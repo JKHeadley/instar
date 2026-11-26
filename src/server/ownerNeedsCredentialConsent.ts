@@ -13,16 +13,18 @@ export interface CredentialRequestBinding {
   revision: number;
   /** Kept at the source. Never serialized to a Needs row, disclosure, or receipt. */
   dropToken: string;
+  /** Additional exact consent authority when a caller supplies a scoped grant. */
+  authorizationBinding?: string;
   presentation: { title: string; why: string; detail: string | null };
 }
 
 interface CredentialConsentDependencies {
   drop: Pick<SecretDrop, 'getPending' | 'submitWithReason'>;
   /** The source's exact binding for this opaque Needs request, resolved on every action. */
-  bindingFor: (requestId: string) => CredentialRequestBinding | null;
+  bindingFor: (requestId: string, req: Request) => CredentialRequestBinding | null;
   /** Returns the current owner from verified signed request authority, not from the body or query. */
   persist?: (token: string, submission: SecretSubmission) => boolean;
-  signedOwnerFor: (request: Request) => { id: string } | null;
+  signedOwnerFor: (request: Request, requestId: string) => { id: string } | null;
 }
 
 function reviewedPresentation(binding: CredentialRequestBinding) {
@@ -40,13 +42,13 @@ export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDepende
   const key = randomBytes(32);
   const disclosureFor = (requestId: string, binding: CredentialRequestBinding, pending: SecretRequest) =>
     createHmac('sha256', key).update(JSON.stringify([
-      requestId, binding.ownerId, binding.revision, binding.dropToken, reviewedPresentation(binding), pending.fields[0].name, pending.expiresAt,
+      requestId, binding.ownerId, binding.revision, binding.dropToken, binding.authorizationBinding ?? null, reviewedPresentation(binding), pending.fields[0].name, pending.expiresAt,
     ])).digest('hex');
   function resolve(req: Request | undefined, requestId: string) {
     if (!req || !REQUEST_ID.test(requestId)) return null;
     try {
-      const owner = deps.signedOwnerFor(req);
-      const binding = owner && deps.bindingFor(requestId);
+      const owner = deps.signedOwnerFor(req, requestId);
+      const binding = owner && deps.bindingFor(requestId, req);
       if (!owner || !binding || binding.ownerId !== owner.id || requestId === binding.dropToken
         || !Number.isSafeInteger(binding.revision) || binding.revision < 1) return null;
       const pending = deps.drop.getPending(binding.dropToken);
@@ -71,7 +73,7 @@ export function createOwnerNeedsCredentialConsent(deps: CredentialConsentDepende
         verifiesCurrentOwnerRequest: (action: { kind: string; requestId?: string }) => {
           if (action.kind !== 'credential' || action.requestId !== requestId) return false;
           const latest = resolve(req, requestId);
-          return latest?.binding.dropToken === dropToken && latest.binding.revision === revision;
+          return latest?.binding.dropToken === dropToken && latest.binding.revision === revision && latest.binding.authorizationBinding === current.binding.authorizationBinding;
         },
       };
     },

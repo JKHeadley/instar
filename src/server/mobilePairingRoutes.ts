@@ -849,6 +849,18 @@ export class MobilePairingService {
     return Number.isSafeInteger(revision) && revision >= 0 ? `${deviceId}:${keyHash}:${revision}` : null;
   }
 
+  ownerCredentialBrowser(deviceId: string): { keyHash: string; host: string; name: string; revision: number } | null {
+    if (!this.browserOn() || this.contested.has(deviceId)) return null;
+    const device = this.devices.get(deviceId);
+    if (!device || !isBrowserDevice(device) || device.scope || device.status !== 'active' ||
+      !device.browserPublicKey || !device.host) return null;
+    const person = this.personOfDevice(device);
+    const keyHash = deviceKeyHashOf(device.browserPublicKey);
+    if (!person.ok || person.role !== 'owner' || this.keyLedger?.isRevoked(keyHash, deviceId)) return null;
+    const revision = device.personRevision ?? 0;
+    return Number.isSafeInteger(revision) && revision >= 0 ? { keyHash, host: device.host, name: device.deviceName || 'Paired browser', revision } : null;
+  }
+
   /** The shared check by device id (push recipients): an unknown device or person ⇒ no. */
   deviceMayUseConversation(deviceId: string, ref: string): boolean {
     const d = this.devices.get(deviceId);
@@ -2646,7 +2658,7 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 // `bucket`: the name of the rule's own bucket (rules sharing a name share a count).
 // `browser`: a browser device may use the route (dashboard-conversations-browser-device §4.4). Closed
 // by default: a route opens to browsers only by being named in BROWSER_ROUTES below.
-export interface DeviceRule { method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean; tier?: Tier; browser?: true }
+export interface DeviceRule { method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean; tier?: Tier; browser?: true; requiresFullDevice?: true }
 
 /**
  * The routes a browser device may call (dashboard-conversations-browser-device §4.4): its own
@@ -3022,7 +3034,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // person's phone may ask; the route itself filters per viewer (a team person gets only what their own
     // phone may already read, e.g. the work board when its rule admits them). Read-only, its own bucket;
     // its team tier is named in TEAM_ROUTE_TIERS (guest).
-    { method: 'GET', re: /^\/mobile\/needs$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'needs-reads' },
+    { method: 'GET', re: /^\/mobile\/needs$/, statuses: active, body: 'none', browser: true, requiresFullDevice: true, ownBucket: 30, bucket: 'needs-reads' },
     // Projects on the Work door (work-front-doors stage 2a): read-only, its own bucket; the handler gives project
     // names to the owner only and an empty answer to anyone else (spec §4.4). Team tier in TEAM_ROUTE_TIERS (guest).
     { method: 'GET', re: /^\/mobile\/work\/projects$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'projects-reads' },
@@ -3062,8 +3074,10 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/trust\/device-acceptance(\/withdraw)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
-    { method: 'GET', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'secrets-reads' },
-    { method: 'POST', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'GET', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'none', ownerOnly: true, browser: true, requiresFullDevice: true, ownBucket: 20, bucket: 'secrets-reads' },
+    { method: 'POST', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}$/, statuses: active, body: 'json', ownerOnly: true, browser: true, requiresFullDevice: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'GET', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}\/browser-grant$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/needs\/credentials\/cr-[a-f0-9]{32}\/browser-grant$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/secrets\/requests\/[0-9a-f]{16}\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // The session screen's controls (docs/specs/mobile-native-session-controls.md). Owner phones only.
@@ -3248,7 +3262,7 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // conversations only until piece 3b gives it the mark. It may use what a browser device may use
     // (status, self-removal, conversations, media), plus its push registration, its route list and its
     // own activation; every other owner route (org acts, grants, approvals, admin) is refused.
-    if (admittedAtComputer(peek) && !rule.browser && !AT_COMPUTER_EXTRA_ROUTES.some(([m, re]) => m === req.method && re.test(pathNorm))) {
+    if (admittedAtComputer(peek) && (rule.requiresFullDevice || !rule.browser) && !AT_COMPUTER_EXTRA_ROUTES.some(([m, re]) => m === req.method && re.test(pathNorm))) {
       return refuse(403, 'cannot-approve-yet');
     }
     // A member's linked computer (instar-document-viewer §3.6a) is scoped to documents: its page reads
@@ -3292,9 +3306,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     (req as unknown as { instarDeviceAdmissionIdentity: MobileDeviceAdmissionIdentity | null }).instarDeviceAdmissionIdentity = admittedIdentity;
-    if (rec && isBrowserDevice(rec)) {
+    if (browserDevice) (req as unknown as { instarDeviceClient: 'browser' }).instarDeviceClient = 'browser';
+    if (rec && browserDevice) {
       // The wording a send uses (💻, "from the dashboard") follows the signing device's kind (§4.7).
-      (req as unknown as { instarDeviceClient: 'browser' }).instarDeviceClient = 'browser';
       // "Last used on this machine", at most once a minute; never refuses or delays the request.
       try { svc.devices.touch(rec.id); } catch (err) {
         featureEvidence.recordAtMostEvery('mobilePairing.browser', 'touch-failed', 60 * 60_000, { kind: 'error', reason: `lastSeenAt write failed: ${err instanceof Error ? err.message : String(err)}` });

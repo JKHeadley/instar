@@ -7,3 +7,5 @@ When a request does need you, it gives you one action. You can decide on a speci
 The first release covers the Needs You list, the dashboard and native clients that display it, and the existing-agent setup that turns on the same check. The nine source policies explain where the work stays. Direct incident views and notification delivery have their own acceptance checks. Existing approval holds stay in place.
 
 This checkpoint is for review with disposable test requests. The feature remains off in production while the team verifies the nine source paths, supported clients, and upgrade behavior. The first pull request lets an agent opt in. A later update will turn it on by default after the team verifies supported devices, existing installations, and that genuine requests stay visible.
+
+A paired browser can show a credential form only after you approve that exact request on your native device. The server shows the browser’s name, host and key fingerprint before asking you to confirm. This option is off by default.
