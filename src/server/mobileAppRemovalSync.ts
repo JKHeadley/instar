@@ -1,3 +1,4 @@
+import type { BrowsedMessage } from '../core/AppConversationStore.js';
 import type { Request } from 'express';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
@@ -99,7 +100,7 @@ export async function executeOwnerRemovalContext(req: Request, pairing: MobilePa
   service: AppConversationService, evidence: Parameters<typeof resolveOwnerRemovalSyncAuthority>[3],
   codec: ReturnType<typeof createRemovalSyncCursorCodec>,
   selection: { target: string; kind: 'event' | 'message' | 'legacy'; beforeAt: string | null; limit: number; conversationKey?: string },
-  projectAnchor?: (anchor: { eventId: string; messageId: string; at: string }) => { status: number; body: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }> {
+  projectAnchor?: (anchor: BrowsedMessage) => { status: number; body: Record<string, unknown> }): Promise<{ status: number; body: Record<string, unknown> }> {
   const missing = { status: 404, body: { error: 'message-not-available' } };
   try {
     const initial = resolveOwnerRemovalSyncAuthority(req, pairing, service, evidence, selection.conversationKey);

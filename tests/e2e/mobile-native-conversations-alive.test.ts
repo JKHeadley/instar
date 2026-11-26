@@ -305,6 +305,14 @@ describe('native app conversations — production wiring', () => {
     const acceptedSync = await send('GET', `/mobile/chat/app/${key}/events`);
     expect(acceptedSync.status, JSON.stringify(acceptedSync.body)).toBe(200);
     expect(acceptedSync.body.epoch).toBe(acceptedHistory.body.epoch);
+    const removedNotificationPath = `/mobile/chat/app/${key}/preview/${encodeURIComponent(reply.body.messageId)}`;
+    const removedNotification = await send('GET', removedNotificationPath);
+    const missingNotification = await send('GET', `/mobile/chat/app/${key}/preview/missing-message-id`);
+    expect(removedNotification.status).toBe(404);
+    expect(removedNotification.body).toEqual(missingNotification.body);
+    expect(removedNotification.body).not.toHaveProperty('body');
+    expect((await auth(request(app).get(removedNotificationPath))).status).toBe(403);
+
     const protectedQuotes = await send('GET', `/mobile/chat/app/${key}/reply-previews?eventId=${encodeURIComponent(quoted.body.eventId)}&eventId=${encodeURIComponent(target)}`);
     expect(protectedQuotes.status).toBe(200);
     expect(protectedQuotes.body).toEqual({ conversationKey: key, epoch: acceptedHistory.body.epoch, messages: [
@@ -340,6 +348,24 @@ describe('native app conversations — production wiring', () => {
     expect((await send('GET', `/mobile/chat/app/${dest}/messages`)).body).not.toHaveProperty('epoch');
     enrolled.delete(key);
     expect((await send('GET', `/mobile/chat/app/${key}/messages`)).body.epoch).toBe(acceptedHistory.body.epoch);
+
+    server.appConversations!.store.append({
+      kind: 'message', conversationKey: key, eventId: 'surviving-notification-event', messageId: 'surviving-notification',
+      machineId: server.appConversations!.deps.machineId(), role: 'agent', text: 'A surviving reply', at: new Date().toISOString(),
+    });
+    const survivingNotificationPath = `/mobile/chat/app/${key}/preview/surviving-notification`;
+    const survivingNotification = await send('GET', survivingNotificationPath);
+    expect(survivingNotification.status).toBe(200);
+    expect(survivingNotification.body.body).toBe('A surviving reply');
+    const notificationToken = crypto.randomBytes(32).toString('hex');
+    expect(server.mobilePairing!.devices.setPush(deviceId, {
+      token: 'a'.repeat(64), environment: 'sandbox',
+      notifyTokenHash: crypto.createHash('sha256').update(notificationToken).digest('hex'), revision: 1,
+    }).ok).toBe(true);
+    const notifier = await request(app).get(survivingNotificationPath)
+      .set('X-Instar-Device', deviceId).set('X-Instar-Notify-Token', notificationToken);
+    expect(notifier.status).toBe(403);
+    expect(notifier.body).not.toHaveProperty('body');
 
     // A ledger revocation alone refuses the phone at once on the production auth path, even if
     // the registry write after it failed (the registry still says active here).

@@ -1946,7 +1946,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   // ── Reply notification preview (chat-media spec §4.11) ──
   // The phone's notification extension asks for the text to show; Apple only ever carries
   // "New reply". Open to the device, its notification read token, or the agent's token.
-  router.get('/mobile/chat/app/:key/preview/:messageId', (req: Request, res: Response) => {
+  router.get('/mobile/chat/app/:key/preview/:messageId', (req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { off(res); return; }
     const p = principalOf(req);
@@ -1955,12 +1955,19 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const messageId = String(req.params.messageId);
     if (!isAppConversationKey(key) || !/^[a-z0-9._:-]{1,128}$/.test(messageId)) { res.status(400).json({ error: 'bad-request' }); return; }
     if (!deviceMayUse(deps.pairing, req, key)) { res.status(404).json({ error: 'not-found' }); return; }
+    const name = deps.config.projectName ?? 'agent';
+    const title = name.charAt(0).toUpperCase() + name.slice(1);
+    if (serveProtectedRead(req, res, next, (request, pairing, service, evidence, codec) =>
+      executeOwnerRemovalContext(request, pairing, service, evidence, codec, {
+        target: messageId, kind: 'message', beforeAt: null, limit: 1,
+      }, (row) => row.role === 'agent'
+        ? { status: 200, body: { title, body: pushPreviewBody(row.attachments ?? [], row.text) } }
+        : { status: 404, body: { error: 'message-not-available' } }))) return;
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
     if (!m || m.role !== 'agent' || !deps.pairing.mayReadMessageId(devicePersonOf(req), key, messageId)) { res.status(404).json({ error: 'not-found' }); return; }
-    const name = deps.config.projectName ?? 'agent';
-    res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
+    res.json({ title, body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
 
   // ── Sync ──

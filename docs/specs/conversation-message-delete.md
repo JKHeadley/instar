@@ -234,3 +234,5 @@ The isolated router also serves exact context under the signed sync epoch. The e
 On the isolated server, link issuance derives its conversation key from the validated App reference and applies the same exact anchor proof as context. Removed and missing targets share the existing link-unavailable response. The live HTTPS link contract stays the same for a surviving anchor.
 
 The isolated reply-preview route selects the requested reply bases and quoted originals under one prepared removal snapshot. It checks the same signed epoch as history and sync. A removed base is indistinguishable from an absent base. A surviving base whose original has been removed returns the established unavailable quote state without original text or target identifiers.
+
+The isolated notification-preview route reads an exact agent message by message ID under the signed custodian proof. A removed target and a missing one produce the same unavailable response. Bearer and notification-only credentials cannot authorize this acceptance path. Before production enrollment, verify the generic fallback for notifications that lack a current signed owner read.

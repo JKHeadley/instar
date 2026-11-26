@@ -55,3 +55,5 @@ On the isolated server, opening a deleted message now reports it as unavailable.
 The isolated server also refuses to copy a new link to a deleted message. The app still gets the usual link for a surviving message.
 
 On the isolated server, a reply stays readable after its original message is deleted, but the quote preview no longer shows the deleted text.
+
+The isolated server also stops deleted text from appearing in notification previews. It uses the current signed device to check the exact message and leaves the generic notification available when it cannot provide text.
