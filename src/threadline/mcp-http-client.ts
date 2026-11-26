@@ -17,7 +17,7 @@ import type {
   RequestSecretResult,
   RelayDiscoverer,
 } from './ThreadlineMCPServer.js';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { ApprovedDeleteResult } from './performApprovedDelete.js';
 
@@ -44,9 +44,12 @@ function relaySendDispatcher(): Agent {
  * undici. When the two disagree on the dispatch handler interface (Node 26 with undici 6.x), Node's
  * fetch rejects the dispatcher with `UND_ERR_INVALID_ARG` ("invalid onError method") before any
  * connection opens, so every threadline_send reported "Failed to reach agent server" with the server
- * up. Same answer as telegram-egress.ts: resend once with Node's default dispatcher and remember it for
- * this process. Nothing was sent on the rejected attempt, so the resend cannot duplicate a message;
- * only the 325 s wait is lost (Node's default is 300 s, which then reads as outcome-unknown).
+ * up. On that rejection the request is resent once through the `undici` package's OWN fetch with the
+ * same Agent, which always agree, and the process remembers to go there directly. Unlike
+ * telegram-egress.ts (which drops to Node's default dispatcher), this keeps deadline 3: Node's
+ * default 300 s would fall below the route's 320 s answer and break the spec's ordering
+ * (docs/specs/threadline-mcp-local-http.md, Bounds). Nothing was sent on the rejected attempt, so
+ * the resend cannot duplicate a message.
  */
 let relaySendDispatcherRejected = false;
 
@@ -58,15 +61,19 @@ function isDispatcherRejection(error: unknown): boolean {
 /** For tests: forget a recorded rejection. */
 export function resetRelaySendDispatcherRejection(): void { relaySendDispatcherRejected = false; }
 
+function packageFetch(url: string, init: RequestInit): Promise<Response> {
+  return undiciFetch(url, { ...init, dispatcher: relaySendDispatcher() } as Parameters<typeof undiciFetch>[1]) as unknown as Promise<Response>;
+}
+
 async function fetchRelaySend(url: string, init: RequestInit): Promise<Response> {
-  if (relaySendDispatcherRejected) return fetch(url, init);
+  if (relaySendDispatcherRejected) return packageFetch(url, init);
   try {
     return await fetch(url, { ...init, dispatcher: relaySendDispatcher() } as RequestInit);
   } catch (error) {
     if (!isDispatcherRejection(error)) throw error;
     relaySendDispatcherRejected = true;
-    console.warn('[threadline-mcp] Node\'s fetch refused the undici package dispatcher (UND_ERR_INVALID_ARG); using Node\'s default dispatcher for relay-send in this process.');
-    return fetch(url, init);
+    console.warn('[threadline-mcp] Node\'s fetch refused the undici package dispatcher (UND_ERR_INVALID_ARG); using the undici package\'s fetch for relay-send in this process.');
+    return packageFetch(url, init);
   }
 }
 

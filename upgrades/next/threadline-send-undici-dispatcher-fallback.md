@@ -2,7 +2,7 @@
 
 ## What Changed
 
-`threadline_send` from an MCP session posts to the agent server's `/threadline/relay-send` with a dedicated `undici` Agent (325s headers/body wait). On Node 26 the fetch built into Node rejects an Agent from the `undici` 6.x package with `UND_ERR_INVALID_ARG` before any connection opens, so every send reported "Failed to reach agent server". The request is now resent once with Node's default dispatcher, and the process stops passing the package Agent from then on, the same fallback `telegram-egress.ts` already uses.
+`threadline_send` from an MCP session posts to the agent server's `/threadline/relay-send` with a dedicated `undici` Agent (325s headers/body wait). On Node 26 the fetch built into Node rejects an Agent from the `undici` 6.x package with `UND_ERR_INVALID_ARG` before any connection opens, so every send reported "Failed to reach agent server". The request is now resent once through the `undici` package's own fetch with the same Agent, and the process goes there directly from then on. The 325s reply-wait bound is kept.
 
 ## What to Tell Your User
 
