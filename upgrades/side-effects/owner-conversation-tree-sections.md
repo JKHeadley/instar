@@ -35,3 +35,5 @@ same project. The signed test places a linked card under the generated
 parent. Missing, cyclic, or out-of-budget edges withhold completeness.
 
 Complete project branches expose a visible descendant conversation count excluding the project chat itself.
+
+A parentless Telegram topic in covered inventory has affirmative negative project placement. App rows still require explicit root or ancestry evidence.

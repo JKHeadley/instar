@@ -23,7 +23,9 @@ export function ownerTreeProjectMembership(
       }
       seen.add(key);
       const parent = snapshot.parents.get(key);
-      if (parent === null) {
+      // A Telegram topic present in the covered inventory can have no
+      // Chief placement record. Certified group membership is checked separately.
+      if (parent === null || (parent === undefined && ref.platform === 'telegram' && seen.size === 1)) {
         if (seen.size === 1) membership.set(nodeKey(ref), null);
         break;
       }
