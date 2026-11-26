@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "web-message-actions",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T17:05:36.695Z",
+  "artifactPath": "upgrades/side-effects/web-message-actions.md",
+  "artifactSha256": "8f4661257829c100241af42f83beff49ed699995aaf884c6e448002849dbf037",
+  "coveredFiles": [
+    "dashboard/console/chat-message-actions.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/web-message-actions.md",
+    "upgrades/side-effects/web-message-actions.eli16.md",
+    "upgrades/side-effects/web-message-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible capability-gated presentation over existing signed routes; no server authorization changes.",
+  "eli16Path": "upgrades/side-effects/web-message-actions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-message-actions.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

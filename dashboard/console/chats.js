@@ -10,6 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
+import { exactId, reactionState, forwardDestinations, replyPreview } from './chat-message-actions.js';
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
@@ -88,6 +89,7 @@ class ChatsPage {
     this.device = createBrowserDevice({ bearer });
     this.status = null;
     this.rows = [];
+    this.messageAttempts = new Map();
     this.meta = { nextCursor: null, failed: [] };
     this.view = null;           // the open conversation
     this.tabId = (globalThis.crypto && globalThis.crypto.randomUUID) ? globalThis.crypto.randomUUID() : String(Math.random());
@@ -365,8 +367,9 @@ class ChatsPage {
   }
 
   /** A signed JSON call with the 401 rule and the 5-retry backoff for a transient refusal. */
-  async call(method, path, opts = {}) {
+  async call(method, path, opts = {}, isCurrent = () => true) {
     for (;;) {
+      if (!isCurrent()) return { ok: false, status: 0, gone: true };
       const r = await this.device.call(method, path, opts);
       if (r.status !== 401) { if (r.ok) this.retries401 = 0; return r; }
       const what = await this.handle401();
@@ -425,7 +428,7 @@ class ChatsPage {
     else if (!more && !this.rows.length) setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: r.status === 503 ? OFF_TEXT : 'Couldn\'t load the conversations right now.' }));
   }
   applyList(data, more) {
-    const rows = listRows(data);
+    const rows = listRows(data).map(row => row.messageActions ? { ...row, actionsReadAt: now() } : row);
     if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     // Conversations this person pinned (conversation-list-pins): the first page carries them; null ⇒ the feature is off here.
     if (!more) this.listPins = listPinnedRows(data);
@@ -435,6 +438,7 @@ class ChatsPage {
     const meta = listMeta(data);
     this.meta = more || !this.pagedMore ? meta : { ...meta, nextCursor: this.meta.nextCursor };
     this.paintList();
+    if (this.view?.live) this.paintBubbles(this.view);
     if (!more) void this.loadHierarchy();
   }
 
@@ -672,7 +676,12 @@ class ChatsPage {
       del.addEventListener('click', () => this.remove(v));
       menu.append(rename, del);
     }
-    v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite', tabindex: '0', 'aria-label': 'Messages' });
+    v.newMessages = el('button', { class: 'btn-quiet chat-new-messages', type: 'button', text: 'New messages', hidden: true });
+    v.newMessages.addEventListener('click', () => this.scrollToEnd(v));
+    v.msgs.addEventListener('scroll', () => {
+      if (this.atChatEnd(v)) v.newMessages.hidden = true;
+    }, { passive: true });
     v.historyWords = el('p', { class: 'card-line chat-muted' });
     v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
     v.historyRetry.addEventListener('click', () => this.loadFirst(v));
@@ -687,11 +696,12 @@ class ChatsPage {
     v.sourceMore.addEventListener('click', () => this.findSource(v));
     v.sourceNotice = el('div', { class: 'card-line chat-source-target', role: 'status', hidden: !sourceTarget }, v.sourceText, v.sourceMore);
     v.nodes = new Map();
+    v.replyPreviews = new Map();
     v.pinBar = this.pinBar(v);
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, v.newMessages, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v, { recoverUnfinished: true });
@@ -774,7 +784,7 @@ class ChatsPage {
       this.applyHistory(v, r.data, { replace: true });
       // Preserve the existing open-time recovery; a history retry never resumes a send.
       if (recoverUnfinished) this.resumeUnfinished(v);
-      this.scrollToEnd(v, true);
+      this.scrollToEnd(v);
       this.findSource(v);
     } catch {
       // A failed history read changes only its explanation, never messages or a draft.
@@ -825,10 +835,12 @@ class ChatsPage {
       if (v.ref.kind === 'telegram') { const t = rows.length ? Date.parse(rows[0].timestamp) : NaN; v.oldestTs = Number.isFinite(t) ? t : null; }
       v.earlier.hidden = v.ref.kind === 'telegram' ? !(rows.length >= 50) : !v.nextBefore;
     }
-    this.setBubbles(v, mergeBubbles(v.list, next));
+    this.setBubbles(v, mergeBubbles(v.list, next), { announceNew: !replace && !earlier });
   }
 
-  setBubbles(v, list) {
+  setBubbles(v, list, { announceNew = false } = {}) {
+    const last = announceNew ? v.list.findLast(bubble => !bubble.id.startsWith('local:')) : null;
+    const known = last ? new Set(v.list.map(bubble => bubble.id)) : null;
     // A server row replaces this page's own placeholder for the same message.
     const real = new Set(list.filter((b) => !b.id.startsWith('local:') && b.messageId).map((b) => b.messageId));
     const realTexts = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right').map((b) => `${b.text}|${b.at}`);
@@ -843,7 +855,11 @@ class ChatsPage {
       if (b.final && v.ref.kind !== 'app' && realTexts.some((k) => k.startsWith(`${b.text}|`))) return false;
       return true;
     });
-    this.paintBubbles(v);
+    const lastIndex = last ? v.list.findIndex(bubble => bubble.id === last.id) : -1;
+    const appended = lastIndex >= 0 && v.list.slice(lastIndex + 1).some(
+      bubble => !bubble.id.startsWith('local:') && !bubble.own && !known.has(bubble.id));
+    this.paintBubbles(v, appended);
+    void this.refreshReplyPreviews(v);
     this.maybeMarkRead(v);
   }
 
@@ -868,13 +884,45 @@ class ChatsPage {
     } catch { /* @silent-fallback-ok — a read report is best-effort; the next new message reports again */ } finally { v.markInFlight = false; }
   }
 
-  paintBubbles(v) {
-    const atEnd = v.msgs.scrollHeight - v.msgs.scrollTop - v.msgs.clientHeight < 80;
+  async refreshReplyPreviews(v) {
+    if (!v.live || v.ref.kind !== 'app' || v.replyPreviewBusy) return;
+    const ids = v.list.filter(b => b.reply && exactId(b.eventId)).slice(-50).map(b => b.eventId);
+    if (!ids.length || (v.replyPreviewAt && now() - v.replyPreviewAt < 30_000)) return;
+    v.replyPreviewBusy = true;
+    v.replyPreviewAt = now();
+    v.replyPreviews.clear();
+    this.paintBubbles(v);
+    const query = new URLSearchParams(ids.map(id => ['eventId', id]));
+    const record = this.device.record;
+    const current = () => v.live && record && this.sameActionDevice(record, this.device.record);
+    try {
+      this.spent();
+      const response = await this.call('GET', this.sendPath(v.ref) + '/reply-previews?' + query, {}, current);
+      if (!current() || !response.ok || response.data?.conversationKey !== v.ref.id || !Array.isArray(response.data.messages)) return;
+      const requested = new Set(ids);
+      for (const row of response.data.messages) {
+        if (!requested.has(row?.eventId)) continue;
+        const preview = replyPreview(row.reply);
+        if (preview?.state === 'available') v.replyPreviews.set(row.eventId, preview);
+      }
+      this.paintBubbles(v);
+    } finally {
+      v.replyPreviewBusy = false;
+    }
+  }
+
+  atChatEnd(v) {
+    // scrollTop can be fractional while the element's two heights are rounded.
+    return v.msgs.scrollHeight - v.msgs.clientHeight - v.msgs.scrollTop <= 2;
+  }
+
+  paintBubbles(v, appended = false) {
+    const atEnd = this.atChatEnd(v);
     const want = new Set(v.list.map((b) => b.id));
     for (const [id, n] of v.nodes) if (!want.has(id)) { n.remove(); v.nodes.delete(id); }
     let prev = null;
     for (const b of v.list) {
-      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who, this.isPinned(v, b)]);
+      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who, b.reply, v.replyPreviews.get(b.eventId), b.reaction, b.forwarded, this.isPinned(v, b), this.actionsFor(v, b)]);
       let n = v.nodes.get(b.id);
       if (!n || n.dataset.sig !== sig) {
         const fresh = this.bubbleNode(v, b);
@@ -889,10 +937,13 @@ class ChatsPage {
     }
     this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
+    else if (appended) v.newMessages.hidden = false;
   }
-  scrollToEnd(v, force) {
-    if (!force && v.msgs.scrollTop > 0 && v.msgs.scrollHeight - v.msgs.scrollTop - v.msgs.clientHeight > 200) return;
+  scrollToEnd(v) {
+    const focusPill = v.newMessages === document.activeElement;
+    v.newMessages.hidden = true;
     v.msgs.scrollTop = v.msgs.scrollHeight;
+    if (focusPill) v.msgs.focus({ preventScroll: true });
   }
 
   bubbleNode(v, b) {
@@ -902,13 +953,19 @@ class ChatsPage {
     if (b.mark) meta.push(el('span', { class: `chat-mark tone-${b.mark.tone}`, text: b.mark.label }));
     const pinId = this.canPin(v) ? pinIdOf(v.ref.kind, b) : null;
     if (this.isPinned(v, b)) meta.push(el('span', { class: 'chat-pinned-mark', text: 'Pinned' }));
-    if (pinId) {
+    const actions = this.actionsFor(v, b);
+    const preview = b.reply && v.replyPreviews.get(b.eventId);
+    if (actions?.emoji.length && b.reaction?.emoji) meta.push(el('span', { text: b.reaction.emoji, 'aria-label': `Your reaction: ${b.reaction.emoji}` }));
+    if (pinId || actions?.reply || actions?.emoji.length || this.forwardChoices(v, b, actions).length) {
       const more = el('button', { class: 'btn-quiet chat-msg-menu', type: 'button', text: '⋯', 'aria-label': 'Message options' });
-      more.addEventListener('click', () => this.messageMenu(v, pinId));
+      more.addEventListener('click', () => this.messageMenu(v, pinId, b));
       meta.push(more);
     }
     return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id, ...(b.messageId ? { 'data-message-id': b.messageId } : {}) },
       b.who ? el('div', { class: 'chat-who', text: b.who }) : null,
+      b.forwarded ? el('p', { class: 'chat-muted', text: 'Forwarded message' }) : null,
+      preview ? el('blockquote', { class: 'chat-reply-preview', text: [preview.senderName, preview.preview].filter(Boolean).join(' · ') })
+        : b.reply ? el('p', { class: 'chat-muted', text: 'Original message unavailable' }) : null,
       b.text ? messageTextNode(b.text) : null,
       b.attachments.length ? el('div', { class: 'chat-files' }, b.attachments.map((a) => this.attachmentNode(v, a))) : null,
       el('div', { class: 'chat-meta' }, meta));
@@ -982,7 +1039,35 @@ class ChatsPage {
     }
     return false;
   }
-  messageMenu(v, messageId) {
+  actionsFor(v, bubble) {
+    if (v.ref.kind !== 'app' || !bubble || !exactId(bubble.eventId) || bubble.id.startsWith('local:')) return null;
+    return this.activeMessageActions(refString(v.ref));
+  }
+
+  activeMessageActions(key) {
+    const row = this.rows.find(row => row.key === key);
+    return row?.actionsReadAt && now() - row.actionsReadAt < 45_000 ? row.messageActions : null;
+  }
+
+  messageMenu(v, messageId, bubble) {
+    const actions = this.actionsFor(v, bubble);
+    const options = [];
+    if (actions?.reply) {
+      const reply = el('button', { class: 'btn-primary', type: 'button', text: 'Reply' });
+      reply.addEventListener('click', () => { closeSheet(); v.selectReply?.(bubble); });
+      options.push(reply);
+    }
+    if (actions?.emoji.length) {
+      const react = el('button', { class: 'btn-quiet', type: 'button', text: 'React' });
+      react.addEventListener('click', () => this.reactionSheet(v, bubble));
+      options.push(react);
+    }
+    const forward = this.forwardChoices(v, bubble, actions);
+    if (forward.length) {
+      const button = el('button', { class: 'btn-quiet', type: 'button', text: 'Forward' });
+      button.addEventListener('click', () => this.forwardSheet(v, bubble));
+      options.push(button);
+    }
     const pinned = v.pins.some((p) => p.messageId === messageId);
     const err = el('p', { class: 'unlock-error', role: 'alert' });
     const go = el('button', { class: 'btn-primary', type: 'button', text: pinned ? 'Unpin' : 'Pin' });
@@ -995,8 +1080,145 @@ class ChatsPage {
       closeSheet();
       if (words.text) v.statusLine.textContent = words.text;
     });
-    sheet({ title: 'Message' }, el('div', { class: 'pin-form' }, go, err));
+    sheet({ title: 'Message' }, el('div', { class: 'pin-form' }, options, messageId ? go : null, err));
   }
+  forwardChoices(v, bubble, actions = this.actionsFor(v, bubble)) {
+    if (!bubble.text.trim() || bubble.attachments.length) return [];
+    return forwardDestinations(this.rows, refString(v.ref), actions?.custodian).filter(row => this.activeMessageActions(row.key));
+  }
+
+  // Retain ambiguous writes while the page is open, tied to the signing browser and intent.
+  messageAttempt(v, key, method, path, fields) {
+    const previous = this.messageAttempts.get(key);
+    const device = this.device.record;
+    if (!device) return null;
+    if (previous) return this.sameActionDevice(previous, device) ? previous : null;
+    if (this.messageAttempts.size >= 100) return null;
+    const next = { deviceId: device.deviceId, machineId: device.machineId, method, path, json: { ...fields, requestId: newRequestId(this.device.clock.now()) }, busy: false };
+    this.messageAttempts.set(key, next);
+    return next;
+  }
+
+  sameActionDevice(attempt, device) {
+    return device && attempt.deviceId === device.deviceId && attempt.machineId === device.machineId;
+  }
+
+  async submitMessageAttempt(v, key, attempt, allowed) {
+    if (!v.live || !attempt || !this.sameActionDevice(attempt, this.device.record) || attempt.busy) return null;
+    attempt.busy = true;
+    try {
+      const response = await this.call(attempt.method, attempt.path, { json: attempt.json },
+        () => v.live && this.sameActionDevice(attempt, this.device.record) && allowed());
+      const known = (response.ok && response.status !== 202) || [400, 403, 404].includes(response.status)
+        || (response.status === 409 && response.data?.error !== 'outcome-unknown');
+      if (known) this.messageAttempts.delete(key);
+      return response;
+    } finally {
+      attempt.busy = false;
+    }
+  }
+
+  async reactionSheet(v, bubble) {
+    const path = this.sendPath(v.ref) + '/reactions';
+    const key = `reaction:${refString(v.ref)}:${bubble.eventId}`;
+    const err = el('p', { role: 'status', text: 'Reading your reaction…' });
+    const list = el('div', { class: 'pin-form' }, err);
+    sheet({ title: 'React to message' }, list);
+    const pending = this.messageAttempts.get(key);
+    const choices = this.actionsFor(v, bubble)?.emoji || [];
+    if (pending && !this.sameActionDevice(pending, this.device.record)) { err.textContent = 'The signing browser changed.'; return; }
+    if (!v.live || !choices.length) { err.textContent = 'Reactions are unavailable.'; return; }
+    const result = pending ? null : await this.call('GET', path + '?eventId=' + encodeURIComponent(bubble.eventId));
+    if (!list.isConnected || !v.live) return;
+    let own = result?.ok ? reactionState(result.data, bubble.eventId) : null;
+    const paint = () => {
+      setKids(list, err);
+      const queued = this.messageAttempts.get(key);
+      if (!own && !queued) { err.textContent = 'Could not read your reaction.'; return; }
+      const values = queued ? [queued.json.emoji] : [...choices, ...(own.emoji !== null ? [null] : [])];
+      for (const emoji of values) {
+        const label = emoji === null ? 'Clear reaction' : `React ${emoji}`;
+        const button = el('button', { class: 'btn-quiet', type: 'button', text: queued ? `Retry: ${label}` : label,
+          ...(!queued && emoji !== null ? { 'aria-pressed': String(own.emoji === emoji) } : {}) });
+        button.addEventListener('click', async () => {
+          const currentChoices = this.actionsFor(v, bubble)?.emoji;
+          if (!v.live || !currentChoices?.length || (emoji !== null && !currentChoices.includes(emoji))) {
+            err.textContent = 'Reactions are unavailable.'; return;
+          }
+          const attempt = this.messageAttempts.get(key) || this.messageAttempt(v, key, 'PUT', path,
+            { eventId: bubble.eventId, emoji, expectedRevision: own.revision });
+          for (const control of list.querySelectorAll('button')) control.disabled = true;
+          const result = await this.submitMessageAttempt(v, key, attempt, () => {
+            const current = this.actionsFor(v, bubble)?.emoji;
+            return current?.length && (emoji === null || current.includes(emoji));
+          });
+          if (!list.isConnected || !v.live) return;
+          const latest = reactionState(result?.data, bubble.eventId);
+          if (latest && (!own || latest.revision >= own.revision)) own = latest;
+          if (result?.ok && latest) {
+            v.list = v.list.map(row => row.eventId === bubble.eventId && (row.reaction?.revision ?? -1) <= latest.revision
+              ? { ...row, reaction: latest } : row);
+            this.paintBubbles(v);
+            v.statusLine.textContent = latest.emoji === null ? 'Reaction cleared.' : `Reaction set to ${latest.emoji}.`;
+            closeSheet();
+          } else {
+            err.textContent = latest ? 'Your reaction changed. Choose again.'
+              : this.messageAttempts.has(key) ? 'Could not confirm the reaction. Retry the same change.'
+                : 'Could not change your reaction. Open the menu to check it.';
+            if (!latest && !this.messageAttempts.has(key)) own = null;
+            if (own || this.messageAttempts.has(key)) paint();
+          }
+        });
+        list.append(button);
+      }
+    };
+    err.textContent = pending ? 'Retry the same reaction change.' : own?.emoji ? `Your reaction: ${own.emoji}` : '';
+    paint();
+  }
+
+  forwardSheet(v, bubble) {
+    const err = el('p', { role: 'status' });
+    const key = `forward:${refString(v.ref)}:${bubble.eventId}`;
+    const list = el('div', { class: 'pin-form' }, err);
+    sheet({ title: 'Forward message' }, el('p', { text: 'Choose a conversation to copy this message to.' }), list);
+    const paint = () => {
+      const actions = this.actionsFor(v, bubble);
+      const queued = this.messageAttempts.get(key);
+      if (queued && !this.sameActionDevice(queued, this.device.record)) { setKids(list, err); err.textContent = 'The signing browser changed.'; return; }
+      const destinations = this.forwardChoices(v, bubble, actions).filter(row =>
+        !queued || queued.path === this.sendPath(row.ref) + '/forward');
+      setKids(list, err);
+      if (!destinations.length) { err.textContent = 'No forwarding destination is available.'; return; }
+      for (const destination of destinations) {
+        const button = el('button', { class: 'btn-quiet', type: 'button', text: queued ? `Retry: ${destination.title}` : destination.title });
+        button.addEventListener('click', async () => {
+          const current = this.actionsFor(v, bubble);
+          if (!v.live || !this.forwardChoices(v, bubble, current).some(row => row.key === destination.key)) {
+            err.textContent = 'That destination is unavailable.'; return;
+          }
+          const attempt = this.messageAttempt(v, key, 'POST', this.sendPath(destination.ref) + '/forward', {
+            sourceConversationKey: v.ref.id, sourceEventId: bubble.eventId, custodianMachineId: current.custodian,
+          });
+          for (const control of list.querySelectorAll('button')) control.disabled = true;
+          const response = await this.submitMessageAttempt(v, key, attempt, () =>
+            this.forwardChoices(v, bubble).some(row => row.key === destination.key));
+          if (!list.isConnected || !v.live) return;
+          if (response?.ok && response.status !== 202 && exactId(response.data?.eventId)) {
+            closeSheet();
+            v.statusLine.textContent = `Forwarded to ${destination.title}.`;
+            return;
+          }
+          err.textContent = this.messageAttempts.has(key)
+            ? 'Could not confirm forwarding. Retry to the same conversation.'
+            : 'Could not forward this message.';
+          paint();
+        });
+        list.append(button);
+      }
+    };
+    paint();
+  }
+
   /** Pin or unpin; answers null when the browser is gone, else the words to show (an error, or a platform refusal). */
   async setPinned(v, messageId, pinned) {
     const path = pinsPathOf(v.ref);
@@ -1037,11 +1259,11 @@ class ChatsPage {
     v.earlier.disabled = true;
     const before = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
     this.spent();
-    const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     const r = await this.call('GET', this.historyPath(v, { pool: v.ref.kind !== 'slack', before }));
     if (seq === v.earlierLoadSeq) v.earlier.disabled = false;
     if (!v.live || !current() || seq !== v.earlierLoadSeq) return 'stale';
     if (r.gone || !r.ok) return 'failed';
+    const keep = v.msgs.scrollHeight - v.msgs.scrollTop;
     this.applyHistory(v, r.data, { earlier: true });
     v.msgs.scrollTop = v.msgs.scrollHeight - keep;
     const after = v.ref.kind === 'telegram' ? (v.oldestTs ? String(v.oldestTs) : null) : v.nextBefore;
@@ -1150,6 +1372,37 @@ class ChatsPage {
     const chosen = el('div', { class: 'chat-chosen' });
     const progress = el('progress', { class: 'chat-progress', max: '100', value: '0', hidden: true });
     v.files = [];
+    const quote = el('div', { class: 'chat-reply-preview', hidden: true });
+    const quoteText = el('span', {});
+    const clearQuote = el('button', { class: 'btn-quiet', type: 'button', text: 'Remove quote' });
+    quote.append(quoteText, clearQuote);
+    v.selectReply = (bubble) => {
+      v.replyTo = bubble;
+      quote.hidden = !bubble;
+      quoteText.textContent = bubble ? `Replying to: ${bubble.text.slice(0, 180) || 'Message'}` : '';
+      if (bubble) text.focus();
+    };
+    clearQuote.addEventListener('click', () => v.selectReply(null));
+    const recovery = el('div', { class: 'chat-reply-preview', role: 'status', hidden: true });
+    v.restoreQuote = (body, files, target) => {
+      if (!v.live) return;
+      const restore = () => {
+        if (text.value || v.files.length || v.replyTo) return false;
+        text.value = body;
+        addFiles(files);
+        v.selectReply(target);
+        return true;
+      };
+      if (restore()) return;
+      const keep = el('button', { class: 'btn-quiet', type: 'button', text: 'Restore unsent quoted reply' });
+      const status = el('span', {});
+      keep.addEventListener('click', () => {
+        if (restore()) { keep.remove(); status.remove(); recovery.hidden = !recovery.childElementCount; }
+        else status.textContent = 'Clear the current draft before restoring this reply.';
+      });
+      recovery.hidden = false;
+      recovery.append(keep, status);
+    };
     const refresh = () => { send.disabled = !(text.value.trim() || v.files.length); };
     text.addEventListener('input', refresh);
     text.addEventListener('keydown', (ev) => {
@@ -1191,10 +1444,15 @@ class ChatsPage {
         if (choice === 'drop') { location.hash = '#/people/secrets'; return; }
         if (choice !== 'send') return;
       }
-      text.value = ''; v.files = []; setKids(chosen); refresh();
-      this.send(v, body, files, progress, box);
+      const target = v.replyTo;
+      if (target && !this.actionsFor(v, target)?.reply) {
+        v.statusLine.textContent = 'Quoted reply is unavailable. You can keep your draft or remove the quote.';
+        return;
+      }
+      text.value = ''; v.files = []; setKids(chosen); refresh(); v.selectReply(null);
+      this.send(v, body, files, progress, box, target);
     });
-    const box = el('div', { class: 'chat-composer' }, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
+    const box = el('div', { class: 'chat-composer' }, recovery, quote, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
     // Files dropped anywhere on the open conversation (its messages or the composer) join the tray.
     let depth = 0;
     const over = (on) => box.classList.toggle('dropping', on);
@@ -1212,26 +1470,30 @@ class ChatsPage {
     return box;
   }
 
-  async send(v, text, files, progress, box) {
+  async send(v, text, files, progress, box, target) {
     const record = this.device.record;
     const requestId = newRequestId(this.device.clock.now());
-    const entry = { requestId, ref: refString(v.ref), text, uploads: [], firstSentAt: now(), deviceId: record.deviceId, machineId: record.machineId };
+    const entry = { requestId, ref: refString(v.ref), text, uploads: [], firstSentAt: now(), deviceId: record.deviceId, machineId: record.machineId, ...(target ? { replyTo: { eventId: target.eventId } } : {}) };
     const local = { id: `local:${requestId}`, messageId: null, side: 'right', who: null, text, at: new Date(this.device.clock.now()).toISOString(), attachments: files.map((f) => ({ sha256: '', filename: f.name, size: f.size, blobType: 'application/octet-stream', display: 'file' })), delivery: deliveryLabel('sending'), mark: null };
     v.sending++;
     box.setAttribute('data-interaction-open', '');
     this.setBubbles(v, mergeBubbles(v.list, [local]));
-    this.scrollToEnd(v, true);
+    this.scrollToEnd(v);
     try {
       if (files.length) {
         progress.hidden = false;
         const ups = await this.uploadAll(v, files, requestId, progress);
         progress.hidden = true;
         // warning-exempt: a delivery or signature state on the operator's own message, shown inside the open conversation where it is read and answered
-        if (!ups) { this.finishLocal(v, local, { label: 'not delivered — a file could not be sent', tone: 'bad' }); return; }
+        if (!ups) {
+          if (target) v.restoreQuote(text, files, target);
+          this.finishLocal(v, local, { label: 'not delivered — a file could not be sent', tone: 'bad' }); return;
+        }
         entry.uploads = ups;
       }
       saveUnfinished(entry);
-      await this.deliver(v, entry, local);
+      const replyResult = await this.deliver(v, entry, local);
+      if (target && replyResult === 'refused') v.restoreQuote(text, files, target);
     } finally {
       v.sending--;
       if (!v.sending) box.removeAttribute('data-interaction-open');
@@ -1250,7 +1512,28 @@ class ChatsPage {
     for (;;) {
       const ref = parseConversationRef(entry.ref);
       const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}), ...(ref.kind === 'slack' ? { machine: this.slackMachine(ref) } : {}) };
-      const r = await this.call('POST', this.sendPath(ref), { json });
+      const quoted = ref.kind === 'app' && exactId(entry.replyTo?.eventId);
+      if (entry.replyTo && !quoted) {
+        dropUnfinished(entry.requestId);
+        this.finishLocal(v, local, deliveryLabel('unknown'));
+        return;
+      }
+      const canReply = () => v.live && this.sameActionDevice(entry, this.device.record)
+        && this.activeMessageActions(entry.ref)?.reply === true;
+      if (quoted && !canReply()) {
+        await this.loadList(false);
+        if (!canReply()) {
+          this.finishLocal(v, local, { label: 'quoted reply paused — check this conversation', tone: 'attn' });
+          return 'paused';
+        }
+      }
+      const r = await this.call('POST', this.sendPath(ref) + (quoted ? '/reply' : ''),
+        { json: quoted ? { ...json, replyTo: { eventId: quoted } } : json }, quoted ? canReply : undefined);
+      if (quoted && r.status === 503 && r.data?.error === 'quoted-replies-unavailable') {
+        dropUnfinished(entry.requestId);
+        this.finishLocal(v, local, { label: 'quoted reply is unavailable', tone: 'bad' });
+        return 'refused';
+      }
       if (r.gone) { this.finishLocal(v, local, deliveryLabel('unknown')); return; }
       const out = sendOutcome(r.status, r.data);
       if (r.ok && r.data && r.data.messageId) { local.messageId = String(r.data.messageId); rememberOwn(this.ownIds, entry.deviceId, local.messageId); }
@@ -1258,7 +1541,7 @@ class ChatsPage {
         dropUnfinished(entry.requestId);
         this.finishLocal(v, local, out.label);
         this.refreshOpen(v);
-        return;
+        return quoted && ([400, 403, 404, 413].includes(r.status) || r.data?.error === 'reply-source-unavailable') ? 'refused' : undefined;
       }
       // 202 in-progress: the server is still delivering the first copy of this requestId (a reload or a
       // lost answer); ask again with the same requestId until a final answer names the message.
@@ -1563,7 +1846,7 @@ class ChatsPage {
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
     if (m.mode === 'events') {
       const since = v.list.find((b) => !b.id.startsWith('local:'))?.at || null;
-      this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }));
+      this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }), { announceNew: true });
       if (Array.isArray(m.data.events) && m.data.events.some((e) => e && e.kind === 'pin')) this.loadPins(v);
     }
     else this.applyHistory(v, m.data);
@@ -1572,6 +1855,7 @@ class ChatsPage {
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
     if (!v || !v.live || v.historyPending) return;
+    void this.refreshReplyPreviews(v);
     const ref = refString(v.ref);
     if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
