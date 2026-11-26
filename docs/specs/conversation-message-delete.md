@@ -390,3 +390,9 @@ That result supplies no evidence of full rollback. The successful probe
 exercises the old listener method and operating-system restrictions.
 Supervisor boot and restore, auxiliary ingress, protected storage
 mounting, and generation-bound cancellation still require acceptance.
+
+After generating a fresh, disposable machine identity in the test home,
+the unmodified 1.3.1942 CLI reached its actual server bind. macOS denied
+the wildcard TCP listener with `EPERM` and the process exited. The
+supervisor-owned rollback and retention of enrollment across restore
+remain to be exercised.
