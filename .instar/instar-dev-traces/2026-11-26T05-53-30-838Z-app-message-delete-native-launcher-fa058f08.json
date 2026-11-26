@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-message-delete-native-launcher",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T05:53:30.838Z",
+  "artifactPath": "upgrades/side-effects/app-message-delete-native-launcher.md",
+  "artifactSha256": "b0c078a2fc07603624876c393db391b4a50c945589a1f10c6a56e785c2c5e2dd",
+  "specPath": "docs/specs/conversation-message-delete.md",
+  "coveredFiles": [
+    "docs/specs/conversation-message-delete.eli16.md",
+    "docs/specs/conversation-message-delete.md",
+    "scripts/app-delete-native-acceptance.mjs",
+    "tests/e2e/app-delete-native-acceptance.test.ts",
+    "upgrades/side-effects/app-message-delete-native-launcher.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Provide a loopback-only persistent Delete server for a synthetic native client key",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
