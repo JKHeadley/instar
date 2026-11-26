@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +8,7 @@ import { JournalSyncApplier } from '../../src/core/JournalSyncApplier.js';
 import { CoherenceJournal, type JournalFs } from '../../src/core/CoherenceJournal.js';
 import { buildLastTick, CHIEF_OF_STAFF_KIND_REGISTRATION } from '../../src/core/ChiefOfStaffStore.js';
 import { ReplicatedKindRegistry } from '../../src/core/ReplicatedRecordEnvelope.js';
-import type { PhysicalEffectLeaseSync } from '../../src/core/PhysicalEffectLock.js';
+import { createPhysicalEffectLock, type PhysicalEffectLeaseSync } from '../../src/core/PhysicalEffectLock.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const machine = 'm_studio';
@@ -21,6 +23,7 @@ function candidate(logical = 0) {
 }
 
 describe('dark chief decision journal append', () => {
+  let projectDir: string;
   let stateDir: string;
   let journal: CoherenceJournal;
 
@@ -38,8 +41,8 @@ describe('dark chief decision journal append', () => {
     },
   };
 
-  function open(fsImpl?: JournalFs) {
-    const next = new CoherenceJournal({ stateDir, machineId: machine, fsImpl, decisionWriterLock });
+  function open(fsImpl?: JournalFs, writerLock: Pick<ReturnType<typeof createPhysicalEffectLock>, 'acquireSync'> = decisionWriterLock) {
+    const next = new CoherenceJournal({ stateDir, machineId: machine, fsImpl, decisionWriterLock: writerLock });
     const registry = new ReplicatedKindRegistry();
     registry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
     next.setReplicatedKindRegistry(registry);
@@ -49,12 +52,13 @@ describe('dark chief decision journal append', () => {
 
   beforeEach(() => {
     ownsKernelLock = false;
-    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-journal-'));
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chief-journal-'));
+    stateDir = path.join(projectDir, '.instar');
     journal = open();
   });
   afterEach(() => {
     journal.close();
-    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'chief-decision-fixture' });
+    SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'chief-decision-fixture' });
   });
 
   it('keeps an advisory-only journal from making exact decisions', () => {
@@ -135,6 +139,36 @@ describe('dark chief decision journal append', () => {
     expect(journal.readKindComplete(kind).entries).toHaveLength(1);
     expect(applier.buildServeBatch(kind, 0, machine).entries).toHaveLength(1);
   });
+
+  const legacyInstall = process.env.INSTAR_JOURNAL_FIXTURE_LEGACY_PACKAGE;
+  it.skipIf(process.platform !== 'darwin' || !legacyInstall)(
+    'excludes the released direct CLI and preserves the uncertain append through successor restart',
+    () => {
+      journal.close();
+      journal = open(undefined, createPhysicalEffectLock(stateDir));
+      const prepared = candidate();
+      let checks = 0;
+      expect(() => journal.appendChiefDecision(() => ++checks <= 3, () => prepared))
+        .toThrow('chief-decision-authority-changed-after-write');
+      journal.close();
+
+      const fixture = fileURLToPath(new URL('../fixtures/journal-writer/legacy-direct-fixture.py', import.meta.url));
+      const proof = execFileSync('python3', [fixture, legacyInstall!, projectDir], {
+        encoding: 'utf-8',
+        timeout: 35_000,
+      });
+      expect(proof).toContain('writer locked out');
+
+      journal = open(undefined, createPhysicalEffectLock(stateDir));
+      expect(journal.readKindComplete(kind)).toEqual({ entries: [], complete: false });
+      expect(() => journal.appendChiefDecision(() => true, () => candidate(1)))
+        .toThrow('chief-decision-reconciliation-required');
+      expect(journal.reconcileChiefDecision(() => false)).toBe(false);
+      expect(journal.reconcileChiefDecision(entry => JSON.stringify(entry.data) === JSON.stringify(prepared.data))).toBe(true);
+      expect(journal.readKindComplete(kind).entries).toHaveLength(1);
+    },
+    40_000,
+  );
 
   it('keeps a partial append fenced after restart even when no complete line exists', () => {
     journal.close();

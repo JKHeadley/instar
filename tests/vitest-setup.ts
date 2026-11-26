@@ -87,6 +87,7 @@ delete process.env.GIT_COMMON_DIR;
 // the few variables that steer the test RUNNER itself rather than the code under
 // test. A test that needs one of these sets it itself, after this file runs.
 const INSTAR_ENV_ALLOWLIST = new Set([
+  'INSTAR_JOURNAL_FIXTURE_LEGACY_PACKAGE',
   // Host test-runner concurrency bound — the documented kill switch and its cap.
   // Read in globalSetup (which runs before this file), allowlisted so that stays
   // true no matter where the read moves to.
