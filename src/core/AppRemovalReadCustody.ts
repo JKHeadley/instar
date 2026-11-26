@@ -45,8 +45,9 @@ function validAdmission(value: unknown, machine: string): value is AppRemovalCre
 export class AppRemovalReadCustody {
   private readonly directory: string;
 
-  constructor(stateDir: string) {
-    this.directory = path.join(stateDir, 'state', 'app-removal-read-custody');
+  constructor(stateDir: string, private readonly scope: 'local' | 'signed-peer' = 'local') {
+    const name = scope === 'signed-peer' ? 'app-removal-signed-peer-custody' : 'app-removal-read-custody';
+    this.directory = path.join(stateDir, 'state', name);
   }
 
   observe(conversationKey: string): CustodyObservation {
@@ -70,7 +71,7 @@ export class AppRemovalReadCustody {
       ...(admission ? { admission } : {}),
     };
     if (!isAppConversationKey(conversationKey) || !isAppRemovalReadCustodyRecord(input, conversationKey)
-      || (admission && !validAdmission(admission, creation.machineId))) return false;
+      || (this.scope === 'signed-peer' ? !validAdmission(admission, creation.machineId) : admission !== undefined)) return false;
     const file = this.file(conversationKey);
     const pending = path.join(this.directory, `.${crypto.randomUUID()}.pending`);
     let createdPending = false;
@@ -156,7 +157,9 @@ export class AppRemovalReadCustody {
         || current.size !== stat.size || current.ctimeMs !== stat.ctimeMs) throw new Error('custody record changed');
       const record: unknown = JSON.parse(bytes.toString('utf8', 0, count));
       if (!isAppRemovalReadCustodyRecord(record, key)
-        || (Object.hasOwn(record, 'admission') && !validAdmission(record.admission, record.custodianMachineId)))
+        || (this.scope === 'signed-peer'
+          ? !validAdmission(record.admission, record.custodianMachineId)
+          : Object.hasOwn(record, 'admission')))
         throw new Error('custody record invalid');
       return record;
     } finally {

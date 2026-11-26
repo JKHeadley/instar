@@ -75,7 +75,7 @@ it('rechecks a signed custody admission in a fresh process', async () => {
     import { generateSigningKeyPair, sign } from ${core('MachineIdentity')};
     import { signerKeyHashOf } from ${core('AppRecordSignatures')};
     const [dir, conversationKey, operation, publicKey] = process.argv.slice(1);
-    const store = new AppRemovalReadCustody(dir);
+    const store = new AppRemovalReadCustody(dir, 'signed-peer');
     const event = { kind: 'created', conversationKey, eventId: 'creation', machineId: 'm1',
       title: 'House plans', at: '2026-11-25T21:00:00.000Z' };
     if (operation === 'write') {

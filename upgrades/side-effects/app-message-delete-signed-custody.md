@@ -18,3 +18,8 @@ This checkpoint adds no user-facing behavior.
 
 The proof binds the deployment, conversation, creation record, and machine
 identity independently of the client platform.
+
+Signed peer admissions use a separate directory from local custody evidence.
+The signed store requires admission evidence and the local store refuses it.
+Existing unsigned records keep their original location and behavior. This
+separation does not authorize either store to serve a fleet request.

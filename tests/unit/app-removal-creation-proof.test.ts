@@ -39,16 +39,21 @@ it('binds the full record, deployment, sender and eligible key at first admissio
   expect(verifyRetainedAppRemovalCreation('deployment-a', creation, { ...reopened, authenticatedSender: 'm2' }, retainedAuthority)).toBe(false);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'app-removal-creation-proof-'));
   try {
-    const custody = new AppRemovalReadCustody(directory);
+    const custody = new AppRemovalReadCustody(directory, 'signed-peer');
+    const local = new AppRemovalReadCustody(directory);
+    expect(local.record(creation.conversationKey, creation, admission)).toBe(false);
+    expect(custody.record(creation.conversationKey, creation)).toBe(false);
     expect(custody.record(creation.conversationKey, creation, admission)).toBe(true);
+    expect(local.observe(creation.conversationKey)).toEqual({ kind: 'unrecorded' });
+    expect(local.record(creation.conversationKey, creation)).toBe(true);
     expect(custody.record(creation.conversationKey, creation, { ...admission, admittedAtMs: 3 })).toBe(false);
-    const retained = new AppRemovalReadCustody(directory).observe(creation.conversationKey);
+    const retained = new AppRemovalReadCustody(directory, 'signed-peer').observe(creation.conversationKey);
     expect(retained).toMatchObject({ kind: 'recorded', record: { admission } });
     if (retained.kind !== 'recorded' || !retained.record.admission) throw new Error('missing durable admission');
     expect(verifyRetainedAppRemovalCreation('deployment-a', creation, retained.record.admission, retainedAuthority)).toBe(true);
-    const file = path.join(directory, 'state', 'app-removal-read-custody', creation.conversationKey + '.json');
+    const file = path.join(directory, 'state', 'app-removal-signed-peer-custody', creation.conversationKey + '.json');
     fs.writeFileSync(file, JSON.stringify({ ...retained.record, admission: { ...admission, authenticatedSender: 'm2' } }));
-    expect(new AppRemovalReadCustody(directory).observe(creation.conversationKey)).toEqual({ kind: 'unavailable' });
+    expect(new AppRemovalReadCustody(directory, 'signed-peer').observe(creation.conversationKey)).toEqual({ kind: 'unavailable' });
   } finally {
     SafeFsExecutor.safeRmSync(directory, { recursive: true, force: true, operation: 'app-removal-creation-proof-test:cleanup' });
   }
