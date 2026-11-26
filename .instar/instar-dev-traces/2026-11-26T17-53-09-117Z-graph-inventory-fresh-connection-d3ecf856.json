@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "graph-inventory-fresh-connection",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T17:53:09.117Z",
+  "artifactPath": "upgrades/side-effects/graph-inventory-fresh-connection.md",
+  "artifactSha256": "1bb151223bc31a2c84e358148e549914baffe6ea98a4e5423c7d4f20fa93b2ee",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/GraphWitnessClient.ts",
+    "src/core/graphInventoryFetch.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/integration/graph-inventory-transport.test.ts",
+    "upgrades/next/graph-inventory-fresh-connection.md",
+    "upgrades/side-effects/graph-inventory-fresh-connection.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
