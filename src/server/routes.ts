@@ -18584,7 +18584,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ ...local, localAction: false, servedBy: owner, stale: true });
     } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
-      res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'promotion proposal failed' });
+      res.status(500).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'promotion proposal failed' });
     }
   });
 
