@@ -518,6 +518,30 @@ describe('Conversations page', () => {
     primaryPath: [{ ref: effort, title: '<b>App work</b>' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` } });
   const GRAPH = { items: [worker(2), worker(4)], partial: false, nextCursor: null };
 
+  it('uses the signed shared tree without lifting a pinned project child out of its project', async () => {
+    const { idb, publicKey } = await seeded();
+    const tree = { partial: false, placementComplete: true, projects: 'known',
+      root: { ...worker(1), title: 'Chief of Staff' },
+      sections: { projects: [{ ref: effort, kind: 'effort', title: 'Dashboard project', visibleChildCount: 2,
+        project: { title: 'Dashboard project', conversationKey: 'telegram:2' },
+        children: [worker(2), worker(4)], childrenComplete: true }], groups: [], ungrouped: [worker(3)] },
+      nextCursor: null };
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
+      if (c.url === '/mobile/conversation-graph/tree') return { status: 200, body: tree };
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 12; i++) await flush();
+    const read = calls.find((c) => c.url === '/mobile/conversation-graph/tree')!;
+    expect(verifySigned(read, publicKey).ok).toBe(true);
+    expect(doc.querySelector('.conversation-tree-chief')?.textContent).toBe('Chief of Staff');
+    expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
+    expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
+    expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
+    expect([...doc.querySelectorAll('.chat-view-toggle button')].map(node => node.textContent)).toEqual(['Tree', 'Flat']);
+  });
+
   it('grouped: Chief of Staff first, a "Groups" header, each group one collapsed row with folder, count and unread, the rest under "Not in a group yet"; All shows the flat list and is remembered', async () => {
     const { idb, publicKey } = await seeded();
     const { doc } = await boot((c) => {

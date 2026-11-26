@@ -1808,3 +1808,13 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.conversation-tree-disclosure { min-width: 0; }
+.conversation-tree-disclosure > summary { min-height: 44px; }
+.conversation-tree-disclosure > summary::before { content: '›'; flex: none; }
+.conversation-tree-disclosure[open] > summary::before { transform: rotate(90deg); }
+.conversation-tree-disclosure > :not(summary) { margin-inline-start: var(--s-2); }
+.conversation-tree-section > summary { color: var(--text-strong); font-weight: 700; }
+.conversation-tree-chief { border-bottom: 1px solid var(--hairline); }
+.conversation-tree-chief .row { font-weight: 700; }
+.chat-view-toggle select { min-width: 0; max-width: 100%; }
