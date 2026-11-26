@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-interface FirstPhoneProposal {
+export interface FirstPhoneProposal {
   ownerId: string;
   ownerGeneration: string;
   accountAcceptanceId: string;

@@ -6,6 +6,7 @@ import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/Fi
 import { expect, it } from 'vitest';
 import { matchesFirstPhonePrivateAccept } from '../../src/core/trustJourney/firstPhonePrivateAccept.js';
 
+import { createFirstPhoneOfferResolver } from '../../src/core/trustJourney/firstPhoneOfferResolver.js';
 import { firstPhoneProposalHash } from '../../src/core/trustJourney/firstPhoneProposal.js';
 
 const proposal = {
@@ -160,4 +161,40 @@ it('resolves the current private approval account and holder before recording th
   } finally {
     db.close();
   }
+});
+
+it('resolves only an exact durable offer for an unexpired committed local holder and current device', () => {
+  const { callbackData, ...stored } = offer;
+  const digest = createHash('sha256').update(callbackData).digest('hex');
+  const holder = { localMachineId: 'local', holderMachineId: 'local', epoch: offer.holderEpoch, expiresAt: 250 };
+  const device = { principal: 'owner', proposal };
+  let liveHolder: typeof holder | null = holder;
+  let liveDevice: typeof device | null = device;
+  let now = 210;
+  const resolve = createFirstPhoneOfferResolver({
+    readStoredOffer: (hash) => hash === digest ? { offer: stored, deviceId: proposal.deviceId, holderMachineId: holder.holderMachineId } : null,
+    readVerifiedHolder: () => liveHolder,
+    readVerifiedDeviceProposal: (id) => id === proposal.deviceId ? liveDevice : null,
+    now: () => now,
+  });
+  expect(resolve(callbackData)).toMatchObject({ offer, ownerId: current.ownerId, principal: 'owner', proposalHash: offer.proposalHash });
+  expect(resolve('first-phone:different_fixture_token_123')).toBeNull();
+  for (const state of [null, { ...holder, holderMachineId: 'peer' }, { ...holder, localMachineId: 'peer', holderMachineId: 'peer' }, { ...holder, epoch: 'next' }, { ...holder, expiresAt: now }]) {
+    liveHolder = state;
+    expect(resolve(callbackData)).toBeNull();
+  }
+  liveHolder = holder;
+  for (const change of [
+    { ownerGeneration: 'changed' }, { accountAcceptanceId: 'changed' }, { deviceId: 'changed' },
+    { deviceKeyHash: 'd'.repeat(64) }, { presenceKeyHash: 'd'.repeat(64) },
+    { origin: 'https://other.example' }, { firstAcceptanceKey: 'tj:device-acceptance:first:1' },
+    { disclosureHash: 'd'.repeat(64) },
+  ]) {
+    liveDevice = { ...device, proposal: { ...proposal, ...change } };
+    expect(resolve(callbackData)).toBeNull();
+  }
+  liveDevice = device;
+  liveHolder = { ...holder, expiresAt: 500 };
+  now = offer.expiresAt;
+  expect(resolve(callbackData)).toBeNull();
 });

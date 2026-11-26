@@ -33,3 +33,5 @@ The disposable server now gives the exact paired phone its enrollment disclosure
 The Telegram adapter now recognizes the private enrollment button and refuses forwarded or group-chat copies. The live bot still needs a nomination authority before the button can do anything.
 
 The test nomination handler now checks that the exact private Telegram approval account was accepted before it offered enrollment and is still active when the owner taps.
+
+The enrollment fixture now compares the saved offer with the current holder and exact phone. It refuses to continue when the holder, keys, address, disclosure, or slot has changed.

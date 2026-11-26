@@ -2,7 +2,7 @@ import type { AuthenticatedPrivateTap, FirstPhonePrivateOffer } from './firstPho
 import type { FirstPhonePrivateNominationStore } from './FirstPhonePrivateNominationStore.js';
 import type { TrustJourneyStore } from './TrustJourneyStore.js';
 
-interface CurrentFirstPhoneOffer {
+export interface CurrentFirstPhoneOffer {
   offer: FirstPhonePrivateOffer;
   ownerId: string;
   principal: string;
