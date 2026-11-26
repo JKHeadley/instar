@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createOrderedGitFloorReader } from '../../src/core/OrderedPublicationGitRead.js';
 import { createOrderedFloorResponder } from '../../src/core/OrderedPublicationWitness.js';
+import { OrderedWitnessSnapshotStore } from '../../src/core/OrderedWitnessSnapshotStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 it('reads the pinned ref of a bare Git repository before verifying its witness', () => {
@@ -15,6 +16,7 @@ it('reads the pinned ref of a bare Git repository before verifying its witness',
   const git = (args: string[]) => SafeGitExecutor.execSync(args, {
     cwd: repository, operation: 'ordered-git-floor-test:prepare-bare-fixture',
   }).trim();
+  let store: OrderedWitnessSnapshotStore | undefined;
   try {
     git(['init', '--bare']);
     const tree = git(['write-tree']);
@@ -26,19 +28,13 @@ it('reads the pinned ref of a bare Git repository before verifying its witness',
     const floor = { ...scope, epoch: 1, holder: 'studio', head: 'a'.repeat(64), position: 0,
       witnessGeneration: 1, witness: 'mini' };
     let requests = 0;
-    let accepted = false;
-    let isolatedOldTip: string | undefined;
+    store = OrderedWitnessSnapshotStore.open(join(repository, 'witness.sqlite'));
     const respond = createOrderedFloorResponder({
       destination: JSON.stringify(['disposable', ref]),
       scope,
       witnessId: 'mini',
       mayRead: peer => peer === 'studio',
-      readAcceptedSnapshot: () => accepted ? {
-        commit: isolatedOldTip ?? SafeGitExecutor.readSync(['rev-parse', '--verify', ref], {
-          cwd: repository, operation: 'ordered-git-floor-test:witness-read',
-        }).trim(),
-        floor,
-      } : null,
+      readAcceptedSnapshot: scope => store?.read(scope) ?? null,
       signReadback: bytes => sign(null, bytes, privateKey),
     });
     let peer = 'studio';
@@ -57,16 +53,20 @@ it('reads the pinned ref of a bare Git repository before verifying its witness',
     git(['update-ref', ref, commit]);
     expect(read({ ...scope, namespace: 'delete' })).toBeNull();
     expect(read(scope)).toBeNull();
-    accepted = true;
+    const old = { commit: 'f'.repeat(40), floor };
+    expect(store.provision(old)).toBe(true);
     peer = 'untrusted';
     expect(read(scope)).toBeNull();
     peer = 'studio';
-    isolatedOldTip = 'f'.repeat(40);
     expect(read(scope)).toBeNull();
-    isolatedOldTip = undefined;
-    expect(read(scope)).toEqual(floor);
+    const current = { ...floor, position: 1, head: 'b'.repeat(64) };
+    expect(store.recordAccepted(old, { commit, floor: current })).toBe('recorded');
+    store.close();
+    store = OrderedWitnessSnapshotStore.open(join(repository, 'witness.sqlite'));
+    expect(read(scope)).toEqual(current);
     expect(requests).toBe(4);
   } finally {
+    store?.close();
     SafeFsExecutor.safeRmSync(repository, { recursive: true, force: true, operation: 'ordered-git-floor-test:cleanup' });
   }
 });

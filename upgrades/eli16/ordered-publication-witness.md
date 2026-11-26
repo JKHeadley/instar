@@ -17,3 +17,5 @@ Before using a journal position, the receiver can ask the enrolled witness to co
 The Git reader checks the configured branch directly. A local checkout or another branch with a similar name cannot supply the journal position.
 
 The witness checks its own accepted journal view before it answers. A request from an unenrolled peer or a request for a commit the witness has yet to accept receives no signed response.
+
+The witness now has a local store for the Git commit and journal position it already accepted. It saves them together and remembers them after reopening. A retry can recognize the same saved pair, while a change based on an older pair has to wait.

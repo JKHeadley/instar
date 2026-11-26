@@ -59,3 +59,7 @@ The read-only adapter checks an exact, receiver-pinned repository and ref twice 
 ## Witness responder
 
 The responder checks transport-authenticated caller permission and receiver-owned destination and scope. It signs only the exact challenge after reading the matching accepted snapshot for its own witness identity. The repository integration exercises both ends with a disposable key and an injected accepted snapshot. The durable snapshot provider and authenticated deployment transport remain separate.
+
+## Witness snapshot persistence
+
+One SQLite WAL/FULL transaction stores the exact commit and floor after a trusted adapter verifies acceptance. An exact retry is recognized and a stale predecessor is refused. The integration connects the disposable Git reader to the responder and reopens the witness database before validating its reply. Physical independence, rollback custody and the adapter authorized to write accepted snapshots are deployment requirements.

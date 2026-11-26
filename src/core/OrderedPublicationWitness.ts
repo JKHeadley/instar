@@ -33,7 +33,7 @@ function fields(floor: PublicationFloor) {
     floor.position, floor.witnessGeneration, floor.witness];
 }
 
-function validFloor(floor: PublicationFloor): boolean {
+export function validPublicationFloor(floor: PublicationFloor): boolean {
   return idPattern.test(floor.agentId) && idPattern.test(floor.holder) &&
     idPattern.test(floor.witness) && floor.holder !== floor.witness &&
     digestPattern.test(floor.head) && Number.isSafeInteger(floor.position) && floor.position >= 0 &&
@@ -74,7 +74,7 @@ export function verifiedOrderedSuccessor(
   current: PublicationFloor, decision: OrderedPublicationDecision, exactPayload: string,
   signature: Buffer, pins: WitnessPins,
 ): PublicationFloor | null {
-  if (!validFloor(current) || !orderedNamespaces.has(current.namespace) ||
+  if (!validPublicationFloor(current) || !orderedNamespaces.has(current.namespace) ||
       !samePublicationFloor(current, decision) || !idPattern.test(decision.operationKey) ||
       hash(exactPayload) !== decision.payloadDigest || current.position >= Number.MAX_SAFE_INTEGER) return null;
   const bytes = orderedDecisionBytes(decision);
@@ -85,7 +85,7 @@ export function verifiedOrderedSuccessor(
 export function verifiedWitnessSuccessor(
   current: PublicationFloor, transfer: WitnessTransfer, offer: Buffer, receipt: Buffer, pins: WitnessPins,
 ): PublicationFloor | null {
-  if (!validFloor(current) || !samePublicationFloor(current, transfer.floor) ||
+  if (!validPublicationFloor(current) || !samePublicationFloor(current, transfer.floor) ||
       !idPattern.test(transfer.nextWitness) || transfer.nextWitness === current.holder ||
       transfer.nextWitness === current.witness || !Number.isSafeInteger(transfer.nextWitnessGeneration) ||
       transfer.nextWitnessGeneration !== current.witnessGeneration + 1 ||
@@ -110,7 +110,7 @@ export function holderHandoverBytes(handover: OrderedHolderHandover): Buffer {
 export function verifiedHolderSuccessor(
   current: PublicationFloor, handover: OrderedHolderHandover, signature: Buffer, pins: WitnessPins,
 ): PublicationFloor | null {
-  if (!validFloor(current) || !samePublicationFloor(current, handover.floor) ||
+  if (!validPublicationFloor(current) || !samePublicationFloor(current, handover.floor) ||
       !Number.isSafeInteger(handover.nextEpoch) || handover.nextEpoch <= current.epoch ||
       !idPattern.test(handover.nextHolder) || handover.nextHolder === current.witness ||
       !digestPattern.test(handover.sealDigest) || current.position >= Number.MAX_SAFE_INTEGER) return null;
@@ -165,7 +165,7 @@ export function createOrderedFloorReader(deps: {
     if (!readback) return null;
 
     const { floor, signature } = readback;
-    if (!validFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
+    if (!validPublicationFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
         floor.witness !== enrolled.id || floor.witnessGeneration !== enrolled.generation ||
         !verifies(deps.pins, enrolled.id, orderedFloorReadbackBytes(challenge, floor), signature)) return null;
     const latest = deps.currentWitness(scope);
@@ -197,7 +197,7 @@ export function createOrderedFloorResponder(deps: {
     const snapshot = deps.readAcceptedSnapshot(scope);
     if (!snapshot || snapshot.commit !== exactChallenge.commit) return null;
     const floor = { ...snapshot.floor };
-    if (!validFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
+    if (!validPublicationFloor(floor) || floor.agentId !== scope.agentId || floor.namespace !== scope.namespace ||
         floor.witness !== witnessId) return null;
 
     const signature = deps.signReadback(orderedFloorReadbackBytes(exactChallenge, floor));

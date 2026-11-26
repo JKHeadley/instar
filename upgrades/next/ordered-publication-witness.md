@@ -20,3 +20,5 @@ The dark receiver can verify a fresh witness readback for the exact private Git 
 The dark receiver can read the exact configured Git ref directly before requesting a witness readback. Missing refs and same-named refs elsewhere in the repository provide no confirmation.
 
 The dark witness can answer an authenticated peer only after its independent snapshot confirms the challenged commit and witness floor.
+
+The dark witness readback can use a durable snapshot of the accepted commit and journal floor. Reopening the witness store preserves the exact accepted pair.
