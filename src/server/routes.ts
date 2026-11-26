@@ -3462,26 +3462,70 @@ export function createRoutes(ctx: RouteContext): Router {
     if (principal.kind !== 'device' || !admission || admission.role !== 'owner') return null;
     return ctx.mobilePairingService?.ownerCredentialDeviceIdentity(principal.deviceId, admission.keyHash) ?? null;
   };
+  const ownerAdmissionEnabled = ownerNeedsAdmissionEnabled(ctx.config.needsYou);
+  const browserGrantsEnabled = () => ownerAdmissionEnabled &&
+    ctx.config.needsYou?.browserCredentialGrants?.enabled === true && !ctx.state.readOnly;
+  const isCredentialBrowser = (req?: ExpressRequest): boolean =>
+    (req as (ExpressRequest & { instarDeviceClient?: string }) | undefined)?.instarDeviceClient === 'browser';
+  const browserGrants = new Map<string, {
+    id: string; nativeId: string; nativeOwner: string; presenceKey: string; browserId: string;
+    browserKey: string; browserHost: string; browserRevision: number; revision: number; expiresAt: number;
+  }>();
+  const browserGrantFor = (req: ExpressRequest, requestId: string) => {
+    if (!browserGrantsEnabled() || devicePersonOf(req)?.role !== 'owner') return null;
+    const principal = principalOf(req);
+    const admission = deviceAdmissionIdentity(req);
+    const grant = browserGrants.get(requestId);
+    const svc = ctx.mobilePairingService;
+    if (!grant || !svc || !admission || principal.kind !== 'device' ||
+      principal.deviceId !== grant.browserId || admission.keyHash !== grant.browserKey || grant.expiresAt <= Date.now()) return null;
+    const browser = svc.ownerCredentialBrowser(grant.browserId);
+    const host = (req as ExpressRequest & { instarDeviceHost?: string }).instarDeviceHost;
+    const binding = secretDrop.ownerNeedsBinding(requestId);
+    return browser?.keyHash === grant.browserKey && browser.host === grant.browserHost && host === grant.browserHost &&
+      browser.revision === grant.browserRevision && svc.ownerCredentialDeviceIdentity(grant.nativeId) === grant.nativeOwner &&
+      svc.devices.get(grant.nativeId)?.presenceKey === grant.presenceKey &&
+      binding?.ownerId === grant.nativeOwner && binding.revision === grant.revision ? grant : null;
+  };
+  const prepareBrowserGrant = (req: ExpressRequest, requestId: string, browserId: unknown) => {
+    if (!browserGrantsEnabled() || typeof browserId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(browserId)) return null;
+    const nativeOwner = credentialOwner(req);
+    const principal = principalOf(req);
+    const svc = ctx.mobilePairingService;
+    if (!nativeOwner || principal.kind !== 'device' || !svc) return null;
+    const presenceKey = svc.devices.get(principal.deviceId)?.presenceKey;
+    const browser = svc.ownerCredentialBrowser(browserId);
+    const binding = secretDrop.ownerNeedsBinding(requestId);
+    const pending = binding && secretDrop.getPending(binding.dropToken);
+    if (!presenceKey || !browser || !binding || binding.ownerId !== nativeOwner || !pending) return null;
+    const browserName = cleanFreeText(browser.name);
+    const proposalHash = createHash('sha256').update(JSON.stringify([
+      'needs-browser-credential-v1', requestId, nativeOwner, presenceKey, browserId, browser.keyHash, browser.host,
+      browser.revision, browserName, binding.revision, pending.label, pending.description ?? null, pending.expiresAt,
+    ])).digest('hex');
+    return { proposalHash, title: pending.label, purpose: pending.description ?? null, browserName,
+      expiresAt: pending.expiresAt, nativeId: principal.deviceId, nativeOwner, presenceKey, browserId, browser, revision: binding.revision };
+  };
   const credentialConsent = createOwnerNeedsCredentialConsent({
     drop: secretDrop,
-    bindingFor: requestId => {
+    bindingFor: (requestId, req) => {
       const binding = secretDrop.ownerNeedsBinding(requestId);
       const pending = binding && secretDrop.getPending(binding.dropToken);
       if (!binding || !pending) return null;
       const destination = cleanFreeText(ctx.config.projectName || 'this agent');
-      return { ...binding, presentation: {
+      const grant = isCredentialBrowser(req) ? browserGrantFor(req, requestId) : null;
+      return { ...binding, authorizationBinding: grant?.id, presentation: {
         title: pending.label,
         why: pending.description || 'The agent requested this credential.',
         detail: `The credential will be saved in the protected store for ${destination}.`,
       } };
     },
-    signedOwnerFor: req => {
-      const id = credentialOwner(req);
+    signedOwnerFor: (req, requestId) => {
+      const id = credentialOwner(req) ?? browserGrantFor(req, requestId)?.nativeOwner;
       return id ? { id } : null;
     },
     persist: (token, submission) => persistSecretSubmission(token, submission, true),
   });
-  const ownerAdmissionEnabled = ownerNeedsAdmissionEnabled(ctx.config.needsYou);
   const sourceProvider = createOwnerNeedsSourceProvider(ctx.trustAccountPath);
   const ownerNeedsCandidate = ctx.ownerNeedsCandidate ?? (ownerAdmissionEnabled
     ? (item: Parameters<typeof sourceProvider>[0], req?: ExpressRequest) => item.source === 'owner-credentials'
@@ -3496,9 +3540,11 @@ export function createRoutes(ctx: RouteContext): Router {
   }
   mountNeedsRoutes(router, {
     ownerCardCandidate: ownerNeedsCandidate,
+    browserCredentialViewer: req => isCredentialBrowser(req) ? browserGrantsEnabled() : null,
     ownerCredentialRequestIds: req => {
       const id = ownerAdmissionEnabled ? credentialOwner(req) : null;
-      return id ? secretDrop.ownerNeedsRequestIds(id) : [];
+      if (id) return secretDrop.ownerNeedsRequestIds(id);
+      return req && isCredentialBrowser(req) ? [...browserGrants.keys()].filter(requestId => browserGrantFor(req, requestId)) : [];
     },
     withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
     canary: ownerNeedsCandidate ? undefined : needsCanary,
@@ -32174,6 +32220,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   }
 
+  router.get('/mobile/needs/credentials/:requestId/browser-grant', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const proposal = prepareBrowserGrant(req, req.params.requestId, req.query.browserId);
+    if (!proposal) { res.status(404).json({ error: 'credential-request-unavailable' }); return; }
+    const { proposalHash, title, purpose, browserName } = proposal;
+    res.json({ proposalHash, title, purpose, browserName, browserHost: proposal.browser.host, browserFingerprint: proposal.browser.keyHash.slice(0, 16) });
+  });
+
   const credentialPath = '/mobile/needs/credentials/:requestId';
   router.get(credentialPath, (req, res) => {
     res.set('Cache-Control', 'no-store');
@@ -32186,6 +32240,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const outcome = ownerAdmissionEnabled
       ? credentialConsent.submit(req, req.params.requestId, req.body?.disclosureId, req.body?.value)
       : 'stale';
+    if (outcome === 'applied') browserGrants.delete(req.params.requestId);
     res.status(outcome === 'applied' ? 200 : outcome === 'invalid' ? 400 : outcome === 'unavailable' ? 503 : 409).json({ outcome });
   });
 
@@ -43937,6 +43992,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // SecretDrop, the same store the console uses. The token never leaves these two calls.
       requestSecret: (label, note, topicId) => askForSecret(secretDrop, label, note, topicId, Date.now()),
       cancelSecret: (key) => cancelSecretByKey(secretDrop, key),
+      credentialBrowserGrant: (req, requestId, browserId, proposalHash, grantExpiresAt) => {
+        const proposal = prepareBrowserGrant(req, requestId, browserId);
+        if (!proposal || proposal.proposalHash !== proposalHash) return { status: 409, body: { error: 'credential-request-unavailable' } };
+        if (grantExpiresAt === null) return { status: 200, body: {} };
+        const expiresAt = Math.min(proposal.expiresAt, grantExpiresAt);
+        if (expiresAt <= Date.now()) return { status: 409, body: { error: 'credential-request-unavailable' } };
+        for (const [id, grant] of browserGrants) {
+          if (grant.expiresAt <= Date.now() || !secretDrop.ownerNeedsBinding(id)) browserGrants.delete(id);
+        }
+        browserGrants.set(requestId, {
+          id: randomUUID(), nativeId: proposal.nativeId, nativeOwner: proposal.nativeOwner, presenceKey: proposal.presenceKey,
+          browserId: proposal.browserId, browserKey: proposal.browser.keyHash, browserHost: proposal.browser.host,
+          browserRevision: proposal.browser.revision, revision: proposal.revision, expiresAt,
+        });
+        return { status: 200, body: { expiresAt: new Date(expiresAt).toISOString() } };
+      },
       setFeature: async (req, id, to, deviceId, stillAuthorized) => {
         if (!ctx.featureRegistry) return { status: 501, body: { error: 'FeatureRegistry not initialized' } };
         const def = ctx.featureRegistry.getDefinition(id);

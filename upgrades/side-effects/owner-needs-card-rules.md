@@ -81,3 +81,11 @@ A canceled, expired or restarted request can leave an encrypted fenced record in
 
 
 An authenticated agent can explicitly purge an abandoned fenced request by its exact private token. The cleanup route refuses live requests and published credentials. It returns success only after the encrypted deletion has synced. No background sweeper or live purge was run.
+
+## Dark browser credential grants
+
+The browser grant is off unless `needsYou.browserCredentialGrants.enabled` is explicitly true and owner admission is active. An eligible native owner reviews the exact credential request and browser identity before using the existing single-use presence challenge. The challenge covers the selected browser, key, host, assignment revisions and disclosed request. The grant is machine-local, expires with the challenge and request, and conveys no trust approval authority.
+
+A signed browser list reads only its granted credential cards. The protected disclosure and exact signed submission recheck both current devices, both assignments, expiry and the request. The browser receives no grant token. The disclosure includes the grant binding in its signature. Failed storage leaves the request pending and successful storage consumes the existing one-time request. An older browser, a PIN session, or a bearer caller cannot substitute for native presence.
+
+The source remains local and grants are lost on restart. A stale grant is never recovered by copying it between machines. Release requires the native grant issuance UI and the Dashboard sheet on eligible signed clients. No grant setting was changed in production.

@@ -113,6 +113,7 @@ export type PermissionAction =
   | { kind: 'set-feature'; target: string; value: 'enabled' | 'disabled'; disclosureHash: string }
   | { kind: 'request-secret'; target: 'new'; label: string; note: string; topicId: number | null }
   | { kind: 'cancel-secret'; target: string }
+  | { kind: 'credential-browser-grant'; target: string; proposalHash: string }
   | { kind: 'session-door'; target: string; framework: string; model: string | null; machine: string | null }
   | { kind: 'session-move'; target: string; to: string; confirmation: string | null }
   /** "Bring it back here" (app-conversations-in-the-pool §2.2): Face ID, behind the same write gate as Move. */
@@ -205,6 +206,7 @@ export function actionLine(a: PermissionAction): string {
     case 'account-add': return `account-add ${a.target}`;
     case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
     case 'work-card-create': return phoneCardCreateLine(a.target, a.proposalHash);
+    case 'credential-browser-grant': return `credential-browser-grant ${a.target} ${a.proposalHash}`;
     case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
     case 'group-project-confirm': return `group-project-confirm ${a.target} ${a.proposalHash}`;
     case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
@@ -258,6 +260,11 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
   }
   if (kind === 'work-card-create') {
     if (typeof target !== 'string' || !PHONE_CARD_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'credential-browser-grant') {
+    if (typeof target !== 'string' || !/^cr-[a-f0-9]{32}$/.test(target)) return { ok: false, error: 'bad-target' };
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
   }
@@ -469,7 +476,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'credential-browser-granted' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -766,6 +773,7 @@ export interface MobilePermissionsDeps {
   requestSecret: (label: string, note: string, topicId: number | null) => ActionResult;
   /** Cancel the request behind this one-way key, on this machine. */
   cancelSecret: (key: string) => ActionResult;
+  credentialBrowserGrant?: (req: Request, requestId: string, browserId: unknown, proposalHash: string, grantExpiresAt: number | null) => ActionResult;
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
@@ -972,6 +980,13 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       const refusal = deps.confirmGroupProject ? deps.groupProjectRefusal?.() ?? null : { status: 503, body: { error: 'chief-of-staff-off' } };
       if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((refusal.body as { error?: unknown }).error ?? 'refused'), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
     }
+    if (built.action.kind === 'credential-browser-grant') {
+      const result = deps.credentialBrowserGrant?.(req, built.action.target, b.browserId, built.action.proposalHash, null);
+      if (!result || result.status !== 200) {
+        res.status(result?.status ?? 503).json(result?.body ?? { error: 'browser-credential-grants-off' });
+        return;
+      }
+    }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
     audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: built.action.kind, target: built.action.target, ...(built.action.kind === 'set-feature' ? { value: built.action.value } : {}) });
@@ -1146,6 +1161,20 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     if (!proven(req, res, g, built.action)) return;
     const a = built.action as Extract<PermissionAction, { kind: 'request-secret' }>;
     finish(res, 'secret-requested', a, g, runAction(() => deps.requestSecret(a.label, a.note, a.topicId)));
+  });
+
+  router.post('/mobile/needs/credentials/:requestId/browser-grant', (req, res) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('credential-browser-grant', req.params.requestId, { proposalHash: b.proposalHash });
+    if (!built.ok || built.action.kind !== 'credential-browser-grant') { res.status(400).json({ error: 'invalid-browser-grant' }); return; }
+    const a = built.action;
+    const proof = provenDetail(req, res, g, a);
+    if (!proof) return;
+    finish(res, 'credential-browser-granted', a, g,
+      deps.credentialBrowserGrant?.(req, a.target, b.browserId, a.proposalHash, proof.expiresAt) ??
+      { status: 503, body: { error: 'browser-credential-grants-off' } });
   });
 
   router.post('/mobile/secrets/requests/:key/cancel', (req: Request, res: Response) => {

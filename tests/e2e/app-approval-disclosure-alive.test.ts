@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import request from 'supertest';
 import type { Server } from 'node:http';
+import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
+import { makeDevice } from '../helpers/mobileDevice.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
 import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { ownerNeedsTrustApprovalCandidate } from '../../src/server/ownerNeedsTrustApproval.js';
@@ -229,6 +231,79 @@ describe('App approval disclosure E2E', () => {
     }
     await s.bearer(request(s.app).delete(`/secrets/pending/${abandoned.body.token}`)).expect(200);
     await s.bearer(request(s.app).post(`/secrets/retrieve/${abandoned.body.token}?consume=true`)).expect(409);
+  });
+
+  it('keeps browser consent dark until enabled and grants one request after native presence', async () => {
+    const s = await bootTrustAppServer('needs-browser-grant-e2e-', undefined, null, undefined, 'default');
+    s.config.secrets = { forceFileKey: true };
+    const native = await s.pair({ local: true, name: 'Native grant owner' });
+    const restricted = await s.pair({ local: false, name: 'Restricted native device' });
+    const browser = makeDevice();
+    const browserId = 'fixture-native-grant-browser';
+    const host = 'echo-trust-app.example.dev';
+    const file = path.join(s.stateDir, 'state', 'mobile-devices.json');
+    const registry = JSON.parse(fs.readFileSync(file, 'utf8'));
+    registry.devices.find((device: { id: string }) => device.id === restricted.id).admission = 'at-computer';
+    registry.devices.push({ id: browserId, status: 'active', client: 'browser', deviceName: 'Fixture browser',
+      browserPublicKey: browser.publicKey, host, pairedAt: new Date().toISOString() });
+    fs.writeFileSync(file, JSON.stringify(registry));
+    let nonce = 0;
+    const browserCall = (method: 'GET' | 'POST', route: string, body?: unknown) => {
+      const time = String(Date.now() + ++nonce);
+      const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+      const sig = browser.sign(canonicalString(browserId, host, method, route, time, raw));
+      const call = method === 'GET' ? request(s.app).get(route) : request(s.app).post(route).type('json');
+      call.set('Host', host).set('X-Instar-Device', browserId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
+      return raw ? call.send(raw.toString()) : call;
+    };
+    const list = () => browserCall('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1');
+    const minted = await s.bearer(request(s.app).post('/secrets/request')).send({
+      label: 'Disposable browser key', needsOwnerDeviceId: native.id,
+    }).expect(201);
+    const id = minted.body.needsRequestId;
+    const credentialPath = `/mobile/needs/credentials/${id}`;
+    const grantPath = credentialPath + '/browser-grant';
+    await list().expect(403);
+    expect((await restricted.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1').expect(403)).body.error).toBe('cannot-approve-yet');
+    await native.signed('GET', grantPath + '?browserId=' + browserId).expect(404);
+
+    s.config.needsYou = { browserCredentialGrants: { enabled: true } };
+    expect((await restricted.signed('GET', '/mobile/needs').set('X-Instar-Needs-Contract', 'in-place-v1').expect(403)).body.error).toBe('cannot-approve-yet');
+    expect((await list().expect(200)).body.items).toEqual([]);
+    await browserCall('GET', credentialPath).expect(404);
+    await browserCall('GET', grantPath + '?browserId=' + browserId).expect(403);
+    await browserCall('POST', '/mobile/permissions/challenge', { action: 'credential-browser-grant', target: id }).expect(403);
+    const reviewed = await native.signed('GET', grantPath + '?browserId=' + browserId).expect(200);
+    expect(reviewed.body).toMatchObject({ title: 'Disposable browser key', browserName: 'Fixture browser', browserHost: host, browserFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/) });
+    const fields = { browserId, proposalHash: reviewed.body.proposalHash };
+    const granted = await native.act({ action: 'credential-browser-grant', target: id, ...fields }, grantPath,
+      fields, `credential-browser-grant ${id} ${fields.proposalHash}`);
+    expect(granted.status).toBe(200);
+    expect((await list().expect(200)).body.items).toEqual([expect.objectContaining({ action: { kind: 'credential', requestId: id } })]);
+    const disclosure = await browserCall('GET', credentialPath).expect(200);
+    const payload = { disclosureId: disclosure.body.disclosureId, value: 'disposable browser value' };
+    expect(JSON.stringify(disclosure.body)).not.toContain(minted.body.token);
+    await native.signed('POST', credentialPath, payload).expect(409);
+    await browserCall('POST', credentialPath, payload).expect(200, { outcome: 'applied' });
+    await browserCall('POST', credentialPath, payload).expect(409);
+    expect((await list().expect(200)).body.items).toEqual([]);
+
+    const next = await s.bearer(request(s.app).post('/secrets/request')).send({
+      label: 'Second disposable browser key', needsOwnerDeviceId: native.id,
+    }).expect(201);
+    const nextId = next.body.needsRequestId;
+    const nextPath = `/mobile/needs/credentials/${nextId}`;
+    const nextGrantPath = nextPath + '/browser-grant';
+    const nextProposal = await native.signed('GET', nextGrantPath + '?browserId=' + browserId).expect(200);
+    const nextFields = { browserId, proposalHash: nextProposal.body.proposalHash };
+    expect((await native.act({ action: 'credential-browser-grant', target: nextId, ...nextFields }, nextGrantPath,
+      nextFields, `credential-browser-grant ${nextId} ${nextFields.proposalHash}`)).status).toBe(200);
+    const stale = await browserCall('GET', nextPath).expect(200);
+    const devices = s.server.mobilePairing!.devices;
+    expect(devices.setPerson(browserId, { userId: 'other', role: 'msp' })).not.toBeNull();
+    expect(devices.setPerson(browserId, { userId: null, role: 'owner' })).not.toBeNull();
+    await browserCall('POST', nextPath, { ...payload, disclosureId: stale.body.disclosureId }).expect(409);
+    expect((await list().expect(200)).body.items).toEqual([]);
   });
 
 });

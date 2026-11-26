@@ -168,6 +168,7 @@ export interface NeedsDeps {
   now?: () => number;
   /** Absent until this agent's clients and sources support in-place actions. */
   // undefined: audience-authorized row lacks a declaration. null: no verified audience or current ask.
+  browserCredentialViewer?: (req: Request) => boolean | null;
   ownerCredentialRequestIds?: (request?: Request) => readonly string[];
   ownerCardCandidate?: (item: NeedItem, request?: Request) => OwnerNeedsCandidate | null | undefined | Promise<OwnerNeedsCandidate | null | undefined>;
   /** Must resolve strict coordinator authority from the request, never from submitted fields. */
@@ -286,7 +287,7 @@ export interface NeedsComposer {
 }
 
 type Composed = Omit<NeedsAnswer, 'viewer'>;
-type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate' | 'ownerCredentialRequestIds'>;
+type ComposerDeps = Pick<NeedsDeps, 'read' | 'consoleDir' | 'agentName' | 'machineId' | 'now' | 'ownerCardCandidate' | 'ownerCredentialRequestIds' | 'browserCredentialViewer'>;
 
 function page(answer: Composed, start: number): Composed {
   return { ...answer, items: answer.items.slice(start, start + NEEDS_MAX_ITEMS) };
@@ -377,6 +378,11 @@ function createFullComposer(deps: ComposerDeps): NeedsComposer {
   };
 
   const owner = async (request?: Request) => {
+    if (request && deps.browserCredentialViewer?.(request) === true) {
+      const rows = (deps.ownerCredentialRequestIds?.(request) ?? []).map(id => ({ row: { key: id, refs: [id] }, source: 'owner-credentials' }));
+      return finish(rows, [], [], true, request);
+    }
+
     const known = deps.ownerCardCandidate ? {} as Record<string, Rec> : legacyKnown;
     const { needs: N, home: H } = await loadModels(dir);
     const t = now();
@@ -595,6 +601,8 @@ export function mountNeedsRoutes(router: Router, deps: NeedsDeps & { canary?: Ne
     res.set('Cache-Control', 'no-store');
     const role = needsViewer(req, deps.bearerOk);
     if (!role) { res.status(403).json({ error: 'needs-viewer-unknown', detail: 'This phone is not linked to a person on this agent.' }); return; }
+    const browserCredentialViewer = deps.browserCredentialViewer?.(req) ?? null;
+    if (browserCredentialViewer === false) { res.status(403).json({ error: 'browser-credential-grants-off' }); return; }
     if (role === 'owner' && deps.ownerCardCandidate && req.get('X-Instar-Needs-Contract') !== 'in-place-v1') {
       res.status(426).json({ error: 'needs-client-update-required', detail: 'Update Instar to see requests you can finish here.' });
       return;

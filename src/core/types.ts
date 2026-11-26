@@ -3834,7 +3834,7 @@ export interface ExternalServicePermissions {
 
 export interface InstarConfig {
   /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
-  needsYou?: { ownerAdmission?: { enabled?: boolean } };
+  needsYou?: { ownerAdmission?: { enabled?: boolean }; browserCredentialGrants?: { enabled?: boolean } };
   /**
    * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
    * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
