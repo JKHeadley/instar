@@ -33,6 +33,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -40,6 +41,7 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y tmux
       - name: Prepare clean checkout
         run: |
+          test "$(git rev-parse --is-shallow-repository)" = false
           mkdir -p "$RUNNER_TEMP/verification"
           git rev-parse HEAD > "$RUNNER_TEMP/verification/source.txt"
           node --version > "$RUNNER_TEMP/verification/node.txt"
