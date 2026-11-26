@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-tree-native-acceptance",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T09:57:00.700Z",
+  "artifactPath": "upgrades/side-effects/conversation-tree-native-acceptance.md",
+  "artifactSha256": "8a03527ec9958d82f3e82a3a72698bf2e1f2a58afe5dc1a053d32f7d7a530732",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/conversation-tree-native-acceptance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read-only disposable native acceptance launcher with existing signed HTTP",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

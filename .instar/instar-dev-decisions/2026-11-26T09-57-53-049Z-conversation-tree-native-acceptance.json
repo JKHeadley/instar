@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T09:57:53.049Z",
+  "slug": "conversation-tree-native-acceptance",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 125,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/conversation-tree-native-acceptance.mjs"
+    ],
+    "addedLines": 125,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
