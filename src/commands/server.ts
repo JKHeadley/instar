@@ -4001,6 +4001,7 @@ export function wireTelegramRouting(
       sessionKey: dmsg.sessionKey,
       messageId: dmsg.messageId,
       payload: dmsg.payload,
+      enqueuedAt: dmsg.enqueuedAt,
       ...(dmsg.media ? { media: dmsg.media } : {}),
       ...(drainRoutingOnly ? { routingOnly: true } : {}),
       topicMetadata: (dmsg.topicMetadata as import('../core/PlacementExecutor.js').TopicPlacement | undefined)
@@ -33737,6 +33738,33 @@ export async function startServer(options: StartOptions): Promise<void> {
               return out.result;
             },
             raiseAttention: (title, body) => console.log(pc.dim(`  [session-router] attention: ${title} — ${body}`)),
+            reportOfflineOwnerHold: (sessionKey, owner, epoch, enqueuedAt) => {
+              const topicId = Number(sessionKey);
+              if (!telegram || !Number.isSafeInteger(topicId) || topicId <= 0) return;
+              // Pool online uses the router's heartbeat deadline. The suspect breaker
+              // alone can send a healthy owner into the placement path, so exclude it.
+              const capacity = machinePoolRegistry?.getCapacity(owner);
+              if (capacity?.online) return;
+              // At boot the host may not have received a heartbeat yet. In
+              // that case require a full minute of durable custody before reporting.
+              if (!capacity?.routerReceivedAt && !(Date.now() - Date.parse(enqueuedAt ?? '') >= 60_000)) return;
+              const id = `inbound-owner-offline:${sessionKey}:${epoch}`;
+              if (telegram.getAttentionItem(id)) return;
+              void telegram.createAttentionItem({
+                id,
+                conditionKey: id,
+                title: 'A message was held while its conversation owner was unreachable',
+                summary: 'The router saved a message because it could not reach the machine that owns the conversation or safely move the conversation.',
+                category: 'agent-health',
+                lane: 'agent-health',
+                priority: 'HIGH',
+                needsUser: false,
+                sourceContext: 'inbound-owner-offline',
+                contextTopicIds: [topicId],
+              }, { recordOnly: true }).catch(error => {
+                console.warn('[session-router] offline owner hold could not be recorded:', error);
+              });
+            },
             sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
             log: (line) => console.log(pc.dim(`  [session-router] ${line}`)),
           });
