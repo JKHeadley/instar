@@ -49,10 +49,14 @@ export interface FeedbackDrainServiceOptions {
   isCanonicalOwner: () => boolean;
   isConsumerLive: () => boolean;
   consumerBatchBound?: () => number;
+  /** The exact work ids the operator approved and when; the live consumer claims these before any other work. */
+  consumerApprovedWorkIds?: () => { ids: string[]; attemptBaselines: Record<string, number>; nonce: string } | null;
   estimatedReadinessBatchUsd?: number;
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
   stageBudgetMs?: number;
+  /** Explicit ceiling for clustering and its durable status writes. Defaults to the general stage budget. */
+  clusteringStageBudgetMs?: number;
   /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
   readinessStageBudgetMs?: number;
   /** Candidates per readiness model call; a tick runs several calls up to the authority's maxBatch. */
@@ -143,6 +147,7 @@ export class FeedbackDrainService {
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
+  private readonly clusteringStageBudgetMs: number;
   private readonly readinessStageBudgetMs: number;
   private readonly readinessChunkSize: number;
   private readonly maxWallClockMs: number;
@@ -153,10 +158,11 @@ export class FeedbackDrainService {
     this.maxReadyScans = Math.min(250, Math.max(1, opts.maxReadyScansPerTick ?? 250));
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
+    this.clusteringStageBudgetMs = Math.max(1, Math.min(60_000, opts.clusteringStageBudgetMs ?? this.stageBudgetMs));
     this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
     const chunkSize = Number(opts.readinessChunkSize ?? READINESS_CHUNK_SIZE);
     this.readinessChunkSize = Number.isFinite(chunkSize) ? Math.min(50, Math.max(1, Math.trunc(chunkSize))) : READINESS_CHUNK_SIZE;
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.clusteringStageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -298,7 +304,7 @@ export class FeedbackDrainService {
       const projectedFeedback = this.opts.store.pendingProjectedFeedback(500);
       const processed = this.opts.processing.processProjected(projectedFeedback.map((row) => row.record));
       if (projectedFeedback.length > 0) this.opts.store.acknowledgeProcessedProjection(projectedFeedback.at(-1)!.ingestSequence);
-      this.assertStageBudget(clusteringStartedAt, 'clustering');
+      this.assertStageBudget(clusteringStartedAt, 'clustering', this.clusteringStageBudgetMs);
       this.opts.store.markClusteringSucceeded(this.now());
       stopIfCancelled();
       out.processed = processed.result.results.length;
@@ -356,9 +362,23 @@ export class FeedbackDrainService {
         out.wouldCreate = this.opts.store.simulateClaims({ limit: this.maxClaims, ownerAuthorityEpoch: ownerEpoch, now });
       } else {
         const promotionBound = Math.min(50, Math.max(0, Math.trunc(this.opts.consumerBatchBound?.() ?? this.maxClaims)));
+        // Proposal-set bound: the batch the operator saw is claimed first, so no earlier
+        // or newly queued item takes its place in the first live run.
+        // Until every approved item has been attempted once, ONLY approved items are claimed
+        // (no fallback to unseen work in the same run); after that the promotion continues
+        // as the ongoing consumer at the approved per-run bound with no lasting priority.
+        const approved = this.opts.consumerApprovedWorkIds?.() ?? null;
+        const pendingApproval = approved ? this.opts.store.outstandingApprovedWork(approved.attemptBaselines, now) : { outstanding: [], claimable: [] };
         for (let i = 0; i < Math.min(this.maxClaims, promotionBound); i++) {
           stopIfCancelled();
-          const claim = this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
+          // A revoke, re-promotion or config change mid-run stops further claims at once.
+          if (!this.opts.isConsumerLive() || (this.opts.consumerApprovedWorkIds?.()?.nonce ?? null) !== (approved?.nonce ?? null)) break;
+          const claim = pendingApproval.outstanding.length > 0
+            // Approved batch outstanding: claim only from it, and nothing if none is claimable now.
+            ? (pendingApproval.claimable.length > 0
+              ? this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now, onlyWorkIds: pendingApproval.claimable })
+              : null)
+            : this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
           if (!claim) break;
           out.claimed++;
           try {
@@ -609,8 +629,9 @@ export class FeedbackDrainService {
     }
   }
 
-  private assertStageBudget(startedAt: number, stage: string): void {
-    if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
+  private assertStageBudget(startedAt: number, stage: string, budgetMs = this.stageBudgetMs): void {
+    const elapsedMs = this.now() - startedAt;
+    if (elapsedMs > budgetMs) throw new Error(`${stage} stage budget exceeded (${elapsedMs}ms > ${budgetMs}ms)`);
   }
 
   private withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {

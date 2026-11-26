@@ -182,7 +182,7 @@ describe('phone taps (Face ID over the exact action line)', () => {
   });
 
   it('the owner\'s phone reads the board and may tap; another person\'s phone is never offered a tap or the pickup counts', async () => {
-    const c = setup(); const owner = c.pair(); const helper = c.pair({ userId: 'adriana', role: 'msp' }); const card = agentCard(c.svc);
+    const c = setup(); const owner = c.pair(); const helper = c.pair({ userId: 'adriana', role: 'msp' }); const card = agentCard(c.svc, { outward: true });
     const o = await send(c.app, owner, 'GET', '/mobile/work-board');
     expect(o.status, JSON.stringify(o.body)).toBe(200);
     expect(o.body.lanes[0].cards.map((x: { id: string }) => x.id)).toEqual([card.id]);

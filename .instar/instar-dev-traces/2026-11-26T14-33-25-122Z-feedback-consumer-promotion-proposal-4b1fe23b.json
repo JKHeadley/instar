@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-consumer-promotion-proposal",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T14:33:25.122Z",
+  "artifactPath": "upgrades/side-effects/feedback-consumer-promotion-proposal.md",
+  "artifactSha256": "204787d5dbf157bd46f64ce38fcc353ddb59cef1b2756a04388cbc38d3f43ea7",
+  "coveredFiles": [
+    "docs/specs/feedback-factory-operating-drain.eli16.md",
+    "src/server/routes.ts",
+    "upgrades/side-effects/feedback-consumer-promotion-proposal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line error-body qualifier fix flagged by the storage ratchet; revert fully undoes it",
+  "eli16Path": "docs/specs/feedback-factory-operating-drain.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-consumer-promotion-proposal.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

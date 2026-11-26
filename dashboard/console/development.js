@@ -10,7 +10,7 @@
 // server requires it. Every value reaches the DOM through textContent.
 
 import {
-  buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, holdWords, verifyWords, rollbackWords,
+  buildShipping, buildPace, buildFeedback, developmentHeadline, stoppedLead, foldFromHash, maintainerMode, authorityCard, consumerPromotionSummary, holdWords, verifyWords, rollbackWords,
   readinessAuthorityRequest, triageAuthorityRequest, commitRequest, authorityResultWords, commitResultWords, newDecisionRef, PACE_METRICS, DEV_TOOLS_KEY,
   borrowedSummary,
 } from './development-model.js';
@@ -98,15 +98,15 @@ export async function renderDevelopment(main, ctx) {
     const want = foldFromHash(location.hash);
     if (want) { view.open = want; view.scrollTo = want; }
   }
-  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, helper] = await Promise.all([
+  const [watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, consumerPromotion, pace, helper] = await Promise.all([
     read('/green-pr-automerge'), read('/local-verify'), read('/release-readiness'),
     read('/feedback-factory/readiness-authorities/proposal'), read('/feedback-factory/triage/summary'), read('/feedback-factory/triage/authority/proposal'),
-    read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'),
+    read('/feedback-factory/execute/status'), read('/feedback-factory/triage/queue'), read('/feedback-factory/drain/status'), read('/feedback-factory/consumer/promotion/proposal'),
     read(`/throughput/series?days=${view.days}`, 15000),
     // Borrowed-machine helper role (docs/specs/local-verify-borrowed-unit-slices.md, G): 404 while off, so no card.
     read('/local-verify/helper-status'),
   ]);
-  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, pace, helper }, main, ctx };
+  last = { res: { watcher, verify, release, readiness, triageSummary, triageProposal, execute, queue, drain, consumerPromotion, pace, helper }, main, ctx };
   paint();
 }
 
@@ -115,7 +115,7 @@ function paint() {
   const now = Date.now();
   const pace = buildPace(res.pace, { days: view.days, person: view.person }, now);
   const shipping = buildShipping({ watcher: res.watcher, verify: res.verify, release: res.release }, now, { repo: pace.repo || null });
-  const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain }, now);
+  const feedback = buildFeedback({ readiness: res.readiness, triageSummary: res.triageSummary, triageProposal: res.triageProposal, execute: res.execute, queue: res.queue, drain: res.drain, consumerPromotion: res.consumerPromotion }, now);
   const h = developmentHeadline({ shipping, feedback, pace });
   const refresh = () => renderDevelopment(main, ctx);
   const deps = { refresh, shipping, feedback, pace };
@@ -286,6 +286,7 @@ function stoppedCard(s, deps) {
 
 // ── to-dos (Feedback approvals and links) ────────────────────────────────────
 function todoCard(todo, deps, lead = false) {
+  if (todo.kind === 'consumer-promotion') return consumerPromotionForm(todo, deps, lead);
   if (todo.kind === 'link') {
     return el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: todo.sentence }), el('span', { class: 'need-sub', text: todo.detail }),
       el('a', { class: 'btn-primary btn-inline', href: todo.href, target: '_blank', rel: 'noopener', text: `${todo.button} ↗` }));
@@ -298,6 +299,53 @@ function todoCard(todo, deps, lead = false) {
   }
   const kind = todo.kind === 'readiness-authority' ? 'readiness' : 'triage';
   return authorityForm(kind, authorityCard(kind, todo.proposal), todo.action, deps, { lead, detail: todo.detail });
+}
+
+function consumerPromotionForm(todo, deps, lead) {
+  const { evidenceHash, approvedBatchBound, items } = todo.proposal;
+  const title = 'Promote feedback processing';
+  const summary = consumerPromotionSummary(approvedBatchBound);
+  const holdExplanation = 'If an item in this batch is put on hold before processing starts on it, processing will not move beyond this batch until you revoke the approval and approve a new batch.';
+  const promote = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Promote' });
+  promote.addEventListener('click', () => {
+    const confirm = el('button', { class: 'btn-primary', type: 'button', text: 'Confirm with PIN' });
+    const panel = sheet({ title },
+      el('p', { class: 'confirm-text plan-text', text: summary }),
+      el('h3', { class: 'eyebrow', text: 'Work items in this proposal' }),
+      el('ul', { class: 'todo-list' }, items.map((item) => el('li', {},
+        el('div', { class: 'need-title', text: item.title }),
+        el('div', { class: 'need-sub', text: `${item.priority} priority · ${item.reportCount} ${item.reportCount === 1 ? 'report' : 'reports'} · ${item.workId}` })))),
+      el('p', { class: 'card-note', text: holdExplanation }),
+      el('div', { class: 'sheet-actions' }, confirm));
+    confirm.addEventListener('click', async () => {
+      confirm.disabled = true;
+      promote.disabled = true;
+      const consent = await askPin({ title, explain: `${summary} ${holdExplanation}`, adapter: 'body', isCurrent: () => panel.isConnected });
+      if (!consent) { confirm.disabled = false; promote.disabled = false; return; }
+      const status = el('p', { class: 'action-status', role: 'status', text: 'Promoting feedback processing…' });
+      sheet({ title }, status);
+      const body = { approvedBatchBound, evidenceHash, operatorDecisionId: newDecisionRef('console-consumer-promotion'), pin: consent.pin };
+      consent.pin = '';
+      const result = await send('/feedback-factory/consumer/promote', body);
+      body.pin = '';
+      if (result.ok && result.data?.promoted === true && result.data.approvedBatchBound === approvedBatchBound) {
+        status.textContent = 'Feedback processing is approved. The next run can create work items.';
+        await deps.refresh();
+      } else if (result.status === 409) {
+        status.textContent = 'Promotion could not be applied. The proposal may have changed. Check the current proposal before approving.';
+        await deps.refresh();
+      } else {
+        status.textContent = result.ok ? 'The promotion outcome could not be confirmed. Check the current proposal before approving again.'
+          : authorityResultWords('readiness', result.status, result.data).text;
+        promote.disabled = false;
+      }
+    });
+  });
+  return el('div', { class: `need-card authority-card${lead ? ' lead' : ''}` },
+    el('span', { class: 'need-title', text: title }),
+    el('span', { class: 'need-sub', text: todo.detail }),
+    el('p', { class: 'confirm-text plan-text', text: summary }),
+    el('div', { class: 'sheet-actions' }, promote));
 }
 
 function openMore(rest, deps) {

@@ -1,0 +1,13 @@
+# Keep Retried Replies Readable In Both Apps
+
+A reply can be held briefly while the server waits for permission to send it to Telegram. The server keeps that original operation and sends it when the hold clears. It must not ask the agent to write the reply again or create another send merely because the first attempt was held.
+
+Telegram and the Instar app display the same words through different formats. The agent writes Markdown, using stars for bold and italics. Telegram receives an HTML version of that text. The Instar app reads the original Markdown from conversation history. On an ordinary successful send, these representations stay separate. The direct recovery path accidentally copied Telegram's HTML into the app's history, which made tags such as `<b>` and `<i>` appear in the conversation.
+
+The repair uses the original text already retained in the protected send request when recording recovered history. Telegram still receives its previously sealed request. The adapter and Lifeline retain their pre-format text even when a message comes directly from background code rather than the HTTP route. Automation replies and imported Markdown from an older pending queue retain their original text, too. Existing reviewed input and the recorded author keep their precedence. An existing late-delivery line remains visible once when recovery had added one. The repair does not remove literal angle brackets from authored prose or code to hide the symptom.
+
+This is a repair to the existing send and history paths. It adds no provider, permission, retry authority, database or background job. Existing checks still decide whether a held reply may be delivered, and an uncertain send is still not repeated as an ordinary message. Existing stored history is not rewritten. Old records that retained only already-formatted text cannot honestly recover the exact original Markdown.
+
+The regression checks exercise the actual HTTP send path, adapter formatter, durable origin store and recovery code. They compare Telegram's formatted request with the app-readable history after both immediate sends and a capacity-held retry. A separate production-start and restart check verifies the same behavior after the server reopens its state. Those checks are required before claiming the repair works; a commit alone does not establish that it is live on the running server or installed apps.
+
+An adapter without a Telegram credential still goes through the existing hold check. It no longer fails early while trying to preserve the message's formatting.

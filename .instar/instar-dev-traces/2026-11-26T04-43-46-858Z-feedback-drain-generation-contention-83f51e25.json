@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "feedback-drain-generation-contention",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-26T04:43:46.858Z",
+  "artifactPath": "upgrades/side-effects/feedback-drain-generation-contention.md",
+  "artifactSha256": "a6281fe09beb064d094696cd7197982626f2531f3277fa95b354efed4b177130",
+  "coveredFiles": [
+    "src/feedback-factory/drain/FeedbackDrainService.ts",
+    "src/feedback-factory/store/FeedbackSourceGenerations.ts",
+    "tests/fixtures/feedback-drain-performance-worker.mjs",
+    "tests/integration/feedback-drain-performance.test.ts",
+    "tests/unit/feedback-source-generations.test.ts",
+    "upgrades/eli16/feedback-drain-generation-contention.md",
+    "upgrades/side-effects/feedback-drain-generation-contention.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible append retry and bounded fixture option. Lock ownership, data format and default production stage limits are unchanged.",
+  "eli16Path": "upgrades/eli16/feedback-drain-generation-contention.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-drain-generation-contention.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
