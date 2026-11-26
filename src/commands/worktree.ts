@@ -119,7 +119,11 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   console.log(pc.dim(`  branch:       ${result.branch} ${result.createdBranch ? '(new)' : '(existing)'}`));
   console.log(pc.dim(`  worktree:     ${result.worktreePath}`));
   console.log(pc.dim(`  instar repo:  ${result.instarRepo} @ ${result.instarRepoSha}`));
-  if (result.nodeModulesShared === 'clone') {
+  if (result.verifiedDependencyOutcome === 'verified-clone') {
+    console.log(pc.dim('  dependencies: verified private clone'));
+  } else if (result.verifiedDependencyOutcome === 'private-install') {
+    console.log(pc.dim('  dependencies: private install (verified store unavailable)'));
+  } else if (result.nodeModulesShared === 'clone') {
     console.log(pc.dim(`  node_modules: own copy-on-write clone of the shared install`));
   } else if (result.nodeModulesShared === 'symlink') {
     console.log(pc.yellow(

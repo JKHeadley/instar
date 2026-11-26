@@ -21,6 +21,7 @@ import path from 'node:path';
 import { loadRegistry } from './AgentRegistry.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { provisionVerifiedWorktreeDependencies, type VerifiedDependencyOutcome } from './VerifiedWorktreeDependencies.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -131,6 +132,7 @@ export interface CreateWorktreeResult {
   shareNodeModules: boolean;
   /** How node_modules ended up shared: an own clone, a symlink, or not at all. */
   nodeModulesShared: 'clone' | 'symlink' | null;
+  verifiedDependencyOutcome?: VerifiedDependencyOutcome;
   /** True if a new branch was created; false if an existing branch was checked out. */
   createdBranch: boolean;
 }
@@ -639,8 +641,9 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // node_modules binary, and a fresh worktree has none of its own. Activating first
   // failed every real create with "husky: not found".
   const shareNodeModules = opts.shareNodeModules ?? true;
-  let nodeModulesShared: 'clone' | 'symlink' | null = null;
-  if (shareNodeModules) {
+  const verifiedDependencyOutcome = provisionVerifiedWorktreeDependencies(agentHome, worktreePath, shareNodeModules);
+  let nodeModulesShared: 'clone' | 'symlink' | null = verifiedDependencyOutcome === 'verified-clone' ? 'clone' : null;
+  if (shareNodeModules && verifiedDependencyOutcome === 'disabled') {
     nodeModulesShared = maybeShareNodeModules(
       instarRepo,
       worktreePath,
@@ -651,7 +654,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   const manifestPath = path.join(worktreePath, 'package.json');
   const needsSqlite = fs.existsSync(manifestPath) &&
     Boolean(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).dependencies?.['better-sqlite3']);
-  if (needsSqlite && shareNodeModules && !fs.existsSync(path.join(worktreePath, 'node_modules'))) {
+  if (verifiedDependencyOutcome === 'private-install' || (needsSqlite && shareNodeModules && !fs.existsSync(path.join(worktreePath, 'node_modules')))) {
     try {
       withSyncOp(() => execFileSync('npm', ['ci'], { cwd: worktreePath, env: runtimeEnv, stdio: 'inherit', timeout: 300_000 }));
     } catch (cause) {
@@ -692,6 +695,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     instarRepo,
     instarRepoSha: sha,
     shareNodeModules,
+    ...(verifiedDependencyOutcome === 'disabled' ? {} : { verifiedDependencyOutcome }),
   });
 
   return {
@@ -704,6 +708,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     instarRepoSha: sha,
     shareNodeModules,
     nodeModulesShared,
+    ...(verifiedDependencyOutcome === 'disabled' ? {} : { verifiedDependencyOutcome }),
     createdBranch,
   };
   } finally {
@@ -1156,6 +1161,7 @@ export interface LedgerEntry {
   instarRepo: string;
   instarRepoSha: string;
   shareNodeModules: boolean;
+  verifiedDependencyOutcome?: VerifiedDependencyOutcome;
 }
 
 export function appendLedgerEntry(
