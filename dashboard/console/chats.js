@@ -11,13 +11,14 @@
 // become a viewable blob:; everything else is a download.
 
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
+import { beginConsoleOutbox, getConsoleOutbox, tryLiveStop, isOutboxStorageFailure, captureSignInFence, signInFenceMatches } from './outbox-runner.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
 } from './browser-device.js';
 import {
   parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
-  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
+  UNFINISHED_KEY, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, attachmentView, readAttachmentBrowsePage, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
@@ -72,6 +73,7 @@ export function renderChats(main, ctx = {}) {
   const page = new ChatsPage(main, ctx);
   if (ctx.selfRefreshing) ctx.selfRefreshing();
   if (ctx.onQuery) ctx.onQuery((q) => page.onQuery(q));
+  if (ctx.onReconnect) ctx.onReconnect(() => page.reconnectPage());
   if (ctx.onDispose) ctx.onDispose(() => page.dispose());
   page.start();
   return page;
@@ -87,6 +89,10 @@ class ChatsPage {
     this.blobUrls = new Set();
     this.device = createBrowserDevice({ bearer });
     this.status = null;
+    this.authFence = captureSignInFence();
+    this.outbox = null;
+    this.outboxStart = null;
+    this.pendingSnapshot = null;
     this.rows = [];
     this.meta = { nextCursor: null, failed: [] };
     this.view = null;           // the open conversation
@@ -122,6 +128,7 @@ class ChatsPage {
   dispose() {
     this.live = false;
     if (this.view?.attachmentSheet) closeSheet();
+    this.outboxUnsubscribe?.();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     for (const c of this.aborts) { try { c.abort(); } catch { /* already done */ } }
@@ -141,7 +148,12 @@ class ChatsPage {
   }
 
   // ── start: the status route decides what to show ──
-  async start() {
+  start() {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startImpl().finally(() => { this.startPromise = null; });
+    return this.startPromise;
+  }
+  async startImpl() {
     if (!consolePathAllowed(location.pathname)) { this.paintNote('Conversations open only in the dashboard itself.'); return; }
     if (!secureContextOk()) {
       this.paintNote('Conversations need a secure address. Open the dashboard at its secure address (https), or on this computer at localhost.');
@@ -151,8 +163,13 @@ class ChatsPage {
     void this.loadChiefOfStaffNeeds().then(() => { if (this.live) this.refreshNeedCard(); });
     const st = await this.device.status(null);
     if (!this.live) return;
-    if (st.off) { this.paintNote(OFF_TEXT); return; }
-    if (!st.ok) { this.paintRetry('Couldn\'t reach the agent to check this browser.', () => this.start()); return; }
+    if (st.off) { this.startOutcome = 'definite'; this.paintNote(OFF_TEXT); return; }
+    if (!st.ok) {
+      const network = st.networkError === true || st.error === 'unreachable';
+      this.startOutcome = network ? 'network' : 'definite';
+      this.paintRetry(network ? 'Couldn\'t reach the agent to check this browser.' : 'The agent could not approve this browser status. Retry after checking your sign-in.', () => this.start()); return;
+    }
+    this.startOutcome = 'definite';
     this.status = st.data;
     let rec = null;
     try { rec = await this.device.load(st.data.machineId); } catch { rec = null; }
@@ -166,7 +183,14 @@ class ChatsPage {
         const ps = await this.device.status(prior.keyHash);
         if (!this.live) return;
         const state = ps.ok && ps.data.key ? ps.data.key.state : 'unknown';
-        if (state === 'revoked') await deleteRecord(prior.machineId).catch(() => {});
+        if (state === 'revoked') {
+          try {
+            const removed = await deleteRecord(prior.machineId, prior);
+            if (!removed) { this.paintRetry('This browser identity changed while it was being checked. Retry to check its current state.', () => this.start()); return; }
+          } catch {
+            this.paintRetry('This browser was removed, but clearing its saved messages did not finish. Retry cleanup.', () => this.start()); return;
+          }
+        }
         else {
           const where = state === 'elsewhere' && ps.data.key.nickname ? ps.data.key.nickname : 'another machine';
           this.paintSetup(`This browser was set up on ${where}; this address is now served by ${st.data.nickname || 'this machine'}.`, { replace: prior.status === 'active' && prior.keyPair ? { record: prior } : null });
@@ -393,6 +417,7 @@ class ChatsPage {
     this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'All' }) };
     for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
+    this.pendingEl = el('section', { class: 'chat-pending', 'aria-label': 'Saved messages', hidden: true });
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
     const forget = el('button', { class: 'btn-quiet chat-forget', type: 'button', text: 'Forget this browser' });
@@ -404,12 +429,13 @@ class ChatsPage {
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
-        this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
+        this.pendingEl, this.viewToggleEl, this.listPinNoteEl, this.listEl, this.moreBtn, this.failedEl),
       this.viewEl);
     setKids(this.main, this.pageEl);
     this.startPolling();
     this.loadList(false);
     this.onQuery(this.ctxQuery());
+    void this.ensureOutbox().catch((error) => { this.outboxError = error; this.paintPendingSends(); });
   }
   teardownApp() {
     this.releaseLeadership();
@@ -653,6 +679,7 @@ class ChatsPage {
     if (!v) return;
     v.live = false;
     if (v.attachmentSheet) closeSheet();
+    if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
     if (this.observer) { try { this.observer.disconnect(); } catch { /* gone */ } this.observer = null; }
@@ -680,6 +707,11 @@ class ChatsPage {
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
+    v.historyWords = el('p', { class: 'card-line chat-muted' });
+    v.historyRetry = el('button', { class: 'btn-quiet chat-history-retry', type: 'button', text: 'Try again', hidden: true });
+    v.historyRetry.addEventListener('click', () => this.loadFirst(v));
+    v.historyNotice = el('div', { class: 'chat-history-state', role: 'status' }, v.historyWords, v.historyRetry);
+    v.msgs.append(v.historyNotice);
     v.earlier = el('button', { class: 'btn-quiet chat-earlier', type: 'button', text: 'Earlier messages', hidden: true });
     v.earlier.addEventListener('click', () => { this.pauseSource(v); this.loadEarlier(v); });
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
@@ -696,7 +728,7 @@ class ChatsPage {
       v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
-    this.loadFirst(v);
+    this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
     this.announce();
   }
@@ -752,21 +784,71 @@ class ChatsPage {
     return (row) => Boolean(row && ((rec && row.originDeviceId && row.originDeviceId === rec.deviceId) || (row.messageId && this.ownIds.has(String(row.messageId)))));
   }
 
-  async loadFirst(v) {
+  async loadFirst(v, { recoverUnfinished = false } = {}) {
+    if (!this.live || !v.live || this.view !== v || v.historyPending) return;
+    v.historyPending = true;
+    v.historyError = null;
+    v.historyWaiting = false;
+    this.paintHistoryState(v);
+    v.historyWaitTimer = this.later(() => {
+      if (!v.live || this.view !== v || !v.historyPending) return;
+      v.historyWaiting = true;
+      this.paintHistoryState(v);
+    }, 10_000);
     this.spent();
-    const r = await this.call('GET', this.historyPath(v, { pool: true }));
-    if (!v.live || r.gone) return;
-    if (r.status === 404) { v.sourceNotice.hidden = true; v.statusLine.textContent = 'This conversation is not here any more.'; return; }
-    if (!r.ok) { v.sourceNotice.hidden = true; v.statusLine.textContent = r.status === 503 ? OFF_TEXT : 'Couldn\'t load this conversation right now.'; return; }
-    this.applyHistory(v, r.data, { replace: true });
-    this.resumeUnfinished(v);
-    this.scrollToEnd(v, true);
-    v.historyReady = true;
-    this.findSource(v);
+    try {
+      const r = await this.readHistory(v, this.historyPath(v, { pool: true }));
+      if (!this.live || !v.live || this.view !== v || r.gone) return;
+      if (!r.ok) {
+        v.sourceNotice.hidden = true;
+        v.historyError = r.status === 404 ? 'This conversation is not here any more.' : 'Couldn\'t load this conversation right now.';
+        return;
+      }
+      v.historyReady = true;
+      this.applyHistory(v, r.data, { replace: true });
+      // Preserve the existing open-time recovery; a history retry never resumes a send.
+      if (recoverUnfinished) this.resumeUnfinished(v);
+      this.scrollToEnd(v, true);
+      this.findSource(v);
+    } catch {
+      // A failed history read changes only its explanation, never messages or a draft.
+      if (this.live && v.live && this.view === v) v.historyError = 'Couldn\'t load this conversation right now.';
+    } finally {
+      v.historyPending = false;
+      clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer);
+      v.historyWaitTimer = null;
+      if (this.live && v.live && this.view === v) this.paintHistoryState(v);
+    }
+  }
+
+  /** Initial, retry, focus and scheduled reads of one view/path share one signed request. */
+  readHistory(v, path) {
+    if (!v.historyReads) v.historyReads = new Map();
+    const current = v.historyReads.get(path);
+    if (current) return current;
+    const pending = this.call('GET', path).finally(() => {
+      if (v.historyReads.get(path) === pending) v.historyReads.delete(path);
+    });
+    v.historyReads.set(path, pending);
+    return pending;
+  }
+
+  paintHistoryState(v) {
+    if (!v.historyNotice) return;
+    const hasMessages = v.list.length > 0;
+    v.historyNotice.hidden = hasMessages && !v.historyError;
+    v.historyRetry.hidden = v.historyPending || (!v.historyError && hasMessages);
+    v.historyRetry.disabled = Boolean(v.historyPending);
+    if (v.historyError) v.historyWords.textContent = hasMessages
+      ? 'Couldn\'t refresh this conversation. Messages already loaded are still shown.' : v.historyError;
+    else if (v.historyPending) v.historyWords.textContent = v.historyWaiting
+      ? 'Waiting for the agent to return this conversation\'s messages. Your draft is unchanged.' : 'Loading messages…';
+    else v.historyWords.textContent = 'No messages were returned for this conversation. Try again to check its history.';
   }
 
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
+    v.historyError = null;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
     const pins = pinsFrom(data);
     if (pins) this.setPins(v, pins);
@@ -839,6 +921,7 @@ class ChatsPage {
       }
       prev = n;
     }
+    this.paintHistoryState(v);
     if (atEnd) this.scrollToEnd(v);
   }
   scrollToEnd(v, force) {
@@ -1101,7 +1184,9 @@ class ChatsPage {
     const chosen = el('div', { class: 'chat-chosen' });
     const progress = el('progress', { class: 'chat-progress', max: '100', value: '0', hidden: true });
     v.files = [];
-    const refresh = () => { send.disabled = !(text.value.trim() || v.files.length); };
+    v.textInput = text;
+    if (this.restorePendingText?.ref === refString(v.ref)) { text.value = this.restorePendingText.text; this.restorePendingText = null; }
+    const refresh = () => { send.disabled = Boolean(v.admitting) || !(text.value.trim() || v.files.length); };
     text.addEventListener('input', refresh);
     text.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (!send.disabled) send.click(); }
@@ -1134,16 +1219,29 @@ class ChatsPage {
       text.focus();
     });
     send.addEventListener('click', async () => {
-      const body = text.value.trim();
+      if (v.admitting) return;
+      const originalText = text.value;
+      const body = originalText.trim();
       const files = v.files.slice();
       if (!body && !files.length) return;
-      if (body && detectCredentialShape(body).detected) {
-        const choice = await credentialChoice();
-        if (choice === 'drop') { location.hash = '#/people/secrets'; return; }
-        if (choice !== 'send') return;
-      }
-      text.value = ''; v.files = []; setKids(chosen); refresh();
-      this.send(v, body, files, progress, box);
+      v.admitting = true; refresh();
+      try {
+        if (body && detectCredentialShape(body).detected) {
+          const choice = await credentialChoice();
+          if (choice === 'drop') { location.hash = '#/people/secrets'; return; }
+          if (choice !== 'send') return;
+        }
+        const saved = await this.send(v, body, files, progress, box);
+        if (!saved) return;
+        // A newer draft or attachment selection belongs to the person still typing.
+        if (text.value === originalText) text.value = '';
+        const queued = new Map();
+        for (const file of files) queued.set(file, (queued.get(file) || 0) + 1);
+        v.files = v.files.filter((file) => { const count = queued.get(file) || 0; if (!count) return true; queued.set(file, count - 1); return false; });
+        addFiles([]);
+      } catch (error) {
+        if (v.live) v.statusLine.textContent = String(error?.code || '').startsWith('live-stop-') ? error.message : 'This message could not be saved. Your draft and selected files are still here.';
+      } finally { v.admitting = false; refresh(); }
     });
     const box = el('div', { class: 'chat-composer' }, chosen, progress, el('div', { class: 'chat-compose-row' }, attach, pick, text, send));
     // Files dropped anywhere on the open conversation (its messages or the composer) join the tray.
@@ -1160,125 +1258,240 @@ class ChatsPage {
         if (files.length) { addFiles(files); text.focus(); }
       });
     }
+    refresh();
     return box;
   }
 
+  async ensureOutbox() {
+    if (this.outbox?.active) return this.outbox;
+    if (this.outboxStart) return this.outboxStart;
+    this.outboxStart = (async () => {
+      const controller = getConsoleOutbox() || await beginConsoleOutbox({ bearer });
+      if (!this.live) return controller;
+      this.outbox = controller;
+      this.outboxError = null;
+      this.outboxUnsubscribe?.();
+      this.outboxUnsubscribe = controller.subscribe((snapshot) => {
+        if (!this.live) return;
+        this.pendingSnapshot = snapshot;
+        this.paintPendingSends();
+        this.syncPending();
+      });
+      return controller;
+    })();
+    try { return await this.outboxStart; }
+    finally { this.outboxStart = null; }
+  }
   async send(v, text, files, progress, box) {
     const record = this.device.record;
-    const requestId = newRequestId(this.device.clock.now());
-    const entry = { requestId, ref: refString(v.ref), text, uploads: [], firstSentAt: now(), deviceId: record.deviceId, machineId: record.machineId };
-    const local = { id: `local:${requestId}`, messageId: null, side: 'right', who: null, text, at: new Date(this.device.clock.now()).toISOString(), attachments: files.map((f) => ({ sha256: '', filename: f.name, size: f.size, blobType: 'application/octet-stream', display: 'file' })), delivery: deliveryLabel('sending'), mark: null };
-    v.sending++;
-    box.setAttribute('data-interaction-open', '');
-    this.setBubbles(v, mergeBubbles(v.list, [local]));
-    this.scrollToEnd(v, true);
-    try {
-      if (files.length) {
-        progress.hidden = false;
-        const ups = await this.uploadAll(v, files, requestId, progress);
-        progress.hidden = true;
-        // warning-exempt: a delivery or signature state on the operator's own message, shown inside the open conversation where it is read and answered
-        if (!ups) { this.finishLocal(v, local, { label: 'not delivered — a file could not be sent', tone: 'bad' }); return; }
-        entry.uploads = ups;
+    let outbox;
+    try { outbox = await this.ensureOutbox(); }
+    catch (error) {
+      if (isOutboxStorageFailure(error) && !files.length && signInFenceMatches(this.authFence)) {
+        const ref = v.ref;
+        const path = ref.kind === 'app' ? `/mobile/chat/app/${encodeURIComponent(ref.id)}` : ref.kind === 'telegram' ? `/mobile/chat/${encodeURIComponent(ref.id)}` : `/mobile/chat/slack/${encodeURIComponent(ref.id)}`;
+        const accepted = await tryLiveStop({ device: this.device, record, path, text, requestId: newRequestId(this.device.clock.now()),
+          slackHolder: ref.kind === 'slack' ? this.slackMachine(ref) : null, isCurrent: () => this.live && v.live && signInFenceMatches(this.authFence) });
+        if (accepted) { rememberOwn(this.ownIds, record.deviceId, String(accepted.messageId)); this.refreshOpen(v); return { direct: accepted }; }
       }
-      saveUnfinished(entry);
-      await this.deliver(v, entry, local);
-    } finally {
-      v.sending--;
-      if (!v.sending) box.removeAttribute('data-interaction-open');
+      throw error;
     }
+    const result = await outbox.submit({ record, status: this.status, ref: refString(v.ref), text, files,
+      requestTime: this.device.clock.now(), slackHolder: v.ref.kind === 'slack' ? this.slackMachine(v.ref) : null,
+      mediaRef: mediaRefFor(v.ref, v.slackKey), isCurrent: () => this.live && v.live && outbox.active && signInFenceMatches(this.authFence) });
+    if (result.entry) {
+      this.syncPending();
+      this.scrollToEnd(v, true);
+    } else if (result.direct) {
+      rememberOwn(this.ownIds, record.deviceId, String(result.direct.messageId));
+      this.refreshOpen(v);
+    }
+    return result;
   }
-
-  sendPath(ref) {
-    if (ref.kind === 'app') return `/mobile/chat/app/${encodeURIComponent(ref.id)}`;
-    if (ref.kind === 'telegram') return `/mobile/chat/${encodeURIComponent(ref.id)}`;
-    return `/mobile/chat/slack/${encodeURIComponent(ref.id)}`;
+  syncPending() {
+    const v = this.view;
+    const snapshot = this.pendingSnapshot;
+    if (!v?.live || !snapshot) return;
+    const entries = snapshot.entries.filter((e) => e.ref === refString(v.ref));
+    const ids = new Set(entries.map((e) => `local:${e.requestId}`));
+    const accepted = snapshot.accepted;
+    let list = v.list.filter((b) => !b.outboxPending || ids.has(b.id));
+    if (accepted && accepted.entry.ref === refString(v.ref) && this.lastOutboxAcceptance !== accepted.entry.requestId) {
+      this.lastOutboxAcceptance = accepted.entry.requestId;
+      rememberOwn(this.ownIds, accepted.entry.actor.deviceId, String(accepted.data.messageId));
+      this.refreshOpen(v);
+    }
+    for (const e of entries) {
+      list = mergeBubbles(list, [{ id: `local:${e.requestId}`, messageId: null, side: 'right', who: null, text: e.text,
+        at: new Date(e.firstSentAt).toISOString(), attachments: (e.files || []).map((f) => ({ sha256: '', filename: f.filename, size: f.size, blobType: 'application/octet-stream', display: 'file' })),
+        // warning-exempt: the bubble has no control of its own; a held send is acted on with the Resume and Use text buttons in this page's saved-messages panel
+        delivery: { label: e.phase === 'held' ? e.reason || 'Saved here — needs review' : 'Saved here — waiting for acceptance', tone: e.phase === 'held' ? 'attn' : 'plain' },
+        mark: null, outboxPending: true, final: false }]);
+    }
+    this.setBubbles(v, list);
   }
-
-  /** Sends until a final answer; retried only under the device that signed it (§4.8). */
-  async deliver(v, entry, local) {
-    let wait = 2000;
-    for (;;) {
+  paintPendingSends() {
+    if (!this.pendingEl) return;
+    const snapshot = this.pendingSnapshot;
+    if (this.outboxError || snapshot?.error) {
+      this.pendingEl.hidden = false;
+      setKids(this.pendingEl, el('p', { class: 'card-line', text: 'Saved-message storage could not be read. New drafts stay in place if they cannot be saved.' }));
+      return;
+    }
+    const rows = snapshot?.entries || [];
+    this.pendingEl.hidden = !rows.length;
+    if (!rows.length) { setKids(this.pendingEl); return; }
+    const heading = el('p', { class: 'card-line', text: `${rows.length} saved ${rows.length === 1 ? 'message' : 'messages'} for this browser identity` });
+    const noLock = !this.outbox?.locks?.request;
+    const limit = noLock ? el('p', { class: 'card-line', text: 'Automatic recovery needs a browser update. To send a saved message now, use its Resume original request button.' }) : null;
+    const visible = this.pendingVisible || 25; // Presentation window only; all saved rows remain in the store.
+    const cards = rows.slice(0, visible).map((entry) => {
       const ref = parseConversationRef(entry.ref);
-      const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}), ...(ref.kind === 'slack' ? { machine: this.slackMachine(ref) } : {}) };
-      const r = await this.call('POST', this.sendPath(ref), { json });
-      if (r.gone) { this.finishLocal(v, local, deliveryLabel('unknown')); return; }
-      const out = sendOutcome(r.status, r.data);
-      if (r.ok && r.data && r.data.messageId) { local.messageId = String(r.data.messageId); rememberOwn(this.ownIds, entry.deviceId, local.messageId); }
-      if (out.final) {
-        dropUnfinished(entry.requestId);
-        this.finishLocal(v, local, out.label);
-        this.refreshOpen(v);
-        return;
+      const open = el('a', { class: 'btn-quiet', href: hashFor(ref), text: 'Check conversation' });
+      const actions = el('div', { class: 'chat-list-actions' }, open);
+      const unsafe = ['stop', 'legacy', 'identity', 'expired', 'conflict', 'unknown', 'storage'].includes(entry.holdCode);
+      if (!unsafe) {
+        const resume = el('button', { class: 'btn-quiet', type: 'button', text: 'Resume original request' });
+        resume.addEventListener('click', async () => { resume.disabled = true; try { await this.outbox.resume(entry); } finally { if (this.live) resume.disabled = false; } });
+        actions.append(resume);
       }
-      // 202 in-progress: the server is still delivering the first copy of this requestId (a reload or a
-      // lost answer); ask again with the same requestId until a final answer names the message.
-      if (r.ok && r.status !== 202) { dropUnfinished(entry.requestId); this.finishLocal(v, local, out.label, true); this.refreshOpen(v); return; }
-      if (!this.live || !v.live) return; // kept in sessionStorage: retried when this conversation opens again here
-      const ms = r.retryAfterMs || wait;
-      wait = Math.min(wait * 2, 30_000);
-      await new Promise((res) => this.later(res, ms));
-      if (unfinishedAction(entry, { deviceId: this.device.record && this.device.record.deviceId, machineId: this.device.record && this.device.record.machineId, nowMs: this.device.clock.now() }) !== 'retry') {
-        dropUnfinished(entry.requestId);
-        this.finishLocal(v, local, deliveryLabel('unknown'));
-        return;
+      const predecessor = rows.find((e) => e.requestId === entry.predecessorId);
+      if (entry.holdCode === 'ordering' && predecessor?.phase === 'held') {
+        const first = el('button', { class: 'btn-quiet', type: 'button', text: 'Send before this held message' });
+        first.addEventListener('click', () => { void this.outbox.resume(entry, { bypassPredecessorIds: [predecessor.requestId] }); });
+        actions.append(first);
       }
-    }
+      if (unsafe) {
+        const use = el('button', { class: 'btn-quiet', type: 'button', text: 'Use text in composer' });
+        use.addEventListener('click', () => {
+          const apply = () => {
+            if (!this.live) return;
+            if (this.view?.live && refString(this.view.ref) === entry.ref) { this.view.textInput.value = entry.text; this.view.textInput.dispatchEvent(new window.Event('input')); this.view.textInput.focus(); }
+            else { this.restorePendingText = { ref: entry.ref, text: entry.text }; location.hash = hashFor(ref); }
+          };
+          const view = this.view;
+          const same = view?.live && refString(view.ref) === entry.ref;
+          const draft = view?.textInput?.value || '';
+          if ((draft.trim() && (!same || draft !== entry.text)) || (!same && view?.files?.length)) {
+            const keep = el('button', { class: 'btn-primary', type: 'button', text: 'Keep current draft' });
+            const replace = el('button', { class: 'btn-quiet', type: 'button', text: 'Use saved text' });
+            keep.addEventListener('click', closeSheet);
+            replace.addEventListener('click', () => { closeSheet(); apply(); });
+            sheet({ title: 'Replace your current draft?' }, el('p', { text: same
+              ? 'The saved text will replace your current unsent text. Your selected files stay in place.'
+              : 'Opening the saved text will leave this conversation and discard its unsent draft and selected files.' }), keep, replace);
+          } else apply();
+        });
+        actions.append(use);
+      }
+      if (entry.files?.length) {
+        const recover = el('button', { class: 'btn-quiet', type: 'button', text: 'Save file copies' });
+        recover.addEventListener('click', () => { void this.savePendingFiles(entry); });
+        actions.append(recover);
+      }
+      const remove = el('button', { class: 'btn-quiet', type: 'button', text: 'Remove saved copy' });
+      remove.addEventListener('click', () => {
+        const confirm = el('button', { class: 'btn-primary', type: 'button', text: 'Remove this saved copy' });
+        const result = el('p', { class: 'card-line', role: 'status' });
+        confirm.addEventListener('click', async () => {
+          confirm.disabled = true;
+          try {
+            if (await this.outbox.remove(entry)) closeSheet();
+            else result.textContent = 'The saved message changed while it was being removed. Retry removal.';
+          } catch { result.textContent = 'Removal could not be confirmed. Your saved copy may remain. Retry removal.'; }
+          finally { confirm.disabled = false; }
+        });
+        sheet({ title: 'Remove saved copy?' }, el('p', { text: 'This removes saved text and files from this browser. It does not recall a message already accepted by the agent.' }), confirm, result);
+      });
+      actions.append(remove);
+      return el('div', { class: 'chat-pending-entry' }, el('p', { class: 'card-line', text: entry.text || `${entry.files?.length || 0} selected files` }),
+        el('p', { class: 'card-line chat-muted', text: entry.reason || 'Saved here. It has not yet been accepted by the agent.' }), actions);
+    });
+    const m = snapshot.metrics;
+    const metrics = m && !m.unknown ? el('p', { class: 'card-line chat-muted', text: `${m.admitted} saved; ${m.accepted} accepted during this sign-in.` }) : null;
+    const more = rows.length > visible ? el('button', { class: 'btn-quiet', type: 'button', text: 'Show more saved messages' }) : null;
+    if (more) more.addEventListener('click', () => { this.pendingVisible = visible + 25; this.paintPendingSends(); });
+    setKids(this.pendingEl, heading, limit, ...cards, more, metrics);
   }
-  finishLocal(v, local, label, pending) {
-    local.delivery = label;
-    local.final = !pending;
-    if (v.live) this.setBubbles(v, mergeBubbles(v.list.filter((b) => b.id !== local.id), [{ ...local }]));
+  async savePendingFiles(entry) {
+    const status = el('p', { class: 'card-line', role: 'status', text: 'Preparing your saved files…' });
+    const links = el('div', { class: 'chat-list-actions' });
+    const urls = [];
+    let open = true;
+    const cleanup = () => {
+      open = false;
+      for (const url of urls) { URL.revokeObjectURL(url); this.blobUrls.delete(url); }
+    };
+    const fileSheet = sheet({ title: 'Save file copies', onClose: cleanup }, status, links);
+    fileSheet.classList.add('chat-file-recovery-sheet');
+    try {
+      for (let i = 0; i < entry.files.length; i++) {
+        const file = await this.outbox.recoverFile(entry, i);
+        if (!open || !this.live || !file) return;
+        const url = URL.createObjectURL(file.blob);
+        urls.push(url); this.blobUrls.add(url);
+        links.append(el('a', { class: 'btn-quiet', href: url, download: file.filename, text: `Save ${file.filename}` }));
+      }
+      if (open && this.live) status.textContent = 'These are your local file copies. Saving them does not send or remove the original message.';
+    } catch {
+      if (open && this.live) status.textContent = 'The saved files could not be opened. Check whether the original message was accepted, or retry opening the local copies.';
+    }
   }
   refreshOpen(v) { if (v.live) this.pollNow(v); }
+  resumeUnfinished(v) { this.syncPending(); }
+  clearUnfinished() { try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* durable legacy retirement still applies */ } }
 
-  resumeUnfinished(v) {
-    const rec = this.device.record;
-    const mine = readUnfinished().filter((e) => e.ref === refString(v.ref));
-    for (const e of mine) {
-      const action = unfinishedAction(e, { deviceId: rec && rec.deviceId, machineId: rec && rec.machineId, nowMs: this.device.clock.now() });
-      const local = { id: `local:${e.requestId}`, messageId: null, side: 'right', who: null, text: e.text, at: new Date(e.firstSentAt || now()).toISOString(), attachments: [], delivery: deliveryLabel(action === 'retry' ? 'sending' : 'unknown'), mark: null, final: action !== 'retry' };
-      this.setBubbles(v, mergeBubbles(v.list, [local]));
-      if (action === 'retry') this.deliver(v, e, local);
-      else dropUnfinished(e.requestId); // shown as unknown, never re-sent
-    }
+  async catchupRead(path) {
+    const controller = this.abortable();
+    const timer = globalThis.setTimeout(() => controller.abort(), 20_000);
+    try { return await this.call('GET', path, { signal: controller.signal }); }
+    catch { return { ok: false, status: 0, data: null }; }
+    finally { globalThis.clearTimeout(timer); this.aborts.delete(controller); }
   }
-  clearUnfinished() { try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* blocked */ } }
-
-  /** Uploads each file (one at a time, chunks one at a time) → the signed attachment list, or null. */
-  async uploadAll(v, files, requestId, progress) {
-    const ref = mediaRefFor(v.ref, v.slackKey);
-    if (!ref) { v.statusLine.textContent = 'Files cannot be sent here yet.'; return null; }
-    const total = files.reduce((s, f) => s + f.size, 0) || 1;
-    let done = 0;
-    const out = [];
-    for (const f of files) {
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const sha256 = await sha256Hex(bytes);
-      const declaredType = f.type || 'application/octet-stream';
-      const meta = { conversationRef: ref, size: f.size, sha256, declaredKind: declaredKindFor(declaredType), declaredType, filename: (f.name || 'file').slice(0, 255) };
-      const start = await this.call('POST', '/mobile/media/uploads', { json: { ...meta, requestId: newRequestId(this.device.clock.now()) } });
-      if (!start.ok || !start.data || !start.data.uploadId) { v.statusLine.textContent = (start.data && start.data.detail) || `${f.name} could not be sent.`; return null; }
-      const chunk = Number(start.data.chunkSize) || (1024 * 1024);
-      const have = new Set(Array.isArray(start.data.received) ? start.data.received : []);
-      const count = Math.max(1, Math.ceil(f.size / chunk));
-      for (let i = 0; i < count; i++) {
-        if (!this.live) return null;
-        if (!have.has(i)) {
-          for (let attempt = 0; ; attempt++) {
-            const part = bytes.subarray(i * chunk, Math.min(f.size, (i + 1) * chunk));
-            const r = await this.call('PUT', `/mobile/media/uploads/${encodeURIComponent(start.data.uploadId)}/chunks/${i}`, { bytes: part });
-            if (r.ok) break;
-            if (r.gone || attempt >= 6 || (r.status !== 429 && r.status !== 0 && r.status < 500)) { v.statusLine.textContent = (r.data && r.data.detail) || `${f.name} could not be sent.`; return null; }
-            await new Promise((res) => this.later(res, r.retryAfterMs || 2000));
-          }
-        }
-        done += Math.min(chunk, f.size - i * chunk);
-        progress.value = String(Math.round((done / total) * 100));
-      }
-      out.push({ uploadId: start.data.uploadId, ...meta });
+  catchupFinishedWith(r, view) {
+    const definite = (r.status > 0 && r.status < 500) || (r.status === 503 && ['native-conversations-off', 'browser-devices-off', 'slack-owner-unset', 'chat-unavailable'].includes(r.data?.error));
+    if (definite && !r.ok) {
+      const text = r.data?.detail || (r.status === 404 ? 'This conversation is not available here.' : 'Conversations are not available with this sign-in right now.');
+      if (view?.live) view.statusLine.textContent = text;
+      else if (this.failedEl) { this.failedEl.textContent = text; this.failedEl.hidden = false; }
     }
-    return out.map(({ conversationRef: _c, ...a }) => a);
+    return definite;
+  }
+  async reconnectPage() {
+    if (!this.live) return false;
+    if (!this.pageEl) {
+      await this.start();
+      if (!this.pageEl) return this.startOutcome !== 'network';
+    }
+    const view = this.view;
+    const list = await this.catchupRead('/mobile/conversations?scope=pool&limit=50');
+    if (!this.live) return false;
+    if (!list.ok) return this.catchupFinishedWith(list, view);
+    this.applyList(list.data, false);
+    if (view?.live) {
+      const history = await this.catchupRead(this.historyPath(view, { pool: view.ref.kind !== 'slack' }));
+      if (!this.live || this.view !== view || !view.live) return false;
+      if (!history.ok) return this.catchupFinishedWith(history, view);
+      this.applyHistory(view, history.data);
+      if (view.ref.kind === 'app') {
+        const ref = refString(view.ref);
+        let cursor = this.cursors.get(ref) || '';
+        for (;;) {
+          const events = await this.catchupRead(`/mobile/chat/app/${encodeURIComponent(view.ref.id)}/events?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+          if (!this.live || this.view !== view) return false;
+          if (events.status === 404) break; // Older servers use the actual history read above.
+          if (!events.ok) return this.catchupFinishedWith(events, view);
+          this.applyResult({ mode: 'events', ref, data: events.data });
+          const next = events.data?.cursor;
+          if (typeof next === 'string') this.cursors.set(ref, next);
+          if ((events.data?.events || []).length < 100) break;
+          if (!next || next === cursor) return false;
+          cursor = next;
+        }
+      }
+    }
+    void this.outbox?.reconnect(); // Upload duration is separate from received-history catch-up.
+    return true;
   }
 
   openAttachmentSheet(v) {
@@ -1652,7 +1865,11 @@ class ChatsPage {
     const attachmentSheet = attachmentView?.attachmentSheet;
     const attachmentReader = this.device.record;
     let r;
-    try { r = await this.call('GET', this.taskPath(task)); } catch { r = { ok: false, status: 0 }; }
+    try {
+      const path = this.taskPath(task);
+      const v = this.view;
+      r = v?.live && task.ref === refString(v.ref) ? await this.readHistory(v, path) : await this.call('GET', path);
+    } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
     const contextUnverified = !r.ok || task.mode === 'fallback';
@@ -1726,13 +1943,16 @@ class ChatsPage {
 
   /** The focused tab's conversation: read now (an operator-caused read, counted in the budget). */
   async pollNow(v) {
-    if (!v || !v.live) return;
+    if (!v || !v.live || v.historyPending) return;
     const ref = refString(v.ref);
     if (!v.attachmentSheet && this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
     const attachmentSheet = v.attachmentSheet;
     const context = attachmentSheet?.context;
-    const r = await this.call('GET', this.historyPath(v, { pool: !attachmentSheet && v.ref.kind !== 'slack' }));
+    // An open attachment sheet needs a read that starts now, so it never shares an in-flight
+    // history read begun before the sheet opened or its context changed (readHistory dedupes by path).
+    const historyPath = this.historyPath(v, { pool: !attachmentSheet && v.ref.kind !== 'slack' });
+    const r = attachmentSheet ? await this.call('GET', historyPath) : await this.readHistory(v, historyPath);
     if (attachmentSheet && v.attachmentSheet === attachmentSheet && this.view === v
       && (!r.ok || this.device.record !== attachmentSheet.record || bearer() !== attachmentSheet.authorization
         || (context && context === attachmentSheet.context && r.data?.attachmentContext !== context))) closeSheet();
@@ -1791,16 +2011,6 @@ export function pastedFiles(cd, at = new Date()) {
     const name = `Pasted image ${stamp}${files.length > 1 ? `-${i + 1}` : ''}.${ext || 'png'}`;
     try { return new File([f], name, { type: f.type, lastModified: f.lastModified }); } catch { return f; } // @silent-fallback-ok: no File constructor keeps the original name
   });
-}
-
-function readUnfinished() {
-  try { const v = JSON.parse(sessionStorage.getItem(UNFINISHED_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
-}
-function saveUnfinished(entry) {
-  try { const list = readUnfinished().filter((e) => e.requestId !== entry.requestId); list.push(entry); sessionStorage.setItem(UNFINISHED_KEY, JSON.stringify(list.slice(-50))); } catch { /* blocked: the send still runs */ }
-}
-function dropUnfinished(requestId) {
-  try { sessionStorage.setItem(UNFINISHED_KEY, JSON.stringify(readUnfinished().filter((e) => e.requestId !== requestId))); } catch { /* blocked */ }
 }
 
 function loadOwn(deviceId) {

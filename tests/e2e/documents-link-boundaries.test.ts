@@ -44,7 +44,7 @@ afterAll(async () => {
 });
 
 type Dev = ReturnType<typeof makeDevice>;
-let clock = Date.now();
+let lastSignedAt = 0;
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
 async function boot(opts: { privacy?: boolean } = {}) {
@@ -90,7 +90,9 @@ async function boot(opts: { privacy?: boolean } = {}) {
 function client(app: Parameters<typeof request>[0], deviceId: string, dev: Dev) {
   return (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown) => {
     const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const time = String(++clock);
+    // Keep timestamps fresh across slow boots and distinct within the same millisecond.
+    lastSignedAt = Math.max(Date.now(), lastSignedAt + 1);
+    const time = String(lastSignedAt);
     const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
     const q = method === 'GET' ? request(app).get(p) : (method === 'DELETE' ? request(app).delete(p) : request(app).post(p)).set('Content-Type', 'application/json');
     // As through the tunnel: TLS ends at cloudflared on this machine.
@@ -337,8 +339,10 @@ describe('a linked computer — privilege boundaries on a real server', () => {
     const n = await request(app).post('/docs/_link/nonce').set('Host', HOST).set('X-Instar-Request', '1').send({ browserPublicKey: comp2.publicKey });
     const r = await owner('POST', '/mobile/browsers/link', { browserPublicKey: comp2.publicKey, nonce: n.body.nonce, machineId: n.body.machineId, host: HOST, expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
     expect(r.status).toBe(403);
-    expect(r.body.error).toBe('member-phone-required');
-    expect((await owner('POST', '/mobile/browsers/link/lookup', { nonce: n.body.nonce, browserPublicKey: comp2.publicKey })).body.error).toBe('member-phone-required');
+    expect(r.body).toMatchObject({ error: 'member-phone-required', detail: expect.stringContaining('browser approval') });
+    const preview = await owner('POST', '/mobile/browsers/link/lookup', { nonce: n.body.nonce, browserPublicKey: comp2.publicKey });
+    expect(preview.status).toBe(403);
+    expect(preview.body).toMatchObject({ error: 'member-phone-required', detail: expect.stringContaining('browser approval') });
   });
 
   it('a member lowered to guest: the computer loses its writes and its send', async () => {

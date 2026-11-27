@@ -1272,8 +1272,8 @@ export interface IntelligenceOptions {
    * to another vendor (context-budget §9: conversation content stays on its family).
    */
   pinnedFramework?: IntelligenceFramework;
-  /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
-  launchGuard?: () => boolean;
+  /** Codex: awaited immediately before the child is spawned. Pair with requiredRoute for strict routing. */
+  launchGuard?: () => boolean | Promise<boolean>;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -3144,6 +3144,8 @@ export interface MultiMachineConfig {
      */
     plannedRestartLeaseContinuity?: {
       enabled?: boolean;
+      /** Require a fresh authenticated holder confirmation before a planned supervised restart. Off by default. */
+      admissionEnabled?: boolean;
       /** Replaces the measured base of the window (still under the peer-enforced caps). */
       windowMs?: number;
     };
@@ -3833,6 +3835,8 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
+  needsYou?: { ownerAdmission?: { enabled?: boolean } };
   /**
    * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
    * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
@@ -3874,6 +3878,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Enables the read-only project binding batch preview. Defaults off. */
+    bindingBatchPreview?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;
@@ -4137,6 +4143,15 @@ export interface InstarConfig {
       /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
       readinessChunkSize?: number;
     };
+    /**
+     * Which subscription account serves feedback readiness calls. Without `account`, readiness
+     * follows `triage.accountSelectionMode` (off = the shared provider, as before). With `account`
+     * (a subscription pool account id), readiness runs on exactly that verified account or is
+     * refused with a named reason, never on another account. Read live per readiness call.
+     */
+    readiness?: {
+      account?: string;
+    };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
       enabled?: boolean;
@@ -4243,6 +4258,14 @@ export interface InstarConfig {
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
   /**
+   * Permanent agent links (docs/specs/permanent-agent-links.md): links on instar.sh that name this
+   * agent by its identity and open a page in the Instar app. Optional; absent or false = off. Read
+   * live, so turning it on needs no restart.
+   */
+  agentLinks?: {
+    enabled?: boolean;
+  };
+  /**
    * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
    * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
    * gate decides; read live by the routes.
@@ -4297,7 +4320,13 @@ export interface InstarConfig {
      * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
      * (default 6) per machine.
      */
-    browser?: { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number };
+    browser?: {
+      enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number;
+      /** Disable new browser outbox network work while retaining logout/cleanup support. */
+      outboxEnabled?: boolean;
+      /** Advance before restoring after a historical downgrade; old entries require local review. */
+      outboxRecoveryGeneration?: string;
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
@@ -5124,6 +5153,12 @@ export interface InstarConfig {
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
   /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
+  /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:
    * `messaging` is an array of adapter configs, so the historically-documented
@@ -5302,6 +5337,8 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Optional expiring ordered placement for new headless Sol helpers and Sol reviews. */
+    routineCodexPlacement?: import('./routineCodexPlacement.js').RoutineCodexPlacementConfig;
     /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
      *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
     assistedRelogin?: {
@@ -7930,6 +7967,16 @@ export interface MonitoringConfig {
    * fleet). Registered in DEV_GATED_FEATURES.
    */
   selfDeferralGuard?: {
+    enabled?: boolean;
+  };
+  /**
+   * CMT-2204: the UnjustifiedStopGate records the credential-scrubbed stop
+   * reason + recent turns it judged under its provenance row's machine-local
+   * `_contentFull`, plus a content-free prompt sha, so its decisions can be
+   * replayed. `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev, DARK on the fleet). Registered in DEV_GATED_FEATURES.
+   */
+  stopGateReplayInput?: {
     enabled?: boolean;
   };
   /**

@@ -61,6 +61,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/conversation-graph/roots'],
       ['GET', '/mobile/conversation-graph/nodes/e30'],
       ['GET', '/mobile/conversation-graph/nodes/e30/destinations'],
+      ['GET', '/mobile/conversation-graph/tree'],
       ['GET', '/mobile/conversation-graph/pending'],
       ['GET', '/mobile/conversation-graph/changes/request-1234'],
       ['GET', '/mobile/conversation-graph/erasures/erasev1_12345678'],

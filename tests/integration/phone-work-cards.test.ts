@@ -142,7 +142,7 @@ async function make(c: ReturnType<typeof setup>, phone: Phone, body: Record<stri
 describe('GET /mobile/work-board/cards/:id (owner phone)', () => {
   it('the owner\'s phone reads one card as the board shows it; unknown is 404; a member\'s phone and a scoped session are refused', async () => {
     const c = setup(); const owner = c.pair(); const member = c.pair({ userId: 'adriana', role: 'team' });
-    const made = c.svc.createCard({ kind: 'agent' }, { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: false });
+    const made = c.svc.createCard({ kind: 'agent' }, { title: 'Pick a venue', need: 'Choose one', doneWhen: [{ id: 'd1', text: 'Booked' }], outward: true, recommendation: 'Book the venue.', whyYou: 'You approve the booking budget.' });
     if (!made.ok) throw new Error('create');
     const r = await send(c.app, owner, 'GET', `/mobile/work-board/cards/${made.cardId}`);
     expect(r.status, JSON.stringify(r.body)).toBe(200);

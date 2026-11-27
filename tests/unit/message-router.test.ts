@@ -98,6 +98,23 @@ describe('MessageRouter', () => {
       expect(result.messageId.length).toBeGreaterThan(10);
     });
 
+    it('SEC-127: refuses an unsafe thread id before storing anything; a plain one still works', async () => {
+      const before = (await store.queryOutbox('my-agent')).length;
+      await expect(router.send(
+        { agent: 'my-agent', session: 'my-session', machine: 'my-machine' },
+        { agent: 'target', session: 'best', machine: 'local' },
+        'info', 'medium', 'Subject', 'Body', { threadId: '../outside' },
+      )).rejects.toThrow(/unsafe thread id/);
+      expect((await store.queryOutbox('my-agent')).length).toBe(before);
+      const ok = await router.send(
+        { agent: 'my-agent', session: 'my-session', machine: 'my-machine' },
+        { agent: 'target', session: 'best', machine: 'local' },
+        'info', 'medium', 'Subject', 'Body', { threadId: 'thr-plain-1' },
+      );
+      expect((await store.get(ok.messageId))?.message.threadId).toBe('thr-plain-1');
+      expect((await store.getThread('thr-plain-1'))?.id).toBe('thr-plain-1');
+    });
+
     it('saves the envelope to the store', async () => {
       const result = await router.send(
         { agent: 'my-agent', session: 'my-session', machine: 'my-machine' },

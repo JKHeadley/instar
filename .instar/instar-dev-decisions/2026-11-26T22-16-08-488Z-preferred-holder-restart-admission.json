@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-26T22:16:08.488Z",
+  "slug": "preferred-holder-restart-admission",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 225,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/DesktopSetupTarget.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/LeaseContinuity.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/PlannedRestartVerifyGuard.ts",
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/core/plannedRestartAdmissionTimeout.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/server/routes.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 181,
+    "deletedLines": 44
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

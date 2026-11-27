@@ -1,0 +1,32 @@
+#!/usr/sbin/nft -f
+# Egress rules for `builder` (uid 61001) inside the helper sandbox
+# (docs/specs/local-verify-borrowed-unit-slices.md, B2.3). Only `npm ci` has network; it runs as
+# builder in the shared network namespace, and these rules match it by user id only, so they never
+# touch anything else (on WSL: never Echo's own traffic).
+#
+# Allowed: DNS to the local resolver stub, TCP 443 to public addresses. Dropped: host loopback
+# beyond the DNS stub, private ranges, 100.64.0.0/10 (Tailscale), link-local, multicast, all IPv6.
+# This table is the helper's own (priority -10: before other tables' accepts); its hash is
+# re-checked before every npm ci (/etc/instar-helper/nft.sha256).
+
+table inet instar_helper {
+  counter builder_drop {}
+  counter builder_allow {}
+
+  set blocked4 {
+    type ipv4_addr
+    flags interval
+    elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }
+  }
+
+  chain output {
+    type filter hook output priority -10; policy accept;
+    meta skuid != 61001 accept
+    oifname "lo" ip daddr 127.0.0.53 udp dport 53 counter name builder_allow accept
+    oifname "lo" ip daddr 127.0.0.53 tcp dport 53 counter name builder_allow accept
+    meta nfproto ipv6 counter name builder_drop drop
+    ip daddr @blocked4 counter name builder_drop drop
+    tcp dport 443 counter name builder_allow accept
+    counter name builder_drop drop
+  }
+}

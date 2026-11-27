@@ -22,10 +22,11 @@ import {
 } from '../core/MobileDeviceKeys.js';
 import { CHUNK_BYTES, MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_MESSAGE_BYTES } from '../core/appMediaTypes.js';
 import { cleanText } from '../core/MobilePairing.js';
+import { exactStopPhrases } from '../core/MessageSentinel.js';
 import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { isMobileNativeEnabled, isPairingApproveEnabled, principalOf } from './mobilePairingRoutes.js';
+import { isMobileNativeEnabled, isMobileChatEnabled, isMobileMediaEnabled, isPairingApproveEnabled, principalOf } from './mobilePairingRoutes.js';
 
 export const BROWSER_FEATURE = 'mobilePairing.browser';
 export const ENROLL_PROOF_VERSION = 'instar-browser-enroll-v1';
@@ -55,7 +56,7 @@ export const FORWARDING_HEADER_PREFIXES: ReadonlyArray<string> = [
   'x-forwarded-', 'forwarded', 'cf-', 'cdn-loop', 'tailscale-', 'x-real-ip', 'true-client-ip',
 ];
 
-interface BrowserConfig { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number }
+interface BrowserConfig { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number; outboxEnabled?: boolean; outboxRecoveryGeneration?: string }
 function browserConfig(config: InstarConfig): BrowserConfig | undefined {
   return (config.mobilePairing as { browser?: BrowserConfig } | undefined)?.browser;
 }
@@ -447,6 +448,33 @@ export function browserKeyState(svc: MobilePairingService, keyHash: string): Rec
   return { state: 'not-found' };
 }
 
+export interface BrowserOutboxSupport {
+  version: 1;
+  enabled: boolean;
+  recoveryGeneration: string | null;
+  text: boolean;
+  media: boolean;
+  stopPhrases: readonly string[];
+}
+
+/** Protocol support on this server, not a delivery verdict or browser storage test. */
+export function browserOutboxSupport(
+  svc: MobilePairingService, wired?: { text: boolean; media: boolean },
+): BrowserOutboxSupport {
+  const config = browserConfig(svc.deps.config);
+  const rawGeneration = config?.outboxRecoveryGeneration;
+  const recoveryGeneration = rawGeneration === undefined ? '1'
+    : typeof rawGeneration === 'string' && rawGeneration.trim().length > 0 ? rawGeneration : null;
+  const enabled = svc.browserOn() && svc.nativeOn && config?.outboxEnabled !== false
+    && recoveryGeneration !== null && wired?.text === true;
+  return {
+    version: 1, enabled, recoveryGeneration,
+    text: enabled && isMobileChatEnabled(svc.deps.config),
+    media: enabled && wired?.media === true && isMobileMediaEnabled(svc.deps.config),
+    stopPhrases: exactStopPhrases(),
+  };
+}
+
 /** Bearer routes for browser setup (§4.2) and status (§4.6). */
 export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
@@ -455,6 +483,7 @@ export function mountBrowserDeviceRoutes(
     telegramConfigured?: () => boolean;
     approvalChat?: () => Promise<{ name: string; username: string | null } | null>;
     attachmentBrowseAvailable?: () => boolean;
+    outboxWiring?: () => { text: boolean; media: boolean };
   },
 ): void {
   router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
@@ -476,6 +505,7 @@ export function mountBrowserDeviceRoutes(
       // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
       telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
       limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
+      outbox: browserOutboxSupport(svc, opts.outboxWiring?.()),
       ...(kh ? { key: browserKeyState(svc, kh) } : {}),
     });
   });

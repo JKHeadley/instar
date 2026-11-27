@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T13:30:07.593Z",
+  "slug": "chief-of-staff-binding-batch-model",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 69,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffBindingBatch.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

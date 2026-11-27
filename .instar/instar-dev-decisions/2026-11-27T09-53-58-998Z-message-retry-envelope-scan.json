@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T09:53:58.998Z",
+  "slug": "message-retry-envelope-scan",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/DeliveryRetryManager.ts",
+      "src/messaging/MessageStore.ts",
+      "src/messaging/types.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
