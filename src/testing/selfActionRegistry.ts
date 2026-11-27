@@ -6418,6 +6418,74 @@ const historyAcquisitionPoll: SelfActionController = {
   restartPosture:{pressureSurvives:true,restartUnderPressure:historyPollUnderPressure},
 };
 
+/**
+ * browser-outbox-recovery — one original browser request and one immutable step
+ * against a permanently rejecting target. This is a minimal MODEL of
+ * dashboard/console/outbox-runner.js step()/schedule()/process(), backed by the
+ * durable claimAttempt()/finishAttempt() ledger in dashboard/console/chat-outbox.js.
+ *
+ * Reconnect, timers, broadcasts and reconstruction consider the SAME persisted
+ * step; none clears its seven admitted attempts or nextEligibleAt. A rejected
+ * attempt follows the live 2s, 4s, 8s, 16s, 30s, 30s backoff. At exhaustion the
+ * original content remains held. An explicit user renewal or independently
+ * confirmed new chunk/phase is a DIFFERENT episode/suboperation and is excluded
+ * from this pinned no-progress pressure fixture, not simulated as a reconnect.
+ *
+ * Held-state broadcast steady state: process() returns immediately for the
+ * exhausted holdCode; it does not rewrite the row, emit changed(), mint another
+ * operation or arm another episode. An already pending wakeup may reconsider it
+ * but emits zero target requests. This model therefore counts physical target
+ * retry actions, not status probes owned by the existing connection lifecycle.
+ *
+ * The model does not stand in for browser execution: console-outbox-runner.test.ts
+ * covers actual runner decisions, while console-chat-outbox-browser.test.ts drives
+ * seven real IndexedDB claims and reconstruction with the original ledger intact.
+ */
+const browserOutboxRecovery: SelfActionController = {
+  id: 'browser-outbox-recovery',
+  actionVerb: 'retry-original-request',
+  models: 'dashboard/console/outbox-runner.js step/schedule/process; dashboard/console/chat-outbox.js claimAttempt/finishAttempt (durable seven-attempt immutable-step ledger)',
+  modelsPath: 'dashboard/console/outbox-runner.js',
+  boundK: 7,
+  perTargetBoundK: 7,
+  ticks: 60,
+  tickMs: 2_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return browserOutboxRecovery.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const key = 'browser-outbox-recovery:scope:original-request:immutable-step';
+    return { tick() {
+      sink.considered += 1;
+      const prior = f.durableState.get(key) as {
+        attempts: number; nextEligibleAt: number; held: boolean; accepted: boolean;
+      } | undefined;
+      const state = prior ?? { attempts: 0, nextEligibleAt: 0, held: false, accepted: false };
+      if (state.held || state.accepted) return;
+      if (state.attempts >= 7) {
+        f.durableState.set(key, { ...state, held: true });
+        return;
+      }
+      if (f.clock.nowMs() < state.nextEligibleAt) return;
+      const attempts = state.attempts + 1;
+      // Admission lands before the physical effect, so rebuilding the controller
+      // cannot acquire a fresh count while this same target still rejects it.
+      f.durableState.set(key, { ...state, attempts });
+      sink.emit({ verb: 'retry-original-request', target: 'scope:original-request:immutable-step' });
+      const rejected = f.targetAlwaysRejects();
+      f.durableState.set(key, {
+        attempts,
+        nextEligibleAt: rejected ? f.clock.nowMs() + Math.min(2_000 * 2 ** (attempts - 1), 30_000) : 0,
+        held: rejected && attempts >= 7,
+        accepted: !rejected,
+      });
+    } };
+  },
+};
+
 const smallPeerTrialAdmission: SelfActionController = {
   id: 'small-peer-trial-admission',
   actionVerb: 'spawn',
@@ -6439,7 +6507,9 @@ const smallPeerTrialAdmission: SelfActionController = {
   },
 };
 
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  browserOutboxRecovery,
   smallPeerTrialAdmission,
   siblingHoldingsRefresh,
   historyAcquisitionNotice,

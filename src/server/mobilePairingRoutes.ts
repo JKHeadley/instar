@@ -1637,6 +1637,14 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     verifyOperatorSession: (token) => poolCtx?.verifyDashboardOperatorSession?.(token) === true,
     telegramConfigured: () => !!poolCtx?.telegram,
     approvalChat: async () => (poolCtx?.telegram?.botIdentity ? poolCtx.telegram.botIdentity() : null),
+    outboxWiring: () => {
+      const app = poolCtx?.appConversations;
+      // This is the same initialized native service/request store used by the mounted
+      // conversation/media routes, not merely a configured feature flag.
+      const text = svc.nativeOn && !!app?.store && !!app?.deps.requests
+        && app.deps.requests === svc.chatRequests();
+      return { text, media: text && !!app?.media };
+    },
   });
 
   router.post('/mobile/pairing-codes', async (req: Request, res: Response) => {

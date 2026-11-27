@@ -42269,6 +42269,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } else if (localAvailability?.state === 'unconfigured') {
       failed.push({ machineId: selfMachineId ?? 'self', error: 'peer-pool-unconfigured' });
     }
+    const answeredMachines: Array<{ machineId: string; nickname: string | null }> =
+      selfMachineId && ctx.subscriptionPool && localReadable ? [{ machineId: selfMachineId, nickname: selfMachineNickname }] : [];
     const remote: Record<string, unknown>[] = [];
     const remoteEmailGaps: Record<string, unknown>[] = [];
     const remoteReconciliation: Array<{
@@ -42295,6 +42297,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           };
         };
         const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+        if (Array.isArray(body.accounts)) answeredMachines.push({ machineId: p.machineId, nickname });
         for (const a of body.accounts ?? []) {
           remote.push({
             ...a,
@@ -42359,6 +42362,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         selfMachineNickname,
         peersQueried: peers.length,
         peersOk: peers.length - failed.length,
+        answeredMachines: answeredMachines.sort((a, b) => a.machineId.localeCompare(b.machineId)),
         failed,
       },
       // This machine's device-limit counters (machine-local; peers report their own).

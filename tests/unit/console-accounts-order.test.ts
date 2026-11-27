@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildAccountsPage } from '../../dashboard/console/accounts-model.js';
+import { accountLayoutPreferences, buildAccountsPage, layoutAccounts } from '../../dashboard/console/accounts-model.js';
 import { renderAccounts } from '../../dashboard/console/accounts.js';
 import { closeSheet } from '../../dashboard/console/ui.js';
 const NOW = Date.parse('2026-11-23T20:00:00Z');
@@ -61,19 +61,62 @@ describe('Accounts default reset ordering', () => {
     expect(page(rows).accounts.map(a => a.name)).toEqual(['Soon', 'Later']);
     expect(page(rows, NOW + 2 * 60_000).accounts.map(a => a.name)).toEqual(['Later', 'Soon']);
   });
-  it('renders one global ordered list with service labels and working detail buttons', async () => {
+  it('defaults to provider groups and puts unknown measurements after known values', () => {
+    const p = page([
+      account('Later', { lastQuota: { measuredAt: iso(-1), sevenDay: windowAt(90, 95) } }),
+      account('Soon', { lastQuota: { measuredAt: iso(-1), sevenDay: windowAt(10, 20) } }),
+      account('No reading', { lastQuota: null }),
+      account('Codex', { framework: 'codex-cli' }),
+    ]);
+    const names = (accounts: typeof p.accounts) => accounts.map(a => a.name);
+    const groups = layoutAccounts(p.accounts);
+    expect(groups.map(g => [g.name, names(g.accounts)])).toEqual([['Claude', ['Soon', 'Later', 'No reading']], ['Codex', ['Codex']]]);
+    expect(names(layoutAccounts(p.accounts, { sort: 'used' })[0].accounts)).toEqual(['Later', 'Soon', 'No reading']);
+    expect(names(layoutAccounts(p.accounts, { group: 'none', sort: 'name' })[0].accounts)).toEqual(['Codex', 'Later', 'No reading', 'Soon']);
+    expect(accountLayoutPreferences({ group: 'invalid', sort: 'name' })).toEqual({ group: 'provider', sort: 'name' });
+  });
+
+  it('includes only present account slots when grouping by machine', () => {
+    const p = page([
+      account('Shared'),
+      account('Shared', { machineId: 'mini', machineNickname: 'Mini' }),
+      account('Studio only'),
+    ]);
+    const groups = layoutAccounts(p.accounts, { group: 'machine' });
+    expect(groups.map(g => [g.name, g.accounts.map(a => a.name)])).toEqual([['Mini', ['Shared']], ['Studio', ['Shared', 'Studio only']]]);
+    expect(groups[0].accounts[0].cells.map(c => c.machineId)).toEqual(['mini']);
+    expect(p.accounts.find(a => a.name === 'Shared')!.cells).toHaveLength(2);
+  });
+
+  it('renders provider groups, remembers choices and keeps detail buttons working', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
     dom = new JSDOM('<main class="main"></main>', { url: 'https://fixture.invalid/dashboard/console/#/capacity/accounts', pretendToBeVisual: true });
     for (const [k, v] of Object.entries({ window: dom.window, document: dom.window.document, location: dom.window.location, localStorage: dom.window.localStorage, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window) })) vi.stubGlobal(k, v);
     const rows = [account('Claude Later', { lastQuota: { measuredAt: iso(-1), sevenDay: windowAt(90) } }), account('Codex Soon', { framework: 'codex-cli', lastQuota: { measuredAt: iso(-1), secondary: windowAt(10) } })];
-    const get = vi.fn(async (path: string) => ({ ok: true, data: path.startsWith('/subscription-pool?') ? { enabled: true, accounts: rows, pool: { failed: [] } } : path.startsWith('/subscription-relogin?') ? { enabled: true, episodes: [], blockers: [] } : path === '/pool' ? { machines: [] } : {} }));
+    const get = vi.fn(async (path: string) => ({ ok: true, data: path.startsWith('/subscription-pool?') ? { enabled: true, accounts: rows, pool: { failed: [] } } : path.startsWith('/subscription-relogin?') ? { enabled: true, episodes: [], blockers: [] } : path === '/pool' ? { machines: [] } : path === '/subscription-pool/in-use' ? { activeAccountId: 'acct-Codex Soon' } : {} }));
     const main = document.querySelector('main')!;
     await renderAccounts(main, { get });
     expect(main.classList.contains('accounts-page')).toBe(true);
+    expect([...main.querySelectorAll('.acct-list h3')].map(r => r.textContent)).toEqual(['Claude', 'Codex']);
+    const controls = main.querySelectorAll<HTMLSelectElement>('.acct-layout select');
+    const group = controls[0];
+    expect(group.labels?.[0].textContent).toContain('Group by');
+    expect(controls[1].value).toBe('reset');
+    expect(main.querySelectorAll('.acct-tag')).toHaveLength(1);
+    group.value = 'machine';
+    group.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    expect(main.querySelectorAll('.acct-tag')).toHaveLength(0);
+    group.focus();
+    group.value = 'none';
+    const readCount = get.mock.calls.length;
+    group.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    expect(get).toHaveBeenCalledTimes(readCount);
+    expect(document.activeElement).toBe(group);
     expect(main.querySelectorAll('.acct-list .list-section')).toHaveLength(1);
     expect([...main.querySelectorAll('.acct-row')].map(r => r.getAttribute('data-focus-key'))).toEqual(['a:acct-Codex Soon', 'a:acct-Claude Later']);
-    expect([...main.querySelectorAll('.acct-kind')].map(r => r.textContent)).toEqual(['Codex', 'Claude']);
-    expect(main.textContent).toContain('Weekly reset, soonest first');
+    await renderAccounts(main, { get });
+    expect(main.querySelector<HTMLSelectElement>('.acct-layout select')?.value).toBe('none');
+    expect(JSON.parse(localStorage.getItem('instar.accounts.layout')!)).toEqual({ group: 'none', sort: 'reset' });
     (main.querySelector('.acct-row') as HTMLButtonElement).click();
     expect(document.querySelector('.sheet-title')?.textContent).toBe('Codex Soon');
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Codex');
