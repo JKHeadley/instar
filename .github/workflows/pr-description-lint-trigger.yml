@@ -1,0 +1,24 @@
+# Trigger for the pull-request description early warning.
+#
+# This job does nothing but exist, so that `pr-description-lint.yml` can run on
+# `workflow_run`, which GitHub always loads from the DEFAULT branch. That way the
+# check and its script can never be changed by the pull request they judge,
+# whatever the pull request's base (a stacked pull request included).
+# This job reads no pull-request text and always succeeds, so it can never
+# appear as a red check row on a pull request.
+name: PR description lint trigger
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  trigger:
+    name: Description early warning (trigger)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hand off to the default-branch check
+        run: echo "description early warning requested"

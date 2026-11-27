@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "pr-description-lint",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-27T19:31:42.979Z",
+  "artifactPath": "upgrades/side-effects/pr-description-lint.md",
+  "artifactSha256": "5ba1a8247e1172abd12254460043276d83494838bbbe657a08187d600352852b",
+  "coveredFiles": [
+    ".github/workflows/pr-description-lint-trigger.yml",
+    ".github/workflows/pr-description-lint.yml",
+    "docs/specs/pr-description-lint.eli16.md",
+    "scripts/pr-description-lint.mjs",
+    "tests/unit/pr-description-lint.test.ts",
+    "upgrades/next/pr-description-lint.md",
+    "upgrades/side-effects/pr-description-lint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI-only early-warning; moved to workflow_run for default-branch trust after two rule 7 dissents; never a red row; a revert fully undoes it",
+  "eli16Path": "docs/specs/pr-description-lint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-description-lint.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

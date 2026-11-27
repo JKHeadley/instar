@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T19:12:03.945Z",
+  "slug": "pr-description-lint",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 137,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/pr-description-lint.mjs"
+    ],
+    "addedLines": 137,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

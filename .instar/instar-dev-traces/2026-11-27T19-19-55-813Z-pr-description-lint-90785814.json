@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "pr-description-lint",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-27T19:19:55.813Z",
+  "artifactPath": "upgrades/side-effects/pr-description-lint.md",
+  "artifactSha256": "33c4afc72e229ed4560698c8090cb61a90f961e292ca05be025f10cad01ffdd3",
+  "coveredFiles": [
+    ".github/workflows/pr-description-lint.yml",
+    "docs/specs/pr-description-lint.eli16.md",
+    "scripts/pr-description-lint.mjs",
+    "tests/unit/pr-description-lint.test.ts",
+    "upgrades/next/pr-description-lint.md",
+    "upgrades/side-effects/pr-description-lint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI-only early-warning workflow and script; never blocks; a revert fully undoes it; follow-up to an independent rule 7 dissent",
+  "eli16Path": "docs/specs/pr-description-lint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-description-lint.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

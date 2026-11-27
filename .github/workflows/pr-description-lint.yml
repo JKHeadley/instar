@@ -1,0 +1,65 @@
+# Pull-request description lint: the EARLY WARNING.
+#
+# Runs safe-merge's own merge-time body checks (ELI16, decision audit, release
+# fragment) and, reported separately, the UX Impact rule, on EVERY pull request,
+# whatever its base. The ELI16, decision-audit and release-fragment gates run
+# only for base `main`, so a stacked pull request used to meet its first
+# description refusal at merge time, after a full verifier run.
+#
+# Signal, never authority. The result is an always-success commit status
+# `description-early-warning (#N)` per pull request on its head, plus warnings and a
+# job summary on this run. Every step is non-failing, the script always exits
+# 0, and the status is never required.
+#
+# TRUST: `workflow_run` workflows are always loaded from the default branch, so
+# neither this file nor the script it runs can be changed by the pull request
+# being judged. The pull request's title, body, files and decision records are
+# read live from the REST API and treated only as data: never executed and never
+# placed in a shell line. Checkout credentials are not persisted. The token can
+# read contents and pull requests and write commit statuses, nothing else.
+name: PR description lint
+
+on:
+  workflow_run:
+    workflows: ["PR description lint trigger"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+# No cancel-in-progress: this run's check rows attach to the default branch's
+# head, and a cancelled row there could be misread as a red main. Each run is
+# short, bound to its own head, and posts nothing if the pull request moved.
+concurrency:
+  group: pr-description-lint-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  description-lint:
+    name: Description early warning
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Checkout the checker from the default branch
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        continue-on-error: true
+        with:
+          node-version: '22'
+      - name: Check the description
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # Same literal author scope as the UX impact gate.
+          INSTAR_UX_SCOPE: "jkheadley"
+        run: node scripts/pr-description-lint.mjs || true
