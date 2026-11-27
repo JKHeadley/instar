@@ -654,7 +654,7 @@ program.command('design:inspect')
   .option('--head <ref>', 'Candidate commit or ref', 'HEAD')
   .option('--repo <path>', 'Git repository to read', '.')
   .action(async (options) => {
-    const { runDesignPolicyInspection } = await import('./commands/designPolicy.js');
+    const { runDesignPolicyInspection } = await import('./commands/designInspect.js');
     process.exitCode = await runDesignPolicyInspection(options);
   });
 

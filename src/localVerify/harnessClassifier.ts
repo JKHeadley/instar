@@ -17,7 +17,7 @@ export const HARNESS_GLOBS: readonly string[] = Object.freeze([
   // rule change must not wait on independent review. The standard-weakened check
   // and the standard lint govern those instead.
   'src/designGate/**',
-  'src/commands/designPolicy.ts',
+  'src/commands/designInspect.ts',
   'docs/design/screens.json',
   'docs/design/coverage.json',
   'docs/design/rule-ids.lock.json',

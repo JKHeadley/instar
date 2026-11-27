@@ -86,3 +86,15 @@ Concur for head `21c8cc467780469ac796610ca1efab43efa207c9`, limited to the path 
 - **No newly silent failure.** A path matching a new entry is reported by name in the record's reasons, exactly like the existing entries.
 
 Non-blocking notes: the `docs/design/**` entry also covers the unrelated note `docs/design/opt-in-heartbeat.md` already on main, so an edit to it will ask for a review (the safe direction); the harness list is an input to the verifier's policy hash, so once verifier machines run a build containing this change, recorded results made under the previous list stop counting and waiting pull requests are verified again, as with any change to this list; the list's doc comment still says a match "routes a PR to the operator", which predates the independent-review rule. This pull request was a draft when reviewed.
+
+## Documentation-coverage correction (2026-11-27)
+
+The Docs Coverage check failed with commands at 59 percent against a 60 percent floor. The check finds a command's documentation by its file name, and the file was `src/commands/designPolicy.ts` while the shipped command is `instar design:inspect`, so no documentation could ever match it. The file is renamed to `src/commands/designInspect.ts` with no change to its contents. The three places that named the old path follow it: the dynamic import in `src/cli.ts`, the harness path list in `src/localVerify/harnessClassifier.ts`, and the matching case in its unit test. The harness list keeps exactly the same set of files; only the one path's spelling changes, so it flags the same changes for independent review as before.
+
+The command is now documented on the documentation site, in the CLI reference and on a new Design Policy Inspection feature page added to the Features sidebar. With both, the command total is 61 percent and the check exits 0 locally. No behavior changes. Earlier review notes that name `src/commands/designPolicy.ts` refer to this same file before the rename.
+
+## Second-pass review of the rename
+
+**Reviewer:** independent second-pass reviewer, a fresh Claude Opus 5.5 general-purpose helper started by Echo on the Mac Studio on 2026-11-27, not the author. It was given the staged change and the questions to check, not a conclusion.
+
+Concur. The renamed file has the same content blob as the original (`66fb861e1a2acb9d565167ca91a9ef6117628a76`, a 100 percent rename). In `src/localVerify/harnessClassifier.ts` only the one path entry changes spelling. The matcher anchors each pattern at both ends and treats a pattern with no wildcards as an exact path, so the old entry matched only the old file and the new entry matches only the new file. No other entry covers either path, so the list flags the same set of files as before. A search of tracked files found no remaining import, build entry, configuration or test path that names `src/commands/designPolicy.ts`; the remaining mentions are earlier review notes in this artifact and audit records. The harness classifier unit test uses the new path and passed 44 of 44. The reviewer did not review the documentation-site pages.

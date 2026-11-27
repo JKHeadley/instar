@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-27T10:43:11.988Z",
+  "slug": "manual-design-policy-inspection",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/designInspect.ts",
+      "src/localVerify/harnessClassifier.ts",
+      "src/commands/designPolicy.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

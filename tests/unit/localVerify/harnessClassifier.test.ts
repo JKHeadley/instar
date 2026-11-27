@@ -27,7 +27,7 @@ const LOCK = {
 
 describe('classifyHarness: paths', () => {
   it.each([
-    'src/designGate/policyInspection.ts', 'src/commands/designPolicy.ts', 'docs/design/screens.json', 'docs/design/coverage.json', 'docs/design/rule-ids.lock.json',
+    'src/designGate/policyInspection.ts', 'src/commands/designInspect.ts', 'docs/design/screens.json', 'docs/design/coverage.json', 'docs/design/rule-ids.lock.json',
     'scripts/local-verify.mjs', 'scripts/safe-merge.mjs', 'src/localVerify/record.ts',
     'src/monitoring/greenPrLogic.ts', 'src/monitoring/GreenPrAutoMerger.ts', 'src/monitoring/MergeRunner.ts',
     'src/monitoring/greenPrAutomergeWiring.ts', 'vitest.config.ts', 'vitest.e2e.config.ts',
