@@ -1,5 +1,7 @@
 import { renderNotifications } from './notifications.js';
 import { installNetState } from './net-state.js';
+import { beginConsoleOutbox, getConsoleOutbox } from './outbox-runner.js';
+import { getChatOutbox } from './chat-outbox.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -45,10 +47,12 @@ import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot, validToken } from './ticket-model.js';
 import { createLifecycle, splitHash } from './page-lifecycle.js';
 import { renderChats } from './chats.js';
+import { UNFINISHED_KEY } from './chats-model.js';
 import { renderDocuments } from './documents.js';
 import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids, rememberOperatorSession, forgetOperatorSession } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
+const LOGOUT_FENCE_KEY = 'instar_console_logout_fence';
 const THEME_KEY = 'instar_console_theme';
 const TIMEOUT_MS = 20000;
 // Cross-machine reads can outlive a local read. A missed browser deadline is
@@ -58,6 +62,12 @@ const COMMITMENTS_TIMEOUT_MS = 25000;
 const REFRESH_MS = 30000;
 
 let token = '';
+let authGeneration = 0;
+let authLogoutFence = null;
+let authLogoutFenceBound = false;
+let outboxStart = null;
+let outboxProblem = '';
+let signOutPending = null;
 let refreshTimer = null;
 let refreshCurrent = null; // the current page's in-place refresh, for net-state's onBack
 let lastGood = {};                      // card id → last model that was not unknown
@@ -162,14 +172,110 @@ async function post(path, body) {
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
-function signOut() {
-  forgetOperatorSession();
-  net.clear(); // saved copies belong to this sign-in
-  try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
+function outboxProblemNode() {
+  return outboxProblem ? el('p', { class: 'card-line chat-note console-outbox-problem', role: 'status', text: outboxProblem }) : null;
+}
+function showOutboxProblem(message) {
+  outboxProblem = message;
+  const existing = document.querySelector('.console-outbox-problem');
+  if (existing) existing.textContent = message;
+  else if (token) document.querySelector('.app')?.prepend(outboxProblemNode());
+}
+async function ensureConsoleOutbox() {
+  const current = getConsoleOutbox();
+  if (current) return current;
+  if (outboxStart) return outboxStart;
+  const generation = authGeneration;
+  outboxStart = beginConsoleOutbox({ bearer: () => token }).then((controller) => {
+    if (generation !== authGeneration || !token) { controller.dispose(); return controller; }
+    outboxProblem = '';
+    return controller;
+  }).catch((error) => {
+    if (generation === authGeneration && token) outboxProblem = 'This browser could not open its saved messages. Your draft stays in place if a message cannot be saved.';
+    throw error;
+  });
+  return outboxStart;
+}
+/** A sibling's logout ends this local session; it never signs in as the sibling's replacement. */
+function signedOutElsewhere(message = 'You were signed out in another tab. Unlock again to continue.') {
+  if (!token) return;
+  const controller = getConsoleOutbox();
+  authGeneration++;
+  authLogoutFenceBound = false;
   token = '';
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  controller?.dispose();
   lifecycle.dispose();
-  renderUnlock();
+  forgetOperatorSession();
+  net.clear();
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
+  outboxStart = null;
+  try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* the durable retirement fence still forbids later import */ }
+  // renderUnlock clears the old DOM synchronously before its first network await.
+  void renderUnlock(message);
+}
+function checkStoredSignIn() {
+  if (!token) return false;
+  try {
+    if ((localStorage.getItem(TOKEN_KEY) || '') !== token
+      || (authLogoutFenceBound && localStorage.getItem(LOGOUT_FENCE_KEY) !== authLogoutFence)) {
+      signedOutElsewhere();
+      return false;
+    }
+  } catch { /* storage may be unavailable; durable queue epochs remain the network-admission authority */ }
+  return true;
+}
+window.addEventListener('storage', (event) => {
+  if (!token) return;
+  if (event.key === TOKEN_KEY && event.newValue !== token) signedOutElsewhere();
+  else if (event.key === LOGOUT_FENCE_KEY && authLogoutFenceBound && event.newValue !== authLogoutFence) signedOutElsewhere();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkStoredSignIn();
+});
+window.addEventListener('pageshow', checkStoredSignIn);
+window.addEventListener('focus', checkStoredSignIn);
+
+function signOut() {
+  if (signOutPending) return signOutPending;
+  const controller = getConsoleOutbox();
+  const pending = outboxStart;
+  authGeneration++;
+  authLogoutFenceBound = false;
+  // Stop immediately, before asynchronous storage work or another page can run.
+  if (controller) controller.dispose();
+  lifecycle.dispose();
+  forgetOperatorSession();
+  net.clear();
+  try {
+    // Unlike the bearer, this changes even when the next PIN unlock returns the same token.
+    localStorage.setItem(LOGOUT_FENCE_KEY, globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`);
+    localStorage.removeItem(TOKEN_KEY);
+  } catch { /* durable epoch invalidation remains authoritative when storage is blocked */ }
+  try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* durable retirement still forbids later import */ }
+  token = '';
+  document.body.replaceChildren(el('main', { class: 'unlock' }, el('p', { text: 'Signing out…' })));
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
+  outboxStart = null;
+  signOutPending = (async () => {
+    let message = '';
+    try {
+      const started = controller || (pending ? await pending.catch(() => null) : null);
+      if (started) { started.dispose(); await started.clearAll(); }
+      else await getChatOutbox().clearAll();
+      outboxProblem = '';
+    } catch (error) {
+      const phase = error && (error.phase || error.stage || error.code);
+      message = phase === 'erase' || phase === 'cleanup' || (error && error.invalidated === true)
+        ? 'You are signed out and saved sends are stopped, but their local copies could not be erased. Retry clearing them.'
+        : 'You are signed out here, but this browser could not confirm that saved sends in other tabs were stopped or cleared. Retry clearing them.';
+      outboxProblem = message;
+    }
+    await renderUnlock(message);
+    signOutPending = null;
+  })();
+  return signOutPending;
 }
 
 async function renderUnlock(message) {
@@ -198,6 +304,7 @@ async function renderUnlock(message) {
   );
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    if (btn.disabled) return;
     btn.disabled = true; err.textContent = '';
     try {
       const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: input.value }) });
@@ -220,6 +327,15 @@ async function renderUnlock(message) {
       start();
     } catch { err.textContent = 'The server could not be reached.'; btn.disabled = false; }
   });
+  if (message) {
+    const retry = el('button', { class: 'btn-quiet', type: 'button', text: 'Retry clearing saved messages' });
+    retry.addEventListener('click', async () => {
+      retry.disabled = true; btn.disabled = true;
+      try { await getChatOutbox().clearAll(); outboxProblem = ''; await renderUnlock(); }
+      catch { err.textContent = message; retry.disabled = false; btn.disabled = false; }
+    });
+    form.append(retry);
+  }
   document.body.append(el('main', { class: 'unlock' }, form));
   input.focus();
 }
@@ -264,7 +380,7 @@ function renderShell(active) {
   if (phone) {
     // Only the page: the app's own frame holds the title bar and navigation.
     const main = el('main', { class: 'main', id: 'main' });
-    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), net.lineElement(), main));
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), net.lineElement(), outboxProblemNode(), main));
     applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
     return main;
   }
@@ -279,7 +395,7 @@ function renderShell(active) {
   // The Needs-you list sits above both front doors (spec decision 2); the Agent door has none.
   const strip = active === 'conversations' || active === 'work' ? el('section', { class: 'needs-strip', id: 'needsStrip', 'aria-label': 'What needs you' }) : null;
   const column = strip ? el('div', { class: 'main-column' }, strip, main) : main;
-  const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), top, navItems(active), column);
+  const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), outboxProblemNode(), top, navItems(active), column);
   document.body.replaceChildren(app);
   mountAgentHealthNote(app.querySelector('nav a[data-door="agent"]'), { get });
   if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
@@ -521,10 +637,12 @@ function fillFromLastComplete(key, fresh) {
   return ROW_LISTS[key] && prev ? fillPartial(fresh, prev.result, ROW_LISTS[key], Date.now(), prev.at) : null;
 }
 
-function loadHome() {
+function loadHome(reconnecting = false) {
   const run = homeRun;
   if (!run || !run.active || run.document !== document) return;
   const { models, raw, results } = run;
+  const readsInThisCatchup = [];
+  run.inFlight ||= {};
   const paint = (id) => {
     const model = raw[id];
     if (!model) return; // nothing read yet for this card
@@ -550,12 +668,17 @@ function loadHome() {
     if ((key === 'guards' || key === 'mandate') && results.guards && results.mandate) set('allowed', annotate(buildAllowed(results.guards, results.mandate), results.guards, results.mandate));
   };
   const read = (key, path, timeoutMs) => {
-    if (run.pending[key]) return;
+    if (run.inFlight[key]) { readsInThisCatchup.push(run.inFlight[key]); return; }
+    if (run.pending[key]) {
+      if (!reconnecting) return;
+      if (run.pending[key] !== true) clearTimeout(run.pending[key]);
+      run.pending[key] = null;
+    }
     const attempt = async () => {
-      if (!run.active || run.document !== document) return;
+      if (!run.active || run.document !== document) return false;
       run.pending[key] = true;
       const result = await get(path, timeoutMs);
-      if (!run.active || run.document !== document) return;
+      if (!run.active || run.document !== document) return false;
       // A 200 that omitted a peer is a partial answer, so keep it visible and
       // retry for coverage just as we do after a transport timeout.
       const partial = result.ok && (key === 'sessions' && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
@@ -576,10 +699,16 @@ function loadHome() {
       if (retryable) {
         run.failures[key] = (run.failures[key] || 0) + 1;
         const delay = Math.min(15000, 300 * (2 ** Math.min(run.failures[key] - 1, 6)));
-        run.pending[key] = setTimeout(attempt, delay);
+        run.pending[key] = setTimeout(launch, delay);
       } else { run.failures[key] = 0; run.pending[key] = null; }
+      return !retryable;
     };
-    attempt();
+    const launch = () => {
+      const work = attempt().finally(() => { if (run.inFlight[key] === work) delete run.inFlight[key]; });
+      run.inFlight[key] = work;
+      return work;
+    };
+    readsInThisCatchup.push(launch());
   };
   read('pool', '/pool', POOL_TIMEOUT_MS);
   read('systemTopics', '/telegram/system-topics');
@@ -588,6 +717,7 @@ function loadHome() {
   read('commitments', '/commitments?scope=mesh', COMMITMENTS_TIMEOUT_MS);
   read('guards', '/guards', TIMEOUT_MS);
   read('mandate', '/mandate', TIMEOUT_MS);
+  return Promise.allSettled(readsInThisCatchup).then((reads) => run.active && reads.every((r) => r.status === 'fulfilled' && r.value !== false));
 }
 
 function renderHome(main, ctx) {
@@ -772,6 +902,7 @@ const PHONE_ONLY = {
 };
 
 function route() {
+  if (!token || !checkStoredSignIn()) return;
   if (!phone && isPhoneMode('', location.hash)) phone = true;
   const { path: hashPath, query } = splitHash(location.hash);
   const path = pagePath(hashPath, phone);
@@ -794,7 +925,7 @@ function route() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   refreshCurrent = null;
   const ctx = lifecycle.begin(path, query);
-  const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
+  const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, onReconnect: c.onReconnect, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
   if (pages[path]) {
     pages[path](main, pageCtx(ctx));
     // Pages refresh in place every 30 s while visible, never over an open sheet or an
@@ -803,11 +934,11 @@ function route() {
     if (!lifecycle.isSelfRefreshing()) {
       let refreshing = false;
       const refreshNow = () => {
-        if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return;
+        if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return false;
         refreshing = true;
         // Each re-run is a new visit: the previous run's disposers are called first.
         const next = lifecycle.begin(path, splitHash(location.hash).query);
-        Promise.resolve().then(() => pages[path](main, pageCtx(next))).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
+        return Promise.resolve().then(() => pages[path](main, pageCtx(next))).then(() => next.isCurrent(), () => false).finally(() => { refreshing = false; });
       };
       const timer = setInterval(refreshNow, REFRESH_MS);
       refreshCurrent = refreshNow;
@@ -821,6 +952,14 @@ function route() {
 }
 
 async function start() {
+  if (signOutPending) await signOutPending;
+  if (!token) return;
+  if (!authLogoutFenceBound) {
+    try { authLogoutFence = localStorage.getItem(LOGOUT_FENCE_KEY); } catch { authLogoutFence = null; }
+    authLogoutFenceBound = true;
+  }
+  await ensureConsoleOutbox().catch(() => null);
+  if (!token) return;
   phone = phone || isPhoneMode(location.search, location.hash);
   // Land on the front door used last (Conversations or Work), once the doors know which pages are on.
   await Promise.race([probeDoors(), new Promise((r) => setTimeout(r, 1500))]);
@@ -860,7 +999,17 @@ function previewBanner() {
 }
 
 // A weak or missing connection: saved status reads, a short first try, one plain line (net-state.js).
-const net = installNetState({ getToken: () => token, onBack: () => { if (refreshCurrent) refreshCurrent(); else if (homeRun) loadHome(); } });
+const net = installNetState({ getToken: () => token, onBack: async () => {
+  if (!token) return false;
+  const controller = getConsoleOutbox();
+  // Uploads do not keep the conversation's received-history catch-up Updating.
+  if (controller) void Promise.resolve(controller.reconnect()).catch(() => { showOutboxProblem('Saved messages could not be checked. Open Conversations to review them; their saved copies have not been discarded.'); });
+  const reconnected = await lifecycle.reconnectCurrent();
+  if (reconnected !== null) return reconnected;
+  if (refreshCurrent) return (await refreshCurrent()) !== false;
+  if (homeRun) return loadHome(true);
+  return true;
+} });
 
 (async function boot() {
   applyTheme(readTheme());
