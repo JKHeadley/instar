@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-26T07:53:29.835Z",
+  "slug": "gate-error-class",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 403,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CircuitBreakingIntelligenceProvider.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/frameworkFacts.ts",
+      "src/core/frameworkLoginPresence.ts",
+      "src/core/internalFrameworkDefault.ts",
+      "src/core/llmErrorClass.ts",
+      "src/data/awareness/llm-error-classes.md",
+      "src/monitoring/FeatureMetricsLedger.ts",
+      "src/monitoring/PromptGate.ts"
+    ],
+    "addedLines": 350,
+    "deletedLines": 53
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

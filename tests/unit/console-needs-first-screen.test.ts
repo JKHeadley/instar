@@ -29,7 +29,7 @@ const FIXTURES: Record<string, { render: [string, string]; reads: Record<string,
   merging: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ gate: { rollback: [{ by: 'agent', at: minsAgo(9) }] } })) } },
   'shipping-approvals': { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher({ snapshot: { at: minsAgo(1), entries: [{ pr: 2391, headRefName: 'x', headRefOid: 'abc', kind: 'code-owner-review' }] } })) } },
   feedback: { render: ['development.js', 'renderDevelopment'], reads: { '/green-pr-automerge': ok(watcher()), '/feedback-factory/execute/status': ok({ reason: 'approver-not-independent', attempts: [] }) } },
-  accounts: { render: ['accounts.js', 'renderAccounts'], reads: { '/subscription-pool?scope=pool': ok({ enabled: true, accounts: [{ id: 'luna', nickname: 'Luna', email: 'luna@x.io', framework: 'claude-code', status: 'needs-reauth', loginCheck: 'ok', machineId: 'm1', machineNickname: 'Mac Studio' }] }) } },
+  accounts: { render: ['accounts.js', 'renderAccounts'], reads: { ...Object.fromEntries(['/subscription-relogin?scope=pool', '/subscription-relogin?scope=pool&retryTimeout=1'].map(path => [path, ok({ episodes: [{ id: 'owner-only', accountId: 'luna', machineId: 'm1', state: 'waiting-operator-only' }] })])), '/subscription-pool?scope=pool': ok({ enabled: true, accounts: [{ id: 'luna', nickname: 'Luna', email: 'luna@x.io', framework: 'claude-code', status: 'needs-reauth', loginCheck: 'ok', machineId: 'm1', machineNickname: 'Mac Studio' }] }) } },
   agents: { render: ['agents.js', 'renderAgents'], reads: { '/threadline/pairing': ok({ pairings: [] }), '/threadline/pairing/invites': ok({ invites: [], pendingAccepts: [{ iid: 'i1', claimedAgent: 'PP', acceptorFp: 'abcdef', claimedAt: iso(-1), expiresAt: iso(30) }], knownPeers: [], restartNotices: [], handshake: [] }) } },
   'trust-requests': { render: ['allowed.js', 'renderAllowed'], reads: { '/trust/requests': ok({ requests: [{ requestId: 'tr-abc-123', changeKind: 'board-policy', status: 'open', adapter: 'telegram', delivered: false, summary: ['Start internal Work Board cards without asking each time.'], expiresAt: iso(60) }], approvalDelivery: { state: 'accepted', message: 'Open Changes to approve in Instar.' } }) } },
   approvals: { render: ['mandates.js', 'renderMandates'], reads: { '/authorization-requests?status=pending': ok({ requests: [{ id: 'r1', status: 'pending', headline: 'Let PP sign code reviews', reason: 'it asked', createdByAgent: 'Echo', heldOnThisMachine: true, requestExpiresAt: iso(60) }] }) } },
@@ -104,6 +104,7 @@ function firstScreenViolations(main: Element, id: string): string[] {
 describe('every source: the shipped page leads with the need, its action in place', () => {
   it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
     const f = FIXTURES[id];
+    if (id === 'accounts') history.replaceState(null, '', '#/capacity/accounts?s=needs');
     reads = f.reads;
     const mod = await import(path.join(CONSOLE, f.render[0]));
     const main = mainNode();
@@ -118,7 +119,7 @@ describe('Home: every source reaches the count and the headline', () => {
   const quietQueue = { count: 0, rows: [], all: [], state: 'ok', line: 'The queue is clear.' };
   const noPromises = { state: 'ok', count: 0, all: [], rows: [] };
 
-  it.each(Object.keys(FIXTURES))('%s', async (id: string) => {
+  it.each(Object.keys(FIXTURES).filter(id => id !== 'context'))('%s', async (id: string) => {
     const { NEED_SOURCES, surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
     const { combineNeeds, headline } = await import(path.join(CONSOLE, 'home-model.js'));
     const known: any = {};
@@ -132,6 +133,33 @@ describe('Home: every source reaches the count and the headline', () => {
     expect(h.tone).toBe('attn');
     expect(h.text).not.toMatch(/quiet|nothing needs/i);
   }, 30000);
+
+  it('keeps context recovery failures out of the owner queue', async () => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const sentinel = FIXTURES.context.reads['/context-budget/sentinel'];
+    const result = surfacedNeeds({ context: { results: { sentinel } } }, NOW);
+    expect(result.rows).toEqual([]);
+    expect(result.failed).not.toContain('context');
+  });
+
+  it.each([
+    ['suggested', 'approval', 'Approve sign-in repair'],
+    ['failed', 'approval', 'Retry sign-in repair'],
+    ['suggested', 'unattended', null],
+    ['failed', 'unattended', null],
+  ])('surfaces %s sign-in repair in %s mode only when the owner needs to act', async (state, mode, title) => {
+    const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));
+    const pool = FIXTURES.accounts.reads['/subscription-pool?scope=pool'];
+    const relogin = ok({ episodes: [{ id: 'repair-1', accountId: 'luna', machineId: 'm1', state, mode }] });
+    const rows = surfacedNeeds({ accounts: { results: { pool, relogin } } }, NOW).rows;
+    if (title) {
+      expect(rows).toHaveLength(1);
+      expect(rows[0].main).toContain(title);
+      expect(rows[0].action).toEqual({ kind: 'href', href: '#/capacity/accounts?s=needs' });
+    } else {
+      expect(rows).toEqual([]);
+    }
+  });
 
   it('a stopped merge names itself in the headline, with a link to act on it', async () => {
     const { surfacedNeeds } = await import(path.join(CONSOLE, 'needs-model.js'));

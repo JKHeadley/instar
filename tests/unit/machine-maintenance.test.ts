@@ -514,7 +514,13 @@ describe('DrainRehearsal', () => {
     agents = ['echo', 'groky'];
     const a = make('echo');
     const b = make('groky');
-    for (now = t0 - 71 * MIN; now <= t0 + 2 * MIN; now += MIN) { await a.tick(); await b.tick(); }
+    // Include a fresh peer acknowledgement before the final checkpoint and close.
+    const offsets = [-71, -70, -60, -55, -50, -45, -40, -35, -30, -25, -20, -15, -10, -6, -5, -2, 0, 1, 2];
+    for (const offset of offsets) {
+      now = t0 + offset * MIN;
+      await a.tick();
+      await b.tick();
+    }
     expect((a.status().lastRehearsal as { episodeId: string }).episodeId).toBe((b.status().lastRehearsal as { episodeId: string }).episodeId);
     expect((b.status().lastRehearsal as { outcome: string }).outcome).toBe('would-restart');
   });

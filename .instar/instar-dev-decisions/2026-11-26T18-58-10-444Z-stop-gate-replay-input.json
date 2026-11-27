@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-26T18:58:10.444Z",
+  "slug": "stop-gate-replay-input",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 186,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/UnjustifiedStopGate.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/awareness/stop-check-replay-input.md",
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 173,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

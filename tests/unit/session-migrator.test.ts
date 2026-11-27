@@ -24,6 +24,21 @@ function createTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sm-unit-'));
 }
 
+async function migrateWithVirtualTime(
+  migrator: SessionMigrator,
+  quota: Parameters<SessionMigrator['checkAndMigrate']>[0],
+): Promise<boolean> {
+  // Run the grace and account-settle timers without wall-clock sleeps.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  try {
+    const migration = migrator.checkAndMigrate(quota);
+    const [result] = await Promise.all([migration, vi.runAllTimersAsync()]);
+    return result;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 function createMockDeps(overrides?: Partial<SessionMigratorDeps>): SessionMigratorDeps {
   return {
     listRunningSessions: vi.fn(() => []),
@@ -115,7 +130,7 @@ describe('SessionMigrator', () => {
 
   describe('shouldMigrate', () => {
     it('skips when no deps set', async () => {
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'test@example.com',
       });
@@ -126,7 +141,7 @@ describe('SessionMigrator', () => {
       const deps = createMockDeps();
       migrator.setDeps(deps);
 
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 50,
         fiveHourPercent: 40,
         activeAccountEmail: 'test@example.com',
@@ -143,7 +158,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 93,
         fiveHourPercent: 40,
         activeAccountEmail: 'active@test.io',
@@ -161,7 +176,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 50,
         fiveHourPercent: 90,
         activeAccountEmail: 'active@test.io',
@@ -183,7 +198,7 @@ describe('SessionMigrator', () => {
       });
       m.setDeps(deps);
 
-      const result = await m.checkAndMigrate({
+      const result = await migrateWithVirtualTime(m, {
         percentUsed: 82,
         activeAccountEmail: 'active@test.io',
       });
@@ -203,13 +218,13 @@ describe('SessionMigrator', () => {
       migrator.setDeps(deps);
 
       // First migration
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 93,
         activeAccountEmail: 'active@test.io',
       });
 
       // Second migration attempt — should be blocked by cooldown
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 93,
         activeAccountEmail: 'backup@test.io',
       });
@@ -329,7 +344,7 @@ describe('SessionMigrator', () => {
       migrator.setDeps(deps);
       migrator.on('migration_no_target', () => events.push('no_target'));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -354,7 +369,7 @@ describe('SessionMigrator', () => {
       const events: MigrationEvent[] = [];
       migrator.on('migration_complete', (e: MigrationEvent) => events.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -399,7 +414,7 @@ describe('SessionMigrator', () => {
       });
       m.setDeps(deps);
 
-      await m.checkAndMigrate({
+      await migrateWithVirtualTime(m, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -425,7 +440,7 @@ describe('SessionMigrator', () => {
       const events: MigrationEvent[] = [];
       migrator.on('migration_partial', (e: MigrationEvent) => events.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -453,7 +468,7 @@ describe('SessionMigrator', () => {
       const rollbackEvents: MigrationEvent[] = [];
       migrator.on('migration_rollback', (e: MigrationEvent) => rollbackEvents.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -479,7 +494,7 @@ describe('SessionMigrator', () => {
       const failEvents: MigrationEvent[] = [];
       migrator.on('migration_failed', (e: MigrationEvent) => failEvents.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -508,7 +523,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -532,7 +547,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      const result = await migrator.checkAndMigrate({
+      const result = await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -550,7 +565,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -570,7 +585,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -590,7 +605,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -609,7 +624,7 @@ describe('SessionMigrator', () => {
       });
       migrator.setDeps(deps);
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -717,7 +732,7 @@ describe('SessionMigrator', () => {
         stateChanges.push(state.status);
       });
 
-      await m.checkAndMigrate({
+      await migrateWithVirtualTime(m, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -738,7 +753,7 @@ describe('SessionMigrator', () => {
       migrator.setDeps(deps);
       migrator.on('migration_started', (e) => startEvents.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -760,7 +775,7 @@ describe('SessionMigrator', () => {
       const events: MigrationEvent[] = [];
       migrator.on('migration_complete', (e: MigrationEvent) => events.push(e));
 
-      await migrator.checkAndMigrate({
+      await migrateWithVirtualTime(migrator, {
         percentUsed: 95,
         activeAccountEmail: 'active@test.io',
       });
@@ -817,7 +832,7 @@ describe('SessionMigrator — pre-grace work evidence (R2.1)', () => {
       thresholds: { gracePeriodMs: 10 },
     });
     m.setDeps(deps);
-    await m.checkAndMigrate({ percentUsed: 95, activeAccountEmail: 'active@test.io' });
+    await migrateWithVirtualTime(m, { percentUsed: 95, activeAccountEmail: 'active@test.io' });
 
     // Evidence collected at the decision moment — BEFORE any Ctrl+C.
     expect(callOrder[0]).toBe('collect');
@@ -856,7 +871,7 @@ describe('SessionMigrator — pre-grace work evidence (R2.1)', () => {
 
     const events: MigrationEvent[] = [];
     m.on('migration_complete', (e: MigrationEvent) => events.push(e));
-    await m.checkAndMigrate({ percentUsed: 95, activeAccountEmail: 'active@test.io' });
+    await migrateWithVirtualTime(m, { percentUsed: 95, activeAccountEmail: 'active@test.io' });
 
     // The refused session is NOT counted halted and NOT respawned (the
     // double-respawn class: its live session would have run alongside a copy).

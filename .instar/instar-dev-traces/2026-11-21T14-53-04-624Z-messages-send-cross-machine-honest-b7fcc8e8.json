@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "messages-send-cross-machine-honest",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T14:53:04.624Z",
+  "artifactPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "artifactSha256": "ecceb30a51d7f8b616e7c801e7a51efcbed398b3a19fddf9c8e34156f5685621",
+  "coveredFiles": [
+    "site/src/content/docs/features/routing-spend-control-room.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "upgrades/side-effects/messages-send-cross-machine-honest.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only follow-up: documents the gemini-payg-reconcile default job so the docs-coverage job floor passes; no runtime surface, a revert fully undoes it",
+  "eli16Path": "docs/specs/messages-send-cross-machine-honest.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/messages-send-cross-machine-honest.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

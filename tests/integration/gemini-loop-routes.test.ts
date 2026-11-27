@@ -6,16 +6,24 @@
  *  - 202 {runId} on admission; GET /:id reflects the async result; GET lists runs.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { GeminiLoopRunner } from '../../src/monitoring/GeminiLoopRunner.js';
 import { DEFAULT_DONE_SENTINEL } from '../../src/monitoring/GeminiLoopDriver.js';
 
+const projects: TempProject[] = [];
+afterEach(() => {
+  for (const project of projects.splice(0)) project.cleanup();
+});
+
 function ctxWith(runner: GeminiLoopRunner | null): RouteContext {
+  const project = createTempProject();
+  projects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null, listSessions: () => [] } as any,
     geminiLoopRunner: runner,
