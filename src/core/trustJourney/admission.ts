@@ -65,7 +65,7 @@ export function decideAdmission(i: AdmissionInputs): AdmissionDecision {
 }
 
 /** The plain sentence the hook prints when it refuses a call that now waits for the person. */
-export function askSentence(reason: AskReason, sent: 'sent' | 'awaiting-acceptance' | 'undelivered' | 'other'): string {
+export function askSentence(reason: AskReason, sent: 'sent' | 'awaiting-acceptance' | 'undelivered' | 'other', deliveryMessage?: string): string {
   const why: Record<AskReason, string> = {
     'no-grant': 'the person has not set what I may do alone for this kind of action',
     'grant-asks': 'the person asked to approve this kind of action first',
@@ -75,9 +75,10 @@ export function askSentence(reason: AskReason, sent: 'sent' | 'awaiting-acceptan
     'unreadable-history': 'its approval history holds a record this version cannot read',
     'holder-unreachable': 'this machine does not hold the serving lease, and governed actions are admitted only there',
   };
-  const where = sent === 'sent' ? 'A card asking for approval is in their direct chat; run the identical call again after they approve it.'
+  const where = deliveryMessage ? `${deliveryMessage}${sent === 'sent' ? ' Run the identical call again after they approve it.' : ''}`
+    : (sent === 'sent' ? 'A card asking for approval is in their direct chat; run the identical call again after they approve it.'
     : sent === 'awaiting-acceptance' ? 'They have been asked for their one-time acceptance first; the card follows.'
       : sent === 'undelivered' ? 'The approval card could not be delivered to their direct chat; tell them in this conversation.'
-        : 'Nothing was sent.';
+        : 'Nothing was sent.');
   return `Waiting for the person's approval: ${why[reason]}. ${where} Continue with other work meanwhile.`;
 }

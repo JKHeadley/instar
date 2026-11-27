@@ -31,6 +31,25 @@ describe('deriveEffect', () => {
     expect(f.operation).toBe('sign-in');
     expect(deriveEffect('mcp__playwright__browser_type', { element: 'Search box', text: 'x' })!.operation).not.toBe('sign-in');
   });
+  it('classifies real GitHub pull request tools and validates the repository audience', () => {
+    for (const name of ['github__create_pull_request', 'github_create_pull_request']) {
+      const tool = 'mcp__codex_apps__' + name;
+      expect(deriveEffect(tool, { repository_full_name: 'Owner/Repo' })).toMatchObject({
+        kind: 'codex_apps.write', audience: ['owner/repo'], matched: true,
+      });
+      for (const repository_full_name of [undefined, 'owner', 'owner/repo,other/repo', 'owner/repo\n', ['owner/repo']]) {
+        expect(deriveEffect(tool, { repository_full_name })?.audience).toBe('unknown');
+      }
+    }
+    expect(deriveEffect('mcp__codex_apps__github__update_pull_request', { repository_full_name: 'owner/repo' })).toMatchObject({
+      kind: 'codex_apps.modify', audience: ['owner/repo'],
+    });
+    expect(deriveEffect('mcp__codex_apps__github__merge_pull_request', { repository_full_name: 'owner/repo' })?.floor)
+      .toContain('irreversible-outside-role');
+    expect(verbRules('github__delete_file').operation).toBe('delete');
+    expect(verbRules('github_post_comment').reversibility).toBe('irreversible');
+    expect(verbRules('other_create_object').operation).toBe('modify');
+  });
   it('the action identity binds the exact input, in any key order', () => {
     expect(actionIdentityOf('t', { a: 1, b: [2] })).toBe(actionIdentityOf('t', { b: [2], a: 1 }));
     expect(actionIdentityOf('t', { a: 1 })).not.toBe(actionIdentityOf('t', { a: 2 }));

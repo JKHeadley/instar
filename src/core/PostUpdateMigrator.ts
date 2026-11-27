@@ -25389,16 +25389,13 @@ process.stdin.on('end', async () => {
     const toolSegments = parts.slice(2);
     const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
     const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
-    const hasReadVerb = readVerb.test(toolTokens[0] || '')
-      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
+    const verb = toolTokens[toolSegments.length === 1 && toolTokens[0] === 'github' ? 1 : 0] || '';
     let mutability = 'modify';
-    if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
+    if (/^(delete|remove|trash|purge|destroy|drop|clear)$/.test(verb)) {
       mutability = 'delete';
-    } else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) {
+    } else if (/^(send|create|post|write|add|insert|new|compose|publish)$/.test(verb)) {
       mutability = 'write';
-    } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
-      mutability = 'modify';
-    } else if (!hasMutatingPart && hasReadVerb) {
+    } else if (!hasMutatingPart && readVerb.test(verb)) {
       mutability = 'read';
     }
 
@@ -25429,9 +25426,14 @@ process.stdin.on('end', async () => {
     // Typing into or filling a browser form can be signing in, which never inherits a legacy grant
     // (decision 15): when the server cannot judge it, it does not pass.
     const maySignIn = service === 'playwright' && (action === 'browser_type' || action === 'browser_fill_form');
+    // PR creation needs live policy reconciliation and PR merge has an approval floor.
+    const requiresLivePrAdmission = service === 'codex_apps'
+      && /^(github_create_pull_request|github_merge_pull_request)$/.test(action);
     const passesWhenUnreachable = () => !journeyImported
-      || (!maySignIn && mutability === 'read' && (serviceAllLegacy || readNames.includes(toolName)))
-      || (!maySignIn && legacyKinds.includes(service + '.' + mutability));
+      || (!maySignIn && !requiresLivePrAdmission && (
+        (mutability === 'read' && (serviceAllLegacy || readNames.includes(toolName)))
+        || legacyKinds.includes(service + '.' + mutability)
+      ));
 
     // Read operations fast-path (today's behaviour, and services whose kinds are all legacy).
     if (mutability === 'read' && (!journeyImported || serviceAllLegacy || readNames.includes(toolName))) {
@@ -25440,9 +25442,9 @@ process.stdin.on('end', async () => {
 
     // Classify reversibility
     let reversibility = 'reversible';
-    if (/^(send|publish|post|destroy|purge|drop)/.test(action)) {
+    if (/^(send|publish|post|destroy|purge|drop)$/.test(verb)) {
       reversibility = 'irreversible';
-    } else if (/^(delete|remove|trash)/.test(action)) {
+    } else if (/^(delete|remove|trash)$/.test(verb)) {
       reversibility = 'partially-reversible';
     }
 

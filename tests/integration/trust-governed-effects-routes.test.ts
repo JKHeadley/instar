@@ -73,7 +73,80 @@ describe('governed effects over HTTP', () => {
       'github__update_file', 'github_delete_file', 'github_fetch_and_push', 'github_read_then_comment', 'inspect_read', 'launch_get_status', 'github_opaque']) {
       const response = await evaluate(`mcp__codex_apps__${suffix}`, {});
       expect(response.status).toBe(200);
-      expect(response.body).toMatchObject({ action: 'ask', trust: { verdict: 'ask', why: 'no-grant' } });
+      expect(response.body).toMatchObject({ action: 'ask', trust: { verdict: 'ask', why: suffix === 'github_merge_pull_request' ? 'always-ask-item' : 'no-grant' } });
+    }
+  });
+
+  it('requests owner proof at the default log level and applies it to GitHub PR creation only', async () => {
+    const create = 'mcp__codex_apps__github__create_pull_request';
+    const input = { repository_full_name: 'owner/repo', head: 'feature', base: 'main', title: 'Proposed change' };
+    const change = { kind: 'trust-grant', service: 'codex_apps', operation: 'write', level: 'log' };
+    const setup = await evaluate(create, input);
+    expect(setup.body.trust).toEqual({ verdict: 'ask', why: 'no-grant' });
+    const direct = await request(app).post('/trust/grant').set('Authorization', `Bearer ${AUTH}`)
+      .send({ ...change, statement: 'Unverified statement' });
+    expect(direct.status).toBe(403);
+    const pending = await request(app).post('/trust/requests').set('Authorization', `Bearer ${AUTH}`).send({ change });
+    expect(pending.status).toBe(202);
+    expect(pending.body.status).toBe('awaiting-acceptance');
+    const stmt = acceptanceStatement({ adapter: 'telegram', accountId: String(OWNER), installationId: 'tj' });
+    expect((await forward(stmt)).body.trustAccountPath).toBe('acceptance-recorded');
+    const code = runtime.store.request(pending.body.requestId)!.code;
+    const card = sent.find((message) => message.text.includes(`approve ${code}`))!;
+    expect(card).toBeDefined();
+    expect((await forward(`approve ${code}`, card.messageId)).body.trustAccountPath).toBe('approved');
+    expect((await evaluate(create, input)).body.trust).toEqual({ verdict: 'proceed', why: 'grant', level: 'log' });
+    expect((await evaluate(create, { ...input, repository_full_name: 'owner/repo,other/repo' })).body.trust.why).toBe('unknown-scope');
+    for (const action of ['update_pull_request', 'merge_pull_request']) {
+      expect((await evaluate(`mcp__codex_apps__github__${action}`, { repository_full_name: 'owner/repo', pr_number: 1 })).body.action).toBe('ask');
+    }
+    const downgrade = await request(app).post('/trust/grant').set('Authorization', `Bearer ${AUTH}`)
+      .send({ ...change, operation: 'modify', level: 'blocked', statement: 'Keep connector modifications blocked' });
+    expect(downgrade.status).toBe(200);
+    expect((await evaluate(create, input)).body.trust).toEqual({ verdict: 'refused', why: 'blocked' });
+  });
+
+  it('tells the owner where to enable app approvals when the PR request is held for setup', async () => {
+    const phone = {
+      deviceId: 'owner-iphone', name: 'Owner iPhone', active: true, keyFingerprint: 'ABCD-0000-0000-0000',
+      presenceKeyHash: 'a'.repeat(64), deviceKind: 'phone' as const, firstPairing: true,
+    };
+    runtime.bindDevices({ get: (id) => id === phone.deviceId ? phone : null, list: () => [phone], enabled: () => true });
+    const response = await evaluate('mcp__codex_apps__github__create_pull_request', {
+      repository_full_name: 'owner/repo', head: 'feature', base: 'main', title: 'Proposed change',
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ action: 'ask', requestId: expect.any(String) });
+    expect(response.body.reason).toContain('Open Changes to approve in the Instar iPhone app');
+    expect(sent).toEqual([]);
+  });
+
+  it('keeps the old modify legacy policy without treating a legacy write row as a PR creation grant', async () => {
+    const tool = 'mcp__codex_apps__github__create_pull_request';
+    const input = { repository_full_name: 'owner/repo' };
+    await runtime.store.write('legacy-grant', {
+      key: 'codex_apps.write', machine: 'm1', behaviour: 'gate', afterChange: null,
+    }, 'tj:legacy:m1:codex_apps.write');
+    expect((await runtime.admit(tool, input)).decision).toEqual({ verdict: 'ask', why: 'no-grant' });
+    await runtime.store.write('legacy-grant', {
+      key: 'codex_apps.modify', machine: 'm1', behaviour: 'gate', afterChange: null,
+    }, 'tj:legacy:m1:codex_apps.modify');
+    expect((await runtime.admit(tool, input)).decision).toEqual({ verdict: 'legacy', why: 'unchanged-legacy-grant' });
+    expect((await runtime.admit('mcp__codex_apps__github__merge_pull_request', input)).decision)
+      .toEqual({ verdict: 'ask', why: 'always-ask-item' });
+  });
+
+  it('does not turn old audit or narrowing records without owner proof into standing permission', async () => {
+    for (const [operation, action, level, direction] of [
+      ['write', 'create_pull_request', 'log', 'same'],
+      ['modify', 'update_pull_request', 'log', 'lower'],
+    ]) {
+      const key = `codex_apps.${operation}`;
+      await runtime.store.write('change', {
+        changeId: `${key}:old`, key, from: direction === 'same' ? level : 'autonomous', to: level, direction, source: 'user-explicit',
+      }, `tj:change:${key}:old`);
+      const result = await runtime.admit(`mcp__codex_apps__github__${action}`, { repository_full_name: 'owner/repo' });
+      expect(result.decision.verdict).toBe('ask');
     }
   });
 

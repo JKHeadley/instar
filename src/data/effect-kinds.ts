@@ -27,19 +27,26 @@ export interface EffectEntry {
   reversibility?: Reversibility;
   /** Input fields that name the recipients; absent means the effect has no recipient (`self`). */
   audienceFields?: string[];
+  /** Exact GitHub destination in the connector’s repository_full_name field. */
+  githubRepository?: boolean;
   /** True when the effect has no recipient at all. */
   selfOnly?: boolean;
   floor?: FloorItem[];
 }
 
-/**
- * Explicit entries refine the verb rules for tools whose real names and inputs are known. Stage 0
- * ships none beyond the sign-in rule below: a guessed tool name would classify nothing real and
- * would read as coverage that does not exist. Entries are added with the tool's real name and a
- * test, and each later entry ships with a migration recording a legacy grant at its current
- * behaviour (spec 6a), except sign-in, which is always governed (decision 15).
- */
-export const EFFECT_ENTRIES: readonly EffectEntry[] = [];
+export const EFFECT_ENTRIES: readonly EffectEntry[] = [
+  { service: 'codex_apps', actions: ['github_create_pull_request'], operation: 'write', githubRepository: true },
+  { service: 'codex_apps', actions: ['github_update_pull_request'], operation: 'modify', githubRepository: true },
+  {
+    service: 'codex_apps', actions: ['github_merge_pull_request'], operation: 'modify',
+    reversibility: 'irreversible', githubRepository: true, floor: ['irreversible-outside-role'],
+  },
+];
+
+export function requiresOwnerProofForSameLevelGrant(service: string, operation: string, level: string): boolean {
+  return service === 'codex_apps' && (operation === 'write' || operation === 'modify')
+    && (level === 'log' || level === 'autonomous');
+}
 
 /**
  * Decision 15, sign-in: on the Playwright MCP server (the browser tools today's gate intercepts),
@@ -101,16 +108,14 @@ export function verbRules(action: string): { operation: EffectOperation; reversi
   const segments = action.split('__');
   const toolTokens = segments[segments.length - 1].split('_').filter(Boolean);
   const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
-  const hasReadVerb = readVerb.test(toolTokens[0] ?? '')
-    || (segments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] ?? ''));
+  const verb = toolTokens[segments.length === 1 && toolTokens[0] === 'github' ? 1 : 0] ?? '';
   let operation: EffectOperation = 'modify';
-  if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) operation = 'delete';
-  else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) operation = 'write';
-  else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) operation = 'modify';
-  else if (!mutatingPart && hasReadVerb) operation = 'read';
+  if (/^(delete|remove|trash|purge|destroy|drop|clear)$/.test(verb)) operation = 'delete';
+  else if (/^(send|create|post|write|add|insert|new|compose|publish)$/.test(verb)) operation = 'write';
+  else if (!mutatingPart && readVerb.test(verb)) operation = 'read';
   let reversibility: Reversibility = 'reversible';
-  if (/^(send|publish|post|destroy|purge|drop)/.test(action)) reversibility = 'irreversible';
-  else if (/^(delete|remove|trash)/.test(action)) reversibility = 'partially-reversible';
+  if (/^(send|publish|post|destroy|purge|drop)$/.test(verb)) reversibility = 'irreversible';
+  else if (/^(delete|remove|trash)$/.test(verb)) reversibility = 'partially-reversible';
   return { operation, reversibility };
 }
 
@@ -146,7 +151,12 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   const reversibility = entry?.reversibility ?? rules.reversibility;
   let audience: DerivedEffect['audience'] = 'unknown';
   if (entry?.selfOnly || signIn) audience = 'self';
-  else if (entry?.audienceFields) audience = recipients(input, entry.audienceFields);
+  else if (entry?.githubRepository) {
+    const repo = input.repository_full_name;
+    if (typeof repo === 'string' && repo === repo.trim() && /^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(repo) && !repo.endsWith('/.') && !repo.endsWith('/..')) {
+      audience = [repo.toLowerCase()];
+    }
+  } else if (entry?.audienceFields) audience = recipients(input, entry.audienceFields);
   return {
     toolName, service, action, operation, reversibility, itemCount,
     kind: `${service}.${operation}`,

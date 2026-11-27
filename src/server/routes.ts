@@ -38674,7 +38674,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         if (adm.verdict === 'ask') {
           const st = ask && (ask.status === 'sent' || ask.status === 'awaiting-acceptance' || ask.status === 'undelivered') ? ask.status : 'other';
-          return res.json({ action: 'ask', reason: askSentence(adm.why, st), trust: adm, ...(ask && 'requestId' in ask ? { requestId: ask.requestId } : {}), llmEvaluated: false, evaluatedAt: now });
+          return res.json({ action: 'ask', reason: askSentence(adm.why, st, ask && 'message' in ask ? ask.message : undefined), trust: adm, ...(ask && 'requestId' in ask ? { requestId: ask.requestId } : {}), llmEvaluated: false, evaluatedAt: now });
         }
         if (adm.verdict === 'refused') {
           return res.json({ action: 'block', reason: 'The person set this kind of action to "Don\'t do this", so it is refused. Only the person can change that setting.', trust: adm, llmEvaluated: false, evaluatedAt: now });
