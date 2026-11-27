@@ -1,3 +1,4 @@
+import { fetchGraphInventoryStart, isGraphInventoryStart } from '../core/graphInventoryFetch.js';
 import {GraphSourceCapacityLedger,type GraphSourceCapacityPolicy} from '../core/GraphSourceCapacityLedger.js';
 import {isPeerUrlAllowedForCredentials} from './peerUrlGuard.js';
 import {assertGraphLocalPath,ensureGraphLocalDirectory} from '../core/GraphLocalFiles.js';
@@ -753,8 +754,10 @@ export class ConversationGraphReplicationRuntime {
   const value={v:1 as const,agentId:this.config.agentId,membershipHash:canonicalHash(this.config.membership),sender:this.machineId,target:machineId,
    action,requestId:crypto.randomBytes(16).toString('hex'),issuedAt:new Date().toISOString(),body:wireBody};
   const request={...value,signature:signGraphRecord(REQUEST_DOMAIN,value,this.signingKey)};const member=this.config.membership.members.find(row=>row.machineId===machineId)!;
+  const custody = action === 'custody' ? body as { method: string; path: string } : null;
+  const send = custody && isGraphInventoryStart(custody.method, custody.path) ? fetchGraphInventoryStart : fetch;
   for(const endpoint of endpoints){try{if(!isPeerUrlAllowedForCredentials({url:endpoint.url,kind:endpoint.kind}).ok)continue;const url=new URL(endpoint.url);if(url.username||url.password||url.search||url.hash)continue;
-    const response=await fetch(new URL(PREFIX+'/replicate',url.origin),{method:'POST',headers:{Authorization:`Bearer ${this.config.peerBearerToken}`,'Content-Type':'application/json'},
+    const response=await send(new URL(PREFIX+'/replicate',url.origin),{method:'POST',headers:{Authorization:`Bearer ${this.config.peerBearerToken}`,'Content-Type':'application/json'},
      body:canonicalJson(request),signal:AbortSignal.timeout(5000),redirect:'error'});if(!response.ok)continue;
     const reader=response.body?.getReader();if(!reader)continue;let total=0;const chunks:Uint8Array[]=[];for(;;){const next=await reader.read();if(next.done)break;total+=next.value.byteLength;if(total>MAX_BYTES){await reader.cancel();throw new Error('graph-peer-response-too-large');}chunks.push(next.value);}
     const result=JSON.parse(Buffer.concat(chunks).toString('utf8')) as PeerResponse;

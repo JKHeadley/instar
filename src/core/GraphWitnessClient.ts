@@ -1,3 +1,4 @@
+import { fetchGraphInventoryStart, isGraphInventoryStart } from './graphInventoryFetch.js';
 import {verifyGraphMemberLossSettlement,verifyGraphMemberLossActivationPins,type GraphMemberLossActivationPin,type GraphMemberLossSettlementProof} from './GraphMemberLossActivation.js';
 import {verifyGraphMemberLossNegativeCustody} from './GraphMemberLossNegativeCustody.js';
 import {verifyGraphCustodyAllocationHold,type GraphCustodyHoldIntent,type GraphCustodyAllocationHold} from './GraphCustodyProfileAuthority.js';
@@ -50,10 +51,14 @@ export class GraphWitnessClient {
   private prefix(): string { return `/v1/agents/${encodeURIComponent(this.options.agentId)}`; }
   private async request<T>(path: string, body?: unknown): Promise<T> {
     if(this.options.transport){const response=await this.options.transport.request(body===undefined?'GET':'POST',path,body);if(Buffer.byteLength(response.json)>3*1024*1024)throw new Error('witness-response-too-large');const value=JSON.parse(response.json);if(response.status<200||response.status>=300)throw new Error(typeof value.code==='string'?value.code:'witness-request-refused');return value as T;}
-    const response = await fetch(this.base + path, { method: body === undefined ? 'GET' : 'POST',
-      headers: { Authorization: `Bearer ${this.options.bearerToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), redirect: 'error',
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 10000) });
+    const url = this.base + path;
+    const requestOptions = { headers: { Authorization: `Bearer ${this.options.bearerToken}` },
+      redirect: 'error' as const, signal: AbortSignal.timeout(this.options.timeoutMs ?? 10000) };
+    const postOptions = body === undefined ? null : { ...requestOptions, method: 'POST' as const,
+      headers: { ...requestOptions.headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    const response = postOptions && isGraphInventoryStart(postOptions.method, path)
+      ? await fetchGraphInventoryStart(url, postOptions)
+      : await fetch(url, postOptions ?? { ...requestOptions, method: 'GET' });
     const reader = response.body?.getReader();
     if (!reader) throw new Error('witness-response-unreadable');
     const chunks: Uint8Array[] = []; let length = 0;

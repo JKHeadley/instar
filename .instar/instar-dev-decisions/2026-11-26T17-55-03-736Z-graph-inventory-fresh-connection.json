@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-26T17:55:03.736Z",
+  "slug": "graph-inventory-fresh-connection",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/GraphWitnessClient.ts",
+      "src/core/graphInventoryFetch.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 39,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
