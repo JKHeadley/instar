@@ -248,3 +248,130 @@ describe('Secret Drop — store-first durable persistence', () => {
     expect(fallback.status).toBe(404);
   });
 });
+
+// A consume is reported only once the stored copy is gone: the stored copy is deleted first,
+// and if that fails nothing is consumed (503) and a retry works. No token in the answer.
+describe('Secret Drop — consume removes the stored copy first', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-consume-order-'));
+    AUTH = generateAgentToken(PROJECT_NAME);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    deleteAgentToken(PROJECT_NAME);
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'test-cleanup' });
+  });
+  const vaultHas = (token: string) => new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true }).get(`secretDrops.${token}`) !== undefined;
+
+  it('a consume removes both copies', async () => {
+    const app = mount(tmpDir);
+    const token = await dropSecret(app, { code: '111111' });
+    expect(vaultHas(token)).toBe(true);
+    const r = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(r.status).toBe(200);
+    expect(r.body.consumed).toBe(true);
+    expect(vaultHas(token)).toBe(false);
+    expect((await request(app).post(`/secrets/retrieve/${token}`).set('Authorization', `Bearer ${AUTH}`)).status).toBe(404);
+  });
+
+  it('in-memory branch: a failed stored-copy delete consumes nothing (503), keeps the value, and a retry succeeds', async () => {
+    const app = mount(tmpDir);
+    const token = await dropSecret(app, { code: '222222' });
+    const spy = vi.spyOn(SecretStore.prototype, 'delete').mockImplementationOnce(() => { throw new Error('disk full'); });
+    const r = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(r.status).toBe(503);
+    expect(JSON.stringify(r.body)).not.toContain(token);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const peek = await request(app).post(`/secrets/retrieve/${token}`).set('Authorization', `Bearer ${AUTH}`);
+    expect(peek.status).toBe(200);
+    expect(peek.body.values.code).toBe('222222');
+    const retry = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(retry.status).toBe(200);
+    expect(vaultHas(token)).toBe(false);
+  });
+
+  it('a browser password (never stored) is consumed even if the vault cannot be written', async () => {
+    const app = mount(tmpDir);
+    const reqRes = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
+      .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
+    const token = reqRes.body.token as string;
+    const form = await request(app).get(`/secrets/drop/${token}`);
+    const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
+    await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw' }).expect(200);
+    const spy = vi.spyOn(SecretStore.prototype, 'delete').mockImplementation(() => { throw new Error('vault unreadable'); });
+    const r = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(r.status).toBe(200);
+    expect(r.body.consumed).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('stored-copy branch (after a restart): a failed delete consumes nothing (503) and a retry succeeds', async () => {
+    const token = await dropSecret(mount(tmpDir), { code: '333333' });
+    const fresh = mount(tmpDir); // a new process: the in-memory copy is gone
+    vi.spyOn(SecretStore.prototype, 'delete').mockImplementationOnce(() => { throw new Error('disk full'); });
+    const r = await request(fresh).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(r.status).toBe(503);
+    expect(vaultHas(token)).toBe(true);
+    const retry = await request(fresh).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(retry.status).toBe(200);
+    expect(retry.body.values.code).toBe('333333');
+    expect(vaultHas(token)).toBe(false);
+  });
+});
+
+describe('Secret Drop — persistence opt-out cannot exempt stored-copy cleanup', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-consume-toggle-'));
+    AUTH = generateAgentToken(PROJECT_NAME);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    deleteAgentToken(PROJECT_NAME);
+    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'consume-toggle-test-cleanup' });
+  });
+  function liveApp() {
+    const ctx = buildCtx(tmpDir);
+    const app = express();
+    app.use(express.json());
+    app.use('/', createRoutes(ctx));
+    return { app, ctx };
+  }
+  it('removes the prior stored copy after persistence is switched off', async () => {
+    const { app, ctx } = liveApp();
+    const token = await dropSecret(app, { code: 'dummy-toggle-code' });
+    ctx.config.secrets!.persistDrops = false;
+    const consumed = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(consumed.status).toBe(200);
+    expect(consumed.body.consumed).toBe(true);
+    const store = new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true });
+    expect(store.get(`secretDrops.${token}`)).toBeUndefined();
+    const restarted = mount(tmpDir);
+    expect((await request(restarted).post(`/secrets/retrieve/${token}`).set('Authorization', `Bearer ${AUTH}`)).status).toBe(404);
+  });
+  it('refuses failed stored-copy deletion with persistence off and keeps memory retryable', async () => {
+    const { app, ctx } = liveApp();
+    const token = await dropSecret(app, { code: 'dummy-retry-code' });
+    ctx.config.secrets!.persistDrops = false;
+    vi.spyOn(SecretStore.prototype, 'delete').mockImplementationOnce(() => { throw new Error('disk refused'); });
+    const refused = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(refused.status).toBe(503);
+    expect(JSON.stringify(refused.body)).not.toContain(token);
+    const peek = await request(app).post(`/secrets/retrieve/${token}`).set('Authorization', `Bearer ${AUTH}`);
+    expect(peek.body.values).toEqual({ code: 'dummy-retry-code' });
+    const retry = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(retry.status).toBe(200);
+    expect(new SecretStore({ stateDir: path.join(tmpDir, '.instar'), forceFileKey: true }).get(`secretDrops.${token}`)).toBeUndefined();
+  });
+  it('consumes an ephemeral submission without creating a vault or key', async () => {
+    const app = mount(tmpDir, { persistDrops: false });
+    const token = await dropSecret(app, { code: 'dummy-ephemeral-code' });
+    const stateDir = path.join(tmpDir, '.instar');
+    const before = fs.existsSync(stateDir) ? fs.readdirSync(stateDir) : [];
+    const consume = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(consume.status).toBe(200);
+    expect(fs.existsSync(path.join(stateDir, 'secrets', 'config.secrets.enc'))).toBe(false);
+    expect(fs.existsSync(stateDir) ? fs.readdirSync(stateDir) : []).toEqual(before);
+  });
+});

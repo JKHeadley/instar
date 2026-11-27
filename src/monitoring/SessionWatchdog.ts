@@ -13,16 +13,19 @@
  *   Level 4: Kill tmux session
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   evaluateThrottleSettle,
   evaluateUsageWallSettle,
+  detectUsageWall,
+  paneShowsUsageWallBanner,
   RATE_LIMIT_SETTLED_CAPTURE_LINES,
   RATE_LIMIT_DEFAULT_SETTLE_MS,
   type ThrottleSettleState,
@@ -58,6 +61,16 @@ async function shellExecAsync(cmd: string, timeout = 5000): Promise<string> {
     return e && typeof e.stdout === 'string' ? e.stdout : '';
   }
 }
+/**
+ * Longest command the stuck-process judge is asked about. Derived: a chained
+ * shell line (`cd <worktree> && <env> <tool> <args>`) runs to a few hundred
+ * characters, and the output sample beside it is 1,500, so 2,000 keeps nearly
+ * every real command whole at a prompt cost the judge already carries. Longer
+ * (heredoc bodies, generated one-liners) skip the judge and fall back to the
+ * hard ceiling, because a cut command is not evidence enough to interrupt.
+ */
+export const WATCHDOG_JUDGE_COMMAND_MAX_CHARS = 2000;
+
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
@@ -264,6 +277,88 @@ export const MAX_TEST_RUNNER_ABSOLUTE_MS = 3 * 60 * 60 * 1_000;
 const PACKAGE_MANAGERS = new Set(['npm', 'pnpm', 'yarn']);
 const VITEST_EXECUTABLES = new Set(['vitest', 'vitest.mjs', 'vitest.js']);
 
+/**
+ * Xcode test runs (fb-412e8332-ee1). An iOS unit + UI suite under
+ * `xcodebuild test` takes 17-22 min and prints nothing while a UI test drives
+ * the simulator, so past the stuck threshold the judge once SIGINTed a healthy
+ * run with 21 of 69 tests still to go. It gets the same bounded floor as
+ * vitest — but only on identity, never a basename: the executable must be
+ * exactly `<developer dir>/usr/bin/<tool>` for the ACTIVE Xcode developer dir
+ * (or the SIP-protected `/usr/bin/xcodebuild` shim), and the argv must carry a
+ * test action as an action word, not as an option's value.
+ */
+const XCODEBUILD_TEST_ACTIONS = new Set(['test', 'test-without-building']);
+/** xcodebuild options that take no value; every other `-option` consumes the next token. */
+const XCODEBUILD_VALUELESS_OPTIONS = new Set([
+  '-quiet', '-verbose', '-json', '-hideShellScriptEnvironment', '-allowProvisioningUpdates',
+  '-allowProvisioningDeviceRegistration', '-skipUnavailableActions', '-skipPackagePluginValidation',
+  '-skipMacroValidation', '-disableAutomaticPackageResolution', '-onlyUsePackageVersionsFromResolvedFile',
+  '-skipPackageUpdates', '-disablePackageRepositoryCache', '-parallelizeTargets',
+  '-showBuildSettings', '-showdestinations', '-showTestPlans', '-list', '-dry-run', '-n',
+  '-retry-tests-on-failure', '-run-tests-until-failure', '-showBuildTimingSummary', '-showsdks',
+  '-alltargets', '-version', '-usage', '-help', '-enableCodeCoverage', '-enableAddressSanitizer',
+  '-enableThreadSanitizer', '-enableUndefinedBehaviorSanitizer', '-collect-test-diagnostics',
+]);
+
+let cachedActiveDeveloperDir: { dir: string | null; at: number } | undefined;
+/** A missing Xcode is re-checked after this long, so one failed probe or a later `xcode-select -s` is not permanent. */
+const XCODE_DIR_NULL_RETRY_MS = 10 * 60 * 1_000;
+/**
+ * The active Xcode developer dir: `DEVELOPER_DIR` if set, else `xcode-select -p`
+ * (macOS only), cached. A bare `.../Xcode.app` (which xcrun accepts) is
+ * normalised to `.../Xcode.app/Contents/Developer`, and symlinks are resolved
+ * because `ps` shows the resolved path. `null` when there is no Xcode — then
+ * only the `/usr/bin/xcodebuild` shim matches.
+ */
+export function activeXcodeDeveloperDir(now: number = Date.now()): string | null {
+  const cached = cachedActiveDeveloperDir;
+  if (cached && (cached.dir !== null || now - cached.at < XCODE_DIR_NULL_RETRY_MS)) return cached.dir;
+  let dir: string | null = null;
+  const fromEnv = process.env.DEVELOPER_DIR?.trim();
+  if (fromEnv) dir = fromEnv;
+  else if (process.platform === 'darwin') {
+    try {
+      dir = withSyncOp(() => execFileSync('/usr/bin/xcode-select', ['-p'], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] })).trim() || null;
+    } catch { dir = null; /* @silent-fallback-ok — no Xcode tools is a normal state: only the /usr/bin/xcodebuild shim matches, the run is judged normally (no new protection), and null is re-probed after XCODE_DIR_NULL_RETRY_MS */ }
+  }
+  if (dir) {
+    dir = path.resolve(dir);
+    if (dir.endsWith('.app')) dir = path.join(dir, 'Contents', 'Developer');
+    try { dir = fs.realpathSync(dir); } catch { /* @silent-fallback-ok — keep the unresolved path: a mismatch with ps output only withholds the floor, so the run is judged normally */ }
+  }
+  cachedActiveDeveloperDir = { dir, at: now };
+  return dir;
+}
+
+/** True when xcodebuild's arguments (executable excluded) name a test action. */
+function hasXcodebuildTestAction(argv: readonly string[]): boolean {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('-')) {
+      // `-only-testing:Target/Case` and `-opt=value` carry their value inline.
+      if (!XCODEBUILD_VALUELESS_OPTIONS.has(arg) && !arg.includes(':') && !arg.includes('=')) i++; // skip the option's value
+      continue;
+    }
+    if (arg.includes('=')) continue; // a build setting, KEY=VALUE
+    if (XCODEBUILD_TEST_ACTIONS.has(arg)) return true;
+  }
+  return false;
+}
+
+function classifyXcodeTestCommand(command: string, developerDir: string | null): 'test-runner' | null {
+  // Match the executable as a prefix of the ps command column, not argv[0]:
+  // a developer dir may contain spaces (`/Applications/Xcode 26.app/...`).
+  const devBin = developerDir ? path.join(developerDir, 'usr', 'bin') : null;
+  const restAfter = (exe: string): string[] | null =>
+    command === exe ? [] : command.startsWith(exe + ' ') ? command.slice(exe.length + 1).trim().split(/\s+/) : null;
+  const xcodebuildArgs = restAfter('/usr/bin/xcodebuild') ?? (devBin ? restAfter(path.join(devBin, 'xcodebuild')) : null);
+  if (xcodebuildArgs) return hasXcodebuildTestAction(xcodebuildArgs) ? 'test-runner' : null;
+  // `xcrun xctest <bundle>.xctest` runs the developer dir's xctest.
+  const xctestArgs = devBin ? restAfter(path.join(devBin, 'xctest')) : null;
+  if (xctestArgs) return xctestArgs.some((a) => !a.startsWith('-') && /\.xctest\/?$/.test(a)) ? 'test-runner' : null;
+  return null;
+}
+
 /** First argument after `start` that is not a flag or the `--` separator. */
 function firstPositional(argv: string[], start: number): string | undefined {
   for (let i = start; i < argv.length; i++) {
@@ -278,8 +373,12 @@ function firstPositional(argv: string[], start: number): string | undefined {
  * position decides, never a substring: `echo npm test`, `grep vitest file` and
  * `node worker.mjs --label "npm test"` do not match.
  */
-export function classifyTestRunnerCommand(command: string): 'test-runner' | null {
+export function classifyTestRunnerCommand(
+  command: string,
+  xcodeDeveloperDir: string | null = activeXcodeDeveloperDir(),
+): 'test-runner' | null {
   const trimmed = command.trim();
+  if (classifyXcodeTestCommand(trimmed, xcodeDeveloperDir)) return 'test-runner';
   // Vitest rewrites its own process title: main process `node (vitest)`,
   // pool workers `node (vitest 1)`, `node (vitest 2)`, ...
   if (/^node \(vitest(?: \d+)?\)$/.test(trimmed)) return 'test-runner';
@@ -301,6 +400,26 @@ export function classifyTestRunnerCommand(command: string): 'test-runner' | null
   }
   if (VITEST_EXECUTABLES.has(exe)) return 'test-runner';
   return null;
+}
+
+// Git starts its HTTPS helper before it invokes pre-push. The hook and helper
+// are siblings, so looking below the idle helper alone misses the active work.
+function isGitHttpsTransport(command: string): boolean {
+  return /^(?:\S*\/)?(?:git\s+remote-https|git-remote-https)(?:\s|$)/.test(command.trim());
+}
+
+function prePushHookForTransport(rows: readonly ChildProcessInfo[], transport: ChildProcessInfo): ChildProcessInfo | undefined {
+  if (!isGitHttpsTransport(transport.command)) return undefined;
+  let parent = rows.find(row => row.pid === transport.parentPid);
+  // Some Git installs dispatch the dashed executable through "git remote-https".
+  if (parent && isGitHttpsTransport(parent.command)) {
+    const pushPid = parent.parentPid;
+    parent = rows.find(row => row.pid === pushPid);
+  }
+  if (!parent || !/^(?:\S*\/)?git\s+(?:(?:-C|-c)\s+\S+\s+)*push(?:\s|$)/.test(parent.command.trim())) return undefined;
+  const pushPid = parent.pid;
+  return rows.find(row => row.parentPid === pushPid &&
+    /^(?:(?:\S*\/)?(?:sh|bash|dash|zsh)\s+(?:-[aefux]+\s+)?)?(?:\S*\/)?pre-push(?:\s|$)/.test(row.command.trim()));
 }
 
 /** Commands of every process below `rootPid` in an already-captured snapshot. */
@@ -577,6 +696,13 @@ export class SessionWatchdog extends EventEmitter {
   /** Temporarily exempted commands (LLM confirmed as legitimate long-running) */
   private temporaryExclusions = new Set<number>(); // PIDs
   /**
+   * PIDs with no verdict (no judge, judge error, or a command too long to show
+   * the judge whole). Skipped by the stuck-child search until they pass the hard
+   * ceiling, so they neither earn a permanent exclusion nor hide a stuck sibling
+   * by being picked first on every poll. Cleared when the process exits.
+   */
+  private undecidedPids = new Set<number>();
+  /**
    * CPU-time samples for test-runner subtrees. Only consulted once a run is
    * past its wall-clock floor, so an ordinary suite never touches it.
    */
@@ -806,7 +932,9 @@ export class SessionWatchdog extends EventEmitter {
     // alone but NOT pruned, so its other children are still checked: a test run
     // cannot hide an unrelated stuck command, even under a shared parent.
     const protectedSubtrees = new Set<number>();
+    const pushWaits = this.activePushWaits(children);
     for (const c of children) {
+      if (pushWaits.has(c.pid)) continue;
       if (protectedSubtrees.has(c.parentPid)) { protectedSubtrees.add(c.pid); continue; }
       const infrastructure = classifyFrameworkInfrastructureProcess(c.command, framework);
       if (infrastructure.protected) {
@@ -836,6 +964,7 @@ export class SessionWatchdog extends EventEmitter {
       }
       if (this.isExcluded(c.command)) continue;
       if (this.temporaryExclusions.has(c.pid)) continue;
+      if (this.undecidedPids.has(c.pid) && !this.hardCeilingExceeded(c.elapsedMs)) continue;
       // Stdin consumers (tail, grep, sort...) get a much longer grace
       // period. They're typically part of a pipeline where the producer
       // is the real work, and the 3-minute default threshold is too
@@ -891,10 +1020,24 @@ export class SessionWatchdog extends EventEmitter {
         // immunity from one historical match if its evidence later changes.
         return;
       }
-      const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs, recentOutput);
-      if (!isStuck) {
-        // LLM says legitimate — temporarily exclude this PID from future checks
+      const judged = await this.judgeCommand(stuckChild.command, stuckChild.elapsedMs, recentOutput);
+      this.undecidedPids.delete(stuckChild.pid);
+      if (judged.verdict === 'legitimate') {
+        // The judge said legitimate — temporarily exclude this PID from future checks
         this.temporaryExclusions.add(stuckChild.pid);
+        return;
+      }
+      if (judged.verdict === 'undecided') {
+        // No verdict (no judge, judge error, or a command too long to show it
+        // whole), and the hard ceiling is not reached. Do NOT exclude the PID
+        // for good: defer it until the ceiling, so the ceiling can still recover
+        // a genuinely hung command. (A permanent exclusion here made the
+        // documented ceiling fallback unreachable.) Deferring rather than
+        // re-picking it every poll lets the search reach a stuck sibling.
+        // A stdin consumer is the exception: the guard below never acts on a
+        // ceiling-only verdict for one, so it is simply excluded.
+        if (this.isStdinConsumerCommand(stuckChild.command)) this.temporaryExclusions.add(stuckChild.pid);
+        else this.undecidedPids.add(stuckChild.pid);
         return;
       }
 
@@ -904,7 +1047,7 @@ export class SessionWatchdog extends EventEmitter {
       // escalate these with explicit LLM confirmation. Without an LLM, we
       // skip and log — a true orphaned consumer will be cleaned up when
       // its tmux session terminates.
-      if (this.isStdinConsumerCommand(stuckChild.command) && !this.intelligence) {
+      if (this.isStdinConsumerCommand(stuckChild.command) && judged.by === 'ceiling') {
         console.log(
           `[Watchdog] "${tmuxSession}": stdin-consumer ${stuckChild.command.slice(0, 60)} ` +
           `without LLM gate — refusing to escalate (fail-closed for pipeline safety)`,
@@ -912,6 +1055,8 @@ export class SessionWatchdog extends EventEmitter {
         this.temporaryExclusions.add(stuckChild.pid);
         return;
       }
+
+      if (await this.liveTransportWait(tmuxSession, stuckChild)) return;
 
       // Decided here, where the live descendant snapshot is still in hand: an
       // ancestor of a test runner (a shell wrapper, a `git push` running a
@@ -955,6 +1100,9 @@ export class SessionWatchdog extends EventEmitter {
       if (!this.isProcessAlive(pid)) {
         this.temporaryExclusions.delete(pid);
       }
+    }
+    for (const pid of this.undecidedPids) {
+      if (!this.isProcessAlive(pid)) this.undecidedPids.delete(pid);
     }
 
     // Post-compaction idle detection — catch sessions that compacted and are
@@ -1040,16 +1188,36 @@ export class SessionWatchdog extends EventEmitter {
    * 'usage-wall'. Signal-only: the consumer (UsageWallRescue) decides whether
    * another account has room and moves the session; this method never acts.
    *
-   * Same settled-output discipline as the throttle: the banner must be the
-   * current pane state (only Claude Code chrome below it) AND the pane must be
-   * byte-identical across polls for the settle window.
+   * Same settled-output discipline as the throttle: the wall must be the
+   * session's current state AND the banner region must stay byte-identical
+   * across polls for the settle window (rows below the banner — ticking
+   * background-agent timers — are not part of that fingerprint).
+   *
+   * The wall is current when the pane alone shows it (banner followed only by
+   * chrome) OR when the exact session's own transcript ends on the provider's
+   * usage-wall error and the pane still shows the banner. The transcript is
+   * read only when the pane shows a banner the chrome check could not clear,
+   * so an ordinary poll costs nothing extra.
    */
   checkUsageWall(tmuxSession: string, output: string | null | undefined, now: number = Date.now()): void {
+    let transcriptConfirmed = false;
+    if (!detectUsageWall(output) && paneShowsUsageWallBanner(output)) {
+      const fromTranscript = (this.sessionManager as Partial<Pick<SessionManager, 'usageWallFromTranscript'>>).usageWallFromTranscript;
+      if (typeof fromTranscript === 'function') {
+        try {
+          transcriptConfirmed = Boolean(fromTranscript.call(this.sessionManager, tmuxSession));
+        } catch {
+          // @silent-fallback-ok — unreadable transcript is not evidence; the
+          // pane-only check above still decides.
+          transcriptConfirmed = false;
+        }
+      }
+    }
     const { decision, next } = evaluateUsageWallSettle(
       output,
       this.usageWallSettle.get(tmuxSession),
       now,
-      { settleMs: this.rateLimitSettleMs },
+      { settleMs: this.rateLimitSettleMs, transcriptConfirmed },
     );
     if (decision === 'no-throttle') {
       // A wall this session had settled on (it emitted) is now gone: say so,
@@ -1133,6 +1301,11 @@ export class SessionWatchdog extends EventEmitter {
     if (!this.isProcessAlive(state.stuckChildPid)) {
       console.log(`[Watchdog] "${tmuxSession}": stuck process ${state.stuckChildPid} died — recovered`);
       this.emit('recovery', tmuxSession, state.level);
+      this.escalationState.delete(tmuxSession);
+      return;
+    }
+
+    if (await this.liveTransportWait(tmuxSession, { pid: state.stuckChildPid, command: state.stuckCommand })) {
       this.escalationState.delete(tmuxSession);
       return;
     }
@@ -1263,12 +1436,45 @@ export class SessionWatchdog extends EventEmitter {
    * load Ctrl+C'd every command running past the 3-min threshold.)
    */
   private async isCommandStuck(command: string, elapsedMs: number, recentOutput = ''): Promise<boolean> {
-    if (!this.intelligence) return this.hardCeilingExceeded(elapsedMs); // No LLM → fail CLOSED (ceiling only)
+    return (await this.judgeCommand(command, elapsedMs, recentOutput)).verdict === 'stuck';
+  }
+
+  /**
+   * The stuck-command decision with its source. `undecided` means no verdict
+   * was reached (no judge, judge error, or a command too long to show whole)
+   * and the hard ceiling is not exceeded: the caller re-checks next poll rather
+   * than excluding the PID. `by: 'ceiling'` marks a "stuck" reached without the
+   * judge, which the stdin-consumer guard refuses to act on.
+   */
+  private async judgeCommand(
+    command: string,
+    elapsedMs: number,
+    recentOutput = '',
+  ): Promise<{ verdict: 'stuck' | 'legitimate' | 'undecided'; by: 'judge' | 'ceiling' }> {
+    const byCeiling = (): { verdict: 'stuck' | 'undecided'; by: 'ceiling' } =>
+      ({ verdict: this.hardCeilingExceeded(elapsedMs) ? 'stuck' : 'undecided', by: 'ceiling' });
+    if (!this.intelligence) return byCeiling(); // No LLM → fail CLOSED (ceiling only)
+    // REFUSE, don't disclose (Never Silently Cut the Data a Decision Depends On):
+    // a "stuck" verdict leads to Ctrl+C, and the part of a command that makes it
+    // legitimate is often at the END (`cd <long worktree path> && … && npm test`).
+    // The old 200-char head could show only the `cd`, which reads as a trivial
+    // command that should have finished. A judge that cannot see the whole
+    // command it would interrupt does not judge it: the same fail-closed path as
+    // an unavailable judge (deferred until the hard ceiling, then interrupted;
+    // never interrupted if the command is a stdin consumer).
+    if (command.length > WATCHDOG_JUDGE_COMMAND_MAX_CHARS) {
+      const out = byCeiling();
+      console.log(
+        `[Watchdog] command of ${command.length} chars exceeds the judge's ${WATCHDOG_JUDGE_COMMAND_MAX_CHARS}; ` +
+        `not judged (${out.verdict === 'stuck' ? 'past hard ceiling → escalate' : 'no interrupt, deferred until hard ceiling'})`,
+      );
+      return out;
+    }
 
     const elapsedMin = Math.round(elapsedMs / 60000);
     // Keep the output sample small — enough for context, not enough to blow the token budget.
     const outputSample = recentOutput ? recentOutput.slice(-1500) : '';
-    const commandSlice = command.slice(0, 200);
+    const commandSlice = command; // whole: longer commands were refused above
     const promptLines = [
       'You are evaluating whether a running process is stuck or legitimately long-running.',
       '',
@@ -1317,7 +1523,7 @@ export class SessionWatchdog extends EventEmitter {
           context: buildWatchdogStuckDecisionContext({
             promptText: prompt,
             commandSlice,
-            commandWasTruncated: command.length > commandSlice.length,
+            commandWasTruncated: false, // a command that would need cutting is never judged (see above)
             outputSample,
             elapsedMinutes: elapsedMin,
           }),
@@ -1329,21 +1535,21 @@ export class SessionWatchdog extends EventEmitter {
       if (answer === 'legitimate') {
         console.log(`[Watchdog] LLM says "${command.slice(0, 60)}" is legitimate — skipping escalation`);
         this.llmGateOverrides++;
-        return false;
+        return { verdict: 'legitimate', by: 'judge' };
       }
-      return true;
+      return { verdict: 'stuck', by: 'judge' };
     } catch (err) {
       // LLM judge errored (rate-limit / circuit-open / timeout — common under
       // load). A destructive Ctrl+C must NOT fail-open to a brittle default
       // (that interrupted legitimate builds/tests under load). Fail CLOSED: only
       // escalate once the deterministic hard ceiling is exceeded.
-      const stuck = this.hardCeilingExceeded(elapsedMs);
+      const out = byCeiling();
       console.warn(
         `[Watchdog] LLM command check failed; failing CLOSED ` +
-        `(${stuck ? 'past hard ceiling → escalate' : 'no interrupt'}):`,
+        `(${out.verdict === 'stuck' ? 'past hard ceiling → escalate' : 'no interrupt, deferred until hard ceiling'}):`,
         err,
       );
-      return stuck;
+      return out;
     }
   }
 
@@ -1449,6 +1655,39 @@ export class SessionWatchdog extends EventEmitter {
     candidate: ChildProcessInfo,
   ): TestRunnerProgress {
     return this.testRunnerProgress.observe(candidate.pid, subtreeCpuMs(children, candidate.pid));
+  }
+
+  private activePushWaits(rows: readonly ChildProcessInfo[]): Set<number> {
+    const waiting = new Set<number>();
+    const hookSubtrees = new Set<number>();
+    const samples = new Map<number, TestRunnerProgress>();
+    for (const row of rows) {
+      if (row.elapsedMs > MAX_TEST_RUNNER_ABSOLUTE_MS) continue;
+      const hook = prePushHookForTransport(rows, row);
+      if (!hook) continue;
+      const progress = samples.get(hook.pid) ?? this.observeTestRunnerProgress(rows, hook);
+      samples.set(hook.pid, progress);
+      if (progress !== 'baseline' && progress !== 'progressed') continue;
+      hookSubtrees.add(hook.pid);
+      waiting.add(row.pid);
+      waiting.add(row.parentPid);
+      waiting.add(hook.parentPid);
+    }
+    // Process snapshots are breadth-first. Protect only the hook's children,
+    // so another command under the same push is still evaluated independently.
+    for (const row of rows) {
+      if (hookSubtrees.has(row.parentPid)) hookSubtrees.add(row.pid);
+      if (hookSubtrees.has(row.pid)) waiting.add(row.pid);
+    }
+    return waiting;
+  }
+
+  private async liveTransportWait(session: string, target: Pick<ChildProcessInfo, 'pid' | 'command'>): Promise<boolean> {
+    const root = await this.getClaudePid(session);
+    if (!root) return false;
+    const rows = await this.getChildProcesses(root);
+    return rows.some(row => row.pid === target.pid && row.command === target.command)
+      && this.activePushWaits(rows).has(target.pid);
   }
 
   private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {

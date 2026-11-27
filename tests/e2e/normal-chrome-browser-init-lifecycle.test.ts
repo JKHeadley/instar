@@ -35,6 +35,8 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
 
     const skill = fs.readFileSync(path.join(agentDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md'), 'utf-8');
     expect(skill).toContain('# /normal-chrome-browser');
+    expect(skill).toContain('### Account actions: read before acting');
+    expect(skill).toContain('Recovery and backup codes are break-glass credentials');
     expect(skill).toContain('### macOS: Apple Events tools');
     expect(skill).toContain('### Windows: `native-drive.ps1` through `ndrive.sh`');
     // CLAUDE.md reference layout: init writes the small core; the feature
@@ -42,11 +44,12 @@ describe('fresh init delivers the normal-Chrome browser method', () => {
     const refDir = path.join(agentDir, '.instar', 'reference');
     const md = [path.join(agentDir, 'CLAUDE.md'), ...fs.readdirSync(refDir).map(f => path.join(refDir, f))]
       .map(p => fs.readFileSync(p, 'utf-8')).join('\n');
+    expect(md).toContain('### Account actions: read before acting');
     expect(md).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)');
     expect(md).not.toContain('### Normal-Chrome browser (account-bound web tasks, macOS)\n');
 
     const browserDir = path.join(agentDir, '.instar', 'scripts', 'browser');
-    expect(BROWSER_SCRIPT_NAMES).toHaveLength(7);
+    expect(BROWSER_SCRIPT_NAMES).toHaveLength(8);
     expect(BROWSER_SCRIPT_NAMES).toEqual(expect.arrayContaining(['xdrive.sh', 'x-drive.py']));
     for (const name of BROWSER_SCRIPT_NAMES) {
       expect(fs.statSync(path.join(browserDir, name)).mode & 0o111, name).not.toBe(0);

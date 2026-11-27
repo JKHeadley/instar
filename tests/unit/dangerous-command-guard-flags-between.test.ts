@@ -73,6 +73,6 @@ describe('every writer carries the patterns', () => {
   it('init.ts inline copy', () => {
     const src = fs.readFileSync(path.join(REPO_ROOT, 'src/commands/init.ts'), 'utf-8');
     for (const verb of ['reset', 'clean', 'push']) expect(src).toContain(`git +([^|;&]* +)?${verb} +`);
-    expect(src).toMatch(/grep -qiE "\\*\$pattern"/);
+    expect(src).toMatch(/grep -qiE (-e )?"\\*\$pattern"/);
   });
 });

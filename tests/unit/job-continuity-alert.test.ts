@@ -29,6 +29,20 @@ describe('job continuity alerts', () => {
 
   afterEach(() => { scheduler.stop(); project.cleanup(); });
 
+  it('keeps a quiet result separate from notified and observes its daily cadence', async () => {
+    raise.mockResolvedValue({ delivered: false, recorded: true, quietId: 'continuity-q' });
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await vi.waitFor(() => expect(project.state.get<any>('job-silence-gci-review')?.recordedAt).toBeDefined());
+    expect(project.state.get<any>('job-silence-gci-review')?.lastNotified).toBeUndefined();
+    expect(project.state.queryEvents({ type: 'job_alert_delivered' })).toHaveLength(0);
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review'); expect(raise).toHaveBeenCalledOnce();
+  });
+  it('uses newer quiet recording time even when an older delivered timestamp exists', async () => {
+    project.state.set('job-silence-gci-review', { count: 3, lastSkip: new Date().toISOString(), lastNotified: new Date(Date.now() - 2 * 86400000).toISOString(), recordedAt: new Date(Date.now() - 60000).toISOString() });
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await Promise.resolve(); expect(raise).not.toHaveBeenCalled();
+  });
+
   it('alerts after three gate skips and clears only after completed success', async () => {
     scheduler.start();
     for (let i = 0; i < 3; i++) scheduler.getSkipLedger().recordSkip(job.slug, 'gate');
@@ -77,7 +91,11 @@ describe('job continuity alerts', () => {
     scheduler.setMachineIdentity('this-machine', 'This Machine');
     scheduler.start();
     await vi.waitFor(() => expect(raise).toHaveBeenCalledTimes(1));
-    expect(raise.mock.calls[0][1]).toContain('pinned elsewhere');
+    expect(raise.mock.calls[0][1]).toContain('set to run only on another machine');
+    // The notice names where the job is pinned, this machine, and how to fix it.
+    expect(raise.mock.calls[0][1]).toContain('another machine (other-machine)');
+    expect(raise.mock.calls[0][1]).toContain('this machine (This Machine)');
+    expect(raise.mock.calls[0][1]).toContain('"machines" list');
   });
 
   it('does not send a queued alert after demotion', async () => {
@@ -95,5 +113,37 @@ describe('job continuity alerts', () => {
     for (let i = 0; i < 3; i++) scheduler.getSkipLedger().recordSkip(job.slug, 'gate');
     expect(raise).not.toHaveBeenCalled();
     project.state.setReadOnly(false);
+  });
+
+  it('treats a gate that answers "nothing to do" (exit 1) as a healthy check, not lost coverage', async () => {
+    (scheduler as any).config.gateRetries = 1;
+    scheduler.start();
+    const polling: JobDefinition = { ...job, gate: 'exit 1' };
+    for (let i = 0; i < 4; i++) await (scheduler as any).runGateAsync(polling);
+    expect(raise).not.toHaveBeenCalled();
+    expect(project.state.get('job-silence-gci-review')).toBeNull();
+    expect(project.state.get('job-last-success-gci-review')).toBeTruthy();
+  }, 60_000);
+
+  it('still warns when the gate itself is broken, in plain words with a direct link to the job', async () => {
+    scheduler.setOperatorLinkOrigin(() => 'https://agent.example.dev');
+    (scheduler as any).config.gateRetries = 1;
+    project.state.set('job-last-success-gci-review', new Date().toISOString());
+    scheduler.start();
+    const broken: JobDefinition = { ...job, gate: 'exit 127' };
+    for (let i = 0; i < 3; i++) await (scheduler as any).runGateAsync(broken);
+    await vi.waitFor(() => expect(raise).toHaveBeenCalledTimes(1));
+    const text = String(raise.mock.calls[0][1]);
+    expect(text).toContain('"GCI review" is not running');
+    expect(text).toContain('has failed 3 times in a row');
+    expect(text).toContain('https://agent.example.dev/dashboard/console/#/work/schedule?job=gci-review');
+    expect(text).not.toContain('Check its gate');
+  }, 60_000);
+
+  it('waits for the public link instead of sending a warning with no link', async () => {
+    scheduler.setOperatorLinkOrigin(() => null);
+    (scheduler as any).raiseContinuityAlert(job, 'fixture', 'job-silence-gci-review');
+    await Promise.resolve();
+    expect(raise).not.toHaveBeenCalled();
   });
 });

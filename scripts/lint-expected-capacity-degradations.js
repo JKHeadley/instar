@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // safe-git-allow: read-only merge-base/show establish the removal ratchet.
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Expected Capacity Enforcement Is an Outcome, Not a Degradation*
+
 /** Mechanical contract lint for bounded-storage outcome classification. */
 import fs from 'node:fs';
 import path from 'node:path';

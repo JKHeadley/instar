@@ -77,6 +77,7 @@ must not include the joiner. A pair by repo URL never reaches this route, so it 
 | `multiMachine.coherenceJournal.replication.enabled` | `true` |
 | `multiMachine.pollFollowsLease.enabled` | `true` |
 | `multiMachine.pollFollowsLease.dryRun` | `false` |
+| `multiMachine.leaseSelfHeal.soloCaptainHold.enabled` | `true`, added by `session-pool-takeover-at-pairing` |
 
 Tests start from the real shipped defaults, not an empty config, and check each path exists there. Both
 machines overwrite these keys, because the defaults are already on disk and the decision has ruled out a

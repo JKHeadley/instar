@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-10T01:58:26.254Z",
+  "slug": "context-budget-layered-summaries",
+  "carriers": {
+    "CMT-1536": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Spec, review, build and measure a working-context budget for long sessions that shrinks them at clean stopping points using our layered topic summaries, with history lookup and a post-shrink goal check. Work and updates in topic 141133."
+    }
+  }
+}

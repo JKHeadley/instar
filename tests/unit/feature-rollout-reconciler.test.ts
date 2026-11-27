@@ -131,6 +131,23 @@ describe('FeatureRolloutReconciler', () => {
     expect(got.phases.find(p => p.id === 'live')?.status).toBe('in-progress');
   });
 
+  it.each([
+    ['same stage', { flagEnabled: true, flagDryRun: true }, { flagEnabled: true, flagDryRun: true }],
+    ['advance', { flagEnabled: true, flagDryRun: true }, { flagEnabled: true, flagDryRun: false }],
+    ['regression', { defaultEnabled: true }, { flagEnabled: true, flagDryRun: false }],
+  ])('repairs rollout and accounting measurement metadata in the same pass as %s', async (_label, before, after) => {
+    const broken = art({ merged: true, shipsStaged: true, flagPath: 'monitoring.featX', sourcePrNumber: 7, maturationContractError: 'invalid-shape' });
+    await makeReconciler([broken], before).reconcile();
+    expect(tracker.get('feat-x')?.rolloutAccounting?.maturationContractError).toBe('invalid-shape');
+    const contract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [{ id: 'coverage', source: 'blocker-summary' as const, sourceRef: 'clear-latency.coverage', direction: 'at-least' as const, threshold: 0.95, minSamples: 10 }] };
+    await makeReconciler([{ ...broken, maturationContractError: undefined, maturationEvaluation: contract }], after).reconcile();
+    const got = tracker.get('feat-x')!;
+    expect(got.rollout?.maturationEvaluation).toEqual(contract);
+    expect(got.rollout?.maturationContractError).toBeUndefined();
+    expect(got.rolloutAccounting?.maturationEvaluation).toEqual(contract);
+    expect(got.rolloutAccounting?.maturationContractError).toBeUndefined();
+  });
+
   it('default-on PARKS as paused (non-terminal/reopenable) and never marks all phases done', async () => {
     const specs = [art({ merged: true, shipsStaged: true, flagPath: 'monitoring.featX' })];
     await makeReconciler(specs, { defaultEnabled: true }).reconcile();

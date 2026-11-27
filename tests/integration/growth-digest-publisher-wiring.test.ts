@@ -56,7 +56,7 @@ function mkCtx(pub: GrowthDigestPublisher | null, opts: { toneBlock?: boolean } 
     config: { authToken: 'test', stateDir: '/tmp', port: 0 },
     state: { get: (k: string) => (k === 'agent-updates-topic' ? UPDATES_TOPIC_ID : undefined) },
     messagingToneGate: { review },
-    telegram: { sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); } },
+    telegram: { sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); return { messageId: sends.length, topicId }; } },
     growthDigestPublisher: pub,
   };
   return { ctx, sends };

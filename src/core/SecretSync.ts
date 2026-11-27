@@ -25,6 +25,7 @@
 import crypto from 'node:crypto';
 import { encryptForSync, decryptFromSync, type Secrets, type EncryptedSecretPayload } from './SecretStore.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { isMeteredSecretName, meteredSendAllowed, meteredReceiveAllowed, type MeteredDesignation } from './meteredSecrets.js';
 
 /**
  * Vault namespaces whose contents are deliberately machine-local.  In
@@ -33,14 +34,32 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
  * the same credential/channel it is meant to survive.
  */
 export const LOCAL_ONLY_SECRET_PREFIXES = ['machineIdentityRecovery'] as const;
+/** Reserved graph control material uses a dedicated, recipient-verified
+ * recovery/bootstrap protocol. Ordinary vault provisioning must never copy a
+ * custody role private key, owner root, local grant key or rollback marker. */
+export const GRAPH_LOCAL_SECRET_KEY_PREFIX = 'conversation_graph_';
 
 function isLocalOnlySecretPath(keyPath: string): boolean {
-  return LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
+  return keyPath.split('.').some(segment => segment.startsWith(GRAPH_LOCAL_SECRET_KEY_PREFIX))
+    || LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
     keyPath === prefix
     || keyPath.startsWith(`${prefix}.`)
     || keyPath.endsWith(`.${prefix}`)
     || keyPath.includes(`.${prefix}.`)
   ));
+}
+
+function firstLocalOnlySecretPath(secrets: Secrets, prefix = ''): string | null {
+  for (const [key, value] of Object.entries(secrets)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    // Check containers too: an empty object must not overwrite a local root.
+    if (isLocalOnlySecretPath(keyPath)) return keyPath;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const child = firstLocalOnlySecretPath(value as Secrets, keyPath);
+      if (child) return child;
+    }
+  }
+  return null;
 }
 
 /**
@@ -58,15 +77,42 @@ export function isLegacyPasskeyPath(keyPath: string): boolean {
   return first.startsWith(LEGACY_PASSKEY_KEY_PREFIX);
 }
 
+/**
+ * Secret Drop values (`secretDrops.<token>` at the vault ROOT) are a one-time hand-off to the
+ * machine that asked for them. They are never sent to peers, and a peer's push never writes
+ * them (an older sender's drops are stripped on receive, counted, never named: a drop token is
+ * a bearer handle). Unlike the namespaces above, a drop in a received batch does NOT refuse
+ * the batch, so a mixed-version fleet keeps syncing every other secret.
+ */
+export const MACHINE_LOCAL_DROP_KEY = 'secretDrops';
+
+/** True for the root drop namespace, or a top-level dotted key inside it. Root only. */
+export function isMachineLocalDropKey(topLevelKey: string): boolean {
+  return topLevelKey === MACHINE_LOCAL_DROP_KEY || topLevelKey.startsWith(`${MACHINE_LOCAL_DROP_KEY}.`);
+}
+
+/**
+ * Per-recipient routing for METERED secrets (gemini-payg-metered-lane §4.6). A metered
+ * key (meteredSecrets.ts) is sent only to the door's designated machine; with no
+ * designation, or while a transfer proposal exists, it is sent to NO recipient.
+ * Omitting the options (or `recipientMachineId`) drops every metered key: fail-closed.
+ */
+export interface SecretSyncRecipientOptions {
+  recipientMachineId?: string | null;
+  designation?: MeteredDesignation | null;
+}
+
 /** Return a deep, non-mutating copy with every machine-local namespace removed. */
-export function filterSecretsForSync(secrets: Secrets, prefix = ''): Secrets {
+export function filterSecretsForSync(secrets: Secrets, prefix = '', opts: SecretSyncRecipientOptions = {}): Secrets {
   const filtered: Secrets = {};
   for (const [key, value] of Object.entries(secrets)) {
     const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (!prefix && isMachineLocalDropKey(key)) continue;
+    if (!prefix && isMeteredSecretName(key) && !meteredSendAllowed(opts.recipientMachineId, opts.designation)) continue;
     if (isLocalOnlySecretPath(keyPath)) continue;
     if (isLegacyPasskeyPath(keyPath)) continue;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const child = filterSecretsForSync(value as Secrets, keyPath);
+      const child = filterSecretsForSync(value as Secrets, keyPath, opts);
       if (Object.keys(child).length > 0) filtered[key] = child;
     } else {
       filtered[key] = value;
@@ -151,17 +197,23 @@ export class SecretProvisioner {
       listPeers: () => SecretSharePeer[];
       /** Send a signed `secret-share` command to a peer over the mesh. */
       send: (machineId: string, command: SecretShareCommand) => Promise<{ ok: boolean; reason?: string }>;
+      /** The metered door's designation (gemini-payg §4.6). Absent/null → metered keys go nowhere. */
+      meteredDesignation?: () => MeteredDesignation | null;
       log?: (msg: string) => void;
     },
   ) {}
 
-  /** Push the current secret set to every online peer. */
+  /** Push the current secret set to every online peer, filtered PER PEER. */
   async provisionAll(): Promise<{ machineId: string; ok: boolean; reason?: string }[]> {
-    const secrets = filterSecretsForSync(this.deps.secretsToSync());
+    const all = this.deps.secretsToSync();
     const peers = this.deps.listPeers();
-    if (Object.keys(secrets).length === 0 || peers.length === 0) return [];
+    if (peers.length === 0) return [];
+    let designation: MeteredDesignation | null = null;
+    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { /* @silent-fallback-ok: an unreadable designation is null, which drops every metered key (fail closed). */ designation = null; }
     const out: { machineId: string; ok: boolean; reason?: string }[] = [];
     for (const peer of peers) {
+      const secrets = filterSecretsForSync(all, '', { recipientMachineId: peer.machineId, designation });
+      if (Object.keys(secrets).length === 0) continue;
       try {
         const cmd = buildSecretShareCommand(secrets, peer);
         const r = await this.deps.send(peer.machineId, cmd);
@@ -182,25 +234,35 @@ export class SecretProvisioner {
  * confidentiality is enforced here (decryption fails for a payload not sealed to our key).
  */
 export class SecretShareHandler {
+  /** Secret Drop entries stripped from the last batch (a count only). */
+  lastDroppedLocalDrops = 0;
   constructor(
     private readonly deps: {
       /** This machine's X25519 private key (KeyObject) for decryption. */
       ownEncryptionPrivateKey: () => crypto.KeyObject;
       /** Persist a secret into the local encrypted vault. */
       store: { set: (keyPath: string, value: unknown) => void };
+      /** This machine's id, for the metered receive-side strip (gemini-payg §4.6). */
+      selfMachineId?: () => string | null;
+      /** The last metered designation this machine received. Unknown → strip. */
+      meteredDesignation?: () => MeteredDesignation | null;
       log?: (msg: string) => void;
     },
   ) {}
 
+  /** Metered secrets stripped from the last batch (a count only, never names). */
+  lastDroppedMetered = 0;
+
   /**
    * Decrypt + store. Returns the keyPaths stored and any prototype passkey keys dropped.
-   * Throws only on a malformed/foreign payload or a machine-local recovery namespace.
+   * Secret Drop values in the batch are stripped and counted (never stored, never named).
+   * Throws only on a malformed/foreign payload or a machine-local recovery/graph namespace.
    */
   handle(command: SecretShareCommand, sender: string): { stored: string[]; dropped: string[] } {
     try {
       const result = this.handleInner(command, sender);
-      // Counts only: never a secret name or value.
-      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length } });
+      // Counts only: never a secret name or value (and never a drop token).
+      featureEvidence.record('multiMachine.secretSync', { kind: 'fired', reason: 'secret sync received and applied', context: { sender, stored: result.stored.length, dropped: result.dropped.length, droppedLocalDrops: this.lastDroppedLocalDrops, droppedMetered: this.lastDroppedMetered } });
       return result;
     } catch (err) {
       // A classified code, never err.message: the refusal message names a secret path.
@@ -220,10 +282,36 @@ export class SecretShareHandler {
     }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
-    const forbidden = secretKeyPaths(secrets).find(isLocalOnlySecretPath);
+    // Checked on the ORIGINAL payload, so a refused namespace hidden inside a drop subtree
+    // still refuses the whole batch (stripping drops must never hide it).
+    const forbidden = firstLocalOnlySecretPath(secrets);
     if (forbidden) {
       throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
     }
+    // Then strip Secret Drop values an older sender may still include. A push never writes
+    // this machine's drops; nothing is written for a stripped key (no emptied parent either).
+    let droppedLocalDrops = 0;
+    for (const key of Object.keys(secrets)) {
+      if (!isMachineLocalDropKey(key)) continue;
+      const v = secrets[key];
+      droppedLocalDrops += key === MACHINE_LOCAL_DROP_KEY && v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v as object).length : 1;
+      delete secrets[key];
+    }
+    this.lastDroppedLocalDrops = droppedLocalDrops;
+    // Metered keys arriving at a machine that is not the door's designated spender are
+    // stripped and counted, never stored (an older sender syncs the whole vault).
+    let droppedMetered = 0;
+    let selfId: string | null = null;
+    let designation: MeteredDesignation | null = null;
+    try { selfId = this.deps.selfMachineId?.() ?? null; } catch { /* @silent-fallback-ok: an unknown self id keeps no metered key (fail closed). */ selfId = null; }
+    try { designation = this.deps.meteredDesignation?.() ?? null; } catch { /* @silent-fallback-ok: an unreadable designation is null, which drops every metered key (fail closed). */ designation = null; }
+    const keepMetered = meteredReceiveAllowed(selfId, designation);
+    for (const key of Object.keys(secrets)) {
+      if (!isMeteredSecretName(key) || keepMetered) continue;
+      droppedMetered += 1;
+      delete secrets[key];
+    }
+    this.lastDroppedMetered = droppedMetered;
     const stored: string[] = [];
     // Prototype passkey keys from an older-build sender are dropped and audited, never
     // stored — and the rest of the batch is still stored (spec §6 Increment 1: a
@@ -242,6 +330,12 @@ export class SecretShareHandler {
       this.deps.log?.(`[secret-sync] dropped ${dropped.length} prototype passkey key(s) from ${sender} (machine-local; names: ${dropped.join(', ')})`);
     }
     this.deps.log?.(`[secret-sync] stored ${stored.length} secret(s) from ${sender}`);
+    if (droppedMetered > 0) {
+      this.deps.log?.(`[secret-sync] stripped ${droppedMetered} metered key(s) from ${sender} (this machine is not the designated spender)`);
+    }
+    if (droppedLocalDrops > 0) {
+      this.deps.log?.(`[secret-sync] ignored ${droppedLocalDrops} Secret Drop value(s) from ${sender} (machine-local; an older sender)`);
+    }
     return { stored, dropped };
   }
 }

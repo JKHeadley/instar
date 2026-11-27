@@ -1,0 +1,88 @@
+{
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touchEmulation": true
+  },
+  "allAssertionsPass": true,
+  "assertions": {
+    "noHorizontalOverflow": {
+      "pass": true,
+      "setup": "scrollWidth 390, innerWidth 390",
+      "owner": "scrollWidth 390, innerWidth 390"
+    },
+    "prepareButtonVisibleInFirstViewport": {
+      "pass": true,
+      "top": 364.8,
+      "bottom": 412.8,
+      "isFirstPaintedControl": true
+    },
+    "approvalLinkHiddenWithZeroRect": {
+      "pass": true,
+      "measured": {
+        "present": true,
+        "hiddenAttribute": true,
+        "display": "none",
+        "width": 0,
+        "height": 0,
+        "clientRects": 0,
+        "painted": false
+      }
+    },
+    "everyVisibleButtonInputSelectSummaryAtLeast44px": {
+      "pass": true,
+      "minimum": 48,
+      "count": 10
+    },
+    "removeAccessClosedAndBelowConstructiveControls": {
+      "pass": true,
+      "summaryTop": 859.2,
+      "constructiveBottoms": [
+        [
+          "routeEnable",
+          787.2
+        ],
+        [
+          "retryRepair",
+          851.2
+        ]
+      ],
+      "controlsInsideNotPainted": [
+        "routeDisable",
+        "source",
+        "revoke",
+        "phoneRevoke"
+      ]
+    },
+    "connectedOwnerRouteEnableInFirstViewport": {
+      "pass": true,
+      "top": 739.2,
+      "bottom": 787.2,
+      "viewportHeight": 844
+    },
+    "obsoleteConnectionPrimaryAndScopeHaveNoBox": {
+      "pass": true,
+      "primary": {
+        "hiddenAttribute": true,
+        "display": "none",
+        "width": 0,
+        "height": 0,
+        "clientRects": 0,
+        "painted": false
+      },
+      "scope": {
+        "hiddenAttribute": true,
+        "display": "none",
+        "width": 0,
+        "height": 0,
+        "clientRects": 0,
+        "painted": false
+      }
+    }
+  },
+  "browser": "HeadlessChrome/151.0.7922.34",
+  "scope": "Inert shipped markup/CSS with realistic fixture state; functional signed controls tested separately over real HTTP. No production credentials, agents or services.",
+  "cleanup": "Isolated browser closed and temporary profile deleted; recovery fixtures stayed stopped."
+}

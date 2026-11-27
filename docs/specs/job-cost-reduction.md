@@ -1233,7 +1233,15 @@ from §9.
 **Audit certification added 2026-10-27 (Justin, topic 130742).** Every new Jev
 or LLM call must join the benchmark and decision-quality audit system before
 activation. Only `llm-decision-grading` may convert in the first wave: its
-grading endpoint is deterministic. `correction-class-review-backstop` remains a
+grading endpoint is deterministic. **Amended 2026-11-10 (CMT-1586,
+fb-13940f65-ead):** `health-check` joins it in the code-owned no-model list
+(`AUDIT_READY_SCRIPT_SLUGS`). Its script reads only the authenticated `/health`
+and disk space, and its Jev triage stays closed by `resultTriage`, so a script
+run makes no model call and replaces an unaudited Haiku session every 5 minutes.
+The directive's own words cover model calls ("ALL calls to Jev or ANY LLM should
+abide by our benchmark auditing standards", Justin, topic 130742, 2026-10-27
+08:41 PDT). The default `disabledSlugs` and the development-agent gate are
+unchanged, so the fleet keeps its session. `correction-class-review-backstop` remains a
 session because its backfill endpoint can invoke `correction-class-review`,
 whose benchmark task is still pending. Later conversions, Jev triage, outage replacement, anomaly
 narration and the daily supervisor remain code-gated until each call family has

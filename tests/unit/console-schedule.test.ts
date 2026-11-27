@@ -61,7 +61,7 @@ describe('schedule model — honesty', () => {
 
   it('a machine that did not answer is named; a failed pool read falls back to this machine; stale is said', () => {
     const jobs = [job()];
-    expect(buildSchedulePage(res(jobs, { pool: pool(jobs, { failed: [{ machineId: 'm2', error: 'timeout' }] }) }), NOW, { names: NAMES }).notes).toContain('Mac Mini did not answer; its jobs are not shown.');
+    expect(buildSchedulePage(res(jobs, { pool: pool(jobs, { failed: [{ machineId: 'm2', error: 'timeout' }] }) }), NOW, { names: NAMES }).notes).toContain("Couldn't reach Mac Mini (for how long is not known); not known whether anything is fixing it. Its jobs are not shown.");
     const fb = buildSchedulePage(res(jobs, { pool: { ok: false, reason: 'no answer within 8 seconds' } }), NOW);
     expect(fb.ok).toBe(true);
     expect(fb.counts.total).toBe(1);
@@ -305,6 +305,7 @@ describe('run history with skips', () => {
     expect(markText(h.marks[1], NOW)).toContain('succeeded · 3 min');
     expect(markText(h.marks[3], NOW)).toContain('failed · 12 s · exit 1 · started by dashboard manual');
     expect(skipWords('gate')).toBe('skipped (nothing to do, by its pre-flight check)');
+    expect(skipWords('definition-changed')).toBe('skipped (its settings changed while it was starting)');
     expect(skipWords('something-new')).toBe('skipped (something new)');
   });
   it('tells a failed history read from a failed skip read (runs still shown)', () => {

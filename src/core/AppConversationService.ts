@@ -1,3 +1,4 @@
+import { validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 /**
  * AppConversationService — the native app conversation core
  * (docs/specs/mobile-native-conversations.md, increment 1).
@@ -7,27 +8,35 @@
  * re-derivation at boot, `bind-app`/`unbind-app` on lease changes, boot recovery of interrupted
  * requests, the emergency-stop/pause effects and the reply-side hook point.
  *
- * Ownership (increment 1): the owner is the machine holding the serving lease (single machine:
- * always this one). Pool placement for app conversations, and forwarding a send accepted on a
- * non-owner, are later work: a non-owner answers `503 owner-unavailable` AFTER the message is
- * persisted (§4.8's fallback), so nothing typed is lost.
+ * Ownership: an unmoved conversation's owner is the machine holding the serving lease (single
+ * machine: always this one). A moved one has a fenced record naming its machine
+ * (docs/specs/app-conversations-in-the-pool.md): `serves`, `mayReply` and `currentOwner` below. A
+ * machine that isn't the lease holder answers a phone's send `503 owner-unavailable` AFTER the
+ * message is persisted (§4.8's fallback), so nothing typed is lost.
  */
+import { safeInboxTarget } from './memorySessionPolicy.js';
 import type { ConversationRegistry } from './ConversationRegistry.js';
 import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
 import type { ConversationOwner } from './MobilePeople.js';
-import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
+import { derivedEventId, isAppConversationKey, removeAuthorityTokens, removeAuthorityTokensAndKeys } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
-import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
-import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { ledgerViewKey, verifyRecordedOrigin, loadMachineSigner, identityKeyLookup, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { DeviceRegistry } from './MobileDeviceKeys.js';
+import { assertGraphLocalPath } from './GraphLocalFiles.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
-import { TranscriptionUnavailableError } from './VoiceTranscription.js';
+import { TranscriptionFailedError, TranscriptionUnavailableError, transcriptionFailureReason } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
+import { MAY_NOT_BE_DELIVERED, type AppPoolHandle } from './appConversationPool.js';
+import fs from 'node:fs';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
+/** Past the queue's 30-minute limit, with room for a drain pass: a `waiting` send here has lost its row. */
+export const WAITING_OVERDUE_MS = 45 * 60_000;
 
 interface PendingRow { attachmentId: string; messageId: string; conversationKey: string; sha256: string; displayName: string; caption: string; createdAt: number; state: 'waiting' | 'ready' | 'expired'; path: string | null }
 
@@ -41,19 +50,37 @@ export function availableLine(filePath: string, caption: string): string {
 }
 
 export interface AppConversationServiceDeps {
+  /** SEC-164 §3.5: read live; when true a server transcript has its live keys masked before it is stored. */
+  credentialScrubEnabled?: () => boolean;
   stateDir: string;
   machineId: () => string;
+  /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
+  machineName?: () => string | null;
   registry: ConversationRegistry;
   requests: MobileChatRequestStore;
   store?: AppConversationStore;
   holdsLease: () => boolean;
+  /** The session pool (app-conversations-in-the-pool). Absent, or `active()` false: the lease holder serves every conversation, as before. */
+  pool?: () => AppPoolHandle | null;
   ownerName: () => string;
+  /**
+   * The conversation's documents block (instar-document-viewer §3.7), or null. Called on each
+   * dispatch; returns lines only when the list changed since the last time it was sent here.
+   */
+  documentNotes?: (conversationKey: string) => string[] | null;
   dispatch: () => AppInboundDispatch | null;
   /** Stop / pause the session serving an app conversation (by tmux name). */
   killSession?: (tmuxSession: string) => boolean;
   pauseSession?: (tmuxSession: string) => void;
   /** The emergency-stop side effects shared with the Telegram path (resume queue pause, …). */
-  onEmergencyStop?: (alias: number) => void;
+  onEmergencyStop?: (alias: number, scope?: 'conversation') => void;
+  /**
+   * The inbox of a confined conversation's scope folder, or null when it is not confined. A confined
+   * session cannot read the agent's state, so its files go here (team-roles-and-access §4.1).
+   */
+  confinedInbox?: (conversationKey: string) => string | null;
+  /** A create recovered after a crash gets the same confinement as a normal one. */
+  confineStranded?: (conversationKey: string, personKey: string, deviceId: string) => void;
   reportDegradation?: (what: string, detail: string) => void;
   now?: () => number;
   /**
@@ -69,16 +96,20 @@ export interface AppConversationServiceDeps {
    * conversations are on, so a machine with the feature off still keeps and purges what it holds.
    */
   mediaMaxStoreBytes?: () => number | undefined;
+  /** Free and total disk for the media store's floor. Absent reads the real disk; tests pass one so they do not depend on the machine. */
+  mediaDiskSpace?: () => { free: number; total: number } | null;
   /** One notice per condition (absent ⇒ degradation reports only). */
   raiseAttention?: (item: { conditionKey: string; title: string; body: string }) => void;
   clearAttention?: (conditionKey: string) => void;
   /**
    * Server-side voice transcription (docs/specs/mobile-native-chat-media.md §4.5.1, increment 2):
-   * the shared `transcribeAudioFile` Telegram voice notes use. Rejects with
-   * `TranscriptionUnavailableError` when no provider is configured. Absent ⇒ every voice note
-   * without a phone transcript reads "transcription unavailable".
+   * the shared transcription Telegram voice notes use (paid provider, else whisper.cpp on this machine,
+   * docs/specs/backup-on-machine-voice.md). Resolves to the text, or `{ text, provider }` naming the
+   * provider that actually produced it (the stored transcript's label). Rejects with
+   * `TranscriptionUnavailableError` when nothing can transcribe, `TranscriptionFailedError` (plain
+   * `reason`) on failure. Absent ⇒ every voice note without a phone transcript reads "transcription unavailable".
    */
-  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string>;
+  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string | { text: string; provider: string }>;
   /** How long one dispatch waits for a server transcript (default 60 s, the spec's fixed deadline). */
   transcribeDeadlineMs?: number;
   /** At most this many provider calls run at once in this process (default 3). */
@@ -88,7 +119,7 @@ export interface AppConversationServiceDeps {
    * at the ceiling ends "timed out waiting"; a running call gets only what is left of it.
    */
   transcribeCeilingMs?: number;
-  /** The provider name stored on a transcript event (e.g. `groq`); absent ⇒ `server`. */
+  /** Fallback provider label when `transcribeVoice` returns bare text (e.g. `groq`); absent ⇒ `server`. */
   voiceProviderName?: () => string | undefined;
 }
 
@@ -151,9 +182,10 @@ const CUT_NOTE = ' … (transcript cut here; the audio file has the rest)';
  * (§4.3, §4.5.1): `scanInbound` first (so a dictated pending pairing code declines that pairing),
  * then exact-token removal. Text past the store's limit is cut with a note, never refused.
  */
-export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null): { text: string; kinds: string[] } {
+export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null, maskKeys = false): { text: string; kinds: string[] } {
   try { scan?.(text); } catch { /* @silent-fallback-ok — the scan only declines leaked pairings; token removal still runs */ }
-  const removed = removeAuthorityTokens(text);
+  // SEC-164 §3.5: with the switch on, live keys are masked too and their kinds join the attestation.
+  const removed = removeAuthorityTokensAndKeys(text, maskKeys);
   let out = removed.text;
   if (out.length > MAX_STORED_TEXT) out = out.slice(0, MAX_STORED_TEXT - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '') + CUT_NOTE;
   return { text: out, kinds: removed.kinds };
@@ -175,7 +207,8 @@ class TranscriptionCeilingTimeout extends Error { constructor() { super('the tra
  * can never carry a pairing invite or a desktop code anywhere (second-pass review, finding 2).
  */
 export function transcriptForDelivery(text: string): string {
-  return removeAuthorityTokens(text).text;
+  // SEC-164 §3.5: the read path also masks live keys, always; it only shows text and keeps nothing.
+  return removeAuthorityTokensAndKeys(text, true).text;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -195,6 +228,7 @@ export class AppConversationService {
    * follow-up of §4.12). Wired where the dispatch is; absent ⇒ the line waits for the next delivery.
    */
   private followUp: ((alias: number, line: string) => boolean) | null = null;
+  private platformFollowUp: ((conversationKey: string, line: string) => boolean) | null = null;
   private lastRefusalSweep = 0;
   private readonly refusedConditions = new Set<string>();
   /* @self-action-controller: app-media-capacity-notice */
@@ -207,24 +241,49 @@ export class AppConversationService {
   private transcribeActive = 0;
   private readonly transcribeWaiters: Array<() => void> = [];
   private inboundScan: ((text: string) => void) | null = null;
+  /** Conversations created here while this machine held the lease: no other machine can own one yet. */
+  private readonly createdHere = new Set<string>();
+  /** Stop or pause reached this owner while a drain ran for the conversation (§2.4). The drain aborts. */
+  private readonly emergencyMarks = new Set<string>();
+  /** Closes in flight, so a slow close isn't started twice. */
+  private readonly closing = new Set<string>();
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
+
+  /** Late first identity setup only. Read the real local signer; never accept
+   * caller-supplied keys, ledger rows or a permission flag. Reconcile before
+   * publishing any binding; existing or partial signing state is not replaced. */
+  initializeNativeSigning(devices:DeviceRegistry):MobileDeviceKeyLedger|null{
+    if(this.deps.signer||this.deps.keyLedger)return this.deps.signer&&this.deps.keyLedger?this.deps.keyLedger:null;
+    const root=fs.realpathSync(this.deps.stateDir);
+    if(!(devices instanceof DeviceRegistry)||path.basename(devices.file)!=='mobile-devices.json'||path.basename(path.dirname(devices.file))!=='state'||fs.realpathSync(path.dirname(path.dirname(devices.file)))!==root)throw new Error('app-native-signing-device-scope-mismatch');
+    assertGraphLocalPath(root,path.join(root,'state','mobile-devices.json'));
+    const signer=loadMachineSigner(this.deps.stateDir);if(!signer)return null;
+    const priorMachine=this.deps.machineId();if(priorMachine!=='local'&&priorMachine!==signer.machineId())throw new Error('app-native-signing-machine-mismatch');
+    const keyLookup=identityKeyLookup(this.deps.stateDir),keyLedger=new MobileDeviceKeyLedger({stateDir:this.deps.stateDir,signer,keyLookup});
+    keyLedger.reconcile(devices);
+    this.deps.signer=signer;this.deps.keyLookup=keyLookup;this.deps.keyLedger=keyLedger;
+    if(priorMachine==='local')this.deps.machineId=()=>signer.machineId();
+    return keyLedger;
+  }
 
   constructor(readonly deps: AppConversationServiceDeps) {
     this.now = deps.now ?? Date.now;
     this.store = deps.store ?? new AppConversationStore({
-      stateDir: deps.stateDir, machineId: deps.machineId, now: this.now,
+      stateDir: deps.stateDir, machineId: () => this.deps.machineId(), now: this.now,
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
     });
     this.channels = new SessionChannelRegistry({ registryPath: path.join(deps.stateDir, 'state', 'app-session-registry.json') });
     this.media = new AppMediaStore({
       stateDir: deps.stateDir, store: this.store, now: this.now,
       maxStoreBytes: () => deps.mediaMaxStoreBytes?.() ?? DEFAULT_MAX_STORE_BYTES,
+      ...(deps.mediaDiskSpace ? { diskSpace: deps.mediaDiskSpace } : {}),
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
       onRefused: (error) => this.onMediaRefused(error),
+      machineName: () => deps.machineName?.() ?? '',
     });
     this.replicator = new AppMediaReplicator({
-      media: this.media, store: this.store, selfId: deps.machineId, now: this.now,
+      media: this.media, store: this.store, selfId: () => this.deps.machineId(), now: this.now,
       report: (detail) => deps.reportDegradation?.('AppMediaReplicator', detail),
       raiseAttention: (item) => deps.raiseAttention?.(item),
       clearAttention: (key) => deps.clearAttention?.(key),
@@ -281,7 +340,9 @@ export class AppConversationService {
    * cleared (re-armed) only when the condition is gone.
    */
   private updateMediaNotices(): void {
-    const machine = this.deps.machineId();
+    // The key stays per machine id; the words use its name (the title used to show the raw id).
+    const machineKey = this.deps.machineId();
+    const machine = this.media.machineWords();
     const raiseOnce = (key: string, item: { title: string; body: string }) => {
       if (this.raisedNotices.has(key)) return;
       this.raisedNotices.add(key);
@@ -296,7 +357,7 @@ export class AppConversationService {
         const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
         const h = this.media.health();
         raiseOnce('app-media:store-full', {
-          title: 'The app media store is full',
+          title: `The app file store on ${machine} is full`,
           body: `${gib(this.media.liveBytes())} GiB of ${gib(this.media.maxBytes())} GiB is in use and ${gib(Number(h.deletedBytes))} GiB sits in deleted conversations. New files are refused until space is freed: the app's Storage screen can permanently remove files, or the limit can be raised.`,
         });
       } else {
@@ -305,9 +366,9 @@ export class AppConversationService {
       }
     }
     if (this.refusedConditions.has('media-disk-floor')) {
-      const key = `app-media:disk-floor:${machine}`;
+      const key = `app-media:disk-floor:${machineKey}`;
       if (this.media.belowDiskFloor()) {
-        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: 'New files are refused on this machine until its disk has more free space (5% or 2 GiB, whichever is larger).' });
+        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: `New files are refused on ${machine} until its disk has more free space (5% or 2 GiB, whichever is larger).` });
       } else {
         this.refusedConditions.delete('media-disk-floor');
         clear(key);
@@ -347,6 +408,14 @@ export class AppConversationService {
   setFollowUp(fn: ((alias: number, line: string) => boolean) | null): void { this.followUp = fn; }
 
   /**
+   * The second injector (native-conversation-base §3c item 6): a file of a `telegram:<topicId>`
+   * conversation that lands later is typed to the session serving that topic on this machine.
+   * Returns true only when the line was typed; otherwise the row stays `ready` and the platform
+   * media sweep retries it.
+   */
+  setPlatformFollowUp(fn: ((conversationKey: string, line: string) => boolean) | null): void { this.platformFollowUp = fn; }
+
+  /**
    * The session lines for a media message on the machine that delivers it (§4.5, §4.12): a private
    * copy per attachment; a blob not held here is pulled first, for at most 60 seconds in all; past
    * that the line reads `[file still copying: <name>]` and a durable row turns into one
@@ -358,7 +427,7 @@ export class AppConversationService {
     // A voice note's server transcription runs in parallel with the other files (§4.5.1).
     const lines: Array<string | Promise<string>> = [];
     for (const a of attachments) {
-      const copy = await this.media.sessionCopy(messageId, a).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
+      const copy = await this.media.sessionCopy(messageId, a).then((p) => (p ? this.intoConfinedInbox(conversationKey, p) : p)).catch((err: unknown) => { // @silent-fallback-ok — reported through deps.reportDegradation; the line says the file is unavailable
         this.report('session copy', err);
         return null;
       });
@@ -373,6 +442,18 @@ export class AppConversationService {
       this.replicator.want(a.sha256);
     }
     return Promise.all(lines);
+  }
+
+  /**
+   * A confined session can read only its scope folder, so a server-recorded file is copied there. The
+   * caller found this file through the conversation's own events: never a path from a message.
+   */
+  intoConfinedInbox(conversationKey: string, filePath: string): string {
+    const inbox = this.deps.confinedInbox?.(conversationKey);
+    if (!inbox) return filePath;
+    const target = safeInboxTarget(inbox, filePath);
+    fs.copyFileSync(filePath, target, fs.constants.COPYFILE_EXCL);
+    return target;
   }
 
   /** Wired where the pairing service is: declines a pending pairing whose code a transcript dictates. */
@@ -442,10 +523,16 @@ export class AppConversationService {
       .then(
         (raw): VoiceOutcome => this.storeTranscript(conversationKey, messageId, a, raw, entry.late),
         (err: unknown): VoiceOutcome => {
-          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: 'no transcription provider is configured' };
+          // Not-installed and per-note outcomes (silent, busy, too long) carry their plain reason and are
+          // not degradation reports; only real faults are (spec: What the person and the agent see).
+          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: transcriptionFailureReason(err) };
+          if (err instanceof TranscriptionQueueTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'timed out waiting' }; }
+          if (err instanceof TranscriptionCeilingTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'the transcription service timed out' }; }
+          if (err instanceof TranscriptionFailedError) {
+            if (err.fault) this.report('voice transcription', err);
+            return { ok: false, reason: err.reason };
+          }
           this.report('voice transcription', err);
-          if (err instanceof TranscriptionQueueTimeout) return { ok: false, reason: 'timed out waiting' };
-          if (err instanceof TranscriptionCeilingTimeout) return { ok: false, reason: 'the transcription service timed out' };
           return { ok: false, reason: 'the transcription service failed' };
         },
       )
@@ -467,7 +554,7 @@ export class AppConversationService {
    * gets the remaining time (passed to the provider as its own timeout) and is abandoned at the
    * ceiling. The slot is held until the provider call itself settles, so at most N ever run.
    */
-  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string> {
+  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string | { text: string; provider: string }> {
     const ceilingMs = this.deps.transcribeCeilingMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS;
     const startedAt = Date.now();
     if (!(await this.acquireTranscribeSlot(ceilingMs))) throw new TranscriptionQueueTimeout();
@@ -503,10 +590,14 @@ export class AppConversationService {
   }
 
   /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
-  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, raw: string, late: boolean): VoiceOutcome {
-    const scrubbed = scrubServerTranscript(raw, this.inboundScan);
+  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, result: string | { text: string; provider: string }, late: boolean): VoiceOutcome {
+    const raw = typeof result === 'string' ? result : result.text;
+    let maskKeys = false;
+    try { maskKeys = this.deps.credentialScrubEnabled?.() === true; } catch { maskKeys = false; } // @silent-fallback-ok — unreadable switch is off
+    const scrubbed = scrubServerTranscript(raw, this.inboundScan, maskKeys);
     const machineId = this.deps.machineId();
-    const provider = (this.deps.voiceProviderName?.() ?? 'server').toLowerCase();
+    // The provider that produced THIS text (no shared "last provider" state, so concurrent transcripts can't swap labels).
+    const provider = (typeof result === 'string' ? (this.deps.voiceProviderName?.() ?? 'server') : result.provider).toLowerCase();
     try {
       this.store.append({
         eventId: transcriptEventId(a.attachmentId, machineId), kind: 'transcript', conversationKey, messageId,
@@ -556,8 +647,9 @@ export class AppConversationService {
     for (const r of rows) {
       try {
         const a = this.store.getMediaAttachments(r.conversationKey, r.messageId)?.find((x) => x.attachmentId === r.attachmentId);
-        const copy = a ? await this.media.sessionCopy(r.messageId, a) : null;
-        if (!copy) continue;
+        const held = a ? await this.media.sessionCopy(r.messageId, a) : null;
+        if (!held) continue;
+        const copy = this.intoConfinedInbox(r.conversationKey, held);
         // Claim the row first, so two landings never produce two lines (§4.12: de-duplicated by attachment).
         const claimed = this.media.indexDb.prepare(`UPDATE pending_deliveries SET state = 'ready', path = ? WHERE attachmentId = ? AND state = 'waiting'`).run(copy, r.attachmentId);
         if (claimed.changes !== 1) continue;
@@ -573,8 +665,9 @@ export class AppConversationService {
         }
         const alias = this.deps.registry.appAliasFor(r.conversationKey);
         const title = this.store.getConversation(r.conversationKey)?.title ?? 'Untitled';
-        const sent = alias !== null && this.ownsAlias(alias)
-          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true;
+        const sent = alias !== null
+          ? this.ownsAlias(alias) && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true
+          : r.conversationKey.startsWith('telegram:') && this.platformFollowUp?.(r.conversationKey, `${availableLine(copy, r.caption)}${tail}`) === true;
         if (sent) {
           this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
           // The transcript rode on this line: a note for it would repeat it (second-pass finding 3).
@@ -585,12 +678,22 @@ export class AppConversationService {
     }
   }
 
+  private heldCheck: ((conversationKey: string, messageId: string) => boolean) | null = null;
+
+  /** Team access says which messages a session must not be given yet. */
+  useHeldCheck(check: (conversationKey: string, messageId: string) => boolean): void { this.heldCheck = check; }
+
   /**
    * Lines for the next delivery's context: files that became available with no live session to
    * tell, and files that could not be copied within 7 days. `ack` removes them once delivered.
    */
   pendingContext(conversationKey: string): { lines: string[]; ack: () => void } {
-    const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[];
+    // A session serves every reader, so a file or transcript of a held message waits with it.
+    const open = <T extends { attachmentId: string }>(r: T): boolean => {
+      const messageId = this.store.mediaRef(r.attachmentId)?.messageId;
+      return !messageId || !this.heldCheck?.(conversationKey, messageId);
+    };
+    const rows = (this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[]).filter(open);
     const carried = new Set<string>();
     const lines = rows.map((r) => {
       if (!(r.state === 'ready' && r.path)) return `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`;
@@ -602,7 +705,7 @@ export class AppConversationService {
     });
     // Late transcripts that found no live session (§4.5.1), oldest first — except one whose
     // transcript the "now available" line above already carries (said once, never twice).
-    const notes = this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>;
+    const notes = (this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>).filter(open);
     for (const n of notes) if (!carried.has(n.attachmentId)) lines.push(transcriptForDelivery(n.line));
     return {
       lines,
@@ -652,6 +755,18 @@ export class AppConversationService {
     try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.approvedVia ?? null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
   }
 
+  /**
+   * `'browser'` when the signed ledger activation row of the key that signed this record says so
+   * (dashboard-conversations-browser-device §4.3), only for a `verified` or `redacted` verdict;
+   * otherwise (or unreadable) null. Display detail only; the verdict is unaffected.
+   */
+  originClient(record: Pick<VerifiableRecord, 'origin'>, verdict: OriginVerdict): 'browser' | null {
+    const o = record.origin as { keyHash?: unknown; deviceId?: unknown } | undefined;
+    if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
+    if (verdict !== 'verified' && verdict !== 'redacted') return null;
+    try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.client === 'browser' ? 'browser' : null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
+  }
+
   /** Mint (idempotently) a local alias for every live conversation in the store. */
   reconcileAliases(): void {
     for (const key of this.store.liveConversationKeys()) {
@@ -693,33 +808,129 @@ export class AppConversationService {
     }
     if (ev.kind !== 'created') return;
     const r = this.deps.registry.mintAppAlias(ev.conversationKey);
-    if (r.ok && this.deps.holdsLease()) this.deps.registry.bindApp(r.id);
+    if (r.ok && this.mayReply(ev.conversationKey)) this.deps.registry.bindApp(r.id);
   }
 
-  /** On gaining the serving lease, bind every live conversation; on losing it, unbind them. */
+  /** Each lease tick: the binding reconcile (§2.1), and aliases when the lease is gained. */
   leaseTick(): void {
     const holds = this.deps.holdsLease();
-    if (holds === this.lastLease) return;
+    const changed = holds !== this.lastLease;
     this.lastLease = holds;
+    if (!holds) this.createdHere.clear();
     try {
-      if (holds) {
-        this.reconcileAliases();
-        for (const key of this.store.liveConversationKeys()) {
-          const id = this.deps.registry.appAliasFor(key);
-          if (id !== null) this.deps.registry.bindApp(id);
-        }
-      } else {
-        for (const id of this.deps.registry.appBoundIds()) this.deps.registry.unbindApp(id);
-      }
-    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next lease change retries
+      if (changed && holds) this.reconcileAliases();
+      this.reconcileBindings();
+    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next tick repeats it
   }
 
-  /** This machine currently owns the conversation behind `alias` (§4.8, pool dark). */
+  /** The pool, when it is on. Null means the lease holder serves everything, as before this part. */
+  private activePool(): AppPoolHandle | null {
+    try { const p = this.deps.pool?.() ?? null; return p && p.active() ? p : null; } catch { return null; } // @silent-fallback-ok — an unreadable pool reads as dark: today's lease-holder rule
+  }
+
+  private recordOf(p: AppPoolHandle, conversationKey: string) {
+    const r = p.read(`app:${conversationKey}`);
+    return r && r.status !== 'released' ? r : null;
+  }
+
+  /**
+   * This machine serves the conversation (§2.1): it starts sessions for it and takes its messages.
+   * An `active` record naming it; or no record, the lease here, and the lease gate open.
+   */
+  serves(conversationKey: string): boolean {
+    const p = this.activePool();
+    if (!p) return this.deps.holdsLease();
+    const r = this.recordOf(p, conversationKey);
+    if (r) return r.status === 'active' && r.ownerMachineId === this.deps.machineId();
+    if (!this.deps.holdsLease()) return false;
+    return this.createdHere.has(conversationKey) || p.gateOpenFor(conversationKey);
+  }
+
+  /** May a reply land from here (§2.1): it serves, or it is the drain's last turn. The runner bounds that window. */
+  mayReply(conversationKey: string): boolean {
+    if (this.serves(conversationKey)) return true;
+    const p = this.activePool();
+    if (!p) return false;
+    const r = this.recordOf(p, conversationKey);
+    return r?.status === 'transferring' && r.ownerMachineId === this.deps.machineId() && p.drainRunning(`app:${conversationKey}`);
+  }
+
+  /** Where a stop or pause goes (§2.4): the owner named by the record, draining or not; else whoever serves it. */
+  currentOwner(conversationKey: string): boolean {
+    const p = this.activePool();
+    if (!p) return this.serves(conversationKey);
+    const r = this.recordOf(p, conversationKey);
+    if (!r) return this.serves(conversationKey);
+    return (r.status === 'active' || r.status === 'transferring') && r.ownerMachineId === this.deps.machineId();
+  }
+
+  /** New conversations start on the lease holder: nothing can own one yet, so the gate doesn't apply. */
+  servesNewConversations(): boolean { return this.deps.holdsLease(); }
+
+  /** The pool is on, so a send goes through the router. */
+  poolRouter(): AppPoolHandle | null { return this.activePool(); }
+
+  /**
+   * A desired-set reconcile, not a reaction to lease changes (§2.1): every conversation for which
+   * `mayReply` holds here is bound, the rest are not. A machine that learns it lost a conversation
+   * closes its copy, and a refused close is retried on the next reconcile.
+   */
+  reconcileBindings(): void {
+    const p = this.activePool();
+    const self = this.deps.machineId();
+    const live = this.store.liveConversationKeys().filter(isAppConversationKey);
+    const want = new Set(live.filter((k) => this.mayReply(k)));
+    for (const key of want) {
+      const id = this.deps.registry.appAliasFor(key) ?? (() => { const m = this.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
+      if (id !== null && !this.deps.registry.isAppBound(id)) this.deps.registry.bindApp(id);
+    }
+    for (const id of this.deps.registry.appBoundIds()) {
+      const key = this.deps.registry.appConversationFor(id);
+      if (!key || !want.has(key)) this.deps.registry.unbindApp(id);
+    }
+    if (!p) return;
+    for (const key of live) {
+      if (want.has(key) || this.closing.has(key)) continue;
+      const r = this.recordOf(p, key);
+      // With no record, only another machine being named holder is the lease moving: a suspended lease or a missed renewal closes nothing.
+      const lost = r ? r.ownerMachineId !== self : !this.deps.holdsLease() && p.leaseHeldElsewhere();
+      if (!lost) continue;
+      const session = this.sessionFor(key);
+      if (!session || !p.sessionRunning(session)) continue;
+      this.closing.add(key);
+      void p.closeLostSession(key, session)
+        .then((out) => { if (!out.closed) this.report('close after losing a conversation', new Error(`${key}: ${out.detail ?? 'refused'}; retried on the next reconcile`)); })
+        .catch((err: unknown) => this.report('close after losing a conversation', err))
+        .finally(() => this.closing.delete(key));
+    }
+  }
+
+  /** A stop or pause reached this owner: a drain running for the conversation aborts on its next check. */
+  noteEmergency(conversationKey: string): void {
+    const p = this.activePool();
+    const rk = `app:${conversationKey}`;
+    if (p?.drainRunning(rk)) this.emergencyMarks.add(rk);
+  }
+
+  emergencyMarked(recordKey: string): boolean { return this.emergencyMarks.has(recordKey); }
+
+  /** The drain ended, whichever way: a later move isn't aborted by an old stop. */
+  clearEmergency(recordKey: string): void { this.emergencyMarks.delete(recordKey); }
+
+  /** This machine owns the conversation behind `alias` right now: replies may land (§2.1). */
   ownsAlias(alias: number): boolean {
-    return this.deps.holdsLease() && this.deps.registry.isAppBound(alias);
+    const key = this.deps.registry.appConversationFor(alias);
+    return !!key && this.mayReply(key) && this.deps.registry.isAppBound(alias);
   }
 
-  isOwner(): boolean { return this.deps.holdsLease(); }
+  /** What stays behind on this machine when its conversation moves (§2.5): named in the move's answer. */
+  leftBehind(conversationKey: string): { files: number; notes: number } {
+    try {
+      const files = this.media.indexDb.prepare(`SELECT COUNT(*) AS n FROM pending_deliveries WHERE conversationKey = ?`).get(conversationKey) as { n: number };
+      const notes = this.media.indexDb.prepare('SELECT COUNT(*) AS n FROM transcript_notes WHERE conversationKey = ?').get(conversationKey) as { n: number };
+      return { files: files.n, notes: notes.n };
+    } catch (err) { this.report('left-behind count', err); return { files: 0, notes: 0 }; } // @silent-fallback-ok — reported; the move still answers, without the count
+  }
 
   /** The live conversation (null when unknown or deleted). */
   liveConversation(key: string) {
@@ -734,12 +945,12 @@ export class AppConversationService {
     return alias === null ? null : this.channels.getSessionForChannel(String(alias));
   }
 
-  emergencyStop(conversationKey: string): { stopped: boolean; session: string | null } {
+  emergencyStop(conversationKey: string, scope?: 'conversation'): { stopped: boolean; session: string | null } {
     const session = this.sessionFor(conversationKey);
     let stopped = false;
     if (session) { try { stopped = this.deps.killSession?.(session) === true; } catch { stopped = false; } } // @silent-fallback-ok — the outcome is reported, never claimed
     const alias = this.deps.registry.appAliasFor(conversationKey);
-    if (alias !== null) { try { this.deps.onEmergencyStop?.(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ } }
+    if (alias !== null) { try { this.deps.onEmergencyStop?.(alias, scope); } catch { /* @silent-fallback-ok — the stop itself already ran */ } }
     return { stopped, session };
   }
 
@@ -763,6 +974,38 @@ export class AppConversationService {
   }
 
   /**
+   * The queue gave up on a held send (app-conversations-in-the-pool §2.2): the phone's request record is
+   * finished in words, as `refused` or `unknown` (appLossState). Nothing re-places the conversation.
+   */
+  finishExpiredForward(conversationKey: string, messageId: string, words: string, state: 'refused' | 'unknown' = 'refused'): void {
+    const rec = this.deps.requests.findSendByMessage(messageId);
+    // Separate steps: the row is already gone, so nothing retries this. A failed event must not leave the request reading `waiting`.
+    try {
+      this.appendDelivery(conversationKey, messageId, state, rec ? `${rec.deviceId}\u0000${rec.requestId}` : `expired\u0000${messageId}`);
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the request below still gets its words
+    try {
+      if (rec) this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: state === 'unknown' ? 'outcome-unknown' : 'not-delivered', outcome: state, expiredForward: true, conversationKey, messageId, deliveryState: state, detail: words } });
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the message stays stored
+  }
+
+  /**
+   * A send still reading `waiting` past the queue's limits has lost its row some way the queue never
+   * reported: a quarantined store, an engine that never started (app-conversations-in-the-pool §2.2). It
+   * can't be known whether the owner took it, so it reads `unknown`, which yields to the owner's outcome.
+   */
+  private settleOverdueWaiting(): void {
+    if (!this.activePool()) return;
+    for (const w of this.deps.requests.waitingOlderThan(WAITING_OVERDUE_MS)) {
+      if (this.store.deliveryState(w.messageId) === 'pending') {
+        this.finishExpiredForward(w.conversationKey, w.messageId, MAY_NOT_BE_DELIVERED, 'unknown');
+      } else {
+        // It settled by replication: nothing to say beyond what the retry answers from the current state.
+        this.deps.requests.finish(w.deviceId, w.requestId, { status: 200, body: { ok: true, outcome: 'settled', expiredForward: true, conversationKey: w.conversationKey, messageId: w.messageId } });
+      }
+    }
+  }
+
+  /**
    * Boot recovery (§4.2 step 8 and §4.1): `entered` requests older than 5 minutes that no live
    * handler owns. A send whose message row is missing was never dispatched → `not-delivered`; a
    * send whose message exists with no delivery event → an `unknown` delivery and
@@ -770,6 +1013,7 @@ export class AppConversationService {
    * event from the reservation (same event id, so it merges away) and records `done`.
    */
   recoverStranded(): void {
+    try { this.settleOverdueWaiting(); } catch (err) { this.report('overdue waiting', err); } // @silent-fallback-ok — reported; the next tick repeats it
     try { this.media.recoverClaims((id) => this.store.hasMessage(id)); } catch (err) { this.report('media claims', err); } // @silent-fallback-ok — reported; the next tick repeats it
     for (const rec of this.deps.requests.stranded(STRANDED_REQUEST_AGE_MS)) {
       const x = rec.extra;
@@ -793,7 +1037,13 @@ export class AppConversationService {
       }
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
-        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
+        if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
+        let creationContext: AppCreationContext | null = null;
+        try { creationContext = x.creationContext ? validateAppCreationContext(JSON.parse(x.creationContext)) : null; }
+        catch (err) { this.deps.reportDegradation?.('AppConversations.creation-recovery', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok: invalid reservation becomes outcome-unknown below, never a guessed parent.
+
+        if (x.creationContext && !creationContext) { this.deps.requests.markUnknown(rec.deviceId, rec.requestId); continue; }
+        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner, creationContext ?? undefined);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {
         this.applyRename(rec.deviceId, rec.requestId, key, x.title);
@@ -807,7 +1057,7 @@ export class AppConversationService {
 
   /** Create: alias first (a refusal leaves no store event), then the `created` event, then bind. */
   /** `ownerPerson`: the MSP phone's person that creates it (people and roles §3.4); null ⇒ the owner's. */
-  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null): { status: number; body: Record<string, unknown> } {
+  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null, creationContext?: AppCreationContext): { status: number; body: Record<string, unknown> } {
     const mint = this.deps.registry.mintAppAlias(conversationKey);
     if (!mint.ok) {
       if (mint.error === 'conversation-recording-disabled') {
@@ -815,12 +1065,19 @@ export class AppConversationService {
       }
       return { status: 503, body: { error: 'conversation-unavailable', detail: 'The conversation could not be created on this machine. Try again.' } };
     }
-    this.store.append({
-      eventId: derivedEventId('cr', deviceId, requestId), kind: 'created', conversationKey, title,
+    const createEventId = derivedEventId('cr', deviceId, requestId);
+    // A crash after the durable created event but before request completion must not mint a new
+    // timestamp/base under that same event id and manufacture a metadata conflict on recovery.
+    if (!this.store.hasEvent(conversationKey, createEventId)) this.store.append({
+      eventId: createEventId, kind: 'created', conversationKey, title,
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
       ...(ownerPerson ? { ownerPerson } : {}),
+      ...(creationContext ? { creationContext } : {}),
     });
-    if (this.deps.holdsLease()) this.deps.registry.bindApp(mint.id);
+    if (this.deps.holdsLease()) {
+      this.createdHere.add(conversationKey);
+      this.deps.registry.bindApp(mint.id);
+    }
     const c = this.store.getConversation(conversationKey);
     return { status: 200, body: { conversationKey, title: c?.title ?? title } };
   }

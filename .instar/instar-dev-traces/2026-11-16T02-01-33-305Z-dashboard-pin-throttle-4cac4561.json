@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "dashboard-pin-throttle",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T02:01:33.305Z",
+  "artifactPath": "upgrades/side-effects/dashboard-pin-throttle.md",
+  "artifactSha256": "3cfc795514233bee1c250f9babce520c54c506d13c493653fbd10ca8caaea7ca",
+  "specPath": "docs/specs/dashboard-pin-throttle.md",
+  "coveredFiles": [
+    "docs/specs/dashboard-pin-throttle.eli16.md",
+    "docs/specs/dashboard-pin-throttle.md",
+    "docs/specs/reports/dashboard-pin-throttle-convergence.md",
+    "src/core/PinThrottle.ts",
+    "src/core/types.ts",
+    "src/data/awareness/dashboard-pin-throttle.md",
+    "src/server/AgentServer.ts",
+    "src/server/pinUnlockMarker.ts",
+    "tests/e2e/dashboard-pin-throttle-alive.test.ts",
+    "tests/integration/dashboard-pin-throttle.test.ts",
+    "tests/unit/pin-throttle.test.ts",
+    "tests/unit/pin-unlock-marker.test.ts",
+    "upgrades/next/dashboard-pin-throttle.md",
+    "upgrades/side-effects/dashboard-pin-throttle.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "auth surface, fleet rollout; whole-PR independent-review trace with the Reviewer line",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

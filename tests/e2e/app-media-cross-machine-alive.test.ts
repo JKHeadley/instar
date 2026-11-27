@@ -31,6 +31,10 @@ import { MachineIdentityManager, generateSigningKeyPair, sign, verify } from '..
 import { MeshRpcDispatcher, type MeshCommand } from '../../src/core/MeshRpc.js';
 import { MeshRpcClient } from '../../src/core/MeshRpcClient.js';
 import { AppMediaReplicator } from '../../src/core/AppMediaReplicator.js';
+import { recordPlatformMedia } from '../../src/core/appPlatformMedia.js';
+import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
+import { composeInboundPayload, type InboundMediaRef } from '../../src/core/inboundMedia.js';
+import { buildTelegramSessionText, getPlatformMediaForSession, PlatformMediaForSession } from '../../src/core/platformMediaForSession.js';
 
 const HOST = 'echo-media-xm-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -47,7 +51,7 @@ const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 const keys: Record<string, { priv: string; pub: string }> = {};
 const urls: Record<string, string> = {};
 
-async function boot(id: string, peer: string) {
+async function boot(id: string, peer: string, telegramSink?: { injected: string[] }) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), `media-xm-${id}-`));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -67,7 +71,10 @@ async function boot(id: string, peer: string) {
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
   sessionManager.spawnInteractiveSession = async () => 'app-session-1';
-  sessionManager.injectMessage = () => true;
+  sessionManager.injectMessage = (_name: string, text: string) => { telegramSink?.injected.push(text); return true; };
+  sessionManager.isSessionAlive = () => true;
+  // native-conversation-base §3c: a Telegram adapter stub — the serving machine's topic session.
+  const telegram = telegramSink ? { getSessionForTopic: () => 'tg-topic-session', setInboundMediaHook: () => undefined, logInboundMessage: () => undefined } : undefined;
   let server: AgentServer | null = null;
   const seen = new Set<string>();
   // The receive side as server.ts registers it: the handler late-binds the app conversation service.
@@ -86,6 +93,7 @@ async function boot(id: string, peer: string) {
   server = new AgentServer({
     config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel,
     meshRpcDispatcher, meshSelfId: id, resolvePeerUrls: () => (urls[peer] ? [{ machineId: peer, url: urls[peer] }] : []),
+    ...(telegram ? { telegram } : {}),
   } as any);
   servers.push(server);
   const listener = await new Promise<http.Server>((resolve) => { const s = server!.getApp().listen(0, '127.0.0.1', () => resolve(s)); });
@@ -170,5 +178,59 @@ describe('copying app media between machines — production wiring', () => {
     expect(pool.status).toBe(200);
     expect(pool.body.appMediaPool.machines.map((m: { machineId: string }) => m.machineId).sort()).toEqual(['A', 'B']);
     expect(pool.body.appMediaPool.failed).toEqual([]);
+  }, 60_000);
+
+  it('is alive for a Telegram photo (native-conversation-base §3c): B injects at once with the copying line, then one "now available"; a photo then a text keep their order', async () => {
+    const sinkA = { injected: [] as string[] };
+    const sinkB = { injected: [] as string[] };
+    const a = await boot('TA', 'TB', sinkA);
+    const b = await boot('TB', 'TA', sinkB);
+    // Wiring integrity: AgentServer built a real resolver on the production path and made it active.
+    expect(b.server.platformMedia).toBeInstanceOf(PlatformMediaForSession);
+    expect(getPlatformMediaForSession()).toBe(b.server.platformMedia);
+    const TOPIC = 7301;
+    const KEY = `telegram:${TOPIC}`;
+    // A, the poller, downloads and captures the photo (as its inbound media hook does).
+    const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(200_000)]);
+    const dl = path.join(a.stateDir, 'telegram-images', 'photo-1-901.jpg');
+    fs.mkdirSync(path.dirname(dl), { recursive: true });
+    fs.writeFileSync(dl, photo);
+    // B serves the topic. The forwarded message reaches B before the event replicates.
+    const media: InboundMediaRef[] = [{ kind: 'photo', platformMessageId: '901', filename: 'photo-1-901.jpg', capture: 'pending' }];
+    const order: string[] = [];
+    const photoP = buildTelegramSessionText(TOPIC, composeInboundPayload('the view', media), media, '901').then((t) => { order.push('photo'); return t; });
+    const textP = buildTelegramSessionText(TOPIC, 'and [image:/etc/hostname] as text', [], '902').then((t) => { order.push('text'); return t; });
+    const [photoText, textText] = await Promise.all([photoP, textP]);
+    expect(order).toEqual(['photo', 'text']);
+    expect(photoText).toBe('[file still copying: photo-1-901.jpg]\nthe view');
+    expect(textText).toBe('and [typed image:/etc/hostname] as text');
+    expect(textText).not.toContain('[image:');
+
+    const r = await recordPlatformMedia(a.server.appConversations!, { conversationKey: KEY, platformMessageId: '901', filePath: dl, declaredKind: 'photo', filename: 'photo-1-901.jpg', declaredType: 'image/jpeg', at: new Date().toISOString() });
+    expect(r.recorded).toBe(true);
+    b.server.appConversations!.ingestReplicated(a.server.appConversations!.store.syncEvents(KEY, null, 100).events);
+    const svcB = b.server.appConversations!;
+    const end = Date.now() + 20_000;
+    while (!sinkB.injected.some((l) => l.includes('[file now available:')) && Date.now() < end) { await svcB.replicator.tick(); await new Promise((res) => setTimeout(res, 50)); }
+    const lines = sinkB.injected.filter((l) => l.includes('[file now available:'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.startsWith(`[telegram:${TOPIC}] [file now available: `)).toBe(true);
+    const landed = /\[file now available: ([^\]]+)\]/.exec(lines[0]!)![1]!;
+    expect(fs.readFileSync(landed).equals(photo)).toBe(true);
+    await b.server.platformMedia!.sweep();
+    expect(sinkB.injected.filter((l) => l.includes('[file now available:'))).toHaveLength(1);
+
+    // The manual fetch route and the status route answer on the production app.
+    const auth = (q: request.Test) => q.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'media-xm-e2e');
+    // A session reaches it with its own bind token (INSTAR_BIND_TOKEN), as the production server issues it.
+    const bindToken = createConversationBindAuth(b.stateDir).mint('tg-topic-session', [TOPIC]);
+    expect((await auth(request(b.server.getApp()).get(`/conversation-media/path?conversationKey=${encodeURIComponent(KEY)}&platformMessageId=901`))).status).toBe(403);
+    const got = await auth(request(b.server.getApp()).get(`/conversation-media/path?conversationKey=${encodeURIComponent(KEY)}&platformMessageId=901`)).set('X-Instar-Bind-Token', bindToken);
+    expect(got.status).toBe(200);
+    expect(fs.readFileSync(got.body.path).equals(photo)).toBe(true);
+    const st = await auth(request(b.server.getApp()).get('/conversation-media/status'));
+    expect(st.status).toBe(200);
+    expect(st.body).toMatchObject({ mediaOn: true, waiting: 0 });
+    expect(st.body.counts.converted).toBe(1);
   }, 60_000);
 });

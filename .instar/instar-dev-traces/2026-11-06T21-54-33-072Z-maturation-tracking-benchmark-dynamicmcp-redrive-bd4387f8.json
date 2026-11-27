@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "maturation-tracking-benchmark-dynamicmcp-redrive",
+  "sessionId": "33dd806a-b807-4765-b8f1-423a8924db9d",
+  "timestamp": "2026-11-06T21:54:33.072Z",
+  "artifactPath": "upgrades/side-effects/maturation-tracking-benchmark-dynamicmcp-redrive.md",
+  "artifactSha256": "a5fff04b676541fad31d44389505c168141857ec9d43ea19527e34312cb25a40",
+  "coveredFiles": [
+    "src/core/DynamicMcpService.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/BenchmarkDivergenceAnalyzer.ts",
+    "src/monitoring/CollaborationRedriveEngine.ts",
+    "tests/unit/BenchmarkDivergenceAnalyzer.test.ts",
+    "tests/unit/CollaborationRedriveEngine.test.ts",
+    "tests/unit/dynamic-mcp-service.test.ts",
+    "upgrades/eli16/maturation-tracking-benchmark-dynamicmcp-redrive.md",
+    "upgrades/next/maturation-tracking-benchmark-dynamicmcp-redrive.md",
+    "upgrades/side-effects/maturation-tracking-benchmark-dynamicmcp-redrive.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Recording only through the existing never-throwing evidence call plus three ladder plan texts; no decision, flag or default changes and a revert fully undoes it.",
+  "eli16Path": "upgrades/eli16/maturation-tracking-benchmark-dynamicmcp-redrive.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-tracking-benchmark-dynamicmcp-redrive.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

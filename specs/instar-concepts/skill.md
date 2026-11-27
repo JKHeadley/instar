@@ -201,3 +201,7 @@ Material findings addressed in this iteration:
 - H5 (canonical-read errors mis-tagged) — `framework: 'canonical'` slot added to the type union.
 
 Material findings deferred to follow-ups (tracked above): C3 (`allowed-tools` rendering), C4 (backfill migration), C6 (atomic writes), H2/H3 (backup + template updates), H4 (git-sync conflict surfacing — partial; parser fails loud on conflict markers).
+
+## Backfill note (2026-11-06, skill-learning-sentinel slice 0)
+
+The "initial scan backfills" claim above (parity-sentinel initial-scan path) and the deferred `migrateSkillsCanonicalBackfill()` / `installBuiltinSkills()` rewrite listed under follow-ups were never carried until this change: on every deployed agent `.instar/skills/` stayed absent, the skills lived only under `.claude/skills/`, and the parity rule was a structural no-op (`migrateParityRenderings` recorded "no canonical instances found"). `docs/specs/skill-learning-sentinel.md` slice 0 lands them in `src/core/PostUpdateMigrator.ts`: `migrateSkillsCanonicalBackfill()` (unconditional, copy-only, idempotent; `.claude` wins a differing `.agents` copy, which is left untouched and logged `canonical-backfill-conflict`; existing renderings are stamped with the canonical body hash, never re-rendered), `migrateBuiltinSkillRenderings()` (absent framework renderings produced through `skillParityRule.remediate()`), and `installBuiltinSkills()` now writes canonical first.

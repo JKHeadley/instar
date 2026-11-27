@@ -11,6 +11,7 @@
  * Bearer-authenticated by the server's global auth middleware, like every other route.
  * Each machine keeps its own data (spec §13); the pool view merges on read.
  */
+import { operatorError } from '../core/storageMachineName.js';
 import type { Router, Request, Response as ExpressResponse } from 'express';
 import { JobCostReport, JobCostBaselineFrozenError, type JobCostReportOutput, type TokenCounts } from '../scheduler/JobCostReport.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
@@ -116,7 +117,7 @@ export function mountJobCostRoutes(router: Router, deps: JobCostRoutesDeps): voi
     try {
       local = await deps.report.compute(sinceDays);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
       return;
     }
     if (scope === 'local') { res.json(local); return; }
@@ -176,7 +177,7 @@ export function mountJobCostRoutes(router: Router, deps: JobCostRoutesDeps): voi
         res.status(409).json({ error: 'already-frozen', frozenAt: err.frozenAt, hint: 'send {"force": true} to refreeze' });
         return;
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 }

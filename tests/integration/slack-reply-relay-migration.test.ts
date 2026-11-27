@@ -18,7 +18,7 @@ afterEach(() => {
   }
 });
 
-function fixture() {
+function fixture(script = prior) {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-relay-migration-'));
   dirs.push(projectDir);
   const stateDir = path.join(projectDir, '.instar');
@@ -29,7 +29,7 @@ function fixture() {
   const compatibility = path.join(projectDir, '.claude/scripts/slack-reply.sh');
   for (const destination of [canonical, compatibility]) {
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, prior, { mode: 0o755 });
+    fs.writeFileSync(destination, script, { mode: 0o755 });
   }
   return { projectDir, stateDir, canonical, compatibility };
 }
@@ -42,6 +42,18 @@ function migrateScripts(projectDir: string, stateDir: string) {
 }
 
 describe('Slack reply relay update migration', () => {
+  it('upgrades the exact shipped here-string relay for existing opted-in agents', () => {
+    const old = fs.readFileSync(path.join(root, 'tests/fixtures/slack-reply-2026-11-05.sh'), 'utf8');
+    const f = fixture(old);
+    const result = migrateScripts(f.projectDir, f.stateDir);
+    expect(result.errors.filter(error => error.includes('Slack reply relay'))).toEqual([]);
+    for (const destination of [f.canonical, f.compatibility]) {
+      expect(fs.readFileSync(destination, 'utf8')).toBe(current);
+      expect(fs.readFileSync(`${destination}.bak.f16111eb9d39`, 'utf8')).toBe(old);
+    }
+    expect(slackReplyRelayReadiness(f.stateDir, current)).toEqual({ ready: true });
+  });
+
   it('reconciles the prior shipped relay through the production migrator and is idempotent', () => {
     const f = fixture();
     const first = migrateScripts(f.projectDir, f.stateDir);

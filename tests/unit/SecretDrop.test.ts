@@ -6,7 +6,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
-import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
+import { JSDOM } from 'jsdom';
+import { SecretDrop, canonicalSubmitMessage, canonicalSubmitMessageV2, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
   let drop: SecretDrop;
@@ -36,6 +37,7 @@ describe('SecretDrop', () => {
         label: 'Database Password',
         description: 'Needed for production migration',
         topicId: 42,
+        mintAuth: 'master',
       });
       const pending = drop.getPending(token);
       expect(pending).not.toBeNull();
@@ -70,10 +72,11 @@ describe('SecretDrop', () => {
 
     it('enforces max pending limit', () => {
       // Create 20 (the max)
+      // (with the agent's key: keyless requests have their own, smaller share)
       for (let i = 0; i < 20; i++) {
-        drop.create({ label: `Key ${i}` });
+        drop.create({ label: `Key ${i}`, mintAuth: 'master' });
       }
-      expect(() => drop.create({ label: 'One too many' })).toThrow(/Too many pending/);
+      expect(() => drop.create({ label: 'One too many', mintAuth: 'master' })).toThrow(/Too many pending/);
     });
   });
 
@@ -181,7 +184,7 @@ describe('SecretDrop', () => {
     });
 
     it('preserves topicId in submission', () => {
-      const { token } = drop.create({ label: 'Topic Test', topicId: 999 });
+      const { token } = drop.create({ label: 'Topic Test', topicId: 999, mintAuth: 'master' });
       const pending = drop.getPending(token)!;
 
       const submission = drop.submit(token, pending.csrfToken, { secret: 'value' });
@@ -239,9 +242,48 @@ describe('SecretDrop', () => {
     });
   });
 
+  // secret-drop-self-mint-hardening: who created a request decides what it may reach.
+  describe('creator class (mintAuth)', () => {
+    it('defaults to keyless: the request cannot name a conversation', () => {
+      const { token } = drop.create({ label: 'X', topicId: 7 });
+      const p = drop.getPending(token)!;
+      expect(p.mintAuth).toBe('none');
+      expect(p.topicId).toBeUndefined();
+    });
+    it('the agent key, the owner phone and the owner dashboard keep the conversation; keyless does not', () => {
+      expect(drop.getPending(drop.create({ label: 'A', topicId: 7, mintAuth: 'master' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'B', topicId: 7, mintAuth: 'owner-phone' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'C', topicId: 7, mintAuth: 'dashboard' }).token)!.topicId).toBe(7);
+      expect(drop.getPending(drop.create({ label: 'D', topicId: 7, mintAuth: 'none' }).token)!.topicId).toBeUndefined();
+    });
+    it('keyless requests get half the pending cap; the owner keeps the other half', () => {
+      for (let i = 0; i < 10; i++) drop.create({ label: `k${i}` });
+      expect(() => drop.create({ label: 'k10' })).toThrow(/made without the agent key/);
+      for (let i = 0; i < 10; i++) expect(() => drop.create({ label: `m${i}`, mintAuth: 'master' })).not.toThrow();
+    });
+    it('the class travels with the submission, the stuck event and the pending list', () => {
+      const { token } = drop.create({ label: 'K', mintAuth: 'master' });
+      expect(drop.listPending().find((p) => p.token === token)!.mintAuth).toBe('master');
+      const sub = drop.submit(token, drop.getPending(token)!.csrfToken, { secret: 'v' })!;
+      expect(sub.mintAuth).toBe('master');
+    });
+    it('a keyless request\'s page shows the fixed warning and omits its description', () => {
+      const { token } = drop.create({ label: 'Looks official', description: 'Please paste your bank password' });
+      const html = drop.renderForm(drop.getPending(token)!);
+      expect(html).toContain('was not created by your agent');
+      expect(html).not.toContain('Please paste your bank password');
+    });
+    it('a verified request\'s page has no warning and shows its description', () => {
+      const { token } = drop.create({ label: 'Mine', description: 'For the deploy', mintAuth: 'master' });
+      const html = drop.renderForm(drop.getPending(token)!);
+      expect(html).not.toContain('was not created by your agent');
+      expect(html).toContain('For the deploy');
+    });
+  });
+
   describe('renderForm', () => {
     it('renders valid HTML with agent name and label', () => {
-      const { token } = drop.create({ label: 'API Key', description: 'For OpenAI access' });
+      const { token } = drop.create({ label: 'API Key', description: 'For OpenAI access', mintAuth: 'master' });
       const request = drop.getPending(token)!;
 
       const html = drop.renderForm(request);
@@ -262,6 +304,54 @@ describe('SecretDrop', () => {
       const html = drop.renderForm(request);
       expect(html).not.toContain('<script>alert("xss")</script>');
       expect(html).toContain('&lt;script&gt;');
+    });
+  });
+
+  describe('renderForm — show/hide toggle (CMT-1250)', () => {
+    function render(fields?: Array<{ name: string; label: string; masked?: boolean }>) {
+      const { token } = drop.create({ label: 'Login', ...(fields ? { fields } : {}) });
+      const html = drop.renderForm(drop.getPending(token)!);
+      const dom = new JSDOM(html, { runScripts: 'dangerously' });
+      return dom;
+    }
+
+    it('gives every masked field an eye button that shows and hides what was typed', () => {
+      const dom = render([{ name: 'user', label: 'Username', masked: false }, { name: 'pass', label: 'Password' }]);
+      const doc = dom.window.document;
+      const pass = doc.getElementById('field-pass') as HTMLInputElement;
+      const btn = doc.querySelector('.reveal-btn[data-reveal-for="field-pass"]') as HTMLButtonElement;
+      expect(pass.type).toBe('password');
+      expect(btn.getAttribute('type')).toBe('button'); // never submits the form
+      expect(btn.getAttribute('aria-pressed')).toBe('false');
+      expect(btn.getAttribute('aria-label')).toBe('Show what you typed');
+      btn.click();
+      expect(pass.type).toBe('text');
+      expect(btn.getAttribute('aria-pressed')).toBe('true');
+      expect(btn.getAttribute('aria-label')).toBe('Hide what you typed');
+      btn.click();
+      expect(pass.type).toBe('password');
+      // an unmasked field needs no toggle
+      expect(doc.querySelector('.reveal-btn[data-reveal-for="field-user"]')).toBeNull();
+      dom.window.close();
+    });
+
+    it('re-masks revealed fields when the form is sent', () => {
+      const dom = render();
+      const doc = dom.window.document;
+      (dom.window as unknown as { fetch: unknown }).fetch = () => new Promise(() => {});
+      const btn = doc.querySelector('.reveal-btn') as HTMLButtonElement;
+      const input = doc.getElementById(btn.getAttribute('data-reveal-for')!) as HTMLInputElement;
+      btn.click();
+      expect(input.type).toBe('text');
+      doc.getElementById('secret-form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+      expect(input.type).toBe('password');
+      dom.window.close();
+    });
+
+    it('escapes the field name inside the toggle attributes', () => {
+      const dom = render([{ name: 'a"><img src=x onerror=alert(1)>', label: 'Odd' }]);
+      expect(dom.window.document.querySelector('img')).toBeNull();
+      dom.window.close();
     });
   });
 
@@ -350,6 +440,98 @@ describe('SecretDrop', () => {
 
     it('buildSignedSubmission rejects a non-32-byte seed', () => {
       expect(() => buildSignedSubmission('t', { secret: 'x' }, 'aabb')).toThrow(/32 bytes/);
+    });
+
+    // Signed-submission encoding: two different value maps must never share signed bytes.
+    describe('unambiguous signed encoding (v2) and the safe v1 subset', () => {
+      function seedKey() {
+        const seed = crypto.randomBytes(32);
+        const priv = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]), format: 'der', type: 'pkcs8' });
+        const pubHex = Buffer.from(Buffer.from(crypto.createPublicKey(priv).export({ type: 'spki', format: 'der' })).subarray(-32)).toString('hex');
+        return { seedHex: seed.toString('hex'), priv, pubHex };
+      }
+      const twoFields = [{ name: 'a', label: 'a' }, { name: 'b', label: 'b' }];
+      const before = { a: 'first\nb=middle', b: 'last' };
+      const after = { a: 'first', b: 'middle\nb=last' };
+
+      it('v2 bytes differ for value maps whose v1 bytes collide', () => {
+        expect(canonicalSubmitMessage('T', before).equals(canonicalSubmitMessage('T', after))).toBe(true);
+        expect(canonicalSubmitMessageV2('T', before).equals(canonicalSubmitMessageV2('T', after))).toBe(false);
+      });
+
+      it('a v2 signature for one value map does not verify a different one; the signed map is accepted', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, before, k.seedHex);
+        expect(drop.submit(token, csrf(token), { ...after, _sig: signed._sig, _sigv: signed._sigv })).toBeNull();
+        expect(drop.getPending(token)).not.toBeNull(); // a refused submit never burns the token
+        const sub = drop.submit(token, csrf(token), signed);
+        expect(sub).not.toBeNull();
+        expect(sub!.values).toEqual(before);
+        expect(sub!.values._sigv).toBeUndefined();
+      });
+
+      it('a v1 signature over multi-line values is refused with a reason the sender can act on', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const v1sig = crypto.sign(null, canonicalSubmitMessage(token, before), k.priv).toString('hex');
+        expect(drop.submitWithReason(token, csrf(token), { ...after, _sig: v1sig })).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.submitWithReason(token, csrf(token), { ...before, _sig: v1sig })).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
+
+      it('v2 carries multi-line values (e.g. a PEM key) end to end', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: [{ name: 'key', label: 'key' }], senderVerification: { senderPubKeyHex: k.pubHex } });
+        const pem = '-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----';
+        const sub = drop.submit(token, csrf(token), buildSignedSubmission(token, { key: pem }, k.seedHex));
+        expect(sub!.values.key).toBe(pem);
+      });
+
+      it('v1 single-line signatures still verify, including an old signer that signed surrounding spaces', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const raw = { secret: '  tok-123  ' }; // v1 signed as sent; the stored value is trimmed
+        const v1sig = crypto.sign(null, canonicalSubmitMessage(token, raw), k.priv).toString('hex');
+        const sub = drop.submit(token, csrf(token), { ...raw, _sig: v1sig });
+        expect(sub).not.toBeNull();
+        expect(sub!.values.secret).toBe('tok-123');
+      });
+
+      it('values with surrounding whitespace verify (signer and verifier agree on trimming)', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const sub = drop.submit(token, csrf(token), buildSignedSubmission(token, { secret: '  spaced  ' }, k.seedHex));
+        expect(sub!.values.secret).toBe('spaced');
+      });
+
+      it('an unknown signature version is refused, not guessed', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, { secret: 'x' }, k.seedHex);
+        expect(drop.submitWithReason(token, csrf(token), { ...signed, _sigv: '9' })).toEqual({ refused: 'signature-format-unknown' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
+
+      it('single-line values are signed in the v1 form older receivers can verify (no _sigv)', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, { secret: ' one-line ' }, k.seedHex);
+        expect(signed._sigv).toBeUndefined();
+        const v1ok = crypto.verify(null, canonicalSubmitMessage(token, { secret: 'one-line' }), crypto.createPublicKey(k.priv), Buffer.from(signed._sig, 'hex'));
+        expect(v1ok).toBe(true);
+        expect(drop.submit(token, csrf(token), signed)!.values.secret).toBe('one-line');
+      });
+
+      it('stripping the version marker from a multi-line v2 submission does not get it accepted', () => {
+        const k = seedKey();
+        const { token } = drop.create({ label: 'T', fields: twoFields, senderVerification: { senderPubKeyHex: k.pubHex } });
+        const signed = buildSignedSubmission(token, before, k.seedHex);
+        expect(signed._sigv).toBe('2');
+        const { _sigv, ...stripped } = signed;
+        expect(drop.submitWithReason(token, csrf(token), stripped)).toEqual({ refused: 'signature-format-outdated' });
+        expect(drop.getPending(token)).not.toBeNull();
+      });
     });
   });
 });

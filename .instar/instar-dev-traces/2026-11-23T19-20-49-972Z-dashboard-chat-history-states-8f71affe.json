@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "dashboard-chat-history-states",
+  "sessionId": "fbd2d863-65c0-467c-b7f0-b849917802c2",
+  "timestamp": "2026-11-23T19:20:49.972Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chat-history-states.md",
+  "artifactSha256": "1d5d1dbce497f83e11a965c36297deafbc0b8a53c17d7484bfb5232c3fb9f7ae",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-chat-history-states.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/dashboard-chat-history-states.md",
+    "upgrades/side-effects/dashboard-chat-history-states.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair of existing chat read-state presentation; no new send enrollment approval or merge authority; shared signed GET lifetime and retry tested.",
+  "eli16Path": "docs/specs/dashboard-chat-history-states.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chat-history-states.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

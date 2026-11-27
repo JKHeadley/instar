@@ -91,7 +91,23 @@ export class SessionBuildContextStore {
       ...(branch ? { branch } : {}),
       updatedAt: now,
     };
-    this.writeAll(all);
+    this.writeAll(this.withoutExpired(all, now));
+  }
+
+  /**
+   * Entries past the max age are never restored (`getRestore` refuses them), yet nothing removed
+   * them: every session ever spawned kept its row. On one machine the file reached 32,378 rows
+   * and 8.2 MB, 99.7% of them expired, and `record` parsed all of it for every running session
+   * on every monitor pass (the largest steady cost on the server's event loop, 2026-11-13) and
+   * rewrote all of it for every new session. Each write now drops the expired rows.
+   */
+  private withoutExpired(all: SessionBuildContextState, now: number): SessionBuildContextState {
+    const maxAge = this.maxAgeMs();
+    const kept: SessionBuildContextState = {};
+    for (const [key, entry] of Object.entries(all)) {
+      if (now - entry.updatedAt <= maxAge) kept[key] = entry;
+    }
+    return kept;
   }
 
   getRestore(tmuxSession: string): SessionBuildContextRestore | null {

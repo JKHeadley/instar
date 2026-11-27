@@ -44,6 +44,13 @@ export const INSTAR_HOOK_PATH_MARKER = '.instar/hooks/instar/';
  */
 export const CODEX_AUTONOMOUS_HOOK_MARKER = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
 
+/**
+ * The external-operation gate's hook timeout (ms). It must exceed the hook's own in-script abort
+ * (8000 ms, above the server's admission time) because Codex kills a slow hook and proceeds, which
+ * would turn a governed action's refusal into an admission (trust-journey spec 6a).
+ */
+export const EXTERNAL_OPERATION_GATE_TIMEOUT_MS = 12000;
+
 interface CodexHookHandler {
   type: 'command';
   command: string;
@@ -95,14 +102,16 @@ export function buildInstarCodexHookGroups(
     // language (it is a PreToolUse hook on Claude too — NOT a Stop hook). All read the
     // command from Codex's stdin payload — Codex's exec_command puts it in
     // tool_input.cmd (Claude uses tool_input.command); the scripts accept both field
-    // names AND both tool names (Bash | exec_command).
+    // names AND both tool names (Bash | exec_command). attribution-gate covers apply_patch and exits
+    // at once for any other tool; its timeout is set explicitly, over its 20s budget, so it always
+    // passes on its own terms rather than being killed.
     PreToolUse: [
-      { matcher: '.*', hooks: [node('signin-profile-guard.js'), node('telegram-origin-guard.js'), sh('dangerous-command-guard.sh'), node('external-operation-gate.js'), sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js')] },
+      { matcher: '.*', hooks: [node('signin-profile-guard.js'), node('telegram-origin-guard.js'), sh('dangerous-command-guard.sh'), { ...node('external-operation-gate.js'), timeout: EXTERNAL_OPERATION_GATE_TIMEOUT_MS }, sh('grounding-before-messaging.sh'), node('deferral-detector.js'), node('self-stop-guard.js'), { ...node('attribution-gate.js'), timeout: 25000 }] },
     ],
     // Codex-only checkpoint. Routes to the same gate; the trust system
     // auto-decides (allow/deny) with NO human prompt so autonomy is preserved.
     PermissionRequest: [
-      { matcher: '.*', hooks: [node('external-operation-gate.js')] },
+      { matcher: '.*', hooks: [{ ...node('external-operation-gate.js'), timeout: EXTERNAL_OPERATION_GATE_TIMEOUT_MS }] },
     ],
     // End-of-turn review chain — starts with the unjustified-stop router
     // (shadow by default), then MUST MIRROR the Claude Stop trio
@@ -143,7 +152,9 @@ export function buildInstarCodexHookGroups(
       { matcher: '', hooks: [sh('session-start.sh')] },
     ],
     UserPromptSubmit: [
-      { matcher: '', hooks: [sh('telegram-topic-context.sh'), node('hook-event-reporter.js')] },
+      // The optional clock, context read, recovery offer and acknowledgement can
+      // run in sequence (3s + 4s + 3s + 1s), before rendering the output.
+      { matcher: '', hooks: [{ ...sh('telegram-topic-context.sh'), timeout: 15000 }, node('hook-event-reporter.js')] },
     ],
   };
 }

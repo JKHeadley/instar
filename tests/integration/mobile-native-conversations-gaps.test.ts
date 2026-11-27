@@ -73,7 +73,7 @@ async function setup(opts: Opts = {}) {
     getOwnerUserId: () => 4242,
     getAllTopicMappings: () => topics.map((t) => ({ topicId: t.topicId, topicName: t.topicName })),
     getTopicHistory: (id: number, limit: number) => tgRows.filter((r) => r.topicId === id).slice(-limit),
-    sendToTopic: async (_id: number, text: string) => { mirrors.push(text); },
+    sendToTopic: async (_id: number, text: string) => { mirrors.push(text);  return { messageId: 1, topicId: Number(_id) }; },
   };
   const resolvePeerUrls = () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' }));
   const ctx = {

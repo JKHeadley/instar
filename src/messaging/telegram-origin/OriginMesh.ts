@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 import { validOriginAdmission } from './OriginAdmissionSeal.js';
 import { canonicalOrigin, wireDigest } from './CanonicalOrigin.js';
 import { verifyOriginAttestation } from './OriginAttestation.js';
@@ -7,17 +8,35 @@ import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { StoredOriginInput, OriginListQuery } from './StoreTypes.js';
 import { TelegramOriginHoldError } from './types.js';
 import { classifyOperationOutcome, unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
+import { authorStatement } from './OriginOwnerRead.js';
 import type { TelegramOriginRecord } from './types.js';
 import { telegramFetch } from '../telegram-egress.js';
 import { verify as verifySignature } from 'node:crypto';
 import { verifyPoolLinkAssertion, type PoolLinkAssertion } from '../../core/PoolLinkAssertion.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import { originAuditDeliveryConfirmed } from './OriginDeliveryResolution.js';
+import { sanitizeForwardContext } from './TokenlessForwardEvidence.js';
+import type { HolderEvidenceRecorder } from './TokenlessForwardEvidence.js';
+import { sanitizeHoldNotice, sanitizeOutcomes } from './TokenlessHeldDebt.js';
+import type { PeerHeldDebtStore } from './TokenlessHeldDebt.js';
+import { forwardedDeliveryRow } from './ForwardedDeliveryHistory.js';
 
 export const ORIGIN_MESH_PROTOCOL = 'instar-telegram-origin-v1';
+
+/** History only: the delivery outcome is already decided, so a failing
+ * recorder can never turn a delivered reply into a refusal the peer retries. */
+function recordForwardedDelivery(runtime: TelegramOriginRuntime, operation: OriginPreparedBotOperation, messageId: unknown): void {
+  if (!runtime.options.onForwardedDelivered) return;
+  try {
+    const row = forwardedDeliveryRow(operation, messageId);
+    if (row) runtime.options.onForwardedDelivered(row);
+  } catch (error) {
+    console.warn('[telegram-origin] forwarded delivery history not recorded', error instanceof Error ? error.name : 'unknown-error');
+  }
+}
 export type OriginMeshCommand = { type: 'telegram-origin'; protocol: typeof ORIGIN_MESH_PROTOCOL } & (
-  { action: 'capabilities' } | { action: 'receipt'; operationId: string } | { action: 'evidence'; record: StoredOriginInput } |
-  { action: 'submit'; operation: OriginPreparedBotOperation } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
+  { action: 'capabilities'; forwardContext?: unknown } | { action: 'receipt'; operationId: string; reader?: boolean } | { action: 'evidence'; record: StoredOriginInput; tokenlessHold?: unknown } |
+  { action: 'submit'; operation: OriginPreparedBotOperation; forwardContext?: unknown } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
   | { action: 'metrics'; operatorAssertion?: PoolLinkAssertion });
 export const ORIGIN_METRICS_AUDIENCE = 'telegram-origin-metrics:v1';
 
@@ -34,8 +53,18 @@ export async function handleOriginMesh(options: {
   command: OriginMeshCommand;
   authenticatedSender: string;
   resolveKey: (machineId: string) => OriginVerificationKey | null;
+  /** standby-durable-forward-without-token §10: records a token-less standby's evidence (signal only). */
+  evidence?: HolderEvidenceRecorder;
+  /** §9: open debt entries for another machine's token-less holds (metadata only). */
+  heldDebt?: PeerHeldDebtStore;
 }): Promise<unknown> {
   const { runtime, command } = options;
+  // A command-level `forwardContext` never changes how the command is handled.
+  const forwardContext = (command.action === 'capabilities' || command.action === 'submit') ? sanitizeForwardContext(command.forwardContext) : null;
+  const observe = (delivered?: { operationId: string }): string[] => {
+    if (!forwardContext || !options.evidence) return [];
+    try { return options.evidence.observe(options.authenticatedSender, forwardContext, delivered); } catch { return []; } // @silent-fallback-ok — evidence is a signal; an unwritable log only delays the ack, never the command
+  };
   if (command.protocol !== ORIGIN_MESH_PROTOCOL) return { ok: false, reason: 'origin-protocol-unsupported' };
   if (!options.resolveKey(options.authenticatedSender)) return { ok: false, reason: 'origin-peer-unavailable' };
   if (command.action === 'receipt') {
@@ -59,22 +88,55 @@ export async function handleOriginMesh(options: {
       if (!audit) return { ok: true, operationId: command.operationId, state: 'no-record', originReceiptConfirmed: false,
         executionOwnerMachineId: runtime.options.identity.originMachineId };
       const record = JSON.parse(audit.record.envelopeJson) as TelegramOriginRecord;
-      if (record.originMachineId !== options.authenticatedSender || record.agentId !== runtime.options.identity.agentId ||
+      const self = runtime.options.identity.originMachineId;
+      // native-conversation-base §3b item 3 — `reader: true` relaxes exactly two
+      // checks (the asker wrote it; this machine owns it); `role` replaces the
+      // second. Agent, operation id, origin id, digest and key epoch stay. The
+      // forward ladder never sends `reader`, so a reader answer cannot free a re-forward.
+      const reader = command.reader === true;
+      if ((!reader && record.originMachineId !== options.authenticatedSender) || record.agentId !== runtime.options.identity.agentId ||
         record.operationId !== command.operationId || record.originId !== audit.record.originId ||
-        record.executionOwnerMachineId !== runtime.options.identity.originMachineId || wireDigest(audit.record.envelopeJson) !== audit.record.envelopeDigest) {
+        (!reader && record.executionOwnerMachineId !== self) || wireDigest(audit.record.envelopeJson) !== audit.record.envelopeDigest) {
         return { ok: false, reason: 'origin-receipt-unavailable' };
       }
-      const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
+      const role = record.executionOwnerMachineId === self ? 'execution-owner' : record.originMachineId === self ? 'author' : null;
+      if (!role) return { ok: false, reason: 'origin-receipt-unavailable' };
       const verdict = classifyOperationOutcome(command.operationId, audit, runtime.unrecordedReceipts?.forOperation(command.operationId) ?? []);
+      if (role === 'author') {
+        // The author's own row: whether it still holds the reply, and its successor. No verdict, no terminal state.
+        // `holding: null` = cannot tell (unresolved forward or send); `delivered` = it sent the reply itself.
+        const statement = authorStatement(audit, verdict);
+        return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest, role,
+          holding: statement.delivered ? null : statement.holding, supersededBy: statement.supersededBy,
+          ...(statement.delivered ? { delivered: true, messageIds: statement.delivered.messageIds } : {}) };
+      }
+      const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
       return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest,
-        executionOwnerMachineId: runtime.options.identity.originMachineId, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
+        executionOwnerMachineId: self, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
         originReceiptConfirmed: (fallback || originAuditDeliveryConfirmed(audit)) && verdict.outcome === 'delivered',
-        messageIds: verdict.messageIds };
+        messageIds: verdict.messageIds,
+        // §3b item 1 — the classified verdict travels with the raw state. An older
+        // asker ignores these fields; the ladder still reads only `state`.
+        role, outcome: verdict.outcome, safeToResend: verdict.safeToResend, reason: verdict.reason ?? null, failure: verdict.failure ?? null,
+        supersededBy: verdict.supersededBy ?? null, duplicateOfMessageId: verdict.duplicateOfMessageId ?? null,
+        originMachineId: record.originMachineId, detail: verdict.detail,
+        // native-conversation-forwarded-advisory item 3 — the recorded verdict goes only to the machine that
+        // wrote the reply, never on a `reader` answer (its suggestion is for that session alone).
+        ...(!reader && record.originMachineId === options.authenticatedSender && audit.operation?.policyVerdict ? { policyVerdict: audit.operation.policyVerdict } : {}),
+        ...(record.originMachineId === self ? { holding: authorStatement(audit, verdict).holding } : {}) };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
-  if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
-    executionOwnerMachineId: runtime.options.identity.originMachineId,
-    credentialOwner: !!runtime.options.bot.token, accountId: runtime.options.bot.token ? runtime.options.bot.accountId : null };
+  if (command.action === 'capabilities') {
+    const evidenceAck = observe();
+    // §9: the origin machine reports how its holds ended; only it can close its entries.
+    let outcomesAck: string[] = [];
+    const outcomes = sanitizeOutcomes((command.forwardContext as { outcomes?: unknown } | undefined)?.outcomes);
+    if (outcomes.length && options.heldDebt) { try { options.heldDebt.close(options.authenticatedSender, outcomes); outcomesAck = outcomes.map(o => o.rootOperationId); } catch { /* @silent-fallback-ok — unacked outcomes are resent */ } }
+    return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
+      executionOwnerMachineId: runtime.options.identity.originMachineId,
+      credentialOwner: !!runtime.options.bot.token, accountId: runtime.options.bot.token ? runtime.options.bot.accountId : null,
+      ...(evidenceAck.length ? { evidenceAck } : {}), ...(outcomesAck.length ? { outcomesAck } : {}) };
+  }
   if (command.action === 'audit' || command.action === 'metrics') {
     const assertion = command.operatorAssertion;
     if (!assertion || assertion.userAuth !== 'pin-session') return { ok: false, reason: 'operator-audit-scope-required' };
@@ -116,7 +178,14 @@ export async function handleOriginMesh(options: {
   const verification = { envelopeDigest: stored.envelopeDigest, verifierMachineId: runtime.options.identity.originMachineId,
     keyId: key.keyId, keyEpoch: key.keyEpoch, keyFingerprint: wireDigest(key.publicKey), verifiedAt: verified.verifiedAt,
     keyStatusAtAcceptance: 'active' as const };
-  if (command.action === 'evidence') return { ok: true, receipt: await runtime.store.putVerifiedEvidence({ record: stored, verification }) };
+  if (command.action === 'evidence') {
+    const receipt = await runtime.store.putVerifiedEvidence({ record: stored, verification });
+    const notice = sanitizeHoldNotice(command.tokenlessHold);
+    if (notice && options.heldDebt && stored.machineId === options.authenticatedSender) {
+      try { options.heldDebt.add(options.authenticatedSender, notice); } catch { /* @silent-fallback-ok — the debt note is best effort; the evidence receipt stands */ }
+    }
+    return { ok: true, receipt };
+  }
   if (command.action !== 'submit' || !runtime.options.bot.token) return { ok: false, reason: 'origin-credential-owner-required' };
   if (record.executionOwnerMachineId !== runtime.options.identity.originMachineId) {
     return { ok: false, reason: 'execution-owner-mismatch', outcome: 'held' };
@@ -135,22 +204,49 @@ export async function handleOriginMesh(options: {
     record.destination.transport !== 'bot-api' || record.destination.accountId !== runtime.options.bot.accountId) {
     return { ok: false, reason: 'origin-plan-invalid' };
   }
+  // native-conversation-base §3a item 7 — an owner that receives a submit for an id
+  // it holds as terminal answers with that ending instead of sending. Naming the
+  // operation id makes the forwarder ask this machine's `receipt`, which carries
+  // the classified outcome, reason and failure; the old id is never sent again.
+  try {
+    const existing = await runtime.store.getOperation(record.operationId);
+    const state = existing?.operation?.state;
+    if (existing && state && ['suppressed', 'known-failed', 'expired', 'superseded'].includes(state)) {
+      const verdict = classifyOperationOutcome(record.operationId, existing, runtime.unrecordedReceipts?.forOperation(record.operationId) ?? []);
+      return { ok: false, reason: 'origin-operation-terminal', outcome: 'held', operationId: record.operationId,
+        terminal: { state, outcome: verdict.outcome, reason: verdict.reason ?? null, failure: verdict.failure ?? null } };
+    }
+  } catch { /* unreadable: the admit below refuses a conflicting replay on its own */ }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
-    await runtime.service.admit(operation);
-    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-    const response = await telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
-      { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-        networkTimeoutMs: 10_000 }, undefined, operation);
+    const response = await runtime.service.runFirstSend(record.operationId, async () => {
+      await runtime.service.admit(operation);
+      const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+      return telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
+        { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
+          networkTimeoutMs: 10_000 }, undefined, operation);
+    });
     const body = await response.json() as { result?: { message_id?: number } };
+    recordForwardedDelivery(runtime, operation, body.result?.message_id);
+    const evidenceAck = observe({ operationId: record.operationId });
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
-      deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
+      deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId,
+      ...(evidenceAck.length ? { evidenceAck } : {}) };
   } catch (error) {
-    if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
-      operationId: record.operationId, policyRefusal: error.decision };
+    if (error instanceof QuietRecordedError) return { ok: true, originId: record.originId, ...error.receipt, deliveryMachineId: runtime.options.identity.originMachineId };
+    if (error instanceof OriginSendPolicyRefusal) {
+      // native-conversation-forwarded-advisory item 2 — "not sent" is answered only after this machine ended
+      // its own copy in the same transition that recorded the verdict. A `retain` refusal, or a write that
+      // lost (a concurrent claim, an earlier verdict), is CUSTODY: the author holds its row and asks later.
+      const ended = await runtime.endForPolicy(record, error.decision).catch(() => null);
+      if (ended?.ended) return { ok: false, reason: error.reason, outcome: 'held', operationId: record.operationId,
+        policyRefusal: error.decision, copyEnded: true, policyVerdict: ended.verdict };
+      return { ok: false, reason: error.reason, outcome: 'outcome-unknown', operationId: record.operationId };
+    }
     // Telegram accepted it; only the receipt write failed. Answering a refusal
     // here would let the forwarding standby re-forward a delivered message.
     if (error instanceof TelegramOriginHoldError && error.outcome === 'accepted-unrecorded' && error.delivered?.messageId && /^\d+$/.test(error.delivered.messageId)) {
+      recordForwardedDelivery(runtime, operation, Number(error.delivered.messageId));
       return { ok: true, originId: record.originId, messageId: Number(error.delivered.messageId), originReceiptConfirmed: true,
         deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId, receiptRecorded: false };
     }

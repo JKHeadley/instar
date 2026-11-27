@@ -17,7 +17,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
-import type { SlackConfig } from '../../src/messaging/slack/types.js';
+import type { SlackConfig, SlackMessage } from '../../src/messaging/slack/types.js';
+import { RingBuffer } from '../../src/messaging/slack/RingBuffer.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 let tmp: string | null = null;
@@ -67,13 +68,14 @@ describe('SlackAdapter → formatter wiring integrity', () => {
     expect(calls[0].params.text).toBe('*bold* and <https://example.com|docs>');
   });
 
-  it('activates a person reference only on an explicit send option', async () => {
-    const { adapter, calls } = makeAdapter();
+  it('keeps a mention of someone outside the conversation literal unless explicitly listed', async () => {
+    const { adapter, calls } = makeAdapter(); // the stub reports no members
     await adapter.sendToChannel('C123', 'Thanks <@U0C62ABNDK8>');
     await adapter.sendToChannel('C123', 'Thanks <@U0C62ABNDK8>', { nativeReferences: ['U0C62ABNDK8'] });
-    expect(calls[0].params.text).toBe('Thanks &lt;@U0C62ABNDK8&gt;');
-    expect(calls[1].params.text).toBe('Thanks <@U0C62ABNDK8>');
-    expect(calls[1].params).not.toHaveProperty('_nativeReferences');
+    const posts = calls.filter((c) => c.method === 'chat.postMessage');
+    expect(posts[0].params.text).toBe('Thanks &lt;@U0C62ABNDK8&gt;');
+    expect(posts[1].params.text).toBe('Thanks <@U0C62ABNDK8>');
+    expect(posts[1].params).not.toHaveProperty('_nativeReferences');
   });
 
   it('send() (OutgoingMessage path) formats each chunk', async () => {
@@ -139,5 +141,150 @@ describe('SlackAdapter → formatter wiring integrity', () => {
     expect(calls[0].params.channel).toBe('C123');
     expect(calls[0].params.thread_ts).toBe('1700000000.000200');
     expect(calls[0].params.text).toBe('*via key*');
+  });
+});
+
+/**
+ * Participant mentions (default on): a `<@U…>` the agent writes is sent active
+ * when that id is a human participant of the target conversation, and literal
+ * otherwise. The Slack transport is stubbed with a member list and users.info.
+ */
+describe('SlackAdapter → participant mentions', () => {
+  const HUMAN = 'U0C62ABNDK8';
+  const OUTSIDER = 'U0APWL48281';
+  const BOT = 'U0BOTUSER01';
+  const LEFT = 'U0DEACTIV01';
+
+  function makeParticipantAdapter(opts: {
+    members?: string[] | 'fail';
+    usersFail?: string[];
+    noBotField?: string[];
+    membersDelayMs?: number;
+  } = {}) {
+    const { adapter } = makeAdapter();
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    (adapter as unknown as { apiClient: unknown }).apiClient = {
+      call: async (method: string, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        if (method === 'conversations.members') {
+          if (opts.membersDelayMs) await new Promise((r) => setTimeout(r, opts.membersDelayMs));
+          if (opts.members === 'fail') throw new Error('missing_scope');
+          return { ok: true, members: opts.members ?? [HUMAN, BOT, LEFT] };
+        }
+        if (method === 'users.info') {
+          const id = String(params.user);
+          if (opts.usersFail?.includes(id)) throw new Error('user_not_found');
+          if (opts.noBotField?.includes(id)) return { ok: true, user: { id, name: id.toLowerCase() } };
+          return { ok: true, user: { id, name: id.toLowerCase(), is_bot: id === BOT, deleted: id === LEFT } };
+        }
+        return { ok: true, ts: '1700000001.000001' };
+      },
+    };
+    const posts = () => calls.filter((c) => c.method === 'chat.postMessage');
+    return { adapter, calls, posts };
+  }
+
+  it('activates a human member mention with no flag (the reported case)', async () => {
+    const { adapter, posts } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `<@${HUMAN}> Justin passed on your note about the mailing address`);
+    expect(posts()[0].params.text).toBe(`<@${HUMAN}> Justin passed on your note about the mailing address`);
+    expect(posts()[0].params).not.toHaveProperty('_participantUserIds');
+  });
+
+  it('keeps a non-member, a bot member and a deactivated member literal', async () => {
+    const { adapter, posts } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `<@${HUMAN}> <@${OUTSIDER}> <@${BOT}> <@${LEFT}>`);
+    expect(posts()[0].params.text).toBe(`<@${HUMAN}> &lt;@${OUTSIDER}&gt; &lt;@${BOT}&gt; &lt;@${LEFT}&gt;`);
+  });
+
+  it('keeps broadcasts and code literal even when the mentioned person is a member', async () => {
+    const { adapter, posts } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `<!channel> <!here> \`<@${HUMAN}>\``);
+    expect(posts()[0].params.text).toBe(`&lt;!channel&gt; &lt;!here&gt; \`&lt;@${HUMAN}&gt;\``);
+  });
+
+  it('fails closed (literal) when the member list cannot be read, and still sends', async () => {
+    const { adapter, posts } = makeParticipantAdapter({ members: 'fail' });
+    await adapter.sendToChannel('C123', `Thanks <@${HUMAN}>`);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].params.text).toBe(`Thanks &lt;@${HUMAN}&gt;`);
+  });
+
+  it('fails closed for one id whose users.info fails, without affecting others', async () => {
+    const { adapter, posts } = makeParticipantAdapter({ members: [HUMAN, OUTSIDER], usersFail: [OUTSIDER] });
+    await adapter.sendToChannel('C123', `<@${HUMAN}> <@${OUTSIDER}>`);
+    expect(posts()[0].params.text).toBe(`<@${HUMAN}> &lt;@${OUTSIDER}&gt;`);
+  });
+
+  it('never holds a send past the lookup timeout', async () => {
+    const { adapter, posts } = makeParticipantAdapter({ membersDelayMs: 4000 });
+    const started = Date.now();
+    await adapter.sendToChannel('C123', `Thanks <@${HUMAN}>`);
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(posts()[0].params.text).toBe(`Thanks &lt;@${HUMAN}&gt;`);
+  }, 10_000);
+
+  it('the explicit list still activates someone outside the conversation', async () => {
+    const { adapter, posts } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `<@${OUTSIDER}>`, { nativeReferences: [OUTSIDER] });
+    expect(posts()[0].params.text).toBe(`<@${OUTSIDER}>`);
+  });
+
+  it('caches the member list and user kinds between sends', async () => {
+    const { adapter, calls } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `Hi <@${HUMAN}>`);
+    await adapter.sendToChannel('C123', `Again <@${HUMAN}>`);
+    expect(calls.filter((c) => c.method === 'conversations.members')).toHaveLength(1);
+    expect(calls.filter((c) => c.method === 'users.info')).toHaveLength(1);
+  });
+
+  it('makes no lookup for a message without a person mention', async () => {
+    const { adapter, calls } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', '**plain** reply');
+    expect(calls.map((c) => c.method)).toEqual(['chat.postMessage']);
+  });
+
+  it('counts someone who posted in the thread as a participant without a member read', async () => {
+    const { adapter, calls, posts } = makeParticipantAdapter({ members: [] });
+    const buf = new RingBuffer<SlackMessage>(50);
+    buf.push({ ts: '1700000000.000300', thread_ts: '1700000000.000100', user: HUMAN, text: 'hi', channel: 'C123' });
+    (adapter as unknown as { channelHistory: Map<string, RingBuffer<SlackMessage>> }).channelHistory.set('C123', buf);
+    await adapter.sendToChannel('C123', `Thanks <@${HUMAN}>`, { thread_ts: '1700000000.000100' });
+    expect(posts()[0].params.text).toBe(`Thanks <@${HUMAN}>`);
+    expect(calls.filter((c) => c.method === 'conversations.members')).toHaveLength(0);
+  });
+
+  it('a users.info answer without is_bot stays literal', async () => {
+    const { adapter, posts } = makeParticipantAdapter({ members: [HUMAN], noBotField: [HUMAN] });
+    await adapter.sendToChannel('C123', `<@${HUMAN}>`);
+    expect(posts()[0].params.text).toBe(`&lt;@${HUMAN}&gt;`);
+  });
+
+  it('an older name-only cache entry is looked up again before a tag goes live', async () => {
+    const { adapter, calls, posts } = makeParticipantAdapter({ members: [HUMAN] });
+    (adapter as unknown as { userCache: Map<string, { name: string; fetchedAt: number }> }).userCache
+      .set(HUMAN, { name: 'cached name', fetchedAt: Date.now() });
+    await adapter.sendToChannel('C123', `<@${HUMAN}>`);
+    expect(calls.filter((c) => c.method === 'users.info')).toHaveLength(1);
+    expect(posts()[0].params.text).toBe(`<@${HUMAN}>`);
+  });
+
+  it('Slackbot stays literal and a W… member id is tagged', async () => {
+    const W = 'W0C62ABNDK8';
+    const { adapter, posts } = makeParticipantAdapter({ members: ['USLACKBOT', W] });
+    await adapter.sendToChannel('C123', `<@USLACKBOT> <@${W}>`);
+    expect(posts()[0].params.text).toBe(`&lt;@USLACKBOT&gt; <@${W}>`);
+  });
+
+  it('concurrent sends to an uncached conversation share one member read', async () => {
+    const { adapter, calls } = makeParticipantAdapter({ membersDelayMs: 50 });
+    await Promise.all([adapter.sendToChannel('C123', `a <@${HUMAN}>`), adapter.sendToChannel('C123', `b <@${HUMAN}>`)]);
+    expect(calls.filter((c) => c.method === 'conversations.members')).toHaveLength(1);
+  });
+
+  it('legacy-passthrough sends make no lookup', async () => {
+    const { adapter, calls } = makeParticipantAdapter();
+    await adapter.sendToChannel('C123', `<@${HUMAN}>`, { formatMode: 'legacy-passthrough' });
+    expect(calls.map((c) => c.method)).toEqual(['chat.postMessage']);
   });
 });

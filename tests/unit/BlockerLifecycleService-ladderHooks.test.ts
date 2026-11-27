@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { BlockerLifecycleLedger } from '../../src/monitoring/BlockerLifecycleLedger.js';
 import { BlockerLifecycleService } from '../../src/monitoring/BlockerLifecycleService.js';
 import type { Initiative } from '../../src/core/InitiativeTracker.js';
+import type { MaturationEvaluationRecord } from '../../src/monitoring/BlockerLifecycleLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const roots: string[] = [];
@@ -19,7 +20,7 @@ function make(now = Date.parse('2026-11-03T00:00:00Z')) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'd7-ladder-'));
   roots.push(root);
   const ledger = new BlockerLifecycleLedger({ dbPath: path.join(root, 'x.db') });
-  const tracker = Object.assign(new EventEmitter(), { getAll: () => [] }) as never;
+  const tracker = Object.assign(new EventEmitter(), { getAll: () => [], getBlockerEpisodeDropBuckets: () => ({}) }) as never;
   const svc = new BlockerLifecycleService(tracker, ledger, 'm1', () => now);
   services.push(svc);
   return { svc, ledger };
@@ -28,6 +29,101 @@ const contract = (ref: string) => ({ cadenceHours: 6, evidenceMaxAgeHours: 12, m
 const subject = (id: string, ref: string) => ({ id, title: id, rollout: { flagPath: id, stage: 'live', maturationEvaluation: contract(ref) } }) as unknown as Initiative;
 
 describe('BlockerLifecycleService ladder hooks', () => {
+  it('distinguishes latest feature states from historical evaluation counts', () => {
+    const { svc, ledger } = make();
+    const at = Date.parse('2026-11-02T00:00:00Z');
+    const row: MaturationEvaluationRecord = { origin: 'm1', featureId: 'one', rung: 'live',
+      dueSlotMs: at, evaluatedAtMs: at + 100, status: 'hold', passingMetrics: 0,
+      totalMetrics: 1, minNormalizedMargin: -0.5, contractHash: 'v1', newestEvidenceAtMs: at };
+    expect(ledger.recordMaturationEvaluation(row)).toBe(true);
+    expect(ledger.recordMaturationEvaluation({ ...row, dueSlotMs: at + 6 * 3_600_000, status: 'ready' })).toBe(true);
+    const summary = svc.localSummary(48).maturation as Record<string, unknown>;
+    expect(summary.byStatus).toMatchObject({ hold: 1, ready: 1 });
+    expect(summary.latestByStatus).toMatchObject({ hold: 0, ready: 1 });
+  });
+
+  it('retains exact cadence times and exposes contract, rung and evidence gaps in the existing trend', () => {
+    const { svc, ledger } = make();
+    const start = Date.parse('2026-11-01T00:00:00Z');
+    const base: MaturationEvaluationRecord = { origin: 'm1', featureId: 'one', rung: 'live',
+      dueSlotMs: start, evaluatedAtMs: start + 1, status: 'hold', passingMetrics: 0,
+      totalMetrics: 1, minNormalizedMargin: -0.5, contractHash: 'v1', newestEvidenceAtMs: start };
+    const changes: Partial<MaturationEvaluationRecord>[] = [{}, { status: 'ready' },
+      { contractHash: 'v2' }, { status: 'insufficient-evidence', newestEvidenceAtMs: null },
+      {}, { rung: 'default-on' }, { status: 'missed-cadence', additionalMissedSlots: 7 }];
+    changes.forEach((change, index) => expect(ledger.recordMaturationEvaluation({ ...base,
+      dueSlotMs: start + index * 3_600_000, ...change })).toBe(true));
+    const trend = svc.localTrend(7).maturation as { features: { evaluations: Record<string, unknown>[] }[] };
+    const points = trend.features[0].evaluations;
+    expect(points.map(p => p.sameEvaluationSeries)).toEqual([false, true, false, false, false, false, false]);
+    expect(points[1]).toMatchObject({ day: '2026-11-01', dueAt: '2026-11-01T01:00:00.000Z',
+      evaluatedAt: '2026-11-01T00:00:00.001Z', passingMetrics: 0, totalMetrics: 1 });
+    expect(points[3].newestEvidenceAt).toBeNull();
+    expect(points[6].additionalMissedSlots).toBe(7);
+  });
+
+  it('discloses omitted history instead of presenting a capped series as complete', () => {
+    const { svc, ledger } = make();
+    const start = Date.parse('2026-11-02T00:00:00Z');
+    for (let index = 0; index < 95; index++) expect(ledger.recordMaturationEvaluation({
+      origin: 'm1', featureId: 'one', rung: 'live', dueSlotMs: start + index * 1000,
+      evaluatedAtMs: start + index * 1000, status: 'ready', passingMetrics: 1, totalMetrics: 1,
+      minNormalizedMargin: 0, contractHash: 'v1', newestEvidenceAtMs: start,
+    })).toBe(true);
+    const trend = svc.localTrend(7).maturation as { features: { totalEvaluations: number; omittedEvaluations: number; evaluations: Record<string, unknown>[] }[] };
+    expect(trend).toMatchObject({ totalFeatures: 1, omittedFeatures: 0, featureLimit: 512, evaluationLimit: 90 });
+    expect(trend.features[0]).toMatchObject({ totalEvaluations: 95, omittedEvaluations: 5 });
+    expect(trend.features[0].evaluations).toHaveLength(90);
+    expect(trend.features[0].evaluations[0].sameEvaluationSeries).toBe(false);
+    expect(trend.features[0].evaluations[0].dueAt).toBe('2026-11-02T00:00:05.000Z');
+  });
+
+  it('bounds the shared history bytes while retaining the newest evidence for every feature', () => {
+    const { svc, ledger } = make();
+    const start = Date.parse('2026-11-02T00:00:00Z');
+    const rows: MaturationEvaluationRecord[] = [];
+    for (let feature = 0; feature < 200; feature++) for (let index = 0; index < 8; index++) rows.push({
+      origin: 'm1', featureId: `feature-${feature}`, rung: 'live', dueSlotMs: start + index * 1000,
+      evaluatedAtMs: start + index * 1000, status: 'ready', passingMetrics: 1, totalMetrics: 1,
+      minNormalizedMargin: 0, contractHash: 'a'.repeat(64), newestEvidenceAtMs: start,
+    });
+    vi.spyOn(ledger, 'maturationEvaluations').mockReturnValue(rows);
+    const trend = svc.localTrend(7).maturation as { historyByteLimit: number; features: { totalEvaluations: number; omittedEvaluations: number; evaluations: { dueAt: string }[] }[] };
+    expect(Buffer.byteLength(JSON.stringify(trend))).toBeLessThanOrEqual(trend.historyByteLimit);
+    expect(trend.historyByteLimit).toBe(384 * 1024);
+    expect(trend.features).toHaveLength(200);
+    expect(trend.features.some(f => f.omittedEvaluations > 0)).toBe(true);
+    for (const feature of trend.features) {
+      expect(feature.evaluations.length).toBeGreaterThan(0);
+      expect(feature.evaluations.at(-1)?.dueAt).toBe('2026-11-02T00:00:07.000Z');
+      expect(feature.totalEvaluations).toBe(feature.omittedEvaluations + feature.evaluations.length);
+    }
+  });
+
+  it('keeps the full maximum-lookback response below the existing peer envelope with dense factors', () => {
+    const now = Date.parse('2026-11-03T00:00:00Z'); const { svc, ledger } = make(now);
+    for (let day = 0; day < 90; day++) for (const factor of ['request-to-persist', 'clear-latency', 'deliverable-completion'] as const) {
+      for (let sample = 0; sample < 3; sample++) expect(ledger.record({ origin: 'm1', factor,
+        sourceEventId: `${factor}-${day}-${sample}`, observedAtMs: now - day * 86_400_000,
+        latencyMs: factor === 'deliverable-completion' ? null : 90_000 + sample, outcome: 'observed' })).toBe(true);
+    }
+    const rows: MaturationEvaluationRecord[] = [];
+    for (let feature = 0; feature < 512; feature++) for (let index = 0; index < 4; index++) rows.push({
+      origin: 'm1', featureId: `f-${feature}`.padEnd(63, 'x'), rung: 'r'.repeat(128),
+      dueSlotMs: now - (4 - index) * 3_600_000, evaluatedAtMs: now - (4 - index) * 3_600_000 + 1,
+      status: 'ready', passingMetrics: Number.MAX_SAFE_INTEGER, totalMetrics: Number.MAX_SAFE_INTEGER,
+      minNormalizedMargin: -0.12345678901234568, contractHash: 'a'.repeat(128), newestEvidenceAtMs: now - 6 * 3_600_000,
+    });
+    vi.spyOn(ledger, 'maturationEvaluations').mockReturnValue(rows);
+    const local = svc.localTrend(90);
+    const history = local.maturation as { features: unknown[]; historyByteLimit: number };
+    expect(history.features).toHaveLength(512);
+    expect((local.factors as { days: unknown[] }[]).every(f => f.days.length >= 89)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(local)) - Buffer.byteLength(JSON.stringify(history))).toBeLessThan(128 * 1024);
+    expect(Buffer.byteLength(JSON.stringify({ schemaVersion: 2, origins: [local] }))).toBeLessThanOrEqual(512 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(history.historyByteLimit);
+  });
+
   it('scores in-memory subjects by the same rule, both sides', () => {
     const { svc } = make();
     svc.registerMaturationProjection('a.good', () => ({ value: 5, samples: 5 }));

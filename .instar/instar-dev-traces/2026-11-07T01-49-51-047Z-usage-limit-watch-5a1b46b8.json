@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "usage-limit-watch",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T01:49:51.047Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-watch.md",
+  "artifactSha256": "c924cc765a35519d2d0e237183647a506a53e2d0c1e61843c866d2dd7fa28d54",
+  "coveredFiles": [
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/core/claudeChildAuth.ts",
+    "src/core/claudeKeyProbe.ts",
+    "tests/unit/usage-limit-watch.test.ts",
+    "upgrades/eli16-usage-limit-watch.md",
+    "upgrades/side-effects/usage-limit-watch.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves one pure check so the model call path keeps its certified imports; no behaviour change",
+  "eli16Path": "upgrades/eli16-usage-limit-watch.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-watch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

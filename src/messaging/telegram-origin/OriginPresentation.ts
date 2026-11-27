@@ -29,12 +29,13 @@ function label(evidence: OriginEvidence, preferred?: string | null, omitUnknown 
 }
 export function originFooter(producer: TelegramOriginProducer, display: OriginDisplaySettings): string {
   if (!display.enabled || (!display.machine && !display.harness && !display.model)) return '';
+  // A field that cannot be known is left out, never printed as the word "unknown": the footer is for a person,
+  // and "unknown model" tells them nothing. The full evidence (status and reason) stays in the origin record.
   const values = [producer.agentName];
   const automation = producer.producerKind === 'server-automation';
   if (display.machine) {
-    const machine = label(producer.machine, producer.originMachineName, automation);
+    const machine = label(producer.machine, producer.originMachineName, true);
     if (machine) values.push(machine);
-    else if (!automation) values.push('unknown machine');
   }
   if (automation) {
     if (display.harness) {
@@ -44,8 +45,8 @@ export function originFooter(producer: TelegramOriginProducer, display: OriginDi
     }
     if (display.model) { const model = label(producer.model, undefined, true); if (model) values.push(model); }
   } else {
-    if (display.harness) values.push(label(producer.harness, producer.harnessName) ?? 'unknown harness');
-    if (display.model) values.push(label(producer.model) ?? 'unknown model');
+    if (display.harness) { const harness = label(producer.harness, producer.harnessName, true); if (harness) values.push(harness); }
+    if (display.model) { const model = label(producer.model, undefined, true); if (model) values.push(model); }
   }
   // Friendly names are configuration-owned. Refuse multiline/control labels; do not silently redact an identity.
   if (values.some(v => /[\r\n\u0000-\u001f\u007f]/.test(v) || v.length > 128)) {
@@ -62,4 +63,18 @@ export function escapeOriginFooter(text: string, parseMode?: string): string {
 /** Indexes all eight presealed field variants; enabled:false uses the all-off request. */
 export function originDisplayVariant(display: OriginDisplaySettings): number {
   return display.enabled ? (Number(display.machine) * 4 + Number(display.harness) * 2 + Number(display.model)) : 0;
+}
+/**
+ * The machine name a message footer shows. The pool nickname first, then the machine's own name from
+ * pairing or identity (its hostname), and the raw id only when no name exists at all — a footer reading
+ * "Machine m_b7f06b" tells the operator nothing. A name must be one printable line the footer accepts.
+ */
+export function publicMachineName(input: { machineId: string; nickname?: string | null; registryName?: string | null; identityName?: string | null }): string {
+  const usable = (v: string | null | undefined): string | null => {
+    const n = typeof v === 'string' ? v.trim() : '';
+    if (!n || n.length > 64 || /[\r\n\u0000-\u001f\u007f]/.test(n)) return null;
+    if (n === input.machineId || /^m_[0-9a-f]{6,}$/i.test(n) || /^Machine (m_)?[0-9a-f]{6,}$/i.test(n)) return null; // an id, not a name
+    return n;
+  };
+  return usable(input.nickname) ?? usable(input.registryName) ?? usable(input.identityName) ?? `Machine ${input.machineId.slice(0, 8)}`;
 }

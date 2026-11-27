@@ -63,7 +63,12 @@ async function boot(ownerId: string | null) {
   const logPath = path.join(stateDir, 'slack-messages.jsonl');
   const posted: Array<{ channelId: string; text: string }> = [];
   const slack = {
-    getChannelMessages: () => [],
+    // A second person's message, seen in the channel but never logged (fb-4db533fa-9d9).
+    getChannelMessages: () => [{ ts: '1730000000.000900', user: 'U0E2EGEAR', text: 'second person here' }],
+    cachedUserName: (u: string) => (u === 'U0E2EGEAR' ? 'Gear Test' : null),
+    cachedChannelName: (c: string) => (c === 'C0E2ECHAN' ? 'e2e-channel' : null),
+    // conversations.info says this is a channel, so its title carries '#', as in Slack.
+    cachedChannelKind: (c: string) => (c === 'C0E2ECHAN' ? 'channel' as const : null),
     getBotUserId: () => 'UBOT',
     getLogPath: () => logPath,
     logMessage: (e: Record<string, unknown>) => fs.appendFileSync(logPath, `${JSON.stringify({ ...e, timestamp: new Date().toISOString(), platform: 'slack' })}\n`),
@@ -121,7 +126,8 @@ describe('Slack from the app — production wiring', () => {
     // The list carries the registry's minted Slack conversation.
     const list = await send('GET', '/mobile/conversations');
     expect(list.status).toBe(200);
-    expect(list.body.conversations).toEqual([expect.objectContaining({ id: conversationId, platform: 'slack', title: '#C0E2ECHAN' })]);
+    // Titled with the channel's Slack name, not its id (fb-4db533fa-9d9).
+    expect(list.body.conversations).toEqual([expect.objectContaining({ id: conversationId, platform: 'slack', title: '#e2e-channel' })]);
     // Every Slack request names the machine its row came from.
     const machine = list.body.conversations[0].machine as string;
     expect(machine).toBe(server.appConversations!.deps.machineId());
@@ -143,9 +149,38 @@ describe('Slack from the app — production wiring', () => {
     const hist = await send('GET', `/mobile/chat/slack/${conversationId}/messages?machine=${encodeURIComponent(machine)}`);
     expect(hist.status).toBe(200);
     expect(hist.body.messages.map((m: { text: string; role: string; originVerified: string }) => [m.role, m.originVerified, m.text])).toEqual([
+      ['participant', 'none', 'second person here'],
       ['operator', 'verified', 'Can you post the release notes?'],
       ['agent', 'none', 'Posted them in the release channel.'],
     ]);
+    // The second person is named, not "Someone" or their id (fb-4db533fa-9d9).
+    expect(hist.body.messages[0].senderName).toBe('Gear Test');
+
+    // The opt-in page diff is alive on this same production path, with real device signatures.
+    const feedPath = `/mobile/chat/slack/${conversationId}/messages?machine=${encodeURIComponent(machine)}&knownRows=`;
+    const baseline = await send('GET', feedPath);
+    expect(baseline.status).toBe(200);
+    expect(baseline.body.messages).toEqual(hist.body.messages);
+    expect(baseline.body.changeFeed.rowHashes).toHaveLength(hist.body.messages.length);
+    const knownRows = encodeURIComponent(baseline.body.changeFeed.rowHashes.join(','));
+    const idle = await send('GET', `${feedPath}${knownRows}`);
+    expect(idle.status).toBe(200);
+    expect(idle.body.messages).toEqual([]);
+    expect(idle.body.changeFeed).toEqual(baseline.body.changeFeed);
+
+    const next = await send('POST', `/mobile/chat/slack/${conversationId}`, {
+      machine, text: 'A second message after the baseline.', requestId: `${Date.now()}-${crypto.randomUUID()}`,
+    });
+    expect(next.status).toBe(200);
+    expect(next.body.outcome).toBe('delivered');
+    const changed = await send('GET', `${feedPath}${knownRows}`);
+    expect(changed.status).toBe(200);
+    expect(changed.body.messages).toHaveLength(1);
+    expect(changed.body.messages[0]).toMatchObject({
+      eventId: next.body.eventId, text: 'A second message after the baseline.',
+      deliveryState: 'delivered', originVerified: 'verified',
+    });
+    expect(changed.body.changeFeed.rowHashes).toHaveLength(baseline.body.messages.length + 1);
   });
 
   it('with no owner id set, Slack rows are withheld and the send route says why', async () => {

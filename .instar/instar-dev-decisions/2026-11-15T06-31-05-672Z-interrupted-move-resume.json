@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-15T06:31:05.672Z",
+  "slug": "interrupted-move-resume",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 399,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/InterruptedMoveResume.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/SessionDrainRunner.ts",
+      "src/data/awareness/moved-mid-step.md",
+      "src/messaging/userNotices.ts"
+    ],
+    "addedLines": 369,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-triggered resume: once per (conversation, ownership epoch), fired only by a drain forced close of a user- or session-initiated move; never retried; moves rate-limited per topic (TransferByNickname 10 s)"
+  },
+  "verdict": "pass"
+}

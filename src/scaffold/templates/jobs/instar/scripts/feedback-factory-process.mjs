@@ -4,7 +4,9 @@
  * (the operating drain).
  *
  * 1. GET /feedback-factory/drain/status: the JSON posture decides, whatever the
- *    HTTP code. dark → skipped feature-dark; unavailable → failed; no answer →
+ *    HTTP code. dark → skipped feature-dark; unavailable → failed; a read that
+ *    times out is retried (10, 20, 30 s) and, still unanswered, is skipped
+ *    status-busy (the server was too busy; no run started); unreachable →
  *    failed; unreadable → failed on a development agent, skipped on the fleet.
  * 2. One POST /feedback-factory/drain/tick (any code but 202 → failed, naming a
  *    paused authority when the status says). A tick proxied to the owner
@@ -178,8 +180,8 @@ process.on('unhandledRejection', (err) => finish('failed', `script-error ${clean
 const POLL_SECONDS = 180;
 const DEVELOPMENT_AGENT = CONFIG.developmentAgent === true;
 
-async function drainStatus() {
-  const r = await call('GET', '/feedback-factory/drain/status', { timeoutMs: 10_000 });
+async function drainStatus(timeoutMs = 10_000) {
+  const r = await call('GET', '/feedback-factory/drain/status', { timeoutMs });
   const posture = isObject(r.json) && isObject(r.json.posture) ? r.json.posture : null;
   return { r, body: isObject(r.json) ? r.json : null, posture, state: posture ? posture.state : null };
 }
@@ -190,8 +192,23 @@ function workCounts(body) {
   return count(work.claimed) + count(work.completed);
 }
 
+/** The first status read: a busy server can take longer than 10 s to answer itself. */
+async function firstStatus() {
+  const tries = [[10_000, 5_000], [20_000, 10_000], [30_000, 0]];
+  let s = null;
+  for (const [wait, pause] of tries) {
+    s = await drainStatus(wait);
+    if (!(s.r.status === 0 && s.r.error === 'timeout')) return s;
+    if (pause) await sleep(CANARY ? 10 : pause);
+  }
+  field('http_status', 0);
+  field('outcome', 'status-busy');
+  finish('skipped', 'status-busy');
+  return s;
+}
+
 async function main() {
-  const before = await drainStatus();
+  const before = await firstStatus();
   field('http_status', before.r.status);
   if (before.state === 'dark') { field('outcome', 'dark'); finish('skipped', 'feature-dark'); }
   if (before.state === 'unavailable') {

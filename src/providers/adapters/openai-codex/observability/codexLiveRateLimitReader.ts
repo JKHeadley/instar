@@ -34,6 +34,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodexRateWindow, CodexUsageSnapshot } from './codexRateLimitReader.js';
 import { buildCodexChildEnv } from '../transport/codexSpawn.js';
+import { guardChildStdin } from '../../../../core/pipeErrorGuard.js';
 
 export interface ReadLiveCodexRateLimitsOptions {
   /** Override $CODEX_HOME (defaults to the process env / ~/.codex). */
@@ -231,6 +232,9 @@ export async function readLiveCodexRateLimitsDetailed(
       }
     };
 
+    // The try/catch in send() cannot see a closed pipe: that failure arrives later,
+    // on the stream. The 'exit' line below still ends the read.
+    guardChildStdin(child.stdin, 'codex-rate-limit-reader');
     child.on('error', () => finish(unavailable()));
     child.on('exit', () => finish(unavailable()));
     child.stderr?.on('data', () => {

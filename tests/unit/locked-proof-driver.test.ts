@@ -10,9 +10,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, launchdServePlist, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
+import { BEFORE_ENTER_LEAD_MS, CASES, RESUME_WINDOW_MS, calibrationProblem, measured, TERMINAL, assertProofTarget, generateProofPassword, judge, launchdServePlist, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { RealTarget, VIEWER_READY, ownerOf, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
+import { RealTarget, VIEWER_READY, ownerOf, parseProcessList, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { isInsideProofHome, proofConfig, validPin } from '../../scripts/locked-proof/configure-proof-agent.mjs';
 
@@ -51,12 +51,12 @@ class FakeTarget {
     if (action === 'grant-other-agent') return { opened: false, refused: 'relock-pending' };
     // Any disruption: the guard does its duty (unless this fake is broken).
     const end = this.c.markerEnd?.[0] ?? 'relocked';
-    this.markers.k = { ...this.markers.k, state: end, guardReplacements: 1, producerGone: true };
+    this.markers.k = { ...this.markers.k, state: end, watchStart: this.t, guardReplacements: 1, producerGone: true };
     this.typist = false; this.guard = null;
     this.lockState = this.broken ? 'unlocked' : (this.c.final === 'unlocked-accepted-risk' ? 'unlocked' : 'locked-in-session');
     return { done: true };
   }
-  async askPerson(text: string) { this.asked.push(text); }
+  async askPerson(text: string) { this.asked.push(text); return { channel: 'console', outcome: 'console-only', sent: false }; }
   async recover() { this.recovered++; return []; }
   settled(snap: { markers: Record<string, Marker> }) { return Object.values(snap.markers).every(m => TERMINAL.includes(m.state)) && !this.typist; }
   async extraEvidence() { return { submissions: 0, submissionsAfterClose: 0, guardReplaced: true, producerGone: true, oldGuardGone: true, typistGone: true, grantAlive: true, securityItemMs: 2_000, securityItemRaised: true }; }
@@ -151,6 +151,14 @@ describe('locked-proof safety helpers', () => {
     expect(text).not.toMatch(/echo[^\n]*\$PIN(?![_A-Za-z])/);
   });
 
+  it('stage-proof-agents re-stages over existing agents: init runs only for an agent with no config', () => {
+    const text = fs.readFileSync(path.join(DIR, 'stage-proof-agents.sh'), 'utf8');
+    const inits = text.split('\n').filter(l => l.includes('init --standalone'));
+    expect(inits).toHaveLength(2);
+    expect(inits[0]).toContain('as_user test -f "$A/.instar/config.json" ||');
+    expect(inits[1]).toContain('as_user test -f "$B/.instar/config.json" ||');
+  });
+
   it('configure-proof-agent refuses any directory outside the proof home, and needs --execute', () => {
     expect(isInsideProofHome('/Users/instarproof/.instar/agents/locked-proof')).toBe(true);
     expect(isInsideProofHome('/Users/instarproofX/a')).toBe(false);
@@ -198,13 +206,59 @@ describe('locked-proof viewer driving', () => {
   it('opens every grant through requestGrant, never a bare click', () => {
     const source = fs.readFileSync(path.join(DIR, 'driver.mjs'), 'utf8');
     expect(source.match(/page\.click\('#requestButton'\)/g)).toHaveLength(1);
-    expect(source.match(/await this\.requestGrant\(v\)/g)).toHaveLength(3);
+    expect(source.match(/await this\.requestGrant\(v\)/g)).toHaveLength(4); // openGrant, grant-other-agent, open-next-grant, next-helper-clears-field
   });
 
   it('maps the new viewer reasons back to their words', () => {
+    // Seen live: the helper's shield-not-confirmed refusal was recorded as "no result" for want of this line.
+    expect(refusalFromStatus("This Mac's lock screen is not ready for a password right now. Wake the screen and try again.")).toBe('shield-not-confirmed');
     expect(refusalFromStatus("Password entry from a browser is off until this Mac's secure tunnel is up. This page updates when it is.")).toBe('tunnel-not-active');
     expect(refusalFromStatus("Password entry needs Instar's kept desktop helper on this Mac, and this install does not have one.")).toBe('retained-helper-required');
     expect(refusalFromStatus('Password entry from a browser is off for this Mac.')).toBe('browser-box-off');
+  });
+});
+
+describe('locked-proof next grant evidence', () => {
+  const c = CASES.find((x: { id: string }) => x.id === '12.10');
+  const target = (visible: boolean, waitFails = false) => Object.assign(Object.create(RealTarget.prototype), {
+    a: {}, events: new Set(),
+    main: { page: { click: async () => {} } },
+    viewer: async () => ({ page: {
+      waitForSelector: async () => { if (waitFails) throw new Error('grant timed out'); },
+      isVisible: async () => visible,
+    } }),
+    requestGrant: async () => {},
+  });
+
+  it('never announces a next grant after a timeout or hidden controls', async () => {
+    for (const t of [target(false, true), target(false)]) {
+      await expect(t.act('open-next-grant')).rejects.toThrow();
+      expect(t.events.has('next-grant-open')).toBe(false);
+    }
+  });
+
+  it('announces a next grant only after its controls are visible', async () => {
+    const t = target(true);
+    expect(await t.act('open-next-grant')).toEqual({ opened: true });
+    expect(t.events.has('next-grant-open')).toBe(true);
+  });
+
+  it('records the failed setup and recovers without attempting to resume the old guard', async () => {
+    const t = new FakeTarget(c);
+    t.failAt = 'open-next-grant';
+    const ev = await runCase(c, t);
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.error).toContain('open-next-grant');
+    expect(t.acts).not.toContain('cont-old-guard');
+    expect(t.recovered).toBe(1);
+  });
+
+  it('rejects missing or failed next-grant evidence even if the Mac ends locked', () => {
+    const ev = { samples: [], final: { lockState: 'locked', markers: { k: { state: 'relocked' } } }, extra: { oldGuardGone: true }, fired: [] };
+    for (const fired of [[], [{ action: 'open-next-grant', result: { opened: false } }], [{ action: 'open-next-grant', result: {} }]]) {
+      expect(judge(c, { ...ev, fired }).reasons).toContain('the next grant was not confirmed open');
+    }
+    expect(judge(c, { ...ev, fired: [{ action: 'open-next-grant', result: { opened: true } }] }).pass).toBe(true);
   });
 });
 
@@ -221,7 +275,7 @@ describe('locked-proof person steps', () => {
 
   it('records a delivered send, and a run with no topic never calls the sender', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-person-'));
-    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0 })).sent).toBe(true);
+    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0, stdout: 'Sent 4 chars to topic 138345' })).sent).toBe(true);
     expect(recordPersonStep({ out }, 'two', () => { throw new Error('must not send'); }).sent).toBe(false);
     expect(rows(out).map(row => row.topic)).toEqual([138345, null]);
     rm(out);
@@ -252,7 +306,8 @@ describe('locked-proof launchd kill', () => {
 
   const realTarget = (o: Record<string, unknown>) => Object.assign(Object.create(RealTarget.prototype), {
     a: { port: 4098, dir: '/d' }, uid: '502', launchdJob: { label: 'l', plist: 'p' },
-    now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, ...o,
+    guardAckCommand: () => ({ released: true, present: false }),
+    now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, wakeDisplay: () => '', ...o,
   });
   const guardRow = { pid: 7, command: 'instar-desktop-host relock-guard' };
 
@@ -367,7 +422,7 @@ describe('locked-proof launchd kill', () => {
 
   it('every case that freezes the server serves it under launchd first, and puts it back in tmux', () => {
     const freezing = CASES.filter((c: { inject: { action: string }[] }) => c.inject.some(i => i.action === 'stop-server'));
-    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6']);
+    expect(freezing.map((c: { id: string }) => c.id)).toEqual(['12.1', '12.6', '12.9']);
     for (const c of freezing) {
       expect(c.before).toEqual(['serve-under-launchd']);
       expect(c.cleanup.slice(0, 3)).toEqual(['cont-server', 'end-launchd-serve', 'start-server']);
@@ -383,6 +438,178 @@ describe('locked-proof launchd kill', () => {
     clock = 0;
     const never = realTarget({ ...timing, api: async () => { throw new Error('down'); } });
     expect(await never.waitLockStateKnown(5_000)).toBe(false);
+  });
+
+  it('revokes as the operator who opened the request, and a refused revoke fails the case', async () => {
+    // Live on the Mini the driver revoked with a session of its own and the server answered 403:
+    // only the session that opened a request may end it. The case then judged a grant still open.
+    const sent: Record<string, string>[] = [];
+    const base = { priorMarkers: {}, readStore: () => ({ markers: { k: { state: 'owed', requestId: 'r1' } } }), a: { port: 4098, session: 'drivers-own' } };
+    const ok = realTarget({ ...base, main: { session: 'viewers' }, api: async (_a: unknown, _m: string, _r: string, _b: unknown, headers: Record<string, string>) => { sent.push(headers); return { status: 200, revoked: true }; } });
+    expect(await ok.act('revoke')).toEqual({ status: 200, revoked: true });
+    expect(sent[0]['X-Instar-Operator-Session']).toBe('viewers');
+    const refused = realTarget({ ...base, main: { session: 'viewers' }, api: async () => ({ status: 403, error: 'Desktop revocation unavailable' }) });
+    await expect(refused.act('revoke')).rejects.toThrow(/revoke: refused with 403 Desktop revocation unavailable/);
+  });
+
+  it('a zombie is not a running process: a frozen server cannot collect its finished children', () => {
+    // Live, 2026-11-05 20:43 PST (case 12.1, server frozen with SIGSTOP under launchd): the typist exited
+    // 31 s after the password and the guard 2 s after the relock, and both stayed as Z under the stopped
+    // server, so a pid match called them "still running after the duty closed".
+    const ps = [
+      '52260 Z    Thu Nov  5 20:43:15 2026 (instar-desktop-host)',
+      '52484 Ss   Thu Nov  5 20:43:16 2026 /Users/proof/.instar/desktop-helper/instar-desktop-host relock-guard --x',
+      '16542 T    Thu Nov  5 20:40:01 2026 node dist/server.js',
+      '  99 R+   Thu Nov  5 20:40:01 2026 ps -U proof',
+      'not a process line',
+    ].join('\n');
+    const parsed = parseProcessList(ps);
+    expect(parsed.live.map(p => p.pid)).toEqual([52484, 16542, 99]);
+    expect(parsed.live[0]).toEqual({ pid: 52484, stat: 'Ss', start: 'Thu Nov  5 20:43:16 2026', command: '/Users/proof/.instar/desktop-helper/instar-desktop-host relock-guard --x' });
+    expect(parsed.zombies).toEqual([52260]);
+    // A stopped (T) process is still a process: the freeze cases depend on seeing it.
+    expect(parsed.live.find(p => p.pid === 16542)?.stat).toBe('T');
+  });
+
+  it('with no duty at all, the input helper of a live grant is not a leftover typist', async () => {
+    // Case 12.17 types one letter and opens no duty; the helper is alive because the grant is.
+    const base = { events: new Set<string>(), store: '/nonexistent', consoleOwner: () => 'someone-else', pids: {}, priorMarkers: {}, consoleLock: () => 'locked', a: { port: 4098 }, b: { port: 4097 }, api: async () => ({ lockState: 'locked-in-session' }) };
+    const helper = [{ pid: 9, command: 'instar-desktop-host input-stream' }];
+    const none = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: {} }) }).snapshot();
+    expect(none.processesGone).toBeUndefined();
+    // Once a duty has closed, the typist and guard THAT DUTY RECORDED must be gone.
+    const closed = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', typistPid: 9 } } }) }).snapshot();
+    expect(closed.processesGone).toBe(false);
+    const guardLeft = await realTarget({ ...base, processes: () => [{ pid: 4, command: 'instar-desktop-host relock-guard' }], readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', guardPid: 4 } } }) }).snapshot();
+    expect(guardLeft.processesGone).toBe(false);
+    // A helper that refused the password before reserving is in no duty's record: live, case 12.1
+    // froze the server, the refused helper stayed up with it, and the guard relocked all the same.
+    const unrecorded = await realTarget({ ...base, processes: () => helper, readStore: () => ({ markers: { k: { state: 'relocked', requestId: 'r9', guardPid: 4 } } }) }).snapshot();
+    expect(unrecorded.processesGone).toBe(true);
+  });
+
+  it('"deadline before Enter" starts typing before the ceiling and presses Enter after it', async () => {
+    // On the Mini the whole password takes 0.73 s; a fixed 1.5 s offset started typing 0.77 s
+    // after the ceiling, when the page had already closed the box, and nothing was typed.
+    let clock = 0; const slept: number[] = []; const woke: number[] = [];
+    const page = { waitForSelector: async () => {}, fill: async () => {}, press: async () => {}, isVisible: async () => true, textContent: async () => '' };
+    const cal = { reserveMs: 38, perCharMs: 34.75 };
+    const timing = { now: () => clock, sleep: async (ms: number) => { slept.push(ms); clock += ms; }, wakeDisplay: () => { woke.push(clock); return ''; } };
+    const target = realTarget({ main: { page }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), ...timing });
+    const typing = cal.reserveMs + cal.perCharMs * 20;
+    const startOf = () => slept[0] + slept[1];
+    await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
+    // 0.8 s ahead of the ceiling: measured live, the duty appears about 0.4 s after the start and
+    // Enter about 0.65 s after that, so the ceiling falls between the first character and Enter.
+    expect(startOf()).toBe(600_000 - 800);
+    // Ten idle minutes is also the display-sleep time, and a password typed as the display sleeps
+    // is refused "lock screen is not ready": the display is woken 6 s before typing starts.
+    expect(woke).toEqual([600_000 - 800 - 6_000]);
+    // "Deadline after Enter" keeps Enter 1.5 s ahead of the ceiling.
+    clock = 0; slept.length = 0; woke.length = 0;
+    await target.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'after-enter' }] });
+    expect(startOf() + typing).toBe(600_000 - 1_500);
+    // When the page was told the grant's own end time, the cases aim from that: measured live,
+    // the server's ceiling comes about 0.6 s before "the moment the driver saw it open, plus 10 minutes".
+    clock = 0; slept.length = 0;
+    const told = realTarget({ main: { page, expiresAt: 599_360 }, mainOpenedAt: 0, cal, password: 'a'.repeat(20), ...timing });
+    await told.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] });
+    expect(startOf()).toBe(599_360 - 800);
+  });
+
+  it('wakes the display the way touching the mouse would, and only ahead of deadline typing', async () => {
+    const calls: string[][] = [];
+    const target = realTarget({ wakeDisplay: undefined, asProof: (args: string[]) => { calls.push(args); return ''; } });
+    delete (target as Record<string, unknown>).wakeDisplay;
+    target.wakeDisplay(2);
+    expect(calls).toEqual([['caffeinate', '-u', '-t', '2']]);
+    // It is not used before a grant opens: measured live, a nudge there made the "lock screen is
+    // not ready" refusal more frequent. Opening a grant goes straight to the viewer.
+    let clock = 0; const order: string[] = [];
+    const page = { waitForSelector: async () => { order.push(`control@${clock}`); } };
+    const opening = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, wakeDisplay: () => { order.push(`wake@${clock}`); return ''; },
+      viewer: async () => { order.push(`viewer@${clock}`); return { page, requestId: '12345678-1234-1234-1234-123456789abc', expiresAt: 600_000 }; }, requestGrant: async () => ({ clicked: false }) });
+    await opening.openGrant({});
+    expect(order).toEqual(['viewer@0', 'control@0']);
+  });
+
+  it('the deadline-recovery case freezes the owning server too, or its sweep replaces the frozen guard', () => {
+    // Live: with the server alive a replacement guard appeared 9 s later, relocked at the deadline,
+    // and the other agent was refused relock-pending. The recovery under test was never reached.
+    const c = CASES.find((x: { id: string }) => x.id === '12.9');
+    expect(c.inject.map((i: { action: string }) => i.action)).toEqual(['stop-typist', 'stop-guard', 'stop-server', 'grant-other-agent', 'cont-typist']);
+    expect(c.markerEnd).toEqual(['relock-failed']);
+  });
+
+  it('the deadline-recovery case watches past the 10-minute deadline it waits for', () => {
+    const c = CASES.find((x: { id: string }) => x.id === '12.9');
+    expect(c.inject.some((i: { at: string }) => i.at === 'deadline-passed')).toBe(true);
+    expect(c.timeoutMs).toBeGreaterThan(600_000 + 120_000);
+  });
+
+  it('when the page gives no recognised answer, the result keeps what the page said', async () => {
+    // Case 15.4 typed 2 s before the ceiling and got no answer; nothing recorded what the page showed.
+    let clock = 0; const texts = ['Remote desktop is live.', 'Remote desktop is live.', 'Desktop access ended. Open it again when needed.'];
+    const page = { waitForSelector: async () => {}, fill: async () => {}, press: async () => {}, isVisible: async () => false, textContent: async () => texts[Math.min(texts.length - 1, Math.floor(clock / 20_000))] };
+    const target = realTarget({ main: { page }, password: 'abc', now: () => clock, sleep: async (ms: number) => { clock += ms; } });
+    expect(await target.typePassword({ inject: [] })).toEqual({ sent: false, refused: 'no-result-within-60s', pageSaid: ['Remote desktop is live.', 'Desktop access ended. Open it again when needed.'] });
+  });
+
+  it('the half-typed-field case checks the clearing where the spec puts it: in the next grant', async () => {
+    // The marker outlives its request; the next input helper clears the field before any password.
+    const c = CASES.find((x: { id: string }) => x.id === '15.9');
+    expect(c.then).toEqual(['next-helper-clears-field']);
+    expect(c.fieldClearedBeforeNextEnter).toBe(true);
+    let clock = 0, reads = 0; const clicks: string[] = [];
+    const page = { waitForSelector: async () => {}, click: async (sel: string) => { clicks.push(sel); }, isVisible: async () => false, evaluate: async () => { clicks.push('evaluate'); } };
+    const procs = [[{ pid: 5, command: 'instar-desktop-host input-stream' }], []];
+    const target = realTarget({
+      now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 },
+      readStore: () => (++reads <= 4 ? { dirty: { at: 1 } } : {}), viewer: async () => ({ page }), requestGrant: async () => ({ clicked: true }),
+      processes: () => procs[Math.min(1, clicks.length ? 1 : 0)],
+    });
+    const r = await target.act('next-helper-clears-field');
+    expect(r).toMatchObject({ dirtyBefore: true, cleared: true, stopClick: 'clicked', helperGone: true });
+    expect(clicks).toEqual(['#stopButton']);
+    // If an ordinary click on Stop does not go through, the step says so and stops the grant anyway.
+    const blocked: string[] = [];
+    const stubborn = { ...page, click: async () => { throw new Error('Timeout 3000ms exceeded.\n<div id="lockedPassword"> intercepts pointer events'); }, evaluate: async () => { blocked.push('evaluate'); } };
+    const viaScript = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 }, readStore: () => ({}), viewer: async () => ({ page: stubborn }), requestGrant: async () => ({}), processes: () => [] });
+    const forced = await viaScript.act('next-helper-clears-field');
+    expect(forced.stopClick).toContain('intercepts pointer events');
+    expect(blocked).toEqual(['evaluate']);
+    expect(forced.helperGone).toBe(true);
+    const stuck = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, a: { port: 4098 }, readStore: () => ({ dirty: { at: 1 } }), viewer: async () => ({ page }), requestGrant: async () => ({}), processes: () => [] });
+    expect(await stuck.act('next-helper-clears-field')).toMatchObject({ dirtyBefore: true, cleared: false });
+  });
+
+  it('follow-on steps are kept as evidence', async () => {
+    const c = CASES.find((x: { id: string }) => x.id === '12.2a');
+    const target = new FakeTarget(c);
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(ev.fired.filter((f: { at: string }) => f.at === 'then').map((f: { action: string }) => f.action)).toEqual(c.then);
+  });
+
+  it('tries again when the lock screen is momentarily not ready, as the page tells a person to', async () => {
+    // Measured live: a few seconds after a lock or a display wake, loginwindow lets go of secure
+    // input for about half a second, and a password arriving then is refused before any attempt
+    // is spent. In one run that refused 6 of 16 passwords.
+    const notReady = "This Mac's lock screen is not ready for a password right now. Wake the screen and try again.";
+    let clock = 0, fills = 0;
+    const timing = { now: () => clock, sleep: async (ms: number) => { clock += ms; } };
+    const flaky = { waitForSelector: async () => {}, fill: async () => { fills++; }, press: async () => {}, isVisible: async () => fills >= 2, textContent: async () => (fills >= 2 ? 'Remote desktop is live.' : notReady) };
+    expect(await realTarget({ main: { page: flaky }, password: 'abc', ...timing }).typePassword({ inject: [] })).toEqual({ sent: true, notReadyRetries: 1 });
+    expect(fills).toBe(2);
+    // A lock screen that stays not ready is still a refusal, after two more tries.
+    clock = 0; fills = 0;
+    const stuck = { waitForSelector: async () => {}, fill: async () => { fills++; }, press: async () => {}, isVisible: async () => false, textContent: async () => notReady };
+    expect(await realTarget({ main: { page: stuck }, password: 'abc', ...timing }).typePassword({ inject: [] })).toEqual({ refused: 'shield-not-confirmed', notReadyRetries: 2 });
+    expect(fills).toBe(3);
+    // The deadline cases type once, at their moment: a retry would land after the ceiling.
+    clock = 0; fills = 0;
+    const timed = realTarget({ main: { page: stuck }, mainOpenedAt: 0, cal: { reserveMs: 38, perCharMs: 34.75 }, password: 'abc', ...timing });
+    expect(await timed.typePassword({ timing: 'deadline', inject: [{ action: 'wait-deadline', at: 'before-enter' }] })).toEqual({ refused: 'shield-not-confirmed' });
+    expect(fills).toBe(1);
   });
 
   it('a revoke with nothing to revoke fails the case', async () => {
@@ -424,8 +651,24 @@ describe('locked-proof runner and verdict', () => {
   });
 
   it('cues the person, records the security item, and never puts the password in evidence', async () => {
-    const c = CASES.find((x: { id: string }) => x.id === '12.8');
+    const c = CASES.find((x: { id: string }) => x.id === '12.11');
     const target = new FakeTarget(c);
+    const act = target.act.bind(target);
+    target.act = async action => {
+      const result = await act(action);
+      if (action === 'kill-server') { target.markers.k.state = 'watching'; target.lockState = 'locked-in-session'; }
+      if (action === 'start-server') target.lockState = 'locked-in-session';
+      return result;
+    };
+    const snapshot = target.snapshot.bind(target);
+    let personReads = 0;
+    target.snapshot = async () => {
+      if (target.asked.length && !target.acts.includes('start-server')) {
+        target.lockState = 'unlocked';
+        if (++personReads > 1) target.markers.k.state = 'relock-failed';
+      }
+      return snapshot();
+    };
     const ev = await runCase(c, target, { pollMs: 50 });
     expect(target.asked).toHaveLength(1);
     expect(ev.verdict.pass).toBe(true);
@@ -446,7 +689,7 @@ describe('locked-proof runner and verdict', () => {
     const target = new FakeTarget(c);
     const realAsk = target.askPerson.bind(target);
     let reads = 0;
-    target.askPerson = async (text: string) => { await realAsk(text); reads = 1; target.lockState = 'unlocked'; };
+    target.askPerson = async (text: string) => { const result = await realAsk(text); reads = 1; target.lockState = 'unlocked'; return result; };
     const snapshot = target.snapshot.bind(target);
     target.snapshot = async () => {
       const snap = await snapshot();
@@ -479,6 +722,96 @@ describe('locked-proof runner and verdict', () => {
     expect(judge(c, ev).reasons.join(' ')).toContain('expected unlocked');
   });
 
+  it('"typing" waits for a duty: the input helper alone, running since the grant opened, is not typing', async () => {
+    // Live on the Mini the helper was up 3 s into the grant and the server was killed before any
+    // password was sent, so "Node killed mid-typing" judged a run with nothing typed.
+    const c = CASES.find((x: { id: string }) => x.id === '12.2e');
+    class SlowTyping extends FakeTarget {
+      polls = 0;
+      dutyAtKill: boolean | null = null;
+      async openGrant() { this.typist = true; this.guard = 41; return { id: 'r1' }; }
+      async typePassword() { return { sent: false }; }
+      async snapshot() {
+        if (++this.polls === 4) this.markers.k = { state: 'owed', requestId: 'r1', deadlineMs: this.t + 600_000 };
+        return super.snapshot();
+      }
+      async act(action: string) {
+        if (action === 'kill-server') this.dutyAtKill = 'k' in this.markers;
+        return super.act(action);
+      }
+    }
+    const target = new SlowTyping(c);
+    const ev = await runCase(c, target, { pollMs: 50 });
+    expect(target.dutyAtKill).toBe(true);
+    expect(ev.fired.filter((f: { at: string }) => f.at !== 'then').map((f: { action: string }) => f.action)).toEqual(['kill-server']);
+    // And once Enter is pending, the password is no longer being typed.
+    const late = new SlowTyping(c);
+    late.snapshot = async function (this: SlowTyping) {
+      if (++this.polls === 4) this.markers.k = { state: 'owed', requestId: 'r1', deadlineMs: this.t + 600_000, enterPendingAt: this.t };
+      return FakeTarget.prototype.snapshot.call(this);
+    };
+    const missed = await runCase({ ...c, timeoutMs: 2_000 }, late, { pollMs: 50 });
+    expect(late.dutyAtKill).toBe(null);
+    expect(missed.unfired).toEqual(['kill-server at typing']);
+  });
+
+  it('guard killed in owed: the case ends the session after the replacement guard takes over', () => {
+    // A live grant with a live server keeps an owed duty owed and the Mac open; the server's job
+    // is to replace the guard. Only ending the session can show the Mac ending locked.
+    const c = CASES.find((x: { id: string }) => x.id === '12.5a');
+    expect(c.inject).toEqual([{ action: 'kill-guard', at: 'marker:owed' }, { action: 'stop-viewer', at: 'takeover' }]);
+    expect(c.guardReplaced).toBe(true);
+    expect(c.markerEnd).toEqual(['relocked']);
+  });
+
+  it('before-enter aims from the duty\'s creation and lands before Enter, not on the next poll (fb-fcb17087-521)', async () => {
+    // Live, aiming from the grant opening landed 15 to 890 ms AFTER Enter, and every such run passed.
+    class PacedTyping extends FakeTarget {
+      firedAt: number | null = null;
+      calibration() { return { reserveMs: 300, perCharMs: 40, length: 20, createToEnterMs: 640 }; }
+      async openGrant() { this.typist = true; this.guard = 41; return { id: 'r1' }; }
+      async typePassword() { this.t += 400; this.markers.k = { state: 'owed', requestId: 'r1', createdAt: this.t }; return { sent: true }; }
+      async snapshot() {
+        const k = this.markers.k as Marker | undefined;
+        if (k?.state === 'owed' && typeof k.createdAt === 'number' && this.t >= k.createdAt + 640 && k.enterPendingAt === undefined) k.enterPendingAt = k.createdAt + 640;
+        return super.snapshot();
+      }
+      async act(action: string) { if (action === 'revoke') this.firedAt = this.t; return super.act(action); }
+    }
+    const c = CASES.find((x: { id: string }) => x.id === '15.1');
+    const target = new PacedTyping(c);
+    const ev = await runCase(c, target);
+    const created = 1_000_400;
+    expect(target.firedAt).toBe(created + 640 - BEFORE_ENTER_LEAD_MS);
+    expect(ev.unfired).toEqual([]);
+    expect(ev.verdict.reasons.join(' ')).not.toMatch(/after Enter/);
+  });
+
+  it('a before-enter step that completed after Enter fails the case, and the gap is recorded', () => {
+    const c = CASES.find((x: { id: string }) => x.id === '15.7');
+    const ev = { grantRequestId: 'r1', grantOpenedAt: 4_000, unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
+      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } }, processesGone: true } };
+    const extra = measured(ev);
+    expect(extra.injectMinusEnterMs).toBe(900);
+    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step completed 900 ms after Enter');
+    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830, t: 4_830 }] };
+    expect(measured(before).injectMinusEnterMs).toBe(-170);
+    expect(judge(c, { ...before, extra: measured(before) }).reasons.join(' ')).not.toMatch(/after Enter/);
+    // The deadline case compares the grant's own limit with Enter.
+    const c153 = CASES.find((x: { id: string }) => x.id === '15.3');
+    const late = { ...ev, grantExpiresAt: 5_002, fired: [{ action: 'wait-deadline', at: 'before-enter', startedAt: 1, t: 1 }] };
+    expect(judge(c153, { ...late, extra: measured(late) }).reasons).toContain('grant limit arrived 2 ms after Enter');
+  });
+
+  it('a run refuses cases its calibration cannot aim, and says which', () => {
+    const p15 = selectCases(['15.1', '15.3', '15.2']);
+    expect(calibrationProblem(selectCases(['12.1', '15.2']), null)).toBeNull();
+    expect(calibrationProblem(p15, null)).toMatch(/no calibration\.json.*15\.1, 15\.3/);
+    expect(calibrationProblem(p15, { reserveMs: 1, perCharMs: 1, length: 20 })).toMatch(/createToEnterMs.*15\.1$|createToEnterMs.*\(needed by 15\.1\)/);
+    expect(calibrationProblem(p15, { reserveMs: 1, perCharMs: 1, length: 20, createToEnterMs: 640 })).toBeNull();
+  });
+
   it('a case that throws still resumes and relocks, and fails with the error', async () => {
     const c = CASES.find((x: { id: string }) => x.id === '12.1');
     const target = new FakeTarget(c);
@@ -501,15 +834,28 @@ describe('locked-proof runner and verdict', () => {
     const base = { unfired: [], fired: [], samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed' } } }], final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked' } }, processesGone: true } };
     const c155 = CASES.find((x: { id: string }) => x.id === '15.5');
     expect(judge(c155, { ...base, extra: {} }).reasons).toContain('not measured: relock time after the transport drop');
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } }).reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
+    const early = judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } });
+    expect(early.reasons).toContain('not measured: actual transport expiry relative to Enter');
+    expect(early.reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
+    const timed = { ...base, grantRequestId: 'r1', grantOpenedAt: 4_000,
+      fired: [{ action: 'drop-transport', at: 'before-enter', startedAt: 4_830, t: 4_830 }],
+      samples: [{ dirty: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { ...base.final, markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } } };
+    for (const id of ['15.5', '15.6']) {
+      const row = CASES.find((x: { id: string }) => x.id === id);
+      const t = id === '15.5' ? 4_830 : 5_170;
+      const verdict = judge(row, { ...timed, fired: [{ ...row.inject[0], startedAt: t, t }],
+        extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500, transportExpiredAt: t, submissionsAfterClose: 0 } });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.reasons).toEqual(['not measured: actual transport expiry relative to Enter']);
+    }
     const c159 = CASES.find((x: { id: string }) => x.id === '15.9');
     expect(judge(c159, { ...base, extra: { typistGone: true } }).reasons).toContain('not measured: password field state at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: true } }).reasons).toContain('password field left dirty at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: false } }).pass).toBe(true);
     const c1212 = CASES.find((x: { id: string }) => x.id === '12.12');
     const closed = { ...base, final: { ...base.final, markers: { k: { state: 'closed-not-applicable' } } } };
-    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (no observable source yet)');
+    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (isolated A+B population not established)');
   });
 
   it('the runner measures the relock time after a transport drop from its own samples', async () => {

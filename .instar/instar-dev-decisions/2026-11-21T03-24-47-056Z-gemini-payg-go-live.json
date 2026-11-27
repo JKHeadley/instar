@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-21T03:24:47.056Z",
+  "slug": "gemini-payg-go-live",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 26,
+  "loc": 2783,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/MeteredSpendLedger.ts",
+      "src/core/MoneyLayerAuditLog.ts",
+      "src/core/MoneyLayerEnableSurface.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RenderedPlanStore.ts",
+      "src/core/RoutingSpendCapsStore.ts",
+      "src/core/geminiPaygGoLive.ts",
+      "src/core/geminiPaygNotices.ts",
+      "src/core/geminiPaygReconciliation.ts",
+      "src/core/geminiPaygReleaseRecorder.ts",
+      "src/core/moneyLayerEnable.ts",
+      "src/data/awareness/gemini-payg-lane.md",
+      "src/data/feature-ladders.json",
+      "src/providers/metered/gemini-api/GeminiApiProvider.ts",
+      "src/providers/metered/gemini-api/geminiApiKeyReader.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/gemini-payg-reconcile.md",
+      "src/server/AgentServer.ts",
+      "src/server/geminiPaygGoLiveWiring.ts",
+      "src/server/geminiPaygRoutes.ts",
+      "src/server/geminiPaygWiring.ts",
+      "src/server/meteredLaneRuntime.ts",
+      "src/server/mobileCapacityRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2711,
+    "deletedLines": 72
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

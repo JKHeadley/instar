@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "jev-first-decision-path",
+  "sessionId": "7e05d7cf-8435-4094-932d-2fa6c3f19f66",
+  "timestamp": "2026-11-04T04:18:16.514Z",
+  "artifactPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "artifactSha256": "26bdafdc3bdc49db2fe76dd9a9e9bf821eaa123f7bcb29c5c7966bdd0848a173",
+  "coveredFiles": [
+    "docs/specs/jev-first-decision-path.eli16.md",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "upgrades/side-effects/jev-first-decision-path.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only capability classification and a wording correction to preserve the existing feature-metrics migration; no settlement authority changes.",
+  "eli16Path": "docs/specs/jev-first-decision-path.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

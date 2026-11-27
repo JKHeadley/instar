@@ -43,9 +43,20 @@ export function movedMachinesMidStepNotice(targetMachineName: string | null | un
     + `The conversation carries on there. If that step matters, ask me to check it.`;
 }
 
-/** A message arrived for a conversation whose session had stopped; a new one is starting. */
+/**
+ * The same cut-off move, but the machine the conversation moved to confirmed it has
+ * picked the step back up (src/core/InterruptedMoveResume.ts). Said once, plainly; the
+ * resumed session itself reports the result.
+ */
+export function movedMachinesResumingNotice(targetMachineName: string | null | undefined): string {
+  const where = plainMachineName(targetMachineName);
+  return `I moved this conversation to ${where} before I'd finished my last step. `
+    + `I'm picking that step back up there now, and I'll tell you when it's done.`;
+}
+
+/** A message arrived with no live session, so a new one is starting. Says nothing has stopped: the conversation carries on. */
 export const SESSION_RESTARTING_NOTICE =
-  `🔄 My session for this conversation had stopped, so I'm starting a new one. Your message is saved and I'll answer it once I'm back.`;
+  `🔄 Starting a new session for this conversation. Your message is saved and I'll answer it once I'm back.`;
 
 /** The replacement session is up and no message was waiting (e.g. a stuck session was
  *  replaced). With a message waiting nothing is sent: the reply is the confirmation. */
@@ -91,9 +102,11 @@ export const LIFECYCLE_NOTICE_EXACT: ReadonlySet<string> = new Set([
 ]);
 export const LIFECYCLE_NOTICE_PREFIXES: readonly string[] = [
   '🔄 Session restarting', // legacy wording, still in history
-  '🔄 My session for this conversation had stopped', // SESSION_RESTARTING_NOTICE
+  '🔄 My session for this conversation had stopped', // legacy wording, still in history
+  '🔄 Starting a new session', // SESSION_RESTARTING_NOTICE
   'I moved this conversation to ',
   'This conversation moved machines mid-task', // legacy wording
+  'Session starting up', // spawn acknowledgement; the person's turn is still open
 ];
 
 /** Every catalogued notice rendered with realistic inputs — the test surface. */
@@ -101,6 +114,8 @@ export const USER_NOTICE_CATALOG: ReadonlyArray<{ id: string; render: () => stri
   { id: 'moved-machines-mid-step', render: () => movedMachinesMidStepNotice('Mac Studio') },
   { id: 'moved-machines-mid-step:unnamed', render: () => movedMachinesMidStepNotice(null) },
   { id: 'moved-machines-mid-step:id-only', render: () => movedMachinesMidStepNotice('m_03b30f5b32c6ef3eb0afd3ca7054e252') },
+  { id: 'moved-machines-resuming', render: () => movedMachinesResumingNotice('Mac Studio') },
+  { id: 'moved-machines-resuming:unnamed', render: () => movedMachinesResumingNotice(null) },
   { id: 'session-restarting', render: () => SESSION_RESTARTING_NOTICE },
   { id: 'session-back', render: () => SESSION_BACK_NOTICE },
   { id: 'profile-reapply', render: () => PROFILE_REAPPLY_NOTICE },

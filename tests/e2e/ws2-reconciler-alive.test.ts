@@ -1,3 +1,4 @@
+import { FAILURE_CALLOUT_KIND_REGISTRATION } from '../../src/core/FailureCalloutReplicatedStore.js';
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 /**
  * Tier-3 E2E "feature is alive" test for the writer-agnostic replication reconciler
@@ -81,6 +82,7 @@ describe('Writer-agnostic reconciler E2E lifecycle (feature is alive)', () => {
     // reader → emitter → reconciler over the production seams).
     liveStateDir = mkStateDir(tmpDir, 'live');
     const registry = new ReplicatedKindRegistry();
+    registry.register(FAILURE_CALLOUT_KIND_REGISTRATION);
     for (const r of [PREF_KIND_REGISTRATION, RELATIONSHIP_KIND_REGISTRATION, KNOWLEDGE_KIND_REGISTRATION, USER_KIND_REGISTRATION, LEARNING_KIND_REGISTRATION, EVOLUTION_ACTION_KIND_REGISTRATION]) {
       registry.register(r);
     }
@@ -176,7 +178,8 @@ describe('Writer-agnostic reconciler E2E lifecycle (feature is alive)', () => {
     expect(JSON.stringify(res.body)).not.toContain('Alive Check');
 
     journal.flush();
-    const own = await new ReplicatedPeerStreamReader({ stateDir: liveStateDir, registry: (() => { const r = new ReplicatedKindRegistry(); r.register(KNOWLEDGE_KIND_REGISTRATION); return r; })(), selfMachineId: MACHINE })
+    const own = await new ReplicatedPeerStreamReader({ stateDir: liveStateDir, registry: (() => { const r = new ReplicatedKindRegistry();
+    r.register(FAILURE_CALLOUT_KIND_REGISTRATION); r.register(KNOWLEDGE_KIND_REGISTRATION); return r; })(), selfMachineId: MACHINE })
       .loadOwnOriginRecordsAsync(KNOWLEDGE_STORE_KEY);
     expect(own.get(deriveKnowledgeRecordKey('Alive Check', 'https://example.com/alive', 'doc')!)?.op).toBe('put');
   });

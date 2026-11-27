@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "studio-boot-holds",
+  "sessionId": "220ff7db-8651-46b9-8d85-8536f15e29a6",
+  "timestamp": "2026-11-07T14:03:52.161Z",
+  "artifactPath": "upgrades/side-effects/studio-boot-holds.md",
+  "artifactSha256": "edc902610ca063e54a2b6f64f5ed7f3cd7c5a94418048ece58e5d083ddc738b5",
+  "coveredFiles": [
+    "docs/specs/studio-boot-holds.eli16.md",
+    "src/core/UpdateChecker.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/UpdateChecker.test.ts",
+    "upgrades/side-effects/studio-boot-holds.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge repair: restores an import main still needs; three merged tests fake npm only",
+  "eli16Path": "docs/specs/studio-boot-holds.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-boot-holds.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "someone-elses-work-gravity-well",
+  "sessionId": "1f96fdd5-a852-4786-a97f-deefb4bfe6f0",
+  "timestamp": "2026-11-11T00:54:39.636Z",
+  "artifactPath": "upgrades/side-effects/someone-elses-work-gravity-well.md",
+  "artifactSha256": "b06970eb41c679cffa6767b9dd28a55780186ddbef1e9d54e3162208a030ce4f",
+  "coveredFiles": [
+    ".claude/skills/autonomous/SKILL.md",
+    "skills/spec-converge/templates/reviewer-decision-completeness.md",
+    "src/core/MessagingToneGate.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/unowned-handoff.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/integration/telegram-reply-unowned-handoff.test.ts",
+    "tests/unit/deferral-detector-unowned-handoff.test.ts",
+    "tests/unit/someone-elses-work-gravity-well.test.ts",
+    "upgrades/next/someone-elses-work-gravity-well.md",
+    "upgrades/side-effects/someone-elses-work-gravity-well.md",
+    "upgrades/someone-elses-work-gravity-well.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Prompt sub-clause behind a signal, signal-only hook family, skill/template/CLAUDE.md wording; a revert restores gate behaviour, no state or config migration",
+  "eli16Path": "upgrades/someone-elses-work-gravity-well.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/someone-elses-work-gravity-well.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

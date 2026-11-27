@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "needs-list-pages",
+  "sessionId": "0ea0d993-474a-4c9c-8d7a-a70eaee28b93",
+  "timestamp": "2026-11-18T05:09:09.097Z",
+  "artifactPath": "upgrades/side-effects/needs-list-pages.md",
+  "artifactSha256": "f2505f9d83473da116cc8547dc0b8d2fca9cb028f70a94d17de56a349bafe744",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/net-state.js",
+    "src/data/awareness/needs-list-pages.md",
+    "src/server/needsRoutes.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "tests/unit/console-needs-pages.test.ts",
+    "tests/unit/console-net-state.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/eli16/needs-list-pages.md",
+    "upgrades/next/needs-list-pages.md",
+    "upgrades/side-effects/needs-list-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded presentation and navigation on the existing viewer-scoped read.",
+  "eli16Path": "upgrades/eli16/needs-list-pages.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-list-pages.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

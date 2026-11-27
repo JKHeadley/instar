@@ -54,6 +54,7 @@ function deps(over: Partial<MobilePhonesMessagesDeps> = {}): MobilePhonesMessage
     peerInsights: async () => [],
     offlineMachineIds: () => ['m_far'],
     nicknameOf: (id) => (id === 'm_peer' ? 'Mac Mini' : id === 'm_far' ? 'Laptop' : null),
+    selfName: () => 'Studio',
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
     now: () => NOW,
     ...over,
@@ -101,12 +102,12 @@ describe('owner phone: served, trimmed', () => {
     expect(r.status).toBe(200);
     expect(r.headers['cache-control']).toBe('no-store');
     expect(r.body).toMatchObject({ schemaVersion: 1, state: 'ok', tone: 'attn', recording: 'not fully set up', unread: { count: 1, names: ['Mac Mini'] }, offline: { count: 1, names: ['Laptop'] } });
-    expect(r.body.headline).toBe('1 reply and 1 automatic message are held on this machine. Machines that did not answer or can\'t tell are not counted.');
+    expect(r.body.headline).toBe('1 reply and 1 automatic message are held on Studio. Machines that did not answer or can\'t tell are not counted.');
     expect(r.body.groups.map((g: { title: string; reasonWords: string }) => [g.title, g.reasonWords]).sort()).toEqual([
       ['1 delayed message', 'held for another reason'],
       ['Instar app', 'waiting to be routed through the machine that holds the conversation'],
     ]);
-    expect(r.body.machines).toEqual([{ name: 'This machine', count: 2, complete: true, state: 'ok' }]);
+    expect(r.body.machines).toEqual([{ name: 'Studio', count: 2, complete: true, state: 'ok' }]);
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
   });
@@ -259,7 +260,7 @@ describe('wiring: the real origin runtime through createRoutes', () => {
     expect((lite.activation as { state: unknown }).state).toBe((full.activation as { state: unknown }).state);
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo', messaging: [] },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo', messaging: [] },
       telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test', sessionManager: { clearInjectionTracker: () => undefined } } as never));
     const phone = await request(app).get('/mobile/messages').set('Authorization', 'Bearer agent-test');
     expect(phone.status).toBe(200);

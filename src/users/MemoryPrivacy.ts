@@ -7,6 +7,7 @@
  * sessions inside the boundary. State lives in `state/memory-privacy.json`.
  */
 
+import type { TeamConfinement } from './TeamConfinement.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,17 +17,32 @@ import {
   isScopedAudience, type MemoryAudience, type MemoryPlace,
 } from './MemoryAudience.js';
 
+/** The synthetic place kind of a fold's shadow answerer (§10): never a channel's place. */
+export const FOLD_PROBE_PLACE_PREFIX = 'fold-probe:';
+
 /** How long proof that a place has one reader stays usable. Inbound re-checks every message. */
 export const READER_PROOF_MS = 5 * 60_000;
 
 /** Stands for the baseline operator on an agent with no profile for them. */
 export const OPERATOR_PERSON_ID = 'operator';
 
+/** A session can leave a link or a file where the server expects a folder: move it out of the way. */
+export function setAsideUnlessRealFolder(dir: string): void {
+  let info: fs.Stats;
+  try { info = fs.lstatSync(dir); } catch { return; } // @silent-fallback-ok — nothing there is the normal first run
+  if (!info.isSymbolicLink() && info.isDirectory()) return;
+  fs.renameSync(dir, `${dir}.set-aside-${randomBytes(8).toString('hex')}`);
+}
+
 export interface MemoryPrivacyConfig {
   enabled?: boolean;
   ownerUserId?: string;
   sharedMemoryPeople?: string[];
   privateGroups?: string[];
+  /** True restores the refusal of agent-to-agent conversations (memory-privacy-agent-places §7). Read live. */
+  refuseAgentSessions?: boolean;
+  /** Whether a peer's reply to a thread an owner or system session started is delivered into it (§3). Read live. */
+  linkedPeerReplies?: 'deliver' | 'post-only';
 }
 
 export interface ReachableLists {
@@ -66,6 +82,8 @@ export interface SessionTokenRecord {
   sessionId: string;
   audience: MemoryAudience;
   placeKey: string | null;
+  /** A reply from this session reached a person. Kept with the token so a restart does not lose it. */
+  replied?: boolean;
 }
 
 interface PersistedState {
@@ -120,6 +138,16 @@ export class MemoryPrivacy {
     this.state = this.load();
   }
 
+  /** `memoryPrivacy.refuseAgentSessions`, read live. Anything but exactly true is false. */
+  refuseAgentSessions(): boolean {
+    return this.deps.config().refuseAgentSessions === true;
+  }
+
+  /** `memoryPrivacy.linkedPeerReplies`, read live. Anything but 'post-only' delivers. */
+  linkedPeerReplies(): 'deliver' | 'post-only' {
+    return this.deps.config().linkedPeerReplies === 'post-only' ? 'post-only' : 'deliver';
+  }
+
   get enabled(): boolean {
     return this.deps.config().enabled !== false;
   }
@@ -166,6 +194,16 @@ export class MemoryPrivacy {
     for (const sender of pending) this.observeSender(sender);
     const group = this.deps.telegramGroupKey?.() ?? null;
     if (group) this.confirmExistingGroup(group);
+  }
+
+  /**
+   * A fingerprint of who counts as the operator (the baseline's operator keys,
+   * the owner, and the configured Telegram owner `isOwnerSender` compares with), so a reader that labelled rows earlier can tell the
+   * binding has changed and relabel (context-budget §8, U). Identity only.
+   */
+  operatorBindingFingerprint(): string {
+    const keys = [...this.state.operatorKeys].sort().join('\n');
+    return createHash('sha256').update(`${this.state.baselineDone ? 1 : 0}\n${this.ownerUserId() ?? ''}\n${this.deps.reachable().telegramOwnerId ?? ''}\n${keys}`).digest('hex');
   }
 
   /** True when this sender is the operator recorded at baseline. */
@@ -354,9 +392,15 @@ export class MemoryPrivacy {
     return proof && this.now() - proof.at < READER_PROOF_MS ? proof.personId : null;
   }
 
+  /** Set at boot; reads the confined list. */
+  confinement: TeamConfinement | null = null;
+
   /** The place a session serves. Nothing recognised means `unknown`, which fails closed. */
   placeFor(input: SessionPlaceInput, telegramGroupKey: string | null): MemoryPlace {
     if (input.memoryPlace) return input.memoryPlace;
+    // A conversation shared with a team stays confined for good (team-roles-and-access §3.5).
+    const confined = this.confinement?.place(input);
+    if (confined) return confined;
     const key = input.memoryPlaceKey
       ?? (input.slackChannelId ? `slack:${input.slackChannelId}` : null)
       ?? (input.telegramTopicId !== undefined ? telegramGroupKey : null);
@@ -377,7 +421,10 @@ export class MemoryPrivacy {
       ? path.join(this.deps.instarRoot, 'memory-scopes', encodeURIComponent(this.deps.agentId), `none-${sessionSuffix}`)
       : memoryScopeDir(this.deps.instarRoot, this.deps.agentId, audience);
     if (!dir) return null;
-    for (const sub of ['', 'inbox', 'tmp']) fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    for (const sub of ['', 'inbox', 'tmp']) {
+      if (sub) setAsideUnlessRealFolder(path.join(dir, sub));
+      fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    }
     return dir;
   }
 
@@ -401,10 +448,35 @@ export class MemoryPrivacy {
     return token;
   }
 
+  /**
+   * A token for the context budget's shadow answerer (context-budget-layered-summaries §10): the
+   * system audience (owner reach, no person) bound to the SYNTHETIC place `fold-probe:<topic>`, a
+   * place no channel ever uses. The memory-session guard lets that place reach exactly its own
+   * topic's chunk lookups and nothing else. Revoke with `revokeSessionTokens(sessionId)` when the
+   * answerer ends.
+   */
+  issueFoldProbeToken(sessionId: string, topicKey: string): string {
+    if (!/^-?\d{1,15}$/.test(topicKey)) throw new Error('fold-probe-token: topic key must be a topic id');
+    return this.issueSessionToken(sessionId, { kind: 'system' }, `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`);
+  }
+
   /** The record for a session token, or null when it is not one. */
   sessionForToken(token: string): SessionTokenRecord | null {
     if (!token.startsWith('mps_')) return null;
     return this.state.tokens[hashToken(token)] ?? null;
+  }
+
+  /** Note that this session's reply went out, once per session. */
+  noteSessionReply(sessionId: string): void {
+    let changed = false;
+    for (const record of Object.values(this.state.tokens)) {
+      if (record.sessionId === sessionId && !record.replied) { record.replied = true; changed = true; }
+    }
+    if (changed) this.save();
+  }
+
+  sessionReplied(sessionId: string): boolean {
+    return Object.values(this.state.tokens).some(r => r.sessionId === sessionId && r.replied === true);
   }
 
   revokeSessionTokens(sessionId: string): void {

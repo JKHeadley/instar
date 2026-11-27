@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-05T23:05:00.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:codex-cli-gpt-6-astra"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/no-purchased-service-constitution-review-2026-11-05.md",
+  "convergenceSha256": "43a68a386e36eab7d7c7d132a38df978548091eb256c5f77c392a929f2078a1d",
+  "areas": {
+    "Building": {
+      "areaSha256": "e3e3c3820054c78e0113b3f3cd2d34db1d188e729b704d49ab1193d2ef9e3c32",
+      "verdict": "accepted"
+    }
+  }
+}

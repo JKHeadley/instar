@@ -59,7 +59,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'threadline/A2ACheckInProxy.ts': 'no catch — advisory A2A check-in proxy; failure propagates to the router',
   'core/TopicIntentArcCheck.ts': 'returns {actsOn:[],contradicts:[]} — advisory intent-arc analysis, no gated action',
   'core/JobReflector.ts': 'returns null/defaults — advisory post-job reflection',
-  'core/TopicIntentCapture.ts': 'returns {status:"degraded"} — explicitly marks degraded; advisory intent capture',
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
   // core/CompletionEvaluator.ts REMOVED from REVIEWED_ADVISORY (llm-decision-quality-meter
   // P7 correlation-persistence wiring): it now carries a @silent-fallback-ok marker
@@ -83,7 +82,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'providers/uxConfirm/OverrideDetector.ts': 'returns NO_OVERRIDE — fail-closed direction (no override = safe default)',
   'knowledge/TreeTriage.ts': 'falls back to deterministic scoreNodes() — advisory knowledge retrieval with a deterministic floor',
   'knowledge/TreeSynthesis.ts': 'returns {synthesis:null} — advisory knowledge synthesis',
-  'monitoring/PromptGate.ts': 'returns/skips on malformed output — advisory prompt observation, no gated action',
   'monitoring/InputClassifier.ts': 'conservative default is "relay" (route to human) with a deterministic destructive-op floor BEFORE the LLM — never auto-approves on failure',
 };
 
@@ -109,6 +107,28 @@ function hasMarker(rel: string): boolean {
   const content = readFileSync(path.join(SRC, rel), 'utf8');
   return MARKERS.some((m) => content.includes(m));
 }
+
+/**
+ * Stated exceptions: a `gating: true` call that, with no model after failover, passes instead of failing
+ * closed. Not "reviewed advisory": the call does gate, so it swaps providers first. Each one must report the
+ * degradation, and is listed here with its reason so the exception stays visible.
+ */
+const STATED_FAIL_OPEN_EXCEPTIONS: Record<string, { reportedFrom: string; reason: string }> = {
+  'core/attribution/AttributionJudge.ts': {
+    reportedFrom: 'core/attribution/attributionRuntime.ts',
+    reason: 'docs/specs/attribution-paper-trail.md section 4: with no model after failover the write passes as `unchecked`, exact facts recorded, reported and counted on /attribution/status, because failing closed would block every memory write during an outage, a far worse harm than a claim the daily audit re-checks',
+  },
+};
+
+describe('stated fail-open exceptions', () => {
+  for (const [file, exception] of Object.entries(STATED_FAIL_OPEN_EXCEPTIONS)) {
+    it(`${file} swaps providers first and reports what it lets through`, () => {
+      expect(readFileSync(path.join(SRC, file), 'utf8')).toContain('gating: true');
+      expect(readFileSync(path.join(SRC, exception.reportedFrom), 'utf8')).toContain('DegradationReporter');
+      expect(exception.reason.length).toBeGreaterThan(40);
+    });
+  }
+});
 
 describe('no-silent-llm-fallback — every LLM-gating callsite is swap/fail-closed/reported or reviewed-advisory', () => {
   it('every LLM callsite carries a safety marker OR is reviewed-advisory (no new silent fallback)', () => {

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "false-stopped-session-self-recovery",
+  "sessionId": "0b8a9d61-a773-4400-b821-0b8a717131e2",
+  "timestamp": "2026-11-05T12:26:30.665Z",
+  "artifactPath": "upgrades/side-effects/false-stopped-session-self-recovery.md",
+  "artifactSha256": "dc3273f16c837efba9a1bd6d24d7244e5f532fa19940d4939f35c14d47abc8fc",
+  "specPath": "docs/specs/resume-follows-account.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/false-stopped-session-self-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restore current main account-rescue spawn authority exactly while preserving conversation recovery; independent review concurs.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

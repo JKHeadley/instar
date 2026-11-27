@@ -85,6 +85,15 @@ export interface ApprovalRecord {
   evidenceRef?: string;
   /** Set when this row CORRECTS a prior row (operator dispute) — the prior subject+decidedAt. */
   corrects?: string;
+  /**
+   * Where the decision came from (trust-journey section 6). `agent-reported`: written through the
+   * agent's own token, whatever approver it names; kept and shown, never counted toward an offer or
+   * auto-approval eligibility. `person-verified`: written by the account-path approval check.
+   * Rows written before this field existed came from the agent's token and read as agent-reported.
+   */
+  provenance?: 'agent-reported' | 'person-verified';
+  /** The approver an agent-reported row claimed (shown as a claim, never as the approver). */
+  reportedApprover?: string;
   signature: string;
 }
 
@@ -126,6 +135,8 @@ export interface ClassSummary {
    *  approved-with-change or rejected (spec B3). */
   streak: number;
   autoApprovalEligible: boolean;
+  /** Rows in the class not verified as the person's own decision (trust-journey section 6). */
+  agentReported: number;
   /** Aggregate divergence-category counts for the class (drives the Phase-3 digest). */
   divergenceCounts: Record<DivergenceCategory, number>;
 }
@@ -204,6 +215,8 @@ export class ApprovalLedger {
       ...(input.commitSha ? { commitSha: input.commitSha } : {}),
       ...(input.evidenceRef ? { evidenceRef: input.evidenceRef } : {}),
       ...(input.corrects ? { corrects: input.corrects } : {}),
+      ...(input.provenance ? { provenance: input.provenance } : {}),
+      ...(input.reportedApprover ? { reportedApprover: input.reportedApprover } : {}),
     };
     const row: ApprovalRecord = { ...unsigned, signature: this.d.sign(canonicalApprovalRow(unsigned)) };
     fs.mkdirSync(path.dirname(this.d.filePath), { recursive: true });
@@ -271,9 +284,21 @@ export class ApprovalLedger {
       else break;
     }
 
+    // Eligibility is earned only from the person's own verified decisions (trust-journey section 6):
+    // agent-reported rows (and rows from before provenance existed) are counted and shown but never
+    // make a class eligible.
+    const verified = rows.filter((r) => r.provenance === 'person-verified');
+    const vAsIs = verified.filter((r) => r.mode === 'approved-as-is').length;
+    const vRatio = verified.length === 0 ? 0 : vAsIs / verified.length;
+    let vStreak = 0;
+    for (let i = verified.length - 1; i >= 0; i--) {
+      if (verified[i].mode === 'approved-as-is') vStreak++;
+      else break;
+    }
+    const agentReported = rows.length - verified.length;
     const autoApprovalEligible =
-      total >= policy.minTotal && ratio >= policy.minRatio && streak >= policy.minStreak;
+      verified.length >= policy.minTotal && vRatio >= policy.minRatio && vStreak >= policy.minStreak;
 
-    return { decisionClass, total, approvedAsIs, approvedWithChange, rejected, ratio, streak, autoApprovalEligible, divergenceCounts };
+    return { decisionClass, total, approvedAsIs, approvedWithChange, rejected, ratio, streak, autoApprovalEligible, divergenceCounts, agentReported };
   }
 }

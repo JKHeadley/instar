@@ -60,6 +60,69 @@ The dashboard uses these authenticated endpoints after the operator enters the e
 | POST | `/jobs/:slug/override` | Fork an instar default into the user namespace (idempotent) |
 | POST | `/jobs/:slug/unfork` | Archive the user copy to `.unfork-backups/<slug>-<ts>.md`, then restore the instar default |
 | GET | `/jobs/:slug/unfork-backups` | List retained unfork backups for a slug (30 days OR last 10, whichever is more generous) |
+| GET | `/jobs/:slug/supervision-hold` | Read a job's script-route supervision hold (or `null`) and its last 20 release records |
+| POST | `/jobs/:slug/supervision-hold/release` | Release a script-route supervision hold with a required reason; refused while the hold's cause is still unsettled |
+
+### Script-route supervision holds
+
+A scheduled script job normally runs its script directly. When the scheduler's restart check finds that the job's run history and its supervision journal disagree about a run, it writes a hold for that job. While a job is held, it runs as a session instead (the prior runner) until the hold is lifted. A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not by itself hold the job. A hold that the restart check wrote is lifted by that same check once its cause is settled; other holds stay until released.
+
+Both routes need the normal `Authorization: Bearer TOKEN` header. The slug must match `^[a-z0-9-]+$`.
+
+**Read a hold** — `GET /jobs/:slug/supervision-hold`
+
+```bash
+curl -H "Authorization: Bearer $AUTH" http://localhost:4040/jobs/health-check/supervision-hold
+```
+
+Returns `{ slug, hold, releases }`. `hold` is `{ slug, reason, heldAt }` when the job is held, or `null` when it is not. `releases` is the job's release history, newest first, at most 20 entries, each `{ slug, holdReason, heldAt, releasedAt, releasedBy, releaseReason }`. Reading changes nothing. Use it first, to see why a job is running as a session and whether it has been released before.
+
+**Release a hold** — `POST /jobs/:slug/supervision-hold/release`
+
+```bash
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' \
+  http://localhost:4040/jobs/health-check/supervision-hold/release \
+  -d '{"reason":"Inspected run history; the mismatched run was settled after the restart"}'
+```
+
+The body is `{ "reason": "..." }`. The reason is required, is trimmed, and must be 1–500 characters; say why the hold's cause is settled. The release is not automatic and is never retried for you. Before releasing, the scheduler runs the same run-history check again for that job:
+
+- If the check still finds runs that disagree between the run history and the supervision journal, or a run too recent to judge yet, the release is refused and the hold stays.
+- Otherwise the hold is removed and an audit row is kept (who released it, why, and the original hold reason and time). The release is also logged as a `job_supervision_hold_released` activity event.
+
+The recorded releaser is always `agent` — the holder of the bearer token. A name in the request body is never used.
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| 200 | `{ released: true, slug, hold, releasedBy: "agent" }` | Released; `hold` is the hold that was removed |
+| 400 | `{ error: "Invalid job slug" }` or a `reason is required (1-500 characters)…` error | Bad slug, or missing, empty or too-long reason |
+| 404 | `{ error: "not-held", slug }` | The job has no hold |
+| 409 | `{ error: "cause-unsettled", slug, runIds, detail }` | Runs still disagree; `runIds` lists up to 20 of them (empty when a run is only too recent to judge) |
+| 409 | `{ error: "read-only-standby" }` | This server is a read-only standby; the supervision journal is not available here |
+| 503 | `{ error: "Scheduler not running" }` or `{ error: "census-unavailable", slug, detail }` | No scheduler, or run history could not be read completely |
+| 500 | `{ error }` | Unexpected failure |
+
+The read route returns the same 400, 409 `read-only-standby`, 503 `Scheduler not running` and 500 errors. On a 409 `cause-unsettled`, inspect the listed runs instead of retrying with a different reason; the release will keep being refused until the check passes.
+
+## Work Board
+
+A card for every decision, answer or sign-off the agent needs from a person. Off unless `workBoard.enabled` is on (on by default for a development agent); when off every route answers `503 work-board-disabled`. See [Work Board](/architecture/work-board/).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/work-board` | The lanes, each card's derived status and what is needed, pending pickups and `behind`. |
+| GET | `/work-board/cards/:id` | One card. A card a person may not read answers 404. |
+| POST | `/work-board/cards` | Create a card: `title`, `need`, at least one `doneWhen` item, `outward`. With the dashboard `pin` the card is the owner's; without it, the agent's. |
+| POST | `/work-board/cards/:id/records` | `kind`: `edited`, `waiting-on`, `evidence` or `claimed-done`. A `waiting-on` names who must act: `principal: "owner"` (the server resolves the team owner) with a `question`, or `"agent"`. Pickup, policy and tap records are refused here. |
+| POST | `/work-board/cards/:id/tap` | A person's tap (`action` plus what it binds to, and the dashboard `pin`). The agent's token alone is refused `person-required`. |
+| POST | `/work-board/settings` | The owner's limits and the approval `policy`, with the dashboard `pin`. `{ preview: true, policy }` says how many waiting cards would start. |
+| GET | `/work-board/graduation` | The pilot's measurement from the card records, and which day-7 / day-14 records are due. |
+| POST | `/work-board/graduation/pass` | Write each due graduation record (the lease holder only). |
+| POST | `/work-board/cards/:id/notes` | `{ text }`: a progress note from the agent (Bearer) or the scoped session bound to the card's conversation or to the conversation that recorded the request. It lands in the card's conversation at once; `503 rate-limited` means nothing was written, write it again. A `not-started` card refuses it. |
+| POST | `/work-board/not-started/approve` | Owner, with the dashboard `pin`: `{ cards: [{ id, materialHash, titleHash }] }` approves each shown not-started internal card, one signed tap each; per-card results, `stale-card` for a card that changed. |
+| POST | `/work-board/not-started/approve-and-widen` | Owner, with the dashboard `pin`: the same approvals, then the `board-policy` trust request is raised with the record it rests on; the response says where to answer it or why it could not be raised. |
+| GET | `/mobile/work-board` | The cards a paired phone's person may see. |
+| POST | `/mobile/work-board/cards/:id/tap` | A tap from the owner's phone, signed with Face ID over the exact action line. |
 
 ## Relationships
 
@@ -77,7 +140,8 @@ The dashboard uses these authenticated endpoints after the operator enters the e
 |--------|------|-------------|
 | GET | `/telegram/topics` | List topic-session mappings |
 | POST | `/telegram/topics` | Programmatic topic creation |
-| POST | `/telegram/reply/:topicId` | Send message to a topic |
+| POST | `/telegram/reply/:topicId` | Send message to a topic. The answer carries `messageId` and, when the chat has message links, `messageLink` |
+| GET | `/messages/link` | Build the link to a message, a card or a conversation from ids: `?platform=telegram&topicId=N&messageId=M`, `?platform=slack&channel=C&ts=T`, `?platform=card&cardId=ID`, `?platform=app&conversationKey=UUID`. Telegram answers say whether this machine's log holds that message (`verified`, `matched`); `409 not-linkable` names why a link cannot be built |
 | GET | `/telegram/topics/:topicId/messages` | Topic message history (`?limit=20`) |
 
 ## Evolution
@@ -320,6 +384,17 @@ with respect to behavior; the ratio is a signal, never a gate.
 - `GET /attention/_remote-ack/pending` — list still-pending durable remote-acks (observability).
 - `POST /attention/_remote-ack/drain` — manually drain pending durable remote-acks to their owning machines.
 
+## /authorization-requests
+
+Operator authorization requests: an agent proposes a time-boxed floor-action grant for a registered Slack user; nothing is granted until the operator approves with the PIN. See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `POST /authorization-requests` — propose a grant (inert until approved)
+- `GET /authorization-requests` — list requests (`?status=`), each with its server-written card
+- `GET /authorization-requests/:id` — one request
+- `POST /authorization-requests/:id/approve` — PIN-gated approval; issues the signed grant mandate
+- `POST /authorization-requests/:id/deny` — PIN-gated decline (`denyReason` required)
+- `POST /authorization-requests/:id/withdraw` — the proposing agent withdraws its pending request
+
 ## /autonomous
 - `POST /autonomous/register` — server-side start snapshot for an autonomous run (scope-accretion R30): the server mints the runId, snapshots the `scopeAccretion` config + sweep base-root start-SHAs, and clamps `endAt` to `now + maxDurationMs`. One registration per active run (409 while the existing record is active).
 - `POST /autonomous/:topic/run-end` — every exit surface reports here (scope-accretion R44): runs the non-blocking advisory sweep and enumerates any unbuilt accreted work loudly; marks the run record ended.
@@ -361,6 +436,18 @@ These authenticated endpoints manage the bounded, per-topic Codex checklist. The
 - `GET /backups`
 - `POST /backups`
 - `POST /backups/:id/restore`
+
+## /blockers
+
+Blocker Ledger and Self-Unblock checklist runs (signal-only; 503 while the ledger is off; writes need `X-Instar-Request: 1`). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /blockers` — list entries (`?limit`, `?offset`, `?includeArchived=1`)
+- `GET /blockers/:id` — one entry with its history and evidence
+- `POST /blockers` — open an entry (`detectedText`, `origin`)
+- `POST /blockers/:id/advance` — move one pipeline step with that step's evidence
+- `POST /blockers/:id/settle` — settle as `resolved` or `true-blocker`
+- `POST /blockers/self-unblock-run` — run the Self-Unblock checklist against a `service:scope` target and store the run
+- `GET /blockers/self-unblock-runs` — recent checklist runs with per-probe results
 
 ## /build
 - `POST /build/heartbeat`
@@ -422,6 +509,19 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/dispatch`
 - `GET /context/working-memory`
 
+## /context-budget (context layers, dev-gated)
+- `GET /context-budget/sentinel` — the Context Budget sentinel: the compaction canary per machine, engine and version, quarantined folds, and the adapter verification suite's recorded results
+- `GET /context-budget/layers` — the context layers' status (store, archive, budget, builders)
+- `GET /context-budget/metrics` — the measurement backend (tokens per request, live context size, rework, layer spend)
+- `POST /context-budget/codex-seed` — the Codex next-prompt seed: the first Codex prompt after a compaction gets the topic's verified standing packet
+- `POST /context-budget/codex-seed/ack` — the hook's acknowledgement; writes the seeded marker for that compaction epoch
+- `GET /context-budget/codex-seed` — the seed's counts
+- `GET /topic/:id/standing-packet` — what a topic's session is re-seeded with after a compaction (sizes and verdicts only)
+- `GET /topic/:id/user-corpus` — the operator's own messages for a topic (sizes and labels only)
+- `GET /topic/:id/anchor` — the topic's Anchor and decisions ledger (references and statuses only)
+- `GET /topic/:id/chunks` — the topic's chunk and range summaries
+- `GET /topic/:id/chunks/:k` — one chunk
+
 ## /decision-quality
 - `GET /decision-quality`
 - `POST /decision-quality/grade-pass`
@@ -479,6 +579,14 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /evolution/learnings`
 - `POST /evolution/proposals`
 
+## /failures
+
+Failure-Learning Loop reads (503 while failure learning is off). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /failures/analysis` — ledger analysis plus the rollout stage (`?sinceDays=`)
+- `GET /failures/insights` — analyzer insights (`?status`, `?before`, `?limit`)
+- `GET /failures/:id` — one failure record
+
 ## /features
 - `DELETE /features/discovery-data`
 - `GET /features`
@@ -513,6 +621,17 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `POST /flows/:flowId/resume`
 - `POST /flows/:flowId/start-step`
 - `POST /flows/:flowId/wait`
+
+## /framework-issues
+
+The framework-issue ledger from framework onboarding (observability only, never gates). See the Blocker, authorization, failure and framework-issue routes reference page for request bodies, switches and errors.
+
+- `GET /framework-issues` — list issues (`?framework`, `?bucket`, `?status`, `?limit`)
+- `GET /framework-issues/playbook` — carry-over lessons for `?targetFramework=`
+- `GET /framework-issues/capture-stats` — mentor runs against observations written
+- `GET /framework-issues/observability` — bucket spread, leak and loop counts
+- `POST /framework-issues/observe` — record an engineering-discovered issue
+- `POST /framework-issues/:id/promote` — change playbook status (`extracted` needs a non-Echo attester)
 
 ## /git
 - `GET /git/log`
@@ -1042,6 +1161,9 @@ Verified per-topic operator binding (Know Your Principal). The operator is estab
 - `GET /trust/elevations`
 - `GET /trust/summary`
 - `POST /trust/grant`
+- `POST /trust/requests` — open the person's approval request for a raise (the card goes to their own direct chat or paired device)
+- `GET /trust/requests` — open and past approval requests
+- `DELETE /trust/requests/:id` — withdraw a request the agent raised that no person has answered; its code approves nothing after that, and the same change cannot be asked again until the card would have expired. A `board-policy` request cannot be withdrawn.
 
 ## /tunnel
 - `GET /tunnel`

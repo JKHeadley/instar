@@ -8,7 +8,7 @@ import { OriginTransportCancelledBeforeNetwork } from '../../../src/messaging/te
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import { telegramFetch } from '../../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
 
 let worker: URL;
@@ -16,16 +16,17 @@ const runtimes: TelegramOriginRuntime[] = [];
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 beforeAll(async () => { worker = await compileOriginWorker(); });
 afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-async function harness() {
+async function harness(extra: Partial<Parameters<typeof TelegramOriginRuntime.open>[0]> = {}) {
   const stateDir = temporaryState(), token = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl: worker,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token, accountId: 'bot-1', chatId: '-100123' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     display: () => ({}), authorize: () => true, diagnoseUnknown: async () => undefined,
-    alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
+    alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined, ...extra });
   runtimes.push(runtime);
+  allowSlowOriginRecording(runtime.service);
   const sessionToken = await lifecycle!.issue({ sessionId: 'deadline-session', harnessId: 'codex-cli', projectDir: process.cwd(), configuredModel: 'fixture-model' });
   const review = vi.fn(async () => ({ ok: true as const }));
   runtime.attachSendPolicy({ review, authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(stateDir) });
@@ -135,6 +136,37 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect(line).toContain(`code=${cause.code}`);
     expect(line).not.toContain(h.token);
   });
+  it('leaves a send alone while its own first pass is still in review, then sends exactly once', async () => {
+    // native-conversation-base §3a — the queued-reply timestamp review is gone; recovery
+    // has no review of its own to run, and still leaves a first send in progress alone.
+    const h = await harness();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    h.review.mockImplementationOnce(async () => { await gate; return { ok: true as const }; });
+    const sending = h.send({ networkTimeoutMs: 15_000 });
+    await vi.waitFor(() => expect(h.review).toHaveBeenCalledOnce());
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    const operationId = (await h.runtime.store.listOrigins()).records[0].operation!.operationId;
+    expect((await h.runtime.store.getOperation(operationId))?.recovery ?? null).toBeNull();
+    release();
+    expect((await sending).status).toBe(200);
+    expect(h.network).toHaveBeenCalledOnce();
+    expect(h.runtime.service.isFirstSendRunning(operationId)).toBe(false);
+  });
+  it('runs recovery as often as asked but scans for reader-visible notices once per five minutes', async () => {
+    const onSessionDeliveryHeld = vi.fn(async () => undefined);
+    const h = await harness({ onSessionDeliveryHeld });
+    const scan = vi.spyOn(h.runtime.store, 'listSessionDeliveryExceptions');
+    await h.runtime.recoverHeld();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledOnce());
+    await h.runtime.recoverHeld(); await h.runtime.recoverHeld();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(scan).toHaveBeenCalledOnce();
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now + 5 * 60_000);
+    await h.runtime.recoverHeld();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledTimes(2));
+  });
   it('retains caller cancellation after invocation as unknown and never automatically replays it', async () => {
     const h = await harness(), caller = new AbortController();
     h.network.mockImplementation(async (_url, init) => { caller.abort(); init.signal!.throwIfAborted(); throw new Error('unreachable'); });
@@ -155,10 +187,15 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('outcome-unknown');
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
   });
-  it.each([0, -1, NaN, Infinity, 1.5])('rejects invalid network duration %s before origin mutation', async networkTimeoutMs => {
+  it('rejects every invalid network duration before origin mutation', async () => {
     const h = await harness();
-    await expect(h.send({ networkTimeoutMs })).rejects.toThrow('telegram-network-timeout-invalid');
-    expect(h.network).not.toHaveBeenCalled(); expect((await h.runtime.store.listOrigins()).records).toEqual([]);
+    // A rejected duration leaves no durable state, so these checks can share the runtime.
+    for (const networkTimeoutMs of [0, -1, NaN, Infinity, 1.5]) {
+      await expect(h.send({ networkTimeoutMs }), `duration: ${networkTimeoutMs}`)
+        .rejects.toThrow('telegram-network-timeout-invalid');
+      expect(h.network).not.toHaveBeenCalled();
+      expect((await h.runtime.store.listOrigins()).records).toEqual([]);
+    }
   });
   it('starts a fresh deadline for every split child', async () => {
     const h = await harness(), clocks: AbortController[] = [];

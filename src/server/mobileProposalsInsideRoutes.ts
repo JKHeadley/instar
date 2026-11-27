@@ -375,7 +375,9 @@ export function summarizeReviews(self: Source): Rec {
 }
 
 /** The console's page headline, worst first, with what could not be read stated. All clear needs something measured. */
-export function insideHeadline(activity: Rec, problems: Rec, claims: Rec, reviews: Rec): { headline: string; tone: string; sub: string | null } {
+export function insideHeadline(activity: Rec, problems: Rec, claims: Rec, reviews: Rec, machine: string | null = null): { headline: string; tone: string; sub: string | null } {
+  // Named ("for Mac Studio"), never "this machine": the phone talks to the agent, not one machine.
+  const on = machine ? ` for ${machine}` : '';
   const unread = [
     activity.state === 'unavailable' ? 'conversation history' : null,
     problems.state === 'unavailable' ? 'recurring problems' : null,
@@ -386,8 +388,8 @@ export function insideHeadline(activity: Rec, problems: Rec, claims: Rec, review
   const sub = unread.length ? `Couldn't read: ${unread.join(', ')}.` : null;
   if ([activity, problems, claims].every((s) => s.state !== 'ok')) {
     if (unread.length) return { headline: "Can't tell how I'm doing inside.", tone: 'unknown', sub };
-    if (reviews.state !== 'ok') return { headline: 'None of these checks are on for this machine.', tone: 'unknown', sub };
-    return { headline: 'Only correction reviews are on for this machine.', tone: 'unknown', sub };
+    if (reviews.state !== 'ok') return { headline: `None of these checks are on${on}.`, tone: 'unknown', sub };
+    return { headline: `Only correction reviews are on${on}.`, tone: 'unknown', sub };
   }
   const contradicted = count(claims.contradicted);
   if (claims.state === 'ok' && contradicted) {
@@ -403,12 +405,13 @@ export function insideHeadline(activity: Rec, problems: Rec, claims: Rec, review
 export interface InsideSources { activity: Source; insights: Source; week: Source; claims: Source; reviews: Source }
 
 /** This machine's summary (also the `?scope=local` answer a peer reads). */
-export function summarizeLocalInside(src: InsideSources, now: number): Rec {
+export function summarizeLocalInside(src: InsideSources, now: number, selfName: string | null = null): Rec {
   const activity = summarizeActivity(src.activity, now);
   const problems = summarizeProblems(src.insights, src.week);
   const claims = summarizeClaims(src.claims);
   const reviews = summarizeReviews(src.reviews);
-  return { ...insideHeadline(activity, problems, claims, reviews), activity, problems, claims, reviews };
+  // `machine` names the answering machine for the phone's section title (never "This machine").
+  return { ...(selfName ? { machine: selfName } : {}), ...insideHeadline(activity, problems, claims, reviews, selfName), activity, problems, claims, reviews };
 }
 
 const SECTION_NAMES = ['activity', 'problems', 'claims', 'reviews'];
@@ -461,7 +464,7 @@ export function peerInside(d: Rec, machineId: string, machine: string): Rec {
   const sections = {
     activity: {
       state: aState, truncated: a.truncated === true, rows: activityRows,
-      line: aState === 'off' ? 'This record is off on this agent.' : aState !== 'ok' ? "Can't tell what this machine's conversations have been doing."
+      line: aState === 'off' ? 'This record is off on this agent.' : aState !== 'ok' ? `Can't tell what ${machine}'s conversations have been doing.`
         : activityRows.length ? `${plural(activityRows.length, 'recent record')} shown.` : 'Nothing recorded recently.',
     },
     problems: {
@@ -482,7 +485,7 @@ export function peerInside(d: Rec, machineId: string, machine: string): Rec {
       })),
     },
   };
-  return { machine, ...insideHeadline(sections.activity, sections.problems, sections.claims, sections.reviews), ...sections };
+  return { machine, ...insideHeadline(sections.activity, sections.problems, sections.claims, sections.reviews, machine), ...sections };
 }
 
 /** Every `ok` section also has its counts (an answer that fails this still shows, those sections unavailable, and is reported). */
@@ -545,6 +548,8 @@ export interface MobileProposalsInsideDeps {
   peerInside: () => Promise<PeerAnswer[]>;
   offlineMachineIds?: () => string[];
   nicknameOf: (machineId: string) => string | null;
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
 }
@@ -626,7 +631,7 @@ export function mountMobileProposalsInsideRoutes(router: Router, deps: MobilePro
           part('records', deps.activity), part('patterns', deps.insights), part('week', deps.week), part('claims', deps.claims), part('reviews', deps.reviews),
           local ? Promise.resolve({ peers: [] as PeerAnswer[], peersRead: true }) : peerRead('GET /mobile/inside (peers)', deps.peerInside),
         ]);
-        const self = summarizeLocalInside({ activity, insights, week, claims, reviews }, now());
+        const self = summarizeLocalInside({ activity, insights, week, claims, reviews }, now(), cleanText(deps.selfName?.() ?? null, 60));
         const sources: Record<string, Source> = { activity, problems: insights, claims, reviews };
         for (const n of SECTION_NAMES) if (sources[n].state === 'ok' && rec(self[n]).state === 'unavailable') wrongShape(`GET /mobile/inside (${n})`);
         if (week.state === 'ok' && rec(self.problems).weekUnread === true) wrongShape('GET /mobile/inside (week)');

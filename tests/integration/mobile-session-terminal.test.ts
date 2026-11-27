@@ -166,7 +166,7 @@ describe('device session output', () => {
 
   it('other device session routes stay refused', async () => {
     const c = setup();
-    const r = await signed(c.app, c.owner, 'POST', '/sessions/echo-topic-7/attachments', { dataBase64: 'aGk=' });
+    const r = await signed(c.app, c.owner, 'POST', '/sessions/echo-topic-7/kill', {});
     expect(r.status).toBe(403);
     expect(r.body.error).toBe('device-not-allowed');
   });

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "approval-not-errand",
+  "sessionId": "dcab2eaa-7913-4ee6-8385-9f9bd82cea54",
+  "timestamp": "2026-11-14T20:22:34.602Z",
+  "artifactPath": "upgrades/side-effects/approval-not-errand.md",
+  "artifactSha256": "8f9a910addc261b0ef2aed71ce561ac1c2b1cdb8c86517a18a7b5cff2cd15e2f",
+  "coveredFiles": [
+    "src/core/MessagingToneGate.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/integration/telegram-reply-approval-not-errand.test.ts",
+    "tests/unit/approval-not-errand.test.ts",
+    "tests/unit/reach-aware-false-blocker.test.ts",
+    "upgrades/approval-not-errand.eli16.md",
+    "upgrades/next/approval-not-errand.md",
+    "upgrades/side-effects/approval-not-errand.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Prompt wording in an existing LLM gate rule plus a CLAUDE.md paragraph; a revert fully undoes it, no state, no new authority beyond the existing B17 rule.",
+  "eli16Path": "upgrades/approval-not-errand.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/approval-not-errand.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

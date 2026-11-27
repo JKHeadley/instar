@@ -24,7 +24,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HostMaintenanceStore, WedgeMaintainerClaim } from './HostMaintenanceStore.js';
-import type { ProbeResult, ProbeRunner } from './readings.js';
+import { parseCanaryProcesses, parseStoppedLaunches, type CanaryProcess, type ProbeResult, type ProbeRunner } from './readings.js';
+
+export interface GentleProcess { pid: number; app: string; ageMinutes: number }
+/** One run of the gentle rung. In dry-run, `resumed` lists what it would have resumed. */
+export interface GentleResult {
+  at: number;
+  mode: GentleResumeMode;
+  result: 'none-found' | 'would-resume' | 'resumed' | 'nothing-resumed' | 'unread';
+  reason: string | null;
+  found: number;
+  resumed: GentleProcess[];
+  failed: GentleProcess[];
+  skipped: GentleProcess[];
+}
 import { consoleSessionFromOwner, readF1, readF2, readF4, type FamilyReading, type LoadReading, type WedgePlatform } from './wedgeEvidence.js';
 import {
   CANDIDATE_FAMILIES, JUDGE_ACTIONS, currentCandidate, emptyWindow, isFresh, nextSampleDelay, observe, recentlyRestarted, rungsFor, singleFamilyRun,
@@ -38,6 +51,8 @@ export const JUDGE_MAX_PER_DAY = 6;
 export const CANDIDATE_BREAKER_PER_DAY = 3;
 const PS_TIMEOUT_MS = 5_000;
 const F1_TIMEOUT_MS = 10_000;
+/** How long a launched canary gets to run and quit before a leftover counts against the launch. */
+export const CANARY_SETTLE_MS = 2_000;
 const MAX_EPISODES = 20;
 const MAX_LOG_BYTES = 2 * 1024 * 1024;
 /** A boot time this much later than the recorded one is a new boot. */
@@ -48,11 +63,24 @@ export interface WedgeSettings {
   dryRun: boolean;
   /** `machineMaintenance.wedgeRestart.dryRunNotice`. Default false: rung 7's real notice. */
   dryRunNotice: boolean;
+  /**
+   * `machineMaintenance.wedgeRestart.gentleResume`: the gentle rung on macOS, resuming app
+   * launches LaunchServices left stopped. `dry-run` (default) records what it would resume;
+   * `on` resumes them; `off` does neither.
+   */
+  gentleResume: GentleResumeMode;
 }
+
+export type GentleResumeMode = 'off' | 'dry-run' | 'on';
+/** At most this many launches are resumed in one sample. */
+export const GENTLE_MAX_PER_SAMPLE = 20;
+/** A launch that is stopped again after this many resumes is left to the later rungs. */
+export const GENTLE_MAX_PER_PROCESS = 2;
 
 export function normalizeWedgeSettings(raw: unknown): WedgeSettings {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  return { dryRun: r.dryRun !== false, dryRunNotice: r.dryRunNotice === true };
+  const gentleResume: GentleResumeMode = r.gentleResume === 'on' || r.gentleResume === 'off' ? r.gentleResume : 'dry-run';
+  return { dryRun: r.dryRun !== false, dryRunNotice: r.dryRunNotice === true, gentleResume };
 }
 
 /** What the judge sees: structured evidence only. Never window titles, dialog text or command output. */
@@ -99,6 +127,25 @@ export interface WedgeMonitorDeps {
   canaryAvailable?: () => boolean;
   /** macOS: this agent's OS user, compared with the console owner for F1 eligibility. */
   ownUser?: string;
+  /** macOS: this agent's uid; only this user's canary processes are read or ended. */
+  ownUid?: number;
+  /**
+   * macOS: ends one leftover canary of this user (SIGKILL; a stopped process still dies).
+   * A canary quits at once on a healthy machine, so any instance left over is stuck, and
+   * ending it is what stops a wedge from also piling up processes. Absent: never ends one.
+   */
+  endCanary?: (pid: number) => boolean;
+  /**
+   * macOS, the gentle rung: resumes one stopped launch of this user (SIGCONT). A resumed
+   * process carries on as if never stopped, so this cannot lose work. Called only for a
+   * launch `parseStoppedLaunches` listed, only while the canary itself was left stopped in
+   * the same sample, and only when `gentleResume` is `on`. Absent: never resumes one.
+   */
+  resumeStopped?: (pid: number) => boolean;
+  /** macOS: this user's home folder, so apps in ~/Applications count as known. */
+  home?: string | null;
+  /** Waits before the leftover read. Default: a real timer of CANARY_SETTLE_MS. */
+  settle?: (ms: number) => Promise<void>;
   loadReading: () => LoadReading | null;
   /** Session spawns that failed for system reasons in the last 30 minutes; null when not counted. */
   spawnSystemFailures30m: () => number | null;
@@ -203,6 +250,9 @@ export class WedgeMonitor {
   private lastSample: Sample | null = null;
   private nextSampleAt = 0;
   private lastVerdict: Record<string, unknown> | null = null;
+  private lastGentle: GentleResult | null = null;
+  /** Resumes per stopped process (by pid), this run of the server. */
+  private resumes = new Map<string, number>();
   private samples = 0;
   private lastError: string | null = null;
   private lastTickAt: number | null = null;
@@ -288,6 +338,65 @@ export class WedgeMonitor {
     return bounded(started.catch(() => ({ ok: false, stdout: null, ms: 0, timedOut: false, code: 'probe-error' } as ProbeResult)), timeoutMs + WEDGE_PROBE_GUARD_MS, timedOut);
   }
 
+  private async listCanaries(): Promise<CanaryProcess[] | null> {
+    const uid = this.deps.ownUid;
+    if (uid === undefined) return null;
+    const r = await this.runProbe('canaryProcesses', PS_TIMEOUT_MS);
+    return r.ok && r.stdout !== null ? parseCanaryProcesses(r.stdout, uid) : null;
+  }
+
+  private endCanaries(list: CanaryProcess[]): number {
+    const end = this.deps.endCanary;
+    if (!end) return 0;
+    let n = 0;
+    for (const c of list) {
+      try { if (end(c.pid)) n += 1; } catch { /* @silent-fallback-ok — one that could not be ended is read again next sample */ }
+    }
+    return n;
+  }
+
+  private async endLeftoverCanaries(): Promise<number | null> {
+    const left = await this.listCanaries();
+    return left === null ? null : this.endCanaries(left);
+  }
+
+  /**
+   * The gentle rung (macOS). Runs only when this sample's own canary was left stopped,
+   * which is the direct sign that LaunchServices is stopping launches. Resumes this user's
+   * other stopped launches from known app folders, a bounded number, each at most
+   * GENTLE_MAX_PER_PROCESS times. The next sample (2 minutes, since F1 is positive) is the
+   * check of whether it helped.
+   */
+  private async gentleRung(at: number, mode: GentleResumeMode): Promise<GentleResult | null> {
+    if (mode === 'off') return null;
+    const uid = this.deps.ownUid;
+    if (uid === undefined) return { at, mode, result: 'unread', reason: 'no-uid', found: 0, resumed: [], failed: [], skipped: [] };
+    const r = await this.runProbe('stoppedLaunches', PS_TIMEOUT_MS);
+    if (!r.ok || r.stdout === null) return { at, mode, result: 'unread', reason: r.timedOut ? 'ps-timed-out' : 'ps-failed', found: 0, resumed: [], failed: [], skipped: [] };
+    const found = parseStoppedLaunches(r.stdout, uid, this.deps.home ?? null);
+    const resumed: GentleProcess[] = [];
+    const failed: GentleProcess[] = [];
+    const skipped: GentleProcess[] = [];
+    const wouldResume: GentleProcess[] = [];
+    for (const p of found) {
+      const row = { pid: p.pid, app: p.app, ageMinutes: Math.floor(p.ageMs / MIN) };
+      // Keyed by pid for this run of the server. A reused pid inherits the count, which can
+      // only mean fewer resumes, never more.
+      const key = String(p.pid);
+      const tries = this.resumes.get(key) ?? 0;
+      if (tries >= GENTLE_MAX_PER_PROCESS || resumed.length + failed.length + wouldResume.length >= GENTLE_MAX_PER_SAMPLE) { skipped.push(row); continue; }
+      if (mode === 'dry-run' || !this.deps.resumeStopped) { wouldResume.push(row); continue; }
+      this.resumes.set(key, tries + 1);
+      let ok = false;
+      try { ok = this.deps.resumeStopped(p.pid); } catch { ok = false; } // @silent-fallback-ok — counted as failed and read again next sample
+      (ok ? resumed : failed).push(row);
+    }
+    if (this.resumes.size > 500) this.resumes = new Map([...this.resumes].slice(-200));
+    const result: GentleResult['result'] = found.length === 0 ? 'none-found'
+      : mode === 'dry-run' || !this.deps.resumeStopped ? 'would-resume' : resumed.length > 0 ? 'resumed' : 'nothing-resumed';
+    return { at, mode: this.deps.resumeStopped ? mode : 'dry-run', result, reason: mode === 'on' && !this.deps.resumeStopped ? 'no-resumer' : null, found: found.length, resumed: mode === 'dry-run' || !this.deps.resumeStopped ? wouldResume : resumed, failed, skipped };
+  }
+
   private async sample(): Promise<void> {
     const platform = this.deps.platform;
     const bootAt = await bounded(this.deps.readBootAt(), WEDGE_READ_BOUND_MS, null);
@@ -303,6 +412,9 @@ export class WedgeMonitor {
     let canary = false;
     try { canary = mac && this.deps.canaryAvailable?.() === true; } catch { canary = false; } // @silent-fallback-ok — no canary: F1 reads unknown with that reason
     const f1Name = platform === 'linux' ? 'userUnitProbe' as const : platform === 'wsl' ? 'interopProbe' as const : canary ? 'guiCanary' as const : null;
+    // Leftovers from earlier launches are stuck (the canary quits at once when the GUI path
+    // works). End them first, so this probe's own canary is the only one read afterward.
+    const reapedBefore = canary ? await this.endLeftoverCanaries() : null;
     const [ps, f1Probe, tasklist, lockState, consoleOwner, kernelZone] = await Promise.all([
       this.runProbe('processStates', PS_TIMEOUT_MS),
       f1Name ? this.runProbe(f1Name, F1_TIMEOUT_MS) : Promise.resolve(null),
@@ -314,7 +426,23 @@ export class WedgeMonitor {
     const at = this.now();
 
     const consoleSession = mac ? consoleSessionFromOwner(consoleOwner, this.deps.ownUser) : null;
-    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession });
+    let canaryLeftover: { stopped: number; alive: number } | null | undefined;
+    let reapedAfter: number | null = null;
+    if (canary && f1Probe) {
+      try { await (this.deps.settle ?? ((ms) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); })))(CANARY_SETTLE_MS); } catch { /* @silent-fallback-ok — a failed wait reads the table at once */ }
+      const left = await this.listCanaries();
+      canaryLeftover = left === null ? null : { stopped: left.filter((c) => c.stopped).length, alive: left.filter((c) => !c.stopped).length };
+      // A stopped canary will never quit by itself: end it now rather than at the next sample.
+      if (left) reapedAfter = this.endCanaries(left.filter((c) => c.stopped));
+    }
+    if (canaryLeftover && canaryLeftover.stopped > 0) {
+      let mode: GentleResumeMode = 'dry-run';
+      try { mode = this.deps.settings().gentleResume ?? 'dry-run'; } catch { mode = 'dry-run'; } // @silent-fallback-ok — unreadable settings record only
+      const gentle = await this.gentleRung(this.now(), mode);
+      if (gentle) { this.lastGentle = gentle; this.audit({ type: 'wedge-gentle', ...gentle }); }
+    }
+    const f1 = readF1({ platform, probe: f1Probe, passedSinceBoot: this.durable.f1PassedThisBoot, lockState, consoleSession, canaryLeftover });
+    if (f1.reading.detail && (reapedBefore || reapedAfter)) f1.reading.detail = { ...f1.reading.detail, canariesEnded: (reapedBefore ?? 0) + (reapedAfter ?? 0) };
     if (f1.passed) this.durable.f1PassedThisBoot = true;
     const f2 = readF2({ platform, ps, priorCounts: this.durable.uninterruptibleCounts, tasklist, kernelZone });
     if (f2.count !== null) this.durable.uninterruptibleCounts = [...this.durable.uninterruptibleCounts, f2.count].slice(-3);
@@ -507,6 +635,7 @@ export class WedgeMonitor {
       } : null,
       condition: this.durable.condition,
       lastVerdict: this.lastVerdict,
+      lastGentle: this.lastGentle,
       forcedDueAt: this.durable.forcedDueAt,
       forcedDueReason: this.durable.forcedDueReason,
       bootAt: this.durable.bootAt,
@@ -539,6 +668,7 @@ export class WedgeMonitor {
       canRestart: false,
       canStopWork: false,
       noticeEnabled: settings.dryRunNotice,
+      gentleResume: settings.gentleResume,
       role: this.role,
       maintainer: this.maintainer,
       rules: {
@@ -550,6 +680,7 @@ export class WedgeMonitor {
         'F1 on macOS runs the shipped canary app only; the capture half (one helper frame) and the desktop-grant failure count are not wired.',
         'The macOS canary app is signed with the release identity when one is configured, and is not notarized.',
         'F3 (stuck dialog) is not built; it never forms a candidate in any build.',
+        'The only action in this build is the gentle rung on macOS: when the canary itself is left stopped, this user\'s other launches left stopped in a known app folder are resumed (gentleResume on) or listed (dry-run). Rungs 1-7 are not built.',
         'Enrolment is not built, so the maintainer is whichever gated agent on this login claims first.',
       ],
       auditPath: this.deps.logPath,
@@ -562,7 +693,7 @@ export class WedgeMonitor {
     if (host && host.snapshot && typeof host.writtenAt === 'number') {
       return { ...base, snapshotFrom: host.agent ?? null, snapshotAgeMs: Math.max(0, this.now() - host.writtenAt), ...host.snapshot };
     }
-    return { ...base, snapshotFrom: null, snapshotAgeMs: null, lastSampleAt: null, families: null, candidate: null, condition: null, lastVerdict: null, forcedDueAt: null };
+    return { ...base, snapshotFrom: null, snapshotAgeMs: null, lastSampleAt: null, families: null, candidate: null, condition: null, lastVerdict: null, lastGentle: null, forcedDueAt: null };
   }
 
   private audit(row: Record<string, unknown>): void {

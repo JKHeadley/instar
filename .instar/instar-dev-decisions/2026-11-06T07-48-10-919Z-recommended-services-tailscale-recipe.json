@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T07:48:10.919Z",
+  "slug": "recommended-services-tailscale-recipe",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 117,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/recommended/recipes.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 110,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

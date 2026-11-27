@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T03:49:07.287Z",
+  "slug": "reaper-ps-snapshot",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/OrphanProcessReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/OrphanProcessReaper.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

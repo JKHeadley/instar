@@ -1,9 +1,11 @@
+import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
+import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 /**
  * HTTP pipeline for native operator chat (docs/specs/mobile-operator-chat.md): a device-signed
  * message goes through the REAL shared inbound core (createRoutes' telegram-forward handler)
  * with the owner's identity, is recorded once per requestId, and never binds the topic operator.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -32,7 +34,7 @@ afterAll(() => {
 
 interface Spies { routed: Array<{ content: string; metadata: Record<string, unknown>; userId: string }>; logged: Array<Record<string, unknown>>; mirrors: Array<{ text: string; opts: Record<string, unknown> }>; killed: string[]; bound: unknown[] }
 
-function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill' } = {}) {
+function setup(opts: { leaseFreshness?: () => unknown; peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill'; owner?: 'configured' | 'verified-only' | 'none' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mchat-'));
   dirs.push(dir);
   const spies: Spies = { routed: [], logged: [], mirrors: [], killed: [], bound: [] };
@@ -50,7 +52,8 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined },
     topicOperatorStore: { setAuthenticatedOperator: (...a: unknown[]) => { spies.bound.push(a); } },
     telegram: {
-      getOwnerUserId: () => OWNER,
+      getOwnerUserId: () => ((opts.owner ?? 'configured') === 'configured' ? OWNER : undefined),
+      getVerifiedOwner: () => ((opts.owner ?? 'configured') === 'none' ? undefined : OWNER),
       getTopicHistory: () => opts.history ?? [],
       getAllTopicMappings: () => [{ topicId: TOPIC, topicName: 'Instar App', sessionName: 'sess-a' }],
       isAuthorizedSender: () => true,
@@ -75,7 +78,7 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
     (ctx as unknown as Record<string, unknown>).sessionManager = null;
   }
   const lease = opts.lease ?? { held: true };
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => lease.held };
+  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => lease.held, leaseFreshness: opts.leaseFreshness };
   const svc = new MobilePairingService(deps);
   services.push(svc);
   const app = express();
@@ -87,7 +90,7 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
   const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!created.ok) throw new Error('setup');
   svc.devices.applyConfirm(created.device.id, { ok: true });
-  return { app, svc, dev, deviceId: created.device.id, spies, dir, lease };
+  return { app, svc, dev, deviceId: created.device.id, spies, dir, lease, ctx };
 }
 
 let tick = 0;
@@ -102,6 +105,45 @@ function chat(c: ReturnType<typeof setup>, body: Record<string, unknown>, topic 
 const rid = (t = Date.now()) => `${t}-${crypto.randomUUID()}`;
 
 describe('mobile operator chat', () => {
+  it('mirrors only authenticated admitted human text through the enforcing gate, once, without answering it', async () => {
+    const c = setup();
+    const gate = new NotificationSelectivityGate(c.dir, 'test-machine', () => ({ enabled: true, dryRun: false }));
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', ownerUserId: OWNER }, c.dir, { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate;
+    c.ctx.telegram!.sendToTopic = adapter.sendToTopic.bind(adapter);
+    const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 22 } })));
+    vi.stubGlobal('fetch', wire); gate.observeInbound(TOPIC, 'waiting-human');
+    try {
+      const body = { text: 'Hello from my authenticated phone', requestId: rid() };
+      const rejected = await request(c.app).post(`/mobile/chat/${TOPIC}`).set('Authorization', 'Bearer tok-1').send(body);
+      expect(rejected.status).toBe(403); expect(wire).not.toHaveBeenCalled();
+      const result = await chat(c, body);
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body).toMatchObject({ outcome: 'delivered', mirrored: true });
+      expect(wire).toHaveBeenCalledOnce();
+      expect((await chat(c, body)).body).toEqual(result.body); expect(wire).toHaveBeenCalledOnce();
+      expect(gate.decide(TOPIC, { origin: 'automated', category: 'presence-standby', sourceContext: 'presence', inboundMessageId: 'waiting-human' }).decision).toBe('deliver');
+      expect(await adapter.sendToTopic(TOPIC, 'Unrelated automation')).toMatchObject({ recorded: true });
+      expect(wire).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllGlobals(); await gate.close(); }
+  });
+
+  it('accepts a topic this machine holds history for but never named (a job topic named on another machine)', async () => {
+    // Justin, 2026-11-12: a job topic named only on the laptop showed its whole history on the
+    // serving machine, but every send into it came back "This conversation no longer exists".
+    const c = setup();
+    const JOB_TOPIC = 534;
+    (c.ctx.telegram as unknown as { getTopicHistory: (t: number) => unknown[] }).getTopicHistory = (t: number) =>
+      (t === JOB_TOPIC ? [{ messageId: 1, topicId: JOB_TOPIC, text: 'Scheduled job notice', fromUser: false, timestamp: new Date().toISOString() }] : []);
+    const ok = await chat(c, { text: 'please fix email checking', requestId: rid() }, JOB_TOPIC);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(c.spies.routed.at(-1)?.content).toBe('please fix email checking');
+    // A topic with no name, no session and no history here is still refused.
+    const unknown = await chat(c, { text: 'into nowhere', requestId: rid() }, 9999);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown-topic');
+  });
+
   it('delivers an app message through the inbound core as the owner, labelled, with one history row and a mirror', async () => {
     const c = setup();
     const r = await chat(c, { text: 'hello from the phone', requestId: rid() });
@@ -120,6 +162,16 @@ describe('mobile operator chat', () => {
     expect(c.spies.mirrors[0]!.opts).toMatchObject({ operatorMirror: true, skipStallClear: true });
     expect(c.spies.bound).toHaveLength(0); // never binds the topic operator
     expect(fs.existsSync(path.join(c.dir, 'serve-progress.json'))).toBe(false);
+  });
+
+  it('speaks as the one verified operator when no owner is configured (an agent set up without ownerUserId)', async () => {
+    const c = setup({ owner: 'verified-only' });
+    const r = await chat(c, { text: 'what does this warning mean?', requestId: rid() });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, outcome: 'delivered' });
+    expect(c.spies.routed[0]!.userId).toBe(String(OWNER));
+    const none = setup({ owner: 'none' });
+    expect((await chat(none, { text: 'x', requestId: rid() })).body.error).toBe('chat-unavailable');
   });
 
   it('a retried requestId gets the stored answer and is delivered once; a different payload is refused', async () => {
@@ -198,6 +250,41 @@ describe('mobile operator chat', () => {
     expect(r.status).toBe(409);
     expect(r.body.error).toBe('not-serving');
     expect(off.spies.logged).toHaveLength(0);
+  });
+
+  it('audits the observed lease reason on a new signed refusal without recording private input', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const c = setup({ lease: { held: false }, leaseFreshness: () => ({ verdict: 'renewal-lapsed', ttlMs: 60_000, msSinceConfirmedRenewal: 60_100, secret: 'private-extra' }) });
+      const r = await chat(c, { text: 'private-input', requestId: rid() });
+      expect(r.status).toBe(409);
+      expect(r.body.error).toBe('not-serving');
+      const lines = log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('mobile-chat-not-serving'));
+      expect(lines).toHaveLength(1);
+      const row = JSON.parse(lines[0]);
+      expect(row).toMatchObject({ kind: 'mobile-chat-not-serving', sample: 'after-refusal', observedLeaseVerdict: 'renewal-lapsed', ttlMs: 60_000, msSinceConfirmedRenewal: 60_100 });
+      expect(Number.isFinite(Date.parse(row.at))).toBe(true);
+      expect(lines[0]).not.toContain('private');
+      expect(lines[0]).not.toContain(c.deviceId);
+      expect(c.spies.logged).toHaveLength(0);
+      expect(c.spies.routed).toHaveLength(0);
+    } finally { log.mockRestore(); }
+  });
+
+  it('preserves the refusal when diagnostics fail and emits no refusal audit for successful replays', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const off = setup({ lease: { held: false }, leaseFreshness: () => { throw new Error('private-diagnostic-error'); } });
+      expect((await chat(off, { text: 'private-input', requestId: rid() })).status).toBe(409);
+      const lines = () => log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('mobile-chat-not-serving'));
+      expect(JSON.parse(lines()[0]).observedLeaseVerdict).toBe('unavailable');
+      const c = setup();
+      const id = rid();
+      expect((await chat(c, { text: 'kept', requestId: id })).status).toBe(200);
+      c.lease.held = false;
+      expect((await chat(c, { text: 'kept', requestId: id })).status).toBe(200);
+      expect(lines()).toHaveLength(1);
+    } finally { log.mockRestore(); }
   });
 
   it('a recorded request answers its stored result even after the lease moved', async () => {

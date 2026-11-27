@@ -158,6 +158,14 @@ describe('detectQuotaExhaustion on the current Claude Code footer', () => {
     expect(msg).toContain('8am');
   });
 
+  it('withholds the captured banner notice without serving-session corroboration', () => {
+    const quotaWallMessage = (PresenceProxy.prototype as any).quotaWallMessage;
+    const describeQuotaWall = vi.fn(() => 'moving you');
+    const context = { confirmUsageLimit: () => false, config: { describeQuotaWall } };
+    expect(quotaWallMessage.call(context, 's', WALLED_PANE)).toBeNull();
+    expect(describeQuotaWall).not.toHaveBeenCalled();
+  });
+
   it('still reports recovery when real work follows the banner', () => {
     expect(detectQuotaExhaustion(RESUMED_PANE)).toBeNull();
   });
@@ -166,15 +174,15 @@ describe('detectQuotaExhaustion on the current Claude Code footer', () => {
     const quotaWallMessage = (PresenceProxy.prototype as unknown as {
       quotaWallMessage: (this: unknown, s: string, snap: string) => string | null;
     }).quotaWallMessage;
-    const moving = quotaWallMessage.call({ config: { describeQuotaWall: () => 'moving you' } }, 's', WALLED_PANE);
+    const moving = quotaWallMessage.call({ confirmUsageLimit: () => true, config: { describeQuotaWall: () => 'moving you' } }, 's', WALLED_PANE);
     expect(moving).toBe('moving you');
-    const noRoom = quotaWallMessage.call({ config: { describeQuotaWall: () => null } }, 's', WALLED_PANE);
+    const noRoom = quotaWallMessage.call({ confirmUsageLimit: () => true, config: { describeQuotaWall: () => null } }, 's', WALLED_PANE);
     expect(noRoom).toContain('paused until');
-    const notWalled = quotaWallMessage.call({ config: { describeQuotaWall: () => 'moving you' } }, 's', RESUMED_PANE);
+    const notWalled = quotaWallMessage.call({ confirmUsageLimit: () => true, config: { describeQuotaWall: () => 'moving you' } }, 's', RESUMED_PANE);
     expect(notWalled).toBeNull();
     // Already told directly → a distinct "say nothing" result (not null, which
     // would fall through to the generic standby, and not a string to send).
-    const told = quotaWallMessage.call({ config: { describeQuotaWall: () => false } }, 's', WALLED_PANE);
+    const told = quotaWallMessage.call({ confirmUsageLimit: () => true, config: { describeQuotaWall: () => false } }, 's', WALLED_PANE);
     expect(told).not.toBeNull();
     expect(typeof told).toBe('symbol');
   });

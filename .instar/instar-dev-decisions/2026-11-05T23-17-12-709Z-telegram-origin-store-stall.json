@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-05T23:17:12.709Z",
+  "slug": "telegram-origin-store-stall",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 180,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-egress.ts",
+      "src/messaging/telegram-origin/OriginConfigReader.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/monitoring/delivery-failure-sentinel.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 132,
+    "deletedLines": 48
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

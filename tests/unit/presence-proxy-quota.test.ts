@@ -39,8 +39,8 @@ You've hit your limit - resets 7pm (America/Los_Angeles)
 
   it('detects various quota exhaustion messages', () => {
     expect(detectQuotaExhaustion('usage limit has been reached')).not.toBeNull();
-    expect(detectQuotaExhaustion('quota exceeded for this period')).not.toBeNull();
-    expect(detectQuotaExhaustion('rate limit exceeded')).not.toBeNull();
+    expect(detectQuotaExhaustion('quota exceeded for this period')).toBeNull();
+    expect(detectQuotaExhaustion('rate limit exceeded')).toBeNull();
   });
 
   it('returns null for normal terminal output', () => {

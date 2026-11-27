@@ -66,3 +66,27 @@ describe('decorateWithRopeCondition', () => {
     expect('ropeAllDownSince' in out[0]).toBe(false);
   });
 });
+
+// CMT-1541: whether this machine is working to reconnect a peer it cannot reach.
+import { decorateWithReconnect } from '../../src/server/poolRopeCondition.js';
+
+describe('decorateWithReconnect', () => {
+  const machines = [{ machineId: 'a' }, { machineId: 'b' }, { machineId: 'c' }];
+  it('no prober rows (dark) leaves every row untouched — absent, never "nothing is fixing it"', () => {
+    expect(decorateWithReconnect(machines, undefined)).toBe(machines);
+    expect(decorateWithReconnect(machines, [])).toBe(machines);
+  });
+  it('one working connection means connected; all dead means retrying; all exhausted means retrying slowly', () => {
+    const out = decorateWithReconnect(machines, [
+      { peer: 'a', state: 'healthy', nextProbeDueAt: null },
+      { peer: 'a', state: 'dead', nextProbeDueAt: 5 },
+      { peer: 'b', state: 'dead', nextProbeDueAt: 2_000 },
+      { peer: 'b', state: 'exhausted', nextProbeDueAt: 1_000 },
+    ]);
+    expect(out[0]).toEqual({ machineId: 'a', reconnect: { state: 'connected' } });
+    expect(out[1]).toEqual({ machineId: 'b', reconnect: { state: 'retrying', nextTryAt: new Date(1_000).toISOString() } });
+    expect(out[2]).toBe(machines[2]);
+    const slow = decorateWithReconnect([{ machineId: 'd' }], [{ peer: 'd', state: 'exhausted', nextProbeDueAt: null }]);
+    expect(slow[0]).toEqual({ machineId: 'd', reconnect: { state: 'retrying-slowly' } });
+  });
+});

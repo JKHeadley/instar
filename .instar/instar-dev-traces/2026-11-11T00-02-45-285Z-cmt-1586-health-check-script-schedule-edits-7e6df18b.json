@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "cmt-1586-health-check-script-schedule-edits",
+  "sessionId": "ed95eceb-d816-4b26-b7ca-018405aa082a",
+  "timestamp": "2026-11-11T00:02:45.285Z",
+  "artifactPath": "upgrades/side-effects/cmt-1586-health-check-script-schedule-edits.md",
+  "artifactSha256": "e92e665040d2c6ca12d21648559332ac14bc303c1e20375f2e45291b06829de9",
+  "coveredFiles": [
+    "docs/specs/cmt-1586-health-check-script-schedule-edits.eli16.md",
+    "docs/specs/job-cost-reduction.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/scheduler/AgentMdJobLoader.ts",
+    "src/scheduler/InstallBuiltinJobs.ts",
+    "src/scheduler/JobCostAuditReadiness.ts",
+    "src/scheduler/buildPerSlugManifest.ts",
+    "src/server/routes.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/integration/health-check-script-runner-route.test.ts",
+    "tests/unit/PostUpdateMigrator-builtinScheduleEdit.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/scheduler/InstallBuiltinJobs.test.ts",
+    "upgrades/next/cmt-1586-health-check-script-schedule-edits.md",
+    "upgrades/side-effects/cmt-1586-health-check-script-schedule-edits.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix: one slug added to a code-owned no-model allowlist plus schedule preservation in the built-in installer; a revert fully undoes both, and fleet behaviour is unchanged.",
+  "eli16Path": "docs/specs/cmt-1586-health-check-script-schedule-edits.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cmt-1586-health-check-script-schedule-edits.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new or changed self-triggered controller: an existing cron job (health-check) runs its script instead of spawning a session on development agents, which reduces spawns; the schedule change only preserves an operator-chosen cron in a manifest"
+  }
+}

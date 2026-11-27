@@ -108,7 +108,7 @@ describe('Resume Follows the Account — dead pane handling', () => {
     sessions.add('topic-a'); deadPanes.add('topic-a');
     const failed: unknown[] = [];
     manager.on('resumeFailed', (e) => failed.push(e));
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('topic-a');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('topic-a');
 
     await (manager as unknown as Handle).handleReadyAndInject('topic-a', 'a', 'bootstrap', 1, {
       resumeSessionId: '56f6396f-85ff-4e3a-8003-9ed6c3bf5ca2', telegramTopicId: 32175,
@@ -126,7 +126,7 @@ describe('Resume Follows the Account — dead pane handling', () => {
 
   it('an unprobeable pane keeps the previous inject-anyway behaviour', async () => {
     sessions.add('topic-b'); deadPanes.add('topic-b'); probeThrows = true;
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('topic-b');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('topic-b');
     const inject = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage').mockReturnValue(true);
     vi.spyOn(manager as unknown as { classifyPaneState(s: string): string }, 'classifyPaneState').mockReturnValue('unknown');
 
@@ -141,7 +141,7 @@ describe('Resume Follows the Account — dead pane handling', () => {
   it('with the kill switch off, a dead pane is treated as before (inject-anyway)', async () => {
     build({ resumeFollowsAccount: { enabled: false } });
     sessions.add('topic-c'); deadPanes.add('topic-c');
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('topic-c');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('topic-c');
     const inject = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage').mockReturnValue(true);
     vi.spyOn(manager as unknown as { classifyPaneState(s: string): string }, 'classifyPaneState').mockReturnValue('unknown');
 

@@ -68,6 +68,14 @@ export interface OrchestratorDeps {
   /** Whether this process runs under launchd (true) or dev (false). */
   isSupervised: boolean;
   /**
+   * Called once, synchronously, immediately before the process exits for a restart, so the
+   * restart history can record that this attempt really exited. Never called on a
+   * suppressed or deferred request. A throw is swallowed: it must never block the exit.
+   */
+  recordExit?: (outcome: RestartExitOutcome) => void;
+  /** Independent bounded observation; an error or unavailable probe is unknown. */
+  observeServerStopped?: () => boolean | null;
+  /**
    * Returns true if a shadow-install update is in progress. The orchestrator
    * will defer the restart by one tick if so, per spec §Shadow-install coordination.
    * Tests can return a fixed value.
@@ -85,6 +93,13 @@ export interface OrchestratorDeps {
   shadowInstallDeferMs?: number;
 }
 
+export interface RestartExitOutcome {
+  reason: string;
+  bucket: RestartRequest['bucket'];
+  serverOutcome: 'kept' | 'stopped' | 'unknown';
+  overrideReason: string | null;
+}
+
 export class RestartOrchestrator {
   private _state: RestartState = 'idle';
   private readonly reporter: DegradationReporter;
@@ -96,6 +111,7 @@ export class RestartOrchestrator {
   private inFlight: { reason: string; keepServer: boolean } | null = null;
   /** A suppressed request that must stop the server arrived while the in-flight one keeps it. */
   private stopServerOverride = false;
+  private exitOutcome: RestartExitOutcome | null = null;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.reporter = deps.reporter ?? DegradationReporter.getInstance();
@@ -122,6 +138,10 @@ export class RestartOrchestrator {
       // swallowed by a lifeline-only restart that happens to be a second ahead of it.
       if (this.inFlight?.keepServer && !keepServer && this._state !== 'exiting') {
         this.stopServerOverride = true;
+        if (this.exitOutcome) {
+          this.exitOutcome.overrideReason = req.reason;
+          this.exitOutcome.serverOutcome = 'unknown';
+        }
         console.log(`[RestartOrchestrator] stop-server override: ${req.reason} arrived during keep-server restart ${this.inFlight.reason} — the server will be stopped before exit`);
       }
       console.log(
@@ -133,6 +153,7 @@ export class RestartOrchestrator {
     this._state = 'quiescing';
     this.inFlight = { reason: req.reason, keepServer };
     this.stopServerOverride = false;
+    this.exitOutcome = { reason: req.reason, bucket: req.bucket, serverOutcome: 'unknown', overrideReason: null };
 
     // Fire-and-forget degradation event (best-effort, budget 500ms).
     try {
@@ -182,20 +203,22 @@ export class RestartOrchestrator {
     // Step 1: quiesce — halt mutations before persist. A stop request that arrived during
     // the telemetry wait above already won: quiesce then stops the server itself.
     const quiesceKeepsServer = keepServer && !this.stopServerOverride;
+    let quiesced = false;
     try {
       await Promise.race([
-        this.deps.quiesce({ ...req, keepServer: quiesceKeepsServer }),
+        this.deps.quiesce({ ...req, keepServer: quiesceKeepsServer }).then(() => { quiesced = true; }),
         new Promise<void>(resolve => setTimeout(resolve, 1000)),
       ]);
     } catch (err) {
       console.error(`[RestartOrchestrator] quiesce error (continuing): ${err}`);
     }
+    if (quiesced && quiesceKeepsServer && !this.stopServerOverride) this.exitOutcome.serverOutcome = 'kept';
 
     // Step 2: persist. Budget 2s. Hard-kill fallback 5s from now.
     this._state = 'persisting';
     const hardKill = setTimeout(() => {
       console.error('[RestartOrchestrator] hard-kill: persist exceeded budget');
-      this.deps.exitFn(1);
+      this.exitNow(1);
     }, this.hardKillMs);
     if (typeof hardKill.unref === 'function') hardKill.unref();
 
@@ -215,6 +238,7 @@ export class RestartOrchestrator {
     // has its own budget; the supervisor force-kills within it.
     clearTimeout(hardKill);
     if (this.stopServerOverride && quiesceKeepsServer && this.deps.stopServer) {
+      this.exitOutcome.serverOutcome = 'unknown';
       console.log('[RestartOrchestrator] stopping the server after all (stop-server override)');
       let done = false;
       try {
@@ -228,16 +252,37 @@ export class RestartOrchestrator {
       if (!done) console.error(`[RestartOrchestrator] stop phase exceeded ${this.stopPhaseMs}ms — exiting; the server may still be running`);
     }
 
+    if (!quiesceKeepsServer || this.stopServerOverride) {
+      try {
+        this.exitOutcome.serverOutcome = this.deps.observeServerStopped?.() === true ? 'stopped' : 'unknown';
+      } catch { this.exitOutcome.serverOutcome = 'unknown'; } // @silent-fallback-ok: observation unavailable is explicitly unknown
+    }
+
     // Step 3: exit.
     this._state = 'exiting';
-    this.deps.exitFn(0);
+    this.exitNow(0);
     return 'proceeded';
+  }
+
+  private exitRecorded = false;
+
+  /** Record that this restart really exits (once), then exit. */
+  private exitNow(code: number): void {
+    if (!this.exitRecorded) {
+      this.exitRecorded = true;
+      try { if (this.exitOutcome) this.deps.recordExit?.({ ...this.exitOutcome }); } catch (err) {
+        console.error(`[RestartOrchestrator] recordExit failed (exiting anyway): ${err}`);
+      }
+    }
+    this.deps.exitFn(code);
   }
 
   /** Test helper: reset state to idle without exiting. Only safe in tests. */
   _resetForTesting(): void {
     this.inFlight = null;
     this.stopServerOverride = false;
+    this.exitOutcome = null;
+    this.exitRecorded = false;
     this._state = 'idle';
     this.lastSuppressed = null;
   }

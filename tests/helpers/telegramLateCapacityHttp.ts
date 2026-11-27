@@ -1,3 +1,4 @@
+import { allowSlowOriginRecording } from './telegramOriginStore.js';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import express from 'express';
@@ -36,6 +37,7 @@ export async function lateCapacityHttpHarness(workerUrl: URL, useIpc: boolean) {
       workerUrl, holdsLease: () => ownsLease, isSessionLive: () => true,
       attachSessionLifecycle: value => { lifecycle = value; },
       diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
+    allowSlowOriginRecording(boot.runtime.service);
     if (useIpc) {
       const socketPath = boot.runtime.options.noticeProcess?.socketPath;
       if (!socketPath) throw new Error('actual Boot capacity socket was not wired');
@@ -44,7 +46,7 @@ export async function lateCapacityHttpHarness(workerUrl: URL, useIpc: boolean) {
     adapter = new TelegramAdapter({ token, chatId: '-100123' }, stateDir, { suppressLifelineAutoCreate: true });
     app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram: adapter,
+    app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram: adapter,
       messagingToneGate: { review: async () => ({ pass: true, latencyMs: 0 }) },
       sessionManager: { clearInjectionTracker: () => undefined } } as never));
     await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });

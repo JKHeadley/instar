@@ -474,7 +474,7 @@ describe('PresenceProxy E2E', () => {
       expect(tier3Msg!.text).not.toContain('unstick');
     });
 
-    it('offers unstick when no processes and LLM says stalled', async () => {
+    it('describes a stall without asking the user to unstick it', async () => {
       deps.llmResponses = ['Reading.', 'Progress.', 'stalled\nNo output change for several minutes.'];
       deps.processes = []; // No child processes
       proxy = new PresenceProxy(createMockConfig(tmpDir, deps));
@@ -486,7 +486,7 @@ describe('PresenceProxy E2E', () => {
 
       const tier3Msg = deps.sentMessages.find(m => m.metadata?.tier === 3);
       expect(tier3Msg).toBeDefined();
-      expect(tier3Msg!.text).toContain('unstick');
+      expect(tier3Msg!.text).not.toContain('unstick');
     });
 
     it('does not let a tier-3 model override a fresh deterministic Codex live signal', async () => {
@@ -520,11 +520,11 @@ describe('PresenceProxy E2E', () => {
       await waitFor(() => deps.sentMessages.length >= 3, { timeoutMs: 10000 });
 
       const tier3Msg = deps.sentMessages.find(m => m.metadata?.tier === 3);
-      expect(tier3Msg?.text).toContain('unstick');
+      expect(tier3Msg?.text).not.toContain('unstick');
       expect(deps.llmCallCount).toBe(3);
     });
 
-    it('reports dead session', { timeout: 30000 }, async () => {
+    it('leaves dead-session recovery and notices to SessionMonitor', { timeout: 30000 }, async () => {
       deps.llmResponses = ['Reading.', 'Progress.'];
       deps.aliveSessions.clear(); // Session is dead
       deps.processes = [];
@@ -533,12 +533,9 @@ describe('PresenceProxy E2E', () => {
 
       proxy.onMessageLogged(makeUserMessage(100, 'test'));
 
-      // Dead session skips to Tier 3 from Tier 1, but with retry delays (5s each in fireTier + fireTier3)
-      await waitFor(() => deps.sentMessages.length >= 1, { timeoutMs: 25000 });
-
-      const deadMsg = deps.sentMessages.find(m => m.text.includes('stopped'));
-      expect(deadMsg).toBeDefined();
-      expect(deadMsg!.text).toContain('unstick');
+      // PresenceProxy yields the dead conversation to SessionMonitor for recovery.
+      await waitFor(() => !proxy.getActiveTopics().includes(100), { timeoutMs: 25000 });
+      expect(deps.sentMessages.some(m => m.text.includes('stopped'))).toBe(false);
     });
 
     it('recovers from transient isSessionAlive false negative', async () => {
@@ -570,7 +567,7 @@ describe('PresenceProxy E2E', () => {
       expect(tier1Msg).toBeDefined(); // Should have proceeded with tier 1
     });
 
-    it('summarizes completed session instead of saying stopped', { timeout: 30000 }, async () => {
+    it('does not announce a stopped or finished session after a Tier 1 update', { timeout: 30000 }, async () => {
       // Session is alive for tier 1 but dies before tier 3.
       // Should get a "Session finished" summary, not "appears to have stopped."
       deps.llmResponses = ['Running CI checks.', 'The session completed its CI checks and exited normally.'];
@@ -591,15 +588,10 @@ describe('PresenceProxy E2E', () => {
       await waitFor(() => deps.sentMessages.length >= 1, { timeoutMs: 5000 });
       tier1Fired = true; // Now the session "dies"
 
-      // Wait for tier 3 (fast-tracked since dead)
-      await waitFor(() => deps.sentMessages.length >= 2, { timeoutMs: 25000 });
-
-      const stoppedMsg = deps.sentMessages.find(m => m.text.includes('stopped'));
-      expect(stoppedMsg).toBeUndefined(); // Should NOT say "stopped"
-
-      const finishedMsg = deps.sentMessages.find(m => m.text.includes('Session finished'));
-      expect(finishedMsg).toBeDefined(); // Should say "finished" with a summary
-      expect(finishedMsg!.text).toContain('new message');
+      // The later death is handed to SessionMonitor; Tier 1 already gave status.
+      await waitFor(() => !proxy.getActiveTopics().includes(100), { timeoutMs: 25000 });
+      expect(deps.sentMessages.some(m => m.text.includes('stopped'))).toBe(false);
+      expect(deps.sentMessages.some(m => m.text.includes('Session finished'))).toBe(false);
     });
   });
 

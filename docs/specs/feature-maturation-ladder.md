@@ -80,8 +80,9 @@ interface LadderEntry {
   aliases?: string[];         // review row ids, spec slugs, guard keys
   subject?: string;           // D7 feature id; `^[a-z0-9][a-z0-9-]{0,62}$`. The spec-born initiative id when one exists, else derived from id
   flag: { path: string; on?: string | boolean } | null; // `on`: the value meaning fully live, default `enabled: true`
-  disposition: 'ladder' | 'composed' | 'retire';
+  disposition: 'ladder' | 'composed' | 'retire' | 'finished';
   composedInto?: string;      // composed: moves with its parent, no thresholds of its own
+  finished?: { reason: string; ref: string }; // finished: live with no rollout left, so no thresholds
   retire?: { reason: string; ref: string };  // includes "no consumer": the flag is read nowhere
   final: 'default-on' | 'default-off-by-preference';
   preference?: { decidedBy: string; reason: string; decidedAt: string; ref: string };
@@ -204,7 +205,7 @@ The per-metric view comes from the same cached readings, so the route and D7 agr
 | `composed` | Moves with its parent; shows the parent's state |
 | `held` | This agent's `maturation.ladder.holds` names it, with a reason |
 | `harmed` | Within 14 days of a rung change (a recorded move, or any observed change such as a released code move): a `harm` metric of the rung it crossed fails, or, unless `rare`, its `ran` metric has gone silent for 3 days |
-| `at-final` | At `fleet`, or at its recorded preference-off final |
+| `at-final` | At `fleet`, at its recorded preference-off final, or disposition `finished`. `metrics` then shows the rung it crossed, read from the post-move window while that watch runs, so `harmed` shows the number that judged it |
 | `not-started` | Rung `dark`: nothing runs, so no number can exist. The first move is to start it |
 | `no-opportunity` | `rare`, and the `ran` metric has 0 samples |
 | `no-data` | The `ran` metric has 0 samples |
@@ -318,7 +319,7 @@ A log can be written by the feature while the feature is wrong, and a bearer hol
 1. Registry is one JSON file in `src/data`, not spec frontmatter: 132+ features have no single spec to hold it, and one file makes coverage testable. Frontmatter contracts keep working for D7 and are overridden only by an entry naming them.
 2. Ladder subjects stay in memory, never in `InitiativeTracker`: 150 more active initiatives would flood the digest.
 3. All new evidence goes through `feature-summary` projections, so no SQLite schema change.
-4. Composed sub-flags have no thresholds of their own.
+4. Composed sub-flags have no thresholds of their own, and neither does a `finished` entry: a feature that ships on with an ordinary off switch has nothing left to earn. The entry records why and where the code shows it, and the parser refuses one with rungs or a preference final.
 5. Thresholds default as in §13; soak 3 days to dev, 7 to fleet, 14 for sensitive; entries may set 1..60. Cheap to change after (a reviewed data file).
 6. The server never moves a feature; the review's model decides every move. No auto-apply or auto-revert in any version without a separate spec and an article change.
 7. Fleet moves and instrumentation open build sessions, at most 2 per review run, not feedback items.

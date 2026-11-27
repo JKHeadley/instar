@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "report-delivery-as-document",
+  "sessionId": "643a61c9-3a26-42f1-9807-60f429cfdd2d",
+  "timestamp": "2026-11-18T05:28:10.389Z",
+  "artifactPath": "upgrades/side-effects/report-delivery-as-document.md",
+  "artifactSha256": "e923e522d5f7ac4acc2772ce59dfbd90d5de63c01a6daeb72f5348145df93f74",
+  "coveredFiles": [
+    "docs/specs/report-delivery-as-document.eli16.md",
+    "docs/specs/report-delivery-as-document.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/instar-documents.md",
+    "src/scaffold/templates.ts",
+    "tests/unit/report-delivery-as-document.test.ts",
+    "upgrades/next/report-delivery-as-document.md",
+    "upgrades/side-effects/report-delivery-as-document.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Instruction text only: two CLAUDE.md rows, one sentence, two AGENT.md principles, plus a verbatim-replace migration. No gate, route or config. A revert restores the old text for new agents; migrated text stays correct.",
+  "eli16Path": "docs/specs/report-delivery-as-document.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/report-delivery-as-document.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

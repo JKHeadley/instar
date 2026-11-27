@@ -7,12 +7,17 @@ import { paceLine, paceSummary, prLinks, toneOf, maturationPaceLine } from './pa
 const POOL_TIMEOUT_MS = 12_000;
 const DOT = { attn: 'attn', ok: '', unknown: 'unknown', muted: 'unknown' };
 
-/** The Pace card: hidden when the route is off (503) or fails; one plain line per queue. */
-export function paceCard(get) {
+/**
+ * The Pace card: hidden when the route is off (503) or fails; one plain line per queue.
+ * opts.onMissing (optional) is called when the card stays hidden for that reason;
+ * opts.onShown (optional) is called once the card has its lines and is shown.
+ */
+export function paceCard(get, opts = {}) {
+  const missing = () => { if (typeof opts.onMissing === 'function') opts.onMissing(); };
   const host = el('section', { class: 'card pace-card', 'data-state': 'loading', hidden: true },
     el('div', { class: 'card-head' }, el('span', { class: 'dot unknown' }), el('h2', { class: 'card-title', text: 'Pace' })));
   get('/queue-pace?scope=pool', POOL_TIMEOUT_MS).then((r) => {
-    if (!r.ok) return; // switched off or unreachable: the card stays hidden
+    if (!r.ok) { missing(); return; } // switched off or unreachable: the card stays hidden
     const queues = (r.data && r.data.queues) || [];
     const machines = new Set(queues.map((q) => q.machine));
     const anyBehind = queues.some((q) => toneOf(q) === 'attn');
@@ -35,7 +40,8 @@ export function paceCard(get) {
       el('p', { class: 'card-note', text: 'Each line compares how much work comes in with how much gets done over the last week. It only measures; it changes nothing by itself.' }),
     );
     host.hidden = false;
-  }).catch(() => { /* hidden on any failure */ });
+    if (typeof opts.onShown === 'function') opts.onShown();
+  }).catch(() => { missing(); /* hidden on any failure */ });
   return host;
 }
 

@@ -2,6 +2,9 @@
 // safe-git-allow: CI-only lint — single read-only `git diff --cached --name-only`
 //   to list staged files; runs on runners where the TS SafeGitExecutor is not
 //   importable from a standalone .js.
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Capacity Safety — No Unbounded Self-Action*
+
 /**
  * lint-no-unregistered-self-action.js — the FORCING lint for the
  * `unbounded-self-action` defect class (docs/specs/self-action-convergence.md

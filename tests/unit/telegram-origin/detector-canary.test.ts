@@ -44,8 +44,10 @@ describe('owned detector known-state canary', () => {
     const write = vi.spyOn(MasterKeyManager.prototype as any, 'writeOsKeychain').mockImplementation(() => { throw new Error('OS keychain forbidden'); });
     try {
       const manager = new MasterKeyManager(stateDir, forceFile);
-      expect(manager.getCandidateKeys()).toHaveLength(1);
+      // Candidate resolution is read-only: it never mints a key (feedback-1ddb71cc).
+      expect(manager.getCandidateKeys()).toHaveLength(0);
       const vault = new SecretStore({ stateDir, forceFileKey: forceFile }); vault.write({ fixture: 'encrypted' });
+      expect(manager.getCandidateKeys()).toHaveLength(1);
       expect(new SecretStore({ stateDir, forceFileKey: forceFile }).read()).toEqual({ fixture: 'encrypted' });
       expect(read).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
     } finally { read.mockRestore(); write.mockRestore(); }

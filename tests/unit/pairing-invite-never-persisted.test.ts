@@ -91,7 +91,20 @@ describe('pairing invites are never persisted', () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(sent).toHaveLength(1);
       expect(sent[0]).toMatchObject({ topicId: 77 });
-      expect(sent[0].text).toMatch(/Threadline tab on the dashboard/);
+      // No address wired: says so plainly (topic 10000002573), never a bare "open the tab".
+      expect(sent[0].text).toContain("I don't know this agent's dashboard address");
+    });
+    it('with the dashboard address wired, the fallback reply links straight to the paste box', async () => {
+      const adapter = new TelegramAdapter({ token: '', chatId: '-1001', authorizedUserIds: [4242] } as never, dir);
+      const sent: Array<{ topicId: number; text: string }> = [];
+      (adapter as unknown as { sendToTopic: (t: number, x: string) => Promise<unknown> }).sendToTopic = async (topicId, text) => { sent.push({ topicId, text }); return {}; };
+      adapter.setPairingHandler({ onForwardedInvite: async () => { throw new Error('boom'); }, onCallback: async () => true });
+      adapter.setPairingDashboardOrigin(() => ({ kind: 'public', origin: 'https://cora.example.dev' }));
+      const proc = (adapter as unknown as { processUpdate(u: unknown): Promise<void> }).processUpdate.bind(adapter);
+      await proc(msg(`Fwd: ${INVITE}`, 6));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(sent[0].text).toContain('Paste it on the dashboard with your PIN: https://cora.example.dev/dashboard/console/#/people/agents?connect=paste');
+      expect(sent[0].text).not.toContain('tlinv1:');
     });
     it('without a handler the old behaviour stands (the adapter is inert for pairing)', async () => {
       const adapter = new TelegramAdapter({ token: '', chatId: '-1001', authorizedUserIds: [4242] } as never, dir);

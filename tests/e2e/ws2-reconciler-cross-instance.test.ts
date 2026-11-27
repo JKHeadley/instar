@@ -1,3 +1,4 @@
+import { FAILURE_CALLOUT_KIND_REGISTRATION } from '../../src/core/FailureCalloutReplicatedStore.js';
 // safe-fs-allow: test fixture teardown uses SafeFsExecutor.safeRmSync on tmp dirs only.
 /**
  * E2E — writer-agnostic replication (docs/specs/statesync-writer-agnostic-reconciler.md):
@@ -63,6 +64,7 @@ const STORES: StateSyncStores = { knowledge: { enabled: true }, userRegistry: { 
 
 function registry(): ReplicatedKindRegistry {
   const r = new ReplicatedKindRegistry();
+    r.register(FAILURE_CALLOUT_KIND_REGISTRATION);
   for (const reg of [PREF_KIND_REGISTRATION, RELATIONSHIP_KIND_REGISTRATION, KNOWLEDGE_KIND_REGISTRATION, USER_KIND_REGISTRATION, LEARNING_KIND_REGISTRATION, EVOLUTION_ACTION_KIND_REGISTRATION]) {
     r.register(reg);
   }

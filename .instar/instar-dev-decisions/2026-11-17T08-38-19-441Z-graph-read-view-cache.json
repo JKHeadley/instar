@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-17T08:38:19.441Z",
+  "slug": "graph-read-view-cache",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 224,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphIntake.ts",
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/ConversationGraphSourceCoverage.ts",
+      "src/core/ConversationGraphSourceInventory.ts",
+      "src/core/ReplicatedPeerStreamReader.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphHeaderCustody.ts",
+      "src/server/ConversationGraphOwnerChanges.ts",
+      "src/server/ConversationGraphReadSource.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 188,
+    "deletedLines": 36
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

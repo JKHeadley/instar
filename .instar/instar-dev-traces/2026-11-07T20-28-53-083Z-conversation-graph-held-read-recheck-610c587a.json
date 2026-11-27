@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-held-read-recheck",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T20:28:53.083Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-held-read-recheck.md",
+  "artifactSha256": "eadcec36fa34cf5ee7000b5f31aae0e268e9c90cb80e2f5e33d8de859e76bd11",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphReplication.ts",
+    "src/server/GraphOwnerMemberLossExecution.ts",
+    "tests/integration/graph-source-postcas-held-reader.test.ts",
+    "upgrades/side-effects/conversation-graph-held-read-recheck.md",
+    "upgrades/side-effects/conversation-graph-removal-at-size.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop."
+  }
+}

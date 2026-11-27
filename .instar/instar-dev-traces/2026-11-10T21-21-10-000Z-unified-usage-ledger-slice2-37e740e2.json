@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-slice2",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T21:21:10.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-slice2.md",
+  "artifactSha256": "86763dc63bbb084b0e5cfcf4faf8181f541edc6a01b6a01030509c51d5a23cb6",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/core/CircuitBreakingIntelligenceProvider.ts",
+    "src/core/ClaudeCliIntelligenceProvider.ts",
+    "src/core/CodexCliIntelligenceProvider.ts",
+    "src/core/types.ts",
+    "src/monitoring/UsageLedger.ts",
+    "src/providers/adapters/openai-codex/transport/codexUsageParser.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/ClaudeCliIntelligenceProvider-jsonParse.test.ts",
+    "tests/unit/UsageLedger.slice2.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-slice2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Extends the Tier-2 usage store with new sources; dev-gated, observational only",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

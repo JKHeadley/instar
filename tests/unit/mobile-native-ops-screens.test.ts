@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
-import { summarizeJobs, summarizeCommitments, summarizeMachines, ownerOrBearer, phoneText, scheduleWords, LATE_GRACE_MS, MAX_JOBS } from '../../src/server/mobileOpsRoutes.js';
+import { summarizeJobs, summarizeCommitments, summarizeMachines, evidenceLine, machineKey, ownerOrBearer, phoneText, scheduleWords, LATE_GRACE_MS, MAX_JOBS } from '../../src/server/mobileOpsRoutes.js';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -138,10 +138,13 @@ describe('summarizeCommitments', () => {
 });
 
 describe('summarizeMachines', () => {
-  it('single-machine agent (pool off): one "This machine" row', () => {
+  it('single-machine agent (pool off): one row, named without "this machine"', () => {
     const r = summarizeMachines({ enabled: false, machines: [] }, '1.0.0');
     expect(r).toMatchObject({ single: true, inventoryKnown: true, headline: 'One machine, answering.' });
-    expect(r.machines[0]).toMatchObject({ name: 'This machine', isSelf: true, version: '1.0.0' });
+    expect(r.machines[0]).toMatchObject({ name: 'Your machine', isSelf: true, version: '1.0.0', statusLine: 'Live' });
+    const named = summarizeMachines({ enabled: true, selfMachineId: 'm_1', machines: [] }, null, () => 'Mac Studio');
+    expect(named.machines[0].name).toBe('Mac Studio');
+    expect(named.headline).toBe("Mac Studio is answering, but I can't read the list of your other machines right now.");
   });
   it('an enabled pool with no usable rows is "can\'t read the list", never "one machine"', () => {
     for (const pool of [{ enabled: true, machines: [] }, { enabled: true }, { enabled: true, machines: [{ nickname: 'no id' }] }, {}, null]) {
@@ -181,8 +184,35 @@ describe('summarizeMachines', () => {
     ] }, null);
     expect(r.machines.map((m) => [m.name, m.state])).toEqual([['Mac Mini', 'unreachable'], ['Studio', 'struggling']]);
     expect(r.headline).toBe("Mac Mini isn't answering.");
-    expect(r.machines[0].statusLine).toMatch(/^Unreachable \(silent\)/);
-    expect(r.machines[1]).toMatchObject({ leading: true, statusLine: 'Live (this machine) · overloaded' });
+    expect(r.machines[0].statusLine).toBe('Not answering');
+    expect(r.machines[1]).toMatchObject({ leading: true, statusLine: 'Live · overloaded' });
+  });
+  it('wording never depends on which machine answered (Justin 2026-11-06: the app is agnostic)', () => {
+    const pool = (self: string) => ({ selfMachineId: self, router: { holder: 'm1' }, machines: [
+      { machineId: 'm1', nickname: 'Mac Studio', liveness: { state: 'live', source: self === 'm1' ? 'self' : 'direct', evidenceAgeMs: 3000 }, livenessLine: 'live (this machine)', loadVerdict: 'elevated', activeSessionCount: 14, maxSessions: 25 },
+      { machineId: 'm2', nickname: 'Laptop', liveness: { state: 'live', source: self === 'm2' ? 'self' : 'direct', evidenceAgeMs: 3000, peerSighting: { observerMachineId: 'm3', ageMs: 9000 } }, livenessLine: 'live, last evidence 3 s ago from a direct check from this machine; Mac M5 Pro reached it 9 s ago', loadVerdict: 'ok' },
+      { machineId: 'm3', nickname: 'Mac M5 Pro', liveness: { state: 'live', source: self === 'm3' ? 'self' : 'direct', evidenceAgeMs: 1000 }, loadVerdict: 'ok' },
+    ] });
+    const a = summarizeMachines(pool('m1'), null);
+    const b = summarizeMachines(pool('m2'), null);
+    for (const r of [a, b]) {
+      expect(JSON.stringify(r.machines.map((m) => [m.statusLine, m.evidenceLine]))).not.toMatch(/this machine|this one/i);
+    }
+    expect(a.machines.map((m) => m.statusLine)).toEqual(b.machines.map((m) => m.statusLine));
+    expect(a.machines.find((m) => m.name === 'Laptop')).toMatchObject({ statusLine: 'Live · load normal', evidenceLine: 'Checked 3 s ago by Mac Studio. Mac M5 Pro reached it 9 s ago.' });
+    expect(a.machines.find((m) => m.name === 'Mac Studio')).toMatchObject({ statusLine: 'Live · busy', evidenceLine: 'Answered the app directly.', leading: true });
+    // The leading machine sorts first among equals, whichever machine answered.
+    expect(b.machines[0].name).toBe('Mac Studio');
+  });
+  it('machineKey is pinned: the iPhone app recomputes it to open Remote Desktop on the chosen machine', () => {
+    // apps/instar-ios OpsDataTests.testDesktopPreferenceMatchesTheMachinesRowKey pins the same value.
+    expect(machineKey('m_abc')).toBe('8a03f2e055f543da');
+  });
+  it('evidenceLine is null without a liveness block, and names no unverified observer', () => {
+    expect(evidenceLine({}, 'Studio', () => null)).toBeNull();
+    expect(evidenceLine({ liveness: { source: 'direct', evidenceAgeMs: 120_000, peerSighting: { observerMachineId: 'mx', ageMs: 1 } } }, null, () => null))
+      .toBe('Checked 2 min ago by the machine the app reached.');
+    expect(evidenceLine({ liveness: { source: 'none' } }, 'Studio', () => null)).toBe('No contact on record yet.');
   });
   it('without liveness, online is an estimate; an unverified nickname is not shown', () => {
     const r = summarizeMachines({ selfMachineId: 'm1', machines: [

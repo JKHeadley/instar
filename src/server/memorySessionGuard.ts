@@ -11,6 +11,8 @@
  */
 
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
+import { PEER_PLACE_PREFIX } from '../users/peerPlaceAdmission.js';
+import { FOLD_PROBE_PLACE_PREFIX } from '../users/MemoryPrivacy.js';
 
 type Limit =
   /** No further check: the route carries no remembered content. */
@@ -24,13 +26,24 @@ interface Rule {
   limit: Limit;
   /** Turns the captured path part into a place key. Absent means the route binds the session itself. */
   place?: (part: string) => string;
+  /** Refused for a session whose place key starts with this (memory-privacy-agent-places §6). */
+  denyPlacePrefix?: string;
+  /** Allowed only for a session whose place key starts with this. */
+  requirePlacePrefix?: string;
+  /**
+   * Open to a fold-probe place (context-budget §10 shadow answerer). A `fold-probe:` session reaches
+   * ONLY rules marked this way; every other rule, `any` included, refuses it.
+   */
+  foldProbe?: true;
 }
 
 const slack = (id: string) => `slack:${id}`;
 const imessage = (id: string) => `imessage:${id}`;
 const whatsapp = (id: string) => `whatsapp:${id}`;
-/** Every Telegram topic is one place: the group. The topic id says nothing more. */
-const telegram = () => 'telegram:';
+/** Every Telegram topic is one place, the group, unless a team shares it (see placeMatches). */
+const telegram = (topicId: string) => `telegram:${topicId}`;
+/** The shadow answerer's synthetic place for one topic. */
+const foldProbe = (topicId: string) => `${FOLD_PROBE_PLACE_PREFIX}${topicId}`;
 
 export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // Replies, one per channel.
@@ -39,22 +52,71 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/imessage\/reply\/([^/]+)$/, limit: 'own-place', place: imessage },
   { method: 'POST', pattern: /^\/imessage\/validate-send\/([^/]+)$/, limit: 'own-place', place: imessage },
   { method: 'POST', pattern: /^\/whatsapp\/send\/([^/]+)$/, limit: 'own-place', place: whatsapp },
-  { method: 'POST', pattern: /^\/slack\/session-reply$/, limit: 'any' },
-  { method: 'POST', pattern: /^\/app\/session-reply$/, limit: 'any' },
+  // Another agent's place speaks only to that agent: never into Slack or the app.
+  { method: 'POST', pattern: /^\/slack\/session-reply$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/app\/session-reply$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Another agent's place replies to that agent only; the handler takes the recipient from the token.
+  { method: 'POST', pattern: /^\/threadline\/session-reply$/, limit: 'any', requirePlacePrefix: PEER_PLACE_PREFIX },
+  // An earlier file of this conversation: the route's own bind check holds it to the session's conversation.
+  { method: 'GET', pattern: /^\/app\/media-path\/[^/]+$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Work Board (work-board-asks §4): a scoped session reads, and writes records on, the ONE card whose
+  // conversation is its own. The handler checks that binding (`placeKey === app:<the card's conversation>`);
+  // no lanes read, no create, no tap.
+  { method: 'GET', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}\/records$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // agent-work-cards-default §2: a progress note from the session doing the work — the card's own conversation OR the
+  // conversation that recorded the request (a Telegram topic session, most often). The handler checks the binding.
+  { method: 'POST', pattern: /^\/work-board\/cards\/wc_[0-9a-f]{16}\/notes$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // agent-work-cards-default §3: a scoped session records a commitment; the conversation is derived from its binding.
+  { method: 'POST', pattern: /^\/commitments$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
   { method: 'POST', pattern: /^\/messaging\/preflight$/, limit: 'any' },
   { method: 'POST', pattern: /^\/events\/delivery-failed$/, limit: 'any' },
   { method: 'POST', pattern: /^\/telegram\/origins\/operations\/[^/]+\/outcome$/, limit: 'any' },
-  // Hooks and session plumbing.
-  { method: 'POST', pattern: /^\/hooks\/(events|native-events)$/, limit: 'any' },
-  { method: 'GET', pattern: /^\/internal\/stop-gate\/hot-path$/, limit: 'any' },
-  { method: 'POST', pattern: /^\/internal\/stop-gate\/evaluate$/, limit: 'any' },
+  // Hooks and session plumbing (no remembered content; a fold-probe session's hooks report too).
+  { method: 'POST', pattern: /^\/hooks\/(events|native-events)$/, limit: 'any', foldProbe: true },
+  { method: 'GET', pattern: /^\/internal\/stop-gate\/hot-path$/, limit: 'any', foldProbe: true },
+  { method: 'POST', pattern: /^\/internal\/stop-gate\/evaluate$/, limit: 'any', foldProbe: true },
+  // context-budget §10: the shadow answerer reads its OWN topic's chunk lookups (the mediated
+  // lookups a `retrievable` grade counts), and nothing else. Only a fold-probe place reaches these.
+  { method: 'GET', pattern: /^\/topic\/([^/]+)\/chunks$/, limit: 'own-place', place: foldProbe, requirePlacePrefix: FOLD_PROBE_PLACE_PREFIX, foldProbe: true },
+  { method: 'GET', pattern: /^\/topic\/([^/]+)\/chunks\/[^/]+$/, limit: 'own-place', place: foldProbe, requirePlacePrefix: FOLD_PROBE_PLACE_PREFIX, foldProbe: true },
   { method: 'GET', pattern: /^\/identity\/soul\/integrity$/, limit: 'any' },
-  { method: 'POST', pattern: /^\/feedback$/, limit: 'any' },
+  // A peer place must not write to the maintainers as this agent.
+  { method: 'POST', pattern: /^\/feedback$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Asking the owner for something: the requester comes from the session, and it gives nothing by itself.
+  // A peer place must not put a request in front of the owner that reads as a person's.
+  { method: 'POST', pattern: /^\/team\/proposals$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Instar Documents (instar-document-viewer §3.3): the documents router checks, per request, that the
+  // document's conversation is this session's own place (route-level, because this guard is a pure path
+  // check). A peer agent's place never reaches documents.
+  { method: 'GET', pattern: /^\/docs(\/[^/]+(\/(data|versions|compare|comments|links))?)?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'GET', pattern: /^\/docs\/session-context$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/docs(\/[0-9a-f-]{36}\/(versions|links|comments\/[^/]+\/replies))?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Document decisions (document-decisions §3.1, §3.5): the session asks and reads; the router checks
+  // standing per document, and the waiting list answers owner-reach sessions only.
+  { method: 'GET', pattern: /^\/docs\/[0-9a-f-]{36}\/decision$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'GET', pattern: /^\/docs\/decisions\/waiting$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/docs\/[0-9a-f-]{36}\/decision-ask$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/docs\/[0-9a-f-]{36}\/decision-ask\/close$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
 ];
 
-function placeMatches(expected: string, own: string | null): boolean {
+const REPLY_ROUTE = /^\/(?:(telegram|slack|imessage)\/reply\/[^/]+|(whatsapp)\/send\/[^/]+|(slack|app|threadline)\/session-reply)$/;
+
+/** The channel when this request is a reply reaching a person, else null. Preflights and hooks are not replies. */
+export function memoryReplyChannel(method: string, path: string): string | null {
+  if (method !== 'POST') return null;
+  const m = REPLY_ROUTE.exec(path);
+  return m ? (m[1] ?? m[2] ?? m[3]) : null;
+}
+
+/** Is a session whose place is `own` the session for the conversation `expected`? Shared by documents (§3.3). */
+export function placeMatches(expected: string, own: string | null): boolean {
   if (!own) return false;
-  return expected === 'telegram:' ? own.startsWith('telegram:') : expected === own;
+  if (!expected.startsWith('telegram:')) return expected === own;
+  // A topic shared with a team has its own place, and its session is held to that topic.
+  const topic = /^telegram:topic:(.+)$/.exec(own);
+  if (topic) return expected === `telegram:${topic[1]}`;
+  return own.startsWith('telegram:');
 }
 
 /** The decision for one request. A refusal names no store, so it reveals nothing. */
@@ -63,6 +125,10 @@ export function memorySessionAllows(method: string, path: string, session: Sessi
     if (rule.method !== method) continue;
     const match = rule.pattern.exec(path);
     if (!match) continue;
+    const own = session.placeKey ?? '';
+    if (own.startsWith(FOLD_PROBE_PLACE_PREFIX) && !rule.foldProbe) return false;
+    if (rule.denyPlacePrefix && own.startsWith(rule.denyPlacePrefix)) return false;
+    if (rule.requirePlacePrefix && !own.startsWith(rule.requirePlacePrefix)) return false;
     if (rule.limit === 'any') return true;
     if (rule.place) return placeMatches(rule.place(decodeURIComponent(match[1] ?? '')), session.placeKey);
     return Boolean(session.placeKey);

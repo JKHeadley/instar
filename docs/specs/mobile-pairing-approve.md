@@ -136,7 +136,7 @@ A pending pairing is held by the machine that redeemed it (its registry row, its
 
 - **Telegram:** redeem needs the serving lease, so the machine that sent the message is the one receiving taps. If the lease moves, the tick voids that pairing, the phone's next status read shows `expired`, and a late tap on the new holder finds no nonce: "This pairing has already ended." Nothing is forwarded.
 - **Dashboard:** `codePageUrl` names the host the phone redeemed on, so the page and its session are on the holding machine. On any other machine the card is not listed and the route answers `404 not-pending`.
-- **Owner phone:** the phone must be paired on the holding machine and signs to it directly. `owner-phone` appears in `confirmWith` only when such a phone exists there, so no phone waits on a path that cannot answer. A phone paired only on another machine is not offered this path. Signed cross-agent or cross-machine trust is deliberately not built.
+- **Owner phone:** the phone must be paired on the holding machine and signs to it directly. `owner-phone` appears in `confirmWith` only when such a phone exists there, so no phone waits on a path that cannot answer. A phone paired only on another machine is not offered this path. Signed cross-agent or cross-machine trust is deliberately not built here; one narrow cross-agent statement (an owner phone of another agent vouching for its own pending key) is added by docs/specs/mobile-pairing-introducer.md.
 
 Forwarding an approval to another machine is a scope decision, not something impossible: it would need signed trust between machines, which this slice deliberately omits. Locality of the credential itself is not a choice:
 

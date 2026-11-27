@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-10T22:38:01.746Z",
+  "slug": "conversation-graph-linux-cpu-bound-skip",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/GraphWitnessTypes.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

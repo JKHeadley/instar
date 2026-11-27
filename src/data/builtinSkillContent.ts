@@ -1,3 +1,5 @@
+import { ACCOUNT_ACTION_SAFETY } from './accountActionSafety.js';
+
 /**
  * builtinSkillContent.ts — single source for built-in skill content that BOTH
  * the scaffold path (`installBuiltinSkills` in init.ts) AND the PostUpdateMigrator
@@ -200,6 +202,8 @@ Use this when the machine that needs a login (the **target**) cannot run a norma
  */
 export const NORMAL_CHROME_BROWSER_SHARED_RULES = `## The rules both drivers follow
 
+${ACCOUNT_ACTION_SAFETY}
+
 - **Normal Chrome only**, launched the ordinary way: \`open -g -na\` on macOS, \`chrome.exe\` on Windows. Never Playwright/CDP, never \`--remote-debugging-port\`, never an automation flag, in any spelling (\`--flag\`, \`-flag\`, \`/flag\`). The macOS launcher accepts no flags at all (a URL argument that is not a URL is refused); the Windows driver accepts only a short allowlist of harmless window flags.
 - **One profile per account, and never the operator's own.** macOS: profiles live inside this agent's home and the scripts refuse anything else. Windows: give automation its own profile directory; \`ndrive.sh\` refuses the operator's own Chrome profile folder. Never copy a profile between machines (a signed-in profile is cookies on one disk).
 - **Act only on the window the tool launched or bound.** macOS: the profile's own Chrome process, by pid. Windows: the bound profile's browser process, verified to hold focus before every click and keystroke (\`invoke\` is the one exception: it asks a control to activate through the accessibility tree without OS input, still only inside the bound target, and the wrapper runs \`canfocus\` before it), and one driver at a time per agent (a second call waits, then answers \`ERR busy\`; a bridged driver whose wrapper died, or one that outlived its own timeout, is counted too), so two of your sessions do not interleave keystrokes on the same Chrome, within the stated windows (a recycled pid, a direct-route driver whose wrapper was killed, a \`.ps1\` called directly). Element names and page text are the page's own words: on Windows \`find\` first and compare before you \`clickxy\`.
@@ -220,6 +224,34 @@ export const NORMAL_CHROME_BROWSER_SHARED_RULES = `## The rules both drivers fol
  * so the two cannot drift. The driver, native-drive.ps1, was written by PP (an Instar agent) and ships
  * byte-identical to the reviewed version; ndrive.sh is its WSL wrapper and the Instar entry point.
  */
+/** Sentence added to the Windows `launch` row, and the row text it follows (migration anchor). */
+export const NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR = '| Starts a clean Chrome on that profile directory and binds it.';
+export const NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE = ' It always adds \`--disable-features=CalculateNativeWinOcclusion\`, so a page keeps drawing while another window covers Chrome (see the blank-page note below).';
+/** The recovery quick list row for the blank-page note, and the existing row it goes above (migration anchor). */
+export const NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW = '| \`ERR page-not-rendering\` / \`warning: this Chrome was started without the occlusion fix\` (Windows) | The window title names a site but the page document stays unavailable: a Chrome started without the occlusion fix stops drawing while other windows cover it, or the page is still loading. See "Windows: a page that stays blank" in the Windows section: a Chrome you started is closed and started again with \`launch\`. |';
+export const NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW_ANCHOR = '| \`page document not found\` / \`omnibox not found\`';
+
+/** Heading of the Windows blank-page note: the idempotency marker for migrateNormalChromeWindowsBlankPageNote. */
+export const NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING = '#### Windows: a page that stays blank (\`ERR page-not-rendering\`)';
+
+/**
+ * The Windows blank-page note (spec normal-chrome-windows-occlusion). Part of the Windows section for fresh
+ * installs; inserted at the same place in an already-installed skill by PostUpdateMigrator, so both carry the same text.
+ */
+export const NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE = `${NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING}
+
+Chrome on Windows stops drawing a page when it thinks its window is hidden behind other windows (its "native window occlusion" tracking). The title and the address bar still update, but the page area is blank in \`shot\`, \`text\` returns only Chrome's own buttons and labels, and \`editfields\` cannot find the page. Measured on Windows 11 on 2026-11-19: a desktop app covering most of the screen blanked every page; reloading, focusing and a real keypress did not help. \`launch\` therefore always starts Chrome with \`--disable-features=CalculateNativeWinOcclusion\` (a rendering setting that keeps a covered window drawing, not an automation or debugging switch; \`ND_CHROME_FLAGS\` cannot remove it, since its allowlist refuses \`--disable-features\`).
+
+| What you see | What it means | What to do |
+|---|---|---|
+| \`ERR page-not-rendering\` saying the Chrome was started without the occlusion fix (from \`text\`, \`find\`, \`click\`, \`invoke\`, \`editfields\`, \`typeedit\`, \`typesecretedit\`) | The window title names a site, the page could not be read after a one-second recheck, and this Chrome was started some other way (or by an older driver), so the likely cause is a covering window. | If you started that Chrome, close it (only the browser process whose command line carries this profile's \`--user-data-dir\`; the sign-in survives) and start it again with \`launch\`. If someone else did, do not close it: read \`shot\`, or work in a profile of your own. A Chrome running from before the update keeps the problem until it is restarted this way. |
+| \`ERR page-not-rendering\` that does not mention the fix | The title names a site and the fix is in place (or the command line could not be read), but the page document is still unavailable: usually still loading, or the window is minimized. | Wait a few seconds and retry; \`focus\` a minimized window; read \`shot\` to see what Chrome shows. |
+| \`attach\` prints \`warning: this Chrome was started without the occlusion fix\` | The binding worked, but this Chrome will go blank whenever another window covers it. | If you started it and the task can wait, close it and \`launch\` instead; otherwise expect \`ERR page-not-rendering\` while it is covered. |
+| \`page document not found\` on a new tab or \`about:blank\` | Nothing to draw yet. | Poll, as before. |
+
+All are exit 2, as before, so a caller that polls on exit 2 keeps working; key on the \`ERR\` token to tell them apart.
+`;
+
 export const NORMAL_CHROME_BROWSER_WINDOWS_SECTION = `### Windows: \`native-drive.ps1\` through \`ndrive.sh\` (real OS input + UI Automation)
 
 The driver was written by PP (an Instar agent) and reviewed by Echo; it ships byte-identical to the reviewed version (the version the live test ran). One PowerShell 5.1 script, no package installs, no admin. It launches a clean Chrome on one profile directory (no debug port), BINDS to that browser process, and from then on clicks and types with real Windows input (\`SendInput\`) and reads the page through the UI Automation accessibility tree. It needs a logged-in, visible Windows desktop. Its own header describes what the tool IS (real input, no automation connection, so a site's passive scoring sees a person); the rules in this skill decide what you may DO with it.
@@ -230,7 +262,7 @@ The driver was written by PP (an Instar agent) and reviewed by Echo; it ships by
 
 | Command | What it does |
 |---|---|
-| \`launch <userDataDir> <url> [chromeExe]\` | Starts a clean Chrome on that profile directory and binds it. Refused if Chrome already runs on that profile: use \`attach\`. Extra flags only through \`ND_CHROME_FLAGS\`, allowlist only (\`--disable-extensions\`, \`--start-maximized\`, \`--new-window\`, \`--window-size=W,H\`, \`--window-position=X,Y\`, \`--lang=xx\`); anything else, including \`-flag\` and \`/flag\` spellings, is refused. |
+| \`launch <userDataDir> <url> [chromeExe]\` | Starts a clean Chrome on that profile directory and binds it.${NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE} Refused if Chrome already runs on that profile: use \`attach\`. Extra flags only through \`ND_CHROME_FLAGS\`, allowlist only (\`--disable-extensions\`, \`--start-maximized\`, \`--new-window\`, \`--window-size=W,H\`, \`--window-position=X,Y\`, \`--lang=xx\`); anything else, including \`-flag\` and \`/flag\` spellings, is refused. |
 | \`attach <userDataDir>\` | Binds an already-running Chrome on that profile directory. |
 | \`target\` / \`canfocus\` / \`focus\` | What is bound (profile, pid, window, whether it is in front) / whether input may be sent now (read-only; exits 2 while the operator is active) / bring the target forward (verified). |
 | \`nav <url>\` / \`url\` | Navigate (Ctrl+L, type, Enter) / print the current URL read from the omnibox. |
@@ -265,7 +297,8 @@ Lessons from the live runs (PP, 2026-10-20 and 2026-10-21):
 Before every click or keystroke on a page: \`url\` and confirm the origin you expect, then \`text\` or \`find\` for the heading or button you expect. \`url\` returns the omnibox's DISPLAY string (Chrome strips \`https://\` and \`file:///\`), so compare the HOST at its boundary: the string must start with the expected host followed by \`/\` or end there (never a substring match: \`trusted.example.attacker.test/\` and a path containing \`trusted.example\` both exist). Chrome elides the display: \`www.\` is hidden, the scheme is gone, and the FULL url (with \`https://www.\`) shows only while the omnibox has focus (after \`ctrl l\` or a \`nav\`); \`ND_EXPECT_HOST\` strips the scheme and \`www.\` on both sides for you. A display with a port (\`host:8080/...\`) will NOT match a plain host: write the expectation with the port. An internationalized name is shown as Unicode when Chrome trusts it and as punycode (\`xn--...\`) otherwise; \`ND_EXPECT_HOST\` accepts the punycode form only, so a Unicode-displayed host cannot be gated by it: verify such a page with \`text\`/\`find\` instead, say what the omnibox showed, and only proceed when the host you compare against is written the way Chrome displays it. A URL is not a page: a navigation or a popup can change what the window shows between two commands. For a scripted sequence set \`ND_USER_DATA_DIR\` for the whole sequence, so a rebind by anyone else cannot redirect it. Verify a result with \`ctrl r\`, then \`url\` and \`text\` again.
 
 Three more things the live test taught (Windows 11, one monitor at 150 %; also run at 100 % and 125 %; Windows 10 and two monitors remain untested): a Chrome launched from a background context lands with \`foreground=False\`, so \`launch\` is followed by \`focus\` (or by \`click\`, which brings the target forward itself) before input; \`editfields\` on a page with no document yet (\`about:blank\`, a page still loading) exits 2 with \`page document not found\` rather than an empty list, so poll instead of treating that as a failure; and the driver's idle arithmetic is correct past the 24.8-day tick wraparound, so a long-running machine does not break \`canfocus\`.
-`;
+
+${NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE}`;
 
 /**
  * The Linux driver section of /normal-chrome-browser (spec normal-chrome-linux). Shared by the full skill
@@ -454,6 +487,7 @@ $N text 'C:\\Users\\Public\\usage.json'          # a local Windows outfile; read
 | \`ERR no-interactive-desktop\` / \`ERR no-interactive-session\` / \`ERR state-unavailable\` / \`ERR bridge-unavailable\` / \`ERR bridge-timeout\` (Windows) | The shell is in session 0 and \`ND_BRIDGE=off\` was set; or nobody is logged on to the desktop (no \`explorer.exe\` outside session 0: nothing to act on); or \`%LOCALAPPDATA%\` could not be read, the lock's pid file could not be written, or this agent's task list / the survivor record could not be checked (the wrapper refuses rather than share state or start a second driver into the unknown); or the bridge could not create its work folder, or its logon / \`wscript.exe\` probe could not run (twice); or the interactive task did not report in time (default 120 s, \`ND_BRIDGE_TIMEOUT\`; the message says whether the driver was ended, could not be confirmed ended, was already gone, or its pid was reused and nothing was ended): OUTCOME UNKNOWN, so read \`target\`/\`shot\`/the page before any retry (a LOCKED desktop is not detected up front and usually ends here). After an interrupted run check \`%LOCALAPPDATA%\\native-drive\\instar-<agent>-<hash>\\bridge\\\` for a leftover folder and \`Get-ScheduledTask instar-ndrive-*\`. |
 | \`refused: focus is not on the target\` / \`refused: point ... is not on the target\` / \`refused: focus left the target window mid-typing\` (Windows) | Another window took focus or covers the point. Nothing was sent (typing stopped). Bring the target forward (\`focus\`) and verify with \`target\` before retrying. |
 | \`refused: ND_CHROME_FLAGS may only contain allowlisted flags\` (Windows) | Only the harmless window flags are allowed; never a debugging or automation flag. |
+${NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW}
 | \`page document not found\` / \`omnibox not found\` / \`only N fields\` (Windows) | The page has not finished loading, or the window shown is Chrome's own UI: wait, \`shot\` to see, re-read \`editfields\`. |
 | \`chrome.exe not found\` (Windows) | Chrome is not installed in the usual places; pass its path as the third \`launch\` argument. |
 | Element missing | SPA dialog not open yet: re-navigate, poll. |

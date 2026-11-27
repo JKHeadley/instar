@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-06T04:22:44.422Z",
+  "slug": "session-presentation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 190,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/routes.ts",
+      "src/server/sessionPlatform.ts",
+      "src/server/sessionPresentation.ts"
+    ],
+    "addedLines": 151,
+    "deletedLines": 39
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

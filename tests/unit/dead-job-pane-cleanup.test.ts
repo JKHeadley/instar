@@ -31,18 +31,25 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
   let state: StateManager;
   let manager: SessionManager;
   let tick: () => Promise<void>;
+  let launchSequence = 0;
 
   const tmux = (...args: string[]) => spawnSync(realTmux, ['-f', '/dev/null', '-L', socket, ...args], { encoding: 'utf-8' });
   const exists = (name: string) => tmux('has-session', '-t', `=${name}`).status === 0;
   const paneDead = (name: string) => tmux('display-message', '-t', `=${name}:`, '-p', '#{pane_dead}').stdout.trim() === '1';
   const base = () => path.basename(dir);
 
-  /** Start a session the way a spawn does: env flags, then `remain-on-exit failed`. */
-  function start(name: string, cmd: string, env: Record<string, string>): void {
+  /** Install retention before allowing the process to exit or close its PTY. */
+  function start(name: string, cmd: string, env: Record<string, string>, retention: 'failed' | 'on' = 'failed'): void {
     const flags = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
-    const r = tmux('new-session', '-d', '-s', name, ...flags, `sleep 0.4; ${cmd}`);
+    const release = path.join(root, `start-${++launchSequence}`);
+    // mkdtemp's path is quoted for the shell, including any apostrophe in TMPDIR.
+    const quotedRelease = "'" + release.replaceAll("'", "'\\''") + "'";
+    const r = tmux('new-session', '-d', '-s', name, ...flags,
+      `while [ ! -f ${quotedRelease} ]; do sleep 0.01; done; ${cmd}`);
     if (r.status !== 0) throw new Error(`new-session failed: ${r.stderr}`);
-    tmux('set-option', '-t', `=${name}:`, 'remain-on-exit', 'failed');
+    const retained = tmux('set-option', '-t', `=${name}:`, 'remain-on-exit', retention);
+    if (retained.status !== 0) throw new Error(`remain-on-exit failed: ${retained.stderr}`);
+    fs.writeFileSync(release, 'start');
   }
 
   async function waitDead(names: string[]): Promise<void> {
@@ -56,7 +63,7 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
       })) return;
       await new Promise((r) => setTimeout(r, 100));
     }
-    throw new Error(`panes never died: ${names.filter((n) => !paneDead(n)).join(', ')}`);
+    throw new Error(`panes lack a terminal result: ${JSON.stringify(names.map((name) => ({ name, result: tmux('display-message', '-t', `=${name}:`, '-p', '#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}||#{pane_pid}').stdout.trim() })))}`);
   }
 
   function record(id: string, tmuxSession: string, jobSlug?: string): void {
@@ -114,16 +121,17 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
     const job = `${base()}-job-pending-status`;
     const release = path.join(root, 'release-exit');
     const ready = path.join(root, 'descriptors-closed');
-    start(job, `exec /bin/sh -c 'echo "429 Too Many Requests"; exec 0<&- 1>&- 2>&-; : >"${ready}"; while [ ! -f "${release}" ]; do sleep 0.1; done; exit 1'`,
+    start(job, `exec /bin/sh -c 'trap "" HUP; echo "429 Too Many Requests"; exec 0<&- 1>&- 2>&-; : >"${ready}"; while [ ! -f "${release}" ]; do sleep 0.1; done; exit 1'`,
       { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'bug-fixer' });
     try {
       for (let i = 0; i < 50 && !fs.existsSync(ready); i++) await new Promise((r) => setTimeout(r, 100));
       expect(fs.existsSync(ready)).toBe(true);
       // 3.4 reports pane_dead=1 on fd closure; 3.7 waits for process exit.
       // Both must preserve the running session while its exit status is unknown.
-      const [dead, status] = tmux('display-message', '-t', `=${job}:`, '-p', '#{pane_dead}||#{pane_dead_status}').stdout.trim().split('||');
+      const [dead, status, signal] = tmux('display-message', '-t', `=${job}:`, '-p', '#{pane_dead}||#{pane_dead_status}||#{pane_dead_signal}').stdout.trim().split('||');
       expect(['0', '1']).toContain(dead);
       expect(status).toBe('');
+      expect(signal).toBe('');
       record('pending-status', job, 'bug-fixer');
       state.saveSession({ ...state.getSession('pending-status')!, framework: 'codex-cli' });
       const notices: Session[] = [];
@@ -147,9 +155,8 @@ describe.skipIf(!realTmux).each([false, true])('dead job pane cleanup (real tmux
     ['other-framework', 'claude-code', 1, '429 Too Many Requests'],
   ] as const)('does not emit a Codex rate-limit notice for %s', async (id, framework, exitCode, text) => {
     const job = `${base()}-job-${id}`;
-    start(job, `echo "${text}"; exit ${exitCode}`, { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'test' });
     // Keep the clean exit too, so its stale error text is actually captured.
-    tmux('set-option', '-t', `=${job}:`, 'remain-on-exit', 'on');
+    start(job, `echo "${text}"; exit ${exitCode}`, { INSTAR_AGENT_HOME: dir, INSTAR_JOB_SLUG: 'test' }, 'on');
     await waitDead([job]);
     record(id, job, 'test');
     state.saveSession({ ...state.getSession(id)!, framework });

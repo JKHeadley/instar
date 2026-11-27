@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-15T00:42:04.299Z",
+  "slug": "enrollment-wizard-one-engine-check",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/EnrollmentWizard.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

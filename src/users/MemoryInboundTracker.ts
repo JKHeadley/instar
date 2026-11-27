@@ -7,11 +7,15 @@
  * session holding wider memory never answers a new reader.
  */
 
+import type { SessionPlaceInput } from './MemoryPrivacy.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { audienceKey, OPERATOR_PERSON_ID, type MemoryPrivacy } from './MemoryPrivacy.js';
 import { isScopedAudience } from './MemoryAudience.js';
 import type { MemoryBlocker, MemoryPrivacyRecovery } from './MemoryPrivacyRecovery.js';
 
 export interface InboundFacts {
+  /** The session's place, when it is more than `placeKey`: a Telegram topic may have its own (team-roles-and-access §3.5). */
+  placeInput?: SessionPlaceInput;
   placeKey: string;
   placeKind: 'private' | 'shared';
   /** Verified sender: `user:<id>` when resolved, else `<platform>:<id>`. Null when unverified. */
@@ -35,6 +39,11 @@ export interface MemoryInboundDeps {
   framework: () => string;
   /** The owner's way out of the fixed reply. */
   recovery?: MemoryPrivacyRecovery;
+  /**
+   * Told about every verified sender, whatever the privacy setting (team-roles-and-access §3.10).
+   * A record only: it must not throw, and nothing here depends on it.
+   */
+  onSender?: (senderKey: string) => void;
 }
 
 export type InboundVerdict = 'deliver' | 'unavailable';
@@ -64,9 +73,14 @@ export class MemoryInboundTracker {
    */
   async refuse(facts: InboundFacts, sendOwnerPrivately?: SendOwnerPrivately): Promise<string> {
     const { privacy, recovery } = this.deps;
-    if (!recovery || !privacy.isOwnerSender(facts.senderKey, facts.personId)) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
+    const owner = privacy.isOwnerSender(facts.senderKey, facts.personId);
+    // Locking the owner out is the harm; anyone else refused is the boundary doing its job.
+    featureEvidence.record('memoryPrivacy', owner
+      ? { kind: 'error', reason: 'owner refused' }
+      : { kind: 'held', reason: 'person refused' });
+    if (!recovery || !owner) return MEMORY_PRIVACY_UNAVAILABLE_REPLY;
     // The owner's own private chat needs no boundary, so private memory is not the cause.
-    const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
+    const audience = privacy.audienceFor(privacy.placeFor(facts.placeInput ?? { memoryPlaceKey: facts.placeKey }, null));
     if (!isScopedAudience(audience)) return MEMORY_PRIVACY_RETRY_REPLY;
     const blocker: MemoryBlocker | undefined = this.deps.framework() !== 'claude-code' ? 'framework' : undefined;
     if (!recovery.hasCause(blocker)) return MEMORY_PRIVACY_RETRY_REPLY;
@@ -85,6 +99,7 @@ export class MemoryInboundTracker {
 
   async onInbound(facts: InboundFacts): Promise<InboundVerdict> {
     const { privacy } = this.deps;
+    if (facts.senderKey) this.deps.onSender?.(facts.senderKey);
     if (!privacy.enabled) return 'deliver';
 
     privacy.establishBaseline();
@@ -114,7 +129,7 @@ export class MemoryInboundTracker {
 
     if (flipped || readersChanged) await this.deps.retireSessions();
 
-    const audience = privacy.audienceFor(privacy.placeFor({ memoryPlaceKey: facts.placeKey }, null));
+    const audience = privacy.audienceFor(privacy.placeFor(facts.placeInput ?? { memoryPlaceKey: facts.placeKey }, null));
     // Whatever started this session, it must match before this message reaches it: this
     // covers sessions from before an update, a restart, and a place that lost its proof.
     const live = facts.liveSession?.();

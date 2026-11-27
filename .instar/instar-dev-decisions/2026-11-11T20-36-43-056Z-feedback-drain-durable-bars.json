@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-11T20:36:43.056Z",
+  "slug": "feedback-drain-durable-bars",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 165,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/featureRolloutScan.ts",
+      "src/data/feature-ladders.json",
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/scaffold/templates/jobs/instar/feedback-factory-process.md",
+      "src/scaffold/templates/jobs/instar/scripts/feedback-factory-process.mjs",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/jobDeclaredFailure.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 138,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

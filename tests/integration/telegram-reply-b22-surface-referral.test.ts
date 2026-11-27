@@ -31,7 +31,7 @@ describe('B22_SURFACE_REFERRAL through POST /telegram/reply', () => {
     const ctx: any = {
       config: { authToken: 'test', stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'b22-route-')), port: 0, projectName: 'test', projectDir: os.tmpdir() },
       messagingToneGate: new MessagingToneGate(provider),
-      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); } },
+      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); return { messageId: sent.length, topicId: _t }; } },
       sessionManager: { clearInjectionTracker: () => {} },
       pendingRelayLookup: (id: string) => id === REDRIVE_ID,
     };

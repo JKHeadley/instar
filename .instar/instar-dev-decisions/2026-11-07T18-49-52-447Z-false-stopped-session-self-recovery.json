@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-07T18:49:52.447Z",
+  "slug": "false-stopped-session-self-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 495,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/slack/ChannelManager.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/SlackApiClient.ts",
+      "src/messaging/userNotices.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SessionMonitor.ts",
+      "src/monitoring/SessionRecovery.ts",
+      "src/monitoring/StallTriageNurse.ts",
+      "src/monitoring/SystemReviewer.ts",
+      "src/monitoring/TriageOrchestrator.ts"
+    ],
+    "addedLines": 323,
+    "deletedLines": 172
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

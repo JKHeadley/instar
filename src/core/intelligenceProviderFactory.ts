@@ -116,6 +116,12 @@ export interface BuildIntelligenceProviderOptions {
    * rollback lever.
    */
   resolveExecJson?: () => boolean;
+  /**
+   * codex-cli only: which pool account an internal call runs under (null ⇒ the
+   * ambient login). Wired by the server to pick the Codex account with the most
+   * room, so one walled login no longer takes every background check down with it.
+   */
+  resolveAccount?: () => import('./CodexCliIntelligenceProvider.js').CodexCallAccount | null;
 }
 
 /**
@@ -195,6 +201,7 @@ export function buildIntelligenceProvider(
           codexPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
           ...(options.resolveExecJson ? { resolveExecJson: options.resolveExecJson } : {}),
+          ...(options.resolveAccount ? { resolveAccount: options.resolveAccount } : {}),
         }),
         options.breaker,
       );

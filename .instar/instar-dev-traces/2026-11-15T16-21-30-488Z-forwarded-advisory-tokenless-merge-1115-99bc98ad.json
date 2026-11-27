@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "forwarded-advisory-tokenless-merge-1115",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-15T16:21:30.488Z",
+  "artifactPath": "upgrades/side-effects/forwarded-advisory-tokenless-merge-1115.md",
+  "artifactSha256": "4aefe6dbd58460ea82359670def2cde2e5563cf45b0e749291f461660b771723",
+  "specPath": "docs/specs/standby-durable-forward-without-token.md",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/types.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

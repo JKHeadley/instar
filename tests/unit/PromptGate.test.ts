@@ -13,7 +13,7 @@ import {
   type DetectedPrompt,
   type InputDetectorConfig,
 } from '../../src/monitoring/PromptGate.js';
-import { DP_PROMPT_INJECTION_DETECT } from '../../src/data/provenanceCoverage.js';
+import { DP_TERMINAL_PROMPT_DETECT } from '../../src/data/provenanceCoverage.js';
 
 const DEFAULT_CONFIG: InputDetectorConfig = {
   detectionWindowLines: 50,
@@ -852,7 +852,7 @@ describe('InputDetector.noPromptCache', () => {
 
     expect(capturedPrompt).toContain('cobalt-lantern');
     expect(capturedOptions.provenance).toMatchObject({
-      decisionPoint: DP_PROMPT_INJECTION_DETECT,
+      decisionPoint: DP_TERMINAL_PROMPT_DETECT,
       optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
       promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
     });

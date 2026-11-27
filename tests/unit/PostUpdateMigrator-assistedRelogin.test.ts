@@ -58,6 +58,10 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added skill-driven sign-in repair awareness');
     expect(once.match(/Skill-driven sign-in repair \(macOS, dev-gated\)/g)).toHaveLength(1);
     expect(once).toContain('POST /subscription-relogin/EPISODE/code');
+    // One-tap repair setting (spec one-tap-unattended-repair §7) — existing agents get it too.
+    expect(first.upgraded).toContain('CLAUDE.md: added one-tap repair setting awareness');
+    expect(once.match(/One-tap repair setting \(Accounts page\)/g)).toHaveLength(1);
+    expect(once).not.toContain('can safely configure this on any machine');
     expect(once).toContain('loginCheck');
     // Spec relogin-unattended-agent-session-and-slow-retry: fresh inserts carry the new wording.
     expect(once).not.toContain('Approval is forced on this path');
@@ -69,6 +73,10 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('relogin_last_resort_anthropic_api_key');
     expect(once).toContain('last-resort-drive-started');
     expect(once.indexOf('Last-resort sign-in model')).toBeGreaterThan(once.indexOf('Failed sign-in repairs retry slowly'));
+    // Relogin self-heal: a failure verified signed in again closes its own alert; lands once, inside the slow-retry bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+    expect(once.match(/why did that sign-in alert disappear\?/g)).toHaveLength(1);
+    expect(once.indexOf('why did that sign-in alert disappear?')).toBeLessThan(once.indexOf('Last-resort sign-in model'));
     // Repair blockers: "why didn't the repair start?" lands once, after the last-resort bullet.
     expect(first.upgraded).toContain('CLAUDE.md: added sign-in repair blockers awareness');
     expect(once.match(/Why a sign-in repair did not start/g)).toHaveLength(1);

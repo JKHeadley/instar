@@ -11,6 +11,7 @@ import type { Dispatch } from '../../src/core/DispatchManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { proved, provedProfile, provedRecovery } from '../helpers/operatorProof.js';
 
 function makeDispatch(type: Dispatch['type'], content: string = '{}'): Dispatch {
   return {
@@ -49,7 +50,7 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
     const provenance = new MigrationProvenance(project.stateDir);
 
     // Phase 1: Start at collaborative
-    profileManager.setProfile('collaborative', 'User trusts routine operations');
+    provedProfile(profileManager).setProfile('collaborative', 'User trusts routine operations');
     expect(profileManager.getProfile()).toBe('collaborative');
 
     // Phase 2: Config dispatch allowed at collaborative
@@ -64,7 +65,7 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
     expect(actionCheck.requiresApproval).toBe(true);
 
     // Phase 4: Upgrade to autonomous
-    profileManager.setProfile('autonomous', 'User granted full autonomy');
+    provedProfile(profileManager).setProfile('autonomous', 'User granted full autonomy');
 
     // Now action dispatches work
     const actionCheck2 = enforcer.checkScope(actionDispatch, profileManager.getProfile());
@@ -115,8 +116,8 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
 
     // Phase 8: Accept recovery
     const incident = recovery.getActiveIncidents()[0];
-    recovery.acceptRecovery(incident.id);
-    trust.grantTrust('github', 'write', incident.previousLevel, 'Trust recovered');
+    provedRecovery(recovery).acceptRecovery(incident.id);
+    proved(trust).grantTrust('github', 'write', incident.previousLevel, 'Trust recovered');
 
     expect(recovery.getActiveIncidents().length).toBe(0);
     expect(trust.getTrustLevel('github', 'write').level).toBe(incident.previousLevel);
@@ -131,7 +132,7 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
     });
 
     for (const level of ['cautious', 'supervised', 'collaborative', 'autonomous'] as const) {
-      profileManager.setProfile(level, 'test');
+      provedProfile(profileManager).setProfile(level, 'test');
       const check = enforcer.checkScope(makeDispatch('behavioral'), profileManager.getProfile());
       expect(check.allowed).toBe(false);
       expect(check.requiresApproval).toBe(true);
@@ -147,19 +148,19 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
     });
 
     // Cautious: notify
-    profileManager.setProfile('cautious', 'test');
+    provedProfile(profileManager).setProfile('cautious', 'test');
     expect(provenance.shouldNotify(profileManager.getProfile())).toBe(true);
 
     // Supervised: notify
-    profileManager.setProfile('supervised', 'test');
+    provedProfile(profileManager).setProfile('supervised', 'test');
     expect(provenance.shouldNotify(profileManager.getProfile())).toBe(true);
 
     // Collaborative: log only
-    profileManager.setProfile('collaborative', 'test');
+    provedProfile(profileManager).setProfile('collaborative', 'test');
     expect(provenance.shouldNotify(profileManager.getProfile())).toBe(false);
 
     // Autonomous: log only
-    profileManager.setProfile('autonomous', 'test');
+    provedProfile(profileManager).setProfile('autonomous', 'test');
     expect(provenance.shouldNotify(profileManager.getProfile())).toBe(false);
   });
 
@@ -206,7 +207,7 @@ describe('Phase 4 E2E: Dispatch Scope + Provenance + Trust Recovery', () => {
     // Accept gmail's recovery to clear it
     const gmailPending = recovery.getPendingRecoveries().find(p => p.service === 'gmail');
     expect(gmailPending).toBeTruthy();
-    recovery.acceptRecovery(gmailPending!.incidentId);
+    provedRecovery(recovery).acceptRecovery(gmailPending!.incidentId);
 
     const activeAfter = recovery.getActiveIncidents();
     expect(activeAfter.length).toBe(1);

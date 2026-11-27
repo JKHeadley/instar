@@ -48,6 +48,7 @@ import {
   configureSyncOpMarker,
   defaultInflightMarkerReader,
   readSyncOpMarker,
+  flushSyncOpMirror,
   __resetSyncOpMarker,
   MARKER_FILENAME,
 } from '../../src/core/InFlightSyncOpMarker.js';
@@ -133,10 +134,18 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
     let server: AgentServer;
     let sm: SessionManager;
     let app: ReturnType<AgentServer['getApp']>;
+    let priorHome: string | undefined;
 
     beforeAll(async () => {
       const t = mkTmp('tmux-routes');
       tmpDir = t.tmpDir;
+      // The server reads this machine's home at boot and then on timers (the
+      // token ledger scans ~/.claude/projects). On a host with a large real
+      // history that scan held the event loop for over a second, which is what
+      // the timed checks below then measured. An empty home keeps them about
+      // these routes only.
+      priorHome = process.env.HOME;
+      process.env.HOME = tmpDir;
       const tmuxPath = writeSlowTmuxStub(tmpDir);
       const state = new StateManager(t.stateDir);
       sm = new SessionManager(smConfig(tmpDir, tmuxPath), state, {
@@ -158,6 +167,8 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
 
     afterAll(async () => {
       await server.stop();
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
       SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tmux-resilience-slow-stub.test.ts' });
     });
 
@@ -349,7 +360,9 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       expect((insideRead as unknown as { stale: boolean }).stale).toBe(false);
 
       // After it clears: the mirror reflects depth 0 again — the supervisor resumes
-      // normal evaluation (a genuinely dead server would now be restarted).
+      // normal evaluation (a genuinely dead server would now be restarted). The idle state is
+      // written once the loop is free (one write per burst of ops); here it is flushed by hand.
+      flushSyncOpMirror();
       const after = reader();
       expect(after).not.toBeNull();
       expect((after as unknown as { inFlight: boolean }).inFlight).toBe(false);
@@ -390,7 +403,8 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       const guard = defaultInflightMarkerReader(stateDir);
       let stormSpawned = 0;
       const fakeRecoveryCascade = (): void => {
-        // The handler reads the marker FIRST; inFlight ⇒ return before any tmux call.
+        // The handler settles the mirror, then reads the marker FIRST; inFlight ⇒ return before any tmux call.
+        flushSyncOpMirror();
         const m = guard();
         if (m?.inFlight) return; // short-circuit — no list-sessions, no tunnel.forceStop
         stormSpawned += 1; // would be the tmux list-sessions storm
@@ -468,7 +482,8 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
         expect((parsed as unknown as { stale: boolean }).stale).toBe(false);
       });
 
-      // After leave(): the mirror file reflects depth 0 → reader says !inFlight.
+      // After leave() and the idle flush: the mirror file reflects depth 0 → reader says !inFlight.
+      flushSyncOpMirror();
       const cleared = JSON.parse(fs.readFileSync(markerFile, 'utf-8')) as { depth: number; setAtMs: number | null };
       expect(cleared.depth).toBe(0);
       expect(cleared.setAtMs).toBeNull();
@@ -485,7 +500,8 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
         // Inner left, outer still in flight ⇒ still inFlight.
         expect((reader() as unknown as { inFlight: boolean }).inFlight).toBe(true);
       });
-      // Both left ⇒ cleared.
+      // Both left ⇒ cleared (once the idle state is flushed).
+      flushSyncOpMirror();
       expect((reader() as unknown as { inFlight: boolean } | null)?.inFlight).toBe(false);
     });
   });

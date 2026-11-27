@@ -46,7 +46,7 @@ describe('decidePairActivation', () => {
     expect(decide({ routingSpend: { money: { enabled: true } } })).toEqual({ activate: false, reason: 'money-layer-on' });
   });
   it('the same machine pairing again re-sends; any other machine does not', () => {
-    const marked = applyPairActivationKeys({}, NOW);
+    const marked = applyPairActivationKeys({}, NOW, 'inviter', 'm_joiner');
     expect(decide(marked, ['m_joiner'])).toEqual({ activate: true, reason: 're-pair' });
     expect(decide(marked, ['m_joiner'], 'm_stranger').activate).toBe(false);
     expect(decide(marked, ['m_joiner', 'm_third']).activate).toBe(false);
@@ -58,31 +58,45 @@ describe('applyPairActivationKeys', () => {
     dotted.split('.').reduce<any>((v, k) => v?.[k], root);
 
   it('every key lands, over the defaults already on disk', () => {
-    const out = applyPairActivationKeys(shipped(), NOW);
+    const out = applyPairActivationKeys(shipped(), NOW, 'inviter', 'm_joiner');
     for (const [dotted, value] of POOL_ACTIVATION_KEYS) expect(read(out, dotted)).toEqual(value);
     expect(activatedAtPairing(out)).toBe(true);
   });
   it('every key names a setting that exists, except those shipped unset', () => {
     const unset = new Set(['multiMachine.coherenceJournal.replication.enabled',
-      'multiMachine.sessionPool.duplicateReconciler.enabled', 'multiMachine.pollFollowsLease.enabled', 'multiMachine.pollFollowsLease.dryRun']);
+      'multiMachine.sessionPool.duplicateReconciler.enabled', 'multiMachine.pollFollowsLease.enabled', 'multiMachine.pollFollowsLease.dryRun', 'multiMachine.leaseSelfHeal.soloCaptainHold.requireLastingLink']);
     for (const [dotted] of POOL_ACTIVATION_KEYS) {
       if (!unset.has(dotted)) expect(read(shipped(), dotted), dotted).toBeDefined();
     }
   });
+  it('a first pairing turns the takeover switch on, and shipped config has it off', () => {
+    expect(read(shipped(), 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled')).toBe(false);
+    expect(read(applyPairActivationKeys(shipped(), NOW, 'inviter', 'm_joiner'), 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled')).toBe(true);
+  });
+  it('a first pairing requires a lasting link and names each side, and shipped config has neither', () => {
+    const key = 'multiMachine.leaseSelfHeal.soloCaptainHold';
+    expect(read(shipped(), `${key}.requireLastingLink`)).toBeUndefined();
+    expect(read(shipped(), `${key}.pairRole`)).toBeUndefined();
+    expect(read(shipped(), `${key}.pairedWith`)).toBeUndefined();
+    expect(read(applyPairActivationKeys(shipped(), NOW, 'inviter', 'm_joiner'), `${key}.requireLastingLink`)).toBe(true);
+    expect(read(applyPairActivationKeys(shipped(), NOW, 'inviter', 'm_joiner'), `${key}.pairRole`)).toBe('inviter');
+    expect(read(applyPairActivationKeys(shipped(), NOW, 'joiner', 'm_inviter'), `${key}.pairRole`)).toBe('joiner');
+    expect(read(applyPairActivationKeys(shipped(), NOW, 'joiner', 'm_inviter'), `${key}.pairedWith`)).toBe('m_inviter');
+  });
   it('sibling settings are kept', () => {
-    const out = applyPairActivationKeys({ multiMachine: { sessionPool: { inboundQueue: { maxTotal: 9 } } } }, NOW) as any;
+    const out = applyPairActivationKeys({ multiMachine: { sessionPool: { inboundQueue: { maxTotal: 9 } } } }, NOW, 'inviter', 'm_joiner') as any;
     expect(out.multiMachine.sessionPool.inboundQueue.maxTotal).toBe(9);
   });
   it('a joiner starts dark under the ceiling whatever its home held', () => {
     const out = applyPairActivationKeys(
-      { multiMachine: { sessionPool: { stage: 'live-transfer', promotionCeiling: 'rebalance' } } }, NOW,
+      { multiMachine: { sessionPool: { stage: 'live-transfer', promotionCeiling: 'rebalance' } } }, NOW, 'inviter',
     ) as any;
     expect(out.multiMachine.sessionPool.stage).toBeUndefined();
     expect(out.multiMachine.sessionPool.promotionCeiling).toBe('shadow');
   });
   it('does not change the object it was given', () => {
     const input = {};
-    applyPairActivationKeys(input, NOW);
+    applyPairActivationKeys(input, NOW, 'inviter', 'm_joiner');
     expect(input).toEqual({});
   });
   it('activation carries no secret sync', () => {

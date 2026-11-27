@@ -57,23 +57,77 @@ export function toRollup(raw: GhRollupEntry[] | null | undefined): RollupEntry[]
   return out;
 }
 
+/** PRs per GraphQL page for the open-PR listing (each PR carries up to 100 check contexts). */
+export const OPEN_PR_PAGE_SIZE = 25;
+
+/** The open-PR listing: the same fields `gh pr list --json ...statusCheckRollup` returned. */
+export const OPEN_PRS_QUERY = `query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: ${OPEN_PR_PAGE_SIZE}, after: $endCursor, states: OPEN, baseRefName: "main", orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number headRefOid baseRefName headRefName isCrossRepository
+        author { __typename login }
+        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
+          pageInfo { hasNextPage }
+          nodes {
+            __typename
+            ... on StatusContext { context state }
+            ... on CheckRun { name status conclusion }
+          }
+        } } } } }
+      }
+    }
+  }
+}`;
+
+interface GqlOpenPrNode {
+  number: number; headRefOid: string; baseRefName: string; headRefName: string; isCrossRepository?: boolean;
+  author?: { __typename?: string; login?: string } | null;
+  commits?: { nodes?: Array<{ commit?: { statusCheckRollup?: { contexts?: { pageInfo?: { hasNextPage?: boolean }; nodes?: GhRollupEntry[] } | null } | null } } | null> };
+}
+interface GqlOpenPrsPage {
+  data?: { repository?: { pullRequests?: { nodes?: Array<GqlOpenPrNode | null> } | null } | null };
+  errors?: unknown[];
+}
+
 export function buildReconcilerGitHubSeams(repo: string, gh: GhRunner): Pick<StatusReconcilerSeams,
   'listOpenPrs' | 'readMainHead' | 'readCombinedStatus' | 'readCheckRuns' | 'postStatus'> {
   return {
     async listOpenPrs(): Promise<OpenPr[] | null> {
-      const r = await gh(['pr', 'list', '--repo', repo, '--base', 'main', '--state', 'open', '--limit', '1000',
-        '--json', 'number,headRefOid,baseRefName,headRefName,author,isCrossRepository,statusCheckRollup']);
+      // Paged GraphQL, OPEN_PR_PAGE_SIZE PRs a page. `gh pr list --limit 1000` asks GitHub for 100
+      // PRs a page with every PR's checks; past ~100 open PRs that page outruns GitHub's ~10 s
+      // GraphQL budget and every pass failed with HTTP 502 (2026-11-13, 102 open PRs: the queue
+      // stopped admitting anything). Smaller pages each finish in ~1.5 s.
+      const [owner, name] = repo.split('/');
+      if (!owner || !name) return null;
+      const r = await gh(['api', 'graphql', '--paginate', '--slurp',
+        '-F', `owner=${owner}`, '-F', `name=${name}`, '-f', `query=${OPEN_PRS_QUERY}`]);
       if (!r.ok) return null;
-      const list = parse<Array<{ number: number; headRefOid: string; baseRefName: string; headRefName: string; author?: { login?: string } | null; isCrossRepository: boolean; statusCheckRollup?: GhRollupEntry[] }>>(r.stdout);
-      if (!Array.isArray(list)) return null;
-      return list.map((p) => {
-        const raw = p.statusCheckRollup ?? [];
-        return {
-          number: p.number, headSha: p.headRefOid, baseRefName: p.baseRefName, headRefName: p.headRefName,
-          author: p.author?.login ?? null, isCrossRepository: p.isCrossRepository === true,
-          rollup: toRollup(raw), rollupTruncated: raw.length >= RECONCILER_LIMITS.rollupTruncationAt,
-        };
-      });
+      const ps = pages<GqlOpenPrsPage>(r.stdout);
+      if (!ps || ps.length === 0) return null;
+      const out: OpenPr[] = [];
+      for (const p of ps) {
+        // A page with GraphQL errors or no connection is a failed read, never a short list.
+        if (p?.errors?.length) return null;
+        const conn = p?.data?.repository?.pullRequests;
+        if (!conn || !Array.isArray(conn.nodes)) return null;
+        for (const n of conn.nodes) {
+          if (!n || typeof n.number !== 'number') return null;
+          const ctx = n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts ?? null;
+          // `gh pr list` reports an unfinished check's conclusion as '' (GraphQL: null); keep that shape.
+          const raw = (ctx?.nodes ?? []).map((c) => (c && c.__typename === 'CheckRun' ? { ...c, conclusion: c.conclusion ?? '' } : c));
+          out.push({
+            number: n.number, headSha: n.headRefOid, baseRefName: n.baseRefName, headRefName: n.headRefName,
+            // `gh pr list` reports a bot author as `app/<login>`; keep that shape.
+            author: n.author?.login ? (n.author.__typename === 'Bot' ? `app/${n.author.login}` : n.author.login) : null,
+            isCrossRepository: n.isCrossRepository === true,
+            rollup: toRollup(raw),
+            rollupTruncated: ctx?.pageInfo?.hasNextPage === true || raw.length >= RECONCILER_LIMITS.rollupTruncationAt,
+          });
+        }
+      }
+      return out;
     },
     async readMainHead(): Promise<string | null> {
       const r = await gh(['api', `repos/${repo}/git/ref/heads/main`]);

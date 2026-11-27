@@ -21,6 +21,7 @@ import { presenceMessage } from '../../src/server/mobileConsoleTicket.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
 
 const HOST = 'echo.example.dev';
 const HASH = 'b'.repeat(64);
@@ -153,6 +154,7 @@ describe('writes: a proven action reaches the console path', () => {
   it('approve, decline and switch with a fresh proof each', async () => {
     const c = setup();
     const p = c.pair();
+    setFeatureEvidenceLog(new FeatureEvidenceLog({ projectDir: c.dir, machine: 'm1', instarVersion: '0.0.0' }));
     let ch = await challenge(c.app, p, { action: 'approve-request', target: 'authreq-1', proposalHash: HASH });
     let r = await send(c.app, p, 'POST', '/mobile/permissions/requests/authreq-1/approve', { proposalHash: HASH, challenge: ch, presenceSig: sig(p, ch, `approve-request authreq-1 ${HASH}`) });
     expect(r.status).toBe(201);
@@ -174,6 +176,14 @@ describe('writes: a proven action reaches the console path', () => {
     const rows = auditRows(c.dir).filter((x) => x.event !== 'challenge');
     expect(rows.map((x) => x.event)).toEqual(['approved', 'declined', 'feature-set', 'feature-set']);
     expect(JSON.stringify(rows)).not.toContain(reason); // the decline text is never in the audit
+    // One ladder row per action that went through, carrying the action kind and nothing it acted on.
+    const evidence = fs.readFileSync(path.join(c.dir, 'logs/feature-evidence.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
+    setFeatureEvidenceLog(null);
+    expect(evidence.map(x => [x.featureId, x.kind, x.reason])).toEqual([
+      ['mobilePairing.permissionActions', 'fired', 'approved'], ['mobilePairing.permissionActions', 'fired', 'declined'],
+      ['mobilePairing.permissionActions', 'fired', 'feature-set'], ['mobilePairing.permissionActions', 'fired', 'feature-set'],
+    ]);
+    expect(JSON.stringify(evidence)).not.toContain('authreq-1');
   });
 });
 

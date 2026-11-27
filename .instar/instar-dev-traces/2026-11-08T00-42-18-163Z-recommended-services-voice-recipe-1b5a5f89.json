@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "recommended-services-voice-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T00:42:18.163Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-voice-recipe.md",
+  "artifactSha256": "351427898314f5c045c8865fab4d0f7e51f2d5c6938293b545b502c9eb15624c",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-voice-recipe.eli16.md",
+    "src/commands/server.ts",
+    "src/core/VoiceTranscription.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/backends/BaileysBackend.ts",
+    "src/recommended/catalog.ts",
+    "src/recommended/recipes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/integration/recommended-services-voice.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "tests/unit/recommended-services-voice-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-voice-recipe.md",
+    "upgrades/side-effects/recommended-services-voice-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A credential stored and read by every voice-note path, audio to an outside provider on a key the agent obtained, available on every agent after its live proof; full chain, second-pass concurred.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

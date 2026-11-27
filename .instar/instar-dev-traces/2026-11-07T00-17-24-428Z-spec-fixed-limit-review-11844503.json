@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "slug": "spec-fixed-limit-review",
+  "sessionId": "35ffb454-1d96-497c-8de3-21ea95ad530b",
+  "timestamp": "2026-11-07T00:33:34.712968+00:00",
+  "artifactPath": "upgrades/side-effects/spec-fixed-limit-review.md",
+  "artifactSha256": "b10c78e60a3f7639b4caf83d94a8bb46c980fee1e90ed66d55d451dc66c65d54",
+  "coveredFiles": [
+    "docs/specs/spec-fixed-limit-review.eli16.md",
+    "skills/spec-converge/SKILL.md",
+    "skills/spec-converge/scripts/write-convergence-tag.mjs",
+    "skills/spec-converge/templates/reviewer-decision-completeness.md",
+    "skills/spec-converge/templates/reviewer-lessons-aware.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/reviewers/standards-conformance.ts",
+    "tests/unit/PostUpdateMigrator-judgment-floors.test.ts",
+    "tests/unit/standards-conformance-gate.test.ts",
+    "tests/unit/write-convergence-tag-decision-completeness.test.ts",
+    "tests/unit/write-convergence-tag-decision-points.test.ts",
+    "upgrades/next/spec-fixed-limit-review.md",
+    "upgrades/side-effects/spec-fixed-limit-review.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair to existing review prompts and structural declaration validation; no new blocking authority, migration of user state, or constitutional edit.",
+  "eli16Path": "docs/specs/spec-fixed-limit-review.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spec-fixed-limit-review.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/write-convergence-tag-decision-points.test.ts",
+      "howCaught": "The original invariant growth-cap row now refuses convergence without a basis and evidence declaration; mandatory reviewer contracts require independent contest of the substance and exact boundary."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Classification presence substituted for evidence; six spec rounds accepted arbitrary growth caps as invariants. The separate spec correction is PR 2871. Feedback fb-10cc0a80-caf."
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "org-multimachine",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T11:41:23.917Z",
+  "artifactPath": "upgrades/side-effects/org-multimachine.md",
+  "artifactSha256": "d747ba8b9ab8ec23f44c53a43cf94740e81bf90a00238bea5d1bd0575e64e442",
+  "coveredFiles": [
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/org-recovery-copy.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/org-admin-bucket.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-multimachine.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a rate-limit bucket name and a missing test step"
+  }
+}

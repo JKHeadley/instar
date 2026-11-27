@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createExecHarness, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { RerouteRefusedError } from '../../../src/core/rerouteRefusedError.js';
-import { prepareFailureStep } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
+import { boundedFailureDetail, prepareFailureStep } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
 
 let h: ExecHarness;
 afterEach(() => h?.cleanup());
@@ -28,6 +28,21 @@ describe('reroute capacity', () => {
     expect(h.sessions.spawned).toHaveLength(0);
     h.admission.rerouteSaturated = false;
     expect((await h.exec.tick()).started).toBe(1);
+  });
+
+  it('a capacity refusal after the lease moved during the spawn still refunds the start', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n' });
+    const refusal = new RerouteRefusedError('rerouted-session cap reached (6/6)');
+    Object.defineProperty(h.spawnError, 'value', { configurable: true, get: () => {
+      h.epoch.value = 2;
+      h.execStore.fenced(2, () => undefined);
+      return refusal;
+    } });
+    await h.exec.tick();
+    expect(h.execStore.all().at(-1)).toMatchObject({ state: 'stopped', reason: 'reroute-capacity' });
+    expect(h.execStore.startsToday()).toBe(0);
   });
 
   it('a RerouteRefusedError stops the attempt as reroute-capacity, refunds the start once, and never holds the item', async () => {
@@ -105,6 +120,14 @@ describe('a failed preparation stops the tick (2026-10-23 live: one machine faul
     // The audit keeps only id-shaped values; the step survives there, the sentence does not.
     const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     expect(audit.find((r) => r.event === 'execute:prepare-failed')).toMatchObject({ step: 'checkout-base' });
+  });
+
+  it('a failure message keeps its start and its end when it is long', () => {
+    expect(boundedFailureDetail('short')).toBe('short');
+    const bounded = boundedFailureDetail(`Command failed: git ${'-c flag=x '.repeat(100)}clone a b\nfatal: destination exists`);
+    expect(bounded.length).toBeLessThanOrEqual(503);
+    expect(bounded.startsWith('Command failed: git')).toBe(true);
+    expect(bounded.endsWith('fatal: destination exists')).toBe(true);
   });
 
   it('prepareFailureStep names the step from the message', () => {

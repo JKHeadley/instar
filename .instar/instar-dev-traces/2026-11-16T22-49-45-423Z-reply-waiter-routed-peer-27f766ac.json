@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "reply-waiter-routed-peer",
+  "sessionId": "490121e8-ac02-4bab-975b-0d6070e0df16",
+  "timestamp": "2026-11-16T22:49:45.423Z",
+  "artifactPath": "upgrades/side-effects/reply-waiter-routed-peer.md",
+  "artifactSha256": "0d1591df5a54b5d2e75daf05a3d0847a7ef03a252d2b732b83f3d9df75eab808",
+  "coveredFiles": [
+    "docs/specs/reply-waiter-routed-peer.eli16.md",
+    "src/commands/server.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/threadline/replyWaiterMatch.ts",
+    "tests/integration/threadline-relay-agent-result.test.ts",
+    "tests/unit/reply-waiter-match.test.ts",
+    "upgrades/next/reply-waiter-routed-peer.md",
+    "upgrades/side-effects/reply-waiter-routed-peer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix (~60 LOC) adding an identity match to an existing in-memory wait; fully reversible by revert, no state/format/config change; worst legitimate effect is a send-and-wait timing out while the reply is still delivered. Security-sensitive, so independent second pass done; its local-path concern is fixed and recorded.",
+  "eli16Path": "docs/specs/reply-waiter-routed-peer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reply-waiter-routed-peer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

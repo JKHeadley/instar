@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "fable-5-2-reviewer-pin",
+  "sessionId": "48a6b8a9-6660-4f85-b87e-3a8a29642bf2",
+  "timestamp": "2026-11-09T22:53:11.481Z",
+  "artifactPath": "upgrades/side-effects/fable-5-2-reviewer-pin.md",
+  "artifactSha256": "9b2be889d30f3ea3fea0c1bfe9d46e4c7c48786b586d01e452add7c10d395a79",
+  "coveredFiles": [
+    "docs/specs/fable-5-2-reviewer-pin.eli16.md",
+    "src/core/crossModelReviewer.ts",
+    "tests/unit/crossModelReviewer-clean-door.test.ts",
+    "upgrades/next/fable-5-2-reviewer-pin.md",
+    "upgrades/side-effects/fable-5-2-reviewer-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One explicit allow-list entry for a live-verified reviewer model id plus its test; nothing is repointed and a revert fully undoes it.",
+  "eli16Path": "docs/specs/fable-5-2-reviewer-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fable-5-2-reviewer-pin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

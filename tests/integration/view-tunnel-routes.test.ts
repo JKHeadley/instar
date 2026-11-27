@@ -67,6 +67,28 @@ describe('View & Tunnel routes integration', () => {
     project.cleanup();
   });
 
+  describe('POST /view while documents replace pages (instar-document-viewer §3.9b)', () => {
+    it('refuses a new page with documents-replace-views, and existing pages stay served', async () => {
+      const before = await request(app).post('/view').send({ title: 'Before', markdown: '# before' }).expect(201);
+      viewer.setNewViewGuard(() => true);
+      try {
+        const res = await request(app).post('/view').send({ title: 'New', markdown: '# new' }).expect(409);
+        expect(res.body.error).toBe('documents-replace-views');
+        expect(res.body.use).toBe('/docs');
+        expect(res.body.detail).toContain('Links to existing pages keep working');
+        expect(viewer.get(before.body.id)?.title).toBe('Before');
+        // Rewriting an old page is refused too, and points at fromView.
+        const put = await request(app).put(`/view/${before.body.id}`).send({ title: 'Rewritten', markdown: '# new text' }).expect(409);
+        expect(put.body.error).toBe('documents-replace-views');
+        expect(put.body.detail).toContain('fromView');
+        expect(viewer.get(before.body.id)?.title).toBe('Before');
+      } finally {
+        viewer.setNewViewGuard(() => false);
+      }
+      await request(app).post('/view').send({ title: 'After', markdown: '# after' }).expect(201);
+    });
+  });
+
   describe('POST /view', () => {
     it('creates a private view and returns metadata', async () => {
       const res = await request(app)
@@ -165,10 +187,25 @@ describe('View & Tunnel routes integration', () => {
         .expect(200);
 
       expect(res.headers['content-type']).toContain('text/html');
-      expect(res.text).toContain('PIN-protected');
-      expect(res.text).toContain('Unlock');
+      // Under the /view sandbox (dashboard-conversations-browser-device §4.12) no form can submit,
+      // so the page states that unlocking is not available here instead of showing a form.
+      expect(res.text).toContain('This view is protected by a PIN.');
+      expect(res.text).not.toContain('<form');
+      expect(res.text).not.toContain('<script');
       // Should NOT contain the actual content
       expect(res.text).not.toContain('Top secret content');
+    });
+
+    it('every /view response is sandboxed through the real server, including upper case and the PIN page (§4.12)', async () => {
+      const sandbox = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+      const pin = await request(app).get(`/view/${pinViewId}`).expect(200);
+      expect(pin.headers['content-security-policy']).toBe(sandbox);
+      const upper = await request(app).get(`/VIEW/${pinViewId}`);
+      expect(upper.headers['content-security-policy']).toBe(sandbox);
+      const missing = await request(app).get('/view/does-not-exist');
+      expect(missing.headers['content-security-policy']).toBe(sandbox);
+      const unlocked = await request(app).post(`/view/${pinViewId}/unlock`).send({ pin: '9876' });
+      expect(unlocked.headers['content-security-policy']).toBe(sandbox);
     });
 
     it('POST /view/:id/unlock with correct PIN returns content', async () => {

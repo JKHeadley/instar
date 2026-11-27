@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-slice5",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T21:55:48.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-slice5.md",
+  "artifactSha256": "f68a7f03a26b15232d0ca2828c9cfa26dc09bd2557d3e277446cab5d3894feed",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/costs.js",
+    "dashboard/console/usage-model.js",
+    "dashboard/console/usage.js",
+    "tests/unit/console-usage.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-slice5.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only console section over existing routes",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

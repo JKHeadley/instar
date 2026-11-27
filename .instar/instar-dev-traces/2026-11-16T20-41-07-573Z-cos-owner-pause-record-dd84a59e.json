@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "cos-owner-pause-record",
+  "sessionId": "cfbf855a-ce35-4f3c-84f8-29cca3be2b9e",
+  "timestamp": "2026-11-16T20:41:07.573Z",
+  "artifactPath": "upgrades/side-effects/cos-owner-pause-record.md",
+  "artifactSha256": "1597d1eb9bd2c6d28679ba2ee397d3d11f2efacaf3649feeb21fb49d4ee07c1c",
+  "specPath": "docs/specs/cos-owner-pause-record.md",
+  "coveredFiles": [
+    "tests/unit/chief-of-staff-surfaces-wiring.test.ts",
+    "upgrades/side-effects/cos-owner-pause-record.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test literal follows the ownerTap call shape changed in this PR; same approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -10,15 +10,23 @@
  * Uses supertest with a minimal Express app and a real in-memory ledger.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { FrameworkIssueLedger } from '../../src/monitoring/FrameworkIssueLedger.js';
 
+const projects: TempProject[] = [];
+afterEach(() => {
+  for (const project of projects.splice(0)) project.cleanup();
+});
+
 function baseCtx(over: Partial<RouteContext>): RouteContext {
+  const project = createTempProject();
+  projects.push(project);
   return {
-    config: { projectName: 't', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0 } as any,
+    config: { projectName: 't', projectDir: project.dir, stateDir: project.stateDir, port: 0 } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null,

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-14T12:56:31.710Z",
+  "slug": "claude-md-core-budget-84k",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scaffold/claudeMdLayout.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

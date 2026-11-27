@@ -16,6 +16,7 @@
  * - The URL token IS the auth — no login or bearer token needed
  */
 
+import { type MintAuth, mintReachesSession, mintIsUnverified } from './secretDropMintPolicy.js';
 import crypto from 'node:crypto';
 
 // E2E-PAIRING: EXEMPT — this change is internal retrieval-lifetime/timer logic on
@@ -38,6 +39,8 @@ export interface SecretField {
 }
 
 export interface SecretRequest {
+  /** Who created it (secret-drop-self-mint-hardening): decides what it may reach. */
+  mintAuth: MintAuth;
   /**
    * The only site this value may be typed into, shown on the form so the person sees it. A submission
    * carrying it leaves only through the helper's --browser mode and is never persisted
@@ -81,6 +84,8 @@ export interface SecretRequest {
 }
 
 export interface SecretSubmission {
+  /** The creating request's class; only master/owner-phone reach a session. Absent on pre-change records = unverified. */
+  mintAuth?: MintAuth;
   /** The values submitted by the user */
   values: Record<string, string>;
   /** When the submission was received */
@@ -98,6 +103,8 @@ export interface SecretSubmission {
 }
 
 export interface CreateSecretRequestOptions {
+  /** Who is creating it. Defaults to 'none' (keyless): fail-closed, never reaches a session. */
+  mintAuth?: MintAuth;
   /** What's being requested — shown as the form title */
   label: string;
   /** Why it's needed — shown as description in the form */
@@ -166,6 +173,18 @@ export function canonicalSubmitMessage(token: string, declaredValues: Record<str
  * The sender POSTs the returned object as the submission body. Keeping the signer
  * and verifier in one module guarantees they share {@link canonicalSubmitMessage}.
  */
+/**
+ * v2 canonical message (SEC-056): domain-tagged JSON over the token and the declared
+ * fields as `[name, value]` pairs sorted by name. `JSON.stringify` escapes quotes,
+ * backslashes and control characters, so different value maps can never produce the
+ * same bytes (v1's newline-joined `name=value` text could, when a value held a newline).
+ */
+export const SUBMIT_SIGNATURE_VERSION = '2';
+export function canonicalSubmitMessageV2(token: string, declaredValues: Record<string, string>): Buffer {
+  const pairs = Object.keys(declaredValues).sort().map((k) => [k, declaredValues[k]]);
+  return Buffer.from(JSON.stringify(['instar-secret-drop-submit', 2, token, pairs]), 'utf8');
+}
+
 export function buildSignedSubmission(
   token: string,
   declaredValues: Record<string, string>,
@@ -180,9 +199,22 @@ export function buildSignedSubmission(
     format: 'der',
     type: 'pkcs8',
   });
-  const sig = crypto.sign(null, canonicalSubmitMessage(token, declaredValues), privateKey);
-  return { ...declaredValues, _sig: sig.toString('hex') };
+  // Sign exactly what the receiver verifies and stores: the trimmed values. When no value
+  // spans a line, the v1 encoding is unambiguous and older receivers can verify it, so use
+  // it; otherwise v2 (older receivers cannot take a multi-line value safely anyway).
+  const trimmed: Record<string, string> = {};
+  for (const [k, v] of Object.entries(declaredValues)) trimmed[k] = typeof v === 'string' ? v.trim() : v;
+  const multiLine = Object.values(trimmed).some((v) => /[\r\n]/.test(v));
+  if (!multiLine) {
+    const sig = crypto.sign(null, canonicalSubmitMessage(token, trimmed), privateKey);
+    return { ...declaredValues, _sig: sig.toString('hex') };
+  }
+  const sig = crypto.sign(null, canonicalSubmitMessageV2(token, trimmed), privateKey);
+  return { ...declaredValues, _sig: sig.toString('hex'), _sigv: SUBMIT_SIGNATURE_VERSION };
 }
+
+/** Why a submit was refused, when the caller can be told something useful. */
+export type SubmitRefusal = 'signature-format-outdated' | 'signature-format-unknown' | 'rejected';
 
 /**
  * Event emitted when a submission has been sitting in `received` for longer
@@ -198,6 +230,8 @@ export function buildSignedSubmission(
  */
 export interface StuckConsumerEvent {
   token: string;
+  /** The request's class: the sink only notifies a session for one that may reach it. */
+  mintAuth?: MintAuth;
   label: string;
   browserHost?: string;
   topicId?: number;
@@ -240,6 +274,16 @@ export class SecretDrop {
    * Create a new secret request. Returns the token for URL construction.
    */
   create(options: CreateSecretRequestOptions): { token: string } {
+    // Unverified requests get their own share of the pending cap, so they can never
+    // crowd out the owner's own requests.
+    if (mintIsUnverified(options.mintAuth ?? 'none')) {
+      this.cleanup();
+      let keyless = 0;
+      for (const r of this.pending.values()) if (mintIsUnverified(r.mintAuth)) keyless++;
+      if (keyless >= MAX_PENDING / 2) {
+        throw new Error(`Too many pending secret requests (max ${MAX_PENDING / 2} made without the agent key are waiting; retrieve or cancel some)`);
+      }
+    }
     if (this.pending.size >= MAX_PENDING) {
       // Clean up expired first
       this.cleanup();
@@ -260,13 +304,16 @@ export class SecretDrop {
       placeholder: 'Paste your secret here',
     }];
 
+    const mintAuth: MintAuth = options.mintAuth ?? 'none';
     const request: SecretRequest = {
+      mintAuth,
       token,
       csrfToken,
       label: options.label,
       description: options.description,
       fields,
-      topicId: options.topicId,
+      // Only a request from the agent's key or the owner's phone may name a conversation.
+      topicId: mintReachesSession(mintAuth) ? options.topicId : undefined,
       createdAt: now,
       expiresAt: now + ttlMs,
       onReceive: options.onReceive,
@@ -298,21 +345,28 @@ export class SecretDrop {
    * Returns the submission on success, null on failure.
    */
   submit(token: string, csrfToken: string, values: Record<string, string>): SecretSubmission | null {
+    const r = this.submitWithReason(token, csrfToken, values);
+    return 'submission' in r ? r.submission : null;
+  }
+
+  /** Same as {@link submit}, but says why a submission was refused. A refused submit never consumes the token. */
+  submitWithReason(token: string, csrfToken: string, values: Record<string, string>): { submission: SecretSubmission } | { refused: SubmitRefusal } {
+    const reject = (refused: SubmitRefusal): { refused: SubmitRefusal } => ({ refused });
     const request = this.getPending(token);
-    if (!request) return null;
+    if (!request) return reject('rejected');
 
     // Verify CSRF token (timing-safe)
     const ha = crypto.createHash('sha256').update(csrfToken).digest();
     const hb = crypto.createHash('sha256').update(request.csrfToken).digest();
     if (!crypto.timingSafeEqual(ha, hb)) {
-      return null;
+      return reject('rejected');
     }
 
     // Validate all required fields are present and non-empty
     for (const field of request.fields) {
       const value = values[field.name];
       if (!value || typeof value !== 'string' || value.trim().length === 0) {
-        return null;
+        return reject('rejected');
       }
     }
 
@@ -330,28 +384,52 @@ export class SecretDrop {
     // behavior for ordinary human Secret Drops.
     if (request.senderVerification) {
       const sigHex = values['_sig'];
-      if (!sigHex || typeof sigHex !== 'string') return null;
-      let verified = false;
+      if (!sigHex || typeof sigHex !== 'string') return reject('rejected');
+      const version = values['_sigv'];
+      let pub: crypto.KeyObject | null = null;
       try {
         const pubRaw = Buffer.from(request.senderVerification.senderPubKeyHex, 'hex');
         if (pubRaw.length === 32) {
-          const pub = crypto.createPublicKey({
+          pub = crypto.createPublicKey({
             key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), pubRaw]),
             format: 'der',
             type: 'spki',
           });
-          verified = crypto.verify(null, canonicalSubmitMessage(token, cleanValues), pub, Buffer.from(sigHex, 'hex'));
         }
       } catch {
-        verified = false;
+        pub = null;
       }
-      if (!verified) return null;
+      if (!pub) return reject('rejected');
+      const sigBuf = Buffer.from(sigHex, 'hex');
+      const check = (msg: Buffer): boolean => { try { return crypto.verify(null, msg, pub as crypto.KeyObject, sigBuf); } catch { return false; } };
+      let verified = false;
+      if (version === SUBMIT_SIGNATURE_VERSION) {
+        verified = check(canonicalSubmitMessageV2(token, cleanValues));
+      } else if (version === undefined) {
+        // v1 (older senders): its encoding is unambiguous only when no value holds a line
+        // break (the declared names are fixed by the request, the token has none). Refuse
+        // anything else with a reason the sender can act on.
+        const rawDeclared: Record<string, string> = {};
+        for (const field of request.fields) rawDeclared[field.name] = values[field.name];
+        // Each v1 encoding is accepted only when ITS values hold no line break. v1 signers signed
+        // the values as sent; the stored values are trimmed, so either form may verify.
+        const hasBreak = (vals: Record<string, string>): boolean => Object.values(vals).some((v) => /[\r\n]/.test(v));
+        const trimmedOk = !hasBreak(cleanValues);
+        const rawOk = !hasBreak(rawDeclared);
+        if (!trimmedOk && !rawOk) return reject('signature-format-outdated');
+        verified = (trimmedOk && check(canonicalSubmitMessage(token, cleanValues)))
+          || (rawOk && check(canonicalSubmitMessage(token, rawDeclared)));
+      } else {
+        return reject('signature-format-unknown');
+      }
+      if (!verified) return reject('rejected');
     }
 
     // Consume the request (one-time use)
     this.pending.delete(token);
 
     const submission: SecretSubmission = {
+      mintAuth: request.mintAuth,
       values: cleanValues,
       receivedAt: new Date().toISOString(),
       label: request.label,
@@ -391,6 +469,7 @@ export class SecretDrop {
       const cleanupAt = this.receivedDeadline.get(token) ?? (Date.now() + RECEIVED_IDLE_TTL_MS);
       const event: StuckConsumerEvent = {
         token,
+        mintAuth: stillPresent.mintAuth,
         label: stillPresent.label,
         browserHost: stillPresent.browserHost,
         topicId: stillPresent.topicId,
@@ -419,7 +498,7 @@ export class SecretDrop {
       }
     }
 
-    return submission;
+    return { submission };
   }
 
   /**
@@ -514,12 +593,14 @@ export class SecretDrop {
   /**
    * List all pending requests (for the agent's management API).
    */
-  listPending(): Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean }> {
+  listPending(): Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean; mintAuth: MintAuth; fields: string[] }> {
     const now = Date.now();
-    const results: Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean }> = [];
+    const results: Array<{ token: string; label: string; topicId?: number; createdAt: number; expiresAt: number; expired: boolean; mintAuth: MintAuth; fields: string[] }> = [];
     for (const [token, req] of this.pending) {
       results.push({
         token,
+        mintAuth: req.mintAuth,
+        fields: req.fields.map((f) => f.name),
         label: req.label,
         topicId: req.topicId,
         createdAt: req.createdAt,
@@ -553,20 +634,33 @@ export class SecretDrop {
    * Render the secret submission form as self-contained HTML.
    */
   renderForm(request: SecretRequest): string {
-    const fieldsHtml = request.fields.map(field => `
+    // A masked field carries a show/hide (eye) toggle so the person can check
+    // what they typed before sending (CMT-1250). The value never leaves the
+    // page because of it: the toggle only flips the input's type locally.
+    const fieldsHtml = request.fields.map(field => {
+      const masked = field.masked !== false;
+      const id = `field-${escapeAttr(field.name)}`;
+      return `
       <div class="field">
-        <label for="field-${escapeAttr(field.name)}">${escapeHtml(field.label)}</label>
-        <input
-          type="${field.masked !== false ? 'password' : 'text'}"
-          id="field-${escapeAttr(field.name)}"
-          name="${escapeAttr(field.name)}"
-          placeholder="${escapeAttr(field.placeholder || '')}"
-          autocomplete="off"
-          spellcheck="false"
-          required
-        >
+        <label for="${id}">${escapeHtml(field.label)}</label>
+        <div class="input-wrap${masked ? ' has-reveal' : ''}">
+          <input
+            type="${masked ? 'password' : 'text'}"
+            id="${id}"
+            name="${escapeAttr(field.name)}"
+            placeholder="${escapeAttr(field.placeholder || '')}"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          >${masked ? `
+          <button type="button" class="reveal-btn" data-reveal-for="${id}" aria-controls="${id}" aria-pressed="false" aria-label="Show what you typed" title="Show what you typed">
+            <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>` : ''}
+        </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     const minutesLeft = Math.max(0, Math.ceil((request.expiresAt - Date.now()) / 60_000));
 
@@ -654,6 +748,19 @@ export class SecretDrop {
       border-color: #533483;
       background: #fff;
     }
+    .input-wrap { position: relative; }
+    .input-wrap.has-reveal input { padding-right: 3rem; }
+    .reveal-btn {
+      position: absolute; top: 50%; right: 0.35rem; transform: translateY(-50%);
+      width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+      background: none; border: none; border-radius: 6px; cursor: pointer; color: #888;
+    }
+    .reveal-btn:hover, .reveal-btn:focus-visible { color: #533483; }
+    .reveal-btn:focus-visible { outline: 2px solid #533483; outline-offset: -2px; }
+    .reveal-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .reveal-btn .eye-closed { display: none; }
+    .reveal-btn[aria-pressed="true"] .eye-open { display: none; }
+    .reveal-btn[aria-pressed="true"] .eye-closed { display: block; }
     .submit-btn {
       width: 100%;
       padding: 0.8rem;
@@ -711,8 +818,9 @@ export class SecretDrop {
   <div class="drop-box">
     <div id="form-view">
       <div class="agent-badge"><span class="dot"></span> ${escapeHtml(request.agentName)}</div>
+      ${mintIsUnverified(request.mintAuth) ? `<p class="description unverified-banner" role="alert"><strong>This request was not created by your agent's verified helper.</strong> Only fill it in if you expected it.</p>` : ''}
       <h1>${escapeHtml(request.label)}</h1>
-      ${request.description ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
+      ${request.description && !mintIsUnverified(request.mintAuth) ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
       ${request.browserHost ? `<p class="description"><strong>This will be typed into ${escapeHtml(request.browserHost)}.</strong> It goes nowhere else.</p>` : ''}
       <p class="expiry">This link expires in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} and can only be used once.</p>
       <div class="error-banner" id="error-banner"></div>
@@ -735,7 +843,22 @@ export class SecretDrop {
     </div>
   </div>
   <script>
+    document.querySelectorAll('.reveal-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const input = document.getElementById(btn.getAttribute('data-reveal-for'));
+        if (!input) return;
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+        const word = show ? 'Hide what you typed' : 'Show what you typed';
+        btn.setAttribute('aria-label', word);
+        btn.setAttribute('title', word);
+        input.focus();
+      });
+    });
     document.getElementById('secret-form').addEventListener('submit', async (e) => {
+      // Re-mask before sending, so nothing stays visible on a shared screen.
+      document.querySelectorAll('.reveal-btn[aria-pressed="true"]').forEach((b) => b.click());
       e.preventDefault();
       const btn = document.getElementById('submit-btn');
       const errorBanner = document.getElementById('error-banner');

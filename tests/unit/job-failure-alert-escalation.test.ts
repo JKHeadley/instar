@@ -102,6 +102,16 @@ describe('JobScheduler bounded failure escalation', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/job-failure-alert-escalation.test.ts' });
   });
 
+  it('records a quiet failure alert without delivery flags or transport retry', async () => {
+    const send = vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'job-q' });
+    scheduler.setMessenger({ send } as unknown as MessagingAdapter);
+    await alert(scheduler, 3);
+    const row = state.get<any>('job-failure-alert-health-check');
+    expect(row.recordedAt).toBeDefined(); expect(row.quietId).toBe('job-q'); expect(row.deliveredCount).toBe(0); expect(row.lastDeliveredAt).toBeUndefined();
+    expect(state.queryEvents({ type: 'job_alert_delivered' })).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(60 * 60_000); expect(send).toHaveBeenCalledOnce();
+  });
+
   it('repairs a historically missed alert when the count is already past threshold', async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     scheduler.setMessenger({ send } as MessagingAdapter);
@@ -318,7 +328,7 @@ describe('JobScheduler bounded failure escalation', () => {
     await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
     // A separate silence alert may become due after a full day without another
     // success; recovery must not revive the failure episode itself.
-    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('not running as expected'))).toHaveLength(1);
+    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('" is not running: '))).toHaveLength(1);
   });
 
   it('clears the durable episode on recovery', async () => {
@@ -344,6 +354,6 @@ describe('JobScheduler bounded failure escalation', () => {
     await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
     // A separate silence alert may become due after a full day without another
     // success; recovery must not revive the failure episode itself.
-    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('not running as expected'))).toHaveLength(1);
+    expect(send.mock.calls.filter(([message]) => !String(message.content).includes('" is not running: '))).toHaveLength(1);
   });
 });

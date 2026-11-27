@@ -28,6 +28,13 @@ describe('PostUpdateMigrator — pool readiness line', () => {
     expect(out).toContain(POOL_READINESS_CLAUDE_MD_LINE);
   });
 
+  it('an older copy of the line gets the current text, once', () => {
+    const out = run('# Agent\n\n- **Pool readiness:** an older sentence.\nNext line\n');
+    expect(out.split('**Pool readiness:**').length).toBe(2);
+    expect(out).toContain(POOL_READINESS_CLAUDE_MD_LINE);
+    expect(out).toContain('Next line');
+  });
+
   it('adds the move nudge line once', () => {
     const out = run('# Agent\n\n**Multi-Machine Session Pool (active-active — spread conversations)**\n');
     expect(out.split('**Why a message waited after a move:**').length).toBe(2);

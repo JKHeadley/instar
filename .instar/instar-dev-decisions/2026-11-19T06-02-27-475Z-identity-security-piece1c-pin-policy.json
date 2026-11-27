@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-19T06:02:27.475Z",
+  "slug": "identity-security-piece1c-pin-policy",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/dashboard-pin-throttle.md",
+      "src/data/awareness/pin-sign-in-paused.md"
+    ],
+    "addedLines": 1,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Text-only change to awareness entries; no action of any kind."
+  },
+  "verdict": "pass"
+}

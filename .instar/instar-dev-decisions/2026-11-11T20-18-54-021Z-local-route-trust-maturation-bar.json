@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-11T20:18:54.021Z",
+  "slug": "local-route-trust-maturation-bar",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 328,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/drills/local-route-trust-drill.mjs",
+      "src/data/feature-ladders.json",
+      "src/monitoring/FeatureEvidenceLog.ts",
+      "src/server/routes.ts",
+      "src/threadline/localRouteTrust.ts"
+    ],
+    "addedLines": 318,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot operator-run drill script that starts and stops two throwaway servers once; not a self-triggered loop. The src/ changes add no action, only evidence rows."
+  },
+  "verdict": "pass"
+}

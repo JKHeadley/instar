@@ -4,7 +4,7 @@
 
 ## Summary
 
-Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
+Thirteen faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-wait fix let the run start.
 
 - **Freezing the server.** Cases 12.1 and 12.6 send SIGSTOP to the proof server. It ran as a tmux pane process, and tmux resumes a stopped pane process at once, so the server never froze. Both cases now run `serve-under-launchd` first and restore tmux in cleanup (`cont-server`, `end-launchd-serve`, `start-server`). `stop-server` now reads the process state half a second after the signal and throws unless it starts with `T`.
 - **Ready after a start.** `start-server` and `serveUnderLaunchd` now call `waitLockStateKnown()` (up to 120 s) before returning, and report `lockStateKnown` in their result.
@@ -12,6 +12,24 @@ Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 - **Lock state from the Mac itself.** `readLockState` now reads IORegistry (`IOConsoleUsers`, `CGSSessionScreenIsLocked` for the proof user's console session) and falls back to the servers only when the proof user has no console session. A server's `/desktop/locked/status` is a cache that only refreshes while a viewer is connected. Each sample also records `serverLockState`.
 - **Both agents after a start.** `start-server` always starts agent A, as before, and also starts agent B when it is not listening; `kill-tmux` takes both down. A first version skipped agent A when its port still had a listener, and after a launchd bootout that left nothing serving (seen live at 12:46 PST: every case after 12.1 failed with a refused connection).
 - **Resuming a process that is gone.** `kill(pid, 'CONT')` on a process that has exited returns `skipped: 'gone'`. STOP and KILL on a process that is gone still throw.
+- **What "typing" means.** The `typing` trigger in `lib.mjs` now needs a duty in state owed with Enter not yet pending, as well as the input helper running. The helper alone runs for the whole grant.
+- **Case 12.5a ends its session.** It now stops the viewer at the `takeover` event (the duty's guard pid changes to the replacement). Before, nothing ended the grant, and an owed duty on a live grant is not due.
+- **Revoke as the right operator.** `viewer()` keeps the operator session the page receives from `/dashboard/unlock`; `revoke` sends that session and throws on a 4xx or 5xx answer. The server's refusal of a foreign session is correct and unchanged.
+- **Leftover-process rule needs a duty.** `processesGone` is left undefined when the case has no duty at all, so the input helper of a live grant is not read as a leftover typist. With a closed duty the rule is unchanged.
+- **Case 12.9 watches long enough.** `timeoutMs: 840_000`, past the 600 s deadline it waits for.
+- **Deadline before Enter.** In `typePassword` the before-enter offset is `min(1.5 s, half the calibrated typing time)`. The after-enter offset is unchanged.
+- **Security item is given time to arrive.** `extraEvidence` polls the attention list for up to 15 s when a sample shows `relock-failed`. It has no unit test (the function shells out to `log show`); the live rerun of 12.18 is its evidence.
+- **What the page said.** `typePassword` returns the last distinct status lines (`pageSaid`, at most six) when no answer is recognised. Status lines are the page's own plain messages and carry no secret.
+- **Case 15.9 checks the clearing in the next grant.** New step `next-helper-clears-field`: opens a grant, waits up to 15 s for the store's `dirty` marker to clear, ends the grant and waits for its helper to go. `runCase` now records `then` steps in `fired`. This follows docs/specs/desktop-locked-screen.md, "Half-typed field": the marker "outlives the request" and "the next helper after a kill" clears it.
+- **Case 12.9 freezes the owning server.** `before: serve-under-launchd`, a `stop-server` step beside `stop-typist` and `stop-guard`, and the tmux-restoring cleanup. This is a reading of the spec's admission rule ("a marker past its deadline with a stale heartbeat stops blocking only after its guard and its recorded typist are SIGKILLed … and the marker moves to `relock-failed`"), which can only apply when nothing has replaced the guard. If the case was meant to cover something else, that needs its author.
+- **One more refusal is recognised.** `STATUS_REASONS` maps the page's "lock screen is not ready for a password" line to `shield-not-confirmed`.
+- **Deadline cases aim from the server's expiry.** `viewer()` keeps `expiresAt` from the page's `/desktop/` JSON responses; `typePassword` starts 0.6 s ahead of it for before-enter and finishes 1.5 s ahead for after-enter, falling back to the old estimate when no expiry was seen. `runCase` records `grantExpiresAt`.
+- **The extra grant is always ended.** `next-helper-clears-field` records whether an ordinary click on Stop went through (`stopClick`) and falls back to calling the button's handler from script. If the click really cannot go through while the locked-screen password box is showing, that is a page fault a person would hit, and it is recorded here so it can be seen, not worked around silently.
+- **15.3 leads the expiry by 0.8 s.** (The commit that made this change, cc8206ede, left one unit assertion on the old timing and failing; the next commit corrects the assertion. Squash-merge hides it, but it happened.) The target window (ceiling between the first character and Enter) is a few tenths of a second wide, so the case can still miss and report "the password was never typed"; that is an honest miss, not a product result, and the case is run again.
+- **The driver tries again when the lock screen is momentarily not ready, and no longer nudges the display before a grant.** `typePassword` retries a `shield-not-confirmed` refusal at most twice, 1.5 s apart, and records `notReadyRetries`; `wakeDisplay()` is used only 6 s before deadline typing. This is what the page tells a person to do, and the refusal comes before reservation, so no attempt is spent. What it costs the proof: a case no longer fails on this refusal alone, so the rate at which a person would meet it is NOT measured by the pass/fail line; it is in each row's `notReadyRetries`. Cause, measured (observer source: /Users/Shared/lp-shieldwatch/shieldwatch.swift on the proof Mac): loginwindow drops and re-takes secure input for about half a second a few seconds after a lock or a display wake. Filed for the product as feedback: the helper should wait and re-check before refusing.
+- **Leftovers are the duty's own.** `processesGone` compares the duty's recorded `guardPid` and `typistPid` with the process list. Seen in the 17:45 run's case 12.1: the helper of the frozen server had refused the password before reserving, stayed up with its server, and was reported as a leftover typist although the guard relocked. Cases that set `typistGone` still check for any input helper.
+
+- **Zombies are not processes.** `processes()` now asks `ps` for `stat` too and drops rows whose stat starts with Z (`parseProcessList`, exported and unit-tested); `extraEvidence` records the zombie pids as `zombies`. Live, 20:43 PST, case 12.1 with the server frozen under launchd: the typist (52260) exited 31 s after the password and the guard (52484) 2 s after the relock, and both lingered as Z under the stopped parent, so the leftover rule matched them by pid. The freeze cases depend on seeing a stopped (T) process, which is kept.
 
 ## 1. Over-block
 
@@ -23,9 +41,17 @@ Six faults found in the live run on the Mac Mini on 2026-11-05, once the viewer-
 
 The IORegistry flag is the console session's lock flag only. The server's classifier also knows states the flag cannot express (policy pending, logged out); those are still read from a server when there is no console session, and stay subject to the stale cache. The cache itself is a product fault filed separately as feedback, not fixed here.
 
+The typing window is short (about 0.7 s for a 20-character password on the Mini) and the driver polls every quarter second, with each sample taking a moment itself. A poll that first sees the duty after Enter is pending never fires the injection, and the case then fails honestly with "injection never fired" instead of judging the wrong moment. Cases 12.2e, 12.9 and 15.9 may need a rerun when that happens.
+
+Changing 12.5a changes what the proof asks of the product, so it is stated here plainly: the spec (docs/specs/desktop-locked-screen.md, "A dead guard" and gate P12) asks for a replacement guard and for the Mac to end locked. It does not ask for a relock while the owner's session is still live. The case as written could only pass if the product locked a Mac out from under a live session. If that stricter behaviour is wanted, it is a spec change, not a test fix.
+
+The deadline offset is measured from when the driver saw the grant open, which trails the server's own start of the 10-minute ceiling by the page's opening delay. If that delay is close to half the typing time, 15.3 can still type too late and will fail honestly with no duty; the rerun shows which.
+
+Dropping zombies from every reading means `oldGuardGone` and `typistGone` also read true for a zombie, which is right (it has exited), but a helper that exited early and wrongly would also read as cleanly gone; the duty's recorded state and the Mac's own flag still have to agree for a pass.
+
 ## 3. Level-of-abstraction fit
 
-Right layer: all six are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
+Right layer: all thirteen are the driver's own assumptions about its target. The page behaviour, the server's start-up and tmux are left as they are.
 
 ## 4. Signal vs authority compliance
 

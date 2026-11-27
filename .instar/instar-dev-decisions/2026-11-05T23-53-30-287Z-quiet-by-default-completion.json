@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-05T23:53:30.287Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 27,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/NotificationPreferences.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/GrowthDigestPublisher.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 10
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Origin quiet outcomes must stop before formatter retries; digest outcome must never claim transport acceptance. CI exposed older partial fixture contracts, now explicit without weakening production checks."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "evidence": "tests/unit/telegram-token-redaction.test.ts",
+    "howCaught": "Delegated quiet receipt and403 behavior permit one attempt; only400 rejected parse retries. Same terminal receipt convergence invariant as tests/unit/self-action-convergence."
+  },
+  "verdict": "pass"
+}

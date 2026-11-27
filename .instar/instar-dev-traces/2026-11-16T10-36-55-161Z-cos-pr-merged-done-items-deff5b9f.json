@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cos-pr-merged-done-items",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-16T10:36:55.161Z",
+  "artifactPath": "upgrades/side-effects/cos-pr-merged-done-items.md",
+  "artifactSha256": "f52c6a30e4f5ffee16ec3f356609661fb2875345f095705b43795e521046047e",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffEvidence.ts",
+    "src/data/awareness/chief-of-staff-checkable-done-items.md",
+    "tests/unit/ChiefOfStaffDoneItemEvaluator.test.ts",
+    "tests/unit/chief-of-staff-loop-wiring.test.ts",
+    "upgrades/next/cos-pr-merged-done-items.md",
+    "upgrades/side-effects/cos-pr-merged-done-items.eli16.md",
+    "upgrades/side-effects/cos-pr-merged-done-items.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Builds an evaluator already specified in the approved chief-of-staff-topic spec (s1.3); read-only GitHub read feeding existing floors; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/cos-pr-merged-done-items.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-pr-merged-done-items.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

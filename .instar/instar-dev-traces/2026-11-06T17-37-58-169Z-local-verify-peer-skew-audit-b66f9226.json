@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-skew-audit",
+  "sessionId": "b9d1a703-2eec-4012-9da5-0d01a0a2a28d",
+  "timestamp": "2026-11-06T17:37:58.169Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-skew-audit.md",
+  "artifactSha256": "e5d2cfa6e2e5f724a13e050694237efda12325f9a0a8c507426ec2e931c88a55",
+  "coveredFiles": [
+    "docs/specs/local-verify-peer-skew-audit.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/peer.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-peer-skew-audit.md",
+    "upgrades/side-effects/local-verify-peer-skew-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Audit rows only, no decision changed; a revert fully undoes it.",
+  "eli16Path": "docs/specs/local-verify-peer-skew-audit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-peer-skew-audit.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

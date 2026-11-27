@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-17T16:14:11.198Z",
+  "slug": "org-policy-standard-form",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 223,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrgPack.ts",
+      "src/core/OrgPackStore.ts",
+      "src/core/OrgPolicyGrammar.ts",
+      "src/data/awareness/org-pack.md",
+      "src/server/orgPackRoutes.ts"
+    ],
+    "addedLines": 209,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "injection-credulity",
+    "closure": "guard",
+    "citation": "src/core/OrgPolicyGrammar.ts#readStandardPolicy",
+    "enforcement": "test",
+    "howCaught": "one standard policy form read the same strict way by the agent, the join page and the Mac app, checked by shared test vectors; hidden characters and comment markers refused"
+  },
+  "verdict": "pass"
+}

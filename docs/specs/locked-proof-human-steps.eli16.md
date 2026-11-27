@@ -1,0 +1,15 @@
+# Ask for the human proof step at the right time
+
+Several locked-Mac safety checks require somebody at the test Mac. The old runner could finish a user-switch check as soon as the guard closed its record, even while the person was still in the other account. Its logout check could reuse the old “test account is on console” observation as evidence that the person had already logged back in. The delayed-unlock checks waited first, then sent a message asking the person to wait again, without sending the promised second message.
+
+The corrected runner observes departure, the required time away and return. Before logging out it stops the remote session so the relock watch can actually begin. It confirms logout and the exit of the recorded old helper processes before asking the person to log back in. A failed observation cannot mean a process has gone.
+
+For delayed unlocks, the runner waits against the actual watch start recorded by the guard, then says “unlock now.” It takes new readings after actions and messages, and checks that the observed unlock happened inside or after the two-minute watch as required.
+
+This changes the proof harness only. It does not change the Mac helper, permissions, product behavior or enabled machines. The switch and logout checks still fail as unmeasured until a separate trustworthy measurement can establish that no lock call reached another login session. These changes prevent wasted or misleading human runs; passing the automated timeline tests is not a live-Mac proof.
+
+Human cues also require a confirmed delivery receipt. The Telegram wrapper deliberately exits successfully for some messages that were not sent or whose outcome is unknown, so exit status alone cannot prove delivery. The runner now recognizes only the wrapper's complete receipt for the intended topic, rejects partial or uncertain outcomes, and never resends automatically. Running without Telegram is recorded as console-only, not delivered to chat.
+
+Each cue names its case/run and an absolute START BY time in local time and UTC. It says not to act after that time or after the run stops. The usual start window is thirty seconds; an inside-watch cue is bounded by the watch's end. A missing usable window prevents sending, and a late receipt fails the case. This deadline is an instruction to the person, not transport cancellation: Telegram can retain and later deliver an uncertain message. A message could still arrive shortly after an aborted run. Strong prevention would require per-message expiry or cancellation in the transport; this harness does not claim to provide it.
+
+A timely receipt alone is not enough: the first relevant action must also be observed before START BY. That means departure for the account-switch case, return/login for the logout case, and unlock for the other human cases. A late or unknown action time fails the proof. The repeated-unlock cases first wait for a positively observed locked watch, then require a fresh unlock after the cue. Their completion still rests on the observed relock-failed outcome; the harness does not claim to have counted four manual unlocks.

@@ -47,7 +47,12 @@ describe('a single-machine agent', () => {
 describe('wiring', () => {
   it('the decision runs before the joiner is stored', () => {
     expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf('storeRemoteIdentity(acceptedMachineIdentity'));
-    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(routes.indexOf("router.post('/api/pair'"));
+    // The pairing route delegates to handlePair, so the decision must sit inside that handler.
+    const handler = routes.indexOf('const handlePair = async');
+    expect(handler).toBeGreaterThan(-1);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeGreaterThan(handler);
+    expect(routes.indexOf('decideInviterPairActivation({')).toBeLessThan(routes.indexOf("router.post('/api/pair'"));
+    expect(routes.slice(routes.indexOf("router.post('/api/pair'")).slice(0, 200)).toContain('handlePair(req, res)');
   });
   it('the joiner writes before its first boot, and before it records the peer', () => {
     expect(joinFlow.indexOf('applyJoinerPairActivation({')).toBeLessThan(joinFlow.indexOf('mgr.storeRemoteIdentity(result.machineIdentity)'));
@@ -74,7 +79,9 @@ describe('wiring', () => {
     expect(server).toMatch(/probeLiveCopy: async[\s\S]{0,900}probeLiveCopyOnPeer\(\{/);
   });
   it('every path that skips the router at dark asks about a peer first', () => {
-    expect(server.match(/_routesToPeerAtDark\(/g)?.length).toBe(3);
+    // Inbound Telegram, the queue drain, inbound Slack, and the forced last attempt of a
+    // waiting message (fb-faa9d074-e09: it takes the conversation here instead of expiring).
+    expect(server.match(/_routesToPeerAtDark\(/g)?.length).toBe(4);
     expect(server).not.toMatch(/if \(_sessionRouter && _sessionPoolStage\(\) !== 'dark'\)/);
   });
 });

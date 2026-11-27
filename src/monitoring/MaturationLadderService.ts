@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Initiative, RolloutStage } from '../core/InitiativeTracker.js';
+import type { Initiative, RolloutStage, MaturationEvaluationContract } from '../core/InitiativeTracker.js';
 import { maybeRotateJsonlSegment } from '../utils/jsonl-rotation.js';
 import { readJsonlQueries, RAN_FRESH_DAYS, type JsonlQuery } from './LadderEvidenceReader.js';
 import {
@@ -29,6 +29,7 @@ import {
   type GuardPostureRef,
   type JsonlLogRef,
   type LadderEntry,
+  type RungAdvance,
   type LadderMetric,
   type LadderRegistry,
   type LadderState,
@@ -145,6 +146,18 @@ interface AuditRow {
 }
 
 const ABSENT = '__absent__';
+
+/**
+ * The kind of move a feature's next step really is. The view and `applyMove` both read this,
+ * so the ladder cannot offer a setting that is really a code move. From dark, only an entry's `start` is a
+ * setting (spec section 8); a rung's config move is for a feature already running there, so a
+ * dark feature with no `start` reaches that rung through reviewed code.
+ */
+function nextAdvance(entry: LadderEntry, rung: string, rungAdvance: RungAdvance | undefined): RungAdvance | undefined {
+  if (rung !== 'dark') return rungAdvance;
+  if (entry.start) return { kind: 'config', set: entry.start.set };
+  return rungAdvance?.kind === 'config' ? { kind: 'code' } : rungAdvance;
+}
 
 function readPath(obj: unknown, dotted: string): unknown {
   return dotted.split('.').reduce<unknown>((acc, k) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[k] : undefined), obj);
@@ -393,11 +406,14 @@ export class MaturationLadderService {
       const contract = contractForRung(rungDef);
       const stage: RolloutStage = rung === 'dry-run' ? 'dry-run' : 'live';
       const existing = byId.get(entry.subject);
+      // Independent target resolution reports this owner collision; never lend
+      // a feature's contract or projections to a generic measurement initiative.
+      if (existing?.measurement !== undefined) continue;
       if (existing) {
         byId.set(entry.subject, {
           ...existing,
-          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
-          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract } } : {}),
+          ...(existing.rollout ? { rollout: { ...existing.rollout, maturationEvaluation: contract, maturationContractError: undefined } } : { rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } }),
+          ...(existing.rolloutAccounting ? { rolloutAccounting: { ...existing.rolloutAccounting, maturationEvaluation: contract, maturationContractError: undefined } } : {}),
         });
       } else {
         extra.push({ id: entry.subject, title: entry.title, rollout: { flagPath: entry.flag?.path ?? entry.id, stage, maturationEvaluation: contract } } as unknown as Initiative);
@@ -407,6 +423,23 @@ export class MaturationLadderService {
   }
 
   // ── Views ────────────────────────────────────────────────────────────────
+
+  /** Exact retained contracts for measurement reads. Unlike features(), this
+   * never uses the UI view cache to choose the live rung's contract. */
+  measurementContracts(): Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }> | null {
+    if (!this.registry) return null;
+    const live = this.deps.readLiveConfig();
+    if (live === null) return null;
+    const out = new Map<string, { contract: MaturationEvaluationContract | undefined; overridesInitiative: boolean }>();
+    for (const entry of this.entries) {
+      if (entry.disposition !== 'ladder') continue;
+      const { rung, target } = this.rungsOf(entry, live);
+      const definition = entry.rungs[target ?? 'fleet'];
+      out.set(entry.subject, { contract: definition ? contractForRung(definition) : undefined,
+        overridesInitiative: Boolean(target && rung !== 'dark' && definition) });
+    }
+    return out;
+  }
 
   private heldReason(live: Record<string, unknown> | null, entry: LadderEntry): string | null {
     const holds = readPath(live, 'maturation.ladder.holds') as Record<string, unknown> | undefined;
@@ -435,12 +468,20 @@ export class MaturationLadderService {
           ...(r?.coverageDays !== undefined ? { coverageDays: r.coverageDays } : {}),
           ...(r?.reason ? { reason: r.reason } : {}) };
       };
-      const readings = (rungDef?.metrics ?? []).map(m => readingFor(m, this.readings, projectionRef(m)));
       const move = this.lastMoves.get(entry.id);
       const watchFrom = this.watchStart(entry.id);
       const afterMove = watchFrom !== null
         ? (crossedRung(entry, rung)?.metrics ?? []).filter(m => m.role !== 'quality').map(m => readingFor(m, this.afterMoveReadings, `after:${entry.id}:${m.id}`))
         : [];
+      // At its last rung there is no next bar, so show the rung it crossed. A number under
+      // the post-move watch is the one that judged it, so `harmed` shows why and when it clears.
+      const shown = target ? rungDef : crossedRung(entry, rung);
+      const readings = (shown?.metrics ?? []).map(m => {
+        const after = `after:${entry.id}:${m.id}`;
+        return !target && watchFrom !== null && this.afterMoveReadings.has(after)
+          ? readingFor(m, this.afterMoveReadings, after)
+          : readingFor(m, this.readings, projectionRef(m));
+      });
       const contract = rungDef ? contractForRung(rungDef) : null;
       const evaluations = bySubject.get(entry.subject) ?? [];
       const result = computeLadderState({
@@ -458,7 +499,7 @@ export class MaturationLadderService {
         stuckDays = sorted.length ? Math.floor((now - sorted[0].dueSlotMs) / DAY_MS) : 0;
         if (stuckDays >= STUCK_BLIND_DAYS) stuck = result.state === 'no-data' ? 'stuck-blind' : 'stuck-rare';
       }
-      const adv = rung === 'dark' && entry.start ? { kind: 'config' as const, set: entry.start.set } : rungDef?.advance;
+      const adv = nextAdvance(entry, rung, rungDef?.advance);
       out.push({
         id: entry.id,
         subject: entry.subject,
@@ -596,9 +637,7 @@ export class MaturationLadderService {
     const startable = feature.state === 'not-started';
     if (!startable && feature.state !== 'ready-to-advance') return { ok: false, refused: 'not-ready', detail: feature.state };
     if (feature.next !== input.target) return { ok: false, refused: 'not-ready', detail: `next is ${feature.next}` };
-    const adv = startable
-      ? (entry.start ? { kind: 'config' as const, set: entry.start.set } : { kind: 'code' as const })
-      : entry.rungs[input.target]?.advance;
+    const adv = nextAdvance(entry, feature.rung, entry.rungs[input.target]?.advance);
     if (!adv || adv.kind !== 'config') return { ok: false, refused: 'not-a-config-move', detail: adv?.kind };
     if (entry.risk !== 'standard') return { ok: false, refused: 'sensitive' };
     if (Object.keys(adv.set).some(k => this.deps.isCoherenceCritical(k)) || (entry.flag && this.deps.isCoherenceCritical(`${entry.flag.path}.enabled`))) {

@@ -67,11 +67,11 @@ function makeInviter(dir: string, telegram: ({ botToken: string; chatId: string;
   const app = express();
   app.use(express.json());
   app.use(routes);
-  const pair = (code: string, joiner: MachineIdentity) => {
+  const pair = (code: string, joiner: MachineIdentity, extra: Record<string, unknown> = {}) => {
     new PairingSessionStore(dir).save(createPairingSession({ code, expiryMs: 600_000 }));
-    return request(app).post('/api/pair').send({ pairingCode: code, machineIdentity: joiner, ephemeralPublicKey: joiner.encryptionPublicKey });
+    return request(app).post('/api/pair').send({ pairingCode: code, machineIdentity: joiner, ephemeralPublicKey: joiner.encryptionPublicKey, ...extra });
   };
-  return { pair };
+  return { pair, identityManager, inviterId: awake.machineId };
 }
 
 describe('sharing turns on at the first pairing', () => {
@@ -100,7 +100,7 @@ describe('sharing turns on at the first pairing', () => {
 
     const res = await pair('CODE-ONE', identity);
     expect(res.status).toBe(200);
-    expect(res.body.sessionPoolActivation).toEqual({ version: 1 });
+    expect(res.body.sessionPoolActivation).toEqual({ version: 1, role: 'joiner' });
     expect(JSON.stringify(res.body)).not.toContain(BOT_TOKEN);
 
     const inviter = readConfig(inviterDir).multiMachine;
@@ -187,6 +187,73 @@ describe('sharing turns on at the first pairing', () => {
     const unchecked = joinerApply((await pair('CODE-THREE', identity)).body, 'CODE-THREE', identity, null);
     expect(unchecked).toMatchObject({ telegram: 'kept-existing', peopleFilled: false, peopleUnchecked: true });
     expect(entry().authorizedUserIds).toBeUndefined();
+  });
+
+  it('both machines learn each other\'s lasting addresses at pairing, and never a quick tunnel', async () => {
+    writeShippedConfig(inviterDir);
+    const { pair, identityManager, inviterId } = makeInviter(inviterDir, null);
+    identityManager.updateMachineEndpoints(inviterId, [
+      { kind: 'lan', url: 'http://10.77.0.2:4040' },
+      { kind: 'cloudflare', url: 'https://old-address-here-now.trycloudflare.com' },
+    ]);
+    const { identity } = makeIdentity('second-machine');
+    const res = await pair('CODE-ONE', identity, { endpoints: [
+      { kind: 'lan', url: 'http://10.77.0.3:4040' },
+      { kind: 'cloudflare', url: 'https://other-address-here-now.trycloudflare.com' },
+      { kind: 'lan', url: 'http://169.254.169.254:4040' },
+    ] });
+    expect(res.status).toBe(200);
+    expect(res.body.endpoints).toEqual([{ kind: 'lan', url: 'http://10.77.0.2:4040' }]);
+    expect(identityManager.getMachineEndpoints(identity.machineId)).toEqual([{ kind: 'lan', url: 'http://10.77.0.3:4040' }]);
+    // That field is read as a tunnel address, and a LAN address there is dropped at every dial.
+    expect(identityManager.loadRegistry().machines[identity.machineId].lastKnownUrl ?? null).toBeNull();
+  });
+
+  it('pairing again in either direction leaves each side with its role', async () => {
+    writeShippedConfig(inviterDir);
+    writeShippedConfig(joinerDir);
+    const { pair } = makeInviter(inviterDir, null);
+    const { identity, encryptionPrivateKeyPem } = makeIdentity('second-machine');
+    joinerApply((await pair('CODE-ONE', identity)).body, 'CODE-ONE', identity, encryptionPrivateKeyPem);
+    SafeFsExecutor.safeRmSync(restartFlag(inviterDir), { force: true, operation: 'tests/integration/session-pool-pair-activation.test.ts:clear-restart' });
+    joinerApply((await pair('CODE-TWO', identity)).body, 'CODE-TWO', identity, encryptionPrivateKeyPem);
+    const role = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf-8')).multiMachine.leaseSelfHeal.soloCaptainHold.pairRole;
+    expect(role(inviterDir)).toBe('inviter');
+    expect(role(joinerDir)).toBe('joiner');
+  });
+
+  it('a rebuilt first machine pairing back through its partner takes the other role, never a second joiner', async () => {
+    writeShippedConfig(inviterDir);
+    const config = readConfig(inviterDir);
+    config.multiMachine.sessionPool.activatedAtPairing = '2026-11-05T00:00:00.000Z';
+    config.multiMachine.leaseSelfHeal = { soloCaptainHold: { enabled: true, requireLastingLink: true, pairRole: 'joiner', pairedWith: 'm_old' } };
+    fs.writeFileSync(path.join(inviterDir, 'config.json'), JSON.stringify(config));
+    writeShippedConfig(joinerDir);
+    const { identity, encryptionPrivateKeyPem } = makeIdentity('rebuilt-first-machine');
+    const { pair, identityManager } = makeInviter(inviterDir, null);
+    identityManager.registerMachine(identity, 'awake');
+    const res = await pair('CODE-ONE', identity);
+    expect(res.body.sessionPoolActivation?.role).toBe('inviter');
+    joinerApply(res.body, 'CODE-ONE', identity, encryptionPrivateKeyPem);
+    expect(readConfig(joinerDir).multiMachine.leaseSelfHeal.soloCaptainHold.pairRole).toBe('inviter');
+  });
+
+  it('a malformed pairing code gets an error answer, and the server stays up', async () => {
+    writeShippedConfig(inviterDir);
+    const { pair } = makeInviter(inviterDir, null);
+    const { identity } = makeIdentity('second-machine');
+    const res = await pair('CODE-ONE', identity, { pairingCode: { toString: 1, valueOf: 1 } });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('a joiner with no lasting address pairs as before', async () => {
+    writeShippedConfig(inviterDir);
+    const { pair, identityManager } = makeInviter(inviterDir, null);
+    const { identity } = makeIdentity('second-machine');
+    const res = await pair('CODE-ONE', identity);
+    expect(res.status).toBe(200);
+    expect(res.body.endpoints).toEqual([]);
+    expect(identityManager.getMachineEndpoints(identity.machineId) ?? []).toEqual([]);
   });
 
   it('a third machine pairs normally and activates nothing', async () => {

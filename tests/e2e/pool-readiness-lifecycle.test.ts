@@ -4,13 +4,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MachinePoolRegistry } from '../../src/core/MachinePoolRegistry.js';
 import { computePoolReadiness, PoolReadinessLog, type PoolReadinessDeps, type PoolReadinessReport } from '../../src/core/poolReadiness.js';
 import { narrowSessionStatusToPeerCapacity } from '../../src/core/PeerPresencePuller.js';
-import { noRemoteTakeoverApplies } from '../../src/commands/machine.js';
+import { noRemoteTakeoverApplies, takeoverSwitchOnDisk } from '../../src/commands/machine.js';
 
 function deps(reg: MachinePoolRegistry, ids: () => string[]): PoolReadinessDeps {
   return {
@@ -90,5 +91,28 @@ describe('pool readiness lifecycle', () => {
     expect(src).toContain('poolReadinessLog.tick()');
     expect(src).toContain('setInterval(poolBeat, 30_000)');
     expect(src).toMatch(/gitLeaseHasNoRemote\(config\.projectDir\) === true/);
+  });
+
+  it('a hold needs the lasting link only where pairing asked for it, and the live resolver proves it', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
+    expect(src).toMatch(/soloCaptainHold\?\.requireLastingLink === true/);
+    expect(src).toMatch(/lastingLinkUnproved\(\{/);
+    expect(src).toMatch(/&& !acquireHeldBack\(\);/);
+    expect(src).toMatch(/survivorMayHold,\s+acquireHeldBack,/);
+    expect(src).toMatch(/onSignedConfirmation: \(peer, kind, url\) => lastingLink\.record\(peer, kind, url\)/);
+    expect(src).toMatch(/takeover: \(\) => _noLastingLinkYet\?\.\(\)/);
+  });
+
+  it('the pairing note stays quiet once pairing has turned the takeover switch on', () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'takeover-note-'));
+    const write = (heal: unknown) => fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ multiMachine: { leaseSelfHeal: heal } }));
+    expect(takeoverSwitchOnDisk(stateDir)).toBe(false);
+    write({ soloCaptainHold: { enabled: false } });
+    expect(takeoverSwitchOnDisk(stateDir)).toBe(false);
+    write({ soloCaptainHold: { enabled: true } });
+    expect(takeoverSwitchOnDisk(stateDir)).toBe(true);
+    write({ soloCaptainHold: { enabled: true }, preferredAwakeMachineId: 'm_a' });
+    expect(takeoverSwitchOnDisk(stateDir)).toBe(false);
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/e2e/pool-readiness-lifecycle' });
   });
 });

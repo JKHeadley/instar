@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-20T21:20:58.591Z",
+  "slug": "work-front-doors-stage2-mobile-hierarchy",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 234,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/conversationGraphRead.ts",
+      "src/core/workFrontDoorsGraph.ts",
+      "src/data/awareness/phone-conversation-tree.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/ConversationGraphSurface.ts",
+      "src/server/conversationGraphRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 210,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

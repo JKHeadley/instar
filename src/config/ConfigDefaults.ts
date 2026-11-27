@@ -28,7 +28,45 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 ] as const;
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
+/**
+ * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). The single
+ * shipped copy: SHARED_DEFAULTS reads it for fresh installs and
+ * PostUpdateMigrator.migrateConfigSkillLearningDefaults adds it, whole, to an
+ * existing agent whose config lacks `monitoring.skillLearning`. `enabled` is the
+ * kill switch (false ⇒ off on every agent; read at boot, so a restart applies a
+ * change — `restartNeeded: true` on its ladder entry).
+ */
+export const SKILL_LEARNING_DEFAULTS = Object.freeze({
+  enabled: false,
+  mode: 'shadow',
+  floor: { minOccurrences: 2, minCorroboratedCleanRuns: 1 },
+  defaultGate: { minSupport: 3, minDistinctDays: 2, minDistinctSessions: 2, windowDays: 30 },
+  shadow: { minDisagreementsSampled: 5, verdictReaskDays: 14 },
+  growthSignals: { createdPerWeekNotice: 4 },
+  evidence: { runSliceBytesPerRun: 98304, promptBudgetBytes: 262144, transcriptScanBytes: 4194304 },
+  retire: { minCorroboratedRuns: 3, defaultScoreFloor: 0.4, defaultMisfireFloor: 0.3, defaultUnusedDays: 60, measurableFloor: 0.2 },
+  review: { requireDifferentFamily: true, minCorrectedRunsSameFamily: 2, revertBreakerPer30d: 2 },
+  llm: { maxDailyCents: 50, batchSize: 20 },
+  tickMinutes: 10,
+  // Live kill switch for the every-machine rendering reconcile (decision 19); server.ts reads it.
+  reconcile: { enabled: true },
+} as const);
+
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // These do not enable pairing, native conversations or browser enrollment. Their existing
+  // gates still apply; init and missing-only update migration share this one default.
+  mobilePairing: { browser: { outboxEnabled: true, outboxRecoveryGeneration: '1' } },
+  notifications: {
+    selectivity: {
+      dryRun: true,
+      push: { categories: {} },
+      digest: {
+        enabled: false,
+        cadence: 'daily',
+      },
+      quietStore: { retentionDays: 30, maxEntries: 20000 },
+    },
+  },
   // Native operator desktop access is a privileged full-machine capability.
   // Every new and existing agent stays dark until a deliberate local opt-in;
   // production also requires the developmentAgent role and live host checks.
@@ -452,9 +490,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     agentWorktreeReaper: {
       enabled: false,
       dryRun: true,
-      reapIntervalMs: 86_400_000,
+      // Hourly (docs/specs/reaper-removal-out-of-process.md §4). An existing
+      // agent holding the old 24 h default is moved by migrateReaperHourlyCadence.
+      reapIntervalMs: 3_600_000,
       initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
+    },
+    // DiskSteward (docs/specs/disk-steward.md) — every machine watches its own
+    // free space and posts in the "Disk space (all machines)" topic when it gets
+    // low. Watching and posting are on for everyone. The cleanup of two tool
+    // caches (npm cache over 5 GiB, Xcode build files older than a day) deletes
+    // files, so it is OFF by default; the update migration turns it on only for
+    // development agents that have no value set.
+    diskSteward: {
+      enabled: true,
+      sampleIntervalMs: 900_000,
+      warnPercent: 15,
+      warnMinGiB: 100,
+      escalatePercent: 10,
+      escalateMinGiB: 60,
+      forecastEscalateDays: 3,
+      prune: {
+        enabled: false,
+        dryRun: false,
+        minIntervalMs: 21_600_000,
+        npmCacheMaxGiB: 5,
+      },
     },
     // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
     // topic 22367): detects an agent worktree with uncommitted work whose owning
@@ -689,6 +750,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Skill-learning sentinel: the whole block, kill switch off (see SKILL_LEARNING_DEFAULTS).
+    skillLearning: structuredClone(SKILL_LEARNING_DEFAULTS) as Record<string, unknown>,
     // Both omit `enabled`: resolveDevAgentGate makes them live on development
     // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
     correctionClassReview: {
@@ -1207,6 +1270,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Shared init + PostUpdateMigrator defaults: setup is visible, host grants
+    // stay inert until an owner enrolls this machine through the phone control.
+    // enabled is omitted: the observer is live on dev agents, fleet-dark.
+    serverDownRecovery: {},
     // Machine identity recovery (machine-self-assertion). All three `enabled`
     // fields are deliberately omitted: live on the development agent, dark on
     // fleet. Dry-run prevents trust/routing mutation during the soak.
@@ -1789,6 +1856,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // preserves today's behavior exactly; a single-machine agent is a strict no-op.
     stateSync: {
       aggregateJournalBudgetBytes: 67108864, // 64 MiB (§10.2)
+      // native-conversation-any-machine-access §3f: session transcripts copied to every machine as
+      // checkpoints of whole redacted rows. A copy cannot be recalled once it lands, so it ships dark on
+      // every agent (a DARK_GATE_EXCLUSIONS entry) until its live date (CMT-047, 2026-12-02).
+      sessionTranscripts: {
+        enabled: false,
+        bytesPerDay: 268435456, // 256 MiB of source rows per machine per day
+      },
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
@@ -2056,6 +2130,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       sweepIntervalMs: 21_600_000,
       dryRun: true,
     },
+    // promise-review-and-priority: the agent reviews its own open promises.
+    // `enabled` DELIBERATELY OMITTED — resolved by the developmentAgent gate
+    // (live on dev, dark on the fleet). Closures ship in shadow
+    // (closureDryRun) until the maturation ladder graduates them.
+    promiseReview: {
+      closureDryRun: true,
+      batchSize: 30,
+      maxClosuresPerRun: 15,
+      maxClosuresPerDay: 60,
+      rereviewAfterDays: 7,
+      highRereviewAfterDays: 1,
+      reopenWindowDays: 30,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:
@@ -2163,6 +2250,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
+  },
+  // Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is deliberately
+  // OMITTED so resolveDevAgentGate decides at runtime: live on a dev agent, dark on the fleet.
+  // Registered in DEV_GATED_FEATURES. `record` refuses nothing and the hook does not wait;
+  // `enforce` stays opt-in, because an update never adds a restriction to an existing agent.
+  attribution: {
+    mode: 'record',
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is
@@ -2337,6 +2431,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 },
     },
   },
+  // Context Budget: Layered Summaries (docs/specs/context-budget-layered-summaries.md).
+  // compactionRecovery: the session-start hook reads Claude Code's stdin `source`
+  // so compaction recovery actually runs (§9.1). A user-facing bug fix: default
+  // on; the switch exists for rollback (off = exactly the old behaviour).
+  contextBudget: {
+    compactionRecovery: { enabled: true },
+  },
 };
 
 /**
@@ -2416,6 +2517,7 @@ const MIGRATION_OVERRIDES: Record<string, unknown> = {
  */
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     if (
       typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
       typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])

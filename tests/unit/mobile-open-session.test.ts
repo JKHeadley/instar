@@ -6,7 +6,7 @@ import path from 'node:path';
 import { PostUpdateMigrator, APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_CONVERSATIONS_OPEN_SESSION_LINE, APP_CONVERSATIONS_POOL_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import {
+import { findRemoteSession,
   parseSessionConversationRef, mayUseRefOf, dashboardSessionUrl, resolveOpenSession, selfMachineNickname, dashboardOriginFor, NO_SESSION_REASON,
 } from '../../src/server/mobileSessionRoutes.js';
 
@@ -71,6 +71,24 @@ describe('resolveOpenSession', () => {
     expect(unnamed.reason).toContain('could not confirm');
     expect(unnamed.reason).not.toContain('m_peer');
     expect(unnamed.ownerMachine).toEqual({ machineId: 'm_peer', nickname: null });
+  });
+  it('another machine runs it: the session opens natively there, never a link to that machine\'s dashboard', () => {
+    const found = resolveOpenSession({ ...base, ownerMachineId: 'm_peer', ownerNickname: 'Mac Mini', localSession: null, remote: { state: 'found', name: 'echo-plans', startedAt: '2026-11-07T05:00:00Z', framework: 'claude-code' } });
+    expect(found).toMatchObject({ active: true, remote: true, sessionName: 'echo-plans', machineId: 'm_peer', machineNickname: 'Mac Mini', ownerMachine: { machineId: 'm_peer', nickname: 'Mac Mini' } });
+    expect(found.dashboardUrl).toBeUndefined();
+    expect(JSON.stringify(found)).not.toMatch(/dashboard/i);
+    // Not answering: said plainly, with a retry, and never "open the dashboard".
+    const down = resolveOpenSession({ ...base, ownerMachineId: 'm_peer', ownerNickname: 'Mac Mini', localSession: null, remote: { state: 'unreachable' } });
+    expect(down).toMatchObject({ active: false, retry: true });
+    expect(down.reason).toBe("This chat's session runs on Mac Mini, which isn't answering right now, so it can't open here. Try again in a moment.");
+    // No session there yet: the next message starts one.
+    expect(resolveOpenSession({ ...base, ownerMachineId: 'm_peer', ownerNickname: 'Mac Mini', localSession: null, remote: { state: 'none' } }).reason).toBe(NO_SESSION_REASON);
+    // An older Instar there: named, with what to do.
+    expect(resolveOpenSession({ ...base, ownerMachineId: 'm_peer', ownerNickname: 'Mac Mini', localSession: null, remote: { state: 'too-old' } }).reason).toBe('Mac Mini needs the latest Instar update before its session can open here.');
+    for (const st of ['found', 'none', 'unreachable', 'too-old'] as const) {
+      const r = resolveOpenSession({ ...base, ownerMachineId: 'm_peer', ownerNickname: 'Mac Mini', localSession: null, remote: st === 'found' ? { state: st, name: 'x' } : { state: st } });
+      expect(r.reason ?? '').not.toMatch(/dashboard/i);
+    }
   });
   it('without a known self id an owner cannot be judged remote', () => {
     expect(resolveOpenSession({ ...base, selfMachineId: null, ownerMachineId: 'm_peer', localSession: null }).reason).toBe(NO_SESSION_REASON);
@@ -137,5 +155,25 @@ describe('Agent Awareness + Migration Parity', () => {
     expect(lines[lines.indexOf(APP_CONVERSATIONS_POOL_LINE) + 1]).toBe(APP_CONVERSATIONS_OPEN_SESSION_LINE);
     expect(run(dir).upgraded).not.toContain('CLAUDE.md: added the Native app conversations Open session line');
     expect(fs.readFileSync(md, 'utf-8').split(APP_CONVERSATIONS_OPEN_SESSION_LINE).length - 1).toBe(1);
+  });
+});
+
+describe('findRemoteSession (the pool listing read)', () => {
+  const APP = { kind: 'app' as const, ref: 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', key: '0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f' };
+  const row = (over: Record<string, unknown>) => ({ tmuxSession: 'echo-plans', machineId: 'm_peer', remote: true, status: 'running', conversationRef: APP.ref, ...over });
+  it('finds the owner machine\'s session by conversation reference', () => {
+    expect(findRemoteSession({ sessions: [row({ startedAt: 'T', framework: 'codex-cli' })], pool: { failed: [] } }, APP, 'm_peer'))
+      .toEqual({ state: 'found', name: 'echo-plans', startedAt: 'T', framework: 'codex-cli' });
+    const tg = { kind: 'telegram' as const, ref: 'telegram:134088', topicId: 134088 };
+    expect(findRemoteSession({ sessions: [row({ conversationRef: 'telegram:134088', tmuxSession: 't' })] }, tg, 'm_peer')).toMatchObject({ state: 'found', name: 't' });
+  });
+  it('a failed machine is unreachable; a session on another machine or another conversation is not it', () => {
+    expect(findRemoteSession({ sessions: [row({})], pool: { failed: [{ machineId: 'm_peer', error: 'timeout' }] } }, APP, 'm_peer')).toEqual({ state: 'unreachable' });
+    expect(findRemoteSession({ sessions: [row({ machineId: 'm_other' })] }, APP, 'm_peer')).toEqual({ state: 'none' });
+    expect(findRemoteSession({ sessions: [row({ conversationRef: 'app:11111111-2222-4333-8444-555555555555' })] }, APP, 'm_peer')).toEqual({ state: 'none' });
+    expect(findRemoteSession(null, APP, 'm_peer')).toEqual({ state: 'unreachable' });
+  });
+  it('a machine whose rows carry no conversation references runs an older Instar', () => {
+    expect(findRemoteSession({ sessions: [row({ conversationRef: undefined })] }, APP, 'm_peer')).toEqual({ state: 'too-old' });
   });
 });

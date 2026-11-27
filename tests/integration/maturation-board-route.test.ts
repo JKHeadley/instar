@@ -6,6 +6,9 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createMaturationBoardRoutes, resolveReviewsDir } from '../../src/server/maturationBoardRoutes.js';
+import { readMeasurementOwner } from '../../src/server/measurementCoverageRead.js';
+import { measurementCoverage } from '../../src/monitoring/MeasurementCoverage.js';
+import { CapabilityRegistryWriter } from '../../src/core/CapabilityRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const rm = (p: string) => SafeFsExecutor.safeRmSync(p, { recursive: true, force: true, operation: 'tests/integration/maturation-board-route.test.ts:cleanup' });
@@ -32,7 +35,7 @@ function makeFixture(): Fixture {
 
 function ctxFor(fx: Fixture, over: Record<string, unknown> = {}) {
   return {
-    config: { stateDir: fx.stateDir, authToken: 'tok', developmentAgent: true, ...(over.config as object ?? {}) },
+    config: { projectDir: fx.projectDir, stateDir: fx.stateDir, authToken: 'tok', developmentAgent: true, ...(over.config as object ?? {}) },
     meshSelfId: 'm_self',
     machinePoolRegistry: { getCapacity: (id: string) => ({ nickname: id === 'm_self' ? 'Self' : id === 'm_peer' ? 'Peer' : id }) },
     resolvePeerUrls: () => [],
@@ -69,6 +72,119 @@ describe('GET /maturation/board', () => {
   it('answers 503 when the gate is off', async () => {
     const res = await request(appFor(ctxFor(fx, { config: { developmentAgent: false } }))).get('/maturation/board');
     expect(res.status).toBe(503);
+  });
+
+  it('reads independent coverage without any review file and retains inactive declarations', async () => {
+    const ctx = ctxFor(fx, {
+      config: { developmentAgent: true, brandNew: { enabled: true } },
+      scheduler: { getJobs: () => [{ slug: 'disabled-review', name: 'Disabled review', enabled: false }] },
+      featureRegistry: { getAllDefinitions: () => [] },
+      blockerLifecycleService: { available: () => true, maturationOutcomeForContract: () => ({ subjectKnown: false, evidence: { state: 'missing-contract', metrics: [] } }) },
+    });
+    const res = await request(appFor(ctx)).get('/maturation/board?part=coverage');
+    expect(res.status).toBe(200);
+    expect(res.body.schema).toBe('measurement-coverage/1');
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ kind: 'feature', state: 'not-linked' });
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'disabled-review')).toMatchObject({ kind: 'job', posture: 'disabled', state: 'not-linked' });
+    expect(res.body.counts.decision.total).toBeGreaterThan(0);
+    expect(res.body.counts.effort.total).toBe(3);
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'commitment:["m_self","CMT-1"]')).toMatchObject({ kind: 'effort', state: 'not-linked', posture: 'pending' });
+    expect(res.body.sourcesComplete).toBe(false);
+  });
+
+  it.each([
+    { origin: 'm_self', truncated: false, entries: true, ok: true, count: 1 },
+    { origin: 'm_self', truncated: false, entries: false, ok: true, count: 0 },
+    { origin: 'm_self', truncated: true, entries: true, ok: false, count: 1 },
+    { origin: 'm_foreign', truncated: false, entries: true, ok: false, count: 0 },
+  ])('reads capability definitions without treating advisory availability as authority: %j', async spec => {
+    const at = new Date().toISOString();
+    new CapabilityRegistryWriter(path.join(fx.stateDir, 'capability-registry.json'), spec.origin).write({
+      schemaVersion: 1, machineEpoch: 1, projectionSeq: 1, scanStampSecs: 1, scanState: 'observed', truncated: spec.truncated,
+      entries: spec.entries ? [{ capabilityId: 'models:codex-cli/test-model', capabilityKind: 'model', doorwayId: 'codex-cli', machineId: spec.origin,
+        probeOutcome: 'unknown', endpointRef: `mesh://${spec.origin}/doorways`, observedAt: at, receivedAt: at, source: 'local-doorways',
+        sourceDetail: 'doorway-manifest', evidenceClass: 'manifest-only', evidence: { manifestVerifiedAt: at } }] : [],
+    });
+    const res = await request(appFor(ctxFor(fx, { capabilityRegistry: null }))).get('/maturation/board?part=coverage');
+    expect(res.status).toBe(200);
+    expect(res.body.sources).toContainEqual(expect.objectContaining({ name: 'local-model-capability-projection', ok: spec.ok }));
+    expect(res.body.counts.capability.total).toBe(spec.count);
+    if (spec.count) expect(res.body.rows.find((r: { kind: string }) => r.kind === 'capability')).toMatchObject({ posture: 'registered-definition', state: 'not-linked' });
+  });
+
+  it('preserves a graduated declaration and refuses ambiguous exact flag associations', async () => {
+    const point = { id: 'm', observedAtMs: Date.now() - 1000, descriptorVersion: 1, value: 1, samples: 1 };
+    const contract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [{ id: 'm' }], outcome: {
+      statement: 'Useful outcomes', owner: 'Echo', method: 'Compare recorded outcomes', version: 'v1', outcomeMetricIds: ['m'], qualityMetricIds: ['m'], baseline: { origin: 'm_self', points: [point] },
+    } };
+    const graduated = { id: 'graduated', title: 'Graduated', status: 'completed', rollout: { flagPath: 'brandNew.enabled', stage: 'default-on', maturationEvaluation: contract } };
+    const service = { available: () => true, maturationOutcomeForContract: () => ({ subjectKnown: false, evidence: { state: 'missing-contract', metrics: [] } }) };
+    const make = (items: unknown[]) => appFor(ctxFor(fx, { config: { developmentAgent: true, brandNew: { enabled: true } }, initiativeTracker: { list: () => items }, blockerLifecycleService: service }));
+    const res = await request(make([graduated])).get('/maturation/board?part=coverage');
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ declaration: 'declared', state: 'inactive' });
+    const multiple = await request(make([graduated, { ...graduated, id: 'other' }])).get('/maturation/board?part=coverage');
+    expect(multiple.body.rows.find((r: { id: string }) => r.id === 'brandNew')).toMatchObject({ declaration: 'ambiguous', state: 'ambiguous', subjects: ['graduated', 'other'] });
+  });
+
+  it.each([{}, null, { subject: { kind: 'invalid', key: 'job' } }])('retains a malformed generic owner collision before ladder precedence: %j', measurement => {
+    const entry = { id: 'collision', subject: 'collision', title: 'Collision', disposition: 'ladder', rungs: {} };
+    const ladderContract = { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [] };
+    const ctx = ctxFor(fx, {
+      initiativeTracker: { list: () => [{ id: 'collision', title: 'Invalid owner', status: 'active', measurement }] },
+      maturationLadder: () => ({ error: null, entries: [entry], measurementContracts: () => new Map([['collision', { contract: ladderContract, overridesInitiative: true }]]) }),
+    });
+    expect(readMeasurementOwner(ctx, 'collision').owner).toMatchObject({ error: 'measurement-owner-collision' });
+    expect(readMeasurementOwner(ctx, 'collision').owner?.contract).toBeUndefined();
+  });
+
+  it('preserves accounting ownership and ladder composition without borrowing parent evidence', async () => {
+    const parent = { id: 'parent-flag', title: 'Parent feature', subject: 'parent-subject', disposition: 'ladder', flag: { path: 'parentFeature.enabled' }, rungs: {} };
+    const child = { id: 'child-flag', title: 'Component', subject: 'child-subject', disposition: 'composed', composedInto: 'parent-flag', flag: { path: 'childFeature.enabled' }, rungs: {} };
+    const ctx = ctxFor(fx, { initiativeTracker: { list: () => [{ id: 'child-task', title: 'Task', status: 'active', rollout: { flagPath: 'ownedFeature.enabled' }, rolloutAccounting: { ownerFeatureId: 'parent-task' } }] },
+      config: { developmentAgent: true, ownedFeature: { enabled: true } },
+      maturationLadder: () => ({ error: null, entries: [parent, child], measurementContracts: () => new Map(), features: () => [{ id: 'parent-flag', next: null }, { id: 'child-flag', next: null }] }),
+    });
+    const res = await request(appFor(ctx)).get('/maturation/board?part=coverage');
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'childFeature')).toMatchObject({ parents: [{ kind: 'feature', id: 'parentFeature', source: 'ladder-composition' }] });
+    expect(res.body.rows.find((r: { id: string }) => r.id === 'ownedFeature')).toMatchObject({ parents: [{ kind: 'effort', id: 'parent-task', source: 'accounting-owner' }] });
+    expect(res.body.counts.feature.states.corroborated).toBe(0);
+  });
+
+  it('pool coverage preserves a valid origin and discloses an old peer as unsupported', async () => {
+    let old = false;
+    let hasCommitmentSource = false;
+    const peer = express().get('/maturation/board', (_req, res) => res.json(old ? { schema: 'maturation-board/1' } : measurementCoverage('m_peer', Date.now(), [{ kind: 'job', id: 'j', title: 'Review', sources: ['jobs'], subjects: [] }], [{ name: 'jobs', ok: true }, ...(hasCommitmentSource ? [{ name: 'commitment-tracker', ok: true }] : [])], () => null)));
+    const server = http.createServer(peer); servers.push(server);
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const app = appFor(ctxFor(fx, { resolvePeerUrls: () => [{ machineId: 'm_peer', url, kind: 'lan' }] }));
+    const res = await request(app).get('/maturation/board?scope=pool&part=coverage');
+    expect(res.body.origins.map((o: { origin: string }) => o.origin)).toEqual(['m_peer', 'm_self']);
+    expect(res.body.origins[0].counts.job.total).toBe(1);
+    expect(res.body.poolComplete).toBe(false);
+    expect(res.body.failed).toContainEqual({ machineId: 'm_peer', reason: 'commitment-inventory-unsupported' });
+    expect(res.body.origins[0].sources).toEqual([{ name: 'jobs', ok: true }]);
+    hasCommitmentSource = true;
+    const upgraded = await request(app).get('/maturation/board?scope=pool&part=coverage');
+    expect(upgraded.body.failed).toEqual([]);
+    expect(upgraded.body.origins[0].counts.job.total).toBe(1);
+    old = true;
+    const unsupported = await request(app).get('/maturation/board?scope=pool&part=coverage');
+    expect(unsupported.body.poolComplete).toBe(false);
+    expect(unsupported.body.failed).toContainEqual({ machineId: 'm_peer', reason: 'unavailable-or-unsupported' });
+  });
+
+  it('measurement detail queries select one known origin and refuse foreign or unsupported replies', async () => {
+    let shape='valid';let calls=0;
+    const peer=express().get('/maturation/board',(_req,res)=>{calls++;res.json(shape==='old'?{schema:'maturation-board/1'}:{schema:'measurement-read/1',advisory:true,authority:'none',origin:shape==='foreign'?'another':'m_peer',subjectId:'one',generatedAt:new Date().toISOString(),windowDays:90,state:'missing-contract',detail:null,sources:[]});});
+    const server=http.createServer(peer);servers.push(server);await new Promise<void>(r=>server.listen(0,'127.0.0.1',()=>r()));
+    const url=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+    const app=appFor(ctxFor(fx,{resolvePeerUrls:()=>[{machineId:'m_peer',url,kind:'lan'},{machineId:'m_other',url:'http://127.0.0.1:1',kind:'lan'}]}));
+    const response=await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer');
+    expect(response.status).toBe(200);expect(response.body.state).toBe('missing-contract');expect(calls).toBe(1);
+    shape='old';expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer')).status).toBe(503);
+    shape='foreign';expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=m_peer')).status).toBe(503);
+    expect((await request(app).get('/maturation/board?part=measurement&subject=one&machine=http://evil')).status).toBe(400);
   });
 
   it('builds a local board from review files and live owners', async () => {

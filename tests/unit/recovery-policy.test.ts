@@ -262,3 +262,29 @@ describe('reasonToCategory — enumerated mapping', () => {
     expect(reasonToCategory('mystery_reason')).toBe('unstructured_403');
   });
 });
+
+describe('evaluatePolicy — 409 fold-hold (context-budget-layered-summaries §10)', () => {
+  it('a redriven pre-fold reply refused by a fold hold is retried at backoff, never escalated as a loss', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'fold-hold', foldId: 'f1', retryable: false }),
+      attempts: 1,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    expect(d.action).toBe('retry');
+    expect(d.reason).toBe('fold_hold_retry_30000ms');
+    expect(new Date(d.nextAttemptAt!).getTime()).toBe(FROZEN_NOW + BACKOFF_SCHEDULE_MS[0]);
+  });
+  it('fold-hold retries stay bounded (escalate at MAX_ATTEMPTS)', () => {
+    const d = evaluatePolicy({
+      httpCode: 409,
+      responseBody: JSON.stringify({ error: 'fold-hold' }),
+      attempts: MAX_ATTEMPTS,
+      timeSinceFirstMs: 0,
+      now,
+    });
+    expect(d.action).toBe('escalate');
+    expect(d.reason).toBe('fold_hold_attempts_exhausted');
+  });
+});

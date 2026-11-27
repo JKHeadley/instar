@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-09T22:33:40.068Z",
+  "slug": "unified-usage-ledger-slice1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 852,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/monitoring/UsageLedger.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 852,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

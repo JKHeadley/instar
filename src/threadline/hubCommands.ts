@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/threadline/hubCommands.ts');
 /**
  * Threadline hub commands — "open this" / "tie this to <topic>" (CMT-529). Both
  * the `POST /threadline/hub/bind` route AND the structural intercept in
@@ -162,7 +164,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
       catch (e) { console.warn(`[hub/bind] commitment topicId update failed: ${e instanceof Error ? e.message : e}`); }
     }
     collaborationSurfacer.markBound(threadId);
-    await telegram.sendToTopic(topicId, firstMessage).catch(() => { });
+    await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, firstMessage)).catch(() => { });
     await collaborationSurfacer.noteInHub(`Opened "${topicName}" (conversation ${threadId.slice(0, 8)}).`);
     return { ok: true, action: args.action, threadId, topicId, topicName };
   } catch (err) {

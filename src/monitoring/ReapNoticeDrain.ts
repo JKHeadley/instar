@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/ReapNoticeDrain.ts');
 /**
  * ReapNoticeDrain — the ALWAYS-ON delivery loop for reap notices
  * (reap-notify spec R1.3, tier0 supervision — deterministic delivery of
@@ -34,6 +36,8 @@
  *    pass is off.
  */
 
+import type { QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import type { SendResult } from '../messaging/TelegramAdapter.js';
 import type { PendingRelayRow, DeliveryState } from '../messaging/pending-relay-store.js';
 import { parseReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
@@ -58,7 +62,7 @@ export interface ReapNoticeDrainStore {
 export interface ReapNoticeDrainDeps {
   store: ReapNoticeDrainStore;
   /** Direct adapter send to an EXISTING topic (never creates topics). */
-  sendToTopic: (topicId: number, text: string) => Promise<void>;
+  sendToTopic: (topicId: number, text: string) => Promise<void | QuietReceipt | SendResult>;
   /** Append a notify outcome record (reap-log pairs, R1.3). */
   recordNotify: (e: {
     noticeId: string;
@@ -178,7 +182,12 @@ export class ReapNoticeDrain {
         const noticeId = parseReapNotifyDeliveryId(row.delivery_id) ?? row.delivery_id;
         const text = Buffer.isBuffer(row.text) ? row.text.toString('utf-8') : String(row.text ?? '');
         try {
-          await this.deps.sendToTopic(row.topic_id, text);
+          const sent = await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(row.topic_id, text));
+          if (sent && 'recorded' in sent && sent.recorded) {
+            this.safeTransition(row.delivery_id, 'quiet-recorded', { claimed_by: null, error_body: sent.quietId });
+            this.safeRecord({ noticeId, topicId: row.topic_id, outcome: 'quiet-recorded', detail: sent.quietId });
+            continue;
+          }
           this.safeTransition(row.delivery_id, 'delivered-recovered', { claimed_by: null });
           this.safeRecord({ noticeId, topicId: row.topic_id, outcome: 'sent' });
           counters.sent++;

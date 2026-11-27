@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "nuke-c-min",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T19:38:47.600Z",
+  "artifactPath": "upgrades/side-effects/nuke-c-min.md",
+  "artifactSha256": "42e563fa113236ee11f5043a8741564580d2dda91994d684015b5610176d610a",
+  "coveredFiles": [
+    "upgrades/next/nuke-c-min.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "release-note fragment format only",
+  "eli16Path": "upgrades/side-effects/nuke-c-min.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/nuke-c-min.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

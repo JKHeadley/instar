@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "accounts-repair-coverage",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T16:40:17.659Z",
+  "artifactPath": "upgrades/side-effects/accounts-repair-coverage.md",
+  "artifactSha256": "8f28256920fd029b1309bc2dd0771c0f43676d7902d2ed8f1dd694023b28cd70",
+  "coveredFiles": [
+    "dashboard/console/auto-repair-model.js",
+    "dashboard/console/console.css",
+    "upgrades/side-effects/accounts-repair-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Scoped disabled styling and plain-language mode labels for the Accounts repair section.",
+  "eli16Path": "docs/specs/accounts-repair-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-repair-coverage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

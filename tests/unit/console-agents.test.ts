@@ -389,4 +389,31 @@ describe('the page in a DOM', () => {
     expect(doc.querySelector('.pin-input')).toBeNull();
     expect(card.querySelector('.action-status')!.textContent).toBe('Finishing. Checking we can talk…');
   });
+
+  it('the agent\'s paste link (#/people/agents?connect=paste) opens "I was sent one" ready, once, and drops the ask from the address', async () => {
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/people/agents?connect=paste' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    g.fetch = async (url: string) => {
+      const q = quiet();
+      const table: Record<string, unknown> = {
+        '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
+        '/threadline/health': q.health.data, '/threadline/pairing': q.pairingRes.data, '/threadline/pairing/invites': invites().data,
+        '/threadline/peers/health?scope=pool': q.peersRes.data, '/threadline/conversations?scope=mesh': q.convRes.data,
+        '/threadline/observability/threads': threads.data, '/pool': pool.data,
+      };
+      if (!(url in table)) return { ok: false, status: 404, json: async () => ({ error: 'no such route in the test' }) };
+      return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(table[url])) };
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 20));
+    const doc = dom.window.document;
+    const paste = doc.querySelector('.sheet textarea[aria-label="The invite you were sent"]') as HTMLTextAreaElement;
+    expect(paste).toBeTruthy();
+    expect(paste.value).toBe(''); // the invite is never carried in the link
+    expect(doc.activeElement).toBe(paste);
+    expect(dom.window.location.hash).toBe('#/people/agents');
+  });
 });

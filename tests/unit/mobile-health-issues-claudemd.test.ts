@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_CONSOLE_PAGES_LINE, MOBILE_HEALTH_ISSUES_LINE, MOBILE_HEALTH_ISSUES_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_CONSOLE_PAGES_LINE, MOBILE_HEALTH_CHOICES_LINE, MOBILE_HEALTH_CHOICES_MARKER, MOBILE_HEALTH_ISSUES_LINE, MOBILE_HEALTH_ISSUES_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_HEALTH_ISSUES_MARKER).length - 1;
@@ -51,5 +51,35 @@ describe('migrateClaudeMd inserts the bullet, idempotently', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\n### Mobile app routes — hand edited\n- something else\n');
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(1);
+  });
+});
+
+describe('quick actions awareness (docs/specs/health-quick-actions.md)', () => {
+  const choiceCount = (t: string) => t.split(MOBILE_HEALTH_CHOICES_MARKER).length - 1;
+  it('new agents get the bullet right after the reading, with the injected port', () => {
+    const lines = MOBILE_ROUTES_CLAUDEMD_SECTION(9999).split('\n');
+    expect(lines[lines.indexOf(MOBILE_HEALTH_ISSUES_LINE(9999)) + 1]).toBe(MOBILE_HEALTH_CHOICES_LINE(9999));
+    expect(MOBILE_HEALTH_CHOICES_LINE(9999)).toContain('http://localhost:9999/');
+    expect(MOBILE_HEALTH_CHOICES_LINE(9999)).toContain('never hide or ignore a problem on my own');
+    expect(generateClaudeMd('p', 'echo', 4042, true).includes(MOBILE_HEALTH_CHOICES_MARKER)).toBe(true);
+  });
+  it('an existing agent gets it after the reading, once across two runs', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'health-choices-claudemd-'));
+    try {
+      const stateDir = path.join(projectDir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042, claudeMd: { layout: 'full' } }));
+      const file = path.join(projectDir, 'CLAUDE.md');
+      const old = MOBILE_ROUTES_CLAUDEMD_SECTION(4042).split('\n').filter((l) => l !== MOBILE_HEALTH_CHOICES_LINE(4042)).join('\n');
+      fs.writeFileSync(file, `# CLAUDE.md\n${old}`);
+      for (let i = 0; i < 2; i++) new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
+      const text = fs.readFileSync(file, 'utf-8');
+      expect(choiceCount(text)).toBeGreaterThan(0);
+      const lines = text.split('\n');
+      expect(lines.filter((l) => l === MOBILE_HEALTH_CHOICES_LINE(4042))).toHaveLength(1);
+      expect(lines[lines.indexOf(MOBILE_HEALTH_ISSUES_LINE(4042)) + 1]).toBe(MOBILE_HEALTH_CHOICES_LINE(4042));
+    } finally {
+      SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'tests/unit/mobile-health-issues-claudemd.test.ts' });
+    }
   });
 });

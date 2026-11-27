@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-18T01:07:35.567Z",
+  "slug": "file-download-cap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/data/awareness/file-downloads-separate-cap.md",
+      "src/server/fileRoutes.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

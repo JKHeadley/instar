@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -44,8 +45,24 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // machine; a restored auto-install file would also start a root install on another machine.
   'state/playwright-profiles/',
   'state/xdrive/',
+  // Team access (team-roles-and-access §7): an ordinary restore must not roll back who has access.
+  // /mobile/team/restore is the only way back.
+  'state/team-access/',
+  'state/team-access-last-good/',
+  '.instar/state/team-access/',
+  '.instar/state/team-access-last-good/',
+  // Instar Documents (instar-document-viewer §3.4): snapshots would copy every version synchronously and a
+  // restore could bring purged text back or undo a move. The document export plus POST /docs/restore is the way back.
+  'documents/',
+  '.instar/documents/',
+  'backups/documents/',
+  '.instar/backups/documents/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
+  // Project apps part 2 (project-apps-sandbox §3.2): the per-machine app key file. Keys are never
+  // backed up, so a restored backup cannot read data the owner erased (a restore re-fetches live keys).
+  'state/project-app-keys.json',
+  '.instar/state/project-app-keys.json',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
   // entry)), so the project-relative '.instar/secrets/' spelling above never matched a
   // stateDir-relative 'secrets/…' entry: `includeFiles: ['secrets/passkeys/']` or
@@ -97,6 +114,13 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // repair through backup replication.
   'state/subscription-relogin',
   '.instar/state/subscription-relogin',
+  // planned-restart-keeps-lead: this machine's own pending-restart renewal copy and its measured
+  // boot durations (hardware-bound-resource). A restored unsigned budget would set another
+  // machine's window from foreign boots; a restored continuity file names a machine it is not.
+  'state/lease-continuity.json',
+  '.instar/state/lease-continuity.json',
+  'state/restart-budget.json',
+  '.instar/state/restart-budget.json',
 ]);
 
 /**
@@ -125,6 +149,24 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
 ]);
 
 /**
+ * `contextBudget.enabled` from `<stateDir>/config.json`, resolved through the
+ * development-agent gate (omitted ⇒ live on a development agent, dark on the
+ * fleet); false when unreadable.
+ */
+export function readContextLayersSwitch(stateDir: string): boolean {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { developmentAgent?: boolean; contextBudget?: { enabled?: unknown } };
+    const explicit = cfg?.contextBudget?.enabled;
+    return resolveDevAgentGate(typeof explicit === 'boolean' ? explicit : undefined, cfg);
+  } catch {
+    return false; // @silent-fallback-ok — no readable config: the layers are treated as off and stay out of the backup
+  }
+}
+
+/** Default entries gated by `contextBudget.enabled` (context-budget-layered-summaries §9.7). */
+export const CONTEXT_LAYER_BACKUP_ENTRIES: readonly string[] = Object.freeze(['state/context-layers/', 'topic-memory.db*']);
+
+/**
  * Path segments that are NEVER included in a backup snapshot, UNCONDITIONALLY
  * (no feature-flag gate): judgment-call provenance rows are machine-local
  * decision context (0700/0600, gitignored, never HTTP-served) — a backup that
@@ -142,6 +184,34 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   // machine-local posture as the provenance rows; the filename segment closes
   // alternate relative spellings the stateDir-relative prefix cannot.
   'external-hog-decisions.json',
+  // Fold records and sidecars (context-budget-layered-summaries §9.3/§9.7): a
+  // record restored from backup could resurrect a finished fold's containment.
+  'fold-records',
+  // The fold lock files and the single-machine fold signing key (§14 "Fold lock").
+  'fold-leases',
+  // The retrieval archive and engine checkpoints (§9.7: the archive root is a sibling of
+  // the layers root precisely so it can be excluded; checkpoints are unscrubbed).
+  'context-archive',
+  // Fold holds and in-flight fold carriers (§7.8, §9.3): a restored hold or
+  // marker would mute or re-seed a conversation for a fold that already ended.
+  'fold-hold.json',
+  '_fold-markers',
+  '_clear-seed',
+  '_seeded',
+  // The per-prompt delta's cursors and shadow log (§7.7): machine-local measurement;
+  // a restored cursor would describe a context the restored session does not hold.
+  '_prompt-cursors',
+  '_delta-shadow',
+  // Saved full recovery blocks (context-budget §9.1): per-session, transient.
+  '_recovery',
+  // Staged standing packets (context-budget §9.5, §9.7): re-rendered from the
+  // layers on every commit; they quote the operator's rows, which TopicMemory
+  // (already backed up) holds. A restored one would seed a stale packet.
+  '_standing',
+  // PreCompact keep-instructions (context-budget §9.5): per-session carriers that
+  // quote operator rows (TopicMemory, backed up, holds them); a restored one
+  // would steer a compaction with stale words.
+  '_keep',
 ]);
 
 /**
@@ -181,6 +251,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/recommended-services/',
     'state/offer-prerequisites/',
     'state/recommended-service-setup/',
+    // Attribution paper trail: a restore without pins would turn good citations into uncheckable ones.
+    'attribution/',
     // Integrated-Being v1 (gated by config.integratedBeing.enabled at snapshot
     // time — see resolveIncludedFiles()). Glob matches the active ledger and
     // any rotated .jsonl.<epoch> archives.
@@ -189,6 +261,9 @@ const DEFAULT_CONFIG: BackupConfig = {
     // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
     // (large, reconstructable via backfill; the symmetry surface flags any gap).
     'threadline/conversations.json',
+    // Unified usage ledger: the slim snapshot (day rollups, bindings, checkpoints, open pairs).
+    // The live database is rebuilt from it plus the source transcripts (docs/specs/unified-usage-ledger.md).
+    'server-data/usage-ledger.snapshot.db',
     // ClassReview is the retained audit/correspondence artifact. Include the
     // SQLite main file plus active WAL/SHM companions as one glob so restore
     // cannot strand a filled review behind a missing journal.
@@ -196,30 +271,124 @@ const DEFAULT_CONFIG: BackupConfig = {
     // Feedback Factory operated state: canonical source generations, durable
     // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
     'state/feedback-factory/store/',
+    // Skill-learning sentinel (docs/specs/skill-learning-sentinel.md decision 21):
+    // canonical skills, the per-machine ledgers/journals/baselines/versions/
+    // proposals/retired, the per-machine use telemetry, and the derived cache
+    // with its WAL/SHM companions (a directory-prefixed glob — see expandGlob).
+    'skills/',
+    'skill-learning/',
+    'skill-telemetry/',
+    'state/skill-learning.db*',
+    // Read markers (mobile-unread-messages §3.3): what each person has read, replicated; small.
+    'state/conversation-read-markers.json',
+    // Conversation-list pins (conversation-list-pins): what each person pinned to the top of the list, replicated; small.
+    'state/conversation-list-pins.json',
+    // Telegram topic names (topic-name-replication): the replicated name rows and outbox; small.
+    'state/telegram-topic-names.json',
+    // Context budget layer store (context-budget-layered-summaries §9.7). A
+    // directory entry: a glob with a wildcard in a middle segment is skipped.
+    // Fold records, holds and markers inside it are never-backup segments
+    // (above), so a restore never resurrects a fold in flight. Gated by
+    // `contextBudget.enabled` at snapshot time (resolveIncludedFiles()).
+    'state/context-layers/',
+    // The Anchor, ledger and U are row references into TopicMemory, so its
+    // database (with the WAL set) joins the backup with the layer store.
+    // Same gate.
+    'topic-memory.db*',
   ],
 };
 
 /**
- * Expand a single glob-style entry (only trailing `*` is supported) against
- * a directory. Returns literal filenames to copy. Safe against path traversal —
- * each returned name is a plain basename in stateDir.
+ * Expand a single glob-style entry (only one `*`, in the LAST path segment,
+ * is supported) against a directory. Returns literal stateDir-relative paths
+ * to copy. Safe against path traversal — each returned name is the entry's
+ * own directory part plus a plain basename read from that directory, e.g.
+ * 'shared-state.jsonl*' → ['shared-state.jsonl', 'shared-state.jsonl.123'] and
+ * 'state/skill-learning.db*' → ['state/skill-learning.db', 'state/skill-learning.db-wal'].
  */
+/**
+ * The trust journey's authority records (trust-journey spec 6a "Backup"): every origin's
+ * `trust-grant-record` journal files held on this machine (own and peer replicas, live and archived),
+ * plus the local-file store used where the journal is off.
+ */
+export function trustJourneyBackupFiles(stateDir: string): string[] {
+  const out: string[] = [];
+  const dir = 'state/coherence-journal';
+  try {
+    for (const n of fs.readdirSync(path.join(stateDir, dir)).sort()) {
+      if (/^[\w.-]+\.trust-(grant|outcome)-record(\.\d+)?\.jsonl$/.test(n)) out.push(`${dir}/${n}`);
+    }
+  } catch { /* @silent-fallback-ok: no journal directory: only the local file can exist */ }
+  for (const f of ['trust-journey.jsonl', 'trust-journey-outcomes.jsonl']) if (fs.existsSync(path.join(stateDir, 'state', f))) out.push(`state/${f}`);
+  return out;
+}
+
+/** This machine's own `work-card-record` journal files (live + archives), relative to the state dir. Peers' replicas are not backed up: a restored machine is brought current by its peers' streams. */
+export function workCardJournalFiles(stateDir: string): string[] {
+  const dir = 'state/coherence-journal';
+  try {
+    return fs.readdirSync(path.join(stateDir, dir))
+      .filter((n) => /^[\w-]+\.work-card-record(\.\d+)?\.jsonl$/.test(n))
+      .sort()
+      .map((n) => `${dir}/${n}`);
+  } catch { // @silent-fallback-ok: no journal directory means there are no cards to back up
+    return [];
+  }
+}
+
 function expandGlob(stateDir: string, entry: string): string[] {
   if (!entry.includes('*')) return [entry];
-  // Only support trailing * for now — e.g., 'shared-state.jsonl*'
   const starIdx = entry.indexOf('*');
   const prefix = entry.slice(0, starIdx);
   const suffix = entry.slice(starIdx + 1);
-  if (prefix.includes('/') || suffix.includes('/') || suffix.includes('*')) {
+  if (suffix.includes('/') || suffix.includes('*')) {
     // Unsupported glob shape — return the literal entry; caller will skip if missing.
     return [entry];
   }
+  // The `*` must sit in the last segment: 'state/skill-learning.db*' splits into
+  // dir 'state' + basename pattern 'skill-learning.db*'. A `*` in an earlier
+  // segment is not a directory wildcard here.
+  const slashIdx = prefix.lastIndexOf('/');
+  const dirPart = slashIdx === -1 ? '' : prefix.slice(0, slashIdx);
+  const basePrefix = slashIdx === -1 ? prefix : prefix.slice(slashIdx + 1);
+  if (dirPart.includes('*') || dirPart.split('/').some((seg) => seg === '..')) return [entry];
   try {
-    const names = fs.readdirSync(stateDir);
-    return names.filter((n) => n.startsWith(prefix) && n.endsWith(suffix));
+    const names = fs.readdirSync(dirPart ? path.join(stateDir, dirPart) : stateDir);
+    return names
+      .filter((n) => n.startsWith(basePrefix) && n.endsWith(suffix))
+      .map((n) => (dirPart ? `${dirPart}/${n}` : n));
   } catch {
     return [];
   }
+}
+
+/** Staging directories live beside the snapshots; the leading dot keeps them out of SNAPSHOT_ID_PATTERN. */
+const STAGING_DIR_PREFIX = '.staging-';
+
+export interface StagedBackupSources {
+  /** The staging directory, inside the backups directory. */
+  dir: string;
+  /** stateDir-relative path (forward slashes) to the staged point-in-time copy. */
+  sources: Record<string, string>;
+}
+
+export interface CreateSnapshotOptions {
+  /** From stageSqliteFiles(): copies to use in place of the live file. */
+  stagedSources?: Readonly<Record<string, string>>;
+}
+
+function stagedKey(relative: string): string {
+  return path.normalize(relative).split(path.sep).join('/');
+}
+
+/**
+ * Files whose copy must come from one moment: a SQLite database with its
+ * write-ahead log, shared-memory file or rollback journal, and the feedback drain checkpoint
+ * record whose checksum describes the database at that moment.
+ */
+export function isPointInTimeFile(relative: string): boolean {
+  const base = path.basename(relative);
+  return /\.(db|sqlite3?)(-wal|-shm|-journal)?$/.test(base) || base === 'feedback-drain-checkpoint.json';
 }
 
 export class BackupManager {
@@ -238,6 +407,7 @@ export class BackupManager {
    * `isIntegratedBeingEnabled`. See spec §A35 + §A50.
    */
   private readonly isRemediationEnabled?: () => boolean;
+  private readonly isContextLayersEnabled?: () => boolean;
   private lastAutoSnapshot: number = 0;
 
   constructor(
@@ -246,7 +416,12 @@ export class BackupManager {
     isSessionActive?: () => boolean,
     isIntegratedBeingEnabled?: () => boolean,
     isRemediationEnabled?: () => boolean,
+    isContextLayersEnabled?: () => boolean,
   ) {
+    // Default gate: read the switch from the agent's own config at snapshot
+    // time, so every construction site (CLI, routes, the drain cadence) honours
+    // it without threading a callback through each one.
+    this.isContextLayersEnabled = isContextLayersEnabled ?? (() => readContextLayersSwitch(stateDir));
     this.stateDir = path.resolve(stateDir);
     this.backupsDir = path.resolve(stateDir, 'backups');
     // `includeFiles` is UNIONED with defaults, not replaced. Users and
@@ -278,12 +453,16 @@ export class BackupManager {
     // F-7 / A35: when remediation is ENABLED, the per-machine
     // remediation runtime paths get actively excluded. When remediation
     // is off, the exclusion is a no-op (no such files exist anyway).
+    const contextLayersOn = this.isContextLayersEnabled ? this.isContextLayersEnabled() : false;
     const remediationExclusionActive = this.isRemediationEnabled
       ? this.isRemediationEnabled()
       : false;
     for (const entry of this.config.includeFiles) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
+      // Gate: the layer store and the TopicMemory rows it references join the
+      // backup only while the layers are on (§9.7 "joins the backup with this feature").
+      if (!contextLayersOn && CONTEXT_LAYER_BACKUP_ENTRIES.includes(entry)) continue;
       // UNCONDITIONAL never-backup segments (spec §3.5) — no flag gates this.
       if (path.normalize(entry).split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg))) {
         continue;
@@ -309,6 +488,11 @@ export class BackupManager {
         expanded.push(entry);
       }
     }
+    // Work Board (docs/specs/work-board-asks.md §3 "Backup"): this machine's own work-card journal,
+    // the live file and every archive. Journal files are named `<machine>.<kind>[.<stamp>].jsonl`, which
+    // a single-wildcard entry cannot select, so they are listed here. No files ⇒ nothing added.
+    for (const f of workCardJournalFiles(this.stateDir)) if (!expanded.includes(f)) expanded.push(f);
+    for (const f of trustJourneyBackupFiles(this.stateDir)) if (!expanded.includes(f)) expanded.push(f);
     return expanded;
   }
 
@@ -365,13 +549,107 @@ export class BackupManager {
   /**
    * Create a snapshot of the current state.
    */
-  createSnapshot(trigger: BackupSnapshot['trigger']): BackupSnapshot {
-    const id = this.generateId();
-    const snapshotDir = path.resolve(this.backupsDir, id);
-    fs.mkdirSync(snapshotDir, { recursive: true });
+  createSnapshot(trigger: BackupSnapshot['trigger'], opts?: CreateSnapshotOptions): BackupSnapshot {
+    const { id, snapshotDir } = this.claimSnapshotDir();
+    let snapshot: BackupSnapshot;
+    try {
+      snapshot = this.fillSnapshot(id, snapshotDir, trigger, opts);
+    } catch (error) {
+      // A snapshot that failed part-way has no manifest, so nothing would ever
+      // list or prune it. Remove it here instead of leaving its bytes behind.
+      try {
+        SafeFsExecutor.safeRmSync(snapshotDir, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:createSnapshot-failed' });
+      } catch { /* @silent-fallback-ok: the original error is rethrown; sweepAbandonedSnapshots removes what is left */ }
+      throw error;
+    }
+    // After the manifest is written the snapshot is complete: nothing below may remove it.
+    this.pruneSnapshots();
+    this.sweepAbandonedSnapshots();
+    return snapshot;
+  }
 
+  /** Create the snapshot directory. Exclusive, so two snapshots in one second never share one. */
+  private claimSnapshotDir(): { id: string; snapshotDir: string } {
+    fs.mkdirSync(this.backupsDir, { recursive: true });
+    for (let attempt = 0; ; attempt++) {
+      const id = this.generateId();
+      const snapshotDir = path.resolve(this.backupsDir, id);
+      try {
+        fs.mkdirSync(snapshotDir);
+        return { id, snapshotDir };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 50) throw error;
+      }
+    }
+  }
+
+  private fillSnapshot(id: string, snapshotDir: string, trigger: BackupSnapshot['trigger'], opts?: CreateSnapshotOptions): BackupSnapshot {
     const files: string[] = [];
     let totalBytes = 0;
+    // Point-in-time copies taken by stageSqliteFiles() stand in for the live
+    // file, so a copy made off the main thread cannot pair a database with a
+    // write-ahead log from a later moment. With staging in force, a
+    // point-in-time file is NEVER read live: one that was not staged (a log
+    // that appeared after staging) belongs to a later moment and is left out.
+    const stagingInForce = opts?.stagedSources !== undefined;
+    const staged = new Map<string, string>();
+    for (const [key, stagedPath] of Object.entries(opts?.stagedSources ?? {})) {
+      if (this.isAcceptableStagedEntry(key, stagedPath)) staged.set(key, stagedPath);
+      else console.warn(`[BackupManager] Ignoring staged entry that is not a staged point-in-time file: ${key}`);
+    }
+    const copied = new Set<string>();
+    let vanished = 0;
+    const goneDuringCopy = (error: unknown): boolean => {
+      // Off the main thread the server keeps working, so a file listed a moment
+      // ago can be renamed or removed before its copy. It is left out and counted.
+      if (!stagingInForce || (error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      vanished++;
+      return true;
+    };
+    const copyStaged = (relative: string, stagedPath: string): void => {
+      if (!fs.existsSync(stagedPath)) throw new Error(`staged copy for ${relative} is gone; the snapshot would not hold one moment`);
+      const dest = path.join(snapshotDir, relative);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(stagedPath, dest, fs.constants.COPYFILE_FICLONE);
+      totalBytes += fs.statSync(stagedPath).size;
+      files.push(relative);
+    };
+    const copyOne = (relative: string, liveAbsolute: string, liveSize: number): void => {
+      const key = stagedKey(relative);
+      const stagedPath = staged.get(key);
+      if (stagedPath !== undefined) {
+        copied.add(key);
+        copyStaged(relative, stagedPath);
+        return;
+      }
+      if (stagingInForce && isPointInTimeFile(relative)) return;
+      const dest = path.join(snapshotDir, relative);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try {
+        fs.copyFileSync(liveAbsolute, dest);
+      } catch (error) {
+        if (goneDuringCopy(error)) return;
+        throw error;
+      }
+      totalBytes += liveSize;
+      files.push(relative);
+    };
+    const lstatIfPresent = (absolute: string): fs.Stats | null => {
+      try {
+        return fs.lstatSync(absolute);
+      } catch (error) {
+        if (goneDuringCopy(error)) return null;
+        throw error;
+      }
+    };
+    const readdirIfPresent = (absolute: string): string[] => {
+      try {
+        return fs.readdirSync(absolute);
+      } catch (error) {
+        if (goneDuringCopy(error)) return [];
+        throw error;
+      }
+    };
 
     for (const entry of this.resolveIncludedFiles()) {
       // Security: block config.json and secrets regardless of user config
@@ -408,31 +686,35 @@ export class BackupManager {
               console.warn(`[BackupManager] Skipping blocked file in directory copy: ${next.relative}`);
               continue;
             }
-            const stat = fs.lstatSync(next.absolute);
-            if (stat.isSymbolicLink()) continue;
+            const stat = lstatIfPresent(next.absolute);
+            if (stat === null || stat.isSymbolicLink()) continue;
             if (stat.isDirectory()) {
-              for (const child of fs.readdirSync(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
+              for (const child of readdirIfPresent(next.absolute)) pending.push({ absolute: path.join(next.absolute, child), relative: path.join(next.relative, child) });
               continue;
             }
             if (!stat.isFile()) continue;
-            const dest = path.join(snapshotDir, next.relative);
-            fs.mkdirSync(path.dirname(dest), { recursive: true });
-            fs.copyFileSync(next.absolute, dest);
-            totalBytes += stat.size;
-            files.push(next.relative);
+            copyOne(next.relative, next.absolute, stat.size);
           }
         }
       } else {
         // Single file
-        if (fs.existsSync(sourcePath) && fs.statSync(sourcePath).isFile()) {
-          const dest = path.join(snapshotDir, entry);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.copyFileSync(sourcePath, dest);
-          const stat = fs.statSync(sourcePath);
-          totalBytes += stat.size;
-          files.push(entry);
+        // One stat instead of exists-then-stat, so a file rotated away in between is simply absent.
+        let stat: fs.Stats | null = null;
+        try {
+          stat = fs.statSync(sourcePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
+        if (stat?.isFile()) copyOne(entry, sourcePath, stat.size);
       }
+    }
+
+    // A staged file whose live original went away in the meantime (a write-ahead
+    // log removed when its last connection closed) still belongs to the moment
+    // that was staged. Staging applied every deny layer; they are applied again here.
+    for (const [relative, stagedPath] of staged) {
+      if (copied.has(relative) || isDeniedForBackup(relative)) continue;
+      copyStaged(relative, stagedPath);
     }
 
     const integrityHash = this.computeIntegrityHash(files, totalBytes);
@@ -452,10 +734,140 @@ export class BackupManager {
       JSON.stringify(snapshot, null, 2),
     );
 
-    // Prune old snapshots
-    this.pruneSnapshots();
-
+    if (vanished > 0) console.warn(`[BackupManager] ${vanished} file(s) went away during the copy and are not in snapshot ${id}`);
     return snapshot;
+  }
+
+  /**
+   * A staged entry is only honoured when it is what stageSqliteFiles() produces:
+   * a point-in-time file, addressed by a plain relative path inside the state
+   * directory, whose copy sits directly inside one of this manager's staging
+   * directories. Anything else could write outside the snapshot or carry a file
+   * the include rules never chose.
+   */
+  private isAcceptableStagedEntry(key: string, stagedPath: string): boolean {
+    if (typeof stagedPath !== 'string' || !isPointInTimeFile(key) || isDeniedForBackup(key)) return false;
+    if (path.isAbsolute(key) || stagedKey(key) !== key || key.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) return false;
+    const stagingDir = path.dirname(path.resolve(stagedPath));
+    return path.dirname(stagingDir) === this.backupsDir && path.basename(stagingDir).startsWith(STAGING_DIR_PREFIX);
+  }
+
+  /**
+   * Remove snapshot directories that never got a manifest (the process was
+   * killed mid-copy) once they are older than `olderThanMs`. They are invisible
+   * to listSnapshots() and pruneSnapshots(), so nothing else reclaims them.
+   * The age bound keeps a copy still in progress safe. Returns how many.
+   */
+  sweepAbandonedSnapshots(olderThanMs = 24 * 60 * 60 * 1000, now = Date.now()): number {
+    let removed = 0;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(this.backupsDir, { withFileTypes: true }); } catch { return 0; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !SNAPSHOT_ID_PATTERN.test(entry.name)) continue;
+      const dir = path.join(this.backupsDir, entry.name);
+      try {
+        if (fs.existsSync(path.join(dir, 'manifest.json'))) continue;
+        if (now - fs.statSync(dir).mtimeMs < olderThanMs) continue;
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:sweepAbandonedSnapshots' });
+        removed++;
+      } catch { /* @silent-fallback-ok: an abandoned directory that cannot be removed now is tried again by the next snapshot */ }
+    }
+    return removed;
+  }
+
+  /** Entry-level deny layers (blocked names and blocked prefixes), shared by staging. */
+  private isEntryBlocked(entry: string): boolean {
+    const baseName = path.basename(entry).replace(/\/$/, '');
+    if (BLOCKED_FILES.has(baseName) || BLOCKED_FILES.has(entry)) return true;
+    const folded = path.normalize(entry).toLowerCase();
+    for (const prefix of BLOCKED_PATH_PREFIXES) {
+      if (folded.startsWith(prefix.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Take point-in-time copies of every SQLite file (database, write-ahead log,
+   * shared-memory file) and the feedback drain checkpoint record in the
+   * included set, for a snapshot whose bulk copy then runs off the main thread.
+   *
+   * Runs synchronously ON the caller's thread, on purpose: nothing in this
+   * process can write to a database between its copy and its log's copy. That
+   * is the guarantee the fully synchronous createSnapshot() gave by blocking
+   * for the whole copy; this keeps it for the handful of files that need it.
+   * Copies are clones where the filesystem supports them (APFS, btrfs, XFS),
+   * so the cost is a few metadata operations rather than the data.
+   *
+   * Returns the staging directory (the caller removes it) and a map of
+   * stateDir-relative path to staged copy, for createSnapshot()'s stagedSources.
+   */
+  stageSqliteFiles(): StagedBackupSources {
+    fs.mkdirSync(this.backupsDir, { recursive: true });
+    const dir = fs.mkdtempSync(path.join(this.backupsDir, STAGING_DIR_PREFIX));
+    const sources: Record<string, string> = {};
+    let index = 0;
+    const stage = (relative: string, absolute: string): void => {
+      if (!isPointInTimeFile(relative) || isDeniedForBackup(relative)) return;
+      const target = path.join(dir, String(index++));
+      try {
+        // A directory that merely has a database-like name is not staged.
+        if (!fs.statSync(absolute).isFile()) return;
+        fs.copyFileSync(absolute, target, fs.constants.COPYFILE_FICLONE);
+        sources[stagedKey(relative)] = target;
+      } catch (error) {
+        // A file that vanished between the listing and the copy is simply not staged.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    };
+    try {
+      for (const entry of this.resolveIncludedFiles()) {
+        if (this.isEntryBlocked(entry)) continue;
+        const sourcePath = path.join(this.stateDir, entry);
+        if (!entry.endsWith('/')) { stage(entry, sourcePath); continue; }
+        const pending = [{ absolute: sourcePath, relative: entry }];
+        while (pending.length > 0) {
+          const next = pending.pop()!;
+          let children: fs.Dirent[];
+          try { children = fs.readdirSync(next.absolute, { withFileTypes: true }); } catch { continue; }
+          for (const child of children) {
+            const relative = path.join(next.relative, child.name);
+            if (isDeniedForBackup(relative)) continue;
+            if (child.isDirectory()) pending.push({ absolute: path.join(next.absolute, child.name), relative });
+            else if (child.isFile()) stage(relative, path.join(next.absolute, child.name));
+          }
+        }
+      }
+    } catch (error) {
+      this.removeStaging(dir);
+      throw error;
+    }
+    return { dir, sources };
+  }
+
+  /** Remove one staging directory. Refuses anything that is not a staging directory of this manager. */
+  removeStaging(dir: string): void {
+    const resolved = path.resolve(dir);
+    if (path.dirname(resolved) !== this.backupsDir || !path.basename(resolved).startsWith(STAGING_DIR_PREFIX)) return;
+    try {
+      SafeFsExecutor.safeRmSync(resolved, { recursive: true, force: true, operation: 'src/core/BackupManager.ts:removeStaging' });
+    } catch { /* @silent-fallback-ok: a staging directory left behind is swept by the next snapshot */ }
+  }
+
+  /** Remove staging directories a crashed run left behind (older than `olderThanMs`). Returns how many. */
+  sweepStaleStaging(olderThanMs = 60 * 60 * 1000, now = Date.now()): number {
+    let removed = 0;
+    let names: string[];
+    try { names = fs.readdirSync(this.backupsDir); } catch { /* @silent-fallback-ok: no readable backups directory means nothing to sweep; the next snapshot sweeps again */ return 0; }
+    for (const name of names) {
+      if (!name.startsWith(STAGING_DIR_PREFIX)) continue;
+      const dir = path.join(this.backupsDir, name);
+      try {
+        if (now - fs.statSync(dir).mtimeMs < olderThanMs) continue;
+      } catch { /* @silent-fallback-ok: a staging directory that vanished mid-sweep needs no removal */ continue; }
+      this.removeStaging(dir);
+      removed++;
+    }
+    return removed;
   }
 
   /**
