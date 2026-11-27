@@ -2610,6 +2610,10 @@ export interface MachineCapacity {
   seamlessnessFlags?: {
     /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
     documentsDecisionRows?: boolean;
+    /** work-front-doors §3.1: this build verifies Chief of Staff tree import receipts (`cos-tree-import`) in the
+     *  conversation graph. A build capability, advertised whatever the import switch says; the importer runs only
+     *  when every other graph member advertises it (older builds refuse such receipts). */
+    conversationGraphImportAuthority?: boolean;
     /** member-browser-any-computer §5: this build reads the computer-* team-log rows (advertised whatever the switches say). Sticky on peers while unreachable. */
     teamLogComputerRows?: boolean;
     /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
@@ -2905,6 +2909,10 @@ export interface MultiMachineConfig {
      * enablement alone does not expose even an opt-in read API. */
     readEnabled?: boolean;
     correctionsEnabled?: boolean;
+    /** work-front-doors §3.1: import Chief of Staff tree placements into the graph (import tier). Absent = live on a
+     *  development agent, off on the fleet; even when on it waits until every graph member runs a build that
+     *  verifies import receipts. */
+    cosTreeImport?: boolean;
     /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
     genesisMembers?: string[];
     storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };

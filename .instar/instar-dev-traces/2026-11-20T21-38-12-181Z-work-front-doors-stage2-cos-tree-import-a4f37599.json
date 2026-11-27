@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-cos-tree-import",
+  "sessionId": "5c9f2279-f637-41e4-8655-2e705082de13",
+  "timestamp": "2026-11-20T21:38:12.181Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-cos-tree-import.md",
+  "artifactSha256": "ad545d4bbc98502df0acad59f10d8a92d19d037613a65f896571a4b2012afc82",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "src/core/ConversationGraphCosTreeImport.ts",
+    "src/core/ConversationGraphReplicationProof.ts",
+    "src/core/conversationGraph.ts",
+    "src/core/types.ts",
+    "src/data/awareness/chief-of-staff-tree-in-conversations.md",
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphCosTreeImporter.ts",
+    "src/server/ConversationGraphOwnerChanges.ts",
+    "tests/e2e/conversation-graph-cos-tree-import-alive.test.ts",
+    "tests/integration/conversation-graph-cos-tree-import.test.ts",
+    "tests/unit/conversation-graph-cos-tree-import.test.ts",
+    "upgrades/next/work-front-doors-stage2-cos-tree-import.md",
+    "upgrades/side-effects/work-front-doors-stage2-cos-tree-import.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a new replicated conversation-graph authority (import tier) and receipt method every machine must verify; a build revert after an import commits is not clean, so it is not Tier 1.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

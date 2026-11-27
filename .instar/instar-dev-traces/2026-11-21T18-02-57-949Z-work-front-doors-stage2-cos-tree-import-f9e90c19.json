@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-cos-tree-import",
+  "sessionId": "8feee9e9-f2df-4889-82f5-a91eafc00e0b",
+  "timestamp": "2026-11-21T18:02:57.949Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-cos-tree-import.md",
+  "artifactSha256": "ad545d4bbc98502df0acad59f10d8a92d19d037613a65f896571a4b2012afc82",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffLoop.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "merge main into the cos-tree-import branch; conflict resolution keeping both methods",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

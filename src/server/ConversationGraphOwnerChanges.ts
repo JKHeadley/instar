@@ -41,6 +41,18 @@ export interface GraphOwnerChangeDeps {
 }
 const equal=(a:string[],b:string[])=>canonicalHash([...a].sort())===canonicalHash([...b].sort());
 const failure=(status:number,code:string,extra:Record<string,unknown>={}):GraphChangeReply=>({status,body:{code,...extra}});
+/**
+ * Did the owner see the current heads? Import heads (the Chief of Staff tree import, work-front-doors §3.1) the owner
+ * did not see do not make a correction stale: an import only ever ADDS a first placement, so the owner's choice
+ * replaces it too (the event names every current head). An owner placement always wins over an import, including a
+ * change the owner saved while offline and one previewed before the import landed.
+ */
+export function ownerObservedHeads(heads:string[],observed:string[],events:GraphEvent[]):boolean{
+ if(equal(heads,observed))return true;
+ if(observed.some(id=>!heads.includes(id)))return false;
+ const seen=new Set(observed);
+ return heads.filter(id=>!seen.has(id)).every(id=>events.some(e=>e.eventId===id&&e.op==='set-primary-placement'&&e.authority==='import'));
+}
 
 export class ConversationGraphOwnerChanges {
  constructor(private readonly options:GraphOwnerChangeDeps){
@@ -212,7 +224,7 @@ export class ConversationGraphOwnerChanges {
    const known=(ref:NodeRef)=>owner.mayView(ref)&&(ref.kind==='effort'?graph.efforts.has(nodeKey(ref)):this.options.hasConversation(ref));
    if(!known(change.subject)||(change.parent&&!known(change.parent)))return failure(404,'not-found');
    const heads=graph.placementHeads.get(nodeKey(change.subject))??[];
-   if(!equal(heads,change.replacesPlacementEventIds))return failure(409,'placement-conflict',{
+   if(!ownerObservedHeads(heads,change.replacesPlacementEventIds,events))return failure(409,'placement-conflict',{
     lastAgreedParent:this.visibleParent(owner,graph.parentOf.get(nodeKey(change.subject))??null),
     proposedParents:events.filter(e=>e.op==='set-primary-placement'&&heads.includes(e.eventId))
      .map(e=>e.op==='set-primary-placement'?e.parent:null).filter(parent=>parent===null||owner.mayView(parent))});
@@ -312,7 +324,7 @@ export class ConversationGraphOwnerChanges {
     if(!known(change.subject)||(change.parent&&!known(change.parent)))return reject('not-found',{},404);
     if(change.parent!==null&&this.options.isRootConversation?.(change.subject)===true)return reject('chief-of-staff-is-root');
     const heads=graph.placementHeads.get(nodeKey(change.subject))??[];
-    if(!equal(heads,change.replacesPlacementEventIds))return reject('placement-conflict',{
+    if(!ownerObservedHeads(heads,change.replacesPlacementEventIds,events))return reject('placement-conflict',{
      lastAgreedParent:this.visibleParent(owner,graph.parentOf.get(nodeKey(change.subject))??null),
      proposedParents:events.filter(e=>e.op==='set-primary-placement'&&heads.includes(e.eventId)).map(e=>e.op==='set-primary-placement'?e.parent:null)
       .filter(parent=>parent===null||owner.mayView(parent))});
