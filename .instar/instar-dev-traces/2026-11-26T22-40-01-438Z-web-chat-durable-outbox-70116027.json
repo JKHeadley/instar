@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "web-chat-durable-outbox",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-26T22:40:01.438Z",
+  "artifactPath": "upgrades/side-effects/web-chat-durable-outbox.md",
+  "artifactSha256": "da3aafbc6519f6a82705e0fffc03f920bfb9ec11227475bbac52ff0ea54e2f81",
+  "specPath": "docs/specs/web-chat-durable-outbox.md",
+  "coveredFiles": [
+    "tests/e2e/dashboard-conversations-browser-alive.test.ts",
+    "tests/e2e/web-chat-durable-outbox-alive.test.ts",
+    "tests/integration/console-chat-outbox-browser.test.ts",
+    "tests/integration/mobile-media-to-platform.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/integration/mobile-slack-from-app.test.ts",
+    "tests/unit/console-chat-outbox-crypto.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-device-state.test.ts",
+    "tests/unit/console-lifecycle.test.ts",
+    "tests/unit/console-net-state.test.ts",
+    "tests/unit/console-outbox-runner.test.ts",
+    "tests/unit/web-chat-outbox-server.test.ts",
+    "upgrades/side-effects/web-chat-durable-outbox.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Independent second-pass review of the fourteen flagged test files at head 8517256b1; tier and spec as declared by the branch.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

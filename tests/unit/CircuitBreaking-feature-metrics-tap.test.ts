@@ -66,7 +66,25 @@ describe('CircuitBreakingIntelligenceProvider — feature metrics tap (Phase 1b)
 
     await expect(p.evaluate('x', { attribution: { component: 'CoherenceReviewer' } })).rejects.toThrow('boom');
     expect(recorded.length).toBe(1);
-    expect(recorded[0]).toMatchObject({ feature: 'CoherenceReviewer', outcome: 'error' });
+    expect(recorded[0]).toMatchObject({ feature: 'CoherenceReviewer', outcome: 'error', errorClass: 'other' });
+  });
+
+  it('CMT-2289: a failure row carries the fixed error class, never the message text', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const inner: IntelligenceProvider = {
+      evaluate: async () => { throw new Error('Gemini CLI error: Command failed: gemini -p SECRET-PROMPT — auth: not-logged-in'); },
+    };
+    const p = new CircuitBreakingIntelligenceProvider(inner, fakeBreaker());
+    await expect(p.evaluate('x', { attribution: { component: 'UnjustifiedStopGate' } })).rejects.toThrow();
+    expect(recorded[0]).toMatchObject({ feature: 'UnjustifiedStopGate', outcome: 'error', errorClass: 'auth' });
+    expect(JSON.stringify(recorded[0])).not.toContain('SECRET-PROMPT');
+  });
+
+  it('CMT-2289: a success row carries no error class', async () => {
+    setFeatureMetricsRecorder(recorder);
+    const p = new CircuitBreakingIntelligenceProvider({ evaluate: async () => 'ok' }, fakeBreaker());
+    await p.evaluate('x', { attribution: { component: 'PromptGate' } });
+    expect(recorded[0]).not.toHaveProperty('errorClass');
   });
 
   it('records the rate-limit wait path with waited=true + waitMs', async () => {

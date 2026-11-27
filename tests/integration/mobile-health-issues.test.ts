@@ -143,3 +143,14 @@ it('an owner phone receives the explicit capacity-wait marker without losing the
  expect(r.body.verdict).toBe('attention');
  expect(r.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false,impact:'user-affecting'}));
 });
+
+
+it('keeps an unsubmitted message visible in Health without asking the owner to act', async () => {
+  const feature = 'SessionManager.verifyInjection.unsubmitted';
+  const { app, pair } = setup(async () => ({ status: 200, body: { status: 'degraded' } }), [{ feature }]);
+  const response = await signedGet(app, pair());
+  expect(response.status).toBe(200);
+  expect(response.body.issues).toContainEqual(expect.objectContaining({
+    id: feature, requiresUserAction: false, impact: 'user-affecting',
+  }));
+});

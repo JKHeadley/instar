@@ -55,6 +55,8 @@ export interface LocalVerifyConfigBlock {
    * days (default false; docs/specs/local-verify-import-related-rerun.md). Read live at each run start.
    */
   importRelatedRerun?: boolean;
+  /** Retry only named assertions on this verifier. Absent means off. */
+  namedFlakeRetry?: boolean;
   /**
    * `off` (default), `on` or `alternate`: on this machine, each lane of a pull request's verify
    * runs a small first part before the rest (the change's own test files, the files it failed on
@@ -664,7 +666,7 @@ export function wireLocalVerifyPeers(
  */
 export function wireLocalVerifySwitches(
   svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled' | 'setQueueControlsEnabled' | 'setPeerWorksThroughRestart'>
-    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff'>>,
+    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff' | 'setNamedFlakeRetryEnabled'>>,
   liveConfig: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
@@ -674,6 +676,7 @@ export function wireLocalVerifySwitches(
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
   // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
   svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
+  svc.setNamedFlakeRetryEnabled?.(() => liveConfig.get<boolean>('monitoring.localVerify.namedFlakeRetry', false) === true);
   // Off unless set: no hold or front route answers and stored choices are not applied (docs/specs/local-verify-queue-controls.md).
   svc.setQueueControlsEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.queueControls', false) === true);
   // docs/specs/local-verify-peer-works-through-restart.md: absent or anything but `true` ⇒ off (today's behaviour). No default is written.

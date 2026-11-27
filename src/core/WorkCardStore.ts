@@ -1030,7 +1030,7 @@ export function isAgentInternalCard(f: CardFold): boolean {
   return f.createdBy?.kind === 'agent' && !f.requester && !f.outward && f.carrier === 'agent'
     && typeof f.waitingOn !== 'object'
     && !(f.openQuestion && typeof f.openQuestion.principal === 'object')
-    && !f.doneWhen.some((item) => item.certify === 'owner-confirms')
+    // A future owner-certified milestone becomes actionable when a claim exists.
     && !(f.currentClaim && f.needsConfirm && !f.done);
 }
 
