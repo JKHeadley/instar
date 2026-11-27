@@ -6,7 +6,7 @@
  * its read allowance, a dispatch failure after persist, token removal, the reply route's
  * 409 not-owner vs accepted, 404s and the recording-disabled 503.
  */
-import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,6 +25,7 @@ import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
 
 const HOST = 'echo.example.dev';
@@ -55,6 +56,8 @@ function setup(opts: Opts = {}) {
   const holdsLease = opts.holdsLease ?? (() => lease.held);
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease };
   const pairing = new MobilePairingService(deps);
+  // Keep the real request-store clock injectable across an expiry/restart fixture.
+  pairing.useChatRequests(new MobileChatRequestStore(dir, () => Date.now()));
   pairing.nativeOn = !opts.nativeOff;
   cleanups.push(() => pairing.stop());
   const dispatched: AppDispatchInput[] = [];
@@ -83,7 +86,7 @@ function setup(opts: Opts = {}) {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1' }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', now: () => Date.now() }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
@@ -337,5 +340,33 @@ describe('native app conversations — a Telegram-free agent keeps its own lease
       expect(r.status).toBe(503);
       expect(r.body.error).toBe('owner-unavailable');
     } finally { await h.close(); vi.useRealTimers(); }
+  });
+});
+
+
+describe('durable browser outbox — original stop age', () => {
+  afterEach(() => vi.restoreAllMocks());
+  it('a pruned old App stop cannot affect a later session, while a fresh stop still bypasses chat-off', async () => {
+    const e = setup();
+    const key = await create(e);
+    expect((await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'begin', requestId: rid() })).status).toBe(200);
+    const requestId = rid();
+    const accepted = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'stop everything', requestId });
+    expect(accepted.status).toBe(200);
+    expect(e.killed).toEqual(['sess-app']);
+    const alias = e.registry.appAliasFor(key)!;
+    e.svc.channels.register(String(alias), 'sess-later');
+    const later = Date.now() + 25 * 60 * 60_000;
+    vi.spyOn(Date, 'now').mockReturnValue(later);
+    const old = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'stop everything', requestId });
+    expect(old.status).toBe(400);
+    expect(old.body.error).toBe('request-id-too-old');
+    expect(e.svc.deps.requests.get(e.deviceId, requestId)).toBeNull();
+    expect(e.killed).toEqual(['sess-app']);
+    (e.pairing.deps.config.mobilePairing as any).chat = { enabled: false };
+    const fresh = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'stop everything', requestId: rid() });
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.outcome).toBe('sentinel-kill');
+    expect(e.killed).toEqual(['sess-app', 'sess-later']);
   });
 });

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "owner-needs-card-rules",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-25T23:32:33.112Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "artifactSha256": "abfaf2711d5b773283435b8117b00829ee528f9ac67cb7ea92adc31cf1f0ba14",
+  "specPath": "docs/specs/owner-needs-card-rules.md",
+  "coveredFiles": [
+    "src/core/types.ts",
+    "src/server/ownerNeedsCredentialConsent.ts",
+    "src/server/ownerNeedsSources.ts",
+    "src/server/routes.ts",
+    "tests/e2e/app-approval-disclosure-alive.test.ts",
+    "tests/e2e/owner-needs-credential-consent-dark.test.ts",
+    "tests/helpers/trustAppServer.ts",
+    "tests/integration/owner-needs-credential-consent.test.ts",
+    "upgrades/side-effects/owner-needs-card-rules.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

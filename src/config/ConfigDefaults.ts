@@ -53,6 +53,9 @@ export const SKILL_LEARNING_DEFAULTS = Object.freeze({
 } as const);
 
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // These do not enable pairing, native conversations or browser enrollment. Their existing
+  // gates still apply; init and missing-only update migration share this one default.
+  mobilePairing: { browser: { outboxEnabled: true, outboxRecoveryGeneration: '1' } },
   notifications: {
     selectivity: {
       dryRun: true,

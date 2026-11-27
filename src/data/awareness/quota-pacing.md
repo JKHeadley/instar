@@ -7,4 +7,6 @@ Will an account's quota expire unused, or will Claude or Codex run out of weekly
 curl -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/quota-pacing
 ```
 
+The dashboard Accounts page includes an Allowance forecast section with provider outlooks, expandable account estimates and comparisons with actual resets. Missing or stale history stays unknown. Read the sample count before describing forecast accuracy; two observed outcomes do not establish reliability. The section loads independently of sign-in controls and never changes account routing or spending.
+
 Spec: docs/specs/quota-pacing-forecast.md.

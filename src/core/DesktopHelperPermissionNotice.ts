@@ -66,7 +66,9 @@ export class DesktopHelperPermissionNotice {
     try {
       await this.deps.raise({
         id: conditionKey, conditionKey,
-        title: `${this.deps.machineLabel}: Remote Desktop needs its Mac permission again`,
+        title: probe.helperChange.kind === 'first-grant'
+          ? `${this.deps.machineLabel}: Remote Desktop needs its Mac permission`
+          : `${this.deps.machineLabel}: Remote Desktop needs its Mac permission again`,
         body: desktopProbeUnavailableReason(probe),
       });
     } catch (error) {

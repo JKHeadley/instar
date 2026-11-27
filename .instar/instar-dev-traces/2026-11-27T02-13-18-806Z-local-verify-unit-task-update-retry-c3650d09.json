@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "local-verify-unit-task-update-retry",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-27T02:13:18.806Z",
+  "artifactPath": "upgrades/side-effects/local-verify-unit-task-update-retry.md",
+  "artifactSha256": "655cf41b500a4ecc64e87881babaf8f2e377a27cc5deb0d3983a451affb70449",
+  "coveredFiles": [
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/unhandledErrorsReporter.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/side-effects/local-verify-unit-task-update-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One reversible retry for an exact worker timeout; existing merge authority still requires a complete green report. Independent second-pass review of the harness-changing files at head fed99727e.",
+  "eli16Path": "docs/specs/local-verify-unit-task-update-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-unit-task-update-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

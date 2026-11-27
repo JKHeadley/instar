@@ -3,6 +3,7 @@
  * real QuotaPoller (wiring integrity: the sink is the ledger, not null, and a real poll writes a real
  * history row), and GET /quota-pacing answers 200 (not 503). A fleet agent answers 503. */
 import { describe, it, expect, afterAll } from 'vitest';
+import { buildQuotaForecast } from '../../dashboard/console/quota-forecast-model.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -72,6 +73,11 @@ describe('quota pacing — production wiring', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ schema: 'quota-pacing/1', scope: 'pool' });
     expect(res.body.providers[0].accounts[0].accountId).toBe('codex-a');
+    const page = buildQuotaForecast({ ok: true, data: res.body }, [{ id: 'codex-a', name: 'Codex Test Account' }]);
+    expect(page.state).toBe('ready');
+    expect(page.providers[0].accounts[0].name).toBe('Codex Test Account');
+    expect(page.providers[0].accounts[0].lines.join(' ')).toContain('Not enough history');
+    expect(page.calibration).toContain('No forecasts have been checked');
     const local = await request(server.getApp()).get('/quota-pacing?scope=local');
     expect(local.status).toBe(200);
     expect(local.body.logins[0].newestPolledAt).not.toBeNull();
