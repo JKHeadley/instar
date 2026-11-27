@@ -310,6 +310,7 @@ export class ServerSupervisor extends EventEmitter {
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
   private deferredRestartRequestedAt: string | null = null;
   private deferredLeaseRequest: string | null = null;
+  private failedLeaseAdmissionRequest: string | null = null;
   private readonly plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
     'ready' | 'wait' | 'not-applicable' | Promise<'ready' | 'wait' | 'not-applicable'>;
 
@@ -1763,7 +1764,13 @@ export class ServerSupervisor extends EventEmitter {
         let admission: 'ready' | 'wait' | 'not-applicable' = 'wait';
         if (requester.attributed && typeof data.requestedAt === 'string') {
           try { admission = await this.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
-          catch { /* @silent-fallback-ok — the deferral below is visible */ }
+          catch {
+            // @silent-fallback-ok: log once per exact request and continue through the normal hold deadline.
+            if (this.failedLeaseAdmissionRequest !== raw) {
+              this.failedLeaseAdmissionRequest = raw;
+              console.warn('[Supervisor] Could not check planned restart admission; keeping the server running');
+            }
+          }
         }
         try {
           if (this.detached || fs.readFileSync(flagPath, 'utf-8') !== raw || restartAdmissionTimedOut(flagPath, raw)) return;

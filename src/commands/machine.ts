@@ -893,7 +893,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
               // A server already running here keeps its old list, and starting the unit does nothing to it.
               console.log(pc.green('  This machine now answers only the people the first machine answers.'));
               try {
-                requestPairActivationRestart(config.stateDir, new Date());
+                await requestPairActivationRestart(config.stateDir, new Date());
               } catch (err) {
                 console.log(pc.yellow(`  Its running server keeps the old list until it next restarts (${err instanceof Error ? err.message : String(err)}).`));
               }

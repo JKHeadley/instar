@@ -385,7 +385,7 @@ import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import { describeRestartRequester, findRestartRequestRecord, cleanString as cleanRestartField } from '../core/restartRequestAttribution.js';
-import { LeaseContinuityStore } from '../core/LeaseContinuity.js';
+import { admissionWithoutLeaseCoordinator, LeaseContinuityStore } from '../core/LeaseContinuity.js';
 import { resolveShutdownDeadlineMs as resolveShutdownDeadlineForLease } from '../core/shutdownDeadline.js';
 import { bootReadiness, isPeerBooting } from '../server/BootReadiness.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
@@ -703,7 +703,7 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     // before the request is visible; the request carries the same fields as every planned writer.
     await announceRestartRequested({ requestedBy: 'fix-command', reason, requestedAt });
     fs.mkdirSync(path.dirname(restartFile), { recursive: true });
-    await publishRestartRequestFileAsync(restartFile, JSON.stringify({
+    const { published } = await publishRestartRequestFileAsync(restartFile, JSON.stringify({
       requestedAt,
       reason,
       requestedBy: 'fix-command',
@@ -712,7 +712,9 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
       expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       pid: process.pid,
     }, null, 2));
-    await send('Restart requested. Your agent will restart momentarily.');
+    await send(published
+      ? 'Restart requested. Your agent will restart momentarily.'
+      : 'A restart request is already pending.');
     return true;
   }
 
@@ -9638,7 +9640,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           roleRestartInFlight = true;
           void requestRoleRestart({ stateDir: config.stateDir, leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity?.machineId, stillNeeded: () => coordinator.isAwake !== bootAwake }, nowAwake)
             .catch((err) => console.warn(`  [lease] role restart request failed: ${err instanceof Error ? err.message : String(err)}`)) // @silent-fallback-ok: logged, and the timer below retries
-            .finally(() => { roleRestartInFlight = false; reconcileRole(); });
+            .finally(() => {
+              roleRestartInFlight = false;
+              if (coordinator.isAwake !== nowAwake) reconcileRole();
+            });
         }
       } catch (err) {
         console.warn(`  [lease] role restart check failed: ${err instanceof Error ? err.message : String(err)}`); // @silent-fallback-ok: logged, and the timer below retries
@@ -16101,7 +16106,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       const lease = leaseCoordinatorRef;
       const preferred = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId;
       if (bootReadiness().snapshot().state !== 'ready') return 'wait';
-      if (!lease) return !preferred && !coordinator.enabled && !coordinator.identity ? 'not-applicable' : 'wait';
+      if (!lease) return admissionWithoutLeaseCoordinator(
+        preferred, coordinator.identity?.machineId, coordinator.enabled, restartTopologyIsSolo,
+      );
       if (!preferred || preferred !== lease.selfMachineId) return 'not-applicable';
       const holder = lease.currentHolder();
       if (holder && holder !== lease.selfMachineId) return 'not-applicable';

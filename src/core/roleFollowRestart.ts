@@ -5,10 +5,11 @@
  * start. A durable timestamp bounds it, so a flapping lease cannot become a restart loop.
  */
 
-import { readRestartRequestFile, removeActiveRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from './restartRequestFile.js';
+import { readRestartRequestFile, removeActiveRestartRequestFile, publishRestartRequestUnderLock, withRestartRequestFileAsync } from './restartRequestFile.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { announceRestartRequested, announceRestartWithdrawn } from './restartRequestSignal.js';
 
 export const ROLE_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
@@ -52,17 +53,23 @@ export interface RecentPromotion {
 export function readRecentPromotion(stateDir: string, now = Date.now(), live?: { leaseEpoch: number; machineId: string; holdsLease: boolean }): RecentPromotion | null {
   try {
     const row = JSON.parse(fs.readFileSync(stampPath(stateDir), 'utf-8')) as
-      { at?: unknown; toAwake?: unknown; promotionId?: unknown; leaseEpoch?: unknown; machineId?: unknown; sweepCompletedAt?: unknown };
+      { at?: unknown; toAwake?: unknown; promotionId?: unknown; leaseEpoch?: unknown; machineId?: unknown; sweepCompletedAt?: unknown; leaseObservedAt?: unknown };
     if (row.toAwake !== true || typeof row.at !== 'number' || !Number.isFinite(row.at)
       || typeof row.sweepCompletedAt === 'number') return null;
     const hasId = typeof row.promotionId === 'string' && /^[a-f0-9-]{36}$/.test(row.promotionId);
     const epoch = typeof row.leaseEpoch === 'number' && Number.isSafeInteger(row.leaseEpoch) && row.leaseEpoch > 0
       ? row.leaseEpoch : null;
+    const leaseObservedAt = typeof row.leaseObservedAt === 'number' && row.leaseObservedAt >= row.at
+      ? row.leaseObservedAt
+      : row.at;
     const verified = hasId && epoch !== null && !!live && live.holdsLease
       && live.leaseEpoch === epoch && row.machineId === live.machineId
-      && now >= row.at && now - row.at <= 60 * 60_000;
+      && now >= leaseObservedAt && now - leaseObservedAt <= 60 * 60_000;
     return { id: hasId ? row.promotionId as string : `legacy-${row.at}`, at: row.at, verified, leaseEpoch: epoch };
-  } catch { return null; }
+  } catch {
+    // @silent-fallback-ok: a missing or unreadable promotion stamp cannot confer catch-up authority.
+    return null;
+  }
 }
 
 /** Consume only the promotion whose missed-work sweep finished. Later ordinary boots resume normal scheduling. */
@@ -76,13 +83,33 @@ export function markPromotionSweepComplete(stateDir: string, promotionId: string
   fs.renameSync(tmp, file);
 }
 
-export function readLastRoleRestart(stateDir: string): number | null {
+interface RoleRestartStamp {
+  at?: unknown;
+  roleRequestedAt?: unknown;
+  toAwake?: unknown;
+  carriedBy?: unknown;
+  leaseEpoch?: unknown;
+  machineId?: unknown;
+  leaseObservedAt?: unknown;
+  promotionId?: unknown;
+}
+
+function readRoleRestartStamp(stateDir: string): RoleRestartStamp | null {
   try {
-    const at = (JSON.parse(fs.readFileSync(stampPath(stateDir), 'utf-8')) as { at?: unknown }).at;
-    return typeof at === 'number' && Number.isFinite(at) ? at : null;
+    return JSON.parse(fs.readFileSync(stampPath(stateDir), 'utf-8')) as RoleRestartStamp | null;
   } catch {
     return null; // @silent-fallback-ok: no stamp yet is the normal first case
   }
+}
+
+function lastPublishedRoleRestart(stamp: RoleRestartStamp | null): number | null {
+  // Older stamps predate the distinction and only recorded published role requests.
+  const at = stamp?.roleRequestedAt === undefined ? stamp?.at : stamp.roleRequestedAt;
+  return typeof at === 'number' && Number.isFinite(at) ? at : null;
+}
+
+export function readLastRoleRestart(stateDir: string): number | null {
+  return lastPublishedRoleRestart(readRoleRestartStamp(stateDir));
 }
 
 /**
@@ -109,13 +136,35 @@ export async function requestRoleRestart(files: RoleRestartFiles, toAwake: boole
     expiresAt: new Date(now + 60 * 60_000).toISOString(),
     pid: process.pid,
   }, null, 2);
-  const published = await withRestartRequestFileAsync(flag, () => {
-    if (files.stillNeeded && !files.stillNeeded()) return false;
-    replaceRestartRequestFile(flag, raw, readRestartRequestFile(flag));
-    return true;
+  await withRestartRequestFileAsync(flag, () => {
+    if (files.stillNeeded && !files.stillNeeded()) return;
+    const current = readRestartRequestFile(flag);
+    const result = publishRestartRequestUnderLock(flag, raw, current);
+    const carriedBy = !result.published && current !== null
+      ? createHash('sha256').update(current).digest('hex')
+      : null;
+    const previous = readRoleRestartStamp(files.stateDir);
+    const storeStamp = (stamp: RoleRestartStamp) => SafeFsExecutor.atomicWriteFileSync(
+      stampPath(files.stateDir), JSON.stringify(stamp), { operation: 'roleFollowRestart:stamp', mode: 0o600 },
+    );
+    if (carriedBy && previous?.carriedBy === carriedBy && previous.toAwake === toAwake &&
+        (!toAwake || (previous.leaseEpoch === (files.leaseEpoch ?? null) && previous.machineId === (files.machineId ?? null)))) {
+      // Keep the promotion ID and original time while refreshing evidence of the same live epoch.
+      const observedAt = typeof previous.leaseObservedAt === 'number' ? previous.leaseObservedAt : previous.at;
+      if (toAwake && typeof observedAt === 'number' && now - observedAt >= 30 * 60_000) {
+        storeStamp({ ...previous, leaseObservedAt: now });
+      }
+      return;
+    }
+
+    // A retained restart can carry promotion evidence, but if it disappears the
+    // next role check must be free to publish. Only our own publication advances cooldown.
+    const roleRequestedAt = result.published ? now : lastPublishedRoleRestart(previous);
+    storeStamp({
+      at: now, toAwake, roleRequestedAt, carriedBy,
+      ...(toAwake ? { promotionId: randomUUID(), leaseEpoch: files.leaseEpoch ?? null, machineId: files.machineId ?? null, leaseObservedAt: now } : {}),
+    });
   });
-  if (!published) return;
-  fs.writeFileSync(stampPath(files.stateDir), JSON.stringify({ at: now, toAwake, ...(toAwake ? { promotionId: randomUUID(), leaseEpoch: files.leaseEpoch ?? null, machineId: files.machineId ?? null } : {}) }));
 }
 
 /**

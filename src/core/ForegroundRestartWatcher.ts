@@ -68,6 +68,7 @@ export class ForegroundRestartWatcher extends EventEmitter {
   private isShuttingDown = false;
   private deferredRestartRequestedAt: string | null = null;
   private deferredLeaseRequest: string | null = null;
+  private failedLeaseAdmissionRequest: string | null = null;
   /** The request whose `beforeConsume` wait ran (or is running); the same request is not waited for twice. */
   private continuityAwaitedFor: string | null = null;
   private awaitingContinuity = false;
@@ -183,9 +184,17 @@ export class ForegroundRestartWatcher extends EventEmitter {
       const requester = describeRestartRequester(data);
       if (this.config.plannedLeaseAdmission && data.plannedRestart === true &&
           data.bypassHolds !== true && data.requestedBy !== 'role-change') {
-        const admission = requester.attributed && typeof data.requestedAt === 'string'
-          ? this.config.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt })
-          : 'wait';
+        let admission: 'ready' | 'wait' | 'not-applicable' = 'wait';
+        if (requester.attributed && typeof data.requestedAt === 'string') {
+          try { admission = this.config.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
+          catch {
+            // @silent-fallback-ok: log once per exact request and continue through the normal hold deadline.
+            if (this.failedLeaseAdmissionRequest !== raw) {
+              this.failedLeaseAdmissionRequest = raw;
+              console.warn('[ForegroundRestartWatcher] Could not check planned restart admission; keeping the server running');
+            }
+          }
+        }
         if (admission !== 'ready' && admission !== 'not-applicable') {
           if (markRestartAdmissionTimeout(this.flagPath, raw)) {
             this.reportTimeout(raw);

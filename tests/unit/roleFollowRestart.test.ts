@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ROLE_RESTART_MIN_INTERVAL_MS as GAP, decideRoleRestart, readLastRoleRestart, requestRoleRestart, withdrawRoleRestart } from '../../src/core/roleFollowRestart.js';
+import { ROLE_RESTART_MIN_INTERVAL_MS as GAP, decideRoleRestart, readLastRoleRestart, readRecentPromotion, requestRoleRestart, withdrawRoleRestart } from '../../src/core/roleFollowRestart.js';
+import { publishRestartRequestFile, removeActiveRestartRequestFile } from '../../src/core/restartRequestFile.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const base = { applies: true, bootAwake: false, nowAwake: true, lastRestartAtMs: null, nowMs: 10 * GAP };
@@ -32,6 +33,38 @@ describe('requestRoleRestart', () => {
     const flag = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf-8'));
     expect(flag).toMatchObject({ requestedBy: 'role-change', plannedRestart: true });
   });
+  it('records a verified promotion while an update carries the actual restart', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
+    dirs.push(stateDir);
+    fs.mkdirSync(path.join(stateDir, 'state'));
+    const flag = path.join(stateDir, 'state', 'restart-requested.json');
+    const now = Date.now();
+    const update = JSON.stringify({ requestedAt: new Date(now - 1).toISOString(), targetVersion: '1.4.0', bypassHolds: true });
+    publishRestartRequestFile(flag, update);
+    const live = { leaseEpoch: 7, machineId: 'this-machine', holdsLease: true };
+
+    await requestRoleRestart({ stateDir, now: () => now, ...live }, true);
+
+    expect(fs.readFileSync(flag, 'utf8')).toBe(update);
+    const promotion = readRecentPromotion(stateDir, now, live);
+    expect(promotion).toMatchObject({ verified: true, leaseEpoch: 7 });
+    expect(readLastRoleRestart(stateDir)).toBeNull();
+    expect(withdrawRoleRestart({ stateDir })).toBe(false);
+    await requestRoleRestart({ stateDir, now: () => now + 60_000, ...live }, true);
+    expect(readRecentPromotion(stateDir, now + 60_000, live)?.id).toBe(promotion?.id);
+    await requestRoleRestart({ stateDir, now: () => now + 35 * 60_000, ...live }, true);
+    expect(readRecentPromotion(stateDir, now + 65 * 60_000, live)).toMatchObject({
+      id: promotion?.id, at: now, verified: true,
+    });
+
+    expect(removeActiveRestartRequestFile(flag, update)).toBe(true);
+    const retryAt = now + 66 * 60_000;
+    expect(decideRoleRestart({ ...base, nowMs: retryAt, lastRestartAtMs: readLastRoleRestart(stateDir) })).toBe('restart');
+    await requestRoleRestart({ stateDir, now: () => retryAt, ...live }, true);
+    expect(JSON.parse(fs.readFileSync(flag, 'utf8'))).toMatchObject({ requestedBy: 'role-change' });
+    expect(readLastRoleRestart(stateDir)).toBe(retryAt);
+  });
+
   it('a failed request leaves no stamp, so the retry is not held back', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
     dirs.push(stateDir);
@@ -90,6 +123,19 @@ describe('withdrawRoleRestart', () => {
     fs.writeFileSync(flagOf(d), update);
     expect(withdrawRoleRestart({ stateDir: d })).toBe(false);
     expect(fs.readFileSync(flagOf(d), 'utf-8')).toBe(update);
+  });
+
+  it('retains a durable restart when a role-flap withdrawal follows', async () => {
+    const d = mk();
+    const now = Date.now();
+    await requestRoleRestart({ stateDir: d, now: () => now }, true);
+    const config = JSON.stringify({
+      requestedAt: new Date(now - 1).toISOString(), requestedBy: 'config-change', plannedRestart: true, pid: process.pid,
+    });
+
+    expect(publishRestartRequestFile(flagOf(d), config)).toBe(true);
+    expect(withdrawRoleRestart({ stateDir: d })).toBe(false);
+    expect(fs.readFileSync(flagOf(d), 'utf8')).toBe(config);
   });
 
   it('a role request written by another process is left alone', async () => {

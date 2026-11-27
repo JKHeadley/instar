@@ -92,6 +92,7 @@ interface RigOpts {
   dir?: string;
   clock?: { wall: number; mono: number };
   continuityOn?: boolean;
+  admissionMinimumRemainingMs?: number;
   safetyOn?: boolean;
   requestFile?: { present: boolean; requestedBy?: string; reason?: string; requestedAt?: string };
   bootRoleAwake?: boolean | null;
@@ -129,6 +130,8 @@ function rig(o: RigOpts = {}) {
     bootClaimSafety: () => (o.safetyOn === false ? null : { enabled: true, preferredMachineId: 'studio' }),
     plannedRestartContinuity: () => ({ enabled: o.continuityOn !== false, windowMs: null }),
     continuity,
+    plannedRestartAdmissionEnabled: () => o.admissionMinimumRemainingMs !== undefined,
+    plannedRestartMinimumRemainingMs: () => o.admissionMinimumRemainingMs ?? null,
     renewIntervalMs: () => 30_000,
     broadcastDeadlineMs: () => 8_000,
     shutdownDeadlineMs: () => o.shutdownDeadlineMs ?? 20_000,
@@ -244,6 +247,18 @@ describe('the night of 2026-11-21 — a role-change restart whose boot outlasts 
     await r.lc.beginPendingRestart({ requestedBy: 'auto-updater', reason: 'update', requestedAt: new Date(r.clock.wall).toISOString() });
     expect(expiryOf(r.lc.currentLease())).toBe(r.clock.wall + 200_000 + 53_000);
     expect(r.lc.pendingRestartStatus()?.windowMs).toBe(253_000);
+  });
+
+  it('keeps admission closed and reports both values when measured boot exceeds the ceiling', async () => {
+    const minimumRemainingMs = 400_000;
+    const r = await holderAtEpoch41({ admissionMinimumRemainingMs: minimumRemainingMs });
+    const request = { requestedBy: 'api', reason: 'restart', requestedAt: new Date(r.clock.wall).toISOString() };
+    await r.lc.beginPendingRestart(request);
+
+    const ceilingMs = TTL * 6 - 8_000;
+    expect(r.lc.pendingRestartStatus()?.windowMs).toBe(ceilingMs);
+    expect(r.lc.confirmedPlannedRestartWindow({ ...request, minimumRemainingMs })).toBeNull();
+    expect(r.logs).toContainEqual(expect.stringContaining(`window target is 420000 ms but the stale-holder ceiling is ${ceilingMs} ms`));
   });
 
   it('an explicit windowMs replaces the base; the stale-holder cap still binds', async () => {

@@ -13,6 +13,7 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { ForegroundRestartWatcher } from '../../src/core/ForegroundRestartWatcher.js';
 import { exitSeenPath } from '../../src/core/PlannedRestartVerifyGuard.js';
+import { publishRestartRequestFileAsync } from '../../src/core/restartRequestFile.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { buildLocalVerifyService } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams, PrView } from '../../src/localVerify/LocalVerifyService.js';
@@ -234,7 +235,7 @@ describe('planned restart / Local Verify production lifecycle', () => {
     }
   }, 15_000);
 
-  it('with production wiring, an accepted peer attempt holds the request until its record imports', async () => {
+  it.each([false, true])('holds an update for an accepted peer attempt unless the operator forces it (force: %s)', async (force) => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'planned-restart-peer-e2e-')));
     const stateDir = path.join(home, '.instar');
     const statePath = path.join(stateDir, 'state');
@@ -309,11 +310,28 @@ describe('planned restart / Local Verify production lifecycle', () => {
       expect((await request(app).get('/local-verify').set('Authorization', 'Bearer test-token')).status).toBe(200);
       fs.writeFileSync(flagPath, JSON.stringify({
         plannedRestart: true, requestedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(), requestedBy: 'update',
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(), requestedBy: 'auto-updater',
+        targetVersion: '1.4.0', previousVersion: '1.3.0',
       }));
       await check();
       expect(detected).not.toHaveBeenCalled();
       expect(fs.existsSync(flagPath)).toBe(true);
+
+      if (force) {
+        const receipt = await publishRestartRequestFileAsync(flagPath, JSON.stringify({
+          plannedRestart: true, requestedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+          requestedBy: 'fix-command', bypassHolds: true,
+        }));
+        expect(receipt.published).toBe(true);
+        expect(JSON.parse(fs.readFileSync(flagPath, 'utf8'))).toMatchObject({
+          targetVersion: '1.4.0', previousVersion: '1.3.0', bypassHolds: true,
+        });
+        await check();
+        expect(detected).toHaveBeenCalledOnce();
+        expect(fs.existsSync(flagPath)).toBe(false);
+        return;
+      }
 
       const req = sent as unknown as PeerRunRequest;
       const now = new Date().toISOString();

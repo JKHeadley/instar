@@ -908,7 +908,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     });
     if (activation?.restart && ctx.stateDir) {
       try {
-        requestPairActivationRestart(ctx.stateDir, new Date());
+        await requestPairActivationRestart(ctx.stateDir, new Date());
       } catch (err) {
         // @silent-fallback-ok: the keys are written, so the next restart applies them; until then this machine stays dark.
         console.warn('[pair] could not request a restart; sharing starts at the next one:', err);

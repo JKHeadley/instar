@@ -277,20 +277,19 @@ export class TelegramLifeline {
         ? async request => {
           const secret = this.ingressSecret.get();
           const token = this.projectConfig.authToken;
-          if (!secret || !token) return 'wait';
-          try {
-            const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/planned-restart-lease-admission`, {
-              method: 'POST', redirect: 'error', signal: AbortSignal.timeout(1000),
-              headers: { Authorization: `Bearer ${token}`, [LIFELINE_SECRET_HEADER]: secret, 'X-Instar-AgentId': this.projectConfig.projectName, 'Content-Type': 'application/json' },
-              body: JSON.stringify(request),
-            });
-            if (!response.ok) return 'wait';
-            const reply = await response.json() as { admission?: unknown; requestedBy?: unknown; requestedAt?: unknown };
-            return reply.requestedBy === request.requestedBy && reply.requestedAt === request.requestedAt &&
-              (reply.admission === 'ready' || reply.admission === 'not-applicable') ? reply.admission : 'wait';
-          } catch {
-            return 'wait'; // Unavailable evidence never admits a planned shutdown.
+          if (!secret || !token) throw new Error('Local admission credentials are unavailable');
+          const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/planned-restart-lease-admission`, {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(1000),
+            headers: { Authorization: `Bearer ${token}`, [LIFELINE_SECRET_HEADER]: secret, 'X-Instar-AgentId': this.projectConfig.projectName, 'Content-Type': 'application/json' },
+            body: JSON.stringify(request),
+          });
+          if (!response.ok) throw new Error('Local admission endpoint rejected the request');
+          const reply = await response.json() as { admission?: unknown; requestedBy?: unknown; requestedAt?: unknown };
+          if (reply.requestedBy !== request.requestedBy || reply.requestedAt !== request.requestedAt ||
+              (reply.admission !== 'ready' && reply.admission !== 'not-applicable' && reply.admission !== 'wait')) {
+            throw new Error('Local admission response did not match the request');
           }
+          return reply.admission;
         } : undefined,
       // Amplifier #2 (spec §A.5): the supervisor defers a restart while an in-flight
       // sync-op marker is set. The supervisor is config-less, so the developmentAgent

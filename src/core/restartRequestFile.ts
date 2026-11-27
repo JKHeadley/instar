@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import { hasPlannedRestartDeliveryProof, type PlannedRestartFlag } from './plannedRestartDelivery.js';
 import lockfile from 'proper-lockfile';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
@@ -36,8 +38,8 @@ export function replaceRestartRequestFile(flagPath: string, raw: string, previou
   if (previous !== null && previous !== raw) removeRestartRequestMarkers(flagPath, previous);
 }
 
-export function publishRestartRequestFile(flagPath: string, raw: string): void {
-  withRestartRequestFile(flagPath, () => replaceRestartRequestFile(flagPath, raw, readRestartRequestFile(flagPath)));
+export function publishRestartRequestFile(flagPath: string, raw: string): boolean {
+  return withRestartRequestFile(flagPath, () => publishRestartRequestUnderLock(flagPath, raw, readRestartRequestFile(flagPath)).published);
 }
 
 /** Read the exact request bytes. Missing is distinct from a read failure. */
@@ -80,26 +82,95 @@ export async function withRestartRequestFileAsync<T>(flagPath: string, change: (
   }
 }
 
-export async function publishRestartRequestFileAsync(flagPath: string, raw: string): Promise<void> {
+interface RestartRequestOrder {
+  requestedAt: number;
+  expiresAt: number | null;
+  targetVersion: string | null;
+  bypassHolds: boolean;
+  withdrawable: boolean;
+  record: PlannedRestartFlag;
+}
+
+function requestOrder(raw: string): RestartRequestOrder | null {
   try {
-    publishRestartRequestFile(flagPath, raw);
+    const request = JSON.parse(raw) as (PlannedRestartFlag & { targetVersion?: unknown; requestedBy?: unknown }) | null;
+    if (!request) return null;
+    return {
+      requestedAt: typeof request.requestedAt === 'string' ? Date.parse(request.requestedAt) : NaN,
+      expiresAt: typeof request.expiresAt === 'string' ? Date.parse(request.expiresAt) : null,
+      targetVersion: typeof request.targetVersion === 'string' && request.targetVersion ? request.targetVersion : null,
+      bypassHolds: request.bypassHolds === true,
+      withdrawable: request.requestedBy === 'role-change',
+      record: request,
+    };
+  } catch {
+    // @silent-fallback-ok: legacy or malformed bytes carry no reliable ordering evidence.
+    return null;
+  }
+}
+
+function activeRequestOrder(flagPath: string, current: string, now = Date.now()): RestartRequestOrder | null {
+  if (fs.existsSync(restartRequestMarkerPath(flagPath, current, 'timeout'))) return null;
+  const active = requestOrder(current);
+  if (!active) return null;
+  const withinTtl = active.expiresAt === null || active.expiresAt >= now;
+  return withinTtl || hasPlannedRestartDeliveryProof(path.dirname(flagPath), active.record, now) ? active : null;
+}
+
+function keepCurrentRequest(active: RestartRequestOrder, incoming: RestartRequestOrder | null): boolean {
+  if (!incoming) return active.targetVersion !== null;
+  if (Boolean(active.targetVersion) !== Boolean(incoming.targetVersion)) return active.targetVersion !== null;
+  if (active.targetVersion && active.targetVersion === incoming.targetVersion && active.bypassHolds !== incoming.bypassHolds) {
+    return active.bypassHolds;
+  }
+  // A role-change request can be withdrawn. It cannot satisfy a durable restart obligation.
+  if (active.withdrawable !== incoming.withdrawable) return !active.withdrawable;
+  // Keep the current owner on a timestamp tie. A later lock acquisition proves no newer intent.
+  return active.requestedAt >= incoming.requestedAt;
+}
+
+type RestartPublication =
+  | { published: true }
+  | { published: false; targetVersion: string | null };
+
+/** Compare live obligations and capture the outcome while holding the publication lock. */
+export function publishRestartRequestUnderLock(flagPath: string, raw: string, current: string | null): RestartPublication {
+  const now = Date.now();
+  const active = current === null ? null : activeRequestOrder(flagPath, current, now);
+  const incoming = requestOrder(raw);
+  const keepCurrent = active !== null && keepCurrentRequest(active, incoming);
+  const kept = keepCurrent ? active : incoming;
+  const other = keepCurrent ? incoming : active;
+  // An unversioned force applies to the next restart. A versioned force
+  // belongs to its own activation and cannot authorize a different release.
+  if (kept && !kept.bypassHolds && other?.bypassHolds && other.targetVersion === null) {
+    const combined = { ...kept.record, bypassHolds: true };
+    // Force changes the exact request key, so an old verification deferral no
+    // longer extends this record. Keep a live expiry from the force request.
+    if (kept.expiresAt !== null && kept.expiresAt < now &&
+        other.expiresAt !== null && other.expiresAt >= now) {
+      combined.expiresAt = other.record.expiresAt;
+    }
+    replaceRestartRequestFile(flagPath, JSON.stringify(combined, null, 2), current);
+    return { published: true };
+  }
+  if (keepCurrent) {
+    return { published: false, targetVersion: active.targetVersion };
+  }
+  replaceRestartRequestFile(flagPath, raw, current);
+  return { published: true };
+}
+
+export async function publishRestartRequestFileAsync(flagPath: string, raw: string): Promise<RestartPublication> {
+  const publish = () => publishRestartRequestUnderLock(flagPath, raw, readRestartRequestFile(flagPath));
+  try {
+    return withRestartRequestFile(flagPath, publish);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') throw error;
-    await withRestartRequestFileAsync(flagPath, () => {
-      replaceRestartRequestFile(flagPath, raw, readRestartRequestFile(flagPath));
-    });
+    return await withRestartRequestFileAsync(flagPath, publish);
   }
 }
 
 export function pendingUpdateRestartTarget(flagPath: string, raw: string | null, now = Date.now()): string | null {
-  if (raw === null || fs.existsSync(restartRequestMarkerPath(flagPath, raw, 'timeout'))) return null;
-  try {
-    const row = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: unknown } | null;
-    if (!row || typeof row.targetVersion !== 'string' || !row.targetVersion) return null;
-    return typeof row.expiresAt !== 'string' || Date.parse(row.expiresAt) > now ? row.targetVersion : null;
-  } catch (error) {
-    // @silent-fallback-ok: warn before declining to treat malformed bytes as a pending update.
-    console.warn('[planned restart] Could not parse the pending request:', error);
-    return null;
-  }
+  return raw === null ? null : activeRequestOrder(flagPath, raw, now)?.targetVersion ?? null;
 }

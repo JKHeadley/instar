@@ -5,18 +5,17 @@
  * child has exited but whose marker is still present gets a short settle window
  * (see EXIT_SETTLE_RESTART_HOLD_MS).
  */
-import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
+import {
+  FUTURE_CLOCK_SKEW_MS, VERIFY_RESTART_HOLD_MS, hasPlannedRestartDeliveryProof,
+  plannedRestartDeferralPath, plannedRestartRequestKey, type PlannedRestartFlag,
+} from './plannedRestartDelivery.js';
 
-export const VERIFY_RESTART_HOLD_MS = 3 * 60 * 60_000;
-// Keep the request deliverable for one additional hour after the maximum hold.
-// A consumer that wakes at the boundary must restart, not discard maintenance.
-export const PLANNED_RESTART_DELIVERY_MS = VERIFY_RESTART_HOLD_MS + 60 * 60_000;
+export { PLANNED_RESTART_DELIVERY_MS, VERIFY_RESTART_HOLD_MS, type PlannedRestartFlag } from './plannedRestartDelivery.js';
 const PRE_SPAWN_HOLD_MS = 30_000;
-const FUTURE_CLOCK_SKEW_MS = 5_000;
 /**
  * How long a planned restart keeps waiting after the run child's pid is gone while the in-flight
  * marker is still there. The server acts only when its event loop handles the child's exit; then,
@@ -44,14 +43,6 @@ export const PEER_RESTART_HOLD_MS = 61 * 60_000;
 /** The verifier ticks every 30 s; three missed ticks means it is not speaking for its attempts. */
 export const PEER_HOLD_HEARTBEAT_MAX_AGE_MS = 90_000;
 
-export interface PlannedRestartFlag {
-  requestedAt?: string;
-  plannedRestart?: boolean;
-  /** Explicit operator forceRestart already bypasses the updater's own holds. */
-  bypassHolds?: boolean;
-  expiresAt?: string;
-}
-
 export interface PlannedRestartVerifyState {
   pending: boolean;
   pendingSinceMs: number | null;
@@ -61,7 +52,6 @@ export interface PlannedRestartVerifyState {
   deferredDelivery?: boolean;
 }
 
-const deferredMarkerPath = (stateDir: string) => path.join(stateDir, 'state', 'restart-local-verify-deferred.json');
 export const peerHoldPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'peer-hold.json');
 /**
  * A green run's merge is in progress. `settling` covers the moment between the run child exiting
@@ -77,7 +67,6 @@ export const MERGE_HANDOFF_RESTART_HOLD_MS = 10 * 60_000;
  * applies to another run.
  */
 export const exitSeenPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'inflight-exit-seen.json');
-const requestKey = (request: PlannedRestartFlag) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
 
 function processExists(pid: number): boolean {
   try {
@@ -271,8 +260,8 @@ export function markPlannedRestartDeferred(stateDir: string, request: PlannedRes
   const expiresAt = typeof request.expiresAt === 'string' ? Date.parse(request.expiresAt) : Number.NaN;
   if (Number.isFinite(expiresAt) && now > expiresAt) return false;
   try {
-    SafeFsExecutor.atomicWriteJsonSync(deferredMarkerPath(stateDir), {
-      requestKey: requestKey(request), deferredAt: now,
+    SafeFsExecutor.atomicWriteJsonSync(plannedRestartDeferralPath(path.join(stateDir, 'state')), {
+      requestKey: plannedRestartRequestKey(request), deferredAt: now,
     }, { operation: 'src/core/PlannedRestartVerifyGuard.ts:markPlannedRestartDeferred', mode: 0o600 });
     return true;
   } catch {
@@ -284,18 +273,6 @@ export function markPlannedRestartDeferred(stateDir: string, request: PlannedRes
   }
 }
 
-/** Only a request actually deferred for verification gets the extended TTL. */
-export function recentlyRequestedPlannedRestart(stateDir: string, request: PlannedRestartFlag | null, now: number = Date.now()): boolean {
-  if (!request || typeof request !== 'object' || request.plannedRestart !== true || typeof request.requestedAt !== 'string') return false;
-  const at = Date.parse(request.requestedAt);
-  if (!Number.isFinite(at) || at > now + FUTURE_CLOCK_SKEW_MS || now - at > PLANNED_RESTART_DELIVERY_MS) return false;
-  try {
-    const marker = JSON.parse(fs.readFileSync(deferredMarkerPath(stateDir), 'utf8')) as Record<string, unknown>;
-    return marker?.requestKey === requestKey(request)
-      && typeof marker.deferredAt === 'number' && Number.isFinite(marker.deferredAt)
-      && marker.deferredAt >= at - FUTURE_CLOCK_SKEW_MS && marker.deferredAt <= now + FUTURE_CLOCK_SKEW_MS;
-  } catch {
-    // @silent-fallback-ok — no readable proof means the original one-hour TTL applies.
-    return false;
-  }
+export function recentlyRequestedPlannedRestart(stateDir: string, request: PlannedRestartFlag | null, now = Date.now()): boolean {
+  return hasPlannedRestartDeliveryProof(path.join(stateDir, 'state'), request, now);
 }

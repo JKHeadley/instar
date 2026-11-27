@@ -1999,9 +1999,11 @@ export class LeaseCoordinator {
         context: { requiredWindowMs: admissionMinimumMs, ceilingMs: v.ceilingMs, ceilingSource: v.ceilingSource },
       });
     }
-    const note = v.clamped
-      ? `the window was clamped to its ${v.clamped} (${v.windowMs} ms; ${v.clamped === 'ceiling' ? `the ${v.ceilingSource} cap` : 'the lease TTL plus the margin'}) from a base of ${v.baseMs} ms`
-      : null;
+    const note = admissionMinimumMs !== null && v.ceilingMs < admissionMinimumMs
+      ? `planned restart window target is ${admissionMinimumMs} ms but the ${v.ceilingSource} ceiling is ${v.ceilingMs} ms`
+      : v.clamped
+        ? `the window was clamped to its ${v.clamped} (${v.windowMs} ms; ${v.clamped === 'ceiling' ? `the ${v.ceilingSource} cap` : 'the lease TTL plus the margin'}) from a base of ${v.baseMs} ms`
+        : null;
     return { windowMs: v.windowMs, note };
   }
 

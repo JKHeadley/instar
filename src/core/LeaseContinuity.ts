@@ -99,6 +99,17 @@ export function clampSampleMs(ms: unknown, unsignedCeilingMs: number): number | 
   return Math.max(0, Math.min(unsignedCeilingMs, ms));
 }
 
+/** Without a lease coordinator, positive solo evidence is required for a configured holder. */
+export function admissionWithoutLeaseCoordinator(
+  preferred: string | null | undefined,
+  self: string | undefined,
+  coordinationEnabled: boolean,
+  isSolo: () => boolean,
+): 'not-applicable' | 'wait' {
+  if (!preferred && !coordinationEnabled && !self) return 'not-applicable';
+  return preferred && preferred === self && isSolo() ? 'not-applicable' : 'wait';
+}
+
 export function resolveWindowMs(i: WindowInputs): WindowVerdict {
   const marginMs = resolveMarginMs(i);
   const samples = i.bootSamplesMs.map((s) => clampSampleMs(s, i.unsignedCeilingMs)).filter((s): s is number => s !== null);

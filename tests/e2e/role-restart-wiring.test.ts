@@ -18,6 +18,9 @@ describe('role restart wiring in server.ts', () => {
     expect(block).toContain('scheduler?.pause()');
     expect(block).toContain('scheduler?.resume()');
   });
+  it('only reconciles immediately if the role changed during publication', () => {
+    expect(block).toMatch(/\.finally\(\(\) => \{\s*roleRestartInFlight = false;\s*if \(coordinator\.isAwake !== nowAwake\) reconcileRole\(\);/);
+  });
   it('a throttled or failed restart is retried', () => expect(block).toContain('setInterval(reconcileRole, 60_000)'));
   it('follows every scheduler-enabled lease transition, independent of optional self-heal policy', () => {
     expect(block).toContain('applies: config.scheduler.enabled');
