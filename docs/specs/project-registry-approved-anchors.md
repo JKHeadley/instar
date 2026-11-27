@@ -58,6 +58,7 @@ The project registry remains responsible for stored state. The pilot admits a wr
 ## Frontloaded Decisions
 
 - Use operator-session authorization for selecting and disclosing an original source.
+- The [Studio standing-summary pilot](studio-project-purpose-pilot.md) may display one preselected original message as advisory context after the verified operator directly authorizes that exact source, destination, and machine. The reviewed release records that exact authorization as a pinned grant. This grants no general selection capability and does not alter the operator-session requirement for writing confirmed registry state.
 - Preserve exact message text. Reuse the adapter's exact bounded history lookup and reject sources outside the available local history.
 - Use the existing active project binding and optimistic version checks. Restore the prior in-memory anchor if a legacy file write fails.
 - This writer accepts one source reference for one project. Job and Projects topic 147616 owns the proposal and batch interfaces.

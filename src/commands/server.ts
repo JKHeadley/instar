@@ -25349,6 +25349,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
     }
 
+    const projectAnchorStager = _contextLayers?.standingPacket();
+    const stopProjectAnchorRefresh = projectAnchorStager
+      ? (await import('../monitoring/contextLayers/standingPacketBoot.js'))
+          .wireProjectAnchorRegistry(projectAnchorStager, initiativeTracker, {
+            stateDir: config.stateDir,
+            history: telegram,
+            machineId: coordinator.identity?.machineId,
+          })
+      : undefined;
+
     // ── Swap-continuity anti-thrash spine (swap-continuity-antithrash §3/§4) ──
     // SwapLedger + SwapAntiThrashEngine + SwapWorkGate. Constructed and
     // hydrated UNCONDITIONALLY (R4-L3): the ledger loads at every boot
@@ -38915,6 +38925,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       stopGraphDelegationSubscription?.();
       await graphDelegationManager.close();
       if(conversationGraphDefault)await conversationGraphDefault.close();else await conversationGraphReplicationRuntime?.close();
+      stopProjectAnchorRefresh?.();
       shutdownStep = 'http-server';
       await server.stop();
       shutdownStep = 'sqlite';

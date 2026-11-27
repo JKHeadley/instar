@@ -10,13 +10,16 @@
  * That is signal; the only action is the fallback the stager already took
  * (nothing staged, so the hook prints today's RF-fitted block).
  */
+import type { InitiativeTracker } from '../../core/InitiativeTracker.js';
+import { createStandingProjectAnchorLookup, readRegistryApprovedProjectAnchor, type ProjectAnchorHistoryReader } from '../../core/ProjectAnchorRegistry.js';
+import { createProjectPurposePilotReader } from '../../core/ProjectPurposePilot.js';
 import type { TopicIntentFile } from '../../core/TopicIntent.js';
 import { DegradationReporter } from '../DegradationReporter.js';
 import { featureEvidence } from '../FeatureEvidenceLog.js';
 import type { ContextLayers } from './contextLayersBoot.js';
 import { CONTEXT_LAYERS_FEATURE_ID } from './contextLayersBoot.js';
 import { isSystemOrProxyMessage } from '../../messaging/shared/isSystemOrProxyMessage.js';
-import { StandingPacketStager, type PacketRowSource } from './standingPacket.js';
+import { StandingPacketStager, type PacketRowSource, type ReadProjectAnchor } from './standingPacket.js';
 import { topicRef } from '../../messaging/shared/topicRef.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../../core/frameworkFacts.js';
 
@@ -59,6 +62,7 @@ export function wireStandingPacket(o: {
   stateDir: string;
   topicMemory: PacketTopicMemory;
   intent?: (topicId: number) => TopicIntentFile | null;
+  readProjectAnchor?: ReadProjectAnchor;
   /** Running sessions on this machine (SessionManager.listRunningSessions). */
   sessions: () => Array<{ id: string; telegramTopicId?: number | null; framework?: string }>;
   debounceMs?: number;
@@ -67,7 +71,7 @@ export function wireStandingPacket(o: {
   const stager = new StandingPacketStager({
     stateDir: o.stateDir,
     store: o.layers.store,
-    rows: packetRowSource(o.topicMemory),
+    rows: { ...packetRowSource(o.topicMemory), readProjectAnchor: o.readProjectAnchor },
     intent: o.intent,
     debounceMs: o.debounceMs,
     sessionsForTopic: (topicId) => o.sessions()
@@ -95,4 +99,22 @@ export function wireStandingPacket(o: {
   });
   o.layers.attachStandingPacket(stager);
   return stager;
+}
+
+export function wireProjectAnchorRegistry(
+  stager: StandingPacketStager,
+  tracker: Pick<InitiativeTracker, 'list' | 'onProjectAnchorChanged'>,
+  pilot?: { stateDir: string; history: ProjectAnchorHistoryReader | undefined; machineId?: string; allowedDesignationDigest?: string },
+): () => void {
+  stager.setProjectAnchorReader(createStandingProjectAnchorLookup({
+    listProjects: () => tracker.list({ kind: 'project' }),
+    readApproved: readRegistryApprovedProjectAnchor,
+    ...(pilot ? { readVerifiedProposal: createProjectPurposePilotReader(pilot.stateDir, pilot.history, pilot.machineId, pilot.allowedDesignationDigest) } : {}),
+  }));
+  return tracker.onProjectAnchorChanged(({ conversationKeys }) => {
+    for (const key of conversationKeys) {
+      const topic = /^telegram:([1-9]\d{0,14})$/.exec(key)?.[1];
+      if (topic) stager.request(topic);
+    }
+  });
 }

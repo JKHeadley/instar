@@ -1,5 +1,5 @@
 import { buildProjectCoverage } from '../core/ChiefOfStaffProjectProgress.js';
-import { isProjectAnchorSourceMessage, isValidProjectAnchor, type ProjectAnchorSourceMessage } from '../core/ProjectAnchorRegistry.js';
+import { isProjectAnchorSourceMessage, isValidProjectAnchor, readVerifiedProjectAnchorSource } from '../core/ProjectAnchorRegistry.js';
 import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
@@ -27,9 +27,7 @@ import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets
 import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
 import { userCorpusView } from '../monitoring/contextLayers/userCorpus.js';
 import { anchorLedgerView } from '../monitoring/contextLayers/anchorLedger.js';
-import { standingPacketView } from '../monitoring/contextLayers/standingPacket.js';
 import { CodexSeedService } from '../monitoring/contextLayers/codexSeed.js';
-import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.js';
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
 import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
@@ -10124,10 +10122,22 @@ export function createRoutes(ctx: RouteContext): Router {
     let intent: ReturnType<NonNullable<typeof ctx.topicIntentStore>['read']> | null = null;
     try { intent = ctx.topicIntentStore ? ctx.topicIntentStore.read(Number(raw)) : null; } catch { intent = null; /* @silent-fallback-ok — without the topic-intent file the live set has no phase and no re-references (the anchor route's behaviour) */ }
     try {
-      res.json({ topicId: Number(raw), ...standingPacketView(stager, ctx.config.stateDir, raw, packetRowSource(ctx.topicMemory), intent, ctx.contextLayers.store) });
+      res.json({ topicId: Number(raw), ...stager.view(raw, intent) });
     } catch (e) { // @silent-fallback-ok — reported to the caller as a 500 with its reason
       res.status(500).json({ error: 'standing packet view failed', detail: operatorError(e, ctx.config.stateDir).slice(0, 200) });
     }
+  });
+  // Claude Code's local recovery hook confirms the exact staged packet still
+  // matches the approved project anchor before forwarding it.
+  router.get('/topic/:id/standing-packet/anchor-current', (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^\d{1,15}$/.test(topicKey) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    const stager = ctx.contextLayers?.standingPacket();
+    res.json({ current: stager?.stagedProjectAnchorCurrent(topicKey, packetHash) ?? false });
   });
   // context-budget-layered-summaries §9.6 Codex column (Phase 1 S17): the Codex
   // next-prompt seed. The per-prompt hook asks, on a Codex prompt naming a topic,
@@ -10136,8 +10146,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // the topic's standing packet is built, verified and returned in its disclosure
   // marker. The hook prints it, then acknowledges (the ack writes the seeded
   // marker, a record only); "already seeded" is read from the rollout itself,
-  // so a delivery Codex dropped is retried once. An unverified packet is never returned. Bearer only; 503 when the
-  // layers are off.
+  // so a delivery Codex dropped is retried once. An unverified packet is never returned.
+  // A proposed purpose also requires a bind token from the live destination session.
   let codexSeedSvc: { stager: unknown; svc: import('../monitoring/contextLayers/codexSeed.js').CodexSeedService } | null = null;
   const codexSeed = () => {
     const stager = ctx.contextLayers?.standingPacket() ?? null;
@@ -10156,19 +10166,43 @@ export function createRoutes(ctx: RouteContext): Router {
           },
           stageNow: (topic) => {
             const r = stager.stageNow(topic);
-            return r.ok ? { ok: true, delivered: r.packet.delivered, sha256: r.pointer.sha256 } : { ok: false, reason: r.reason };
+            return r.ok ? {
+              ok: true, delivered: r.packet.delivered, sha256: r.pointer.sha256,
+              projectAnchorProposed: r.packet.projectAnchorProposed,
+            } : { ok: false, reason: r.reason };
           },
         }),
       };
     }
     return codexSeedSvc.svc;
   };
-  router.post('/context-budget/codex-seed', (req, res) => {
+  router.post('/context-budget/codex-seed', async (req, res) => {
     const svc = codexSeed();
     if (!svc) { res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
     const b = (req.body ?? {}) as Record<string, unknown>;
     try {
-      res.json(svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256 }));
+      const token = req.get('X-Instar-Bind-Token');
+      const topicId = typeof b.topicId === 'string' || typeof b.topicId === 'number' ? Number(b.topicId) : NaN;
+      const bind = token && Number.isSafeInteger(topicId) ? ctx.conversationBindAuth?.verify(token) : null;
+      const destination = bind && bind.bootstrapConversationIds.includes(topicId) ?
+        (ctx.sessionManager?.listRunningSessions?.() ?? []).find((s) =>
+          s.tmuxSession === bind.sessionName && s.telegramTopicId === topicId &&
+          s.framework === CODEX_CLI_FRAMEWORK && s.claudeSessionId === b.sessionId) : undefined;
+      const offer = svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256, allowProjectProposal: !!destination });
+      if (offer.deliver && offer.projectProposalPacketHash) {
+        if (!destination || !token ||
+          !await ctx.sessionManager?.matchesCurrentConversationBindToken?.(destination.tmuxSession, destination.id, token) ||
+          !ctx.contextLayers?.standingPacket()?.stagedProjectAnchorCurrent(String(topicId), offer.projectProposalPacketHash)) {
+          svc.finishProjectProposalOffer(false);
+          res.json({ deliver: false, reason: 'not-this-topic-session' });
+          return;
+        }
+        svc.finishProjectProposalOffer(true);
+        const { deliver, epoch, carrier, text } = offer;
+        res.json({ deliver, epoch, carrier, text });
+        return;
+      }
+      res.json(offer);
     } catch (e) {
       res.status(500).json({ deliver: false, error: 'codex seed failed', detail: operatorError(e, res.app?.locals?.stateDir).slice(0, 200) });
     }
@@ -26593,16 +26627,6 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: 'project-membership-is-missing-or-ambiguous' });
       return;
     }
-    const verifiedOwner = ctx.telegram?.getVerifiedOwner();
-    const readOwnerText = (source: ProjectAnchorSourceMessage): string | undefined => {
-      if (verifiedOwner === undefined) return undefined;
-      const topic = Number(source.conversationKey.slice('telegram:'.length));
-      const id = Number(source.messageId);
-      if (!Number.isSafeInteger(topic) || !Number.isSafeInteger(id)) return undefined;
-      const row = ctx.telegram?.findTopicMessage(topic, id, Date.parse(source.at)).entry;
-      if (row?.fromUser === true && row.forwarded === false && row.telegramUserId === verifiedOwner &&
-        Date.parse(row.timestamp) === Date.parse(source.at)) return row.text;
-    };
     const project = matches[0]!;
     if (project.version !== expectedVersion) {
       res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
@@ -26614,7 +26638,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const anchor = {
       revision: (project.approvedProjectAnchorRevision ?? 0) + 1,
-      purpose: readOwnerText(sourceMessage),
+      purpose: readVerifiedProjectAnchorSource(ctx.telegram ?? undefined, sourceMessage),
       sourceMessages: [sourceMessage],
       done: [],
       outOfScope: [],

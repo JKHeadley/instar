@@ -20,7 +20,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import { PostUpdateMigrator, STANDING_PACKET_PY, SEED_CARRIER_PY } from '../../src/core/PostUpdateMigrator.js';
 import { CompactionCanary } from '../../src/monitoring/compactionCanary.js';
@@ -144,6 +147,22 @@ describe('the standing packet through the real session-start compact hook', () =
     expect(out.stdout.length).toBeLessThanOrEqual(10_000);
   });
 
+  it('recovers ordinary Claude context when a staged proposal fails its live check', () => {
+    const a = agent();
+    const purpose = 'Private proposed fixture purpose.';
+    a.stager.setProjectAnchorReader(() => ({
+      status: 'proposed', projectId: 'context-budget', purpose,
+      source: { conversationKey: 'telegram:141385', messageId: '101', at: '2026-11-26T22:00:00.000Z' },
+    }));
+    const staged = a.stager.stageNow(T);
+    expect(staged.ok && staged.packet.delivered.includes(purpose)).toBe(true);
+    const out = compact(a, 'sess-proposal-unavailable');
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain(MARKER);
+    expect(out.stdout).not.toContain(purpose);
+    expect(out.stdout).not.toContain('--- STANDING PACKET');
+  });
+
   it('recovery switched off: no packet even when staged — today\'s behaviour exactly (the env-only read resolves startup)', () => {
     const a = agent({ recoveryOff: true });
     a.stager.stageNow(T);
@@ -213,7 +232,7 @@ describe('the fitter refuses a spoofed packet section', () => {
 });
 
 describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
-  function staged(o: { mutate?: (p: Record<string, unknown>) => void; text?: string; topic?: string } = {}) {
+  function prepareStaged(o: { mutate?: (p: Record<string, unknown>) => void; text?: string; topic?: string } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sph-py-')); dirs.push(root);
     const dir = path.join(root, 'state', 'context-layers', '_standing');
     fs.mkdirSync(dir, { recursive: true });
@@ -223,7 +242,10 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
     o.mutate?.(p);
     fs.writeFileSync(path.join(dir, `${T}.json`), JSON.stringify(p));
     fs.writeFileSync(path.join(dir, `${T}.md`), body);
-    return spawnSync('python3', ['-c', STANDING_PACKET_PY, root, o.topic ?? T], { encoding: 'utf-8' }).stdout;
+    return { root, hash: p.sha256, args: ['-c', STANDING_PACKET_PY, root, o.topic ?? T] };
+  }
+  function staged(o?: Parameters<typeof prepareStaged>[0]) {
+    return spawnSync('python3', prepareStaged(o).args, { encoding: 'utf-8' }).stdout;
   }
   it('prints a valid packet, nonce-delimited', () => {
     expect(staged()).toMatch(/^--- STANDING PACKET [0-9a-f]{8} ---\n=== STANDING PACKET \(topic 141133\) ===\nhello\n=== END STANDING PACKET ===\n--- END STANDING PACKET [0-9a-f]{8} ---\n$/);
@@ -231,6 +253,7 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
   it.each([
     ['older than 7 days', { mutate: (p: Record<string, unknown>) => { p.builtAt = Date.now() - 8 * 86_400_000; } }],
     ['built in the future', { mutate: (p: Record<string, unknown>) => { p.builtAt = Date.now() + 3_600_000; } }],
+    ['project anchor freshness cannot be confirmed', { mutate: (p: Record<string, unknown>) => { p.projectAnchorHash = 'a'.repeat(64); } }],
     ['not verified', { mutate: (p: Record<string, unknown>) => { p.verified = false; } }],
     ['another topic', { mutate: (p: Record<string, unknown>) => { p.topicKey = '999'; } }],
     ['a length mismatch', { mutate: (p: Record<string, unknown>) => { p.chars = 3; } }],
@@ -239,6 +262,29 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
     ['a non-numeric topic', { topic: '-141133' }],
   ])('prints nothing when %s', (_n, o) => {
     expect(staged(o as Parameters<typeof staged>[0])).toBe('');
+  });
+  it('prints an anchored packet only after the local server confirms its exact hash', async () => {
+    const { root, hash, args } = prepareStaged({ mutate: (p) => { p.projectAnchorHash = 'a'.repeat(64); } });
+    let current = true;
+    const server = createServer((req, res) => {
+      const requestMatches = req.url === `/topic/${T}/standing-packet/anchor-current?packetHash=${hash}`
+        && req.headers.authorization === 'Bearer fixture-token';
+      res.end(JSON.stringify({ current: current && requestMatches }));
+    }).listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('missing fixture port');
+      fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ port: address.port }));
+      const run = () => promisify(execFile)('python3', args, {
+        env: { ...process.env, INSTAR_AUTH_TOKEN: 'fixture-token' },
+      });
+      expect((await run()).stdout).toContain('hello');
+      current = false;
+      expect((await run()).stdout).toBe('');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
   it('counts UTF-16 units like the server: an emoji-heavy packet at exactly 6,500 units prints, one more does not', () => {
     const at = '🎯'.repeat(3250);

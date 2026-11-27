@@ -389,6 +389,7 @@ const KEEP_INSTRUCTIONS_PY = [
  * (the fitter keeps that section whole), and nothing otherwise: absent,
  * unverified, stale (over 7 days), a hash or length mismatch, or over the
  * hook ceiling all print nothing and the hook falls back to today's block.
+ * A packet carrying a project anchor also requires live confirmation of its revision.
  * Schema written by `stageStandingPacket`
  * (src/monitoring/contextLayers/standingPacket.ts); keep the two in step.
  */
@@ -420,6 +421,23 @@ export const STANDING_PACKET_PY = [
   "n=len(t.encode('utf-16-le'))//2",
   "if n!=p.get('chars') or n>6500:",
   '    sys.exit(0)',
+  "if 'projectAnchorHash' in p:",
+  '    try:',
+  '        import http.client',
+  "        config=json.load(open(os.path.join(root,'config.json')))",
+  "        port=config.get('port',4040)",
+  "        token=os.environ.get('INSTAR_AUTH_TOKEN') or config.get('authToken')",
+  "        if not isinstance(port,int) or not 1<=port<=65535 or not isinstance(token,str) or not token:",
+  '            sys.exit(0)',
+  "        agent=os.environ.get('INSTAR_AGENT_ID') or config.get('projectName','')",
+  "        route=f'/topic/{topic}/standing-packet/anchor-current?packetHash={h}'",
+  "        conn=http.client.HTTPConnection('127.0.0.1',port,timeout=2)",
+  "        conn.request('GET',route,headers={'Authorization':'Bearer '+token,'X-Instar-AgentId':agent})",
+  '        res=conn.getresponse()',
+  "        if res.status!=200 or json.loads(res.read(256)).get('current') is not True:",
+  '            sys.exit(0)',
+  '    except Exception:',
+  '        sys.exit(0)',
   "sys.stdout.buffer.write(('--- STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii')+body+(chr(10)+'--- END STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii'))",
   'sys.stdout.buffer.flush()',
 ].join('\n');
@@ -22768,6 +22786,7 @@ print(json.dumps({"topicId":int(sys.argv[1]),"sessionId":str(d.get("session_id")
   if [ -n "\$CB_SEED_REQ" ]; then
     CB_SEED_RESP=\$(curl -s --max-time 3 -X POST \\
       -H "Authorization: Bearer \${AUTH_TOKEN}" -H "X-Instar-AgentId: \${AGENT_ID}" -H 'Content-Type: application/json' \\
+      -H "X-Instar-Bind-Token: \${INSTAR_BIND_TOKEN:-}" \\
       -d "\$CB_SEED_REQ" "http://localhost:\${PORT}/context-budget/codex-seed" 2>/dev/null)
     CB_SEED_TEXT=\$(printf '%s' "\$CB_SEED_RESP" | python3 -c 'import sys,json
 try:
