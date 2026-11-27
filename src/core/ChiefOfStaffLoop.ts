@@ -749,6 +749,12 @@ export class ChiefOfStaffLoop {
       currentChecklistReadable && !project.binding.pausedBy && this.safe(() => this.d.holdsLease(), false));
   }
 
+  /** A binding's absence is meaningful only in a complete, non-flushing union. */
+  bindingPreviewKeys(): ReadonlySet<string> | null {
+    const snapshot = this.readOwnerNeedsRecord((union) => new Set(boundProjects(union).map((project) => project.conversationKey)));
+    return snapshot.available ? snapshot.record : null;
+  }
+
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
   projectsSummary(): ProjectSummaryRow[] {
     try { return this.summarizeProjects(this.d.journal.loadUnion()); }

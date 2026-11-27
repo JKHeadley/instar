@@ -33,7 +33,7 @@ function keypair() {
 }
 const ctxV = () => ({ countDroppedField: () => {}, countJailReject: () => {} });
 
-function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean }) {
+function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean; preview?: boolean; incomplete?: boolean }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-checkin-')); dirs.push(dir);
   const keys = keypair();
   const tracker = new InitiativeTracker(dir);
@@ -43,7 +43,7 @@ function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean }) {
     journal: {
       emit: (recordKey, build) => { const hlc: HlcTimestamp = { physical: ++clock, logical: 0, node: 'm1' }; const data = build(hlc, 'm1'); if (!data) return { outcome: 'dropped' }; const v = chiefOfStaffRecordStoreSchema.validate(data, ctxV()); if (!v) return { outcome: 'dropped:schema' }; entries.push({ data: { ...v, recordKey, hlc, op: 'put', origin: 'm1' }, origin: 'm1' }); return { outcome: 'emitted', seq: ++seq }; },
       loadUnion: () => entries.slice(),
-      loadUnionCompleteReadOnly: () => entries.slice(),
+      loadUnionCompleteReadOnly: () => opts.incomplete ? null : entries.slice(),
     },
     verifyRenewal: (r) => verify(`cos-renewal:${r.renewedAt}:${r.renewedVia}:${r.principal}:${r.machine}`, String(r.machineSignature), keys.pub),
     gather: async () => { throw new Error('n/a'); }, judge: async () => null,
@@ -62,7 +62,8 @@ function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean }) {
     startTime: new Date(), scheduler: null,
     sessionManager: { listRunningSessions: () => [], killSession: () => true },
     state: { get: (k: string) => state.get(k) ?? null, getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, readOnly: false },
-    liveConfig: { get: (_k: string, fb?: unknown) => fb },
+    liveConfig: { get: (key: string, fallback?: unknown) => key === 'chiefOfStaff.bindingBatchPreview' ? opts.preview ?? fallback : fallback },
+    verifyDashboardOperatorSession: (token?: string) => token === 'operator-session',
     ...(opts.loop ? { chiefOfStaffLoop: loop } : {}),
     ...(opts.progress || opts.anchor ? { initiativeTracker: tracker } : {}),
     ...(opts.anchor ? {
@@ -180,5 +181,37 @@ describe('source-backed project purpose', () => {
     });
     await request(a).put(route).set(operator).send({ ...body, expectedVersion: saved.version })
       .expect(409, { error: 'project-anchor-already-exists' });
+  });
+});
+
+describe('read-only Chief of Staff binding batch preview', () => {
+  const route = '/chief-of-staff/project-binding-preview';
+  const operator = { ...auth, 'X-Instar-Operator-Session': 'operator-session' };
+  const draft = {
+    version: 1, id: 'a'.repeat(32), createdAt: '2026-11-26T20:00:00Z',
+    sourceMessageRefs: ['telegram:1/2'],
+    items: [{
+      kind: 'project-bind', title: 'Fixture project',
+      binding: {
+        conversationKey: 'telegram:123', goal: 'Fixture goal',
+        doneDefinition: [{ id: 'check', kind: 'deterministic', text: 'Fixture check' }],
+        checkCadenceHours: 24, linked: {},
+      },
+    }],
+  };
+
+  it('defaults off, requires an owner session, validates the draft, and writes nothing', async () => {
+    await request(app({ loop: true }).a).post(route).set(operator).send({ draft }).expect(503);
+    await request(app({ loop: true, preview: true, incomplete: true }).a)
+      .post(route).set(operator).send({ draft }).expect(503);
+    const { a, entries } = app({ loop: true, preview: true });
+    await request(a).post(route).set(auth).send({ draft }).expect(403);
+    await request(a).post(route).set(operator).send({ draft: null }).expect(400);
+    const response = await request(a).post(route).set(operator).send({ draft }).expect(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.body).toMatchObject({
+      mode: 'preview', items: [{ item: draft.items[0], disposition: 'proposed-binding' }],
+    });
+    expect(entries).toEqual([]);
   });
 });

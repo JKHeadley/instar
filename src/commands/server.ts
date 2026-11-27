@@ -24250,7 +24250,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
       if (sharedIntelligence && stopGateDb) {
         try {
-          const { UnjustifiedStopGate } = await import('../core/UnjustifiedStopGate.js');
+          const { UnjustifiedStopGate, resolveStopGateReplayInput } = await import('../core/UnjustifiedStopGate.js');
           const { stopGateBreakerKey } = await import('../core/StopGateBreakerState.js');
           const { resolveDevAgentGate } = await import('../core/devAgentGate.js');
           // Turn-End Self-Deferral Guard (Phase A / shadow) — dev-gated dark:
@@ -24264,6 +24264,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           unjustifiedStopGate = new UnjustifiedStopGate({
             intelligence: sharedIntelligence,
             selfDeferralGuardEnabled,
+            // CMT-2204: scrubbed replay input on the provenance row, live on dev
+            // agents and dark on the fleet (byte-identical rows there).
+            recordReplayInput: resolveStopGateReplayInput(config),
             breakerStateStore: stopGateDb,
             breakerKey: stopGateBreakerKey({
               defaultFramework: config.sessions?.framework,
@@ -39011,15 +39014,16 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Get the path to the CLI entry point
     const cliPath = path.resolve(__dirname, '../cli.js');
+    const projectDir = path.resolve(config.projectDir);
 
-    // Use shell-safe command construction: pass node + args as separate tokens
-    // tmux new-session runs the remainder as a shell command, so we quote each arg
-    const nodeCmd = ['node', cliPath, 'server', 'start', '--foreground']
+    // Keep the launcher's Node runtime and project directory in the detached process.
+    // tmux can have an older PATH, and directory discovery can select an enclosing checkout.
+    const nodeCmd = [process.execPath, cliPath, 'server', 'start', '--foreground', '--dir', projectDir]
       .map(arg => `'${arg.replace(/'/g, "'\\''")}'`)
       .join(' ');
 
     try {
-      execFileSync(tmuxPath, ['new-session', '-d', '-s', serverSessionName, '-c', config.projectDir, nodeCmd], { stdio: 'ignore' });
+      execFileSync(tmuxPath, ['new-session', '-d', '-s', serverSessionName, '-c', projectDir, nodeCmd], { stdio: 'ignore' });
       console.log(pc.green(`Server started in tmux session: ${pc.bold(serverSessionName)}`));
       console.log(`  Port: ${config.port}`);
       console.log(`  Attach: tmux attach -t '=${serverSessionName}'`);
