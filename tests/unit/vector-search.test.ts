@@ -15,11 +15,12 @@
  * 9. Graceful behavior when sqlite-vec extension isn't loaded
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
+import { createRealEmbeddingProvider } from '../helpers/realEmbeddingProvider.js';
 import { VectorSearch } from '../../src/memory/VectorSearch.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -31,9 +32,11 @@ type Database = import('better-sqlite3').Database;
 let sharedProvider: EmbeddingProvider;
 
 beforeAll(async () => {
-  sharedProvider = new EmbeddingProvider();
+  sharedProvider = createRealEmbeddingProvider();
   await sharedProvider.initialize();
-}, 120_000); // Model download can take a while on first run
+}, 120_000); // Only local model initialization; acquisition happens before workers.
+
+afterAll(async () => { await sharedProvider?.dispose(); });
 
 // ─── Helpers ──────────────────────────────────────────────────────
 

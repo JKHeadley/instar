@@ -44,6 +44,21 @@ describe('experience review is delivered through the production update path', ()
       for (const name of ['reviewer-lessons-aware.md', 'report.md']) expect(fs.readFileSync(path.join(dir, 'templates', name), 'utf8')).toBe(fs.readFileSync(path.join(source, 'templates', name), 'utf8'));
     }
   });
+  it('refreshes the routine Codex policy loader in every installed default skill and preserves custom skills', () => {
+    for (const root of roots) {
+      const dir = seed(root); fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'scripts/cross-model-review.mjs'), 'old shipped loader');
+    }
+    const custom = path.join(home, '.agents/skills/custom-review/scripts/cross-model-review.mjs');
+    fs.mkdirSync(path.dirname(custom), { recursive: true }); fs.writeFileSync(custom, 'custom loader');
+    update(); update();
+    for (const root of roots) {
+      const actual = fs.readFileSync(path.join(home, root, 'skills/spec-converge/scripts/cross-model-review.mjs'), 'utf8');
+      expect(actual).toBe(fs.readFileSync(path.join(source, 'scripts/cross-model-review.mjs'), 'utf8'));
+      expect(actual).toContain('out.subscriptionPool = { routineCodexPlacement: cfg.subscriptionPool.routineCodexPlacement }');
+    }
+    expect(fs.readFileSync(custom, 'utf8')).toBe('custom loader');
+  });
   it('is idempotent and keeps a backup of replaced shipped templates', () => {
     const dir = seed('.agents'); update();
     const first = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');

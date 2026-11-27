@@ -2,11 +2,11 @@
  * Pool core for the anthropic-interactive-pool adapter.
  *
  * Manages a fixed-size set of long-lived `claude` REPL sessions in tmux.
- * Each session can serve many prompts before being retired (auto-retire
- * defends against context-window overflow).
+ * Each session serves exactly ONE prompt and is then retired and replaced
+ * (SEC-172: no judgment ever sees another judgment's text).
  *
  * Lifecycle:
- *   spawning → ready ⇄ busy → retiring → dead
+ *   spawning → ready → busy → retiring → dead
  *
  * Allocation: LRU (least-recently-used ready session wins).
  * Recycling: when a session is retired, the pool spawns a fresh one in its
@@ -70,6 +70,40 @@ export interface PoolEvents {
 const MAX_REPLACEMENT_ATTEMPTS = 5;
 /** Maximum backoff between retries (ms). */
 const MAX_REPLACEMENT_BACKOFF_MS = 30_000;
+
+/**
+ * SEC-172 — the locked-down argv for a pool REPL. Pool sessions only ever
+ * answer internal judgment prompts, and those prompts can carry text from
+ * peer agents, Slack members or team members. So a pool REPL gets:
+ *
+ *   - `--tools ''`            no built-in tools at all (not just "not allowed":
+ *                             the model is offered none, so a talked-into tool
+ *                             call has nothing to run);
+ *   - `--strict-mcp-config`   with no `--mcp-config`, no MCP servers load;
+ *   - `--setting-sources user` the agent's project CLAUDE.md, project hooks and
+ *                             project settings stay out (parity with the
+ *                             hardened `claude -p` reviewer door);
+ *   - `--disable-slash-commands` a prompt that starts with "/" is text, never a
+ *                             command or skill.
+ *
+ * `--dangerously-skip-permissions` stays: with no tools it grants nothing, and
+ * it is what keeps the folder-trust question from appearing at spawn (a
+ * question nobody answers would hang the pool). Live-checked on Claude Code
+ * 2.1.330: with these flags the REPL reaches the same idle markers, sees no
+ * project instructions, and a "write this file" request produces text only.
+ */
+export function buildPoolReplArgs(config: Pick<InteractivePoolConfig, 'claudePath' | 'model'>): string[] {
+  const args = [
+    config.claudePath,
+    '--tools', '',
+    '--strict-mcp-config',
+    '--setting-sources', 'user',
+    '--disable-slash-commands',
+    '--dangerously-skip-permissions',
+  ];
+  if (config.model) args.push('--model', config.model);
+  return args;
+}
 
 export class InteractivePool extends EventEmitter {
   private readonly sessions = new Map<string, PoolSession>();
@@ -296,10 +330,7 @@ export class InteractivePool extends EventEmitter {
       args.push('-c', this.config.workingDirectory);
     }
     args.push(...envFlags);
-    args.push(this.config.claudePath, '--dangerously-skip-permissions');
-    if (this.config.model) {
-      args.push('--model', this.config.model);
-    }
+    args.push(...buildPoolReplArgs(this.config));
 
     try {
       execFileSync(this.config.tmuxPath, args, { encoding: 'utf-8' });
@@ -494,20 +525,22 @@ export class InteractivePool extends EventEmitter {
   }
 
   /**
-   * Return a session to ready. Increments messageCount and checks retire
-   * thresholds; auto-retires if needed.
+   * Finish a prompt: count it, then retire the session (and spawn a clean
+   * replacement). Sessions are never handed out twice.
    */
   async release(s: PoolSession): Promise<void> {
     if (s.state !== 'busy') return;
     s.messageCount += 1;
     s.lastUsedAt = Date.now();
-    if (s.messageCount >= this.config.maxMessagesPerSession) {
-      await this.retire(s);
-      return;
-    }
-    s.state = 'ready';
+    // SEC-172: one prompt per REPL. A judgment prompt can carry text from a
+    // peer agent, a Slack member or a team member; if the REPL went back to
+    // ready, that text would sit in the context of the NEXT judgment (and
+    // the one after, up to the old 50-message limit). Retiring here kills
+    // the session and spawns a clean replacement in the background, so every
+    // allocate gets a REPL that has seen nothing but its own prompt.
+    // `maxMessagesPerSession` is no longer consulted for reuse.
     this.emit('session:released', s);
-    this.flushWaiter(s);
+    await this.retire(s);
   }
 
   /**

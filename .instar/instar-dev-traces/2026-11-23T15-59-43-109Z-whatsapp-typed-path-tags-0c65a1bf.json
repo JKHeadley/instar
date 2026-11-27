@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "whatsapp-typed-path-tags",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:59:43.109Z",
+  "artifactPath": "upgrades/side-effects/whatsapp-typed-path-tags.md",
+  "artifactSha256": "30c1056b887bc92a666e05a2d9eabead94e9f1bd52b4959c8183bf0c8cfafb5b",
+  "coveredFiles": [
+    "docs/specs/whatsapp-typed-path-tags.eli16.md",
+    "src/commands/server.ts",
+    "tests/unit/whatsapp-typed-path-tags.test.ts",
+    "upgrades/next/whatsapp-typed-path-tags.md",
+    "upgrades/side-effects/whatsapp-typed-path-tags.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace after merging main: WhatsApp typed path-tag escaping, moved into a helper so the routing function stays within its source checks.",
+  "eli16Path": "docs/specs/whatsapp-typed-path-tags.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/whatsapp-typed-path-tags.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

@@ -161,7 +161,7 @@ export function searchLocal(
     if (only) {
       const key = only.slice(4);
       const c = svc.store.getConversation(key);
-      if (c && svc.liveConversation(key)) keys.push({ key, title: c.title ?? null });
+      if (c && !svc.store.isHiddenConversation?.(key) && svc.liveConversation(key)) keys.push({ key, title: c.title ?? null });
     } else {
       let cursor: string | null = null;
       do {
@@ -349,6 +349,7 @@ async function searchPeers(ctx: PoolReadCtx, path: string): Promise<{
 export function createConversationSearchRouter(deps: ConversationSearchRouteDeps): Router {
   const router = Router();
   router.get('/mobile/conversations/search', async (req: Request, res: Response) => {
+    try {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !deps.service) { res.status(503).json({ error: 'native-conversations-off', detail: 'App conversations are turned off on this agent.' }); return; }
     if (!isConversationSearchEnabled(deps.config)) { res.status(503).json({ error: 'search-off', detail: 'Searching conversations is turned off on this agent.' }); return; }
@@ -377,7 +378,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     }
     const pool = req.query.scope === 'pool' && !importedRef;
     const person = devicePersonOf(req);
-    const may = (accessKey: string) => deviceMayUse(deps.pairing, req, accessKey);
+    const may = (accessKey: string) => !deps.service!.store.isHiddenConversation?.(accessKey) && deviceMayUse(deps.pairing, req, accessKey);
     if (only && !importedRef) {
       if (!may(accessKeyOf(only))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
       // A conversation this machine does not hold is a 404 here; a pool read asks the others too.
@@ -434,6 +435,13 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     const results = dedupeHits(ordered).slice(0, limit);
     const failedMachines = [...new Set(peers.failed)].sort();
     res.json({ ...base, results, partial: failedMachines.length > 0 || capped || unsearched.size > 0, failedMachines, capped, unsearched: [...unsearched] });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'work-card-visibility-unavailable') {
+        res.status(503).json({ error: 'work-card-visibility-unavailable', detail: 'Work card visibility is not ready. Try this read again.' });
+        return;
+      }
+      throw error;
+    }
   });
   return router;
 }
