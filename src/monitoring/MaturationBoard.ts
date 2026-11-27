@@ -89,8 +89,12 @@ function parseMeasure(v: unknown): PlainMeasure | null | 'invalid' {
   // this for a feature it could not measure; rejecting it dropped the whole review file from the
   // board (2026-11-27: 29 such rows hid the day's 260-feature review). A partial measure, with
   // some fields set but no what or no now, is still invalid.
+  // It is a placeholder only if it has no other keys and claims no trend: anything else is data.
   const empty = (x: unknown) => x === undefined || x === null || (typeof x === 'string' && x.trim() === '');
-  if (['what', 'now', 'target', 'before'].every((k) => empty(m[k]))) return null;
+  const PLACEHOLDER_KEYS = ['what', 'now', 'target', 'before', 'trend'];
+  const trendEmpty = empty(m.trend) || m.trend === 'unknown';
+  if (Object.keys(m).every((k) => PLACEHOLDER_KEYS.includes(k)) && trendEmpty
+    && ['what', 'now', 'target', 'before'].every((k) => empty(m[k]))) return null;
   const what = clip(m.what, 60);
   const now = clip(m.now, 40);
   if (!what || !now) return 'invalid';

@@ -100,6 +100,13 @@ describe('review JSON contract (§2)', () => {
     expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { what: null, now: null, target: 'under 5%' } })]), NOW).ok).toBe(false);
   });
 
+  it('treats only a true placeholder as empty: a trend claim, a malformed trend or unknown keys are still invalid', () => {
+    for (const measure of [{ trend: 'better' }, { trend: { bad: true } }, { typo: 'real data' }, { what: null, now: null, trend: 'worse' }]) {
+      expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure })]), NOW).ok).toBe(false);
+    }
+    expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { trend: 'unknown' } })]), NOW).ok).toBe(true);
+  });
+
   it('drops a duplicate id and counts it', () => {
     const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live'), row('a', 'stalled')]), NOW);
     expect(r.ok && r.review.rows.length).toBe(1);

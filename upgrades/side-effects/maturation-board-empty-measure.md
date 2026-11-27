@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-`parseMeasure` in `src/monitoring/MaturationBoard.ts` now returns `null` (no measure) when every one of `what`, `now`, `target` and `before` is empty. Before, it returned `invalid`, and `parseReviewJson` then rejected the whole review file. On 2026-11-27 that dropped the day's 260-feature review from the board, because 29 features had all-empty measures. A partial measure, with some field set but no `what` or no `now`, is still invalid. Adds one unit test. Tier 1: one source file and one test file.
+`parseMeasure` in `src/monitoring/MaturationBoard.ts` now returns `null` (no measure) when every one of `what`, `now`, `target` and `before` is empty. Before, it returned `invalid`, and `parseReviewJson` then rejected the whole review file. On 2026-11-27 that dropped the day's 260-feature review from the board, because 29 features had all-empty measures. Only a true placeholder counts: the keys are a subset of `what`, `now`, `target`, `before` and `trend`; the trend is absent, blank or `unknown`; and the four value fields are empty. Anything else (a partial measure, a trend claim such as `better`, a malformed trend, or unknown keys) is still invalid. This was tightened after a rule 7 dissent from Jobs and Projects on 211246f1, which showed `{"trend":"better"}`, `{"trend":{"bad":true}}` and `{"typo":"real data"}` passing as empty. Adds two unit tests. Tier 1: one source file and one test file.
 
 ## Decision-point inventory
 
@@ -19,7 +19,7 @@ Before this change, the board over-rejected: a whole review was dropped for one 
 
 ## 2. Under-block
 
-A review that writes all-empty measures by mistake, rather than because a feature could not be measured, now shows "no measure" for those features instead of failing. That is the correct reading of an empty measure, and the review's own text still carries its evidence.
+After the tightening, a measure carrying any data (a trend claim or an unknown key) still fails as before. A review that writes all-empty measures by mistake, rather than because a feature could not be measured, now shows "no measure" for those features instead of failing. That is the correct reading of an empty measure, and the review's own text still carries its evidence.
 
 ## 3. Level-of-abstraction fit
 
@@ -55,5 +55,5 @@ Revert the commit. No data or migration is involved.
 
 ## Evidence pointers
 
-- `tests/unit/maturation-board.test.ts`: "reads an all-empty measure as no measure, so one unmeasured feature cannot reject the review". It covers both sides: all-empty gives null, and partial stays invalid.
+- `tests/unit/maturation-board.test.ts`: "reads an all-empty measure as no measure, so one unmeasured feature cannot reject the review". It covers both sides: all-empty gives null, and partial stays invalid. A second test covers a trend-only claim, a malformed trend, unknown keys, and a placeholder that claims a trend, all still invalid, while `{trend:'unknown'}` alone is empty. All 29 placeholder rows in the 27 November file still read as empty under the tightened rule, and no other row there changes category.
 - Live, on 2026-11-27 at 13:42 PT: the Studio's board reported the source `review:2026-11-27.json` as `ok:false, reason: features[16].measure` and served `reviewDate: 2026-11-23`.

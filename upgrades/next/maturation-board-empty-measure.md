@@ -16,4 +16,4 @@ None new. The board stays current when a review has unmeasured features.
 
 ## Evidence
 
-A new unit test in tests/unit/maturation-board.test.ts covers both sides: an all-empty measure reads as no measure, and a partial measure stays invalid. On 2026-11-27 the Studio's board had rejected that day's review on features[16].measure.
+Two unit tests in tests/unit/maturation-board.test.ts: a true placeholder reads as no measure, while a partial measure, a trend claim, a malformed trend or unknown keys stay invalid. On 2026-11-27 the Studio's board had rejected that day's review on features[16].measure.
