@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "hook-reporter-event-delivery",
+  "sessionId": "307dde87-3f6f-49c0-8b98-324626210356",
+  "timestamp": "2026-11-23T03:49:46.444Z",
+  "artifactPath": "upgrades/side-effects/hook-reporter-event-delivery.md",
+  "artifactSha256": "624d6ee71453e9e2d783644b599213f504edf49ccb80d191a18a106d57044ad0",
+  "coveredFiles": [
+    "docs/specs/hook-reporter-event-delivery.md",
+    "upgrades/side-effects/hook-reporter-event-delivery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two documentation edits correct invalid ladder metadata; no runtime or assertion changes.",
+  "eli16Path": "docs/specs/hook-reporter-event-delivery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/hook-reporter-event-delivery.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

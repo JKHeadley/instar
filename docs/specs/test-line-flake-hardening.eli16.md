@@ -1,0 +1,9 @@
+# Why these two test-line failures happened
+
+The Studio runs several test groups at the same time. When the machine is busy, a new worker process or a small operating-system utility can take longer to start than it does on an idle computer. Two checks had deadlines short enough to turn that ordinary delay into a failure.
+
+The Cartographer test gave its worker only one second to launch and start a fake Git command. Its purpose is to prove that when a deliberately hung Git command is stopped, the worker also removes that child process. On a busy machine, the one-second clock could expire before the fake command wrote its process identifier. The test then failed because the identifier file did not exist, even though the hung command had not yet started. The test will give worker startup ten seconds while retaining the deliberately long running child. It will still verify that the worker stops the child when its deadline expires.
+
+The recovery installer checks whether a copied Node runtime depends on libraries outside the protected operating-system folders. On macOS it asks the built-in `otool` program for that information. The check had a three-second limit. The main verifier has recorded that command timing out, and the same kind of failure appeared in an earlier verifier run. The installer will allow ten seconds for `otool` to answer, then refuse as before if the command still has not finished.
+
+These changes do not turn a failed check into a pass or skip either test. They give the processes enough time to start under the parallel load this project is trying to support. The runtime inspection remains bounded, and the worker test still checks that a real child process was cleaned up. The focused integration tests must pass before the change is offered for shared verification.

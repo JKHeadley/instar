@@ -1308,6 +1308,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       actions: actionsState(req, deps),
       holder: port.holdsLease(),
       requests: store.deviceListing(),
+      approvalDelivery: await store.approvalDelivery(),
       // The calling device's own key fingerprint, so the app signs exactly what the server will check.
       thisDeviceKey: self ? (port.devices.get(self)?.keyFingerprint ?? null) : null,
       approvals: {

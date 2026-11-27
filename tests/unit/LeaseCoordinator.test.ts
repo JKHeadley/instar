@@ -66,6 +66,44 @@ function makeFlA() { return new FencedLease(crypt('A'), { leaseTtlMs: TTL, failo
 function makeFlB() { return new FencedLease(crypt('B'), { leaseTtlMs: TTL, failoverThresholdMs: FAILOVER }); }
 
 describe('LeaseCoordinator', () => {
+  it('verifies the observed foreign record once and refuses it after expiry', () => {
+    const peer = makeFlB().buildAcquisition(undefined, 1_000, 1);
+    const self = makeFlA();
+    const verify = vi.spyOn(self, 'verifyLease');
+    let now = 2_000;
+    let higherEpoch = 0;
+    const tunnel: LeaseTransport = {
+      broadcast: async () => true,
+      observed: () => ({ lease: peer, lastNonceByHolder: { B: peer.nonce } }),
+      isReachable: () => true,
+      higherEpochEvidence: () => higherEpoch,
+    };
+    const store = new FakeStore();
+    store.lease = { ...peer };
+    store.epoch = peer.epoch;
+    const lc = new LeaseCoordinator({ lease: self, store, tunnel, presumedDeadHolders: () => new Set(), now: () => now });
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: true });
+    expect(verify).toHaveBeenCalledTimes(1);
+    higherEpoch = peer.epoch + 1;
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+    higherEpoch = 0;
+    now = 1_000 + TTL + 1;
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+  });
+
+  it('accepts confirmed local lease authority and refuses a forged durable holder', async () => {
+    const store = new FakeStore();
+    const peer = makeFlB().buildAcquisition(undefined, 1_000, 1);
+    store.lease = { ...peer, signature: 'invalid' };
+    store.epoch = peer.epoch;
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 2_000 });
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+
+    const solo = new LeaseCoordinator({ lease: makeFlA(), store: new FakeStore(), presumedDeadHolders: () => new Set(), now: () => 2_000 });
+    expect(await solo.acquireIfEligible()).toBe(true);
+    expect(solo.appBindingLeaseAuthority()).toEqual({ holdsLease: true, heldElsewhere: false });
+  });
+
   it('reports once at five consecutive own-candidate write read-backs and resets on success', async () => {
     let fail = true;
     const store: LeaseStore = {
@@ -302,6 +340,42 @@ describe('LeaseCoordinator', () => {
     const got = await lc.acquireIfEligible();
     expect(got).toBe(false); // A's epoch-1 candidate is rejected; B (live) holds it
     expect(store.lease?.holder).toBe('B');
+  });
+
+  // lease-freshness-lapse-retry — a send refused for the lease reads which check answered and the renewal gap.
+  it('reports the hold verdict and renewal freshness: a late renewal within the lifetime holds, a gap past it lapses', async () => {
+    const store = new FakeStore();
+    let now = 1_000;
+    const tunnel: LeaseTransport = { broadcast: async () => true, observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => true };
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, tunnel, presumedDeadHolders: () => new Set(), now: () => now, monotonicNow: () => now });
+    expect(lc.holdVerdict()).toBe('not-current-holder'); // nothing acquired yet
+    expect(await lc.acquireIfEligible()).toBe(true);
+    expect(lc.holdVerdict()).toBe('holding');
+    expect(lc.renewalFreshness()).toEqual({ msSinceConfirmedRenewal: 0, ttlMs: TTL, verdict: 'holding' });
+    // Timeline 1: the renewal due at 30 s lands at 35 s — 25 s of lifetime remained, nothing lapsed.
+    now = 1_000 + 35_000;
+    expect(lc.holdsLease()).toBe(true);
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: 35_000, verdict: 'holding' });
+    expect(await lc.renew()).toBe(true);
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: 0, verdict: 'holding' });
+    // Timeline 2: no confirmation for longer than the lifetime — the renewal fence answers.
+    now += TTL + 1;
+    expect(lc.holdsLease()).toBe(false);
+    expect(lc.holdVerdict()).toBe('renewal-lapsed');
+    expect(lc.renewalFreshness()).toMatchObject({ msSinceConfirmedRenewal: TTL + 1, ttlMs: TTL, verdict: 'renewal-lapsed' });
+  });
+
+  it('reports an unconfirmed planned-restart lease as unknown freshness and not held', async () => {
+    const store = new FakeStore();
+    const tunnel: LeaseTransport = { broadcast: async () => true, observed: () => ({ lease: null, lastNonceByHolder: {} }), isReachable: () => true };
+    const deps = { store, tunnel, presumedDeadHolders: () => new Set<string>(), now: () => 1_000, monotonicNow: () => 1_000 };
+    const previous = new LeaseCoordinator({ ...deps, lease: makeFlA() });
+    expect(await previous.acquireIfEligible()).toBe(true);
+    const pendingStore: LeaseStore = Object.assign(store, { readPendingEpisodeId: () => 'planned-episode' });
+    const rebooted = new LeaseCoordinator({ ...deps, store: pendingStore, lease: makeFlA() });
+    expect(rebooted.holdsLease()).toBe(false);
+    expect(rebooted.holdVerdict()).toBe('not-current-holder');
+    expect(rebooted.renewalFreshness()).toEqual({ msSinceConfirmedRenewal: null, ttlMs: TTL, verdict: 'not-current-holder' });
   });
 
   it('self-suspends when the tunnel is unreachable past leaseTtlMs', async () => {

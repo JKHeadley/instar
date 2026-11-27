@@ -7,6 +7,22 @@ import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
 // carries that card's titleHash so a tap made on an old copy of the card is refused.
 
 import { whenWords } from './mandates-model.js';
+import { verifiedDisplayName } from './display-identity.js';
+
+/** A Needs-you row's words for a card title: whole words, ending in "…" when cut (never "needs y"). */
+export const NEED_ROW_TITLE_MAX = 140;
+export function needRowTitle(title) {
+  const t = String(title || 'A work card').replace(/\s+/g, ' ').trim() || 'A work card';
+  if (t.length <= NEED_ROW_TITLE_MAX) return t;
+  const room = t.slice(0, NEED_ROW_TITLE_MAX - 1);
+  const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
+  return `${(sp >= NEED_ROW_TITLE_MAX / 3 ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '')}…`;
+}
+
+/** A machine as the person knows it: its nickname, never its id. */
+export function machineWords(name, id) {
+  return verifiedDisplayName(name, id) || 'another of your machines';
+}
 
 export { whenWords };
 
@@ -52,6 +68,8 @@ export function readBoard(body) {
     pickups: isObj(body.pickups) ? body.pickups : null,
     behind: isObj(body.behind) ? body.behind : null,
     settings: isObj(body.settings) ? body.settings : null,
+    // agent-work-cards-default §1: the team's not-started internal cards (one aggregated Needs-you row). Absent on an older server.
+    notStartedCards: isObj(body.notStartedCards) && typeof body.notStartedCards.count === 'number' ? body.notStartedCards : null,
   };
 }
 
@@ -116,7 +134,7 @@ export function pickupLine(p) {
 
 export function behindLine(b) {
   if (!b || !b.machineId) return null;
-  return `This machine may not have the newest changes from ${b.machineId} yet, so a card here can be out of date.`;
+  return `This machine may not have the newest changes from ${machineWords(b.machineName, b.machineId)} yet, so a card here can be out of date.`;
 }
 
 // ── who ───────────────────────────────────────────────────────────────────
@@ -148,7 +166,7 @@ export function cardRow(card) {
   const notes = [];
   if (card.repliedAfterQuestion) notes.push('You replied; the agent has not updated the card');
   if (card.mayHaveBeenHandedOver) notes.push('This may already have been handed over');
-  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${card.mayHaveChangedOn}`);
+  if (card.mayHaveChangedOn) notes.push(`This card may have changed on ${machineWords(card.mayHaveChangedOnName, card.mayHaveChangedOn)}`);
   if (card.capacity) notes.push(capacityWords(card.capacity));
   return { key: `card:${card.id}`, main: String(card.title || 'Untitled card'), sub: String(card.needLine || ''), notes, outward: Boolean(card.outward) };
 }
@@ -215,6 +233,8 @@ export function cardActions(card, { inSheet = false } = {}) {
   const approved = Boolean(card.approved);
   switch (card.status) {
     case 'needs-approval': add('approve', 'primary'); break;
+    // agent-work-cards-default §7: the card's own Approve; "Approve and widen" lives on the aggregated row (needs-model.js).
+    case 'not-started': add('approve', 'primary'); break;
     case 'waiting-on-person': if (card.question) add('answer', 'primary'); break;
     case 'claims-done': if (card.claim) { add('confirm-done', 'primary'); add('reopen'); } break;
     case 'done': if (card.claim) add('reopen'); break;
@@ -515,11 +535,10 @@ export function workBoardNeedRows(wb) {
   const lane = b.lanes['waiting-on-you'];
   const soft = b.settings && typeof b.settings.softOpenCards === 'number' && b.settings.softOpenCards > 0 ? b.settings.softOpenCards : Infinity;
   const shown = lane.cards.slice(0, soft);
-  const rest = lane.more + (lane.cards.length - shown.length);
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
-    main: String(c.title || 'A work card').slice(0, 80),
-    sub: String(c.needLine || ''),
+    main: needRowTitle(c.title),
+    sub: (c.serverOwned === true && c.status === 'with-person' && str(c.brief?.ask)) || String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
     // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
     // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.
@@ -529,8 +548,9 @@ export function workBoardNeedRows(wb) {
     serverOwned: c.serverOwned === true,
     createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
     cardId: c.id,
+    ...(c.ownerAction === false || c.agentInternal === true ? { ownerAction: false } : {}),
   }));
-  if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
+  // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
 }
 
@@ -682,6 +702,8 @@ export function cardBrief(card) {
 const STATUS_WORDS = {
   'needs-approval': 'Needs your approval', 'with-person': 'Waiting on you', 'waiting-on-person': 'Waiting for your answer',
   'claims-done': 'Says it is done', held: 'On hold', 'with-agent': 'With the agent', parked: 'Parked', quiet: 'Quiet',
+  // agent-work-cards-default §1/§7: an agent-work card the owner has not let start (one aggregated Needs-you row, never per card).
+  'not-started': 'Not started',
   done: 'Done', archived: 'Closed', removed: 'Removed', unknown: 'Partly unreadable',
 };
 export function statusChip(card) {
@@ -745,6 +767,7 @@ export function chatLines(data, max = 30) {
 
 /** Where a card's conversation is read, only ever an app conversation path on this server. */
 export function messagesPathOf(card) {
+  if (card?.conversationAvailable === false) return null;
   const c = isObj(card) ? card : {};
   const p = isObj(c.conversation) ? c.conversation.messagesPath : null;
   if (typeof p === 'string' && /^\/mobile\/chat\/app\/[A-Za-z0-9-]+\/messages$/.test(p)) return `${p}?limit=30&scope=pool`;

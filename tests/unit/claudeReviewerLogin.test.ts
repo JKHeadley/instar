@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
 import { applyClaudeReviewerLogin, configureClaudeChildAuth, configureClaudeReviewerLogin } from '../../src/core/claudeChildAuth.js';
 import { toReviewerOutcome, reviewFindingsText } from '../../src/feedback-factory/execute/independentReview.js';
@@ -31,10 +31,12 @@ echo '{"is_error":false,"result":"Verdict: CLEAN"}'
 
 const reviewerCall = (bin: string) => new ClaudeCliIntelligenceProvider(bin).evaluate('hi', { reviewerHardening: { model: 'claude-opus-5-5' } });
 
-let inherited: string | undefined;
-beforeEach(() => { inherited = process.env.CLAUDE_CONFIG_DIR; delete process.env.CLAUDE_CONFIG_DIR; });
+beforeEach(() => {
+  vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+  vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', undefined);
+});
 afterEach(() => {
-  if (inherited === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = inherited;
+  vi.unstubAllEnvs();
   configureClaudeChildAuth(null);
   configureClaudeReviewerLogin(null);
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/claudeReviewerLogin.test.ts:cleanup' });
@@ -93,8 +95,8 @@ describe('Claude reviewer login on a machine with a signed-out default login', (
   it('the server gives the reviewer the same account a new session gets, on both pinning paths', () => {
     const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
     expect(server).toContain('sessionManager.setSpawnAccountResolver(pinnedAccount);');
-    expect(server).toContain('configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);');
-    expect(server).toContain('configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);');
+    expect(server).toContain('configureClaudeReviewerLogin(() => pinnedAccount({ shadow: false })?.configHome ?? null);');
+    expect(server).toContain('configureClaudeReviewerLogin(() => wallRescue.spawnAccount({ shadow: false })?.configHome ?? null);');
   });
 });
 

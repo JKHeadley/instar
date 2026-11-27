@@ -22,10 +22,14 @@ import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Worker } from 'node:worker_threads';
+import { transcriptObservationId, type TranscriptBatch, type TranscriptCheckpoint, type TranscriptKind,
+  type TranscriptRecord, type TranscriptRequest } from './UsageLedgerTranscript.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import type { ServedAccountResolver, ServedAttribution, ServedBasis } from './servedAccount.js';
 
 export type UsageSource =
   | 'claude-transcript' | 'codex-rollout' | 'intelligence-call'
@@ -88,6 +92,11 @@ export interface UsageLedgerOptions {
   settleWindowMs?: number;
   now?: () => number;
   databaseFactory?: (p: string) => BetterSqliteDatabase;
+  /**
+   * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): which account actually
+   * served each row. When `enabled()` is false, rows are written with `served_basis: 'off'`.
+   */
+  servedAccount?: { enabled: () => boolean; resolver: ServedAccountResolver };
 }
 
 export interface ScanReport {
@@ -391,6 +400,9 @@ export function normalizeFramework(f: string | null | undefined): UsageFramework
   return 'api';
 }
 
+/** quota-pacing step 3: the served-account columns (raw rows only; rollups are not re-keyed). */
+export const SERVED_COLS = ['served_slot', 'served_account_id', 'served_identity', 'served_basis'] as const;
+
 const PAGE_ROWS = 5_000;
 const PAGE_BYTES = 5 * 1024 * 1024;
 const EXPORT_TABLES = ['rollup_hour', 'rollup_day', 'rollup_session_day', 'session_bindings'] as const;
@@ -424,6 +436,28 @@ export interface AggregateRow {
   reportedActualUsd: number;
   reportedPlanRateUsd: number;
 }
+export interface ServedAggregateRow {
+  bucket: number;
+  model: string | null;
+  framework: string;
+  basis: ServedBasis;
+  identity: string | null;
+  served: string | null;
+  tagged: string | null;
+  calls: number;
+  input: number; cacheRead: number; cacheWrite: number; output: number;
+}
+export interface AccountMismatch {
+  sessionId: string;
+  tagged: string;
+  served: string;
+  servedBasis: ServedBasis;
+  requests: number;
+  firstTs: number;
+  lastTs: number;
+  /** False for an identity-unconfirmed served account (Codex today): counted, never treated as a placement bug alone. */
+  confirmed: boolean;
+}
 export interface SnapshotRules {
   /** Is this id a predecessor of THIS machine in the identity-change ledger? */
   isPredecessor?: (machineId: string) => boolean;
@@ -444,7 +478,94 @@ function pathIsMissing(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
-type ScanQueue = { r: CoverageRoot; kind: 'claude' | 'codex'; files: string[] };
+const TRANSCRIPT_IO_FAILURES = new Set(['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ELOOP', 'ESTALE', 'EIO', 'EFBIG', 'ETIMEDOUT', 'ERR_OUT_OF_RANGE', 'ERR_WORKER_OUT_OF_MEMORY']);
+
+function transcriptIoFailure(error: unknown): boolean {
+  return TRANSCRIPT_IO_FAILURES.has((error as NodeJS.ErrnoException)?.code ?? '');
+}
+
+type ScanQueue = { r: CoverageRoot; kind: TranscriptKind; files: string[] };
+type IngestResult = { inserted: number; counted: number; unavailable?: boolean; pending?: boolean };
+type ScanFile = { root: string; file: string; kind: TranscriptKind };
+const FILE_SLICES_PER_TICK = 64;
+const FILE_TIME_PER_TICK_MS = 250;
+const WORKER_READ_DEADLINE_MS = 15_000;
+
+function openTranscriptWorker(): Worker {
+  const compiled = new URL('./UsageLedgerTranscript.worker.js', import.meta.url);
+  const workerUrl = fs.existsSync(compiled) ? compiled :
+    new URL('../../dist/monitoring/UsageLedgerTranscript.worker.js', import.meta.url);
+  return new Worker(workerUrl, { env: {}, execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 256 } });
+}
+
+// RULE 3: EXEMPT — This worker transport reads transcript bytes for local usage accounting.
+class TranscriptReader {
+  private worker: Worker | undefined;
+  private closed = false;
+
+  async read(request: TranscriptRequest): Promise<TranscriptBatch | null> {
+    if (this.closed) return null;
+    const worker = this.worker ??= openTranscriptWorker();
+    return new Promise((resolve, reject) => {
+      const complete = (): void => {
+        clearTimeout(deadline);
+        worker.off('message', onMessage);
+        worker.off('error', onError);
+        worker.off('exit', onExit);
+      };
+      const invalidate = (error: Error): void => {
+        complete();
+        if (this.worker === worker) {
+          this.worker = undefined;
+          void worker.terminate().then(() => reject(error), () => reject(error));
+        } else {
+          reject(error);
+        }
+      };
+      const onMessage = (response: { batch?: TranscriptBatch | null; failed?: boolean; code?: string }): void => {
+        complete();
+        if (response.failed) reject(Object.assign(new Error('Transcript reading failed'), { code: response.code }));
+        else resolve(response.batch ?? null);
+      };
+      const onError = (error: Error): void => invalidate(error);
+      const onExit = (): void => invalidate(Object.assign(
+        new Error('Usage ledger transcript worker exited during a read'), { code: 'EIO' },
+      ));
+      const deadline = setTimeout(() => invalidate(Object.assign(
+        new Error('Usage ledger transcript read timed out'), { code: 'ETIMEDOUT' },
+      )), WORKER_READ_DEADLINE_MS);
+      worker.once('message', onMessage);
+      worker.once('error', onError);
+      worker.once('exit', onExit);
+      try {
+        worker.postMessage(request);
+      } catch (error) {
+        // @silent-fallback-ok: invalidation rejects this read with the original error after worker cleanup.
+        invalidate(error as Error);
+      }
+    });
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    const worker = this.worker;
+    this.worker = undefined;
+    await worker?.terminate();
+  }
+}
+
+function* localTranscriptRecords(text: string, startAt: number, kind: TranscriptKind): Generator<TranscriptRecord> {
+  let position = startAt;
+  for (const line of text.split('\n')) {
+    const linePos = position;
+    position += Buffer.byteLength(line, 'utf8') + 1;
+    if (!line.trim() || (kind === 'codex' && line[0] !== '{')) continue;
+    try {
+      const value = JSON.parse(line);
+      if (value && typeof value === 'object') yield { position: linePos, value };
+    } catch { /* A malformed transcript line never advances usage counters. */ }
+  }
+}
 
 /** How many stats one directory's files may have in flight at once in the non-blocking walk. */
 const ASYNC_STAT_BATCH = 32;
@@ -460,7 +581,8 @@ async function mapInBatches<T, R>(items: readonly T[], fn: (item: T) => Promise<
 
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
-  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes' | 'poolHomes'>> & { otherAgentHomes: string[] };
+  private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes' | 'poolHomes' | 'servedAccount'>> & { otherAgentHomes: string[] };
+  private readonly served: UsageLedgerOptions['servedAccount'];
   private readonly roots = new Map<string, CoverageRoot>();
   private readonly codexRoots = new Map<string, CoverageRoot>();
   private readonly poolHomes: UsageLedgerOptions['poolHomes'];
@@ -470,12 +592,14 @@ export class UsageLedger {
   /** Resume after an unreadable file next tick so it cannot starve later files within the same root. */
   private readonly retryAfter = new WeakMap<CoverageRoot, string>();
   private scanInFlight: Promise<ScanReport> | null = null;
+  private transcriptReader: TranscriptReader | undefined;
   private readonly promoteCopiedRow: Database.Statement;
   private readonly upsertStmts: Record<'hour' | 'day' | 'sessionDay', Database.Statement>;
   private closed = false;
 
   constructor(opts: UsageLedgerOptions) {
     this.poolHomes = opts.poolHomes;
+    this.served = opts.servedAccount;
     this.refreshPoolRoots();
     this.opts = {
       maxDepth: 3,
@@ -503,6 +627,11 @@ export class UsageLedger {
     for (const ddl of SCHEMA) this.db.exec(ddl);
     const cpCols = (this.db.prepare('PRAGMA table_info(checkpoints)').all() as { name: string }[]).map(c => c.name);
     if (!cpCols.includes('extra')) this.db.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
+    // quota-pacing step 3: served-account columns on the raw rows only (additive, idempotent).
+    // Rows written before they existed read served_basis 'before-attribution'.
+    const evCols = (this.db.prepare('PRAGMA table_info(usage_events)').all() as { name: string }[]).map(c => c.name);
+    for (const col of SERVED_COLS) if (!evCols.includes(col)) this.db.exec(`ALTER TABLE usage_events ADD COLUMN ${col} TEXT`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_usage_events_served ON usage_events(served_identity, ts)');
     this.initMeta();
     // Stable observation IDs are shared across homes. An uncopied source can arrive
     // after a backup; replace only the uncounted copy's detail from the original.
@@ -512,7 +641,8 @@ export class UsageLedger {
       parent_session_id = @parent_session_id, scope_basis = @scope_basis, topic_id = @topic_id,
       job_slug = @job_slug, run_id = @run_id, tok_input = @tok_input, tok_cache_read = @tok_cache_read,
       tok_cache_write = @tok_cache_write, tok_output = @tok_output, tok_reasoning = @tok_reasoning,
-      status = 'counted', source_path = @source_path, source_pos = @source_pos
+      status = 'counted', source_path = @source_path, source_pos = @source_pos,
+      served_slot = @served_slot, served_account_id = @served_account_id, served_identity = @served_identity, served_basis = @served_basis
       WHERE observation_id = @observation_id AND status = 'copied-history'`);
     this.upsertStmts = {
       hour: this.prepareUpsert('rollup_hour', HOUR_KEY),
@@ -826,12 +956,17 @@ export class UsageLedger {
    */
   scanTick(): ScanReport {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
-    if (!this.beginScanTick()) return report;
+    if (this.scanInFlight || !this.beginScanTick()) return report;
+    this.rescanSnapshotDetails();
     const steps = this.consumeScanQueues([
       ...[...this.roots.values()].map(r => this.finishListing(r, 'claude', this.listRootFiles(r.root).filter(f => this.fileChanged(f, r)))),
       ...[...this.codexRoots.values()].map(r => this.finishListing(r, 'codex', this.listCodexFiles(r.root).filter(f => this.fileChanged(f, r)))),
     ], report);
-    while (!steps.next().done) { /* The explicit synchronous API drains this tick in one turn. */ }
+    for (let step = steps.next(); !step.done;) {
+      let result: IngestResult;
+      try { result = this.ingestScanFile(step.value); } catch (error) { step = steps.throw(error); continue; }
+      step = steps.next(result);
+    }
     return report;
   }
 
@@ -843,9 +978,9 @@ export class UsageLedger {
    * contended disk it held the server's main thread for over a minute and the
    * supervisor killed the server (2026-11-13 02:36 PST). Here every directory
    * read and stat goes through fs.promises, so the loop keeps turning between
-   * them. The cold backfill also yields between files; each individual file and
-   * its checkpoint are still one synchronous transaction. The one-off detail
-   * rescan after a snapshot import and hourly prune and snapshot are unchanged.
+   * them. File payload reads and parsing run in a worker. The main thread
+   * applies small projected batches, with their checkpoints, in separate
+   * transactions and yields between them.
    *
    * One scan at a time: a call while one is running returns that run's promise.
    */
@@ -854,26 +989,13 @@ export class UsageLedger {
     const run = (async (): Promise<ScanReport> => {
       const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
       if (!this.beginScanTick()) return report;
-      const queues: ScanQueue[] = [];
-      // Roots one after another: the walk inside a root already overlaps its stats.
-      for (const r of [...this.roots.values()]) {
-        queues.push(this.finishListing(r, 'claude', await this.filterChangedAsync(await this.listRootFilesAsync(r.root), r)));
+      const reader = this.transcriptReader = new TranscriptReader();
+      try {
+        return await this.scanAvailableTranscripts(reader, report);
+      } finally {
+        this.transcriptReader = undefined;
+        await reader.close();
       }
-      for (const r of [...this.codexRoots.values()]) {
-        queues.push(this.finishListing(r, 'codex', await this.filterChangedAsync(await this.listCodexFilesAsync(r.root), r)));
-      }
-      if (this.closed) return report;
-      // The listing took time: a one-shot that finished meanwhile needs its binding before its transcript is read.
-      try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
-      const steps = this.consumeScanQueues(queues, report);
-      while (!steps.next().done) {
-        await new Promise<void>(resolve => setImmediate(resolve));
-        if (this.closed) {
-          report.pending = queues.reduce((sum, q) => sum + q.r.filesPending, 0);
-          break;
-        }
-      }
-      return report;
     })();
     this.scanInFlight = run;
     const clear = (): void => { if (this.scanInFlight === run) this.scanInFlight = null; };
@@ -881,11 +1003,83 @@ export class UsageLedger {
     return run;
   }
 
+  private async scanAvailableTranscripts(reader: TranscriptReader, report: ScanReport): Promise<ScanReport> {
+    const claudeRoots = [...this.roots.values()];
+    const codexRoots = [...this.codexRoots.values()];
+    const queues: ScanQueue[] = [];
+    // Roots one after another: the walk inside a root already overlaps its stats.
+    for (const r of claudeRoots) {
+      queues.push(this.finishListing(r, 'claude', await this.filterChangedAsync(await this.listRootFilesAsync(r.root), r)));
+    }
+    for (const r of codexRoots) {
+      queues.push(this.finishListing(r, 'codex', await this.filterChangedAsync(await this.listCodexFilesAsync(r.root), r)));
+    }
+    if (this.closed) return report;
+    // The listing took time: a one-shot that finished meanwhile needs its binding before its transcript is read.
+    try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
+    const steps = this.consumeScanQueues(queues, report);
+    for (let step = steps.next(); !step.done;) {
+      let result: IngestResult;
+      try { result = await this.ingestScanFileAsync(reader, step.value); } catch (error) {
+        if (this.closed) break;
+        step = steps.throw(error);
+        continue;
+      }
+      if (this.closed) {
+        report.rowsInserted += result.inserted;
+        report.rowsCounted += result.counted;
+        break;
+      }
+      step = steps.next(result);
+      if (!step.done) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (this.closed) break;
+      }
+    }
+    if (this.closed) report.pending = queues.reduce((sum, q) => sum + q.r.filesPending, 0);
+    else await this.rescanSnapshotDetailsAsync(reader);
+    return report;
+  }
+
+  private ingestScanFile({ file, root, kind }: ScanFile): IngestResult {
+    return kind === 'codex' ? this.ingestCodexFile(root, file) : this.ingestClaudeFile(root, file);
+  }
+
+  private async ingestScanFileAsync(
+    reader: TranscriptReader, { file, root, kind }: ScanFile,
+  ): Promise<IngestResult> {
+    const result: IngestResult = { inserted: 0, counted: 0 };
+    const startedAt = performance.now();
+    for (let index = 0; index < FILE_SLICES_PER_TICK && !this.closed; index++) {
+      const checkpoint = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as TranscriptCheckpoint | undefined;
+      let batch: TranscriptBatch | null;
+      try {
+        batch = await reader.read({ file, kind, checkpoint });
+      } catch (error) {
+        if (!transcriptIoFailure(error)) throw error;
+        return { ...result, unavailable: true };
+      }
+      if (!batch || this.closed) return result;
+      const applied = kind === 'codex' ? this.ingestCodexFile(root, file, batch) : this.ingestClaudeFile(root, file, {}, batch);
+      result.inserted += applied.inserted;
+      result.counted += applied.counted;
+      if (!batch.more) return result;
+      if (performance.now() - startedAt >= FILE_TIME_PER_TICK_MS) break;
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    return { ...result, pending: true };
+  }
+
   /** Work every tick does before listing. False when there is nothing to scan. */
   private beginScanTick(): boolean {
     this.refreshPoolRoots();
+    try { if (this.served?.enabled()) this.served.resolver.refresh(); } catch { /* @silent-fallback-ok: a failed refresh keeps last tick's slot map; rows still record their basis */ }
     // Bindings from queued one-shots must exist before their transcripts are scanned.
     try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
+    return this.roots.size > 0 || this.codexRoots.size > 0 || this.pendingDetailRescan;
+  }
+
+  private rescanSnapshotDetails(): void {
     if (this.pendingDetailRescan) {
       this.pendingDetailRescan = false;
       // After a snapshot import: content before each checkpoint is re-read for detail only (never counted).
@@ -893,11 +1087,51 @@ export class UsageLedger {
         try { this.ingestClaudeFile(root, p, { rescanForDetail: true }); } catch { /* @silent-fallback-ok: a detail rescan miss leaves totals intact; only per-request detail is absent */ }
       }
     }
-    return this.roots.size > 0 || this.codexRoots.size > 0;
+  }
+
+  private detailReplayAfter = '';
+  private detailReplayFile:
+    { file: string; root: string; detail: NonNullable<TranscriptRequest['detail']> } | undefined;
+
+  private async rescanSnapshotDetailsAsync(reader: TranscriptReader): Promise<void> {
+    if (!this.pendingDetailRescan) return;
+    const startedAt = performance.now();
+    for (let index = 0; index < FILE_SLICES_PER_TICK && !this.closed; index++) {
+      if (!this.detailReplayFile) {
+        const next = this.db.prepare(
+          'SELECT path, root, inode, head_hash, offset FROM checkpoints WHERE extra IS NULL AND path > ? ORDER BY path LIMIT 1',
+        ).get(this.detailReplayAfter) as ({ path: string; root: string } & TranscriptCheckpoint) | undefined;
+        if (!next) {
+          this.pendingDetailRescan = false;
+          this.detailReplayAfter = '';
+          return;
+        }
+        this.detailReplayFile = { file: next.path, root: next.root,
+          detail: { offset: 0, end: next.offset, inode: next.inode, head: next.head_hash } };
+      }
+      const { file, root, detail } = this.detailReplayFile;
+      const checkpoint = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as TranscriptCheckpoint | undefined;
+      let batch: TranscriptBatch | null;
+      try {
+        batch = await reader.read({ file, kind: 'claude', checkpoint, detail });
+      } catch (error) {
+        if (!transcriptIoFailure(error)) throw error;
+        batch = null;
+      }
+      if (this.closed) return;
+      if (batch) this.ingestClaudeFile(root, file, {}, batch);
+      if (batch?.more) detail.offset = batch.end;
+      else {
+        this.detailReplayAfter = file;
+        this.detailReplayFile = undefined;
+      }
+      if (performance.now() - startedAt >= FILE_TIME_PER_TICK_MS) return;
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
   }
 
   /** Ingest from the listed queues under the shared file budget, round-robin across roots. */
-  private *consumeScanQueues(queues: ScanQueue[], report: ScanReport): Generator<void> {
+  private *consumeScanQueues(queues: ScanQueue[], report: ScanReport): Generator<ScanFile, void, IngestResult> {
     if (queues.length === 0) return;
     for (const q of queues) {
       const last = this.retryAfter.get(q.r);
@@ -914,31 +1148,34 @@ export class UsageLedger {
         const q = queues[(this.rootCursor + i) % queues.length];
         const f = q.files.shift();
         if (!f) continue;
-        q.r.filesPending--;
         budget--;
         progressed = true;
         try {
-          const r = q.kind === 'codex' ? this.ingestCodexFile(q.r.root, f) : this.ingestClaudeFile(q.r.root, f);
+          const r = yield { root: q.r.root, file: f, kind: q.kind };
+          report.rowsInserted += r.inserted;
+          report.rowsCounted += r.counted;
           if (r.unavailable) {
             q.r.listing = 'partial';
             q.r.filesPending++;
             this.retryAfter.set(q.r, f);
           } else {
             report.filesRead++;
-            report.rowsInserted += r.inserted;
-            report.rowsCounted += r.counted;
             q.r.filesScanned++;
+            if (r.pending) {
+              q.r.filesPending++;
+              this.retryAfter.set(q.r, f);
+            }
           }
         } catch (error) {
           // One enrolled home may be inaccessible. Keep scanning other homes and
           // retry the uncheckpointed file next tick. Database/logic failures propagate.
-          const code = (error as NodeJS.ErrnoException).code;
-          if (!code || !['EACCES', 'EPERM', 'ENOENT', 'ENOTDIR', 'EISDIR', 'ELOOP', 'ESTALE', 'EIO'].includes(code)) throw error;
+          if (!transcriptIoFailure(error)) throw error;
           q.r.listing = 'partial';
           q.r.filesPending++;
           this.retryAfter.set(q.r, f);
+        } finally {
+          q.r.filesPending--;
         }
-        yield;
       }
       this.rootCursor = (this.rootCursor + 1) % queues.length;
     }
@@ -966,52 +1203,59 @@ export class UsageLedger {
    * `rescanForDetail` re-reads from 0 and stores missing rows before the checkpoint as
    * `replay` (detail only, never counted) — used after a snapshot import.
    */
-  ingestClaudeFile(root: string, file: string, opts: { rescanForDetail?: boolean } = {}): { inserted: number; counted: number; unavailable?: boolean } {
-    let st: fs.Stats;
-    try {
-      const lst = fs.lstatSync(file);
-      if (lst.isSymbolicLink()) return { inserted: 0, counted: 0 };
-      st = lst;
-    } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
-    const head = UsageLedger.readHead(file);
-    const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
-      { inode: number; head_hash: string; birth_ms: number; offset: number } | undefined;
-    const sameFile = !!cp && cp.inode === st.ino && cp.head_hash === head && st.size >= cp.offset;
-    const checkpointOffset = sameFile ? cp!.offset : 0;
-    const birthMs = sameFile ? cp!.birth_ms : (st.birthtimeMs > 0 ? Math.floor(st.birthtimeMs) : 0);
-    const startAt = opts.rescanForDetail ? 0 : checkpointOffset;
-    if (st.size <= startAt) return { inserted: 0, counted: 0 };
+  ingestClaudeFile(root: string, file: string, opts: { rescanForDetail?: boolean } = {}, prepared?: TranscriptBatch): IngestResult {
+    let inode: number;
+    let head: string;
+    let checkpointOffset: number;
+    let birthMs: number;
+    let newOffset: number;
+    let records: Iterable<TranscriptRecord>;
+    if (prepared) {
+      ({ inode, head, checkpointOffset, birthMs, end: newOffset, records } = prepared);
+    } else {
+      let st: fs.Stats;
+      try {
+        const lst = fs.lstatSync(file);
+        if (lst.isSymbolicLink()) return { inserted: 0, counted: 0 };
+        st = lst;
+      } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
+      head = UsageLedger.readHead(file);
+      const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
+        { inode: number; head_hash: string; birth_ms: number; offset: number } | undefined;
+      const sameFile = !!cp && cp.inode === st.ino && cp.head_hash === head && st.size >= cp.offset;
+      checkpointOffset = sameFile ? cp!.offset : 0;
+      birthMs = sameFile ? cp!.birth_ms : (st.birthtimeMs > 0 ? Math.floor(st.birthtimeMs) : 0);
+      const startAt = opts.rescanForDetail ? 0 : checkpointOffset;
+      if (st.size <= startAt) return { inserted: 0, counted: 0 };
 
-    const buf = UsageLedger.readFrom(file, startAt, st.size);
-    const lastNl = buf.lastIndexOf(0x0a);
-    if (lastNl < 0) return { inserted: 0, counted: 0 };
-    const text = buf.subarray(0, lastNl + 1).toString('utf8');
+      const buf = UsageLedger.readFrom(file, startAt, st.size);
+      const lastNl = buf.lastIndexOf(0x0a);
+      if (lastNl < 0) return { inserted: 0, counted: 0 };
+      const text = buf.subarray(0, lastNl + 1).toString('utf8');
+      inode = st.ino;
+      newOffset = startAt + lastNl + 1;
+      records = localTranscriptRecords(text, startAt, 'claude');
+    }
     const isSubagent = file.split(path.sep).includes('subagents');
     const parentSessionId = isSubagent ? path.basename(path.dirname(path.dirname(file))) : null;
 
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'claude-transcript', 'claude-code', @model, @machine_id,
        @account_id, @session_id, @session_kind, @parent_session_id, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
-       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, NULL, @status, NULL, NULL, @source_path, @source_pos)`);
+       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, NULL, @status, NULL, NULL, @source_path, @source_pos,
+       @served_slot, @served_account_id, @served_identity, @served_basis)`);
 
     const memberCache = new Map<string, ScopeBasis | null>();
     const batch = new DeltaBatch();
     let inserted = 0, counted = 0, pairHeld = 0;
-    const newOffset = startAt + lastNl + 1;
-
     const tx = this.db.transaction(() => {
-      let pos = startAt;
-      for (const line of text.split('\n')) {
-        const linePos = pos;
-        pos += Buffer.byteLength(line, 'utf8') + 1;
-        if (!line.trim()) continue;
-        let obj: Record<string, any>;
-        try { obj = JSON.parse(line); } catch { /* @silent-fallback-ok: a malformed transcript line is skipped; the row count is unaffected for valid lines */ continue; }
-        if (obj.type !== 'assistant' || !obj.message?.usage || !obj.requestId || !obj.sessionId || !obj.timestamp) continue;
-        const ts = Date.parse(obj.timestamp);
+      for (const { position: linePos, value: obj } of records) {
+        if (!prepared && (obj.type !== 'assistant' || !obj.message?.usage || !obj.requestId || !obj.sessionId || !obj.timestamp)) continue;
+        const ts = prepared ? obj.ts : Date.parse(obj.timestamp);
         if (Number.isNaN(ts)) continue;
         const sessionId = clip(obj.sessionId)!;
         const cwd = clip(obj.cwd);
@@ -1022,7 +1266,7 @@ export class UsageLedger {
           memberCache.set(sessionId, scope);
         }
         if (!scope) continue;
-        const observationId = UsageLedger.observationId('claude-transcript', String(obj.requestId));
+        const observationId = prepared ? obj.observationId : UsageLedger.observationId('claude-transcript', String(obj.requestId));
         let status: RowStatus = 'counted';
         if (linePos < checkpointOffset) status = 'replay';
         else if (birthMs > 0 && ts < birthMs) status = 'copied-history';
@@ -1040,6 +1284,7 @@ export class UsageLedger {
           run_id: binding?.runId ?? null,
           tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite, tok_output: parts.output,
           tok_reasoning: null, status, source_path: file, source_pos: linePos,
+          ...this.servedColumns(root, 'claude', ts, isSubagent && parentSessionId ? parentSessionId : sessionId, binding),
         };
         if (insert.run(event).changes === 1) inserted++;
         else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
@@ -1059,7 +1304,7 @@ export class UsageLedger {
       this.db.prepare(`INSERT INTO checkpoints(path, root, inode, head_hash, birth_ms, offset, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, head_hash = excluded.head_hash,
         birth_ms = excluded.birth_ms, offset = excluded.offset, updated_at = excluded.updated_at`)
-        .run(file, root, st.ino, head, birthMs, Math.max(newOffset, checkpointOffset), this.opts.now());
+        .run(file, root, inode, head, birthMs, Math.max(newOffset, checkpointOffset), this.opts.now());
     });
     tx();
     return { inserted, counted };
@@ -1082,7 +1327,7 @@ export class UsageLedger {
   }
 
   private static observationId(source: string, nativeId: string): string {
-    return crypto.createHash('sha256').update(`${source}\u0000${nativeId}`).digest('hex').slice(0, 32);
+    return transcriptObservationId(source, nativeId);
   }
 
   private static readHead(file: string): string {
@@ -1133,10 +1378,12 @@ export class UsageLedger {
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'invocation', @ts, 'intelligence-call', @framework, @model, @machine_id,
        NULL, @session_id, 'internal', NULL, 'spawn-record', NULL, @job_slug, @run_id, @feature,
-       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, @tok_reasoning, 'counted', @reported_usd, @reported_basis, NULL, NULL)`);
+       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, @tok_reasoning, 'counted', @reported_usd, @reported_basis, NULL, NULL,
+       NULL, NULL, NULL, @served_basis)`);
     let n = 0;
     const tx = this.db.transaction(() => {
       const batch = new DeltaBatch();
@@ -1158,6 +1405,8 @@ export class UsageLedger {
           job_slug: clip(it.jobSlug), run_id: clip(it.runId), feature: clip(it.feature),
           tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite,
           tok_output: parts.output, tok_reasoning: parts.reasoning, reported_usd: usd, reported_basis: basis,
+          // A one-shot has no transcript root: its spend is its own bucket, never a login's.
+          served_basis: this.servedOn() ? 'no-transcript' : 'off',
         });
         if (res.changes !== 1) continue;
         n++;
@@ -1416,48 +1665,64 @@ export class UsageLedger {
    * the deltas of the cumulative `total_token_usage` between consecutive `token_count`
    * events, skipping events whose total did not change. Input excludes cached input.
    */
-  ingestCodexFile(root: string, file: string): { inserted: number; counted: number; unavailable?: boolean } {
-    let st: fs.Stats;
-    try {
-      st = fs.lstatSync(file);
-      if (st.isSymbolicLink()) return { inserted: 0, counted: 0 };
-    } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
-    const head = UsageLedger.readHead(file);
-    const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
-      { inode: number; head_hash: string; birth_ms: number; offset: number; extra: string | null } | undefined;
-    const same = !!cp && cp.inode === st.ino && cp.head_hash === head && st.size >= cp.offset;
-    const startAt = same ? cp!.offset : 0;
-    const birthMs = same ? cp!.birth_ms : (st.birthtimeMs > 0 ? Math.floor(st.birthtimeMs) : 0);
-    const state: CodexCheckpointState = same && cp!.extra ? JSON.parse(cp!.extra) : { sessionId: null, cwd: null, model: null, last: null, baseline: null, resumed: false };
-    if (st.size <= startAt) return { inserted: 0, counted: 0 };
-    const buf = UsageLedger.readFrom(file, startAt, st.size);
-    const lastNl = buf.lastIndexOf(0x0a);
-    if (lastNl < 0) return { inserted: 0, counted: 0 };
-    const text = buf.subarray(0, lastNl + 1).toString('utf8');
+  ingestCodexFile(root: string, file: string, prepared?: TranscriptBatch): IngestResult {
+    let inode: number;
+    let mtimeMs: number;
+    let head: string;
+    let birthMs: number;
+    let newOffset: number;
+    let records: Iterable<TranscriptRecord>;
+    let extra: string | null | undefined;
+    if (prepared) {
+      ({ inode, mtimeMs, head, birthMs, end: newOffset, records } = prepared);
+      if (prepared.checkpointOffset > 0) {
+        extra = (this.db.prepare('SELECT extra FROM checkpoints WHERE path = ?').get(file) as TranscriptCheckpoint | undefined)?.extra;
+      }
+    } else {
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(file);
+        if (st.isSymbolicLink()) return { inserted: 0, counted: 0 };
+      } catch { /* Re-stat next tick and report this file in partial coverage. */ return { inserted: 0, counted: 0, unavailable: true }; }
+      head = UsageLedger.readHead(file);
+      const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
+        { inode: number; head_hash: string; birth_ms: number; offset: number; extra: string | null } | undefined;
+      const same = !!cp && cp.inode === st.ino && cp.head_hash === head && st.size >= cp.offset;
+      const startAt = same ? cp!.offset : 0;
+      birthMs = same ? cp!.birth_ms : (st.birthtimeMs > 0 ? Math.floor(st.birthtimeMs) : 0);
+      extra = same ? cp!.extra : null;
+      if (st.size <= startAt) return { inserted: 0, counted: 0 };
+      const buf = UsageLedger.readFrom(file, startAt, st.size);
+      const lastNl = buf.lastIndexOf(0x0a);
+      if (lastNl < 0) return { inserted: 0, counted: 0 };
+      const text = buf.subarray(0, lastNl + 1).toString('utf8');
+      inode = st.ino;
+      mtimeMs = st.mtimeMs;
+      newOffset = startAt + lastNl + 1;
+      records = localTranscriptRecords(text, startAt, 'codex');
+    }
+    const state: CodexCheckpointState = extra ? JSON.parse(extra) :
+      { sessionId: null, cwd: null, model: null, last: null, baseline: null, resumed: false };
     const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
       (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
        parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
-       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos,
+       served_slot, served_account_id, served_identity, served_basis)
       VALUES (@observation_id, @correlation_key, 'request', @ts, 'codex-rollout', 'codex-cli', @model, @machine_id,
        @account_id, @session_id, @session_kind, NULL, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
-       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, @status, NULL, NULL, @source_path, @source_pos)`);
+       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, @status, NULL, NULL, @source_path, @source_pos,
+       @served_slot, @served_account_id, @served_identity, @served_basis)`);
     let inserted = 0, counted = 0;
     const batch = new DeltaBatch();
     let scope: ScopeBasis | null | undefined;
     const tx = this.db.transaction(() => {
-      let pos = startAt;
-      for (const line of text.split('\n')) {
-        const linePos = pos;
-        pos += Buffer.byteLength(line, 'utf8') + 1;
-        if (!line.trim() || line[0] !== '{') continue;
-        let d: Record<string, any>;
-        try { d = JSON.parse(line); } catch { /* @silent-fallback-ok: a malformed transcript line is skipped; the row count is unaffected for valid lines */ continue; }
+      for (const { position: linePos, value: d } of records) {
         const payload = d.payload && typeof d.payload === 'object' ? d.payload : null;
         if (!payload) continue;
         if (d.type === 'session_meta') {
           state.sessionId = clip(payload.id) ?? state.sessionId;
           state.cwd = clip(payload.cwd) ?? state.cwd;
-          state.resumed = Object.keys(payload).some(k => /fork|resum|parent/i.test(k) && payload[k]);
+          state.resumed = prepared ? payload.resumed : Object.keys(payload).some(k => /fork|resum|parent/i.test(k) && payload[k]);
           continue;
         }
         if (d.type === 'turn_context') { state.model = clip(payload.model) ?? state.model; continue; }
@@ -1479,7 +1744,7 @@ export class UsageLedger {
         state.last = t;
         if (scope === undefined) scope = this.membership(state.sessionId, state.cwd);
         if (!scope) continue;
-        const ts = Date.parse(d.timestamp ?? '') || st.mtimeMs;
+        const ts = (prepared ? d.ts : Date.parse(d.timestamp ?? '')) || mtimeMs;
         const binding = this.bindingAt(state.sessionId, ts);
         const parts: TokenParts = { input: Math.max(0, delta.input - delta.cached), cacheRead: delta.cached, cacheWrite: null, output: delta.output, reasoning: delta.reasoning };
         const obs = UsageLedger.observationId('codex-rollout', `${state.sessionId}:${linePos}`);
@@ -1491,6 +1756,7 @@ export class UsageLedger {
           session_kind: sessionKind, scope_basis: scope, topic_id: binding?.topicId ?? null, job_slug: binding?.jobSlug ?? null,
           run_id: binding?.runId ?? null, tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_output: parts.output,
           parent_session_id: null, tok_cache_write: null, tok_reasoning: parts.reasoning, source_path: file, source_pos: linePos,
+          ...this.servedColumns(root, 'codex', ts, state.sessionId, binding),
         };
         if (insert.run(event).changes === 1) inserted++;
         else if (status !== 'counted' || this.promoteCopiedRow.run(event).changes !== 1) continue;
@@ -1509,7 +1775,7 @@ export class UsageLedger {
       this.db.prepare(`INSERT INTO checkpoints(path, root, inode, head_hash, birth_ms, offset, updated_at, extra)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, head_hash = excluded.head_hash,
         birth_ms = excluded.birth_ms, offset = excluded.offset, updated_at = excluded.updated_at, extra = excluded.extra`)
-        .run(file, root, st.ino, head, birthMs, startAt + lastNl + 1, this.opts.now(), JSON.stringify(state));
+        .run(file, root, inode, head, birthMs, newOffset, this.opts.now(), JSON.stringify(state));
     });
     tx();
     return { inserted, counted };
@@ -1712,6 +1978,93 @@ export class UsageLedger {
   }
 
   get machineId(): string { return this.opts.machineId; }
+
+  // ── quota-pacing step 3: served account (docs/specs/quota-pacing-spend-by-account.md) ──
+
+  private servedOn(): boolean {
+    try { return !!this.served?.enabled(); } catch { return false; }
+  }
+
+  /** When a row's session began: its spawn record, else its earliest row on this machine, else the row itself. */
+  private sessionStartTs(sessionId: string, binding: SessionBinding | null, ts: number): number {
+    if (binding) return binding.validFrom;
+    const first = this.anyBinding(sessionId);
+    if (first) return first.validFrom;
+    const row = this.db.prepare('SELECT MIN(ts) AS t FROM usage_events WHERE session_id = ?').get(sessionId) as { t: number | null } | undefined;
+    return row?.t != null ? Math.min(row.t, ts) : ts;
+  }
+
+  private servedColumns(root: string, kind: 'claude' | 'codex', ts: number, sessionId: string, binding: SessionBinding | null): Record<'served_slot' | 'served_account_id' | 'served_identity' | 'served_basis', string | null> {
+    if (!this.servedOn()) return { served_slot: null, served_account_id: null, served_identity: null, served_basis: 'off' };
+    let a: ServedAttribution;
+    try {
+      a = this.served!.resolver.resolve({ root, kind, ts, sessionStartTs: this.sessionStartTs(sessionId, binding, ts) });
+    } catch { /* @silent-fallback-ok: an attribution failure records the row as unknown-root, never as a guessed account */
+      a = { slot: path.resolve(root), accountId: null, identity: null, basis: 'unknown-root' };
+    }
+    return { served_slot: clip(a.slot), served_account_id: clip(a.accountId), served_identity: clip(a.identity), served_basis: a.basis };
+  }
+
+  /** The earliest raw row this machine still keeps (retention or the raw-row ceiling may have dropped older ones). */
+  oldestRawTs(): number | null {
+    const r = this.db.prepare('SELECT MIN(ts) AS t FROM usage_events').get() as { t: number | null } | undefined;
+    return r?.t ?? null;
+  }
+
+  /**
+   * Served-account spend over raw rows: token sums by day bucket, model, framework, served basis,
+   * served identity, served account and tagged account. Counts the same row statuses as the
+   * rollups: transcript/rollout rows `counted`; invocation rows `counted` with their tokens, and
+   * `paired` invocations for their call only (their tokens moved to the transcript rows).
+   */
+  servedAggregate(sinceMs: number, untilMs: number, filter: { identity?: string; bases?: readonly ServedBasis[]; fableOnly?: boolean } = {}): ServedAggregateRow[] {
+    const where: string[] = ['ts >= @since', 'ts < @until', `(status = 'counted' OR (grain = 'invocation' AND status = 'paired'))`];
+    const params: Record<string, unknown> = { since: sinceMs, until: untilMs };
+    if (filter.identity !== undefined) { where.push('served_identity = @identity'); params.identity = filter.identity; }
+    if (filter.bases && filter.bases.length) {
+      where.push(`COALESCE(served_basis, 'before-attribution') IN (${filter.bases.map((_, i) => `@b${i}`).join(', ')})`);
+      filter.bases.forEach((b, i) => { params[`b${i}`] = b; });
+    }
+    if (filter.fableOnly) where.push(`LOWER(COALESCE(model, '')) LIKE '%fable%'`);
+    const paired = `(grain = 'invocation' AND status = 'paired')`;
+    const rows = this.db.prepare(`SELECT
+        (ts / ${DAY_MS}) * ${DAY_MS} AS bucket, model, framework,
+        COALESCE(served_basis, 'before-attribution') AS basis, served_identity AS identity,
+        served_account_id AS served, account_id AS tagged,
+        COUNT(*) AS calls,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_input, 0) END) AS input,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_cache_read, 0) END) AS cache_read,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_cache_write, 0) END) AS cache_write,
+        SUM(CASE WHEN ${paired} THEN 0 ELSE COALESCE(tok_output, 0) END) AS output
+      FROM usage_events WHERE ${where.join(' AND ')}
+      GROUP BY bucket, model, framework, basis, identity, served, tagged`).all(params) as Array<Record<string, unknown>>;
+    return rows.map(r => ({
+      bucket: Number(r.bucket), model: (r.model as string) ?? null, framework: r.framework as string,
+      basis: r.basis as ServedBasis, identity: (r.identity as string) ?? null, served: (r.served as string) ?? null,
+      tagged: (r.tagged as string) ?? null, calls: Number(r.calls),
+      input: Number(r.input), cacheRead: Number(r.cache_read), cacheWrite: Number(r.cache_write), output: Number(r.output),
+    }));
+  }
+
+  /**
+   * Sessions whose tagged account and served account are both known and differ, newest first.
+   * Only rows whose basis can name an account count. Paged by `(lastTs desc, sessionId)`.
+   */
+  accountMismatches(sinceMs: number, limit: number, after: { lastTs: number; sessionId: string } | null): { rows: AccountMismatch[]; total: number } {
+    const base = `FROM usage_events WHERE ts >= @since AND account_id IS NOT NULL AND served_account_id IS NOT NULL
+      AND account_id <> served_account_id AND served_basis IN ('ledger-verified', 'enrollment-confirmed', 'identity-unconfirmed')
+      AND status = 'counted'`;
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM (SELECT session_id ${base} GROUP BY session_id, account_id, served_account_id, served_basis)`)
+      .get({ since: sinceMs }) as { n: number }).n;
+    const rows = this.db.prepare(`SELECT * FROM (
+        SELECT session_id AS sessionId, account_id AS tagged, served_account_id AS served, served_basis AS servedBasis,
+          COUNT(*) AS requests, MIN(ts) AS firstTs, MAX(ts) AS lastTs ${base}
+        GROUP BY session_id, account_id, served_account_id, served_basis)
+      WHERE (@afterTs IS NULL OR lastTs < @afterTs OR (lastTs = @afterTs AND sessionId > @afterSession))
+      ORDER BY lastTs DESC, sessionId ASC LIMIT @limit`)
+      .all({ since: sinceMs, limit, afterTs: after?.lastTs ?? null, afterSession: after?.sessionId ?? '' }) as AccountMismatch[];
+    return { rows: rows.map(r => ({ ...r, confirmed: r.servedBasis !== 'identity-unconfirmed' })), total };
+  }
 
   // ── Slice 4: backed-up snapshot ─────────────────────────────────────
 
@@ -1970,6 +2323,7 @@ export class UsageLedger {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    void this.transcriptReader?.close().catch(error => console.warn('[UsageLedger] transcript worker shutdown failed:', error));
     try { this.db.close(); } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ /* already closed */ }
   }
 }

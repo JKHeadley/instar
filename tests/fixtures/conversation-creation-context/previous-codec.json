@@ -1,0 +1,58 @@
+{
+  "previousSourceCommit": "f16742a3e327d1048bd39fb3ed4fd9448b01e58e",
+  "upgradedEvent": {
+    "eventId": "created-compat",
+    "kind": "created",
+    "conversationKey": "22222222-2222-4222-8222-222222222222",
+    "title": "Compatibility fixture",
+    "at": "2026-11-22T00:00:00.000Z",
+    "machineId": "machine-a",
+    "creationContext": {
+      "v": 1,
+      "source": {
+        "kind": "session",
+        "requestId": "compat-request"
+      },
+      "parentConversationKey": "telegram:145738",
+      "parentBasis": "explicit"
+    }
+  },
+  "oldValidatorResult": {
+    "eventId": "created-compat",
+    "conversationKey": "22222222-2222-4222-8222-222222222222",
+    "at": "2026-11-22T00:00:00.000Z",
+    "machineId": "machine-a",
+    "kind": "created",
+    "title": "Compatibility fixture"
+  },
+  "oldPeerResult": {
+    "eventId": "created-compat",
+    "conversationKey": "22222222-2222-4222-8222-222222222222",
+    "at": "2026-11-22T00:00:00.000Z",
+    "machineId": "machine-a",
+    "title": "Compatibility fixture",
+    "eventKind": "created"
+  },
+  "oldRebuildConversationSurvives": true,
+  "oldRebuildSummary": {
+    "conversationKey": "22222222-2222-4222-8222-222222222222",
+    "canonicalKey": "app:22222222-2222-4222-8222-222222222222",
+    "title": "Compatibility fixture",
+    "createdAt": "2026-11-22T00:00:00.000Z",
+    "lastActivity": null,
+    "lastPreview": null,
+    "tombstoned": false,
+    "ownerPerson": null
+  },
+  "observed": "Previous codec preserves the conversation while dropping unknown creationContext from normalized/peer events. The raw upgraded JSONL retains the field through a derived index rebuild; an old normalized peer copy cannot recover dropped context.",
+  "baseHashContract": "UTF8(instar.app-created-base.v1\\n + JSON.stringify([canonicalConversationKey,eventId,created,title,at,machineId,ownerTupleOrNull]))",
+  "expectedBaseSha256": "b578aca6605887d87f9d9d1cfc6cad5fc7e554dafacac5d5a17ff77059b080ff",
+  "contextDigestFixtures": {
+    "absentParent": "6e107a70661718087ec46d71d0f155b2bc264a612fb4a7ebca0a1a159a91a455",
+    "explicitNullParent": "56956931d90e51d528c027b5aac07cbf5a7a5d85f8efeb5d0b50a58e5f594dd6",
+    "source": {
+      "kind": "session",
+      "requestId": "compat-request"
+    }
+  }
+}

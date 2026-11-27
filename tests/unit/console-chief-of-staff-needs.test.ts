@@ -50,10 +50,35 @@ describe('chiefOfStaffNeedRows', () => {
     expect(rows[1].main).toBe('Monroe launch is waiting on you');
     expect(rows[2].main).toBe('Keep every one of the customer onboarding flows working… is waiting on you');
     expect(rows[0].action.href).toBe('#/work/chats?c=telegram%3A1');
+    expect(rows[0].sub).toBe('The project is waiting for your reply in its conversation.');
     for (const r of rows) expect(r.main).not.toMatch(/\w…\w/);
+  });
+  it('uses a plain fallback when a waiting project has no display name', () => {
+    const rows = chiefOfStaffNeedRows(ok({ lease: { live: true }, projects: [
+      { conversationKey: 'telegram:456', lastVerdict: 'waiting-on-user' },
+    ] }), NOW);
+    expect(rows[0].main).toBe('A project is waiting on you');
+    expect(rows[0].action.href).toBe('#/work/chats?c=telegram%3A456');
   });
   it('the dashboard name rule matches the note rule exactly', () => {
     const goals = ["Emily Ghosh's affiliate intelligence project: confirm the weekly report", 'Get Monroe AI ready for public launch: DNS, chat rate limits', 'Billing cleanup — every invoice matched', 'Ship the iOS app. Then tell the beta group.', 'https://example.com goes live', 'Keep every one of the customer onboarding flows working smoothly across all of the regions we serve', '   ', 'Supercalifragilisticexpialidociousandthensome'];
     for (const g of goals) for (const max of [20, 40, 60]) { expect(shortJs(g, max)).toBe(shortTs(g, max)); expect(cutJs(g, max)).toBe(cutTs(g, max)); }
+  });
+});
+
+describe('the Conversations card does not repeat the Needs-you list (2026-11-20 dashboard audit)', () => {
+  it('with the list on screen only the check-in rows stay; without it every row shows', async () => {
+    const { chiefOfStaffCardRows } = await import('../../dashboard/console/needs-model.js');
+    const rows = [{ key: 'need:cos:waiting:telegram:1', main: 'A is waiting on you' }, { key: 'need:cos:parked:telegram:2', main: 'B is parked' }, { key: 'need:cos:expiring', main: 'Your Chief of Staff pauses within a day unless you check in' }];
+    expect(chiefOfStaffCardRows(rows, { stripShown: true }).map((r) => r.key)).toEqual(['need:cos:expiring']);
+    expect(chiefOfStaffCardRows(rows, { stripShown: false })).toHaveLength(3);
+    expect(chiefOfStaffCardRows(rows.slice(0, 2), { stripShown: true })).toEqual([]);
+    expect(chiefOfStaffCardRows(null)).toEqual([]);
+  });
+  it('the Conversations page reads whether the list is on screen (wiring)', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../dashboard/console/chats.js', import.meta.url), 'utf8');
+    expect(src).toContain("document.querySelector('#needsStrip:not([hidden])')");
+    expect(src).toContain('chiefOfStaffCardRows(this.cosNeeds, { stripShown })');
   });
 });

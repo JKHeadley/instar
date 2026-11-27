@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "preferred-holder-restart-admission",
+  "sessionId": "a1b42eb8-a116-44f0-88db-7fb10f903f2e",
+  "timestamp": "2026-11-27T05:12:38.641Z",
+  "artifactPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "artifactSha256": "9f37fc9633f5589cbe7a486b141c37b37c9b88df8aaf7268c90366366c7cd8e0",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The route only reads evidence. This annotation has no runtime effect.",
+  "eli16Path": "upgrades/eli16/preferred-holder-restart-admission.md",
+  "sideEffectsPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      3942
+    ],
+    "notes": "The new POST admission route only reads lease evidence but omitted the explicit write-domain declaration required for new POST routes."
+  }
+}

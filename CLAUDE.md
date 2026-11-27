@@ -266,7 +266,7 @@ Run `instar dev:ci-failures <pr>` to print a red PR's exact failing tests (file:
 - **Generate a file link**: `curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/api/files/link?path=.claude/CLAUDE.md"`
 - **Download a file**: `curl -H "Authorization: Bearer $AUTH" "http://localhost:4040/api/files/download?path=.claude/CLAUDE.md" -O`
 - **Default config**: Browsing and editing enabled for the entire project directory (`./`) by default.
-- **Never editable**: `.claude/hooks/`, `.claude/scripts/`, `node_modules/` are always read-only regardless of config.
+- **Never editable**: files that decide what runs are always read-only regardless of config: `.claude/hooks/`, `.claude/scripts/`, `.claude/settings*.json`, `.instar/hooks/`, `.instar/scripts/`, `.instar/config.json`, job files (`.instar/jobs.json`, `.instar/jobs/instar/`, `.instar/jobs/user/`, `.instar/jobs/schedule/`), `.mcp.json`, `.codex/`, `.gemini/`, `.husky/`, `node_modules/`, including the same paths inside worktrees. Edit jobs on the Schedule page.
 
 
 ### Coherence Gate (Pre-Action Verification)

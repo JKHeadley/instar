@@ -160,8 +160,23 @@ const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
 const KIND_WORDS: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 export function kindWord(framework: unknown): string { return (typeof framework === 'string' && KIND_WORDS[framework]) || 'Other'; }
 
-export interface MobileAccountWindow { label: string; pct: number; resetsAt: string | null }
-export interface MobileAccountMachine { name: string; isSelf: boolean; state: 'ok' | 'attn' | 'working' | 'unknown'; label: string }
+/**
+ * One usage limit on an account. `label` is unchanged for older apps. `name` is the display word
+ * ("5-hour", "Weekly", "Fable weekly"); `tone` is the colour for the rounded, displayed percentage
+ * (`usageTone`); `rolledOver` means the reset time has passed since the reading, so the figure is
+ * no longer true and gets no colour (DF-0001, docs/specs/design-standard-enforcement.md §4).
+ */
+export interface MobileAccountWindow { label: string; name: string; pct: number; resetsAt: string | null; tone: UsageTone; rolledOver: boolean }
+export type UsageTone = 'bad' | 'attn' | null;
+export interface MobileAccountMachine {
+  name: string;
+  isSelf: boolean;
+  state: 'ok' | 'attn' | 'working' | 'unknown';
+  label: string;
+  /** Stable identity for grouping only, never an action target. */
+  machineKey: string | null;
+  present: true;
+}
 export interface MobileAccount {
   key: string;
   name: string;
@@ -173,6 +188,7 @@ export interface MobileAccount {
   usageLine: string;
   tone: 'bad' | 'attn' | null;
   readingAt: string | null;
+  lastCheckedAt?: string;
   stale: boolean;
   machines: MobileAccountMachine[];
 }
@@ -212,20 +228,53 @@ export function accountCellState(row: Rec, repairing = false, blockerReason: str
   return { state: 'unknown', label: status && /^[a-z-]{1,24}$/.test(status) ? status.replace(/-/g, ' ') : 'unknown' };
 }
 
-/** Every usage window on a reading, highest first (the console's `tightest`, all windows kept). */
-export function usageWindows(q: unknown): MobileAccountWindow[] {
+/**
+ * Usage colour bands. The web console holds the same two numbers in
+ * dashboard/console/accounts-model.js; src/data/design/usage-tone-vectors.json pins both sides to
+ * one set of boundary cases (tests/unit/usage-tone-parity.test.ts).
+ */
+export const USAGE_TONE_ATTN_PCT = 75;
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+
+/** The colour for a limit or an account: from the rounded percentage that is displayed; none once reset. */
+export function usageTone(pct: number, rolledOver = false): UsageTone {
+  if (rolledOver || !Number.isFinite(pct)) return null;
+  const shown = Math.round(pct);
+  return shown >= NEAR_OUT_PCT ? 'bad' : shown >= USAGE_TONE_ATTN_PCT ? 'attn' : null;
+}
+
+const WINDOW_ORDER = [['fiveHour', '5-hour', '5-hour'], ['sevenDay', 'weekly', 'Weekly'], ['fable', 'Fable weekly', 'Fable weekly'], ['primary', '5-hour', '5-hour'], ['secondary', 'weekly', 'Weekly']] as const;
+const WINDOW_RANK: Record<string, number> = { '5-hour': 0, weekly: 1, 'Fable weekly': 2 };
+
+/**
+ * Every usage window on a reading, in a fixed order (5-hour, weekly, Fable weekly), never re-sorted
+ * by percentage, so every app draws the rows in the same order. `now` decides `rolledOver`.
+ */
+export function usageWindows(q: unknown, now: number = Date.now()): MobileAccountWindow[] {
   const r = rec(q);
   const wins: MobileAccountWindow[] = [];
   const seen = new Set<string>();
-  for (const [k, label] of [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']] as const) {
+  for (const [k, label, name] of WINDOW_ORDER) {
     const w = rec(r[k]);
     if (!Object.keys(w).length || seen.has(label)) continue;
     const pct = Number(w.utilizationPct ?? w.usedPercent);
     if (!Number.isFinite(pct)) continue;
     seen.add(label);
-    wins.push({ label, pct: Math.max(0, Math.round(pct)), resetsAt: iso(w.resetsAt ?? w.resetsAtIso) });
+    const resetsAt = iso(w.resetsAt ?? w.resetsAtIso);
+    const t = resetsAt ? Date.parse(resetsAt) : NaN;
+    const rolledOver = Number.isFinite(t) && t <= now;
+    const shown = Math.max(0, Math.round(pct));
+    wins.push({ label, name, pct: shown, resetsAt, tone: usageTone(shown, rolledOver), rolledOver });
   }
-  return wins.sort((a, b) => b.pct - a.pct);
+  return wins.sort((a, b) => WINDOW_RANK[a.label] - WINDOW_RANK[b.label]);
+}
+
+/** The highest limit that has not reset since the reading (the one that decides the account), or null. */
+export function topWindow(windows: readonly MobileAccountWindow[]): MobileAccountWindow | null {
+  let top: MobileAccountWindow | null = null;
+  for (const w of windows) if (!w.rolledOver && (top === null || w.pct > top.pct)) top = w;
+  return top;
 }
 
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
@@ -236,7 +285,7 @@ export function accountEmail(id: string, email: unknown): string | null {
   return v;
 }
 
-interface AccountGroup { id: string; name: string | null; email: string | null; framework: unknown; cells: Array<{ row: Rec; machine: string; isSelf: boolean }>; reading: unknown; readingAt: number }
+interface AccountGroup { id: string; name: string | null; email: string | null; framework: unknown; cells: Array<{ row: Rec; machine: string; isSelf: boolean }>; readings: Map<string, { window: MobileAccountWindow; at: number }>; lastCheckedAt: number }
 export interface AccountsOptions {
   /** The account this machine's sessions run on (`/subscription-pool/in-use`), or null. */
   inUseAccountId?: string | null;
@@ -253,9 +302,6 @@ export interface AccountsOptions {
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
 }
-
-/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
-export const NEAR_OUT_PCT = 90;
 
 /**
  * Something on the Accounts screen that needs the person or changes what they can do. The screen's
@@ -276,7 +322,7 @@ type NoticeAccount = Pick<MobileAccount, 'key' | 'name' | 'kind' | 'signIn' | 'w
 
 /** When this account has room again: every window at or over the line must reset (null if one has no time). */
 function roomReturnsAt(a: NoticeAccount): number | null {
-  const full = a.windows.filter((w) => w.pct >= NEAR_OUT_PCT);
+  const full = a.windows.filter((w) => !w.rolledOver && w.pct >= NEAR_OUT_PCT);
   let latest = 0;
   for (const w of full) {
     const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
@@ -329,10 +375,10 @@ export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadabl
   for (const kind of kinds) {
     const list = usable.filter((a) => a.kind === kind);
     if (list.some((a) => a.windows.length === 0)) continue; // one we can't read may have room
-    if (list.every((a) => (a.windows[0]?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+    if (list.every((a) => (topWindow(a.windows)?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
   }
   const roomNotice = (list: NoticeAccount[], kind: string | null): AccountNotice => {
-    const usedUp = list.every((a) => (a.windows[0]?.pct ?? 0) >= 100);
+    const usedUp = list.every((a) => (topWindow(a.windows)?.pct ?? 0) >= 100);
     const state = usedUp ? 'used up' : 'nearly out';
     const noun = kind ? `${kind} account` : 'account';
     const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
@@ -388,7 +434,7 @@ export function summarizeAccounts(
     const r = rec(raw);
     const id = str(r.id);
     if (!id) continue;
-    const g = groups.get(id) ?? { id, name: null, email: null, framework: r.framework, cells: [], reading: null, readingAt: 0 };
+    const g = groups.get(id) ?? { id, name: null, email: null, framework: r.framework, cells: [], readings: new Map<string, { window: MobileAccountWindow; at: number }>(), lastCheckedAt: 0 };
     g.name = g.name ?? phoneText(verifiedEntityName(id, r.nickname), 80);
     g.email = g.email ?? accountEmail(id, r.email);
     const mid = String(r.machineId ?? '');
@@ -398,20 +444,31 @@ export function summarizeAccounts(
     const q = rec(r.lastQuota);
     const at = Date.parse(String(q.measuredAt ?? ''));
     // A reading dated in the future (beyond small skew) is not evidence; it can never win "freshest".
-    if (Object.keys(q).length && Number.isFinite(at) && at <= opts.now + FUTURE_SKEW_MS && at > g.readingAt) { g.reading = q; g.readingAt = at; }
+    if (Number.isFinite(at) && at <= opts.now + FUTURE_SKEW_MS) {
+      g.lastCheckedAt = Math.max(g.lastCheckedAt, at);
+      // A newer response may omit a limit that another machine could still read.
+      for (const window of usageWindows(q, opts.now)) {
+        const previous = g.readings.get(window.label);
+        if (!previous || at > previous.at) g.readings.set(window.label, { window, at });
+      }
+    }
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
     const machines = g.cells.map((c) => {
       const mid = String(c.row.machineId ?? '');
+      const sourceId = str(c.row.machineId);
+      const stableId = sourceId && sourceId !== 'self' ? sourceId : c.isSelf && selfId !== 'self' ? selfId : null;
       // Latest repair for this account on THIS machine (self rows may carry no machineId: match self).
       const latest = (opts.repairs ?? [])
         .filter((r) => r.accountId === g.id && (r.machineId === mid || (c.isSelf && (!mid || r.machineId === selfId))))
         .sort((a, b) => Date.parse(String(b.updatedAt ?? '')) - Date.parse(String(a.updatedAt ?? '')))[0] ?? null;
-      return { name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
+      return { name: c.machine, isSelf: c.isSelf, machineKey: stableId ? rowKey('account-machine', stableId) : null, present: true as const, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
     });
-    const windows = usageWindows(g.reading);
-    const top = windows[0] ?? null;
+    const readings = [...g.readings.values()];
+    const windows = readings.map(({ window }) => window).sort((a, b) => WINDOW_RANK[a.label] - WINDOW_RANK[b.label]);
+    const readingAt = readings.length ? Math.min(...readings.map(({ at }) => at)) : 0;
+    const top = topWindow(windows);
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
       : machines.some((m) => m.state === 'working') ? 'signing-in'
         : machines.some((m) => m.state === 'ok' && m.label === 'signed in') ? 'signed-in'
@@ -426,9 +483,10 @@ export function summarizeAccounts(
       signIn,
       windows: windows.map((w) => ({ ...w, resetsAt: w.resetsAt && Date.parse(w.resetsAt) > opts.now ? w.resetsAt : null })),
       usageLine: top ? `${top.pct}% of ${top.label}` : g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.',
-      tone: top && top.pct >= 90 ? 'bad' : top && top.pct >= 75 ? 'attn' : null,
-      readingAt: g.readingAt ? new Date(g.readingAt).toISOString() : null,
-      stale: !!g.readingAt && opts.now - g.readingAt > READING_STALE_MS,
+      tone: top ? usageTone(top.pct) : null,
+      readingAt: readingAt ? new Date(readingAt).toISOString() : null,
+      ...(windows.length === 0 && g.lastCheckedAt ? { lastCheckedAt: new Date(g.lastCheckedAt).toISOString() } : {}),
+      stale: !!readingAt && opts.now - readingAt > READING_STALE_MS,
       machines,
       _pct: top ? top.pct : -1,
     };

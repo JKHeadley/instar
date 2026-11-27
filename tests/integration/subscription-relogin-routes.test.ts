@@ -181,6 +181,32 @@ describe('/subscription-relogin routes', () => {
     expect(list.body.pool.failed).toEqual([]);
   });
 
+  it('retries only the timed-out peer once with a longer budget on the Accounts read', async () => {
+    let lateReads = 0;
+    let fastReads = 0;
+    const late = express();
+    late.get('/subscription-relogin', (_req, res) => {
+      lateReads += 1;
+      if (lateReads === 1) return; // First read never responds.
+      res.json({ enabled: true, episodes: [], config: { mode: 'approval' } });
+    });
+    const fast = express();
+    fast.get('/subscription-relogin', (_req, res) => {
+      fastReads += 1;
+      res.json({ enabled: true, episodes: [], config: { mode: 'off' } });
+    });
+    const a = await listen(late); const b = await listen(fast);
+    extraServers.push(a, b);
+    peerUrls = [{ machineId: 'machine-2', url: a.url }, { machineId: 'machine-3', url: b.url }];
+    const list = await api('/subscription-relogin?scope=pool&retryTimeout=1');
+    expect(list.body.pool.failed).toEqual([]);
+    expect(list.body.pool.configs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ machineId: 'machine-2', mode: 'approval' }),
+      expect.objectContaining({ machineId: 'machine-3', mode: 'off' }),
+    ]));
+    expect([lateReads, fastReads]).toEqual([2, 1]);
+  }, 20_000);
+
   it('merges peer repair blockers and names machines whose blockers are unknown', async () => {
     const newer = express();
     newer.get('/subscription-relogin', (_req, res) => res.json({ enabled: true, episodes: [], blockers: [

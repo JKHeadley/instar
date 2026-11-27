@@ -25,6 +25,7 @@
  *       → No: queue to outbound directory for git-sync fallback
  */
 
+import { maskInbound } from './inboundCredentialMask.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,19 +46,22 @@ import type {
   MessagingStats,
   SignedPayload,
 } from './types.js';
-import { DEFAULT_TTL, VALID_TRANSITIONS, CLOCK_SKEW_TOLERANCE, THREAD_STALE_MINUTES, RELAY_MACHINE_PATH } from './types.js';
+import { DEFAULT_TTL, VALID_TRANSITIONS, CLOCK_SKEW_TOLERANCE, THREAD_STALE_MINUTES, machineRelayBody, GENERATION_RELAY_MACHINE_PATH, RELAY_MACHINE_PATH } from './types.js';
 import { CrossMachineRelayQueue, type RelayPassOutcome } from './CrossMachineRelayQueue.js';
-import type { MessageStore } from './MessageStore.js';
-import type { MessageDelivery } from './MessageDelivery.js';
+import { MessageStore } from './MessageStore.js';
+import { beginDeliveryAttempt, ownsDeliveryAttempt, type DeliveryAttemptClaim, type MessageDelivery } from './MessageDelivery.js';
 import { getAgentToken, computeDropHmac } from './AgentTokenManager.js';
 import { listAgents } from '../core/AgentRegistry.js';
 import type { AgentRegistryEntry } from '../core/types.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { sign, verify } from '../core/MachineIdentity.js';
 import { signRequest } from '../server/machineAuth.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { NonceStore } from '../core/NonceStore.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import { localRouteSignatureCounters, logSafe, type LocalEnvelopeSigner } from '../threadline/localEnvelopeSignature.js';
+import { describeHolderRefusal, isHolderPendingRefusal } from './sessionAddressResolver.js';
+import type { PeerMessageGeneration } from './peerMessageTarget.js';
 
 export interface MessageRouterConfig {
   localAgent: string;
@@ -82,6 +86,17 @@ export interface MessageRouterConfig {
    * names, as of `asOf` (ms). Absent ⇒ today's exact-name behaviour.
    */
   resolveSession?: (target: string, asOf: number) => ResolveResult;
+  /**
+   * relay-asof-holder-skew §3: where one JSONL row per holder refusal is appended
+   * (reason, target, holder start vs reference time). Absent ⇒ no file; the envelope's
+   * transitions still carry the refusal.
+   */
+  refusalAuditPath?: string;
+  /** N73: trusted peer read, before message creation; never inferred from clocks. */
+  /** Live sender-only rollout switch. Absent is off; receiver proof checks are always on. */
+  generationBindingEnabled?: () => boolean;
+  generationEvidence?: (kind: 'fired' | 'held' | 'error', reason: string, messageId: string) => void;
+  peerSessionGeneration?: (machineId: string, target: string, timeoutMs: number) => Promise<PeerMessageGeneration>;
   /** §C: a same-agent message reached a terminal failure on this machine. Never throws. */
   onDeliveryFailure?: (envelope: MessageEnvelope, reason: string) => void;
   /** §C: failures with no session to tell, by `target|reason`, for GET /messages/stats. */
@@ -91,6 +106,11 @@ export interface MessageRouterConfig {
    * the router). Absent ⇒ cross-machine session messages fail with no address.
    */
   peerAddresses?: (machineId: string) => string[];
+  /**
+   * SEC-164 part 1 §3.5: read live for each send; when true, live keys in the subject and body are
+   * masked before the envelope is saved, signed or delivered. Absent ⇒ off (tests and embedders).
+   */
+  credentialScrubEnabled?: () => boolean;
 }
 
 /** What the target's server said to a same-machine relay POST. */
@@ -100,6 +120,26 @@ export type LocalRelayOutcome =
   | { kind: 'refused'; status: number; error: string; reason: string | null; retryable: boolean }
   /** Everything else, exactly as before: no token, a network error, any other answered error. */
   | { kind: 'unreachable' };
+
+/** relay-asof-holder-skew §3: one row per holder refusal, countable by `reason`. */
+export interface HolderRefusalAuditRow {
+  ts: string;
+  kind: 'holder-refusal';
+  messageId: string;
+  target: string;
+  reason: string;
+  /** The message's reference time (ISO, this clock): when it was written. */
+  referenceTime: string;
+  /** When the too-new holder started (ISO), for `role-respawned-after-message`. */
+  holderStartedAt: string | null;
+  /** The machine that relayed the message here, or null for a local send. */
+  relayedFrom: string | null;
+  attempt: number;
+  outcome: 'received' | 'failed';
+}
+
+/** The refusal audit rolls over to `<file>.1` past this size (same shape as the a2a sweep audit). */
+const REFUSAL_AUDIT_MAX_BYTES = 5 * 1024 * 1024;
 
 /** Optional cross-machine crypto dependencies. Only needed when multi-machine is enabled. */
 export interface CrossMachineDeps {
@@ -120,6 +160,10 @@ export function isRelayChainLoop(envelope: Pick<MessageEnvelope, 'transport'>, l
 }
 
 export class MessageRouter implements IMessageRouter {
+  private refusalAuditTail: Promise<void> = Promise.resolve();
+  private refusalAuditReady: Promise<void> | null = null;
+  private refusalAuditWarned = false;
+  private readonly generationLanes = new Map<string, Promise<void>>();
   private readonly store: MessageStore;
   private readonly delivery: MessageDelivery;
   private readonly config: MessageRouterConfig;
@@ -275,22 +319,29 @@ export class MessageRouter implements IMessageRouter {
 
     const arrivedAt = Date.now();
     const age = rawAge === null ? 0 : Math.min(Math.max(0, rawAge), ttlMs);
-    const W = CLOCK_SKEW_TOLERANCE['relay-machine'] ?? 5 * 60_000;
     const nowIso = new Date(arrivedAt).toISOString();
+    // Map sender-measured age onto the receiving clock. The old extra -2W
+    // subtraction refused every young holder, even when it predated the send.
+    // This is an age-based estimate, not proof of clock offset or bounded transit;
+    // do not add a grace period that knowingly admits post-reference replacements.
     envelope.delivery = {
       phase: 'received',
       transitions: [...(envelope.delivery?.transitions ?? []), { from: envelope.delivery?.phase ?? 'sent', to: 'received', at: nowIso, reason: `relayed from ${signer}` }],
       attempts: 0,
-      deliveryPending: !!m.to.session && m.to.session !== 'best',
+      deliveryPending: !m.to.sessionGenerationRequired && !!m.to.session && m.to.session !== 'best',
+      ...(m.to.sessionGenerationRequired ? { holderPending: true } : {}),
       arrivedAt: nowIso,
-      asOf: arrivedAt - age - 2 * W,
+      expiresAt: arrivedAt + Math.max(0, ttlMs - age),
+      // Older/unproven senders retain the original conservative fence. A bound
+      // generation is checked by id below and does not rely on this estimate.
+      asOf: arrivedAt - age - (m.to.sessionId ? 0 : 2 * (CLOCK_SKEW_TOLERANCE['relay-machine'] ?? 5 * 60_000)),
     };
     const claimed = await this.store.saveIfAbsent(envelope);
     if (!claimed) return { outcome: 'duplicate' };
     if (m.threadId) {
       try { await this.updateThread(m.threadId, m); } catch { /* @silent-fallback-ok: thread aggregate is observability */ }
     }
-    if (envelope.delivery.deliveryPending) {
+    if (envelope.delivery.deliveryPending || envelope.delivery.holderPending) {
       // The ack goes back before typing; delivery runs after the answer.
       setImmediate(() => { void this.deliverRelayed(envelope); });
     }
@@ -298,36 +349,17 @@ export class MessageRouter implements IMessageRouter {
   }
 
   private async deliverRelayed(envelope: MessageEnvelope): Promise<void> {
-    try {
-      await this.deliverSameAgentLocal(envelope);
-    } finally {
-      try {
-        // Once delivery reached delivered/queued/failed, boot recovery no longer owns it:
-        // a queued message belongs to the retry manager (held to its pinned session).
-        const cur = await this.store.get(envelope.message.id);
-        if (cur && cur.delivery.deliveryPending && cur.delivery.phase !== 'received') {
-          cur.delivery.deliveryPending = false;
-          await this.store.updateDelivery(cur.message.id, cur.delivery);
-        }
-      } catch { /* @silent-fallback-ok: boot recovery reads the marker; a stale true is resolved there */ }
-    }
+    await this.deliverSameAgentLocal(envelope, undefined, true);
   }
 
-  /** Boot (§D.2): relayed envelopes this machine stored but did not finish. */
+  /** Recover persisted unfinished attempts; the exclusive wrapper rereads state. */
   async recoverPendingRelayed(): Promise<void> {
     let all: MessageEnvelope[] = [];
-    try { all = await this.store.queryInbox(this.config.localAgent); } catch { return; } // @silent-fallback-ok: nothing readable to recover; each envelope still expires by TTL
+    try { all = await this.store.queryInbox(this.config.localAgent); } catch { return; } // @silent-fallback-ok: unreadable persisted state grants no delivery authority
     for (const env of all) {
-      // Only messages that never left 'received' are recovery's; anything further along
-      // (delivered, queued, failed) is owned by its terminal state or the retry manager.
-      if (!env.delivery.deliveryPending || env.delivery.phase !== 'received') continue;
-      if (env.delivery.typingStartedAt) {
-        const reason = 'outcome unknown: the machine stopped while delivering';
-        await this.setPhase(env, 'failed', reason, { deliveryPending: false });
-        this.reportTerminalFailure(env, reason);
-        continue;
-      }
-      void this.deliverRelayed(env);
+      if (!env.delivery.deliveryPending) continue;
+      if (['delivered', 'read', 'failed', 'expired', 'dead-lettered'].includes(env.delivery.phase)) continue;
+      if (env.delivery.typingStartedAt || env.delivery.phase === 'received') await this.deliverRelayed(env);
     }
   }
 
@@ -348,12 +380,52 @@ export class MessageRouter implements IMessageRouter {
     try { this.config.onDeliveryFailure?.(orig, why); } catch { /* @silent-fallback-ok: notice is best-effort */ }
   }
 
+  /** Runtime status uses the same live source as sender admission. */
+  isGenerationBindingEnabled(): boolean { return this.config.generationBindingEnabled?.() === true; }
+
+  /** N73: current role generation for an authenticated machine preflight. */
+  currentSessionGeneration(target: string): string | null {
+    if (!this.config.resolveSession) throw new Error('session generation resolver is unavailable');
+    const result = this.config.resolveSession(target, Number.MAX_SAFE_INTEGER);
+    return result.kind === 'exact' || result.kind === 'redirected' ? result.session.id : null;
+  }
+
   /** Attach a summary sentinel for intelligent routing (session: "best") */
   setSummarySentinel(sentinel: import('./SessionSummarySentinel.js').SessionSummarySentinel): void {
     this.summarySentinel = sentinel;
   }
 
   async send(
+    from: AgentMessage['from'], to: AgentMessage['to'], type: MessageType,
+    priority: MessagePriority, subject: string, body: string, options?: SendMessageOptions,
+  ): Promise<SendResult> {
+    const { sessionId: _untrustedId, sessionGenerationRequired: _untrustedRequired, ...cleanAddress } = to;
+    to = cleanAddress;
+    const namedPeer = to.agent === this.config.localAgent && to.machine !== '*' && to.machine !== 'local'
+      && to.machine !== this.config.localMachine && to.session !== '*' && to.session !== 'best';
+    const bindingEnabled = namedPeer && this.isGenerationBindingEnabled();
+    if (!bindingEnabled) return this.sendMessage(from, to, type, priority, subject, body, options, 5_000, false);
+    // One preflight/send admission per peer. Waiting shares the same bounded
+    // budget; expired waiters are recorded as explicit failures, not dropped.
+    const started = performance.now();
+    const previous = this.generationLanes.get(to.machine) ?? Promise.resolve();
+    let release!: () => void;
+    const owned = new Promise<void>((done) => { release = done; });
+    const tail = previous.then(() => owned);
+    this.generationLanes.set(to.machine, tail);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const admitted = await Promise.race([previous.then(() => true), new Promise<boolean>((done) => { timer = setTimeout(() => done(false), 5_000); })]);
+      return await this.sendMessage(from, to, type, priority, subject, body, options,
+        admitted ? Math.max(0, 5_000 - (performance.now() - started)) : 0, true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      void tail.then(() => { if (this.generationLanes.get(to.machine) === tail) this.generationLanes.delete(to.machine); });
+    }
+  }
+
+  private async sendMessage(
     from: AgentMessage['from'],
     to: AgentMessage['to'],
     type: MessageType,
@@ -361,7 +433,17 @@ export class MessageRouter implements IMessageRouter {
     subject: string,
     body: string,
     options?: SendMessageOptions,
+    generationBudgetMs = 5_000,
+    generationBinding = false,
   ): Promise<SendResult> {
+    // SEC-164 §3.5: mask live keys before the envelope is saved or signed. A queued envelope is never
+    // rewritten; only a new send is masked. Never throws: a failed check sends the text unchanged.
+    if (this.config.credentialScrubEnabled) {
+      let enabled = false;
+      try { enabled = this.config.credentialScrubEnabled(); } catch { enabled = false; } // @silent-fallback-ok — unreadable switch is off
+      subject = maskInbound(subject, { enabled }).text;
+      body = maskInbound(body, { enabled }).text;
+    }
     // Intelligent routing: resolve session: "best" to actual session.
     // Pass `from.session` as an exclusion so the sender's own session is
     // never selected as the target — otherwise a self-to-self match would
@@ -386,12 +468,35 @@ export class MessageRouter implements IMessageRouter {
       throw new Error('Cannot send a message to the same session (echo prevention)');
     }
 
+    // The recipient generation is observed BEFORE createdAt. Network delay after
+    // this point cannot redirect the message into a replacement with the same name.
+    let generationUnavailable: string | undefined;
+    if (to.agent === this.config.localAgent && to.machine !== '*' && to.machine !== 'local' && to.machine !== this.config.localMachine && to.session !== '*' && to.session !== 'best') {
+      const { sessionId: _callerId, sessionGenerationRequired: _callerRequired, ...address } = to;
+      to = address; // caller-supplied ids are never a trusted preflight observation
+      if (generationBinding) {
+      to = { ...address, sessionGenerationRequired: true };
+      try {
+        const proof = generationBudgetMs > 0 ? await this.config.peerSessionGeneration?.(to.machine, to.session, generationBudgetMs) : { reason: 'the recipient generation check could not start within its deadline' };
+        if (proof && 'sessionId' in proof) to = { ...to, sessionId: proof.sessionId };
+        else generationUnavailable = proof?.reason ?? 'receiving session generation is unavailable';
+      } catch {
+        // @silent-fallback-ok: absent proof records an explicit origin failure; never send unproved work
+        generationUnavailable = 'receiving session generation check failed';
+      }
+      }
+    }
     const messageId = crypto.randomUUID();
     const now = new Date().toISOString();
     const ttlMinutes = options?.ttlMinutes ?? DEFAULT_TTL[type];
 
     // Auto-create thread for query and request types
     let threadId = options?.threadId;
+    // SEC-127: refuse an unsafe thread id before anything is stored, so a send never
+    // ends half-done (message saved as sent, thread write refused, never routed).
+    if (threadId !== undefined && !MessageStore.isSafeFileId(threadId)) {
+      throw new Error('unsafe thread id: a thread id must be a plain name (no folder separators)');
+    }
     if (!threadId && (type === 'query' || type === 'request')) {
       threadId = crypto.randomUUID();
     }
@@ -425,6 +530,7 @@ export class MessageRouter implements IMessageRouter {
           { from: 'created', to: 'sent', at: now },
         ],
         attempts: 0,
+        ...(generationUnavailable ? { refusalDetail: `${generationUnavailable}; no receiving session generation was proved` } : {}),
       },
     };
 
@@ -434,6 +540,14 @@ export class MessageRouter implements IMessageRouter {
     // Track thread if message has a threadId
     if (threadId) {
       await this.updateThread(threadId, message);
+    }
+
+    if (generationUnavailable) {
+      const reason = `not sent: ${generationUnavailable}; no receiving session generation was proved`;
+      await this.setPhase(envelope, 'failed', reason);
+      this.recordGenerationEvidence('held', 'proof-unavailable', messageId);
+      this.reportTerminalFailure(envelope, reason);
+      return { messageId, threadId, phase: 'failed', delivered: false, failureReason: reason, notice: 'The message was not sent because the receiving session could not be verified.' };
     }
 
     // Route the message based on target
@@ -453,15 +567,24 @@ export class MessageRouter implements IMessageRouter {
       // 'queued'/'undelivered' — so sessions had no working private channel to
       // each other and fell back to posting in the user's Telegram topic
       // (bug 2026-11-03, Echo Bugs topic 10000001474).
-      await this.deliverSameAgentLocal(envelope);
+      await this.deliverSameAgentLocal(envelope, undefined, true);
     }
     // Broadcast ('*') and an unresolved 'best' stay saved locally as before.
 
-    return {
+    const result: SendResult = {
       messageId,
       threadId,
-      phase: envelope.delivery.phase,
+      phase: (await this.store.get(messageId))?.delivery.phase ?? 'failed',
     };
+    if (!isLocalMachine) {
+      result.delivered = ['received', 'delivered', 'read'].includes(envelope.delivery.phase);
+      if (envelope.delivery.phase === 'failed') {
+        result.failureReason = envelope.delivery.failureReason ?? 'cross-machine delivery failed';
+        result.notice = this.lastFailureNotice.get(messageId) ?? `The message was not delivered: ${result.failureReason}.`;
+        this.lastFailureNotice.delete(messageId);
+      }
+    }
+    return result;
   }
 
   async acknowledge(messageId: string, sessionId: string): Promise<void> {
@@ -735,20 +858,73 @@ export class MessageRouter implements IMessageRouter {
    * (unsafe foreground process, send-keys error, or a throw) → 'queued', which
    * DeliveryRetryManager's Layer-2 loop retries every 30s for ~5 minutes and
    * then dead-letters. Never throws: the message is already saved.
+   *
+   * relay-asof-holder-skew: a role the store knows but nobody holds yet, or whose
+   * only holder started too late, is 'queued' with `holderPending` instead of
+   * 'failed'. The retry loop re-resolves it each pass (redeliverSameAgentLocal);
+   * when the lane is exhausted the sender gets the plain reason.
    */
-  private async deliverSameAgentLocal(envelope: MessageEnvelope): Promise<void> {
+  private async deliverSameAgentLocal(envelope: MessageEnvelope, inheritedClaim?: DeliveryAttemptClaim, initialOnly = false): Promise<void> {
+    const inherited = ownsDeliveryAttempt(inheritedClaim, envelope.message.id);
+    const claim = inherited ? inheritedClaim! : beginDeliveryAttempt(envelope.message.id);
+    if (!claim) return;
+    try {
+      // The inbox snapshot may predate another completed attempt. Refresh only
+      // its mutable delivery state under exclusive ownership before acting.
+      const latest = await this.store.get(envelope.message.id);
+      if (!latest) return; // A stale inbox snapshot is not authority to resurrect a dead letter.
+      if (latest) {
+        envelope.delivery = latest.delivery;
+        if (initialOnly && latest.delivery.phase !== 'sent'
+          && !(latest.delivery.phase === 'received' && (latest.delivery.deliveryPending
+            || (latest.delivery.holderPending && !latest.delivery.holderRetryState)))) return;
+        if (['delivered', 'read', 'failed', 'expired', 'dead-lettered'].includes(latest.delivery.phase)) return;
+        if (latest.delivery.deliveryPending && latest.delivery.typingStartedAt) {
+          const reason = 'outcome unknown: delivery began but its final state was not recorded; the message may have arrived';
+          await this.setPhase(envelope, 'failed', reason, { deliveryPending: false });
+          if (envelope.message.to.sessionId) this.recordGenerationEvidence('error', 'delivery-outcome-unknown', envelope.message.id);
+          this.reportTerminalFailure(envelope, reason);
+          return;
+        }
+      }
+      const created = Date.parse(envelope.message.createdAt);
+      const ttl = (envelope.message.ttlMinutes ?? DEFAULT_TTL[envelope.message.type] ?? 30) * 60_000;
+      if (Date.now() > (envelope.delivery.expiresAt ?? (Number.isFinite(created) ? created + ttl : Number.MAX_SAFE_INTEGER))) {
+        await this.setPhase(envelope, 'failed', 'TTL expired', { deliveryPending: false });
+        this.reportTerminalFailure(envelope, 'TTL expired'); return;
+      }
+      await this.doDeliverSameAgentLocal(envelope);
+    } finally { if (!inherited) claim.release(); }
+  }
+
+  private async doDeliverSameAgentLocal(envelope: MessageEnvelope): Promise<void> {
     const requested = envelope.message.to.session;
     let target = requested;
     let success = false;
+    let outcomeUnknown = false;
     let reason = '';
     let owned = true;
+    let holderPending = false;
+    let refusalDetail: string | undefined;
     let resolvedNote = '';
+    if ((envelope.message.to.sessionGenerationRequired || envelope.message.to.sessionId) && !this.config.resolveSession) {
+      owned = false;
+      reason = 'target session generation cannot be verified on this receiver';
+    }
     if (this.config.resolveSession) {
       let res: ResolveResult;
+      // §D.3: a relayed message carries its reference time on this clock.
+      const rawAsOf = typeof envelope.delivery.asOf === 'number' ? envelope.delivery.asOf : Date.parse(envelope.message.createdAt);
+      const asOf = Number.isFinite(rawAsOf) ? rawAsOf : Date.now();
       try {
-        // §D.3: a relayed message carries its own cut-off (arrival − age − 2W).
-        const asOf = typeof envelope.delivery.asOf === 'number' ? envelope.delivery.asOf : Date.parse(envelope.message.createdAt);
-        res = this.config.resolveSession(requested, Number.isFinite(asOf) ? asOf : Date.now());
+        const expectedId = envelope.message.to.sessionId;
+        res = envelope.message.to.sessionGenerationRequired && !expectedId
+          ? { kind: 'none', reason: 'target-session-generation-unavailable', known: true }
+          : this.config.resolveSession(requested, expectedId ? Number.MAX_SAFE_INTEGER : asOf);
+        if (expectedId && (res.kind === 'exact' || res.kind === 'redirected') && res.session.id !== expectedId) {
+          res = { kind: 'none', reason: 'target-session-generation-changed', known: true,
+            holderStartedAt: res.session.startedAt, expectedSessionId: expectedId };
+        }
       } catch (err) {
         res = { kind: 'none', reason: 'no-session-holds-this-role' };
         reason = `resolver failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -756,16 +932,24 @@ export class MessageRouter implements IMessageRouter {
       if (res.kind === 'exact' || res.kind === 'redirected') {
         target = res.session.tmuxSession;
         // Pin BEFORE typing: retries and recovery are held to this exact session.
+        // The same write leaves the holder lane (relay-asof-holder-skew §2): from here
+        // on a retry goes to the pinned session id, never back through the resolver,
+        // so a same-name respawn after this point cannot take the message.
         envelope.delivery = {
           ...envelope.delivery,
+          phase: 'received',
           resolvedSession: target,
           resolvedSessionId: res.session.id,
           resolvedVia: res.via,
           typingStartedAt: new Date().toISOString(),
+          // Recovery owns the uncertain interval from durable pin through final outcome.
+          deliveryPending: true,
         };
+        delete envelope.delivery.holderPending;
         try { await this.store.updateDelivery(envelope.message.id, envelope.delivery); } catch (err) {
-          // @silent-fallback-ok: the pin write failed; deliver anyway, the retry manager falls back to to.session
+          // @silent-fallback-ok: leave the persisted envelope for recovery; never type without a durable pin
           console.warn(`[message-router] pin write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
+          return;
         }
         if (res.kind === 'redirected') resolvedNote = ` (redirected from ${requested} via ${res.via})`;
       } else {
@@ -774,6 +958,21 @@ export class MessageRouter implements IMessageRouter {
         reason = reason || (refused.kind === 'ambiguous'
           ? `ambiguous: ${refused.reason} (${refused.candidates.join(', ')})`
           : refused.reason === 'topic-held-on' ? `topic-held-on ${refused.heldOn}` : refused.reason);
+        // A resolver that threw is not a holder verdict; only a real refusal waits.
+        holderPending = !reason.startsWith('resolver failed') && isHolderPendingRefusal(refused);
+        if (refused.kind === 'none') refusalDetail = describeHolderRefusal(refused, requested, asOf);
+        await this.auditRefusal({
+          ts: new Date().toISOString(),
+          kind: 'holder-refusal',
+          messageId: envelope.message.id,
+          target: requested,
+          reason: refused.kind === 'none' ? refused.reason : 'ambiguous',
+          referenceTime: new Date(asOf).toISOString(),
+          holderStartedAt: refused.kind === 'none' ? refused.holderStartedAt ?? null : null,
+          relayedFrom: envelope.transport.signedBy && envelope.transport.signedBy !== this.config.localMachine ? envelope.transport.signedBy : null,
+          attempt: envelope.delivery.attempts + 1,
+          outcome: holderPending ? 'received' : 'failed',
+        });
       }
     }
     if (owned) {
@@ -789,33 +988,114 @@ export class MessageRouter implements IMessageRouter {
       try {
         const result = await this.delivery.deliverToSession(target, envelope);
         success = result.success;
+        outcomeUnknown = result.outcomeUnknown === true;
         reason = result.failureReason ?? '';
+        if (!result.success && !result.shouldRetry) owned = false;
       } catch (err) {
-        reason = err instanceof Error ? err.message : String(err);
+        outcomeUnknown = true; owned = false;
+        reason = `outcome unknown: delivery did not confirm its result; the message may have arrived (${err instanceof Error ? err.message : String(err)})`;
       }
     }
     const now = new Date().toISOString();
-    const to = success ? 'delivered' : owned ? 'queued' : 'failed';
+    // Keep an unpinned holder wait at received: older binaries never retry that
+    // phase by name, so a downgrade cannot deliver to a reused session name.
+    const to = success ? 'delivered' : holderPending ? 'received' : owned ? 'queued' : 'failed';
+    const from = envelope.delivery.phase;
+    const transitionReason = success
+      ? `injected into session ${target}${resolvedNote}`
+      : holderPending
+        ? `same-agent delivery waiting for a holder: ${refusalDetail ?? reason}`
+        : `same-agent delivery deferred: ${refusalDetail ?? reason}`;
     envelope.delivery = {
       ...envelope.delivery,
       phase: to,
-      transitions: [
-        ...envelope.delivery.transitions,
-        { from: envelope.delivery.phase, to, at: now, reason: success ? `injected into session ${target}${resolvedNote}` : `same-agent delivery deferred: ${reason}` },
-      ],
+      // Hand recovery to the retry lane in the SAME durable write as the holder wait.
+      deliveryPending: false,
+      // A repeat holder refusal (queued → queued) bumps attempts and the reason without
+      // growing the transition list on every pass.
+      transitions: from === to && holderPending && envelope.delivery.holderPending
+        ? envelope.delivery.transitions
+        : [...envelope.delivery.transitions, { from, to, at: now, reason: transitionReason }],
       attempts: envelope.delivery.attempts + 1,
       ...(success ? {} : { failureReason: reason }),
+      ...(holderPending ? { holderPending: true, refusalDetail } : {}),
     };
-    // A failed attempt typed nothing (deliverToSession reports success only after the paste).
-    if (!success) delete envelope.delivery.typingStartedAt;
+    if ((holderPending || (to === 'queued' && envelope.delivery.resolvedSessionId)) && !envelope.delivery.holderRetryState) {
+      envelope.delivery.holderRetryState = { attempts: 0, lastAttemptAt: 0, firstAttemptAt: Date.now() };
+    }
+    if (!holderPending) {
+      delete envelope.delivery.holderPending;
+      if (!refusalDetail) delete envelope.delivery.refusalDetail; else envelope.delivery.refusalDetail = refusalDetail;
+    }
+    // Only a proven pre-injection refusal clears the typing evidence. A physical
+    // send error is uncertain even if tmux returned false or threw after Enter.
+    if (!success && !outcomeUnknown) delete envelope.delivery.typingStartedAt;
+    let outcomePersisted = false;
     try {
       await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      outcomePersisted = true;
     } catch (err) {
       // @silent-fallback-ok: the envelope is already saved; a failed phase write
       // leaves it at 'sent' (today's behaviour) and is logged, never thrown.
       console.warn(`[message-router] same-agent delivery phase write failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
     }
-    if (to === 'failed') this.reportTerminalFailure(envelope, reason);
+    if (outcomePersisted && envelope.message.to.sessionId) {
+      if (success) this.recordGenerationEvidence('fired', 'generation-delivered', envelope.message.id);
+      else if (outcomeUnknown) this.recordGenerationEvidence('error', 'delivery-outcome-unknown', envelope.message.id);
+      else if (reason === 'target-session-generation-changed') this.recordGenerationEvidence('held', 'generation-changed', envelope.message.id);
+    }
+    if (to === 'failed' && outcomePersisted) this.reportTerminalFailure(envelope, refusalDetail ?? reason);
+  }
+
+  /**
+   * relay-asof-holder-skew §2: DeliveryRetryManager's pass over a `holderPending`
+   * envelope. Re-resolves the role with the envelope's own reference time and
+   * reference time (never types into `to.session` by name) and returns the phase it
+   * reached. Never throws.
+   */
+  async redeliverSameAgentLocal(envelope: MessageEnvelope, claim?: DeliveryAttemptClaim): Promise<MessageEnvelope['delivery']['phase']> {
+    try {
+      await this.deliverSameAgentLocal(envelope, claim);
+    } catch (err) {
+      // @silent-fallback-ok: deliverSameAgentLocal records its own outcome; a throw here is a store fault, logged
+      console.warn(`[message-router] holder redelivery failed for ${envelope.message.id}: ${err instanceof Error ? err.message : err}`);
+    }
+    return (await this.store.get(envelope.message.id))?.delivery.phase ?? 'failed';
+  }
+
+  private recordGenerationEvidence(kind: 'fired' | 'held' | 'error', reason: string, messageId: string): void {
+    try { this.config.generationEvidence?.(kind, reason, messageId); }
+    catch { /* @silent-fallback-ok: feature telemetry never changes the persisted delivery outcome */ }
+  }
+
+  /** One JSONL row per holder refusal (§3), appended to `refusalAuditPath`. Never throws. */
+  private async auditRefusal(row: HolderRefusalAuditRow): Promise<void> {
+    const file = this.config.refusalAuditPath;
+    if (!file) return;
+    // Legacy callers can supply long names; bound every encoded row independently.
+    const bounded = Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 512) : value]));
+    const encoded = JSON.stringify(bounded) + '\n';
+    const append = this.refusalAuditTail.then(async () => {
+      this.refusalAuditReady ??= fs.promises.mkdir(path.dirname(file), { recursive: true }).then(() => undefined);
+      await this.refusalAuditReady;
+      let size = 0;
+      try { size = (await fs.promises.stat(file)).size; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; } // @silent-fallback-ok: a missing audit starts at zero bytes
+      if (size + Buffer.byteLength(encoded) > REFUSAL_AUDIT_MAX_BYTES) await fs.promises.rename(file, `${file}.1`);
+      await fs.promises.appendFile(file, encoded);
+      this.refusalAuditWarned = false;
+    });
+    // Awaited per-caller backpressure, one writer for rotation, no sync disk IO.
+    this.refusalAuditTail = append.then(() => undefined, () => undefined); // @silent-fallback-ok: the caller below reports the audit failure
+    try { await append; }
+    catch (error) {
+      // @silent-fallback-ok: audit loss emits the warning below once until recovery; the delivery outcome remains durable
+      this.refusalAuditReady = null;
+      if (!this.refusalAuditWarned) {
+        this.refusalAuditWarned = true;
+        console.warn(`[message-router] refusal audit unavailable (non-fatal): ${error instanceof Error ? error.message : error}`);
+      }
+    }
   }
 
   private async routeCrossAgentLocal(envelope: MessageEnvelope): Promise<void> {
@@ -1000,21 +1280,23 @@ export class MessageRouter implements IMessageRouter {
 
     // Verify target machine is paired and active
     if (!identityManager.isMachineActive(targetMachine)) {
-      if (envelope.message.type !== 'delivery-notice' && envelope.message.to.agent === this.config.localAgent) {
-        // (falls through to the existing failed write below; the sender is told after it)
-        queueMicrotask(() => this.reportTerminalFailure(envelope, `target machine ${targetMachine} not active or unknown`));
+      const standing = this.registryStanding(targetMachine);
+      if (standing === 'revoked') {
+        // A revoked machine is removed from this agent on purpose: no fallback.
+        await this.failCrossMachine(
+          envelope,
+          targetMachine,
+          `target machine ${targetMachine} was removed (revoked) from this agent's machines`,
+          `The message was not delivered: that machine was removed from this agent's machines, so nothing will be sent to it.`,
+        );
+        return;
       }
-      const now = new Date().toISOString();
-      envelope.delivery = {
-        ...envelope.delivery,
-        phase: 'failed',
-        transitions: [
-          ...envelope.delivery.transitions,
-          { from: envelope.delivery.phase, to: 'failed', at: now, reason: `target machine ${targetMachine} not active or unknown` },
-        ],
-        failureReason: `target machine ${targetMachine} not active or unknown`,
-      };
-      await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      await this.failCrossMachine(
+        envelope,
+        targetMachine,
+        `target machine ${targetMachine} is not known to this machine (not in its machine registry)`,
+        `The message was not delivered: this machine does not know the target machine, so it had no way to reach it. The target may need to be paired with this machine again.`,
+      );
       return;
     }
 
@@ -1147,6 +1429,78 @@ export class MessageRouter implements IMessageRouter {
     return { valid: true };
   }
 
+  /** Per-send side channel for the honest SendResult (bounded, consumed by send()). */
+  private readonly lastFailureNotice = new Map<string, string>();
+  /** Notice dedup: target machine → last DegradationReporter report (ms). */
+  private readonly failureReportedAt = new Map<string, number>();
+  private static readonly FAILURE_REPORT_WINDOW_MS = 30 * 60_000;
+  private static readonly MAX_TRACKED = 200;
+
+  private rememberBounded(map: Map<string, string>, key: string, value: string): void {
+    map.set(key, value);
+    while (map.size > MessageRouter.MAX_TRACKED) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  /** 'revoked' | 'unknown' standing of a machine this registry does not list as active. */
+  private registryStanding(machineId: string): 'revoked' | 'unknown' {
+    try {
+      const registry = this.crossMachine?.identityManager.loadRegistry();
+      const entry = registry?.machines?.[machineId];
+      if (entry && (entry.status === 'revoked' || entry.revokedAt)) return 'revoked';
+    } catch {
+      // @silent-fallback-ok — an unreadable registry reads as unknown; both
+      // outcomes fail the send, only the wording of the reason differs.
+    }
+    return 'unknown';
+  }
+
+  /** Terminal cross-machine failure: record it, keep the notice for send(), raise ONE deduped signal per target. */
+  private async failCrossMachine(envelope: MessageEnvelope, targetMachine: string, reason: string, notice: string): Promise<void> {
+    const now = new Date().toISOString();
+    envelope.delivery = {
+      ...envelope.delivery,
+      phase: 'failed',
+      transitions: [
+        ...envelope.delivery.transitions,
+        { from: envelope.delivery.phase, to: 'failed', at: now, reason },
+      ],
+      failureReason: reason,
+    };
+    await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+    // §C/§D.6 (main's cross-machine phase 1): a same-agent message that ends here is also
+    // reported to its sender — the local notifier, or a signed notice back to the machine it
+    // came from. Told after the failed write, same order as the other terminal failures.
+    if (envelope.message.type !== 'delivery-notice' && envelope.message.to.agent === this.config.localAgent) {
+      this.reportTerminalFailure(envelope, reason);
+    }
+    this.rememberBounded(this.lastFailureNotice, envelope.message.id, notice);
+    const nowMs = Date.now();
+    const last = this.failureReportedAt.get(targetMachine) ?? 0;
+    if (nowMs - last < MessageRouter.FAILURE_REPORT_WINDOW_MS) return;
+    this.failureReportedAt.set(targetMachine, nowMs);
+    while (this.failureReportedAt.size > MessageRouter.MAX_TRACKED) {
+      const oldest = this.failureReportedAt.keys().next().value;
+      if (oldest === undefined) break;
+      this.failureReportedAt.delete(oldest);
+    }
+    try {
+      DegradationReporter.getInstance().report({
+        feature: 'MessageRouter.crossMachineDelivery',
+        primary: `Deliver a message from ${this.config.localMachine} to machine ${targetMachine}`,
+        fallback: 'Return the failure to the sender (HTTP 502 with a notice); nothing was queued',
+        reason,
+        impact: 'A cross-machine message was not delivered; the sending session was told',
+      });
+    } catch {
+      // @silent-fallback-ok — the failure is already recorded on the envelope and
+      // returned to the caller; the operator signal is best-effort.
+    }
+  }
+
   /**
    * Relay an envelope to a remote machine via HTTP.
    * Uses Machine-HMAC (5-header scheme) for transport auth.
@@ -1157,21 +1511,24 @@ export class MessageRouter implements IMessageRouter {
 
     try {
       const sequence = this.machineSequence++;
+      const requestBody = machineRelayBody(envelope);
       const machineHeaders = signRequest(
         this.config.localMachine,
         this.crossMachine.signingKeyPem,
-        envelope,
+        requestBody,
         sequence,
       );
 
-      const url = `${targetUrl}${RELAY_MACHINE_PATH}`;
+      const relayPath = envelope.message.to.sessionGenerationRequired ? GENERATION_RELAY_MACHINE_PATH : RELAY_MACHINE_PATH;
+      const url = targetUrl.replace(/\/+$/, '') + relayPath;
       const response = await fetch(url, {
         method: 'POST',
+        ...(envelope.message.to.sessionGenerationRequired ? { redirect: 'manual' as const } : {}),
         headers: {
           'Content-Type': 'application/json',
           ...machineHeaders,
         },
-        body: JSON.stringify(envelope),
+        body: JSON.stringify(requestBody),
         signal: AbortSignal.timeout(10_000), // Cross-machine gets longer timeout
       });
 

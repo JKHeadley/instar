@@ -1,0 +1,3 @@
+# One more media test that does not depend on the test machine's disk, in plain words
+
+Before storing a photo or file, the agent checks that its disk still has at least 5 percent free. This morning we stopped four end-to-end tests from tripping over that check on nearly full test computers. One more test, which checks that a file kept on another machine can be fetched, still built a real media store with the real disk check, and it failed on the nearly full MacBook. It now tells its media store that there is plenty of room, the same way the other media tests do. We searched all the other tests and found no further ones that store media without that fixed reading. The real 5 percent rule is unchanged.

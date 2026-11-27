@@ -14,7 +14,7 @@
  */
 
 import type { MessageEnvelope } from './types.js';
-import { RELAY_MACHINE_PATH } from './types.js';
+import { machineRelayBody, GENERATION_RELAY_MACHINE_PATH, RELAY_MACHINE_PATH } from './types.js';
 import { verifyRelayAnswer, type RelayAnswer } from '../server/machineAuth.js';
 
 export const RELAY_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -107,15 +107,17 @@ export class CrossMachineRelayQueue {
     let acklessSuccess = false;
     for (const base of addresses) {
       this.deps.resignForAttempt(envelope);
-      const headers = this.deps.signRequestHeaders(envelope);
+      const requestBody = machineRelayBody(envelope);
+      const headers = this.deps.signRequestHeaders(requestBody);
       const reqNonce = headers['X-Nonce'];
       let status = 0;
       let body: RelayResponseBody | null = null;
       try {
-        const res = await this.fetchImpl(`${base.replace(/\/+$/, '')}${RELAY_MACHINE_PATH}`, {
+        const res = await this.fetchImpl(`${base.replace(/\/+$/, '')}${envelope.message.to.sessionGenerationRequired ? GENERATION_RELAY_MACHINE_PATH : RELAY_MACHINE_PATH}`, {
           method: 'POST',
+          ...(envelope.message.to.sessionGenerationRequired ? { redirect: 'manual' as const } : {}),
           headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify(envelope),
+          body: JSON.stringify(requestBody),
           signal: AbortSignal.timeout(RELAY_ATTEMPT_TIMEOUT_MS),
         });
         status = res.status;

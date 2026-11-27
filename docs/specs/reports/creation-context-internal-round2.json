@@ -1,0 +1,38 @@
+{
+  "security": [
+    "Chief-disabled is not empty; fixed in round3body"
+  ],
+  "scalability": [
+    "strict version probe, non-ENOENT errors unknown, Chief-kind sequence state; fixed in round3body"
+  ],
+  "adversarial": [
+    "WorkBoard persistent context pure immutable bytes; legacy aliases only readtime; fixed in round3body"
+  ],
+  "integration": [
+    "stripped first copy requires companion-backed recovery; added in round3body"
+  ],
+  "decisions": {
+    "frontloadedDecisions": 21,
+    "cheapTags": 0,
+    "contestedThenCleared": 0,
+    "design": [
+      "mixed-version preservation; companion store added"
+    ]
+  },
+  "lessons": {
+    "experienceFit": "live/native proof before carddone; implemented in spec",
+    "fixedLimits": "none new"
+  },
+  "round3ExternalDesign": [
+    "recovery authorization vs immutable intent",
+    "current-placement vs preview-proposal cycle relation",
+    "byte-exact base digest contract"
+  ],
+  "round3ConformanceDesign": [
+    "explicit pending/allmember receipts",
+    "check both present context copies",
+    "no whole-inventory traversal in request path",
+    "attribute shared-suite policy to Chief, not unquoted operator"
+  ],
+  "resolution": "All incorporated into round4 draft. Requires review, not yet converged."
+}

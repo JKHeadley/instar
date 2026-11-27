@@ -35,6 +35,7 @@ import { recordPlatformMedia } from '../../src/core/appPlatformMedia.js';
 import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
 import { composeInboundPayload, type InboundMediaRef } from '../../src/core/inboundMedia.js';
 import { buildTelegramSessionText, getPlatformMediaForSession, PlatformMediaForSession } from '../../src/core/platformMediaForSession.js';
+import { useHermeticMediaDisk } from '../helpers/hermeticMediaDisk.js';
 
 const HOST = 'echo-media-xm-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -96,6 +97,7 @@ async function boot(id: string, peer: string, telegramSink?: { injected: string[
     ...(telegram ? { telegram } : {}),
   } as any);
   servers.push(server);
+  useHermeticMediaDisk(server); // the host's free space must not decide the result
   const listener = await new Promise<http.Server>((resolve) => { const s = server!.getApp().listen(0, '127.0.0.1', () => resolve(s)); });
   listeners.push(listener);
   urls[id] = `http://127.0.0.1:${(listener.address() as AddressInfo).port}`;

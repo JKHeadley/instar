@@ -7,7 +7,7 @@ import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
 import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
-/** cos-owner-decision-delivery: the only producer of the owner-decision category (an offer only the owner can answer). */
+/** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
+import { withOriginBotAuthoredText } from './telegram-origin/OriginBotEgress.js';
 import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
@@ -70,6 +71,8 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { approveTapResult, declineTapResult } from './ownerChatTap.js';
+import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -679,6 +682,13 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicToPurpose: Map<number, string> = new Map();
   private registryPath: string;
   private messageLogPath: string;
+  /** Lines in the message log as of `logLineCountBytes`, kept by counting only the bytes appended
+   *  since the last check, so the rotation check never rereads the whole log (2026-11-27 stall:
+   *  a 30 MB log paid a full read and split on every append). null = not counted yet. */
+  private logLineCount: number | null = null;
+  private logLineCountBytes = 0;
+  /** Inode at the last count: a log replaced by a new file of any size is counted again. */
+  private logLineCountIno: number | bigint | null = null;
   /** Durable append-seam dedupe, seeded from the bounded JSONL on first use. */
   private loggedMessageKeys = new Set<string>();
   private messageLogDedupeSeeded = false;
@@ -1321,20 +1331,17 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    const browser = r.client === 'browser';
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
-    if (r.outcome === 'approved') {
-      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
-      // and once the phone is active any such code finishes it. Only the buttons go.
-      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+    // The visible result is shared with the throwaway stand-in owner chat (src/messaging/ownerChatTap.ts).
+    const shown = approveTapResult(r);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.approved) {
+      if (shown.removeButtons && typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
         // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
-        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
-        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
-      ));
+      const confirmation = shown.confirmation ?? '';
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(confirmation));
       return 'approved';
     }
     return r.outcome === 'ended' ? 'unknown' : 'held';
@@ -1357,16 +1364,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    const r = typeof raw === 'string' ? raw : raw.result;
-    const browser = typeof raw !== 'string' && raw.client === 'browser';
-    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
-    // way is answered "already approved", never as declined.
-    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
-      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
-      : 'This pairing has already ended.';
-    await this.answerCallback(t.callbackQueryId, toast);
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
-    return r === 'declined' ? 'declined' : 'unknown';
+    const shown = declineTapResult(raw);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.replaceText) await this.closeOwnerPairingMessage(owner, t.messageId, shown.replaceText);
+    return shown.declined ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -1421,6 +1422,15 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicTailCache = new Map<number, LogEntry[]>();
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
+  /**
+   * Newest logged entry per topic, built once in the background (latestTopicEntries) so the
+   * conversation list's previews never scan the log on the request path (2026-11-27 Laptop stall:
+   * GET /mobile/conversations scanned the whole 30 MB log once per cold topic). null until built.
+   */
+  private latestEntryIndex: Map<number, LogEntry> | null = null;
+  /** Entries logged while the index was being built; applied over it when the build finishes. */
+  private latestEntryPending: Map<number, LogEntry> | null = null;
+  private latestEntryBuild: Promise<void> | null = null;
   private static readonly TAIL_CACHE_LIMIT = 500;
 
   // Shared infrastructure modules (Phase 1 extraction)
@@ -1747,6 +1757,9 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   async start(): Promise<void> {
+    // Build the list-preview index in the background right away, so the first conversation list
+    // after a start rarely finds it missing (it yields between 1 MB chunks).
+    setImmediate(() => { void this.buildLatestEntryIndex(); });
     if (this.polling) return;
     // HARDENED (v1.3.270 incident): without a usable bot token (empty/normalized
     // placeholder), getUpdates 404s forever — a zombie poll loop that looks alive
@@ -2587,6 +2600,14 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.getCallbackApprover();
   }
 
+  /**
+   * Whose words may teach the agent preferences (SEC-105): the verified owner, else the one allowed
+   * sender of a single-person agent. Undefined means nobody's words teach.
+   */
+  getLearningOwner(): number | undefined {
+    return learningOwnerId(this.getVerifiedOwner(), this.config.authorizedUserIds);
+  }
+
   /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
   ownerSourcesReady(): boolean {
     return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
@@ -2667,13 +2688,15 @@ export class TelegramAdapter implements MessagingAdapter {
   static readonly OWNER_DM_HELD = -1;
   /**
    * Hold reasons whose operation the origin service keeps and sends again: its RECOVERABLE_HOLD_REASONS
-   * (a unit test keeps this list a superset of it) plus credential-capacity-unavailable, which the
-   * capacity owner releases and the recovery path re-sends (2026-11-14: such holds on Echo landed late).
-   * Any other "held" error is a refusal with no retry behind it (held is the error's default outcome).
+   * (a unit test keeps this list a superset of it) plus the request-bound local refusals
+   * (ORIGIN_LOCAL_REFUSAL_REASONS: credential-capacity-unavailable, which the capacity owner releases and the
+   * recovery path re-sends (2026-11-14: such holds on Echo landed late), and the two lease refusals, retried
+   * within seconds once the lease is held again). Any other "held" error is a refusal with no retry behind it
+   * (held is the error's default outcome).
    */
   static readonly OWNER_DM_RETRIED_HOLDS: readonly string[] = Object.freeze([
     'all-durable-recording-sinks-unavailable', 'execution-admission-unavailable', 'destination-not-authorized', 'lease-not-held',
-    'credential-capacity-unavailable',
+    'credential-capacity-unavailable', 'lease-freshness-lapsed', 'lease-not-held-at-send',
   ]);
 
   /** What a caller that asked for `reportHeld` should make of a send error: a message id, OWNER_DM_HELD, or null. */
@@ -2727,6 +2750,14 @@ export class TelegramAdapter implements MessagingAdapter {
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in a message read here (no lifeline poll owner) before the
+   * trust-account receipt, the unknown-user path, the log or the session see it. Returns the text to
+   * use; null or a throw leaves the message unchanged (the operator channel fails toward delivery).
+   */
+  public inboundCredentialMasker: ((input: {
+    text: string; topicId: number; messageId: number; fromId: number | undefined; notFromThePerson: boolean;
+  }) => string | null) | null = null;
   /**
    * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
    * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
@@ -3665,6 +3696,25 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * A message sent into a forum topic comes back replying to that topic's creation message, which
+   * carries the topic's name. Learning it here (only when no name is known; a rename still wins)
+   * lets a machine that lost its names, as after a rebuild, name its conversations again the next
+   * time it speaks in them, instead of showing "Conversation name unavailable". No extra request.
+   */
+  private learnTopicNameFromSent(result: unknown): void {
+    try {
+      const m = result as { chat?: { id?: number | string }; message_thread_id?: number; is_topic_message?: boolean; reply_to_message?: { forum_topic_created?: { name?: unknown } } } | null;
+      const name = m?.reply_to_message?.forum_topic_created?.name;
+      if (!m || m.is_topic_message !== true || typeof name !== 'string' || typeof m.message_thread_id !== 'number') return;
+      const topicId = inboundTopicId(m.chat?.id ?? this.config.chatId, m.message_thread_id, this.topicSpace());
+      if (typeof topicId === 'number' && !this.getTopicName(topicId)) this.captureTopicName(topicId, name, false);
+    } catch (err) {
+      // @silent-fallback-ok: a display name is optional; the send itself already succeeded
+      console.warn('[telegram] could not read the topic name from a sent message:', err instanceof Error ? err.message : err);
+    }
+  }
+
   /** Return a captured topic name. Sending a temporary message to discover a
    * missing name can leave a visible dot when deletion or routing is delayed. */
   async resolveTopicName(topicId: number): Promise<string | null> {
@@ -4332,6 +4382,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async transcribeVoice(filePath: string): Promise<string> {
     return transcribeAudioFile(filePath, {
       explicit: this.config.voiceProvider,
+      channel: 'telegram',
       mediaType: 'audio/ogg',
       timeoutMs: 60_000,
       log: (note) => console.log(`[telegram] ${note}`),
@@ -4793,6 +4844,84 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * The newest logged entry for each topic, for list previews, without touching the log on the
+   * request path. A topic in the tail cache answers from it; otherwise from the background index.
+   * `undefined` = not known yet (the index is still building; it is started here if needed), `null`
+   * = the log holds no entry for that topic.
+   */
+  latestTopicEntries(topicIds: readonly number[]): Map<number, LogEntry | null | undefined> {
+    const out = new Map<number, LogEntry | null | undefined>();
+    let needIndex = false;
+    for (const id of topicIds) {
+      const tail = this.topicTailCache.get(id);
+      if (tail && tail.length) { out.set(id, tail[tail.length - 1]!); continue; }
+      if (this.latestEntryIndex) { out.set(id, this.latestEntryIndex.get(id) ?? null); continue; }
+      out.set(id, undefined);
+      needIndex = true;
+    }
+    if (needIndex) void this.buildLatestEntryIndex();
+    return out;
+  }
+
+  /**
+   * Build the per-topic newest-entry index with async 1 MB reads, yielding between chunks so the
+   * event loop keeps serving requests. One build per process; a failed build is retried on the
+   * next request. Appends during the build go to `latestEntryPending` and win over the file.
+   */
+  buildLatestEntryIndex(): Promise<void> {
+    if (this.latestEntryIndex) return Promise.resolve();
+    if (this.latestEntryBuild) return this.latestEntryBuild;
+    this.latestEntryPending = new Map();
+    const run = async () => {
+      const built = new Map<number, LogEntry>();
+      let handle: fs.promises.FileHandle | null = null;
+      try {
+        handle = await fs.promises.open(this.messageLogPath, 'r');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      if (handle) {
+        try {
+          const size = (await handle.stat()).size;
+          const CHUNK = 1024 * 1024;
+          const buf = Buffer.alloc(CHUNK);
+          let carry = Buffer.alloc(0);
+          for (let pos = 0; pos < size; pos += CHUNK) {
+            const { bytesRead } = await handle.read(buf, 0, Math.min(CHUNK, size - pos), pos);
+            if (bytesRead <= 0) break;
+            const joined = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
+            const nl = joined.lastIndexOf(0x0a);
+            const complete = nl < 0 ? Buffer.alloc(0) : joined.subarray(0, nl);
+            carry = Buffer.from(nl < 0 ? joined : joined.subarray(nl + 1));
+            for (const line of complete.toString('utf-8').split('\n')) this.indexLogLine(built, line);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          if (carry.length) this.indexLogLine(built, carry.toString('utf-8'));
+        } finally {
+          await handle.close().catch(() => { /* @silent-fallback-ok: closing a read-only handle */ });
+        }
+      }
+      for (const [id, entry] of this.latestEntryPending ?? []) built.set(id, entry);
+      this.latestEntryIndex = built;
+      this.latestEntryPending = null;
+    };
+    this.latestEntryBuild = run().catch((err) => {
+      console.error(`[telegram] latest-entry index build failed: ${err}`);
+      this.latestEntryPending = null;
+    }).finally(() => { this.latestEntryBuild = null; });
+    return this.latestEntryBuild;
+  }
+
+  private indexLogLine(index: Map<number, LogEntry>, line: string): void {
+    if (!line) return;
+    try {
+      const entry: LogEntry = JSON.parse(line);
+      const topicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+      if (typeof topicId === 'number') index.set(topicId, entry);
+    } catch { /* @silent-fallback-ok — a malformed log line is skipped, as every log reader here does */ }
+  }
+
+  /**
    * Get recent messages for a topic (for thread history on respawn, the live-tail
    * streamer, and the handoff hash).
    *
@@ -5220,6 +5349,8 @@ export class TelegramAdapter implements MessagingAdapter {
   private rememberLoggedEntry(entry: LogEntry, dedupeKey: string): void {
     this.loggedMessageKeys.add(dedupeKey);
     if (typeof entry.topicId !== 'number') return;
+    if (this.latestEntryIndex) this.latestEntryIndex.set(entry.topicId, entry);
+    else if (this.latestEntryPending) this.latestEntryPending.set(entry.topicId, entry);
     this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
     const tail = this.topicTailCache.get(entry.topicId);
     if (tail) {
@@ -5237,7 +5368,24 @@ export class TelegramAdapter implements MessagingAdapter {
       // Only check rotation when file exceeds ~20MB
       if (stat.size < 20 * 1024 * 1024) return;
 
-      const content = fs.readFileSync(this.messageLogPath, 'utf-8');
+      // Count lines without reading the whole log on every append: only the bytes added since the
+      // last count are read. A file smaller than at the last count was rotated or truncated
+      // elsewhere, so it is counted again from the start.
+      if (this.logLineCount === null || stat.size < this.logLineCountBytes || stat.ino !== this.logLineCountIno) {
+        this.logLineCount = 0;
+        this.logLineCountBytes = 0;
+        this.logLineCountIno = stat.ino;
+      }
+      if (stat.size > this.logLineCountBytes) {
+        this.logLineCount += this.countNewlines(this.logLineCountBytes, stat.size);
+        this.logLineCountBytes = stat.size;
+      }
+      // N newlines can mean N+1 lines (a final line without its newline), so read at N >= 100,000
+      // and let the full read below make the exact decision, as before.
+      if (this.logLineCount < 100_000) return;
+
+      const raw = fs.readFileSync(this.messageLogPath);
+      const content = raw.toString('utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > 100_000) {
         const kept = lines.slice(-75_000);
@@ -5250,9 +5398,37 @@ export class TelegramAdapter implements MessagingAdapter {
           throw rotateErr;
         }
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
+        const rotated = fs.statSync(this.messageLogPath);
+        this.logLineCount = kept.length;
+        this.logLineCountBytes = rotated.size;
+        this.logLineCountIno = rotated.ino;
+      } else {
+        // The newline count overstated non-empty lines (blank lines): adopt the exact count from
+        // this read, so later appends again only count their own bytes.
+        this.logLineCount = lines.length;
+        this.logLineCountBytes = raw.length; // bytes on disk, not the decoded length (invalid UTF-8 decodes longer)
       }
     } catch {
       // @silent-fallback-ok — log rotation non-critical
+      this.logLineCount = null;
+    }
+  }
+
+  /** Newline bytes in the message log between two offsets, read in 1 MB chunks (no decode, no split). */
+  private countNewlines(from: number, to: number): number {
+    const CHUNK = 1024 * 1024;
+    const fd = fs.openSync(this.messageLogPath, 'r');
+    try {
+      const buf = Buffer.alloc(CHUNK);
+      let count = 0;
+      for (let pos = from; pos < to; pos += CHUNK) {
+        const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, to - pos), pos);
+        if (n <= 0) break;
+        for (let i = 0; i < n; i++) if (buf[i] === 0x0a) count++;
+      }
+      return count;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
     }
   }
 
@@ -6658,6 +6834,23 @@ export class TelegramAdapter implements MessagingAdapter {
     normalizeInboundThread(msg, this.topicSpace());
     // Mobile device keys (§2.2): a live phone-pairing code in a conversation voids that pairing first.
     for (const t of [msg.text, (msg as { caption?: string }).caption]) if (typeof t === 'string' && t) this.mobileInboundScan?.(t);
+    // SEC-164 §3.5: mask live keys in the text and the caption before anything below keeps them.
+    if (this.inboundCredentialMasker) {
+      const raw = msg as unknown as Record<string, unknown>;
+      const notFromThePerson = !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot)
+        || (msg.from as { is_bot?: boolean } | undefined)?.is_bot === true;
+      for (const field of ['text', 'caption'] as const) {
+        const value = raw[field];
+        if (typeof value !== 'string' || !value) continue;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: value, topicId: msg.message_thread_id ?? GENERAL_TOPIC_ID, messageId: msg.message_id,
+            fromId: msg.from?.id, notFromThePerson,
+          });
+          if (typeof masked === 'string') raw[field] = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
+    }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here
     // from Telegram's own getUpdates, is offered to the account path as a platform receipt. Anything
@@ -7011,6 +7204,17 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     try {
       if (transcript === null) throw transcribeError ?? new Error('no transcript');
+      // SEC-164 §3.5: a voice transcript is masked at the same point as its channel's text.
+      if (this.inboundCredentialMasker) {
+        const raw = msg as unknown as Record<string, unknown>;
+        try {
+          const masked = this.inboundCredentialMasker({
+            text: transcript, topicId, messageId: msg.message_id, fromId: msg.from?.id,
+            notFromThePerson: !!(raw.forward_origin || raw.forward_from || raw.forward_date || raw.sender_chat || raw.via_bot),
+          });
+          if (typeof masked === 'string') transcript = masked;
+        } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
+      }
       console.log(`[telegram] Transcribed voice (${voice.duration}s): "${transcript.slice(0, 80)}"`);
 
       // Create a message with the transcription
@@ -7914,12 +8118,12 @@ export class TelegramAdapter implements MessagingAdapter {
     // Long polling uses 30s timeout in params — give extra headroom
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     // Origin review/storage/capacity must finish before this request's clock starts.
-    const response = await telegramFetch(url, {
+    const response = await withOriginBotAuthoredText(this.config.token, params.text, () => telegramFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sendParams.outgoingParams),
       networkTimeoutMs: timeoutMs,
-    });
+    }));
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after
@@ -7978,6 +8182,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     if (data.result && typeof data.result === 'object' && (data.result as QuietReceipt).recorded === true) throw new QuietRecordedError(data.result as QuietReceipt);
+    if (method === 'sendMessage') this.learnTopicNameFromSent(data.result);
     return data.result;
   }
 }

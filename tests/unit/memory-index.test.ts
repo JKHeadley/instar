@@ -219,6 +219,21 @@ describe('MemoryIndex', () => {
       index.close();
     });
 
+    it('matches dotted names and hyphenated IDs as literal phrases', async () => {
+      fs.appendFileSync(path.join(stateDir, 'MEMORY.md'), '\n\nPrior work on instar.sh belongs to SEC-123.');
+      const index = new MemoryIndex(stateDir, { enabled: true });
+      await index.open();
+      index.sync();
+      try {
+        expect(index.search('instar.sh')).toHaveLength(1);
+        expect(index.search('SEC-123')).toHaveLength(1);
+        expect(index.search('instarsh')).toHaveLength(0);
+        expect(index.search('SEC-124')).toHaveLength(0);
+      } finally {
+        index.close();
+      }
+    });
+
     it('sanitizes FTS5 special syntax', async () => {
       const index = new MemoryIndex(stateDir, { enabled: true });
       await index.open();

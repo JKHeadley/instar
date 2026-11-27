@@ -130,8 +130,8 @@ describe('local subscription transcript roots', () => {
     for (const id of ['a', 'b', 'c']) rollout(slot, id, home);
     let rowsAtCallback: number | undefined, waitingAtCallback: number | undefined;
     const ingest = ledger.ingestCodexFile.bind(ledger);
-    vi.spyOn(ledger, 'ingestCodexFile').mockImplementationOnce((root, file) => {
-      const result = ingest(root, file);
+    vi.spyOn(ledger, 'ingestCodexFile').mockImplementationOnce((root, file, prepared) => {
+      const result = ingest(root, file, prepared);
       setImmediate(() => {
         rowsAtCallback = ledger.rawRowCount;
         waitingAtCallback = ledger.listRoots()[0].filesPending;
@@ -147,12 +147,17 @@ describe('local subscription transcript roots', () => {
 
   it('counts both frameworks once when an older observation is discovered in a backup before its original', async () => {
     const home = temp(), original = temp(), backup = temp();
-    const ts = Date.now() + 30;
-    const originalRollout = rollout(original, 'cx', home, ts);
+    const originalRollout = rollout(original, 'cx', home);
     const project = path.join('projects', encodeClaudeProjectDir(home));
     fs.mkdirSync(path.join(original, project), { recursive: true });
     const transcript = path.join(project, 'cc.jsonl');
-    fs.writeFileSync(path.join(original, transcript), JSON.stringify({
+    const originalTranscript = path.join(original, transcript);
+    fs.writeFileSync(originalTranscript, '');
+    // The event must postdate BOTH originals. A future wall-clock guess can
+    // expire while a loaded host is still creating the Claude transcript.
+    const ts = Math.max(Date.now(), Math.ceil(fs.statSync(originalRollout).birthtimeMs), Math.ceil(fs.statSync(originalTranscript).birthtimeMs));
+    rollout(original, 'cx', home, ts);
+    fs.writeFileSync(originalTranscript, JSON.stringify({
       type: 'assistant', requestId: 'cc-req', sessionId: 'cc', cwd: home, timestamp: new Date(ts).toISOString(),
       message: { model: 'claude', usage: { input_tokens: 9, output_tokens: 3 } },
     }) + '\n');

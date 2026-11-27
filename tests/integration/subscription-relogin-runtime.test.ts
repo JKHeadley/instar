@@ -77,7 +77,7 @@ describe('production-shaped subscription re-login runtime', () => {
     runtime.close();
   });
 
-  it('completes an OpenAI/Codex device-code repair through the dedicated Google profile without paste-back', async () => {
+  it.each([false, true])('honors the backup-code boundary during unattended Codex repair (challenge: %s)', async (backupChallenge) => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-codex-runtime-')); dirs.push(stateDir);
     const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
     let account: SubscriptionAccount = { id: 'codex-1', nickname: 'Codex account', email: 'person@example.com',
@@ -101,14 +101,17 @@ describe('production-shaped subscription re-login runtime', () => {
     const profiles = { resolve: () => ({ profile: { id: 'google-1' }, dirExists: true }), listProfiles: () => [{
       id: 'google-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
       accounts: [{ service: 'google', identity: account.email, owner: 'operator', vaultRefs: [],
-        loginMethod: 'session-cookie', lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }],
+        loginMethod: 'password', vaultBindings: { password: 'password-ref', backupCode: 'backup-ref' }, lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }],
     }] } as unknown as PlaywrightProfileRegistry;
     const browser: ReloginBrowserPort = { open: vi.fn(async () => {}), snapshot: vi.fn(async () => ({
-      origin: 'https://auth.openai.com', pageClass: 'success', expectedAccountVisible: true,
+      origin: backupChallenge ? 'https://accounts.google.com' : 'https://auth.openai.com',
+      pageClass: backupChallenge ? 'google-backup-code-entry' : 'success', expectedAccountVisible: true,
       hasGoogleSignIn: false, hasNext: false, hasAuthorize: false, requestedScopes: [],
     })), chooseExpectedAccount: vi.fn(), fillPublic: vi.fn(), fillSecret: vi.fn(), click: vi.fn(),
     readPasteCode: vi.fn(), wait: vi.fn(), close: vi.fn(async () => {}) };
     const pasteBack = { finish: vi.fn(async () => 'complete') } as unknown as ClaudePasteBackController;
+    const takeBackupCode = vi.fn(async () => '12345678');
+    const resolveSecret = vi.fn(async () => null);
     const runtime = createSubscriptionReloginRuntime({ stateDir, projectDir: stateDir, machineId: 'machine-1',
       // A private seat lease: the default is the machine-wide file under HOME, which a live browser
       // user on the same machine holds for real (2026-10-25: two verifies failed on a busy seat).
@@ -117,18 +120,21 @@ describe('production-shaped subscription re-login runtime', () => {
         minimumEvidenceDays: 0 }, pool, ledger, enrollment, profiles,
       quotaPoller: { pollAccount: vi.fn(async () => ({ source: 'codex-app-server', measuredAt: new Date().toISOString() })) } as unknown as QuotaPoller,
       identityOracle: { resolveSlotTenant: vi.fn(async () => ({ email: account.email })) } as unknown as IdentityOracle,
-      pasteBack, createBrowser: () => browser, resolveSecret: async () => null,
+      pasteBack, createBrowser: () => browser, resolveSecret, takeBackupCode,
       supervise: async ({ allowedActions }) => allowedActions[0],
     });
     await runtime.service.tick();
     const suggested = runtime.store.list()[0];
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe(backupChallenge ? 'waiting-operator-only' : 'succeeded'), RELOGIN_SETTLE);
     expect(runtime.store.listEvents(suggested.id).map((event) => event.eventClass))
       .toContain('unattended-policy-approved');
     expect(enrollment.start).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', framework: 'codex-cli', openBrowser: false }));
     expect(browser.open).toHaveBeenCalledWith('https://auth.openai.com/codex/device');
     expect(pasteBack.finish).not.toHaveBeenCalled();
-    expect(account.status).toBe('active');
+    expect(account.status).toBe(backupChallenge ? 'needs-reauth' : 'active');
+    expect(resolveSecret).not.toHaveBeenCalled();
+    expect(takeBackupCode).not.toHaveBeenCalled();
+    expect(browser.fillSecret).not.toHaveBeenCalled();
     runtime.close();
   });
 

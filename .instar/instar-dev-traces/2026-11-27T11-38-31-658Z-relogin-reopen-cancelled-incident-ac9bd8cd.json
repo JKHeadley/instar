@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "relogin-reopen-cancelled-incident",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-27T11:38:31.658Z",
+  "artifactPath": "upgrades/side-effects/relogin-reopen-cancelled-incident.md",
+  "artifactSha256": "a50db35d01a2ad6f78de35779c23f4e5150cf130f211ee936f8421b03efa48af",
+  "coveredFiles": [
+    "tests/unit/relogin-reopen-cancelled-incident.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test fixture only: replace a real account id and profile id with neutral ids; no runtime change",
+  "eli16Path": "docs/specs/relogin-reopen-cancelled-incident.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relogin-reopen-cancelled-incident.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
