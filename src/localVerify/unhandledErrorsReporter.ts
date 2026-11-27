@@ -121,6 +121,21 @@ export function readUnhandledErrors(text: string | null, requireEmptyMessagesFor
   }
 }
 
+/** An exact, complete list of the worker's task-update RPC timeout, or null. */
+export function readTaskUpdateTimeouts(text: string | null): number | null {
+  if (text === null || text.length > 16 * 1024) return null;
+  try {
+    const report = JSON.parse(text) as Partial<UnhandledErrorsFile> | null;
+    if (report?.v !== 1 || !Array.isArray(report.messages) || report.messages.length === 0 || report.messages.length > 5
+        || report.messages.length !== report.unhandledErrors) return null;
+    return report.messages.every(message => message === '[vitest-worker]: Timeout calling "onTaskUpdate"')
+      ? report.messages.length
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Parse a progress snapshot; null when absent or malformed. File paths are made relative to `root`. */
 export function readProgress(text: string | null, root: string, now: number): { finishedFiles: number; running: Array<{ file: string; seconds: number }> } | null {
   if (text === null) return null;

@@ -665,6 +665,12 @@ export class ChiefOfStaffLoop {
     }
   }
 
+  /** A binding's absence is meaningful only in a complete, non-flushing union. */
+  bindingPreviewKeys(): ReadonlySet<string> | null {
+    const snapshot = this.readOwnerNeedsRecord((union) => new Set(boundProjects(union).map((project) => project.conversationKey)));
+    return snapshot.available ? snapshot.record : null;
+  }
+
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
   projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> {
     let union: UnionEntry[] = [];
