@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "development-review-observation",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T16:41:25.161Z",
+  "artifactPath": "upgrades/side-effects/development-review-observation.md",
+  "artifactSha256": "bca7290a26442e369c36ac5463e806c0f69f1074e2b103d5ff739e67784a8c0a",
+  "coveredFiles": [
+    "docs/specs/development-review-observation.eli16.md",
+    "src/server/routes.ts",
+    "upgrades/side-effects/development-review-observation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Use the same authenticated history view in the latest-run summary",
+  "eli16Path": "docs/specs/development-review-observation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/development-review-observation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
