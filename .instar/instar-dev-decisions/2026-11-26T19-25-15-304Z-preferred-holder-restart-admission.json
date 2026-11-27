@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T19:25:15.304Z",
+  "slug": "preferred-holder-restart-admission",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/lifeline/ServerSupervisor.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Request-driven guard of an existing supervisor restart path, with no new self-triggered restart or renewal."
+  },
+  "verdict": "pass"
+}

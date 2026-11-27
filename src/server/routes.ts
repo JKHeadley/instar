@@ -1,3 +1,5 @@
+import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
+import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -306,6 +308,8 @@ import {
   describeSubscriptionReloginConfig,
   readOnDiskSubscriptionReloginBlock,
   subscriptionReloginConfigureDigest,
+  subscriptionReloginPoolTargetConfig,
+  prepareSubscriptionReloginPoolTarget,
   validateSubscriptionReloginOperatorInput,
   writeSubscriptionReloginRestartRequest,
   subscriptionReloginFinishRestartDigest,
@@ -411,7 +415,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
+import { lifelineSecretMatches, LIFELINE_SECRET_HEADER, sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -1309,6 +1313,8 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  plannedRestartLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) => 'ready' | 'wait' | 'not-applicable';
+
   ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
   ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
@@ -3355,6 +3361,26 @@ export function createRoutes(ctx: RouteContext): Router {
     };
     for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
   }
+  // @write-domain:none — reads current lease evidence and returns an admission verdict.
+  router.post('/internal/planned-restart-lease-admission', (req, res) => {
+    const address = req.socket.remoteAddress;
+    const local = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+    if (!local || !lifelineSecretMatches(req.headers[LIFELINE_SECRET_HEADER],
+      sharedLifelineIngressSecretHolder(ctx.config.stateDir).get())) {
+      res.sendStatus(403);
+      return;
+    }
+    const { requestedBy, requestedAt } = req.body ?? {};
+    if (typeof requestedBy !== 'string' || !requestedBy || requestedBy.length > 200 ||
+        typeof requestedAt !== 'string' || requestedAt.length > 40 || !Number.isFinite(Date.parse(requestedAt))) {
+      res.sendStatus(400);
+      return;
+    }
+    res.set('Cache-Control', 'no-store').json({
+      admission: ctx.plannedRestartLeaseAdmission?.({ requestedBy, requestedAt }) ?? 'wait',
+      requestedBy, requestedAt,
+    });
+  });
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOwnedRepoRoutes(router, () => ctx.ownedRepos?.() ?? null);
@@ -7124,9 +7150,11 @@ export function createRoutes(ctx: RouteContext): Router {
     // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and
     // overwriting it would drop the version and its restart-loop detection. Leave it in place.
     try {
-      const pending = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { targetVersion?: unknown; expiresAt?: unknown };
+      const flag = path.join(ctx.config.stateDir, 'state', 'restart-requested.json');
+      const raw = fs.readFileSync(flag, 'utf8');
+      const pending = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: unknown };
       const live = typeof pending.expiresAt !== 'string' || Date.parse(pending.expiresAt) > Date.now();
-      if (live && typeof pending.targetVersion === 'string' && pending.targetVersion) {
+      if (live && !restartAdmissionTimedOut(flag, raw) && typeof pending.targetVersion === 'string' && pending.targetVersion) {
         res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion: pending.targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
         return;
       }
@@ -10293,6 +10321,33 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
     res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
   });
+  router.post('/chief-of-staff/project-binding-preview', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const enabled = ctx.liveConfig?.get(
+      'chiefOfStaff.bindingBatchPreview', ctx.config.chiefOfStaff?.bindingBatchPreview ?? false,
+    ) ?? ctx.config.chiefOfStaff?.bindingBatchPreview;
+    if (enabled !== true || !ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'project-binding-preview-disabled' });
+      return;
+    }
+    const operatorSession = req.get('x-instar-operator-session');
+    if (ctx.verifyDashboardOperatorSession?.(operatorSession) !== true) {
+      res.status(403).json({ error: 'dashboard-operator-session-required' });
+      return;
+    }
+    const bound = ctx.chiefOfStaffLoop.bindingPreviewKeys();
+    if (!bound) {
+      res.status(503).json({ error: 'project-list-unavailable' });
+      return;
+    }
+    const preview = previewOwnerBindingBatch(req.body?.draft, bound);
+    if (!preview) {
+      res.status(400).json({ error: 'invalid-project-binding-draft' });
+      return;
+    }
+    res.json(preview);
+  });
+
   // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
   // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
   // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,
@@ -42269,6 +42324,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } else if (localAvailability?.state === 'unconfigured') {
       failed.push({ machineId: selfMachineId ?? 'self', error: 'peer-pool-unconfigured' });
     }
+    const answeredMachines: Array<{ machineId: string; nickname: string | null }> =
+      selfMachineId && ctx.subscriptionPool && localReadable ? [{ machineId: selfMachineId, nickname: selfMachineNickname }] : [];
     const remote: Record<string, unknown>[] = [];
     const remoteEmailGaps: Record<string, unknown>[] = [];
     const remoteReconciliation: Array<{
@@ -42295,6 +42352,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           };
         };
         const nickname = ctx.machinePoolRegistry?.getCapacity(p.machineId)?.nickname ?? null;
+        if (Array.isArray(body.accounts)) answeredMachines.push({ machineId: p.machineId, nickname });
         for (const a of body.accounts ?? []) {
           remote.push({
             ...a,
@@ -42359,6 +42417,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         selfMachineNickname,
         peersQueried: peers.length,
         peersOk: peers.length - failed.length,
+        answeredMachines: answeredMachines.sort((a, b) => a.machineId.localeCompare(b.machineId)),
         failed,
       },
       // This machine's device-limit counters (machine-local; peers report their own).
@@ -42610,36 +42669,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   };
 
-  // Fronting route: a recent dashboard unlock (header only — never a PIN in the body), then each
-  // ticked machine: peers first with a signed single-use mandate, this machine last.
-  router.post('/subscription-relogin/configure-pool', async (req, res) => {
-    if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
-      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
-      return;
-    }
-    const body = (req.body ?? {}) as { action?: unknown; mode?: unknown; targets?: unknown };
+  // Peer mandates and local application share the same target normalization. This writer is
+  // still PIN-only until the recipient machines support a distinct verified biometric proof.
+  const configureReloginPoolWithVerifiedPin = async (input: unknown) => {
+    const body = (input ?? {}) as { action?: unknown; mode?: unknown; targets?: unknown };
     const action = body.action === undefined ? 'configure' : body.action;
-    if (action !== 'configure' && action !== 'finish-restart') { res.status(400).json({ error: 'action must be configure or finish-restart' }); return; }
-    if (action === 'configure' && body.mode !== 'unattended' && body.mode !== 'approval') { res.status(400).json({ error: 'mode must be unattended or approval' }); return; }
-    if (!Array.isArray(body.targets) || body.targets.length === 0) { res.status(400).json({ error: 'at least one target is required' }); return; }
+    if (action !== 'configure' && action !== 'finish-restart') { return { status: 400, body: { error: 'action must be configure or finish-restart' } }; }
+    if (action === 'configure' && body.mode !== 'unattended' && body.mode !== 'approval') { return { status: 400, body: { error: 'mode must be unattended or approval' } }; }
+    if (!Array.isArray(body.targets) || body.targets.length === 0) { return { status: 400, body: { error: 'at least one target is required' } }; }
     const targets = body.targets as Array<Record<string, unknown>>;
     const ids = targets.map((t) => (typeof t?.machineId === 'string' ? t.machineId : ''));
-    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) { res.status(400).json({ error: 'each target needs a unique machineId' }); return; }
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) { return { status: 400, body: { error: 'each target needs a unique machineId' } }; }
     if (targets.some((t) => typeof t.expectedRevision !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(t.expectedRevision as string))) {
-      res.status(400).json({ error: 'each target needs the expectedRevision it was read at' }); return;
+      return { status: 400, body: { error: 'each target needs the expectedRevision it was read at' } };
     }
     const selfId = reloginSelfMachineId();
     const mode = body.mode as 'unattended' | 'approval' | undefined;
-    const buildConfig = (t: Record<string, unknown>, isSelf: boolean) => ({
-      enabled: true, mode, dryRun: false,
-      unattendedPolicy: {
-        identities: Array.isArray(t.identities) ? t.identities : [],
-        // The card sends 0/0 when it turns this machine on, and the current waits otherwise; the
-        // point-of-use rules refuse any other value (spec §2, §3 step 4).
-        minimumSuccessfulRepairs: t.minimumSuccessfulRepairs,
-        minimumEvidenceDays: t.minimumEvidenceDays,
-      },
-    });
     const peers = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p]));
     const results: ConfigureTargetResult[] = [];
     const issuedMandates = new Map<string, string>();
@@ -42657,11 +42702,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (action === 'finish-restart') {
         configDigest = subscriptionReloginFinishRestartDigest(expectedRevision);
       } else {
-        rawConfig = buildConfig(t, false);
-        const parsed = validateSubscriptionReloginOperatorInput(rawConfig);
-        if (!parsed.ok) return { machineId, ok: false, error: 'invalid-config' };
-        rawConfig = parsed.value;
-        configDigest = subscriptionReloginConfigureDigest(parsed.value, expectedRevision);
+        const prepared = prepareSubscriptionReloginPoolTarget(t, mode, expectedRevision);
+        if (!prepared) return { machineId, ok: false, error: 'invalid-config' };
+        rawConfig = prepared.config;
+        configDigest = prepared.configDigest;
       }
       let mandateId: string;
       try {
@@ -42729,14 +42773,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // This machine last (its own restart can then never cut off the fan-out or the response).
     const selfTarget = targets.find((t) => t.machineId === selfId);
     if (selfTarget) {
-      const local = applyConfigureHere({ action, rawConfig: action === 'configure' ? buildConfig(selfTarget, true) : undefined,
+      const local = applyConfigureHere({ action, rawConfig: action === 'configure' ? subscriptionReloginPoolTargetConfig(selfTarget, mode) : undefined,
         expectedRevision: selfTarget.expectedRevision as string, remote: false, provenance: { via: 'configure-pool-self' } });
       results.push(local.status < 300
         ? { machineId: selfId, ok: true, mode: local.body.mode as string | undefined, changed: local.body.changed === true,
           restartRequested: local.body.restartRequested === true, revision: local.body.revision as string | undefined }
         : { machineId: selfId, ok: false, error: String(local.body.error ?? 'apply-failed') });
     }
-    res.json({ ok: results.every((r) => r.ok), results });
+    return { status: 200, body: { ok: results.every((r) => r.ok), results } };
+  };
+
+  // The dashboard carrier must prove a recent PIN unlock before reaching the shared writer.
+  router.post('/subscription-relogin/configure-pool', async (req, res) => {
+    if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const result = await configureReloginPoolWithVerifiedPin(req.body);
+    res.status(result.status).json(result.body);
   });
 
   // Target point of use (§3): verify the delivered mandate FIRST, then the setting checks.

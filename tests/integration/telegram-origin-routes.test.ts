@@ -24,8 +24,6 @@ import { listenOriginNotices, originCapacityClient } from '../../src/messaging/t
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { recordRecoveredSessionDelivery } from '../../src/messaging/telegram-origin/SessionDeliveryReporter.js';
-import { setTimeout as delay } from 'node:timers/promises';
-
 import { NEEDS_CANARY_FIRST_DELAY_MS } from '../../src/server/needsRoutes.js';
 
 let worker: URL;
@@ -125,13 +123,26 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
         expect(h.network).not.toHaveBeenCalled();
         expect(adapter.getTopicHistory(42, 10)).toEqual([]);
         capacity!.mockRestore();
-        // The durable worker uses its own clock. Respect its actual retry pacing.
         const row = (await h.runtime.store.listOrigins()).records[0];
         const nextAt = row.attempts.find(attempt => attempt.reason === 'credential-capacity-unavailable')?.nextAttemptAt;
         expect(Number.isSafeInteger(nextAt)).toBe(true);
-        const waitMs = Math.max(0, nextAt! - Date.now() + 10);
-        expect(waitMs).toBeLessThanOrEqual(31_000);
-        if (waitMs) await delay(waitMs);
+        expect(nextAt).toBeLessThanOrEqual(Date.now() + 31_000);
+        // Keep the scheduler, queued claim and receipt on the same worker clock.
+        let now = nextAt! - 1;
+        const store = h.runtime.store;
+        const take = store.takeRecoverableAdmissions.bind(store);
+        const reserve = store.reserveRecoveryAttempt.bind(store);
+        const claim = store.claim.bind(store);
+        const dispatch = store.markDispatched.bind(store);
+        const outcome = store.recordOutcome.bind(store);
+        vi.spyOn(store, 'takeRecoverableAdmissions').mockImplementation(input => take({ ...input, now }));
+        vi.spyOn(store, 'reserveRecoveryAttempt').mockImplementation(input => reserve({ ...input, now }));
+        vi.spyOn(store, 'claim').mockImplementation(input => claim({ ...input, now }));
+        vi.spyOn(store, 'markDispatched').mockImplementation(input => dispatch({ ...input, now }));
+        vi.spyOn(store, 'recordOutcome').mockImplementation(input => outcome({ ...input, now }));
+        expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 0 });
+        expect(h.network).not.toHaveBeenCalled();
+        now = nextAt!;
         expect(await h.runtime.recoverHeld()).toMatchObject({ recovered: 1 });
       }
       expect(h.network).toHaveBeenCalledOnce();

@@ -473,14 +473,16 @@ describe('development page in a DOM', () => {
   const expanded = (doc: Document, id: string) => doc.querySelector(`#sec-${id} .list-head`)!.getAttribute('aria-expanded');
   const stoppedGate = { gate: { rollback: ['L1', 'L2'], emergencyPause: [], poolArmed: true, mergeAllowed: false } };
 
-  it('reviews every item and sends one PIN-bound exact promotion before refreshing the count', async () => {
+  it.each(['lead', 'more'])('reviews every item and sends one PIN-bound exact promotion from %s', async (placement) => {
+    const isLead = placement === 'lead';
     const { doc, posted } = await bootPage('#/work/development?s=feedback', {
-      '/feedback-factory/readiness-authorities/proposal': { body: proposal({ status: 'active', approveAction: null }) },
+      '/feedback-factory/readiness-authorities/proposal': { body: isLead ? proposal({ status: 'active', approveAction: null }) : proposal() },
       '/feedback-factory/consumer/promotion/proposal': { body: consumerProposal },
     });
     const button = (label: string, scope: ParentNode = doc) =>
       [...scope.querySelectorAll('button')].find((element) => element.textContent === label)!;
-    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain('1 thing needs you');
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain(isLead ? '1 thing needs you' : '2 things need you');
+    if (!isLead) button('1 more thing needs you ›').click();
     button('Promote').click();
     const review = doc.querySelector('.sheet')!;
     expect(review.textContent).toContain('starts with this batch');
@@ -502,7 +504,7 @@ describe('development page in a DOM', () => {
     });
     expect(doc.querySelector('.pin-input')).toBeNull();
     expect(doc.querySelector('.sheet .action-status')!.textContent).toContain('Feedback processing is approved.');
-    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain('nothing needs you');
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain(isLead ? 'nothing needs you' : '1 thing needs you');
   });
   it('stopped: the card leads the page, above a Feedback approval, and both buttons take the same PIN path to the same route', async () => {
     const { doc, posted } = await bootPage('#/work/development', { '/green-pr-automerge': { body: watcher(stoppedGate) } });
