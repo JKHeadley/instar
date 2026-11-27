@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T22:37:56.580Z",
+  "slug": "owner-conversation-tree-sections",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ownerTreeProjectMembership.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

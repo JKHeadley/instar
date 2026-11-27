@@ -23,10 +23,14 @@ export function ownerTreeProjectMembership(
       }
       seen.add(key);
       const parent = snapshot.parents.get(key);
-      // A Telegram topic present in the covered inventory can have no
-      // Chief placement record. Certified group membership is checked separately.
-      if (parent === null || (parent === undefined && ref.platform === 'telegram' && seen.size === 1)) {
-        if (seen.size === 1) membership.set(nodeKey(ref), null);
+      // The walk reached a visible top-level conversation without passing a confirmed project, so
+      // the chat is in no project: an explicit root (parent null, such as the Chief of Staff topic
+      // or an unconfirmed project), or a Telegram topic present in the covered inventory with no
+      // Chief placement record. This holds at any depth, not only for the chat itself. An
+      // invisible or unknown ancestor still ends the loop above without an entry, so placement is
+      // withheld. Certified group membership is checked separately.
+      if (parent === null || (parent === undefined && key.startsWith('telegram:'))) {
+        membership.set(nodeKey(ref), null);
         break;
       }
       key = parent ?? null;
