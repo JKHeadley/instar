@@ -504,6 +504,34 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
   return ledger;
 }
 
+// ---------------------------------------------------------------- diagnose
+
+// Counts only, for finding why a step fell short: judge attempts by arm,
+// judge family, state and error code, and answer outcomes by arm and reason.
+// Codes that are not plain dash codes are reported as "other", so no model
+// or private text can appear.
+const plainCode = v => (typeof v === 'string' && /^[a-z0-9-]{1,80}$/.test(v) ? v : (v == null ? 'none' : 'other'));
+export function diagnoseRun(run) {
+  const index = run.read('index.json');
+  const judges = {}; const answers = {};
+  const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
+  for (const trialId of index.order) {
+    const arm = /-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown';
+    if (run.has(`answers/${trialId}.json`)) {
+      const a = run.read(`answers/${trialId}.json`);
+      bump(answers, `${arm} ${plainCode(a.parseOutcome?.status)} ${plainCode(a.parseOutcome?.reason)}`);
+    } else bump(answers, `${arm} not-run none`);
+    for (const i of [0, 1]) {
+      const f = `judges/${trialId}.slot-${i}.json`;
+      if (!run.has(f)) { bump(judges, `${arm} slot-${i} not-judged none`); continue; }
+      const l = run.read(f);
+      if (l.attempts.length === 0) bump(judges, `${arm} ${plainCode(l.family)} skipped none`);
+      for (const at of l.attempts) bump(judges, `${arm} ${plainCode(at.family)} ${plainCode(at.state)} ${plainCode(at.error)}`);
+    }
+  }
+  return { version: 1, answers, judges };
+}
+
 // ---------------------------------------------------------------- totals
 
 function armSummary() {
@@ -659,6 +687,7 @@ export function main(argv) {
     }
     return { state: 'judged', counts };
   }
+  if (command === 'diagnose') return { state: 'diagnosed', ...diagnoseRun(run) };
   if (command === 'total') {
     const t = totalRun(run, pack);
     return { state: 'totalled', arms: Object.fromEntries(Object.entries(t.arms).map(([a, s]) => [a, { trials: s.trials, allCriteriaPass: s.allCriteriaPass, criticalFailureTrials: s.criticalFailureTrials }])) };

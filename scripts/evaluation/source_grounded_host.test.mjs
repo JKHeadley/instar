@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, checkCodexStream, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, checkCodexStream, diagnoseRun, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -220,6 +220,24 @@ test('a judge evidence record id that is missing or not a string is an invalid s
         evidence: [{ collection: 'answer', recordId, quote: 'ships' }] }] });
     assert.doesNotThrow(() => resolveJudge(raw, records, answerRaw));
   }
+});
+
+test('diagnose reports counts and plain codes only, never model text', () => {
+  const files = {
+    'index.json': { order: ['h01-none-1', 'h01-full-1'] },
+    'answers/h01-none-1.json': { parseOutcome: { status: 'valid' } },
+    'answers/h01-full-1.json': { parseOutcome: { status: 'schema-invalid', reason: 'invalid-fields' } },
+    'judges/h01-none-1.slot-0.json': { family: 'anthropic', attempts: [{ family: 'anthropic', state: 'valid', error: null }] },
+    'judges/h01-none-1.slot-1.json': { family: 'openai', attempts: [{ family: 'openai', state: 'invalid', error: 'The secret café text "quoted"' },
+      { family: 'openai', state: 'timeout', error: null }] },
+    'judges/h01-full-1.slot-0.json': { family: 'anthropic', attempts: [] },
+  };
+  const run = { read: rel => files[rel], has: rel => rel in files };
+  const d = diagnoseRun(run);
+  assert.deepEqual(d.answers, { 'none valid none': 1, 'full schema-invalid invalid-fields': 1 });
+  assert.deepEqual(d.judges, { 'none anthropic valid none': 1, 'none openai invalid other': 1, 'none openai timeout none': 1,
+    'full anthropic skipped none': 1, 'full slot-1 not-judged none': 1 });
+  assert.ok(!JSON.stringify(d).includes('café'));
 });
 
 test('the Codex judge uses the same tool-free profile as instar itself', () => {

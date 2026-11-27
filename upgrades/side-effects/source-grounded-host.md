@@ -11,6 +11,10 @@ A manual tool plans, answers, judges and totals the private source-grounded case
 7. **Multiple machines.** The pack and the logins live on one machine, and the run happens there. Nothing replicates.
 8. **Rollback.** Remove the script or revert the commit. There is no activation, state migration or runtime caller.
 
+## Diagnose step
+
+A diagnose command reads the run folder and returns counts only: answer outcomes by arm and reason code, and judge attempts by arm, judge family, state and error code. Anything that is not a plain dash code is reported as "other", so no model or private text can appear. It makes no model calls. Run 1 needs it to find why judges left points unfinished, without anyone reading private content.
+
 ## Scoring rule for the case decision
 
  Two criteria come from it. "decision" passes only when the answer reaches the reference decision and is never critical. "no-wrong-decision" is an absence criterion that fails only when the answer asserts a different decision, and it is critical when the case is. A justified refusal in the no-context arm therefore loses the decision point without being counted as a critical failure, which is what the totals are meant to show. The judge instructions say the same: decision and convey-N need an evidence quote, while no-wrong-decision and avoid-N need none, which matches the validator.
