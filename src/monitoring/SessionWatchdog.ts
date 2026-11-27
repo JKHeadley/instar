@@ -184,7 +184,7 @@ export interface InterventionEvent {
 
 export interface ProtectedWaitEvidence {
   protected: boolean;
-  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output' | 'test-runner' | 'test-runner-ancestor' | 'timed-sleep';
+  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output' | 'test-runner' | 'test-runner-ancestor' | 'timed-sleep' | 'poll-loop-sleep';
   /**
    * True when the wall-clock floor had already expired and protection was held
    * open only because the subtree's CPU time was still advancing. Surfaced so
@@ -535,12 +535,31 @@ export function timedSleepDurationMs(command: string): number | null {
 
 const TIMED_SLEEP_SLACK_MS = 60_000;
 
+/**
+ * A poll loop or Monitor watch script is a long-lived shell that runs a quick check and then a timed
+ * `sleep`, over and over, printing only on a change. The stuck candidate is the shell, never its short
+ * sleep, so the timed-sleep rule above cannot see it, and the judge reads a quiet, minutes-old loop as
+ * stuck (2026-11-27: four watches stopped on the M5, four heavy-turn waits on the Studio). The shell is
+ * protected while a timed sleep is running below it, or was seen below it within this window: the loop
+ * spends a few seconds in its check between sleeps, and one poll may land there. A loop that stops
+ * sleeping (it hangs inside its check) loses the protection after this window, and the two-hour
+ * protected-wait bound still applies to every loop.
+ */
+export const POLL_LOOP_SLEEP_RECENT_MS = 5 * 60_000;
+
+/** True when one of the commands below the candidate is a timed `sleep` (the definition above). */
+export function hasTimedSleepDescendant(descendantCommands: readonly string[]): boolean {
+  return descendantCommands.some((command) => timedSleepDurationMs(command) !== null);
+}
+
 export function classifyProtectedWait(
   command: string,
   recentOutput = '',
   elapsedMs = 0,
   descendantCommands: readonly string[] = [],
   progress: TestRunnerProgress = 'unknown',
+  /** Milliseconds since a timed sleep was last observed below this process; undefined if never. */
+  timedSleepSeenMsAgo?: number,
 ): ProtectedWaitEvidence {
   const testRunner = classifyTestRunnerProtection(command, elapsedMs, descendantCommands, progress);
   if (testRunner) return testRunner;
@@ -549,6 +568,10 @@ export function classifyProtectedWait(
   if (elapsedMs > MAX_PROTECTED_WAIT_MS) return { protected: false };
   const sleepMs = timedSleepDurationMs(command);
   if (sleepMs !== null && elapsedMs <= sleepMs + TIMED_SLEEP_SLACK_MS) return { protected: true, reason: 'timed-sleep' };
+  if (hasTimedSleepDescendant(descendantCommands)
+    || (timedSleepSeenMsAgo !== undefined && timedSleepSeenMsAgo >= 0 && timedSleepSeenMsAgo <= POLL_LOOP_SLEEP_RECENT_MS)) {
+    return { protected: true, reason: 'poll-loop-sleep' };
+  }
   const normalized = command.toLowerCase();
   const argv = normalized.trim().split(/\s+/);
   const executableIndex = /(?:^|\/)node(?:\.exe)?$/.test(argv[0] ?? '') ? 1 : 0;
@@ -702,6 +725,8 @@ export class SessionWatchdog extends EventEmitter {
    * by being picked first on every poll. Cleared when the process exits.
    */
   private undecidedPids = new Set<number>();
+  /** PID -> when a timed sleep was last seen below it (poll-loop evidence; pruned when the PID exits). */
+  private timedSleepSeenAt = new Map<number, number>();
   /**
    * CPU-time samples for test-runner subtrees. Only consulted once a run is
    * past its wall-clock floor, so an ordinary suite never touches it.
@@ -933,6 +958,10 @@ export class SessionWatchdog extends EventEmitter {
     // cannot hide an unrelated stuck command, even under a shared parent.
     const protectedSubtrees = new Set<number>();
     const pushWaits = this.activePushWaits(children);
+    const observedAt = Date.now();
+    for (const c of children) {
+      if (hasTimedSleepDescendant(descendantCommands(children, c.pid))) this.timedSleepSeenAt.set(c.pid, observedAt);
+    }
     for (const c of children) {
       if (pushWaits.has(c.pid)) continue;
       if (protectedSubtrees.has(c.parentPid)) { protectedSubtrees.add(c.pid); continue; }
@@ -1008,6 +1037,7 @@ export class SessionWatchdog extends EventEmitter {
       const protectedWait = classifyProtectedWait(
         stuckChild.command, recentOutput, stuckChild.elapsedMs, descendantCommands(children, stuckChild.pid),
         this.observeTestRunnerProgress(children, stuckChild),
+        this.timedSleepSeenAt.has(stuckChild.pid) ? Date.now() - this.timedSleepSeenAt.get(stuckChild.pid)! : undefined,
       );
       if (protectedWait.protected) {
         const why = protectedWait.extendedByProgress
@@ -1103,6 +1133,9 @@ export class SessionWatchdog extends EventEmitter {
     }
     for (const pid of this.undecidedPids) {
       if (!this.isProcessAlive(pid)) this.undecidedPids.delete(pid);
+    }
+    for (const pid of this.timedSleepSeenAt.keys()) {
+      if (!this.isProcessAlive(pid)) this.timedSleepSeenAt.delete(pid);
     }
 
     // Post-compaction idle detection — catch sessions that compacted and are
