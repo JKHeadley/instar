@@ -51,14 +51,46 @@ routes expose the bounded operator and agent surfaces:
   of agents allowed to make readiness decisions; this is an operator-rooted action.
 - **`POST /feedback-factory/readiness/hold`** and **`POST /feedback-factory/readiness/release`** —
   apply or clear integrity holds under their deterministic and operator authority rules.
+- **`GET /feedback-factory/consumer/promotion/proposal`** — the exact batch an operator would
+  approve: up to the per-run claim cap (at most 50) of queued work items in claim order, each
+  with id, title, priority and report count, plus a `proposalSetHash`. Non-pending answers name
+  the state (`configured-simulation`, `already-live`, `no-work`, `non-owner`, `restore`,
+  `unavailable`); `localAction` is true only on the canonical owner with a pending batch.
 - **`POST /feedback-factory/consumer/promote`** and **`POST /feedback-factory/consumer/revoke`** —
-  switch a proposal-set-bound consumer batch between simulation and live handoff.
+  switch a proposal-set-bound consumer batch between simulation and live handoff. Promote needs
+  the operator PIN, `evidenceHash` set to the proposal's `proposalSetHash`, and its
+  `approvedBatchBound`. The server re-derives the batch immediately before the write and
+  refuses a stale or invented hash. The approved items are claimed first, and while any of
+  them is still untried (including one that is held), no other work is claimed. If an approved
+  item is held, revoke and approve the fresh proposal to continue. After that
+  the promotion stays on, and each run claims at most `approvedBatchBound` items until revoked.
+  A record made before this check (not bound to an approved set) never turns the consumer
+  live and must be approved again.
 
 Development agents construct the drain by default while fleet agents remain dark. Work
 creation starts in simulation. Readiness decisions come from a registered frontier-model
 Instar agent under deterministic safety floors; human approval is reserved for escalation
 and break-glass cases. Every accepted work item has a stable key, so retries, crashes, and
 concurrent ticks converge on one Initiative link.
+
+## Triage and executor API
+
+Use these authenticated routes to inspect the path from a ready work item to a reviewed fix. Reads show the current canonical owner's state. Mutation routes also require their own intent, owner and approval checks; a successful read never grants permission to change a decision.
+
+| Route | Purpose |
+|---|---|
+| `GET /feedback-factory/readiness-authorities/proposal` | Preview a bounded readiness authority and any approval blockers. |
+| `GET /feedback-factory/triage/queue` | See ranked work items, priorities and execution states. |
+| `GET /feedback-factory/triage/summary` | See disposition counts, authority health and recent triage results. |
+| `GET /feedback-factory/triage/authority/proposal` | Preview the triage model authority and its blockers. |
+| `POST /feedback-factory/triage/authority` | Create, replace, revoke or restore the approved triage authority. |
+| `POST /feedback-factory/triage/plan` | Prepare a reviewable plan for live ignores, approver acceptance or publication of a held secret-shaped change. |
+| `POST /feedback-factory/triage/commit` | Apply one PIN-approved plan after its nonce and intent checks pass. |
+| `GET /feedback-factory/execute/status` | See executor availability, admission, attempts and recent tick results. |
+| `POST /feedback-factory/execute/stop` | Stop one Initiative's attempts and disarm any armed PR. |
+| `POST /feedback-factory/execute/revoke-acceptance` | Withdraw the recorded approver-dependence acceptance. |
+| `POST /feedback-factory/execute/release` | Return a parked Initiative to triage. |
+| `POST /feedback-factory/execute/canary-retry` | End the canary wait; the sandbox check must still pass on the next attempt. |
 
 ## Which component owns each stage
 

@@ -15,6 +15,7 @@
  * bounded to three attempts, without silently losing the row.
  */
 /* @self-action-controller: undated-action-resurfacer */
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -520,7 +521,7 @@ export class UndatedActionResurfacer {
   private capacityAlert(): UndatedActionAttention {
     return {
       id: 'undated-actions:ledger-capacity',
-      title: 'Undated-action resurfacing paused at its storage ceiling',
+      title: `Undated-action resurfacing on ${storageMachineName(this.deps.stateDir)} paused at its storage ceiling`,
       summary: 'The bounded resurfacing ledger reached its byte ceiling, so the component stopped before losing or corrupting actionable state.',
       description: 'Review and compact the undated-action resurfacing ledger before resuming this cadence. No action was mutated or silently dropped.',
       category: 'evolution-action-resurfacing',

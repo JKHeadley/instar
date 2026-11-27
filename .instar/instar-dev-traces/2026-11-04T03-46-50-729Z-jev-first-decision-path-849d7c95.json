@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "jev-first-decision-path",
+  "sessionId": "7e05d7cf-8435-4094-932d-2fa6c3f19f66",
+  "timestamp": "2026-11-04T03:46:50.729Z",
+  "artifactPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "artifactSha256": "0b05cfcf724b33f5e54d4760eb35ff0e85799965edaad33f6b62507e4f88974f",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-04T03-46-01-651Z-jev-first-decision-path.json",
+    ".instar/instar-dev-traces/2026-11-04T03-45-41-314Z-jev-first-decision-path-17f81fd0.json",
+    "docs/specs/jev-first-decision-path.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/jev-first-decision-path.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This follow-up adds the missing framework awareness marker and parity check; it is a reversible migration fix.",
+  "eli16Path": "docs/specs/jev-first-decision-path.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-20T21:24:41.670Z",
+  "slug": "cb-p2-probe-grade",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 178,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/foldGrade.ts"
+    ],
+    "addedLines": 178,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

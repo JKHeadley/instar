@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-05T05:31:28.830Z",
+  "slug": "class-review-list-one-scan",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ReplicatedPeerStreamReader.ts",
+      "src/monitoring/ClassReviewStore.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Reduces repeated reads; adds no loop or action."
+  },
+  "verdict": "pass"
+}

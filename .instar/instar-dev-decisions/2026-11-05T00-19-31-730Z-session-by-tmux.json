@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-05T00:19:31.730Z",
+  "slug": "session-by-tmux",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StateManager.ts",
+      "src/core/pickSessionByTmux.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

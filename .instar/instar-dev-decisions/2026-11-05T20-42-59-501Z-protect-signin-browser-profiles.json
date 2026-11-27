@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-05T20:42:59.501Z",
+  "slug": "protect-signin-browser-profiles",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/BrowserMcpProfileGuard.ts",
+      "src/core/DynamicMcpService.ts",
+      "src/core/SigninProfileGuard.ts",
+      "src/core/dynamicMcpConfig.ts",
+      "src/providers/primitives/integration/mcpToolRegistry.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

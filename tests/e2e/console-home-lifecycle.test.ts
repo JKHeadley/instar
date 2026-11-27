@@ -80,7 +80,7 @@ describe('Console Home E2E (feature is alive)', () => {
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
       scheduler: { enabled: false, jobsFile, maxParallelJobs: 1 }, messaging: [], updates: {},
       // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
-      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
+      monitoring: { blockerLedger: { enabled: true }, failureCallouts: { enabled: false } } } as unknown as InstarConfig;
     features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
     await features.open();
     for (const def of BUILTIN_FEATURES) features.register(def);
@@ -258,9 +258,13 @@ describe('Console Home E2E (feature is alive)', () => {
     const netWalk = await walkToEnabled(net, deps);
     expect(netWalk.ok).toBe(true);
     expect(features.getConsentRecordsForFeature('publishing-telegraph', 'default')[0].mechanism).toBe('explicit-written');
-    // A self-governing feature passes its activation challenge.
+    // A self-governing feature passes its activation challenge. Its setting (evolution approving
+    // itself) is a raise, so the choice is recorded but the setting is refused until the person
+    // approves it from their own chat (trust-journey decision 4).
     const sg = await walkToEnabled(byId('autonomous-evolution'), deps);
-    expect(sg.ok).toBe(true);
+    expect(sg.ok).toBe(false);
+    expect(sg.apply?.outcome).toBe('refused');
+    expect(sg.apply?.detail).toBe('operator-approval-required');
     expect((await read('/features/autonomous-evolution')).data.state.discoveryState).toBe('enabled');
     // A disabled feature comes back in one direct step.
     const off = await request(app).post('/features/external-operation-gate/transition').set(auth).send({ to: 'disabled', trigger: 'explicit-ask' });
@@ -303,10 +307,15 @@ describe('Console Home E2E (feature is alive)', () => {
       blockers: await read('/blockers'), floor: await read('/autonomous/throughput-floor'),
     }, Date.now());
     expect(page.ok).toBe(true);
-    // The real needs-you initiative leads; the project waits for its first OK; the child folds under it.
+    // The initiative names its decision, and the project names the work awaiting approval.
     const needs = page.sections.needsYou.map((r: { id: string; needs: string }) => [r.id, r.needs]);
-    expect(needs).toEqual(expect.arrayContaining([['e2e-plan', 'Waiting on you: choose between two names'], ['e2e-project', 'Waiting for your OK on round 1']]));
-    expect(page.sections.needsYou.find((r: { id: string }) => r.id === 'e2e-project')!.sub).toContain('round 1 of 2 · 0 of 1 piece merged');
+    expect(needs).toEqual(expect.arrayContaining([
+      ['e2e-plan', 'Waiting on you: choose between two names'],
+      ['e2e-project', 'Review and approve: Home'],
+    ]));
+    const projectApproval = page.sections.needsYou.find((r: { id: string }) => r.id === 'e2e-project')!;
+    expect(projectApproval.sub).toContain('Review and approve: Home');
+    expect(projectApproval.sub).toContain('round 1 of 2 · 0 of 1 piece merged');
     expect([...page.sections.inFlight, ...page.sections.needsYou].some((r: { id: string }) => r.id === 'e2e-piece')).toBe(false);
     // Blockers answered through the real ledger: an honest empty, never a fabricated "stuck".
     expect(page.inTheWay.state).toBe('ok');

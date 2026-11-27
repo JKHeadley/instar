@@ -9,6 +9,7 @@
  * Spec: docs/specs/desktop-locked-screen.md.
  */
 import fs from 'node:fs';
+import type { GuardObservationSnapshot } from './DesktopGuardObservation.js';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -56,6 +57,7 @@ export interface DesktopRelockMarker {
 export interface DesktopLockedHostPort {
   lockedOp(op: Record<string, unknown>): Promise<Record<string, unknown>>;
   startRelockGuard(key: string): Promise<void>;
+  getRelockGuardObservation?(): GuardObservationSnapshot;
   setLockedMode(mode: { root: string; refuse: string[]; chime?: boolean } | null): void;
 }
 
@@ -66,6 +68,9 @@ export interface DesktopLockedDeps {
   saveSettings: (next: DesktopLockedSettings) => void;
   readPolicy: () => Promise<DesktopLockPolicy>;
   tunnelFirstTierActive: () => boolean;
+  /** True while any tunnel is up, first tier or not. Lets a refusal say
+   * "no tunnel" apart from "backup tunnel". Absent reads as not up. */
+  tunnelActive?: () => boolean;
   /** True only once the item is durably with the owner's attention surface. */
   raiseSecurity: (item: { key: string; title: string; body: string }) => boolean | Promise<boolean>;
   audit?: (event: Record<string, unknown>) => void;
@@ -337,7 +342,14 @@ export class DesktopLockedController {
   /** A hint for honest pages. The target still refuses, and a hostile front
    * can draw a box anyway; that limit is stated in the spec. */
   browserBoxShown(): boolean {
-    return this.deps.settings().browserBox && this.deps.tunnelFirstTierActive();
+    return this.browserBoxRefusal() === null;
+  }
+
+  /** Null when a browser may show the box, else why not. */
+  browserBoxRefusal(): string | null {
+    if (!this.deps.settings().browserBox) return 'browser-box-off';
+    if (!this.deps.tunnelFirstTierActive()) return this.deps.tunnelActive?.() ? 'tunnel-not-first-tier' : 'tunnel-not-active';
+    return null;
   }
 
   /** Null when the password path is ready, else a named reason. */
@@ -347,10 +359,22 @@ export class DesktopLockedController {
     if (probe.helperSource !== 'retained') return 'retained-helper-required';
     if (probe.inputGrant !== 'own') return 'own-input-grant-required';
     if (client === 'browser') {
-      if (!this.deps.settings().browserBox) return 'browser-box-off';
-      if (!this.deps.tunnelFirstTierActive()) return 'tunnel-not-first-tier';
+      const box = this.browserBoxRefusal();
+      if (box) return box;
     }
     return state === 'locked-in-session' ? null : 'not-locked';
+  }
+
+  /**
+   * Whether a password could be typed once this Mac is locked, per client.
+   * Null is ready; a word names what stands in the way. Without a probe the
+   * helper's side is unknown, and says so rather than reading as ready.
+   */
+  passwordReadiness(probe: (DesktopLockSample & { inputGrant?: string; helperSource?: string }) | null):
+    { app: string | null; browser: string | null } {
+    if (!probe) return { app: 'helper-unprobed', browser: this.browserBoxRefusal() ?? 'helper-unprobed' };
+    return { app: this.passwordRefusal(probe, 'app', 'locked-in-session'),
+      browser: this.passwordRefusal(probe, 'browser', 'locked-in-session') };
   }
 
   private startSweep(): void {
@@ -453,12 +477,24 @@ export class DesktopLockedController {
     await this.deps.host.startRelockGuard(key);
   }
 
-  async status(osMajor: number | undefined): Promise<Record<string, unknown>> {
-    const { markers, disabled, attempts } = await this.read();
+  private guardObservation(): GuardObservationSnapshot | { available: false; complete: false; reason: string } {
+    try {
+      return this.deps.host.getRelockGuardObservation?.()
+        ?? { available: false, complete: false, reason: 'observer-unavailable' };
+    } catch { return { available: false, complete: false, reason: 'observer-unreadable' }; }
+  }
+
+  async status(osMajor: number | undefined,
+    probe: (DesktopLockSample & { inputGrant?: string; helperSource?: string }) | null = null): Promise<Record<string, unknown>> {
+    const { markers, disabled, attempts, loginSession } = await this.read();
     const settings = this.deps.settings();
-    return { enabled: settings.enabled, active: this.active(osMajor), disabled,
+    return { guardObservation: this.guardObservation(), observedLoginSession: loginSession ?? null, enabled: settings.enabled, active: this.active(osMajor), disabled,
       browserBox: settings.browserBox, chime: settings.chime,
-      refusal: this.enableRefusal(osMajor), lockState: this.lastState,
+      refusal: this.enableRefusal(osMajor),
+      // The spec's "whether the password path is ready, with its named reason".
+      passwordReadiness: this.passwordReadiness(probe),
+      browserBoxShown: this.browserBoxShown(), browserBoxRefusal: this.browserBoxRefusal(),
+      lockState: this.lastState,
       attemptsToday: attempts.count ?? 0, lastAdmissionRefusal: this.lastAdmissionRefusal,
       openDuties: Object.values(markers).filter(item => BLOCKING.has(item.state)).length,
       failedRelocks: Object.values(markers).filter(item => item.state === 'relock-failed').length };

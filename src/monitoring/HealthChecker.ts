@@ -5,6 +5,7 @@
  * and disk space. Returns a HealthStatus object.
  */
 
+import { storageMachineName } from '../core/storageMachineName.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -237,7 +238,7 @@ export class HealthChecker {
     try {
       const exists = fs.existsSync(this.config.stateDir);
       if (!exists) {
-        return { status: 'unhealthy', message: 'State directory missing', lastCheck: now };
+        return { status: 'unhealthy', message: `State directory missing on ${storageMachineName(this.config.stateDir)}`, lastCheck: now };
       }
 
       // Check we can write — fixed name prevents orphaned files on crash
@@ -247,7 +248,7 @@ export class HealthChecker {
 
       return { status: 'healthy', message: 'State directory writable', lastCheck: now };
     } catch (err) {
-      return { status: 'unhealthy', message: `State dir error: ${err instanceof Error ? err.message : String(err)}`, lastCheck: now };
+      return { status: 'unhealthy', message: `State dir error on ${storageMachineName(this.config.stateDir)}: ${err instanceof Error ? err.message : String(err)}`, lastCheck: now };
     }
   }
 }

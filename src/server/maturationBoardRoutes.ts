@@ -16,6 +16,7 @@
  * production path is covered by tests/e2e/maturation-board-alive.test.ts.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -47,6 +48,10 @@ import {
   type SourceStatus,
 } from '../monitoring/MaturationBoard.js';
 import type { RouteContext } from './routes.js';
+import { readMeasurementDetail, validMeasurementRead } from './measurementDetailRead.js';
+import { COMMITMENT_INVENTORY_SOURCE, measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
+import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
+import { readQualityGlance, type QualityGlance } from './measurementQualityGlance.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -65,6 +70,7 @@ const FORBIDDEN_SEGMENTS = ['.instar', '.git', '.ssh', 'node_modules'];
 type BoardCtx = Pick<RouteContext,
   'config' | 'meshSelfId' | 'machinePoolRegistry' | 'resolvePeerUrls' | 'recordRopeResult'
   | 'commitmentTracker' | 'initiativeTracker' | 'blockerLifecycleService' | 'guardRegistry'
+  | 'scheduler' | 'featureRegistry' | 'capabilityRegistry'
 > & { darkFlagRegistry?: DarkFlagMaturationRegistry | null; maturationLadder?: () => MaturationLadderService | null };
 
 interface MaturationBoardConfig { enabled?: boolean; reviewsDir?: string }
@@ -442,6 +448,21 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     return true;
   };
   const responseCache = new Map<string, { at: number; body: unknown }>();
+  const QUALITY_CACHE_MS = 60_000;
+  let qualityCache: { at: number; body: QualityGlance } | null = null;
+  let qualityInFlight: Promise<QualityGlance> | null = null;
+  /** One whole-census read at a time; a fresh answer is reused for a minute. A failed read is not cached. */
+  async function cachedQualityGlance(now: number): Promise<QualityGlance> {
+    if (qualityCache && now - qualityCache.at < QUALITY_CACHE_MS) return qualityCache.body;
+    if (!qualityInFlight) {
+      const read = readQualityGlance(ctx, now);
+      qualityInFlight = read;
+      void read.then(() => undefined, () => undefined).then(() => { if (qualityInFlight === read) qualityInFlight = null; });
+    }
+    const body = await qualityInFlight;
+    qualityCache = { at: now, body };
+    return body;
+  }
   /** Last review assessment fetched from another machine (in-memory only; offline rule). */
   let lastRemoteReview: { machine: string; machineId: string; fetchedAt: number; reviews: ParsedReview[] } | null = null;
 
@@ -499,6 +520,73 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     const part = typeof req.query.part === 'string' ? req.query.part : 'board';
     const now = Date.now();
     if (part === 'probe') { res.json({ schema: BOARD_SCHEMA, part: 'probe', enabled: true }); return; }
+    if (part === 'measurement') {
+      const subject = req.query.subject;
+      const selfOrigin = measurementOrigin(ctx);
+      const machine = req.query.machine ?? selfOrigin;
+      const windowDays = Number(req.query.windowDays ?? 90);
+      if (typeof subject !== 'string' || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(subject) ||
+          typeof machine !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(machine) || !Number.isInteger(windowDays) || windowDays<7 || windowDays>90) {
+        res.status(400).json({error:'invalid-measurement-query'}); return;
+      }
+      if (machine === selfOrigin) { res.json(readMeasurementDetail(ctx,subject,windowDays,now)); return; }
+      if (!poolLimiter(now)) { res.status(429).json({error:'rate-limited'}); return; }
+      const peer = (ctx.resolvePeerUrls?.() ?? []).find(p => p.machineId === machine);
+      if (!peer) { res.status(503).json({error:'measurement-origin-unavailable'}); return; }
+      try {
+        if (!isPeerUrlAllowedForCredentials({url:peer.url,kind:peer.kind},(ctx.config.multiMachine as {peerUrlAllowlist?:string[]}|undefined)?.peerUrlAllowlist).ok) throw Error('peer-refused');
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined,peer,`/maturation/board?part=measurement&subject=${subject}&windowDays=${windowDays}`,{
+          headers:{Authorization:`Bearer ${ctx.config.authToken}`},redirect:'manual',signal:AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+        });
+        if (!response.ok) throw Error('peer-unavailable');
+        const text = await response.text(); if(Buffer.byteLength(text)>128*1024) throw Error('peer-too-large');
+        const body:unknown=JSON.parse(text);
+        if(!validMeasurementRead(body,machine,subject,windowDays,now)) throw Error('unsupported-or-invalid');
+        res.json(body);
+      } catch { res.status(503).json({error:'measurement-origin-unavailable-or-unsupported'}); }
+      return;
+    }
+    if (part === 'quality') {
+      // Quality history at a glance (docs/specs/quality-history-glance.md): this
+      // machine's recorded series, same owner as part=measurement. Cached briefly and
+      // single-flight so repeated page loads never stack whole-census reads.
+      try { res.json(await cachedQualityGlance(now)); }
+      catch { res.status(503).json({ error: 'quality-history-unavailable' }); }
+      return;
+    }
+    if (part === 'coverage') {
+      const local = readMeasurementCoverage(ctx, now);
+      if (scope === 'local') { res.json(local); return; }
+      if (!poolLimiter(now)) { res.status(429).json({ error: 'rate-limited' }); return; }
+      const origins: MeasurementCoverage[] = [local];
+      const failed: Array<{ machineId: string; reason: string }> = [];
+      const allPeers = (ctx.resolvePeerUrls?.() ?? []).filter(p => p.machineId !== ctx.meshSelfId);
+      const peers = [...new Map(allPeers.map(p => [p.machineId, p])).values()].slice(0, 16);
+      await Promise.all(peers.map(async peer => {
+        try {
+          if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) throw Error('peer-refused');
+          const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/maturation/board?part=coverage', {
+            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, redirect: 'manual', signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+          });
+          if (!response.ok) throw Error('peer-unavailable');
+          const text = await response.text();
+          if (Buffer.byteLength(text) > 128 * 1024) throw Error('peer-too-large');
+          const body: unknown = JSON.parse(text);
+          if (!validMeasurementCoverage(body, peer.machineId, now)) throw Error('peer-unsupported-or-invalid');
+          origins.push(body);
+          // Keep an older peer's known prefix while disclosing that its census
+          // does not account for this existing inventory; absence is not zero.
+          if (!body.sources.some(s => s.name === COMMITMENT_INVENTORY_SOURCE)) {
+            failed.push({ machineId: peer.machineId, reason: 'commitment-inventory-unsupported' });
+          }
+        } catch { failed.push({ machineId: peer.machineId, reason: 'unavailable-or-unsupported' }); }
+      }));
+      res.json({ schema: 'measurement-coverage-pool/1', advisory: true, authority: 'none', scope: 'pool', generatedAt: new Date(now).toISOString(),
+        poolComplete: allPeers.length <= 16 && failed.length === 0 && origins.every(o => o.sourcesComplete), origins: origins.sort((a, b) => a.origin.localeCompare(b.origin)), failed,
+        peersOmitted: Math.max(0, allPeers.length - peers.length) });
+      return;
+    }
+
     try {
       if (scope === 'local' && part === 'owners') {
         const { owners, sources } = collectLocalOwners(ctx, now);
@@ -665,7 +753,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       res.json(body);
     } catch (err) { // @silent-fallback-ok — logged and answered as an explicit 500, never an empty board
       console.warn('[maturation-board] build failed:', err);
-      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? err.message.slice(0, 200) : 'unknown' });
+      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir).slice(0, 200) : 'unknown' });
     }
   });
 

@@ -20,6 +20,8 @@ export class SkipLedger {
   private ledgerDir: string;
   private skipFile: string;
   private workloadFile: string;
+  /** Optional live observation; the ledger remains the durable record. */
+  onSkip?: (event: SkipEvent) => void;
 
   constructor(stateDir: string) {
     this.ledgerDir = path.join(stateDir, 'ledger');
@@ -48,6 +50,9 @@ export class SkipLedger {
       scheduledAt,
     };
     this.appendLine(this.skipFile, event);
+    try { this.onSkip?.(event); } catch (error) {
+      console.error('[SkipLedger] Skip observer failed:', error);
+    }
   }
 
   /**

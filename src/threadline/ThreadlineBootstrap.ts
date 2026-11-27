@@ -14,6 +14,8 @@
  * Part of Threadline Protocol integration (Principle #11: "I am the interface").
  */
 
+import { reportUnheardRelayError } from './client/relayErrorReport.js';
+import type { KindedAckWire } from './requiredAck.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -680,107 +682,132 @@ export async function bootstrapThreadline(
 
     // Route inbound relay messages through the gate
     relayClient.on('message', async (msg: ReceivedMessage) => {
-      if (!inboundGate) return;
-      // Encrypted ordinary chat from an invite peer, verified against its pinned key, records
-      // the encryptedSeen mark (step 6). Off: nothing. Never blocks delivery.
-      noteEncryptedChat({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, msg);
-      const decision = await inboundGate.evaluate(msg);
-      if (decision.action === 'pass' && decision.message) {
-        // Gate passed — emit for ThreadlineRouter to handle
-        relayClient!.emit('gate-passed', decision);
+      try {
+        if (!inboundGate) return;
+        // Encrypted ordinary chat from an invite peer, verified against its pinned key, records
+        // the encryptedSeen mark (step 6). Off: nothing. Never blocks delivery.
+        noteEncryptedChat({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, msg);
+        const decision = await inboundGate.evaluate(msg);
+        if (decision.action === 'pass' && decision.message) {
+          // Gate passed — emit for ThreadlineRouter to handle
+          relayClient!.emit('gate-passed', decision);
+        }
+      } catch (err) {
+        // SEC-136: this listener is async, so a throw would become an unhandled rejection, which the server treats as fatal.
+        reportUnheardRelayError({ code: 'inbound-message-listener-failed', message: err instanceof Error ? err.message : String(err) });
       }
     });
 
     // Handle unknown senders — decode payload directly (relay-authenticated, not E2E encrypted)
+    let undecryptableDropped = 0;
     relayClient.on('unknown-sender', async (envelope: Record<string, unknown>) => {
-      if (!inboundGate || !envelope) return;
+      try {
+        if (!inboundGate || !envelope) return;
 
-      // Attempt to decode the base64 payload as plaintext JSON
-      let textContent: string;
-      let msgType: string | undefined;
-      let resend = false;
-      const decoded = decodePlaintextPayload(envelope.payload);
-      if (decoded) {
-        textContent = decoded.text;
-        msgType = decoded.type;
-        resend = decoded.resend;
-      } else {
-        textContent = `[undecryptable relay message from ${String(envelope.from).slice(0, 16)}]`;
-      }
+        // Attempt to decode the base64 payload as plaintext JSON
+        let textContent: string;
+        let msgType: string | undefined;
+        let resend = false;
+        // a2a-required-acknowledgment D1: the kinded-ack field and the capability stamp survive the rebuild.
+        let ack: KindedAckWire | undefined;
+        let ackKinds: number | undefined;
+        const decoded = decodePlaintextPayload(envelope.payload);
+        if (decoded) {
+          textContent = decoded.text;
+          msgType = decoded.type;
+          resend = decoded.resend;
+          ack = decoded.ack;
+          ackKinds = decoded.ackKinds;
+        } else {
+          // a2a-required-acknowledgment: a body we cannot read may be a kinded ack from a
+          // peer whose keys we lost, and a receipt must never start a session. So it is not
+          // routed. The sender's ledger keeps the message unacknowledged, which is true.
+          undecryptableDropped++;
+          console.warn(`[relay] Dropped undecryptable message from ${String(envelope.from).slice(0, 16)} (${undecryptableDropped} since boot): no keys for this sender yet`);
+          return;
+        }
 
-      const received: ReceivedMessage = {
-        from: String(envelope.from ?? 'unknown'),
-        fromName: String(envelope.from ?? 'unknown').slice(0, 8),
-        threadId: String(envelope.threadId ?? `relay-${Date.now()}`),
-        // inbound-id ledger §1: no fabricated `msg-<now>` id — a message with no
-        // id is UNKEYED (admitted, never deduplicated, counted).
-        messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
-        // No `type` key when the payload carries none: a present-but-undefined
-        // key reads as an operation name downstream.
-        content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}) },
-        timestamp: String(envelope.timestamp ?? new Date().toISOString()),
-        envelope: envelope as never,
-      };
+        const received: ReceivedMessage = {
+          from: String(envelope.from ?? 'unknown'),
+          fromName: String(envelope.from ?? 'unknown').slice(0, 8),
+          threadId: String(envelope.threadId ?? `relay-${Date.now()}`),
+          // inbound-id ledger §1: no fabricated `msg-<now>` id — a message with no
+          // id is UNKEYED (admitted, never deduplicated, counted).
+          messageId: typeof envelope.messageId === 'string' && envelope.messageId ? envelope.messageId : (undefined as unknown as string),
+          // No `type` key when the payload carries none: a present-but-undefined
+          // key reads as an operation name downstream.
+          content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}), ...(ack ? { ack } : {}), ...(ackKinds !== undefined ? { ackKinds } : {}) },
+          timestamp: String(envelope.timestamp ?? new Date().toISOString()),
+          // The fill-in above is this end's receive time, not a sender stamp: mark it so
+          // canonical history records it with receive-time provenance (relayIngressHistory).
+          ...(envelope.timestamp === undefined || envelope.timestamp === null ? { timestampSynthesized: true as const } : {}),
+          envelope: envelope as never,
+        };
 
-      // Payload size check, as in the gate.
-      const payloadSize = Buffer.byteLength(JSON.stringify(received.content), 'utf-8');
-      if (payloadSize > 64 * 1024) {
-        console.log(`Threadline: relay message from ${received.from.slice(0, 8)} blocked (payload too large: ${payloadSize})`);
-        return;
-      }
+        // Payload size check, as in the gate.
+        const payloadSize = Buffer.byteLength(JSON.stringify(received.content), 'utf-8');
+        if (payloadSize > 64 * 1024) {
+          console.log(`Threadline: relay message from ${received.from.slice(0, 8)} blocked (payload too large: ${payloadSize})`);
+          return;
+        }
 
-      // Trust (docs/specs/a2a-relay-unknown-sender-trust.md, ACT-066). The relay
-      // proves the sender holds its fingerprint's key, not who it is. With the
-      // check on, the level comes from the trust manager the gate reads and the
-      // gate's operation table applies; off, today's `verified` handling stands.
-      // Invite pairing: the accept arrives as plaintext from a not-yet-known sender
-      // (docs/specs/a2a-pairing-invite-link.md §4.3). It is a CONTROL message for the gate, never
-      // conversation text, so it must not reach the unknown-sender router (which would treat it
-      // as an ordinary message and could spawn a session).
-      if (msgType && ALL_PAIRING_OPS.has(msgType)) {
-        void inboundGate.evaluate(received);
-        return;
-      }
+        // Trust (docs/specs/a2a-relay-unknown-sender-trust.md, ACT-066). The relay
+        // proves the sender holds its fingerprint's key, not who it is. With the
+        // check on, the level comes from the trust manager the gate reads and the
+        // gate's operation table applies; off, today's `verified` handling stands.
+        // Invite pairing: the accept arrives as plaintext from a not-yet-known sender
+        // (docs/specs/a2a-pairing-invite-link.md §4.3). It is a CONTROL message for the gate, never
+        // conversation text, so it must not reach the unknown-sender router (which would treat it
+        // as an ordinary message and could spawn a session).
+        if (msgType && ALL_PAIRING_OPS.has(msgType)) {
+          // SEC-136: not awaited, so it needs its own catch: a rejection here would be unhandled (fatal).
+          inboundGate.evaluate(received).catch((err: unknown) => reportUnheardRelayError({ code: 'unknown-sender-gate-failed', message: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
 
-      // No downgrade after encryption (spec D6, step 6): an invite peer that has sent us
-      // encrypted chat does not get plaintext delivered in its name. Enforce refuses here,
-      // before anything is recorded or routed; watch only counts.
-      if (shouldRefuseDowngradedPlaintext({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, received.from, msgType)) {
-        // Loud, never silent (Echo, 2026-10-20): named reason + remedy in the log, a per-peer
-        // record on /health, one degradation report and one encrypted notice back to the
-        // sender per peer per hour.
-        reportDowngradeRefusal({
-          trustManager,
-          report: ({ reason, impact }) => DegradationReporter.getInstance().report({
-            feature: 'Threadline.refuseDowngrade',
-            primary: 'deliver messages from agents you paired with',
-            fallback: 'the unencrypted message was not delivered; encrypted messages from that agent still are',
-            reason,
-            impact,
-          }),
-          sendNotice: (fp, pinnedHex, text) => { relayClient!.sendNoticeToPinned(fp, pinnedHex, text); },
-        }, received.from);
-        return;
-      }
+        // No downgrade after encryption (spec D6, step 6): an invite peer that has sent us
+        // encrypted chat does not get plaintext delivered in its name. Enforce refuses here,
+        // before anything is recorded or routed; watch only counts.
+        if (shouldRefuseDowngradedPlaintext({ trustManager, mode: refuseDowngradeMode, counters: refuseDowngradeCounters }, received.from, msgType)) {
+          // Loud, never silent (Echo, 2026-10-20): named reason + remedy in the log, a per-peer
+          // record on /health, one degradation report and one encrypted notice back to the
+          // sender per peer per hour.
+          reportDowngradeRefusal({
+            trustManager,
+            report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+              feature: 'Threadline.refuseDowngrade',
+              primary: 'deliver messages from agents you paired with',
+              fallback: 'the unencrypted message was not delivered; encrypted messages from that agent still are',
+              reason,
+              impact,
+            }),
+            sendNotice: (fp, pinnedHex, text) => { relayClient!.sendNoticeToPinned(fp, pinnedHex, text); },
+          }, received.from);
+          return;
+        }
 
-      handleRelayUnknownSender(
-        {
-          trustManager: trustManager!,
-          mode: relayUnknownSenderTrustMode,
-          counters: relayUnknownSenderTrustCounters,
-          // Plaintext under an invite-paired peer's fingerprint is labelled unverified
-          // (never refused): the relay is the only evidence of who wrote it (spec D6/D9).
-          emit: (decision) => {
-            relayClient!.emit('gate-passed', labelUnverifiedPinnedPlaintext(
-              { trustManager, mode: encryptToPinnedMode, counters: encryptToPinnedCounters },
-              decision,
-              msgType,
-            ));
+        handleRelayUnknownSender(
+          {
+            trustManager: trustManager!,
+            mode: relayUnknownSenderTrustMode,
+            counters: relayUnknownSenderTrustCounters,
+            // Plaintext under an invite-paired peer's fingerprint is labelled unverified
+            // (never refused): the relay is the only evidence of who wrote it (spec D6/D9).
+            emit: (decision) => {
+              relayClient!.emit('gate-passed', labelUnverifiedPinnedPlaintext(
+                { trustManager, mode: encryptToPinnedMode, counters: encryptToPinnedCounters },
+                decision,
+                msgType,
+              ));
+            },
           },
-        },
-        received,
-        msgType,
-      );
+          received,
+          msgType,
+        );
+      } catch (err) {
+        // SEC-136: this listener is async, so a throw would become an unhandled rejection, which the server treats as fatal.
+        reportUnheardRelayError({ code: 'unknown-sender-listener-failed', message: err instanceof Error ? err.message : String(err) });
+      }
     });
 
     // Log auto-discovery results

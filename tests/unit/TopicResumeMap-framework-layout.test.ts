@@ -51,7 +51,7 @@ describe('TopicResumeMap — framework-scoped transcript check', () => {
     projectDir = path.join(home, 'project');
     fs.mkdirSync(stateDir, { recursive: true });
     fs.mkdirSync(projectDir, { recursive: true });
-    tmuxStub = writeTmuxStub(home);
+    tmuxStub = writeTmuxStub(home, ['echo-instar-agent-management', 'echo-threadline-dev', 'legacy', 'sess']);
     map = new TopicResumeMap(stateDir, projectDir, tmuxStub);
     resetRolloutLookupState();
   });

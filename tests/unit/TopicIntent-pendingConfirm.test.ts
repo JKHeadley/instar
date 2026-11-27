@@ -2,7 +2,7 @@
  * Unit tests for PendingConfirmationManager — queue + TTL + dedup + retry.
  *
  * Covers spec acceptance items 4 and 5:
- *   4. 4th queued confirmation is silently dropped; telemetry counter increments
+ *   4. past the queue depth a confirmation is deferred (context-budget §6.1 extension; v14 dropped it), with telemetry
  *   5. Sharpening retry: ambiguous answer triggers up to 2 retries, then abandoned
  */
 
@@ -79,12 +79,14 @@ describe('PendingConfirmationManager — outstanding + queue', () => {
     expect(r3.status).toBe('dropped-duplicate');
   });
 
-  // ── Acceptance test 4 ──────────────────────────────────────────────────
-  it('4th queued is silently dropped; telemetry increments (acceptance test 4)', () => {
+  // ── Acceptance test 4, as extended by context-budget §6.1 (decision 15) ──
+  // v14 dropped the 4th queued item silently; the extension DEFERS it with
+  // telemetry instead, and it moves back up as the queue drains.
+  it('past the queue depth the item is deferred (never dropped), with telemetry, and moves up as the queue drains', () => {
     for (const id of ['A', 'B', 'C', 'D', 'E']) {
       seedTentativeRef(104, `ref-${id}`, id);
     }
-    // 1st → outstanding, 2-4 → queue (depth 3), 5th → dropped
+    // 1st → outstanding, 2-4 → queue (depth 3), 5th → deferred
     const r1 = mgr.create({ topicId: 104, arcId: 'arc', refId: 'ref-A', propositionText: 'A', questionText: 'q', currentUserTurn: 5 });
     const r2 = mgr.create({ topicId: 104, arcId: 'arc', refId: 'ref-B', propositionText: 'B', questionText: 'q', currentUserTurn: 5 });
     const r3 = mgr.create({ topicId: 104, arcId: 'arc', refId: 'ref-C', propositionText: 'C', questionText: 'q', currentUserTurn: 5 });
@@ -95,11 +97,20 @@ describe('PendingConfirmationManager — outstanding + queue', () => {
     expect(r2.status).toBe('queued');
     expect(r3.status).toBe('queued');
     expect(r4.status).toBe('queued');
-    expect(r5.status).toBe('dropped-queue-full');
+    expect(r5.status).toBe('deferred');
 
-    const file = store.load(104);
+    let file = store.load(104);
     expect(file.pending.queue).toHaveLength(3);
-    expect(file.telemetry.pending_confirm_queue_dropped_total).toBe(1);
+    expect(file.pending.deferred?.map((p) => p.refId)).toEqual(['ref-E']);
+    expect(file.telemetry.pending_confirm_deferred_total).toBe(1);
+    expect(file.telemetry.pending_confirm_queue_dropped_total).toBe(0);
+
+    // Answering the outstanding one promotes B and pulls E up into the queue.
+    mgr.interpretAnswer(104, 'positive', 'msg-ans');
+    file = store.load(104);
+    expect(file.pending.outstanding?.refId).toBe('ref-B');
+    expect(file.pending.queue.map((p) => p.refId)).toEqual(['ref-C', 'ref-D', 'ref-E']);
+    expect(file.pending.deferred).toEqual([]);
   });
 });
 

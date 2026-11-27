@@ -67,6 +67,7 @@ export function detectImproperRevocations(registry: MachineRegistry): ImproperRe
 }
 
 export interface GuardNotice {
+  contextTopicIds?: number[];
   kind: 'improper-revocation' | 'peer-missing' | 'peer-flapping';
   machineId: string;
   title: string;
@@ -199,10 +200,11 @@ export class PeerVisibilityGuard {
       } catch { /* @silent-fallback-ok: the stranded-topics enrichment is best-effort; the disappearance notice itself must still fire (WORKING-SET-HANDOFF-SPEC §3.6) */
       }
       const strandedLine = stranded.length
-        ? ` Topic working set(s) stranded on it: ${stranded.join(', ')} — recover by bringing it back / un-revoking; the pending fetch re-fires automatically on its return.`
+        ? ` Topic working set(s) stranded on it: ${stranded.join(', ')} — the agent-owned pending fetch re-fires automatically on its return.`
         : '';
       this.safeNotify({
         kind: 'peer-missing',
+        contextTopicIds: stranded,
         machineId,
         title: `Machine ${machineId} has been unreachable for 30+ minutes`,
         body:

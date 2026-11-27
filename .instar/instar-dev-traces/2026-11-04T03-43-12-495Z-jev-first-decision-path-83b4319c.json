@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "slug": "jev-first-decision-path",
+  "sessionId": "7e05d7cf-8435-4094-932d-2fa6c3f19f66",
+  "timestamp": "2026-11-04T03:43:12.495Z",
+  "artifactPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "artifactSha256": "1dd469e5864588c606419b7c827e3ba645c6b4c517cda8906b4d997565ac025b",
+  "coveredFiles": [
+    "docs/research/jev/harness/jev-first/.gitignore",
+    "docs/research/jev/harness/jev-first/README.md",
+    "docs/research/jev/harness/jev-first/build.mjs",
+    "docs/research/jev/harness/jev-first/future_tone.py",
+    "docs/research/jev/harness/jev-first/run.mjs",
+    "docs/research/jev/harness/jev-first/tone2.mjs",
+    "docs/research/jev/harness/jev.mjs",
+    "docs/research/jev/jev-first-brief-2026-11-03.md",
+    "docs/research/jev/jev-first-inventory.md",
+    "docs/research/jev/tone-future-holdout-2026-11-03.md",
+    "docs/specs/jev-first-decision-path.eli16.md",
+    "docs/specs/jev-first-decision-path.md",
+    "src/commands/server.ts",
+    "src/core/JevFirstCommitment.ts",
+    "src/core/JevFirstDecision.ts",
+    "src/core/JudgmentProvenanceLog.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/monitoring/CommitmentSentinel.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/e2e/decision-quality-alive.test.ts",
+    "tests/integration/jev-first-summary-routes.test.ts",
+    "tests/unit/CommitmentSentinel.test.ts",
+    "tests/unit/JevFirstDecision.test.ts",
+    "tests/unit/PostUpdateMigrator-jevFirstAwareness.test.ts",
+    "upgrades/next/jev-first-decision-path.md",
+    "upgrades/side-effects/jev-first-decision-path.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The first caller is clamped to shadow, the fleet remains off, the new summary is read-only, and a revert restores prior behavior.",
+  "eli16Path": "docs/specs/jev-first-decision-path.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

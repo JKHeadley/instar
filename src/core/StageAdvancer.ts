@@ -68,6 +68,8 @@ export interface StageAdvancerDeps {
   writeStageConfig: (stage: SessionPoolStage) => void;
   /** This machine's rebalance proof state. Absent ⇒ stage `rebalance` is unreachable. */
   rebalanceProof?: () => RebalanceProofState;
+  /** A pool started at pairing: `shadow` needs this to stay fresh. Absent ⇒ no such rule. */
+  shadowProof?: () => RebalanceProofState;
   audit?: (event: string, detail: Record<string, unknown>) => void;
 }
 
@@ -134,6 +136,16 @@ export class StageAdvancer {
         return { ok: false, reason: 'e2e-gate-not-passed', detail };
       }
     }
+    // Checked on the way in as well as in reconcile: the driver advances straight after
+    // reconciling, so an expired pair would otherwise return in the same tick.
+    if (targetStage === 'shadow' && this.d.shadowProof) {
+      const proof = this.d.shadowProof();
+      if (!proof.fresh) {
+        const detail = `shadow-proof:${proof.detail}`;
+        this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail });
+        return { ok: false, reason: 'e2e-gate-not-passed', detail };
+      }
+    }
     this.d.writeStageConfig(targetStage);
     this.d.audit?.('stage-advanced', { from: current, to: targetStage, commitSha: sha, evidenceRef: prior.evidenceRef });
     return { ok: true, stage: targetStage };
@@ -164,6 +176,15 @@ export class StageAdvancer {
       this.d.writeStageConfig(reverted);
       this.d.audit?.('stage-reverted', { from: current, to: reverted, reason: failoverRed ? 'e2e-red' : `rebalance-proof:${proof.detail}` });
       return reverted;
+    }
+    if (current === 'shadow' && this.d.shadowProof) {
+      const proof = this.d.shadowProof();
+      if (!proof.fresh) {
+        const reverted = STAGES[idx - 1];
+        this.d.writeStageConfig(reverted);
+        this.d.audit?.('stage-reverted', { from: current, to: reverted, reason: `shadow-proof:${proof.detail}` });
+        return reverted;
+      }
     }
     const latest = this.d.resultStore.getLatestForStage(idx);
     // Only revert on a red for the CURRENT commit — a stale red from a prior commit

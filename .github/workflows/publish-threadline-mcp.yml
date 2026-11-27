@@ -4,8 +4,14 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # Only what changes the published build. A README or server.json edit alone no longer starts a
+    # run; it ships with the next version bump (or a manual workflow_dispatch).
     paths:
-      - 'packages/threadline-mcp/**'
+      - 'packages/threadline-mcp/src/**'
+      - 'packages/threadline-mcp/package.json'
+      - 'packages/threadline-mcp/package-lock.json'
+      - 'packages/threadline-mcp/tsconfig.json'
+      - '.github/workflows/publish-threadline-mcp.yml'
 
 concurrency:
   group: publish-threadline-mcp
@@ -62,12 +68,17 @@ jobs:
           echo "$OUT" | tail -5
           if echo "$OUT" | grep -qE "ReferenceError|SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module|ERR_REQUIRE|require is not defined|Fatal:"; then echo "::error::the installed package did not load"; exit 1; fi
           echo "$OUT" | grep -q "Initial relay connection failed: Error: connect ECONNREFUSED" || { echo "::error::the installed package never reached the network"; exit 1; }
-          PAIR=$(THREADLINE_STATE_DIR="$SD" node "$BIN" pair status 2>&1 || true)
-          echo "$PAIR" | grep -q "Nothing is listening for terminal pairing" || { echo "::error::the installed pair command did not answer"; echo "$PAIR"; exit 1; }
+          # The terminal `pair` CLI was removed in 0.5.1 (32ee7e3be); the bin has no subcommands, so
+          # the consumer check is that the installed package is the version this tree builds (#2243).
+          WANT=$(node -p "require('./package.json').version")
+          GOT=$(node -p "require('$C/node_modules/threadline-mcp/package.json').version")
+          [ "$GOT" = "$WANT" ] || { echo "::error::installed threadline-mcp is $GOT, expected $WANT"; exit 1; }
           echo "packed smoke ok"
 
-  # Publishes only from main, only after the tests pass. The npm token is visible to the publish
-  # step alone; the release token only to the push of the version bump.
+  # Publishes only from main, only after the tests pass, and only when package.json carries a
+  # version newer than npm's. CI never bumps the version itself: a merge that changes the package
+  # without a deliberate version bump publishes nothing (#2243). The npm token is visible to the
+  # publish step alone.
   publish:
     name: Publish threadline-mcp
     needs: test
@@ -108,44 +119,48 @@ jobs:
           if ! echo "$OUT" | grep -q "Initial relay connection failed: Error: connect ECONNREFUSED"; then echo "::error::the built server never reached the network"; exit 1; fi
           echo "smoke ok"
 
+      # Publish only when package.json is strictly newer than npm. Equal or older skips with a
+      # notice, never a CI-made patch bump. An unreadable registry answer fails rather than guessing;
+      # only a 404 (package not on npm yet) counts as "nothing published".
       - name: Check if version changed
         id: check
         working-directory: packages/threadline-mcp
         run: |
           LOCAL=$(node -p "require('./package.json').version")
-          REMOTE=$(npm view threadline-mcp version 2>/dev/null || echo "0.0.0")
-          if [ "$LOCAL" = "$REMOTE" ]; then
-            npm version patch --no-git-tag-version
-            NEW=$(node -p "require('./package.json').version")
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-            echo "version=$NEW" >> "$GITHUB_OUTPUT"
-            echo "Bumped $LOCAL → $NEW"
+          ERR=$(mktemp)
+          if REMOTE=$(npm view threadline-mcp version 2>"$ERR"); then
+            :
+          elif grep -q "E404" "$ERR"; then
+            REMOTE="0.0.0"
           else
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-            echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
-            echo "Already at $LOCAL (remote: $REMOTE)"
+            cat "$ERR"
+            echo "::error::could not read the published threadline-mcp version"
+            exit 1
+          fi
+          NEWER=$(node -e '
+            const p = (v) => { const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(v).trim()); if (!m) { console.error("not x.y.z: " + v); process.exit(2); } return m.slice(1).map(Number); };
+            const [a, b] = [p(process.argv[1]), p(process.argv[2])];
+            const d = a.map((x, i) => x - b[i]).find((x) => x !== 0) ?? 0;
+            console.log(d > 0 ? "true" : "false");
+          ' "$LOCAL" "$REMOTE")
+          echo "version=$LOCAL" >> "$GITHUB_OUTPUT"
+          echo "publish=$NEWER" >> "$GITHUB_OUTPUT"
+          if [ "$NEWER" = "true" ]; then
+            echo "Publishing $LOCAL (npm has $REMOTE)"
+          else
+            echo "::notice::threadline-mcp $LOCAL is not newer than npm ($REMOTE); nothing to publish. Bump packages/threadline-mcp/package.json to release."
           fi
 
       # npm trusted publishing (OIDC, no stored npm token) needs npm 11.5.1 or later. NPM_TOKEN stays
       # only as the fallback for the first publish of a new package; remove it from the repo once the
       # package's trusted publisher (this repo, this workflow, environment npm-publish) is set on npmjs.com.
       - name: Use an npm that supports trusted publishing
+        if: steps.check.outputs.publish == 'true'
         run: npm install -g npm@^11.5.1
 
       - name: Publish to npm
+        if: steps.check.outputs.publish == 'true'
         working-directory: packages/threadline-mcp
         run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Commit version bump
-        if: steps.check.outputs.bumped == 'true'
-        env:
-          HUSKY: '0'
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add packages/threadline-mcp/package.json packages/threadline-mcp/package-lock.json
-          git commit -m "chore: release threadline-mcp v${{ steps.check.outputs.version }} [skip ci]"
-          git push "https://x-access-token:${RELEASE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main

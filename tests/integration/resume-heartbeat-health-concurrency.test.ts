@@ -64,7 +64,7 @@ describe('resume heartbeat vs /health (integration)', () => {
     const config: InstarConfig = {
       projectName: 'resume-hb', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token,
       requestTimeoutMs: 5000, version: '1.3.1349',
-      sessions: { claudePath: '/usr/bin/echo', maxSessions: 4, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000, projectDir: project.dir, tmuxPath: writeTmuxStub(home) },
+      sessions: { claudePath: '/usr/bin/echo', maxSessions: 4, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000, projectDir: project.dir, tmuxPath: writeTmuxStub(home, ['echo-instar-agent-management', 'echo-legacy']) },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
     } as InstarConfig;
     resumeMap = new TopicResumeMap(config.stateDir, config.sessions.projectDir, config.sessions.tmuxPath);

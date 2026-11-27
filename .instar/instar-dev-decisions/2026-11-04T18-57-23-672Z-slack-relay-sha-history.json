@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-04T18:57:23.672Z",
+  "slug": "slack-relay-sha-history",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 61,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-template-sha-history.ts",
+      "src/core/SlackReplyRelayInstaller.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

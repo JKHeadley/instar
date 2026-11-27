@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-08T12:01:07.177Z",
+  "slug": "git-lease-no-remote-asks-first",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/GitLeaseStore.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

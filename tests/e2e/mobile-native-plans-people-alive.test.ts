@@ -108,6 +108,7 @@ describe('native plans and people screens — production wiring', () => {
     expect(rawChannels.status).toBe(200);
     expect(agents.body.channels.map((c: { key: string }) => c.key)).toEqual(rawChannels.body.channels.map((c: { id: string }) => c.id));
     expect(agents.body.channelSummary).toEqual(rawChannels.body.summary);
+    expect(agents.body.channels.find((c:{key:string})=>c.key==='server-down-recovery')).toMatchObject({name:'Machine recovery',audience:'agents',state:'unknown',directionWords:'carries nothing'});
 
     // The raw Bearer routes stay closed to the phone.
     for (const p of ['/initiatives', '/projects', '/preferences/session-context', '/corrections', '/channels']) {

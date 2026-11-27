@@ -9,7 +9,7 @@ import {
   topicNameMap, conversationChoices, requestCard, requestBody, testRequestBody, resultWords, shareWords,
   leftWords, TTL_CHOICES,
 } from './secrets-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, firstPaint, markNeed } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, firstPaint, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const RECORD_KEYS = ['token', 'topicId', 'createdAt', 'expiresAt'];
@@ -72,7 +72,7 @@ export async function renderSecrets(main, ctx) {
 
   const parts = [pageHead({ eyebrow: 'People · Passwords & keys', headline: h.text, tone: h.tone, facts: secretsFacts({ requests, keys, sync }) })];
   // A vault that can't be opened leads the page: hands off, tell the agent (never repair or rotate).
-  if (vaultBroken(keys, sync)) parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Saved keys can’t be opened' }), el('p', { class: 'incident-text', text: VAULT_BROKEN_WORDS })));
+  if (vaultBroken(keys, sync)) parts.push(el('section', { class: 'incident', role: 'alert' }, el('span', { class: 'incident-title', text: 'Saved keys can’t be opened' }), askLink('Saved keys can’t be opened'), el('p', { class: 'incident-text', text: VAULT_BROKEN_WORDS })));
   const sections = [];
   sections.push(waitingBlock(requests, deps, multi));
   sections.push(el('div', { class: 'page-primary' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ Ask someone for one', 'data-ask': '1', onclick: () => askSheet(deps) })));

@@ -44,6 +44,15 @@ export const FRAMEWORK_ALIASES: Readonly<Record<string, IntelligenceFramework>> 
   'grok-build': 'grok-build',
 };
 
+/** The plain name a person sees for each engine (never-silent notices and similar user text). */
+export const FRAMEWORK_DISPLAY_NAMES: Readonly<Record<IntelligenceFramework, string>> = {
+  'claude-code': 'Claude',
+  'codex-cli': 'Codex',
+  'gemini-cli': 'Gemini',
+  'pi-cli': 'Pi',
+  'grok-build': 'Grok',
+};
+
 /**
  * Resolve a user-supplied framework name, or null when it is not recognised.
  * Trims and lowercases, matching the historical behaviour of both callers.
@@ -77,3 +86,17 @@ export function frameworkHasNoUsageSurface(framework: string | undefined | null)
   return framework !== null && framework !== undefined
     && NO_USAGE_SURFACE.has(framework as IntelligenceFramework);
 }
+
+/**
+ * The engine ids that engine-specific code outside the adapters compares
+ * against (2.0 Rule 30: one place names the engines). Callers import these
+ * rather than spelling the id, so the framework-name ratchet only ever counts
+ * the ids here. A default or fallback engine id (e.g. a command's default
+ * framework) imports one of these too, never a quoted id.
+ */
+export const CLAUDE_CODE_FRAMEWORK = 'claude-code' as const satisfies IntelligenceFramework;
+export const CODEX_CLI_FRAMEWORK = 'codex-cli' as const satisfies IntelligenceFramework;
+export const GEMINI_CLI_FRAMEWORK = 'gemini-cli' as const satisfies IntelligenceFramework;
+
+/** The two engines whose context recovery the Context Budget work verifies. */
+export type ClaudeOrCodexEngine = typeof CLAUDE_CODE_FRAMEWORK | typeof CODEX_CLI_FRAMEWORK;

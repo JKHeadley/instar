@@ -35,6 +35,8 @@ export interface SessionOwnershipRecord {
    *  reconciler-cooperative transfers (claim promptly) and on records from
    *  pre-WS1.2 peers. */
   drainInFlight?: boolean;
+  /** App conversations only (app-conversations-in-the-pool §2.2): written by the operator's "bring it back here". Wins an equal-epoch tie. */
+  takeover?: boolean;
   nonce: string;
   timestamp: number;
   updatedAt: string;
@@ -57,7 +59,7 @@ export type OwnershipAction =
    * never by wall-clock timers alone. A reachable-but-slow owner must get the
    * cooperative transfer path, never a force-claim.
    */
-  | { type: 'force-claim'; machineId: string }
+  | { type: 'force-claim'; machineId: string; epochMargin?: number; takeover?: boolean }
   /**
    * WS1.2 (MULTI-MACHINE-SEAMLESSNESS-SPEC): the emergency-stop-during-drain
    * path — the CURRENT owner aborts its own in-flight transfer and returns to
@@ -149,7 +151,11 @@ export function applyOwnershipAction(
       if (current.ownerMachineId === action.machineId && current.status === 'active') {
         return { ok: false, reason: 'force-claim-self' };
       }
-      return { ok: true, next: { ...base, ownerMachineId: action.machineId, ownershipEpoch: epoch + 1, status: 'active' } };
+      // "Bring it back here" (app-conversations-in-the-pool §2.2) writes far above the observed epoch,
+      // so nothing the far side of a partition can still write by cooperative steps ever outranks it.
+      // A bad margin falls back to today's +1, never a smaller or fractional epoch.
+      const margin = Number.isSafeInteger(action.epochMargin) && (action.epochMargin as number) > 0 ? (action.epochMargin as number) : 1;
+      return { ok: true, next: { ...base, ownerMachineId: action.machineId, ownershipEpoch: epoch + margin, status: 'active', ...(action.takeover ? { takeover: true } : {}) } };
     }
     case 'abort-transfer': {
       // WS1.2 emergency-stop-during-drain: only the DRAINING OWNER of a
@@ -178,6 +184,21 @@ export function applyOwnershipAction(
     default:
       return { ok: false, reason: 'no-record' };
   }
+}
+
+/** Is this ownership key an app conversation's (`app:<uuid>`)? */
+export function isAppOwnershipKey(sessionKey: string): boolean {
+  return sessionKey.startsWith('app:');
+}
+
+/**
+ * The tie rule for two app-conversation rows at the SAME epoch (app-conversations-in-the-pool §2.2):
+ * a row marked as an operator takeover wins, then the lower machine id. Deterministic on every
+ * machine, so an equal epoch still converges to one owner. True when `a` beats `b`.
+ */
+export function appRowWinsTie(a: { owner: string; takeover?: boolean }, b: { owner: string; takeover?: boolean }): boolean {
+  if ((a.takeover === true) !== (b.takeover === true)) return a.takeover === true;
+  return a.owner < b.owner;
 }
 
 /**

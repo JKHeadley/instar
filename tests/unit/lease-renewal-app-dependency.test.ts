@@ -49,14 +49,19 @@ describe('leaseRenewalDependencies', () => {
     expect(leaseRenewalDependencies(cfg({ messaging: [{ type: 'telegram', enabled: false, config: {} }] }))).toEqual([]);
     expect(leaseRenewalDependencies(cfg({ mobilePairing: { enabled: true, native: { enabled: false } } }))).toEqual([]);
   });
+  it('names the takeover survivor only when the takeover switch is on, with no surface needed', () => {
+    const lease = (enabled: boolean) => ({ multiMachine: { leaseSelfHeal: { soloCaptainHold: { enabled } } } });
+    expect(leaseRenewalDependencies(cfg(lease(true)))).toEqual(['takeover-survivor']);
+    expect(leaseRenewalDependencies(cfg(lease(false)))).toEqual([]);
+  });
   it('follows the app gate on a development agent (omitted ⇒ on)', () => {
     expect(leaseRenewalDependencies(cfg({ developmentAgent: true }))).toEqual(['app-conversations']);
   });
 });
 
 describe('app-conversations lease renewal dependency', () => {
-  it('REPRODUCTION: without any dependency, a non-development agent loses its lease between heartbeat ticks', async () => {
-    const h = await fixture({ enroll: false });
+  it('REPRODUCTION: on a shared store without any dependency, a non-development agent loses its lease between heartbeat ticks', async () => {
+    const h = await fixture({ enroll: false, sharedStore: true });
     const held = await h.sample(240);
     expect(held.filter((x) => !x).length).toBeGreaterThan(0);
     expect(h.lc.currentEpoch()).toBeGreaterThan(1); // re-acquired, epoch climbed

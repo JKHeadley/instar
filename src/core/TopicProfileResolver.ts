@@ -44,6 +44,8 @@ import {
 } from './topicProfileValidation.js';
 import { resolveTierModel, type TierEscalationConfig } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import { isIssuesTopicId } from '../messaging/telegramTopicSpace.js';
+import { CODEX_OLDER_CLI_FALLBACKS, codexSupportsNewerModels } from './codexCapabilities.js';
 
 export interface ResolvedTopicProfile {
   framework: IntelligenceFramework;
@@ -80,6 +82,10 @@ export interface TopicProfileResolverOptions {
   configTopicFrameworks: () => Record<string, string>;
   /** `topicProfiles.defaults` — per-topic config-default profiles (§12.5). */
   configProfileDefaults: () => Record<string, { model?: string; thinkingMode?: string; effort?: string }>;
+  /** A config-owned group policy, separate from per-topic operator pins. */
+  configGroupDefaults?: () => { issues?: { framework?: IntelligenceFramework; model?: string } };
+  /** Test seam; production probes the resolved Codex CLI version. */
+  codexModelSupported?: (binaryPath: string) => boolean;
   /** `frameworkDefaultModels` config layer. */
   frameworkDefaultModels: () => Partial<Record<IntelligenceFramework, string>>;
   /** Live tier-escalation config — resolves a modelTier pin to a concrete id. */
@@ -130,6 +136,9 @@ export class TopicProfileResolver {
     const key = String(topicKey);
     const pin: TopicProfile | null = this.opts.store.resolve(key);
     const notices: string[] = [];
+    const groupDefault = isIssuesTopicId(topicKey)
+      ? { framework: 'codex-cli' as IntelligenceFramework, model: 'gpt-6.2-sol', ...this.opts.configGroupDefaults?.().issues }
+      : undefined;
 
     // ── framework arm ────────────────────────────────────────────────────
     let framework: IntelligenceFramework | null = null;
@@ -163,6 +172,12 @@ export class TopicProfileResolver {
         framework = configFw as IntelligenceFramework;
         frameworkSource = 'config-default';
       }
+    }
+    if (!framework && groupDefault?.framework
+      && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(groupDefault.framework)
+      && this.isAdmissible(groupDefault.framework)) {
+      framework = groupDefault.framework;
+      frameworkSource = 'group-config-default';
     }
     if (!framework) {
       framework = this.opts.defaultFramework();
@@ -225,10 +240,32 @@ export class TopicProfileResolver {
       }
     }
     if (model === undefined && modelSource === 'account-default') {
+      if (groupDefault?.model) {
+        const err = validateModelId(groupDefault.model, framework);
+        if (err === null) {
+          model = groupDefault.model;
+          modelSource = 'group-config-default';
+        }
+      }
+    }
+    if (model === undefined && modelSource === 'account-default') {
       const fwDefault = this.opts.frameworkDefaultModels()[framework];
       if (fwDefault) {
         model = fwDefault;
         modelSource = 'frameworkDefaultModels';
+      }
+    }
+    if (framework === 'codex-cli' && model !== undefined && CODEX_OLDER_CLI_FALLBACKS[model]) {
+      const binary = this.opts.frameworkBinaryPath(framework);
+      const supported = binary && (this.opts.codexModelSupported ?? codexSupportsNewerModels)(binary);
+      if (!supported) {
+        // Recorded, not announced (Near-Silent Notifications): the resolved
+        // source and the session's launch model carry the fallback, and the
+        // audit names the requested id. Nothing here needs the person to act.
+        const wanted = model;
+        model = CODEX_OLDER_CLI_FALLBACKS[wanted];
+        modelSource = 'older-codex-cli-fallback';
+        this.opts.audit?.({ type: 'fallback', reason: 'older-codex-cli', topic: key, failure: `cannot-run:${wanted}` });
       }
     }
 

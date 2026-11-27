@@ -201,7 +201,9 @@ export class RelayHolderFinder {
       for (const peer of peers) {
         void (async () => {
           try {
-            const res = await fetchFn(peer.url.replace(/\/$/, '') + '/threadline/health', { signal: controller.signal });
+            // Probe the peer's own relay state. The default health view is
+            // agent-wide and would recursively fan out through every sibling.
+            const res = await fetchFn(peer.url.replace(/\/$/, '') + '/threadline/health?scope=local', { signal: controller.signal });
             let body: unknown = null;
             try { body = await res.json(); } catch { /* @silent-fallback-ok — no body ⇒ fingerprint absent ⇒ not the holder */ }
             if (checkFingerprintHealth(res.ok, body, want).ok) { finish(peer); return; }
@@ -465,6 +467,12 @@ export interface TopicReplyInjectHandlerDeps {
   /** The confirmed paste (reports whether the session consumed the text). */
   inject: (sessionName: string, text: string) => Promise<boolean> | boolean;
   counters?: RelayForwardCounters;
+  /**
+   * Memory privacy (memory-privacy-agent-places §3): whether a peer's reply may be typed into
+   * this topic's session on THIS machine. False → not injected, definitively, so the holder
+   * posts it instead. Absent → allowed (today's behaviour).
+   */
+  peerReplyAllowed?: (topicId: number) => boolean;
 }
 
 /**
@@ -482,6 +490,14 @@ export async function handleTopicReplyInjectCommand(
     || typeof command.text !== 'string' || !command.text
     || Buffer.byteLength(command.text, 'utf-8') > MAX_INJECT_TEXT_BYTES) {
     return { injected: false, definitive: true, reason: 'invalid-payload' };
+  }
+  try {
+    if (deps.peerReplyAllowed && !deps.peerReplyAllowed(command.topicId)) {
+      return { injected: false, definitive: true, reason: 'memory-privacy-refused' };
+    }
+  } catch {
+    // @silent-fallback-ok — an unreadable privacy state refuses: the holder posts the reply instead.
+    return { injected: false, definitive: true, reason: 'memory-privacy-refused' };
   }
   let sessionName: string | null = null;
   try {

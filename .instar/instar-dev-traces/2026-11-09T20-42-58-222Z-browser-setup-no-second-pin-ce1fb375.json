@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "browser-setup-no-second-pin",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T20:42:58.222Z",
+  "artifactPath": "upgrades/side-effects/browser-setup-no-second-pin.md",
+  "artifactSha256": "c60d5863d4625d0fb7c6b8b74553e997012819aa2111c40dc8879936a485d300",
+  "specPath": "docs/specs/browser-setup-no-second-pin.md",
+  "coveredFiles": [
+    "dashboard/console/browser-device.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/browser-setup-no-second-pin.eli16.md",
+    "docs/specs/browser-setup-no-second-pin.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/dashboard-conversations-browser-alive.test.ts",
+    "tests/unit/mobile-browser-devices.test.ts",
+    "tests/unit/notification-selectivity.test.ts",
+    "upgrades/next/browser-setup-no-second-pin.md",
+    "upgrades/side-effects/browser-setup-no-second-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Authentication change on browser setup (operator session no longer required on the telegram path); spec + independent security review",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

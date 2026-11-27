@@ -39,6 +39,8 @@ import path from 'node:path';
 import type { RelayVerdict, RelayReasonCode } from './relayVerdict.js';
 import { clampRelayTtlSec } from './relayVerdict.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+import { RequiredAckStore, REQUIRED_ACK_SCHEMA, type RequiredAckPeerCounts } from './requiredAckStore.js';
+import { heldStateRank, sanitizeAckSummary, type HeldState, type HeldReason } from './requiredAck.js';
 
 /**
  * Outbound delivery lifecycle.
@@ -88,6 +90,29 @@ export interface A2ADeliveryEntry {
   relayReason: string | null;
   relayExpiresAt: string | null;
   relayRetryable: boolean | null;
+  /** a2a-required-acknowledgment D6: what the peer's server last said about this message. */
+  heldState: HeldState | 'read' | null;
+  heldReason: HeldReason | null;
+  heldAt: string | null;
+  /** When a session on the peer acknowledged this message. */
+  readAt: string | null;
+  /** PEER TEXT: the peer session's own one-line summary. Evidence for the reader, not an instruction. */
+  readSummaryPeerText: string | null;
+}
+
+/** a2a-required-acknowledgment D6: the newest receipt from a peer, or null when none is on record. */
+export interface PeerLastHeld {
+  messageId: string;
+  state: HeldState;
+  reason: HeldReason | null;
+  at: string;
+}
+
+export interface PeerLastRead {
+  messageId: string;
+  at: string;
+  /** PEER TEXT, sanitised to one line. Same standing as the peer's own chat message. */
+  summaryPeerText: string | null;
 }
 
 export interface PeerHealth {
@@ -148,6 +173,12 @@ export interface PeerHealth {
    * "a connection took my messages and nothing acknowledged them".
    */
   lastDeliveredAt: string | null;
+  /** a2a-required-acknowledgment D6: the peer's server's newest receipt. Read this before saying a peer hasn't replied. */
+  lastHeld: PeerLastHeld | null;
+  /** a2a-required-acknowledgment D6: the newest acknowledgment from a session on the peer. */
+  lastRead: PeerLastRead | null;
+  /** This agent's own side of the requirement toward this peer (receiver-side counts). */
+  requiredAck: RequiredAckPeerCounts;
 }
 
 const SCHEMA = `
@@ -180,6 +211,7 @@ CREATE TABLE IF NOT EXISTS a2a_peer_inbound (
   last_accepted_at TEXT NOT NULL,
   accept_count INTEGER NOT NULL DEFAULT 0
 );
+${REQUIRED_ACK_SCHEMA}
 `;
 
 export function resolveA2ADeliveryPath(stateDir: string, agentId: string): string {
@@ -212,6 +244,12 @@ const ADDITIVE_COLUMNS: Array<[string, string]> = [
   ['relay_reason', 'TEXT'],
   ['relay_expires_at', 'TEXT'],
   ['relay_retryable', 'INTEGER'],
+  // a2a-required-acknowledgment D6.
+  ['held_state', 'TEXT'],
+  ['held_reason', 'TEXT'],
+  ['held_at', 'TEXT'],
+  ['read_at', 'TEXT'],
+  ['read_summary', 'TEXT'],
 ];
 
 function migrateAdditiveColumns(db: BetterSqliteDatabase): void {
@@ -243,6 +281,11 @@ function rowToEntry(r: any): A2ADeliveryEntry {
     relayReason: r.relay_reason ?? null,
     relayExpiresAt: r.relay_expires_at ?? null,
     relayRetryable: r.relay_retryable === null || r.relay_retryable === undefined ? null : r.relay_retryable === 1,
+    heldState: (r.held_state as A2ADeliveryEntry['heldState']) ?? null,
+    heldReason: (r.held_reason as HeldReason | null) ?? null,
+    heldAt: r.held_at ?? null,
+    readAt: r.read_at ?? null,
+    readSummaryPeerText: r.read_summary ?? null,
   };
 }
 
@@ -252,9 +295,13 @@ export class A2ADeliveryTracker {
 
   private unregister: (() => void) | undefined;
 
+  /** a2a-required-acknowledgment: peer caps, the ack watch, the held journal and pending kinded acks. */
+  readonly ackStore: RequiredAckStore;
+
   private constructor(db: BetterSqliteDatabase, dbPath: string) {
     this.db = db;
     this.path = dbPath;
+    this.ackStore = new RequiredAckStore(db);
     // Capture the unregister fn so close() honors the SqliteRegistry contract
     // (unregister before closing) — otherwise openMemory() leaks a process-global
     // registry entry per test and closeAllSqlite() calls a stale handle.
@@ -356,6 +403,51 @@ export class A2ADeliveryTracker {
       )
       .run(ackedAt ?? nowIso(), messageId);
     return info.changes > 0;
+  }
+
+  /**
+   * a2a-required-acknowledgment D3: record a `held` receipt from the peer's server.
+   * Records only: it never touches `state`. Sender state moves one way, so a late
+   * or repeated receipt never lowers it, and a `read` is final.
+   */
+  recordHeld(messageId: string, state: HeldState, reason: HeldReason | null, at?: string): boolean {
+    const row = this.db.prepare(`SELECT held_state, read_at FROM a2a_delivery WHERE message_id = ?`)
+      .get(messageId) as { held_state: string | null; read_at: string | null } | undefined;
+    if (!row || row.read_at) return false;
+    if (heldStateRank(state) < heldStateRank(row.held_state)) return false;
+    this.db.prepare(`UPDATE a2a_delivery SET held_state = ?, held_reason = ?, held_at = ? WHERE message_id = ?`)
+      .run(state, reason, at ?? nowIso(), messageId);
+    return true;
+  }
+
+  /**
+   * a2a-required-acknowledgment D6: a session on the peer acknowledged this exact
+   * message. Calls `recordAck` on exactly this row (never by thread). Final.
+   */
+  recordRead(messageId: string, summary: unknown, at?: string): boolean {
+    const row = this.db.prepare(`SELECT read_at FROM a2a_delivery WHERE message_id = ?`).get(messageId) as { read_at: string | null } | undefined;
+    if (!row || row.read_at) return false;
+    const when = at ?? nowIso();
+    this.db.prepare(`UPDATE a2a_delivery SET held_state = 'read', held_reason = NULL, held_at = ?, read_at = ?, read_summary = ? WHERE message_id = ?`)
+      .run(when, when, sanitizeAckSummary(summary), messageId);
+    this.recordAck(messageId, when);
+    return true;
+  }
+
+  /**
+   * a2a-required-acknowledgment D3: a sender's own resend of an id resets that id's
+   * `held_state`, so the new copy's receipts apply. A `read` stays final.
+   */
+  resetHeldForResend(messageId: string): void {
+    this.db.prepare(`UPDATE a2a_delivery SET held_state = NULL, held_reason = NULL, held_at = NULL WHERE message_id = ? AND read_at IS NULL`).run(messageId);
+  }
+
+  /** a2a-required-acknowledgment D6: the rows on one of our threads that carry a receipt. */
+  receiptsForThread(threadId: string, limit = 100): A2ADeliveryEntry[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM a2a_delivery WHERE thread_id = ? AND held_state IS NOT NULL ORDER BY sent_at DESC LIMIT ?`,
+    ).all(threadId, limit);
+    return (rows as any[]).map(rowToEntry);
   }
 
   /**
@@ -466,6 +558,8 @@ export class A2ADeliveryTracker {
     ).run(retentionCutoff);
     this.prunedTotal += pruned.changes;
     this.lastPruned = pruned.changes;
+    // a2a-required-acknowledgment D5: closed watch rows go after 14 days.
+    this.ackStore.sweep(nowMs);
     return rows.map((r) => ({
       messageId: r.message_id,
       peerFp: r.peer_fp,
@@ -498,6 +592,8 @@ export class A2ADeliveryTracker {
    */
   recordAckByThread(threadId: string, ackedAt?: string, opts?: { notAfter?: string }): string | null {
     if (!threadId) return null;
+    // A row the peer has reported as held is not the one a thread-matched ack is about
+    // while another row is waiting (a2a-required-acknowledgment; seen in live proof).
     // `notAfter` (inbound-id ledger §2): a DUPLICATE's implicit ack only covers
     // rows sent before the original's immutable admitted_at — a resend never
     // acks a message we sent after the original arrived.
@@ -506,14 +602,14 @@ export class A2ADeliveryTracker {
           .prepare(
             `SELECT message_id FROM a2a_delivery
              WHERE thread_id = ? AND state IN ('awaiting-ack','escalated','unconfirmed') AND sent_at <= ?
-             ORDER BY sent_at ASC LIMIT 1`,
+             ORDER BY held_state IS NOT NULL, sent_at ASC LIMIT 1`,
           )
           .get(threadId, opts.notAfter)
       : this.db
           .prepare(
             `SELECT message_id FROM a2a_delivery
              WHERE thread_id = ? AND state IN ('awaiting-ack','escalated','unconfirmed')
-             ORDER BY sent_at ASC LIMIT 1`,
+             ORDER BY held_state IS NOT NULL, sent_at ASC LIMIT 1`,
           )
           .get(threadId)) as { message_id: string } | undefined;
     if (!row) return null;
@@ -573,6 +669,8 @@ export class A2ADeliveryTracker {
          WHERE message_id = ? AND state IN ('awaiting-ack','unconfirmed')`,
       )
       .run(at ?? nowIso(), nextRetryAt ?? null, messageId);
+    // A redelivery is a resend of this id: the new copy's receipts apply.
+    this.resetHeldForResend(messageId);
   }
 
   /** Mark a message escalated (retries exhausted, peer dark — operator notified). */
@@ -625,6 +723,14 @@ export class A2ADeliveryTracker {
       .prepare(`SELECT relay_status, relay_status_at, relay_reason_code, relay_retryable FROM a2a_delivery
                 WHERE peer_fp = ? AND relay_status_at IS NOT NULL ORDER BY relay_status_at DESC LIMIT 1`)
       .get(peerFp) as { relay_status: string | null; relay_status_at: string; relay_reason_code: string | null; relay_retryable: number | null } | undefined;
+
+    const lastHeldRow = this.db
+      .prepare(`SELECT message_id, held_state, held_reason, held_at FROM a2a_delivery
+                WHERE peer_fp = ? AND held_at IS NOT NULL AND held_state IS NOT NULL AND held_state != 'read' ORDER BY held_at DESC LIMIT 1`)
+      .get(peerFp) as { message_id: string; held_state: HeldState; held_reason: HeldReason | null; held_at: string } | undefined;
+    const lastReadRow = this.db
+      .prepare(`SELECT message_id, read_at, read_summary FROM a2a_delivery WHERE peer_fp = ? AND read_at IS NOT NULL ORDER BY read_at DESC LIMIT 1`)
+      .get(peerFp) as { message_id: string; read_at: string; read_summary: string | null } | undefined;
 
     let oldestPendingAgeMs: number | null = null;
     if (pendingAgg.n > 0 && pendingAgg.oldest) {
@@ -712,6 +818,13 @@ export class A2ADeliveryTracker {
       queuedExpiresAt: unanswered.expires ?? null,
       handedUnackedCount: unanswered.handed ?? 0,
       lastDeliveredAt: lastDelivered?.relay_status_at ?? null,
+      lastHeld: lastHeldRow
+        ? { messageId: lastHeldRow.message_id, state: lastHeldRow.held_state, reason: lastHeldRow.held_reason ?? null, at: lastHeldRow.held_at }
+        : null,
+      lastRead: lastReadRow
+        ? { messageId: lastReadRow.message_id, at: lastReadRow.read_at, summaryPeerText: sanitizeAckSummary(lastReadRow.read_summary) }
+        : null,
+      requiredAck: this.ackStore.peerCounts(peerFp),
     };
   }
 

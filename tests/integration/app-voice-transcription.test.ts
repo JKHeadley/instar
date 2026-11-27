@@ -7,7 +7,7 @@
  * audio/mp4; a failing provider still delivers the path with an honest "transcription
  * unavailable" note, and the send is still `delivered`.
  */
-import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,7 +28,12 @@ const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
 
+beforeAll(() => {
+  // Voice delivery is under test; disk-capacity refusal has separate coverage.
+  vi.spyOn(AppMediaStore.prototype, 'diskSpace').mockReturnValue({ free: 50 * 1024 ** 3, total: 100 * 1024 ** 3 });
+});
 afterAll(async () => {
+  vi.restoreAllMocks();
   for (const s of servers) await s.stop();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/app-voice-transcription.test.ts' });
 });
@@ -50,6 +55,9 @@ async function boot(developmentAgent: boolean) {
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
     threadline: { ownerName: 'Justin' },
+    // Paid-provider behaviour only: the on-machine fallback is off so the result is the same on every
+    // machine (docs/specs/backup-on-machine-voice.md; tests/e2e/local-voice-transcription-lifecycle.test.ts covers it on).
+    voiceTranscription: { local: false },
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
@@ -137,7 +145,7 @@ describe('app voice notes are transcribed with the Telegram transcriber', () => 
       const msg = pointer ? fs.readFileSync(pointer[1]!, 'utf8') : spawned[0]!.message;
       const line = scenario === 'transcribed'
         ? /\[voice:([^\]]+)\] bring the blue folder/.exec(msg)
-        : /\[voice:([^\]]+)\] \(transcription unavailable: the transcription service failed; the audio file is at that path\)/.exec(msg);
+        : /\[voice:([^\]]+)\] \(transcription unavailable: Groq answered with an error \(503\); the audio file is at that path\)/.exec(msg);
       expect(line).not.toBeNull();
       expect(fs.readFileSync(line![1]!).equals(voice)).toBe(true);
     }, 30_000);

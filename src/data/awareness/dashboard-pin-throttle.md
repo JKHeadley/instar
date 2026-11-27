@@ -1,0 +1,4 @@
+---
+title: Dashboard PIN is protected against lockout and guessing
+---
+Every place that asks for the dashboard PIN shares one guessing policy. Sign-in, step-up, the email-code page and approval links are reachable without signing in. Each visitor there is limited on its own, with an overall cap of 20 wrong guesses per 5 minutes; approval links are limited per request. Owner actions behind sign-in are limited per credential: a dashboard session, a browser that signed in before, a peer machine, or the agent's own key. Strangers' guesses never refuse them. If the owner sees "PIN sign-in is paused for a few minutes", the guess counter file was damaged and has been set aside; it clears by itself within 5 minutes. A browser that signed in before, the phone app and this computer still work in the meantime.

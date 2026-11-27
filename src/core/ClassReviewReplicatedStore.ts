@@ -5,7 +5,7 @@ import type { ImpactTier, OriginRecord } from './UnionReader.js';
 import type { ReplicatedEnvelope } from './ReplicatedRecordEnvelope.js';
 import type { ReplicatedKindBounds } from './ReplicationBudget.js';
 import { scrubSecrets } from '../monitoring/scrubSecrets.js';
-import type { ClassReviewRecord, ClassReviewObservation } from '../monitoring/ClassReviewStore.js';
+import type { ClassReviewRecord, ClassReviewObservation, ClassReviewRemoteReader } from '../monitoring/ClassReviewStore.js';
 
 export const CLASS_REVIEW_STORE_KEY = 'classReview';
 export const CLASS_REVIEW_RECORD_KIND = 'class-review-record';
@@ -102,6 +102,30 @@ export function classReviewToOriginRecord(record: ClassReviewRecord, origin: str
   };
   const { recordKey: _recordKey, hlc: _hlc, op: _op, origin: _origin, ...data } = buildClassReviewRecordData({ record, hlc: envelope.hlc, op: 'put', origin });
   return { origin, envelope, data };
+}
+
+/** What the class review store needs from the peer-stream reader. */
+export interface ClassReviewOriginSource {
+  loadOriginRecords(store: string, recordKey: string): OriginRecord[];
+  listRecordKeys(store: string): string[];
+  loadAllOriginRecords(store: string): Map<string, OriginRecord[]>;
+}
+
+/**
+ * The one way to wire a ClassReviewStore to the peer streams. Two startup paths bind this
+ * reader and the later one wins, so a hand-written adapter at either site can silently drop
+ * `all` and put a list back on one full scan per key (measured: about 9 s per list).
+ */
+export function classReviewRemoteReader(source: ClassReviewOriginSource): ClassReviewRemoteReader {
+  const parsed = (records: OriginRecord[]): ClassReviewRecord[] => records.flatMap((record) => {
+    const one = classReviewFromOriginRecord(record);
+    return one ? [one] : [];
+  });
+  return {
+    get: (dedupeKey) => parsed(source.loadOriginRecords(CLASS_REVIEW_STORE_KEY, dedupeKey)),
+    keys: () => source.listRecordKeys(CLASS_REVIEW_STORE_KEY),
+    all: () => new Map([...source.loadAllOriginRecords(CLASS_REVIEW_STORE_KEY)].map(([key, records]) => [key, parsed(records)])),
+  };
 }
 
 export function classReviewFromOriginRecord(record: OriginRecord): ClassReviewRecord | null {

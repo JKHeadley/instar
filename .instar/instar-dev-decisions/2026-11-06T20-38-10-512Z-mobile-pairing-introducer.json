@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T20:38:10.512Z",
+  "slug": "mobile-pairing-introducer",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/machineRoutes.ts",
+      "src/server/mobilePairingIntroducer.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

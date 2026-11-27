@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
-import { MOBILE_CAPACITY_SCREENS_LINE, MOBILE_CAPACITY_SCREENS_MARKER, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_ROUTES_PROBE_LINE_PREFIX, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MOBILE_CAPACITY_SCREENS_LINE, MOBILE_CAPACITY_SCREENS_MARKER, MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_ROUTES_PROBE_LINE_PREFIX, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const count = (s: string) => s.split(MOBILE_CAPACITY_SCREENS_MARKER).length - 1;
@@ -51,6 +51,18 @@ describe('migrateClaudeMd inserts the bullet into an existing Mobile app routes 
     expect(lines[lines.findIndex((l) => l.startsWith(MOBILE_ROUTES_PROBE_LINE_PREFIX)) + 1]).toBe(MOBILE_CAPACITY_SCREENS_LINE(4042));
     new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
     expect(count(fs.readFileSync(claudeMdPath, 'utf-8'))).toBe(1);
+  });
+
+  it('an existing bullet saying "resources are this machine\'s" is reworded to every machine, once', () => {
+    const current = MOBILE_ROUTES_CLAUDEMD_SECTION(4042);
+    expect(current).toContain(MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
+    fs.writeFileSync(claudeMdPath, `# CLAUDE.md\n${current.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_NEW, MOBILE_CAPACITY_SCREENS_RESOURCES_OLD)}`);
+    new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
+    const once = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(once).not.toContain(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD);
+    expect(once.split(MOBILE_CAPACITY_SCREENS_RESOURCES_NEW).length - 1).toBe(1);
+    new PostUpdateMigrator({ stateDir, projectDir, version: '1.0.0', port: 4042 } as any).migrate();
+    expect(fs.readFileSync(claudeMdPath, 'utf-8')).toBe(once);
   });
 
   it('a hand-edited block without the probe bullet gets the line appended, not skipped', () => {

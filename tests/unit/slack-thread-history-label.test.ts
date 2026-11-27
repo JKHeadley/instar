@@ -34,4 +34,8 @@ describe('slackHistoryLabel (each history line carries its own sender)', () => {
     const lines = [ECHO, BOT, DAWN, 'U0THIRD'].map((u) => slackHistoryLabel({ user: u }, BOT, cur));
     expect(lines).toEqual([ECHO, 'Agent', 'Dawn', 'U0THIRD']);
   });
+
+  it('uses the resolved name of another participant when available', () => {
+    expect(slackHistoryLabel({ user: ECHO }, BOT, { userId: DAWN, name: 'Dawn' }, new Map([[ECHO, 'Indra']]))).toBe('Indra');
+  });
 });

@@ -1,0 +1,9 @@
+# Imported Conversations design authority
+
+This imports the existing reviewed Echo design into the coherent Instar worktree. It does not run a new convergence review and does not assert production acceptance. The review-convergence flag records the already completed design verdict in the imported convergence report, supported by the imported rounds. It is not a newly generated model-review receipt. The original body is preserved byte-for-byte; only source/provenance frontmatter was added for the implementation handoff.
+
+Justin approved choice A in Telegram topic 137342 at 2026-11-05 00:37 PST: “Yes, A. Approved please proceed”. This ratified the narrowly scoped witness-backed Pending design. The design verdict was recorded and communicated by Echo at 00:56 PST. At 00:58:39 PST, message 138665, Justin clarified: “In case it’s not clear this 24 hour session is responsible for moving forward with the design into building test testing and verifying the feature and deploying it”. The approved flag records this existing authorization, not a new approval and not permission to bypass deployment gates.
+
+The convergence report distinguishes ten GPT-6 Astra/Claude Opus review pairs, the focused Claude correction check, DAWN’s substantive peer input, prototype tests and remaining production gates. The installed standards checker still has a literal-rule conflict pending the registry amendment. No zero-flag or shipped-feature claim is imported.
+
+Original v3 SHA256 before frontmatter: 1164ce115a928e4b0cc3d0a7424dfce33c2c494a8c7ef4bd7fe62be1b0ffe204. The source remains Echo docs/specs/conversation-effort-hierarchy-v3.md. The native app owner received exact source copies through Studio’s session attachment endpoint at 09:23:06Z, with hashes and byte counts. The ELI16 companion is the existing conversation-effort-hierarchy-brief.md, not a new product spec.

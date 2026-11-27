@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * AgentMdJobLoader — Phase 1a loader-side support for the new agentmd job format.
  *
@@ -24,6 +25,8 @@ import type {
   JobPriority,
   ModelTier,
 } from '../core/types.js';
+import { validJobDependencyPath } from '../core/JobDependency.js';
+import { THINKING_MODES, type ThinkingMode } from '../core/topicProfileValidation.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import {
   readLockFile,
@@ -79,6 +82,10 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
   'description',
   'toolAllowlist',
+  // EVO-008: the author's explicit enrolment — apply this job's toolAllowlist exactly
+  // (even a bare ["Read"]) and refuse the launch rather than run it unapplied. Read
+  // directly by JobScheduler.resolveToolEnforcement.
+  'toolAllowlistEnforce',
   'grounding',
   'notificationMode',
   'viewMetadata',
@@ -91,16 +98,23 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'framework',
   'frameworkModel',
   'leanContext',
+  // Per-job thinking mode (job-launch-intent-record §1) — decorative here; the manifest is authority.
+  'thinkingMode',
   'enabled',
   'tags',
   'unrestrictedTools',
   'gate',
   'telegramNotify',
+  // Where a report goes (docs/specs/backup-email-sending.md). An older instar withholds a job with this key, so
+  // the jobs.json form is documented first and this one needs this version or later.
+  'deliver',
   'topicId',
   'machines',
   'supervision',
   'mcpAccess',
   'perMachineIndependent',
+  'catchUpPolicy',
+  'requiredPaths',
   // Jev job-completion audit (spec: jev-job-supervision.md) — both wired
   // through PerSlugManifest + manifestToJobDefinition, never dead vocabulary:
   'completionAudit',
@@ -158,13 +172,20 @@ export interface PerSlugManifest {
   framework?: IntelligenceFramework;
   frameworkModel?: string;
   leanContext?: boolean;
+  /** Per-job thinking mode (job-launch-intent-record §1). Validated against the closed enum. */
+  thinkingMode?: ThinkingMode;
   expectedDurationMinutes: number;
   enabled: boolean;
+  catchUpPolicy?: 'skip' | 'run-once' | 'ask';
+  requiredPaths?: string[];
+  /** Explicit opt-in to private peer transfer; not execution approval. */
+  portable?: boolean;
   execute: { type: 'skill' | 'prompt' | 'script' | 'agentmd'; value?: string; args?: string };
   // optional pass-throughs preserved as-is
   tags?: string[];
   topicId?: number;
   telegramNotify?: boolean | 'on-alert';
+  deliver?: Array<'telegram' | 'email'>;
   machines?: string[];
   gate?: string;
   unrestrictedTools?: boolean;
@@ -179,6 +200,9 @@ export interface PerSlugManifest {
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
+  /** Built-in only: the shipped schedule at the last install. A different
+   *  `schedule` is an operator edit kept across updates (InstallBuiltinJobs). */
+  shippedSchedule?: string;
   /** Jev job-completion audit eligibility (spec: jev-job-supervision.md). */
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */
@@ -313,6 +337,48 @@ export function loadAgentMdJobs(
     };
   }
 
+  // Imported jobs require an active journal, matching local approval, and an
+  // unchanged manifest. Interrupted or revoked imports never reach scheduler.
+  const withheld = new Set<string>();
+  const stateDir = path.dirname(jobsRootDir);
+  try {
+    const file = path.join(stateDir, 'state', 'job-portable-import-journal.json');
+    const raw = fs.readFileSync(file, 'utf8');
+    if (raw.length > 8 * 1024 * 1024) throw new Error('portable-journal-oversized');
+    const journal = JSON.parse(raw);
+    if (journal.version !== 1 || !journal.jobs || typeof journal.jobs !== 'object') throw new Error('portable-journal-corrupt');
+    const disarmed = fs.existsSync(path.join(stateDir, 'state', 'job-portable-disarmed.json'));
+    let approvals: Record<string, { root: string }> = {};
+    try {
+      const approvalFile = path.join(stateDir, 'state', 'job-portable-activate-approval.json');
+      const approvalRaw = fs.readFileSync(approvalFile, 'utf8');
+      if (approvalRaw.length > 64 * 1024) throw new Error('portable-approval-oversized');
+      const parsed = JSON.parse(approvalRaw);
+      if (parsed.version !== 1 || !parsed.approvals || typeof parsed.approvals !== 'object')
+        throw new Error('portable-approval-corrupt');
+      approvals = parsed.approvals;
+    } catch { /* no valid approval means imported jobs are withheld */ }
+    for (const [slug, row] of Object.entries(journal.jobs)) {
+      const imported = row as { state?: string; root?: string; manifestHash?: string };
+      if (disarmed || fs.existsSync(path.join(stateDir, 'state', 'job-portable-pending', `${slug}.json`))
+        || imported.state === 'pending' || approvals[slug]?.root !== imported.root) {
+        withheld.add(slug); continue;
+      }
+      try {
+        const manifestPath = path.join(scheduleDir, `${slug}.json`);
+        const bytes = fs.readFileSync(manifestPath);
+        if (bytes.length > 256 * 1024 || createHash('sha256').update(bytes).digest('hex') !== imported.manifestHash)
+          withheld.add(slug);
+      } catch { withheld.add(slug); }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { jobs: [], problems: [{ kind: 'unknown', path: scheduleDir,
+        message: 'Portable import journal cannot be verified; per-slug jobs withheld' }], bodyFailures: [] };
+    }
+  }
+  entries = entries.filter(filename => !withheld.has(filename.slice(0, -5)));
+
   // Step 1: read + validate every manifest sequentially. The hand-rolled
   // bounded-concurrency helper above is exported for Phase 1b's async
   // migration; Phase 1a is single-threaded for API parity with the existing
@@ -323,7 +389,8 @@ export function loadAgentMdJobs(
   });
 
   const validManifests: { manifest: PerSlugManifest; sourcePath: string }[] = [];
-  const problems: LoadProblem[] = [];
+  const problems: LoadProblem[] = [...withheld].map(slug => ({ kind: 'unknown', slug,
+    message: `Portable import ${slug} withheld: pending, revoked, disarmed, or changed` }));
 
   for (const r of manifestResults) {
     if (r.problem) problems.push(r.problem);
@@ -749,6 +816,9 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   if ((j.framework === undefined) !== (j.frameworkModel === undefined)) {
     throw new Error(`${prefix}: "framework" and "frameworkModel" must be set together`);
   }
+  if (j.thinkingMode !== undefined && !(THINKING_MODES as readonly unknown[]).includes(j.thinkingMode)) {
+    throw new Error(`${prefix}: "thinkingMode" must be one of ${THINKING_MODES.join(', ')}`);
+  }
   if (j.leanContext !== undefined && typeof j.leanContext !== 'boolean') {
     throw new Error(`${prefix}: "leanContext" must be a boolean`);
   }
@@ -769,6 +839,19 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   // Enabled
   if (typeof j.enabled !== 'boolean') {
     throw new Error(`${prefix}: "enabled" must be a boolean`);
+  }
+
+  if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
+    throw new Error(`${prefix}: catchUpPolicy must be skip, run-once, or ask`);
+  }
+
+  if (j.portable !== undefined && typeof j.portable !== 'boolean') {
+    throw new Error(`${prefix}: portable must be a boolean`);
+  }
+
+  if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
+    || j.requiredPaths.some(value => !validJobDependencyPath(value)))) {
+    throw new Error(`${prefix}: requiredPaths must be at most 32 safe project-relative paths`);
   }
 
   // Execute block
@@ -833,6 +916,17 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
       typeof j.telegramNotify !== 'boolean' &&
       j.telegramNotify !== 'on-alert') {
     throw new Error(`${prefix}: "telegramNotify" must be true, false, or "on-alert" if provided`);
+  }
+
+  // deliver (docs/specs/backup-email-sending.md): where a report goes. Script jobs have no report text.
+  if (j.deliver !== undefined) {
+    const d = j.deliver;
+    if (!Array.isArray(d) || d.length === 0 || d.length > 2 || d.some((v) => v !== 'telegram' && v !== 'email') || new Set(d).size !== d.length) {
+      throw new Error(`${prefix}: "deliver" must be a list of "telegram" and/or "email" if provided`);
+    }
+    if ((j.execute as Record<string, unknown> | undefined)?.type === 'script' && d.includes('email')) {
+      throw new Error(`${prefix}: "deliver" with "email" is not available for script jobs (deliver-on-script-job): a script run has no report text to email`);
+    }
   }
 
   // Optional machines
@@ -1283,6 +1377,22 @@ function validateFrontmatterShape(
     }
   }
 
+  // FAILSAFE_SCHEMA hands booleans over as strings; BoolField is the exact coercion.
+  const enforceParsed = fm.toolAllowlistEnforce === undefined ? null : BoolField.safeParse(fm.toolAllowlistEnforce);
+  if (enforceParsed && !enforceParsed.success) {
+    return mkFmProblem(manifest, '"toolAllowlistEnforce" must be true or false if provided');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && !Array.isArray(fm.toolAllowlist)) {
+    // EVO-008 §2a: enrolment binds a DECLARED list. Without one there is nothing to apply
+    // exactly, and running the job would silently do the opposite of what was asked.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" needs a toolAllowlist array (the exact tools to apply)');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && fm.runner === 'script') {
+    // A script runner opens no model session, so an enrolled tool list would be accepted
+    // and never applied on its normal path — refuse the ambiguous combination outright.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" cannot be used on a runner: script job (it opens no session to limit)');
+  }
+
   if (fm.toolAllowlist !== undefined) {
     if (fm.toolAllowlist === '*') {
       // ok — checked against manifest.unrestrictedTools in Phase 1b
@@ -1434,12 +1544,17 @@ function manifestToJobDefinition(
     framework: manifest.framework,
     frameworkModel: manifest.frameworkModel,
     leanContext: manifest.leanContext,
+    ...(manifest.thinkingMode !== undefined ? { thinkingMode: manifest.thinkingMode } : {}),
     enabled: manifest.enabled,
+    catchUpPolicy: manifest.catchUpPolicy,
+    requiredPaths: manifest.requiredPaths,
+    portable: manifest.portable,
     execute: manifest.execute as JobDefinition['execute'],
     origin: manifest.origin,
     tags: manifest.tags,
     topicId: manifest.topicId,
     telegramNotify: manifest.telegramNotify,
+    deliver: manifest.deliver,
     machines: manifest.machines,
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,

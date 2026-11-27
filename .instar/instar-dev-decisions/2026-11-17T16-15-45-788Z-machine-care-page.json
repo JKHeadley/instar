@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-17T16:15:45.788Z",
+  "slug": "machine-care-page",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/machine-care-page.md"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The page adds no self-action; its buttons reach existing gated offer and control routes, and any restart stays under the machine-restart Eternal Sentinel."
+    }
+  },
+  "verdict": "pass"
+}

@@ -33,7 +33,7 @@ describe('buildInjectionTag — signedByAgent clause', () => {
     expect(buildInjectionTag(42, 'Topic', undefined, undefined, false, 'echo'))
       .toBe('[telegram:42 "Topic" from agent echo (signed)]');
     expect(buildInjectionTag(42, undefined, undefined, undefined, false, 'echo'))
-      .toBe('[telegram:42 from agent echo (signed)]');
+      .toBe('[telegram:42 (name unresolved) from agent echo (signed)]');
   });
 
   it('composes with the re-delivery marker', () => {
@@ -44,8 +44,8 @@ describe('buildInjectionTag — signedByAgent clause', () => {
   it('is byte-identical to the previous output when no agent is given (ADDITIVE ONLY)', () => {
     expect(buildInjectionTag(42, 'Agent Updates', 'Justin', 12345)).toBe('[telegram:42 "Agent Updates" from Justin (uid:12345)]');
     expect(buildInjectionTag(42, 'Agent Updates')).toBe('[telegram:42 "Agent Updates"]');
-    expect(buildInjectionTag(42, undefined, 'Justin', 12345)).toBe('[telegram:42 from Justin (uid:12345)]');
-    expect(buildInjectionTag(42)).toBe('[telegram:42]');
+    expect(buildInjectionTag(42, undefined, 'Justin', 12345)).toBe('[telegram:42 (name unresolved) from Justin (uid:12345)]');
+    expect(buildInjectionTag(42)).toBe('[telegram:42 (name unresolved)]');
     expect(buildInjectionTag(42, 'T', 'J', 1, false, undefined)).toBe('[telegram:42 "T" from J (uid:1)]');
   });
 
@@ -71,22 +71,22 @@ describe('resolveInboundTelegramMessageId', () => {
 
 describe('resolveSignedByAgent — reads the classifier verdict, never content', () => {
   const classifierWith = (v: { classification: string; agentId: string | null } | null) =>
-    ({ verdictFor: () => v as never });
+    ({ lookupVerdict: () => (v ? { kind: 'hit', verdict: { ...v, textHash: 'h' } } : { kind: 'miss' }) as never });
 
   it('returns the agent id for an agent-verified verdict', () => {
-    expect(resolveSignedByAgent(classifierWith({ classification: 'agent-verified', agentId: 'echo' }), 1, 2)).toBe('echo');
+    expect(resolveSignedByAgent(classifierWith({ classification: 'agent-verified', agentId: 'echo' }), 1, 2, 'text')).toBe('echo');
   });
   it('returns null for human, rejected, missing verdict, and missing classifier', () => {
-    expect(resolveSignedByAgent(classifierWith({ classification: 'human', agentId: null }), 1, 2)).toBeNull();
-    expect(resolveSignedByAgent(classifierWith({ classification: 'rejected', agentId: 'echo' }), 1, 2)).toBeNull();
-    expect(resolveSignedByAgent(classifierWith(null), 1, 2)).toBeNull();
-    expect(resolveSignedByAgent(null, 1, 2)).toBeNull();
+    expect(resolveSignedByAgent(classifierWith({ classification: 'human', agentId: null }), 1, 2, 'text')).toBeNull();
+    expect(resolveSignedByAgent(classifierWith({ classification: 'rejected', agentId: 'echo' }), 1, 2, 'text')).toBeNull();
+    expect(resolveSignedByAgent(classifierWith(null), 1, 2, 'text')).toBeNull();
+    expect(resolveSignedByAgent(null, 1, 2, 'text')).toBeNull();
   });
   it('never throws — a throwing classifier reads as unsigned', () => {
-    expect(resolveSignedByAgent({ verdictFor: () => { throw new Error('boom'); } }, 1, 2)).toBeNull();
+    expect(resolveSignedByAgent({ lookupVerdict: () => { throw new Error('boom'); } }, 1, 2, 'text')).toBeNull();
   });
   it('refuses an agent id outside the ASP charset', () => {
-    expect(resolveSignedByAgent(classifierWith({ classification: 'agent-verified', agentId: 'bad id' }), 1, 2)).toBeNull();
+    expect(resolveSignedByAgent(classifierWith({ classification: 'agent-verified', agentId: 'bad id' }), 1, 2, 'text')).toBeNull();
     expect(sanitizeSignedAgentId('echo-2')).toBe('echo-2');
     expect(sanitizeSignedAgentId(42)).toBeNull();
   });
@@ -124,8 +124,8 @@ describe('wiring — the label and the bind-skip sit at the convergence point (s
   const fwd = read('src/core/ForwardedTopicContext.ts');
 
   it('server.ts resolves the verdict BEFORE the operator auto-bind and gates the bind on it', () => {
-    const resolveAt = server.indexOf('resolveSignedByAgent(getAspClassifierRef(), topicId, inboundMessageId)');
-    const bindAt = server.indexOf('operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)');
+    const resolveAt = server.indexOf('getAspClassifierRef(), topicId, inboundMessageId,');
+    const bindAt = server.indexOf('!isReplay && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)');
     const setAt = server.indexOf('opStore.setAuthenticatedOperator(topicId, {');
     expect(resolveAt).toBeGreaterThan(0);
     expect(bindAt).toBeGreaterThan(resolveAt);
@@ -136,15 +136,16 @@ describe('wiring — the label and the bind-skip sit at the convergence point (s
     expect(read('src/server/AgentServer.ts')).toContain('getAspClassifier: getAspClassifierRef,');
   });
   it('server.ts passes signedByAgent into the injection from in-process metadata', () => {
-    expect(server).toContain("signedByAgent: typeof msg.metadata?.signedByAgent === 'string' ? msg.metadata.signedByAgent : undefined");
+    // SEC-106: the label is the ingress-reconciled value, framed (and counted) through framingLabel.
+    expect(server).toContain("signedByAgent: framingLabel(signedLabelSource, isReplay ? 'F' : 'live'");
   });
   it('SessionManager passes the option to BOTH the inline tag and the long-message reference tag', () => {
     expect(sm).toContain('buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered, opts?.signedByAgent)');
-    expect(sm).toContain('buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent)');
+    expect(sm).toContain('buildInjectionTag(topicId, safeTopic, undefined, undefined, opts?.reDelivered, opts?.signedByAgent)');
   });
   it('routes.ts gates the lifeline-side operator bind on the same verdict, after the message is logged', () => {
     const logAt = routes.indexOf('ctx.telegram.logInboundMessage({');
-    const resolveAt = routes.indexOf("resolveSignedByAgent(\n      ctx.getAspClassifier?.() ?? null,");
+    const resolveAt = routes.indexOf('const lifelineSignedByAgent = readLifelineClassifier() ?? ledgerLabel ?? null;');
     // The gate also skips app messages (mobile-operator-chat: `!trust &&`).
     const gateAt = routes.indexOf('if (!trust && ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined');
     const bindAt = routes.indexOf("ingress: 'telegram-lifeline-forward'");
@@ -154,7 +155,7 @@ describe('wiring — the label and the bind-skip sit at the convergence point (s
     expect(bindAt).toBeGreaterThan(gateAt);
   });
   it('server.ts owns the metadata field — it is rewritten from the verdict, never trusted from the Message', () => {
-    expect(server).toContain('const { signedByAgent: _ignored, ...rest } = msg.metadata ?? {};');
+    expect(server).toContain('const { signedByAgent: _ignored, ledgerSignedByAgent: _l, replaySignedByAgent: _r, ...rest } = msg.metadata ?? {};');
     expect(server).toContain('msg.metadata = signedByAgent ? { ...rest, signedByAgent } : rest;');
   });
   it('every thread-history renderer uses the shared label', () => {

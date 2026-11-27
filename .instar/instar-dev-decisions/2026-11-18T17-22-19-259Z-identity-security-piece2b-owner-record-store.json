@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-18T17:22:19.259Z",
+  "slug": "identity-security-piece2b-owner-record-store",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 999,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/core/ownerRecord.ts",
+      "src/core/ownerRecordStore.ts",
+      "src/core/ownerRecordSync.ts",
+      "src/core/ownerRecordWiring.ts",
+      "src/core/types.ts",
+      "src/data/awareness/owner-record.md",
+      "src/server/AgentServer.ts",
+      "src/server/ownerRecordRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 995,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "self-triggered actions are the 15-minute pull cycle (≤4 pages per peer, per-peer backoff to 6 h, a 24 h breaker), pushes after a local change (≤500 entries), and a once-only lease-holder bootstrap"
+  },
+  "verdict": "pass"
+}

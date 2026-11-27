@@ -7,13 +7,13 @@ const base = { displayCount: 1, sessionActive: true, ready: false };
 const missing = { ...base, screenPermission: false, inputPermission: false, helperChange: change };
 const granted = { ...base, ready: true, screenPermission: true, inputPermission: true };
 
-function notice(probes: unknown[], claim = () => true) {
+function notice(probes: unknown[], claim = () => true, recentlyUsed = () => true) {
   const raise = vi.fn(async () => undefined);
   const clear = vi.fn();
   const release = vi.fn();
   let i = 0;
   const subject = new DesktopHelperPermissionNotice({
-    machineLabel: 'the Mini', machineId: 'm_1', sourceHash: () => 'a'.repeat(64), claim, raise, clear, release,
+    machineLabel: 'the Mini', machineId: 'm_1', sourceHash: () => 'a'.repeat(64), claim, raise, clear, release, recentlyUsed,
     probe: async () => probes[Math.min(i++, probes.length - 1)] as never,
   });
   return { subject, raise, clear, release };
@@ -34,9 +34,25 @@ describe('desktop helper permission wording', () => {
     expect(reason).not.toContain('Screen Recording');
   });
 
-  it('explains the one-time move on a Mac that never granted the kept copy', () => {
-    expect(desktopProbeUnavailableReason({ ...missing, helperChange: { ...change, kind: 'first-grant' } }))
-      .toContain('one permanent copy');
+  it('asks a Mac that never granted the kept copy to allow it once, with no update story', () => {
+    const reason = desktopProbeUnavailableReason({ ...missing, helperChange: { ...change, kind: 'first-grant' } });
+    expect(reason).toContain('has not yet allowed');
+    expect(reason).toContain('allow it once: System Settings → Privacy & Security → Screen Recording and Accessibility.');
+    expect(reason).toContain('will not fix itself');
+    expect(reason).toContain(change.helperPath);
+    // A freshly installed or rebuilt Mac never allowed anything: "again" and an
+    // update version would both be false there.
+    expect(reason).not.toContain('again');
+    expect(reason).not.toContain('update 1.3.1580');
+    expect(reason).not.toContain('now keeps');
+  });
+
+  it('a first grant at a locked screen keeps the once-only wording', () => {
+    const reason = desktopProbeUnavailableReason({ ...missing, sessionActive: false, screenLocked: true,
+      helperChange: { ...change, kind: 'first-grant' } });
+    expect(reason).toContain('locked screen');
+    expect(reason).toContain('has not yet allowed');
+    expect(reason).not.toContain('allow it again');
   });
 
   it('keeps the ordinary wording when no update is involved', () => {
@@ -53,6 +69,30 @@ describe('desktop helper permission wording', () => {
 });
 
 describe('DesktopHelperPermissionNotice', () => {
+  it('raises no card on a Mac nobody has used Remote Desktop on, and leaves the claim for a sibling', async () => {
+    const claim = vi.fn(() => true);
+    const { subject, raise } = notice([missing], claim, () => false);
+    await subject.check();
+    expect(raise).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('raises once Remote Desktop is used on that Mac', async () => {
+    let used = false;
+    const { subject, raise } = notice([missing], () => true, () => used);
+    await subject.check();
+    expect(raise).not.toHaveBeenCalled();
+    used = true;
+    await subject.check();
+    expect(raise).toHaveBeenCalledOnce();
+  });
+
+  it('still closes an open card when permission comes back, used or not', async () => {
+    const { subject, clear } = notice([granted], () => true, () => false);
+    await subject.check();
+    expect(clear).toHaveBeenCalledOnce();
+  });
+
   it('raises once with the plain reason, then closes itself when granted', async () => {
     const { subject, raise, clear } = notice([missing, missing, granted]);
     await subject.check();
@@ -65,6 +105,13 @@ describe('DesktopHelperPermissionNotice', () => {
     expect((raise.mock.calls[0]![0] as { body: string }).body).toContain('will not fix itself');
     await subject.check();
     expect(clear).toHaveBeenCalledOnce();
+  });
+
+  it('a never-granted Mac gets a title without "again"', async () => {
+    const { subject, raise } = notice([{ ...missing, helperChange: { ...change, kind: 'first-grant' } }]);
+    await subject.check();
+    expect(raise.mock.calls[0]![0]).toMatchObject({ title: 'the Mini: Remote Desktop needs its Mac permission' });
+    expect((raise.mock.calls[0]![0] as { body: string }).body).not.toContain('again');
   });
 
   it('stays quiet when another agent on this Mac already raised it', async () => {

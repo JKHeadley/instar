@@ -17,6 +17,8 @@ import type { BuildRecordData } from './ReplicatedRecordEmitter.js';
 import { stableJson } from './stableJson.js';
 import { readDeletionIntents } from './DeletionIntentLog.js';
 import { redactForLiveTail } from './liveTailRedaction.js';
+import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { FAILURE_CALLOUT_STORE_KEY, failureSnapshotChunks, buildFailureChunkData } from './FailureCalloutReplicatedStore.js';
 import { PreferencesManager } from './PreferencesManager.js';
 import { PREF_STORE_KEY, buildPrefRecordData } from './PreferencesReplicatedStore.js';
 import { RelationshipManager } from './RelationshipManager.js';
@@ -61,6 +63,20 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   recommendedServices: 'written only by the server choice routes (RecommendedServicesLedger); no CLI path',
   appConversations: 'written only by the server app-conversation routes (AppConversationStore); no CLI path',
   mobileDeviceKeyLedger: 'written only by the server device activation/revocation paths and boot reconciliation (MobileDeviceKeyLedger); no CLI path',
+  listPins: 'written only by the server list-pin route (ConversationListPinStore, docs/specs/conversation-list-pins.md); no CLI path; immutable rows keyed by eventId',
+  readMarkers: 'written only by the server read routes and the list\'s own-reply inference (ConversationReadMarkerStore); no CLI path',
+  emailOutbox: 'written only by the lease holder\'s email sender (EmailOutbox, backup-email-sending); no CLI path, and its own hourly checkpoint re-emits every live row',
+  chiefOfStaff: 'written only by the server Chief of Staff loop and owner-tap routes (ChiefOfStaffStore, docs/specs/chief-of-staff-topic.md); no CLI path; immutable event records',
+  trustJourneyOutcomes: 'written only by the lease holder\'s governed-effect admission (TrustOutcomeLog, docs/specs/trust-journey.md section 4); no CLI path; immutable outcome rows',
+  trustJourney: 'written only by the server trust-journey account path (TrustJourneyStore, docs/specs/trust-journey.md); receipts by the receiving machine, everything else by the lease holder; no CLI path; immutable records',
+  workBoard: 'written only by the server Work Board routes and its pickup controller (WorkCardStore, docs/specs/work-board-asks.md); no CLI path; immutable event records',
+  contextLayers: 'written only by the server context-layer store and fold coordinator (contextLayerKind, docs/specs/context-budget-layered-summaries.md §14); no CLI path; per-entry records, HLC-latest per key',
+  projectApps: 'written only by the server project-apps runtime and the custom-app source on the lease holder (ProjectAppStore + ProjectAppCustomFold, docs/specs/project-apps.md, project-apps-sandbox.md); no CLI path; immutable or last-writer records',
+  projectAppBlobs: 'written only by the server custom-app source on the lease holder (ProjectAppBlobStore, docs/specs/project-apps-sandbox.md §3.2); no CLI path; immutable encrypted chunks and revisions',
+  conversationGraphSuggestions: 'written only by the server suggestion service (SuggestionDecisionStore, docs/specs/conversation-graph-suggestions-replicated-decisions.md); no CLI path; immutable decision rows keyed by content, re-offered at boot and by its own drain',
+  ownedRepo: 'written only by the server owned-repository registry tick (OwnedRepoRegistry, docs/specs/no-data-loss-on-machine-death.md §1); no CLI path; latest record per (machine, repository), re-emitted on any change',
+  telegramTopicNames: 'written only by the server Telegram adapter hook and peer ingest (TelegramTopicNameStore, docs/specs/topic-name-replication.md); no CLI path; immutable name rows keyed by event id, carried once per machine, drained with backoff',
+  sessionTranscripts: 'written only by the server transcript checkpoint tick and peer ingest (transcriptCheckpoints.ts, docs/specs/native-conversation-any-machine-access.md §3f); no CLI path; dark by default',
 });
 
 function sourceFp(raw: unknown): string {
@@ -73,12 +89,36 @@ export interface ReconcilerSeamDeps {
   relationshipsDir?: string;
   testIdentityKey?: string;
   /** The server's EvolutionManager (its list methods re-read disk on every call). */
-  evolution: { listLearnings(): LearningEntry[]; listActions(): ActionItem[] };
+  evolution: { listLearnings(): LearningEntry[]; listActions(): ActionItem[]; listLearningsForReplication?(): LearningEntry[]; listActionsForReplication?(): ActionItem[] };
 }
 
 export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSeam[] {
   const { stateDir } = deps;
   const seams: ReconcileStoreSeam[] = [];
+
+  // Full forensic snapshots and immutable episodes retry via the existing
+  // durable reconciler fingerprint/emit receipt, not a second retry controller.
+  seams.push({ store: FAILURE_CALLOUT_STORE_KEY, paths: [path.join(stateDir, 'correction-ledger.db')], snapshot: () => {
+    const file = path.join(stateDir, 'correction-ledger.db');
+    if (!fs.existsSync(file)) return { rows: [], skipped: 0, present: false };
+    const ledger = new CorrectionLedger({ dbPath: file });
+    try {
+      const rows: ReconcileRow[] = [];
+      for (const record of ledger.ownFailureSnapshots()) {
+        const chunks = failureSnapshotChunks(record);
+        let before: number | undefined;
+        while (true) {
+          const episodes = ledger.listFailureEpisodes(record.id, before, 1000);
+          for (const episode of episodes) chunks.push(...failureSnapshotChunks(record, episode));
+          if (episodes.length < 1000) break;
+          before = episodes[episodes.length - 1].version;
+        }
+        for (const chunk of chunks) rows.push({ recordKey: chunk.key, sourceFp: sourceFp(chunk.data),
+          build: (hlc, origin, observed) => buildFailureChunkData(chunk, hlc, origin, observed) });
+      }
+      return { rows, skipped: 0, present: true };
+    } finally { ledger.close(); }
+  } });
 
   // preferences — sole writer is the correction loop; puts-only (no delete path).
   seams.push({
@@ -177,10 +217,10 @@ export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSe
   // learnings — puts-only.
   seams.push({
     store: LEARNING_STORE_KEY,
-    paths: [path.join(stateDir, 'state', 'evolution', 'learning-registry.json')],
+    paths: [path.join(stateDir, 'state', 'evolution', 'learning-registry.json'), path.join(stateDir, 'state', 'evolution', 'action-archive.json')],
     snapshot: () => {
       const rows: ReconcileRow[] = [];
-      for (const record of deps.evolution.listLearnings()) {
+      for (const record of (deps.evolution.listLearningsForReplication?.() ?? deps.evolution.listLearnings())) {
         const key = deriveLearningRecordKey(record.title, record.category, record.source);
         if (key === null) continue;
         rows.push({
@@ -196,10 +236,10 @@ export function buildReconcilerSeams(deps: ReconcilerSeamDeps): ReconcileStoreSe
   // evolutionActions — puts-only.
   seams.push({
     store: EVOLUTION_ACTION_STORE_KEY,
-    paths: [path.join(stateDir, 'state', 'evolution', 'action-queue.json')],
+    paths: [path.join(stateDir, 'state', 'evolution', 'action-queue.json'), path.join(stateDir, 'state', 'evolution', 'action-archive.json')],
     snapshot: () => {
       const rows: ReconcileRow[] = [];
-      for (const record of deps.evolution.listActions()) {
+      for (const record of (deps.evolution.listActionsForReplication?.() ?? deps.evolution.listActions())) {
         const key = deriveEvolutionActionRecordKey(record.title, record.commitTo, record.createdAt);
         if (key === null) continue;
         rows.push({

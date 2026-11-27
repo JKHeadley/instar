@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-16T19:41:24.146Z",
+  "slug": "machine-restart-actuator",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 419,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/machineMaintenance/HostMaintenanceStore.ts",
+      "src/monitoring/machineMaintenance/RestartActuator.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 412,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "machine-restart modelled with the real checkBrakes on a durable ledger: under a wedge that never clears, 3 restarts per 7 days, never closer than 6 hours."
+    }
+  },
+  "verdict": "pass"
+}

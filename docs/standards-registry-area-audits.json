@@ -2,30 +2,30 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "f1e19aebd9bb8a1470a25c247528fe696b661e958d95de806e932b8b14d23328",
+      "lastAuditedAt": "2026-11-19T03:22:00.000Z",
+      "auditRef": "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
+      "auditSha256": "6cf106db2d14c069d9f7931f98c1105ac33a23dfc0a3dc07ea6b4eb1a01b5e0c",
+      "areaSha256": "52533019f8162a188875bc18bccfbb5252bc573b224711ecb067048609409506",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-04T01:31:00.000Z",
-      "auditRef": "docs/audits/message-origin-all-platforms-interaction-family-2026-11-03.json",
-      "auditSha256": "7c202e4a259acf30626806e2d824674e964159380e027c5b66fb7fab2f609ca6",
-      "areaSha256": "2a93dd9f0ce33f615611e26700fed66baec9eb2b3cfefc1f9c9571af2d13c163",
+      "lastAuditedAt": "2026-11-19T09:47:49.000Z",
+      "auditRef": "docs/audits/waiting-ask-links-interaction-family-merge-2026-11-19.json",
+      "auditSha256": "5fbe42c7eff6018805ea9f689cdb953cbe4e120aa8eda95a376b1749d968e4c3",
+      "areaSha256": "610341e18c0a9f214ecf70f8ee172ed51abbf68b9cd82592c9e3f287806ed2ed",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-11-04T07:59:34.000Z",
-      "auditRef": "docs/audits/maturation-path-and-alignment-2026-11-04.json",
-      "auditSha256": "7b2b785c5e8cc33dfe65754dc45a04e5a46e5d7a84c715a8aa4ddfe4f538bdac",
-      "areaSha256": "ac00e8f2cb6881cdbfe54c278267f9d4c12b8a4370d57e864cb68c281308f8a8",
+      "lastAuditedAt": "2026-11-14T08:19:56.000Z",
+      "auditRef": "docs/audits/maturation-dated-owner-shipping-family-2026-11-14.json",
+      "auditSha256": "ecc6c0ae128fffd82094fcdea86b590c0638fd129837d41621ce7f8ebc55ee5e",
+      "areaSha256": "1fb87921b71fb3f94a795d35c5d8bc1cf3ba909efa31a7ba999bee53e993c424",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-10-26T18:24:09.000Z",
-      "auditRef": "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
-      "auditSha256": "d71b646fc0e257fa49e4e502b6e1ce30a62d82ac5f12609494fd4265dc2fc677",
-      "areaSha256": "d48659d1b19c4425d5475987c65f20d2bcc3f5839c9691c4eb87654a8448cb76",
+      "lastAuditedAt": "2026-11-16T06:30:00.000Z",
+      "auditRef": "docs/audits/trust-journey-amendments-substrate-family-2026-11-15.json",
+      "auditSha256": "d5778801623322a61960dc9a7d33d09fc5a4de819fac46cb402115cd9a4b9de5",
+      "areaSha256": "b32a7f199cb411534aa4734c847be545ac99c2182c6582449822bf7b99ca441a",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "dashboard-scoped-session-revocation",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T09:06:53.355Z",
+  "artifactPath": "upgrades/side-effects/dashboard-scoped-session-revocation.md",
+  "artifactSha256": "c348dde402917ba1c837aa8eed68a4c2d921024a6e08f3fe316702c14a052a05",
+  "coveredFiles": [
+    "docs/specs/dashboard-scoped-session-revocation.eli16.md",
+    "docs/specs/dashboard-scoped-session-revocation.md",
+    "docs/specs/reports/dashboard-scoped-session-revocation-convergence.md",
+    "src/data/awareness/dashboard-scoped-session-revocation.md",
+    "src/server/AgentServer.ts",
+    "src/server/DashboardSessionStore.ts",
+    "src/server/middleware.ts",
+    "src/server/routes.ts",
+    "tests/e2e/dashboard-scoped-session-revocation-alive.test.ts",
+    "tests/integration/dashboard-scoped-session-revocation.test.ts",
+    "tests/unit/dashboard-session-store.test.ts",
+    "upgrades/next/dashboard-scoped-session-revocation.md",
+    "upgrades/side-effects/dashboard-scoped-session-revocation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SHIP is Tier-1: dark + fully reversible completeness fix of the approved SEC-002b feature, gated by the live dashboard proof. Risk-floor 2 (auth); declared below deliberately + recorded. Review ran at Tier-2 depth (7 rounds + codex, 2 HIGH caught).",
+  "eli16Path": "docs/specs/dashboard-scoped-session-revocation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-scoped-session-revocation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

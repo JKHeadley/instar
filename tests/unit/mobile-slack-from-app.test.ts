@@ -23,7 +23,7 @@ import {
   type SlackAdapterLike, type SlackAppConversation,
 } from '../../src/server/mobileSlackRoutes.js';
 import { mergeConversationPages } from '../../src/server/mobileConversationRoutes.js';
-import { PostUpdateMigrator, SLACK_FROM_APP_CLAUDEMD_MARKER, SLACK_FROM_APP_CLAUDEMD_SECTION } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, SLACK_FROM_APP_CLAUDEMD_MARKER, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_OWNER_READ_AUTHORITY_LINE } from '../../src/core/PostUpdateMigrator.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
@@ -132,7 +132,7 @@ describe('helpers', () => {
   it('titles a conversation by its label, else its channel, and says when it is a thread', () => {
     const c: SlackAppConversation = { id: -1, key: SLACK_KEY, channelId: 'C0123ABC', threadTs: null, label: null, mintedAt: null };
     expect(slackConversationTitle(c)).toBe('#C0123ABC');
-    expect(slackConversationTitle({ ...c, label: 'general\u0000' })).toBe('general');
+    expect(slackConversationTitle({ ...c, label: 'general\u0000' })).toBe('#general');
     expect(slackConversationTitle({ ...c, threadTs: '1730000000.000100' })).toBe('#C0123ABC (thread)');
   });
 
@@ -203,7 +203,7 @@ describe('the production bridge', () => {
     expect(bridge.history(chan, 50).find((r) => r.text.startsWith('bot'))!.fromUser).toBe(false);
     expect(bridge.history(thread, 50).map((r) => r.text)).toEqual(['in the thread']);
     const list = slackListRows(bridge);
-    expect(list.find((r) => r.id === -11)).toMatchObject({ title: 'general', lastActivity: '2026-11-02T10:00:00.000Z', lastPreview: 'channel hello' });
+    expect(list.find((r) => r.id === -11)).toMatchObject({ title: '#general', lastActivity: '2026-11-02T10:00:00.000Z', lastPreview: 'channel hello' });
     expect(list.find((r) => r.id === -12)).toMatchObject({ title: '#C0123ABC (thread)', lastPreview: 'in the thread' });
     expect(bridge.emergencyStop()).toEqual({ stopped: true });
     expect(killed).toBe(true);
@@ -261,6 +261,24 @@ describe('boot recovery of an interrupted Slack send (crash between persist and 
 });
 
 describe('agent awareness migration', () => {
+  it('refreshes installed owner-history guidance once without replacing custom text', () => {
+    const dir = tmp('slack-owner-read-mig-');
+    const stateDir = path.join(dir, '.instar');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const file = path.join(dir, 'CLAUDE.md');
+    fs.writeFileSync(file, '# Agent\n' + SLACK_FROM_APP_CLAUDEMD_MARKER + '\nCustom operator instruction.\n');
+    const m = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4321, hasTelegram: false, projectName: 'x' } as never);
+    const run = () => (m as unknown as { migrateClaudeMd(r: unknown): void })
+      .migrateClaudeMd({ upgraded: [], errors: [], skipped: [] });
+    run();
+    const once = fs.readFileSync(file, 'utf8');
+    run();
+    expect(fs.readFileSync(file, 'utf8')).toBe(once);
+    expect(once.split(SLACK_OWNER_READ_AUTHORITY_LINE)).toHaveLength(2);
+    expect(once).toContain('Custom operator instruction.');
+    expect(SLACK_FROM_APP_CLAUDEMD_SECTION(4321)).toContain(SLACK_OWNER_READ_AUTHORITY_LINE);
+  });
+
   it('adds the Slack-from-the-app section once', () => {
     const dir = tmp('slackmig-');
     const stateDir = path.join(dir, '.instar');

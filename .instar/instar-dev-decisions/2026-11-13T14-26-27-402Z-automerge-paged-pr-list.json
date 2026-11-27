@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-13T14:26:27.402Z",
+  "slug": "automerge-paged-pr-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 167,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/greenPrAutomergeWiring.ts",
+      "src/monitoring/greenPrOpenPrList.ts"
+    ],
+    "addedLines": 156,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

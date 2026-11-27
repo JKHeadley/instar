@@ -20,7 +20,7 @@ import { CommandRouter } from './shared/CommandRouter.js';
 import { AuthGate } from './shared/AuthGate.js';
 import { MessagingEventBus } from './shared/MessagingEventBus.js';
 import { smartChunk } from './shared/SmartChunker.js';
-import { normalizePhoneNumber, phoneToJid, jidToPhone } from './shared/PhoneUtils.js';
+import { normalizePhoneNumber, phoneToJid, jidToPhone, isLidJid } from './shared/PhoneUtils.js';
 import { PrivacyConsent } from './shared/PrivacyConsent.js';
 
 // ── Config types ──────────────────────────────────────────
@@ -51,6 +51,11 @@ export interface BusinessApiConfig {
   accessToken: string;
   /** Webhook verify token */
   webhookVerifyToken: string;
+  /**
+   * Meta App Secret (SEC-086). Every webhook POST must carry an X-Hub-Signature-256
+   * HMAC of its exact body under this secret. Without it, deliveries are accepted UNVERIFIED (observe mode) and the owner is told once.
+   */
+  appSecret?: string;
   /** Webhook port (if different from Instar server port) */
   webhookPort?: number;
 }
@@ -198,6 +203,7 @@ export class WhatsAppAdapter implements MessagingAdapter {
   // Connection state
   private connectionState: ConnectionState = 'disconnected';
   private phoneNumber: string | null = null;
+  private ownLidUser: string | null = null;
   private reconnectAttempts = 0;
   private lastConnected: string | null = null;
   private lastError: string | null = null;
@@ -334,6 +340,40 @@ export class WhatsAppAdapter implements MessagingAdapter {
     return this.currentQrCode;
   }
 
+  /** Record the connected account's own linked identity (Baileys `user.lid`). */
+  setOwnLid(lid: string | null | undefined): void {
+    this.ownLidUser = lid ? WhatsAppAdapter.lidUser(lid) : null;
+  }
+
+  private static lidUser(jid: string): string {
+    return jid.split('@')[0].split(':')[0];
+  }
+
+  /**
+   * Who sent a direct message whose chat id is a linked identity (@lid / @hosted.lid)?
+   * - Sent by this account (fromMe): it is the owner talking to the agent only in the
+   *   account's own chat. When this account's LID is known, a fromMe message in anyone
+   *   else's chat is the owner talking to that person, not to the agent, so it is
+   *   dropped. Without a known own LID, fromMe alone is accepted (the old behaviour).
+   * - Not sent by this account: WhatsApp's phone-form alternate id for the sender
+   *   (key.remoteJidAlt, phone JIDs only), or this account's own LID.
+   * Otherwise null: the sender cannot be identified, so the caller drops the message.
+   */
+  private resolveLidSender(jid: string, msgKey: unknown): string | null {
+    const key = (msgKey && typeof msgKey === 'object') ? msgKey as { fromMe?: unknown; remoteJidAlt?: unknown } : {};
+    const ownChat = this.ownLidUser !== null && WhatsAppAdapter.lidUser(jid) === this.ownLidUser;
+    if (key.fromMe === true) {
+      if (!this.phoneNumber) return null;
+      return (this.ownLidUser === null || ownChat) ? '+' + this.phoneNumber : null;
+    }
+    if (typeof key.remoteJidAlt === 'string' && key.remoteJidAlt.endsWith('@s.whatsapp.net')) {
+      const alt = jidToPhone(key.remoteJidAlt);
+      if (alt) return alt;
+    }
+    if (!this.phoneNumber) return null;
+    return ownChat ? '+' + this.phoneNumber : null;
+  }
+
   /** Update connection state (called by backend). */
   async setConnectionState(state: ConnectionState, phoneNumber?: string): Promise<void> {
     this.connectionState = state;
@@ -449,6 +489,17 @@ export class WhatsAppAdapter implements MessagingAdapter {
   // ── Inbound message handling ──────────────────────────────
 
   /** Called by backend when a message is received. */
+  /**
+   * SEC-164 part 1 §3.5: masks a live key in an incoming message before it is logged, emitted or
+   * routed. Returns the text to use; null or a throw leaves it unchanged (fails toward delivery).
+   */
+  public inboundCredentialMasker: ((text: string) => string | null) | null = null;
+
+  private maskIncomingCredential(text: string): string {
+    if (!this.inboundCredentialMasker || typeof text !== 'string' || !text) return text;
+    try { return this.inboundCredentialMasker(text) ?? text; } catch { return text; } // @silent-fallback-ok — the masker reports its own failures
+  }
+
   async handleIncomingMessage(
     jid: string,
     messageId: string,
@@ -459,6 +510,8 @@ export class WhatsAppAdapter implements MessagingAdapter {
     participant?: string,
     mentionedJids?: string[],
   ): Promise<void> {
+    // SEC-164 §3.5: before the log, the event bus, the group path or the session see it.
+    text = this.maskIncomingCredential(text);
     // Dedup
     if (this.processedMessageIds.has(messageId)) return;
     this.processedMessageIds.add(messageId);
@@ -489,12 +542,17 @@ export class WhatsAppAdapter implements MessagingAdapter {
 
     let phoneNumber = jidToPhone(jid) ?? jid;
 
-    // LID JID workaround: WhatsApp's Linked Identity format (e.g. 272404173598970@lid)
-    // doesn't contain the real phone number. jidToPhone() returns null for these.
-    // For self-chat messages (the primary personal-agent use case), the LID always
-    // belongs to the connected user, so map it to the known phone number.
-    if (jid.endsWith('@lid') && this.phoneNumber) {
-      phoneNumber = '+' + this.phoneNumber;
+    // LID chats: WhatsApp's Linked Identity form (e.g. 272404173598970@lid) carries no
+    // phone number, and ANYONE's 1:1 chat can arrive in this form, not only self-chat.
+    // Resolve it from facts WhatsApp gives us, never by assumption and never from the
+    // LID's own digits (they could collide with an authorized number).
+    if (isLidJid(jid)) {
+      const resolved = this.resolveLidSender(jid, msgKey);
+      if (!resolved) {
+        console.log(`[whatsapp] Dropping direct message in linked-identity chat ${jid}: sender could not be identified`);
+        return;
+      }
+      phoneNumber = resolved;
     }
 
     let normalizedPhone: string;

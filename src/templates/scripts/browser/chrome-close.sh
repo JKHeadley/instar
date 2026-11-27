@@ -8,7 +8,7 @@
 # cannot close yourself. If it reports unsaved input, submit or clear the form first.
 # macOS only (Apple Events). Installed by instar into .instar/scripts/browser/.
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s)" >&2
+  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s). On Linux use xdrive.sh in this same folder." >&2
   exit 2
 fi
 [ -z "$1" ] && { echo "usage: chrome-close.sh <profile-id|/absolute/user-data-dir> [--when-free]" >&2; exit 64; }

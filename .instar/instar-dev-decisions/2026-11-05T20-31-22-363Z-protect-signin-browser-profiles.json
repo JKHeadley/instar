@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-05T20:31:22.363Z",
+  "slug": "protect-signin-browser-profiles",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SigninProfileGuard.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Saved Google sign-in profile isolation was a memory-only rule. Generic automation could reuse the physical profile; historical sign-out causation is unproven. Canonical path failures must fail closed."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

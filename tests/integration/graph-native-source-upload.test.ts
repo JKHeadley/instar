@@ -1,0 +1,41 @@
+import Database from 'better-sqlite3';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {afterEach,expect,it} from 'vitest';
+import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
+import {GraphWitnessClient} from '../../src/core/GraphWitnessClient.js';
+import {createGraphWitnessServer} from '../../src/server/graphWitnessServer.js';
+import {ConversationGraphReplication} from '../../src/core/ConversationGraphReplication.js';
+import {createGraphControlCapsule} from '../../src/core/GraphWitnessControl.js';
+import {GRAPH_NATIVE_TAIL_DOMAIN,graphNativeTailEntries,type GraphNativeTailClosure} from '../../src/core/ConversationGraphNativeTail.js';
+import {createGraphNativeSourceUpload} from '../../src/core/GraphNativeSourceUpload.js';
+import {rewrapGraphBundle} from '../../src/core/GraphWitnessCrypto.js';
+import {canonicalHash,canonicalJson,signGraphRecord,witnessActionPayload,GRAPH_SIGNATURE_DOMAINS as D} from '../../src/core/GraphWitnessTypes.js';
+import {replicationFixture} from '../unit/conversation-graph-replication.fixtures.js';
+const cleanup:Array<()=>Promise<void>>=[];afterEach(async()=>{for(const close of cleanup.splice(0).reverse())await close();});
+it('recovers an original source through real bounded HTTP chunks when signed closed tails exceed 3 MiB',async()=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'native-source-upload-'));cleanup.push(async()=>SafeFsExecutor.safeRmSync(dir,{recursive:true,force:true,operation:'native-source-upload-test:cleanup'}));
+ const f=replicationFixture(),source=await ConversationGraphReplication.open(f.options(path.join(dir,'source'))),record=f.record('large-native-source');const accepted=await source.appendLocal(record);
+ const production=createGraphWitnessServer({databasePath:path.join(dir,'witness.sqlite'),witnessId:f.membership.witnessId,failureDomain:f.membership.failureDomain,signingPrivateKey:f.witness.privateKey,enrollments:{echo:{ownerPublicKey:f.owner.publicKey.export({format:'pem',type:'spki'}).toString(),bearerToken:'native-source-http-token'}},installedFailureDomains:['installed'],now:()=>Date.parse('2026-11-05T08:07:00Z')});const service=production.service;service.registerMembership(f.membership);cleanup.push(async()=>service.close());
+ const server=production.app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));cleanup.push(()=>new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())));
+ const address=server.address();if(!address||typeof address==='string')throw new Error('missing address');const client=new GraphWitnessClient({baseUrl:`http://127.0.0.1:${address.port}`,agentId:'echo',witnessId:f.membership.witnessId,witnessPublicKey:f.witness.publicKey.export({format:'pem',type:'spki'}).toString(),expectedFailureDomain:f.membership.failureDomain,bearerToken:'native-source-http-token',ownerPublicKey:f.owner.publicKey.export({format:'pem',type:'spki'}).toString(),allowLoopbackHttpForTests:true});
+ const current=f.actuation('sleeper',2),entries=graphNativeTailEntries([record]);
+ // Opaque tail entries model other frozen intents. This test proves transport
+ // of signed manifests; the separate runtime test proves real Intake closure.
+ for(let sequence=2;sequence<=4100;sequence++)entries.push({eventId:`graph-event:transport-${sequence}`,packetHash:canonicalHash({packet:sequence}),sourceSequence:sequence,predecessorHash:entries.at(-1)!.coreHash,coreHash:canonicalHash({core:sequence}),sourceProofHash:canonicalHash({proof:sequence})});
+ const closedTails:GraphNativeTailClosure[]=[];for(const member of f.members){const file=await fs.open(path.join(dir,member.machineId+'-tail.json'),'wx');try{await file.writeFile(canonicalJson(entries));await file.sync();}finally{await file.close();}const value={v:1 as const,agentId:'echo',membershipHash:canonicalHash(f.membership),writerId:current.lease.writerId,leaseEpoch:current.lease.leaseEpoch,nativeLeaseHash:canonicalHash(current.originalLease),machineId:member.machineId,tailHash:canonicalHash(entries),entryCount:entries.length,highestSourceSequence:4100,recordedAt:'2026-11-05T08:07:00Z'};closedTails.push({receipt:{...value,signature:signGraphRecord(GRAPH_NATIVE_TAIL_DOMAIN,value,member.signing.privateKey)},observedLease:current.lease,originalObservedLease:current.originalLease,entries});}
+ const rewrap=rewrapGraphBundle(record.encryptedSourceBundle!,'sleeper',f.members[1].sealing.privateKey,f.membership,'sleeper',f.members[1].signing.privateKey,record.packet);
+ const value={v:1 as const,agentId:'echo',idempotencyKey:record.packet.idempotencyKey,operationHash:canonicalHash(record.packet),coreHash:record.packet.coreHash,sourceProofHash:entries[0].sourceProofHash,subjectHeadsHash:canonicalHash([]),dependenciesHash:canonicalHash([]),rewrapHash:canonicalHash(rewrap),newMembershipHash:canonicalHash(f.membership),currentLeaseHash:canonicalHash(current.lease),writerId:'sleeper',decision:'adopt' as const,reason:'ok' as const,validatedAt:'2026-11-05T08:07:00Z'};
+ const signUpload=(plan:unknown)=>signGraphRecord('graph-native-source-upload-v1',plan,f.members[1].signing.privateKey);
+ const request={packet:record.packet,packetSignature:record.packetSignature,controlCapsule:createGraphControlCapsule(record.coreType,record.core,record.authorizationProof),encryptedSourceBundle:record.encryptedSourceBundle!,...current,originalSourceReceipt:accepted.receipt,closedTails,revalidation:{...value,signature:signGraphRecord(D.revalidation,value,f.members[1].signing.privateKey)},rewrap};
+ expect(Buffer.byteLength(canonicalJson(request))).toBeGreaterThan(3*1024*1024);const {plan,chunks}=createGraphNativeSourceUpload(request,signUpload);expect(chunks.every(value=>Buffer.byteLength(canonicalJson({value}))<3*1024*1024)).toBe(true);
+ expect(()=>service.beginNativeSourceUpload('echo',{...plan,bytes:32*1024*1024+1})).toThrow('plan-invalid');expect(()=>service.beginNativeSourceUpload('echo',{...plan,requestHash:canonicalHash('bearer-only-mutation')})).toThrow('plan-invalid');expect(()=>service.beginNativeSourceUpload('echo',{...plan,signature:signGraphRecord('graph-native-source-upload-v1',((({signature,...body})=>body)(plan)),f.members[0].signing.privateKey)})).toThrow('plan-invalid');service.beginNativeSourceUpload('echo',plan);expect(()=>service.putNativeSourceUpload('echo',plan.transferId,0,chunks[0].slice(1))).toThrow('chunk-invalid');expect(()=>service.finishNativeSourceUpload('echo',plan.transferId)).toThrow('incomplete');expect(service.operation('echo',record.packet.idempotencyKey)).toBeNull();
+ const operation=await client.recoverPositiveSource(request,signUpload);expect(operation.packetSignature).toBe(record.packetSignature);expect(operation.prepareProof).not.toBeNull();expect(operation.adoption?.currentLease).toEqual(current.lease);expect(service.recover('echo',record.packet.idempotencyKey).encryptedSourceBundle).toEqual(record.encryptedSourceBundle);
+ expect(service.finishNativeSourceUpload('echo',plan.transferId).packet).toEqual(record.packet);
+ const later={...value,validatedAt:'2026-11-05T08:07:01Z'},interrupted=createGraphNativeSourceUpload({...request,revalidation:{...later,signature:signGraphRecord(D.revalidation,later,f.members[1].signing.privateKey)}},signUpload);service.beginNativeSourceUpload('echo',interrupted.plan);service.putNativeSourceUpload('echo',interrupted.plan.transferId,0,interrupted.chunks[0]);
+ const fields={requestId:'erase-native-upload',target:record.packet.erasureIdentity,bundleHashes:[record.packet.sourceBundleHash],authorizationReceiptHash:canonicalHash({forget:'owner'})};service.erase('echo',fields.requestId,fields.target,fields.bundleHashes,fields.authorizationReceiptHash,current.lease,current.originalLease,signGraphRecord(D.action,witnessActionPayload('erase',fields,current.lease),f.members[1].signing.privateKey));
+ expect(()=>service.finishNativeSourceUpload('echo',interrupted.plan.transferId)).toThrow('unavailable');
+ const disk=new Database(path.join(dir,'witness.sqlite'),{readonly:true});try{expect(disk.prepare("SELECT body FROM witnessTransferRows WHERE section='native-source'").all().every((row:any)=>row.body==='null')).toBe(true);}finally{disk.close();}
+
+});

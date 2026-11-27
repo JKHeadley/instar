@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T22:34:32.439Z",
+  "slug": "health-quick-actions",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

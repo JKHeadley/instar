@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-21T13:04:27.803Z",
+  "slug": "updater-native-rebuild-runtime-node",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/UpdateChecker.ts",
+      "src/server/middleware.ts"
+    ],
+    "addedLines": 91,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

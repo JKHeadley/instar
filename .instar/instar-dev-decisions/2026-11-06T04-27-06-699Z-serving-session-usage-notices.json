@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-06T04:27:06.699Z",
+  "slug": "serving-session-usage-notices",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/PresenceProxy.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Unscoped phrase matching admitted helper and stale errors; later tiers repeated the same notice without a durable episode budget."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The notify edge converges to one attempt per topic/provider UUID at N and 2N ticks, including restart. The durable pre-send reservation is the settling brake; serving replies carry a clear through transfer and a new UUID starts a distinct episode."
+    }
+  },
+  "verdict": "blocked"
+}

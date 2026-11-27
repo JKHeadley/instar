@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dropped-origin-registry-damage-failsafe",
+  "sessionId": "8e9e2742-87e9-40e2-ac7d-af55bba2defa",
+  "timestamp": "2026-11-09T17:26:51.031Z",
+  "artifactPath": "upgrades/side-effects/dropped-origin-registry-damage-failsafe.md",
+  "artifactSha256": "4a3c51e93b9af719df4ef64c7ad1a069172a97e30c7d435ec03b70d2bc4fb43d",
+  "coveredFiles": [
+    "docs/eli16/dropped-origin-registry-damage-failsafe.md",
+    "src/core/RollbackUnmerge.ts",
+    "src/server/routes.ts",
+    "tests/integration/state-sync-routes.test.ts",
+    "tests/unit/RollbackUnmerge.test.ts",
+    "upgrades/next/dropped-origin-registry-damage-failsafe.md",
+    "upgrades/side-effects/dropped-origin-registry-damage-failsafe.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow storage-integrity bug fix in one registry class plus one optional route field; a revert fully undoes it and no state is migrated.",
+  "eli16Path": "docs/eli16/dropped-origin-registry-damage-failsafe.md",
+  "sideEffectsPath": "upgrades/side-effects/dropped-origin-registry-damage-failsafe.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

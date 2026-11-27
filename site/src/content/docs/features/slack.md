@@ -50,6 +50,18 @@ instar slack-cli channels      # List authorized channels and their session mapp
 
 The Slack adapter exposes eight HTTP routes for inbound delivery, outbound sending, and inspection. See the [API reference](/reference/api) for the full list, including the webhook endpoint that Slack delivers events to.
 
+The main operations are:
+
+| Route | Purpose |
+|-------|---------|
+| `POST /slack/reply/:channelId` | Send an agent reply to a channel or thread. |
+| `POST /internal/slack-forward` | Forward a Slack event to the machine that owns the conversation. |
+| `GET /slack/channels` | List authorized channels. |
+| `POST /slack/channels` | Add an authorized channel. |
+| `GET /slack/channels/:channelId/messages` | Read stored channel history. |
+| `GET /slack/search` | Search stored Slack messages. |
+| `GET /slack/log-stats` | Inspect Slack message-log counts. |
+
 Outbound sends follow the same single-use send-token pattern as iMessage — the agent validates the recipient, gets a token, performs the send, and confirms delivery, so every send is auditable end-to-end.
 
 ## When to choose Slack vs Telegram

@@ -112,6 +112,9 @@ describe('native ops screens — production wiring', () => {
     expect(machines.body.machines.length).toBeGreaterThanOrEqual(1);
     expect(machines.body.machines.some((x: { isSelf: boolean }) => x.isSelf)).toBe(true);
     expect(typeof machines.body.headline).toBe('string');
+    // Agnostic wording (2026-11-06): no row names the answering machine as "this machine".
+    expect(JSON.stringify(machines.body.machines.map((x: { statusLine: string; name: string }) => [x.statusLine, x.name]))).not.toMatch(/this machine|this one/i);
+    expect(machines.body.machines.every((x: { evidenceLine?: unknown }) => 'evidenceLine' in x)).toBe(true);
 
     // The health the screen pairs with stays the existing allowlisted read.
     expect((await send('GET', '/health')).status).toBe(200);

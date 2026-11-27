@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -60,17 +60,19 @@ const SEEDED_RUNS = 20;
 const FREE_SLOTS = DAILY_MAX_RUNS - SEEDED_RUNS;
 
 function supportsTransformTypes(): boolean {
-  const [maj, min] = process.versions.node.split('.').map((n) => Number(n));
-  if (!Number.isFinite(maj) || !Number.isFinite(min)) return false;
-  return maj > 22 || (maj === 22 && min >= 7) || maj >= 23;
+  // Node 26 removed this flag despite its higher major version. Probe the
+  // executable the children will actually use instead of inferring support.
+  return spawnSync(process.execPath, ['--experimental-transform-types', '-e', ''], {
+    stdio: 'ignore', timeout: 5000,
+  }).status === 0;
 }
 
 const CAN_RUN = supportsTransformTypes();
 if (!CAN_RUN) {
   // Loud, not silent: a skipped concurrency proof must never read as coverage.
   console.warn(
-    `[grok-budget-concurrency] SKIPPED on node ${process.versions.node} — needs >=22.7 for `
-      + '--experimental-transform-types so children can load TS source. Runs on the node-22 CI shard.',
+    `[grok-budget-concurrency] SKIPPED on node ${process.versions.node} — this executable lacks `
+      + '--experimental-transform-types; the node-22 CI shard runs this proof.',
   );
 }
 
@@ -210,7 +212,7 @@ function readLedger(home: string): { runs: number; reservations: unknown[] } {
 async function raceChildren(
   home: string,
   script: string,
-): Promise<{ ok: number; exhausted: number; other: number }> {
+): Promise<{ ok: number; exhausted: number; lockUnavailable: number; other: number }> {
   const outputs: string[] = [];
   const children = Array.from({ length: CHILDREN }, (_, i) => {
     const child = spawn(
@@ -254,6 +256,7 @@ async function raceChildren(
   return {
     ok: verdicts.filter((v) => v === 'ok').length,
     exhausted: verdicts.filter((v) => v === 'exhausted').length,
+    lockUnavailable: verdicts.filter((v) => v === 'lock-unavailable').length,
     other: verdicts.filter((v) => v !== 'ok' && v !== 'exhausted').length,
   };
 }
@@ -281,10 +284,20 @@ describe.skipIf(!CAN_RUN)('grok reviewer budget — ceiling under REAL process c
     seedLedger(home);
     const r = await raceChildren(home, 'child-real.mjs');
 
-    expect(r.other).toBe(0);
+    // A child that waited out the 2s lock deadline refuses ('lock-unavailable').
+    // That is the designed fail-closed path, and on a small, busy CI runner
+    // twelve spinning children can starve the holder past it (PR 2920 run
+    // 42465978857: 8 of 12). It is a refusal, never an admission, so it cannot
+    // break the spend brake; any OTHER verdict is still a failure.
+    expect(r.other).toBe(r.lockUnavailable);
+    expect(r.ok + r.exhausted + r.lockUnavailable).toBe(CHILDREN);
     // The spend brake: never more admissions than the ceiling allows...
-    expect(r.ok).toBe(FREE_SLOTS);
-    expect(r.exhausted).toBe(CHILDREN - FREE_SLOTS);
+    expect(r.ok).toBeLessThanOrEqual(FREE_SLOTS);
+    expect(r.ok).toBeGreaterThan(0);
+    if (r.lockUnavailable === 0) {
+      expect(r.ok).toBe(FREE_SLOTS);
+      expect(r.exhausted).toBe(CHILDREN - FREE_SLOTS);
+    }
     // ...and every admission is accounted for by a persisted reservation, so a
     // concurrent admission can SEE it. An admission without a reservation is a
     // slot spent invisibly.

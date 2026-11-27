@@ -73,7 +73,7 @@ describe('telegram origin: unreadable config is unknown, not missing', () => {
     const wire = vi.fn(async () => { throw new Error('must not send while config is unreadable'); });
     vi.stubGlobal('fetch', wire);
     const app = express(); app.use(express.json());
-    app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
+    app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
     const response = await request(app).post(`/telegram/reply/${ISSUES_TOPIC}`)
       .set('X-Instar-Origin-Session', token).send({ text: 'A note for the bug topic.' });
     expect(response.status).toBe(503);

@@ -2,7 +2,7 @@
 /**
  * Set a proof agent's config for the locked-Mac proof run. Runs as the proof user.
  *
- *   configure-proof-agent.mjs <agent-dir> --port N [--tunnel] [--front] --execute
+ *   configure-proof-agent.mjs <agent-dir> --port N [--tunnel] [--front] [--pin-stdin] --execute
  *
  * Without --execute it prints what it would change. It refuses any directory that
  * does not resolve inside /Users/instarproof (the throwaway proof user's home).
@@ -14,6 +14,9 @@
  * - --tunnel: a Cloudflare quick tunnel (the password box needs a first-tier tunnel).
  * - --front: this agent is its own designated desktop front (needs the machine id,
  *   which exists after the first server start; run again with --front then).
+ * - --pin-stdin: the dashboard PIN, read from stdin (stage-proof-agents.sh pipes it from
+ *   the operator's vault). The run unlocks the dashboard with it, so the proof never
+ *   depends on the server minting one. It is never printed or put on a command line.
  * Only missing or listed keys change; everything else in config.json is kept.
  */
 import fs from 'node:fs';
@@ -26,8 +29,15 @@ export function isInsideProofHome(resolved) {
   return resolved === PROOF_HOME || resolved.startsWith(`${PROOF_HOME}/`);
 }
 
-export function proofConfig(config, { port, tunnel, frontMachineId }) {
+/** A dashboard PIN as the dashboard accepts it: digits only. */
+export function validPin(pin) { return typeof pin === 'string' && /^[0-9]{4,12}$/.test(pin); }
+
+export function proofConfig(config, { port, tunnel, frontMachineId, pin }) {
   const next = { ...config, port };
+  if (pin !== undefined) {
+    if (!validPin(pin)) throw new Error('the dashboard PIN must be 4 to 12 digits');
+    next.dashboardPin = pin;
+  }
   next.remoteDesktop = { ...(config.remoteDesktop ?? {}), enabled: true, retainedHelper: true };
   if (frontMachineId) next.remoteDesktop.frontMachineId = frontMachineId;
   delete next.remoteDesktop.lockedScreen;
@@ -54,15 +64,18 @@ function main() {
     if (!fs.existsSync(identity)) { process.stderr.write('no machine identity yet: start the server once, then run with --front\n'); process.exit(1); }
     frontMachineId = JSON.parse(fs.readFileSync(identity, 'utf8')).machineId;
   }
-  const next = proofConfig(config, { port, tunnel: rest.includes('--tunnel'), frontMachineId });
+  const pin = rest.includes('--pin-stdin') ? fs.readFileSync(0, 'utf8').trim() : undefined;
+  let next;
+  try { next = proofConfig(config, { port, tunnel: rest.includes('--tunnel'), frontMachineId, pin }); }
+  catch (error) { process.stderr.write(`${error.message}\n`); process.exit(1); }
   if (!rest.includes('--execute')) {
-    process.stdout.write(`dry run (no --execute): would write ${file}\n${JSON.stringify({ port: next.port, remoteDesktop: next.remoteDesktop, updates: next.updates, autostart: next.autostart, tunnel: next.tunnel ?? null })}\n`);
+    process.stdout.write(`dry run (no --execute): would write ${file}\n${JSON.stringify({ port: next.port, remoteDesktop: next.remoteDesktop, updates: next.updates, autostart: next.autostart, tunnel: next.tunnel ?? null, dashboardPin: next.dashboardPin ? 'set' : 'absent' })}\n`);
     return;
   }
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);
-  process.stdout.write(`configured ${dir} (port ${port}${rest.includes('--tunnel') ? ', quick tunnel' : ''}${frontMachineId ? `, front ${frontMachineId}` : ''})\n`);
+  process.stdout.write(`configured ${dir} (port ${port}${rest.includes('--tunnel') ? ', quick tunnel' : ''}${frontMachineId ? `, front ${frontMachineId}` : ''}${pin ? ', dashboard PIN set' : ''})\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) main();

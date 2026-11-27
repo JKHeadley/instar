@@ -13,6 +13,7 @@ import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG } from '../../src/recommended/catalog.js';
+import { readSetupStates } from '../../src/recommended/setupState.js';
 import { GLOBAL_PIN_KEY } from '../../src/core/PinAttemptStore.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 
@@ -32,17 +33,27 @@ afterEach(() => {
 function fixture(ownerUid: number | undefined) {
   dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-wiring-'));
   const recordApproval = vi.fn();
-  const record = vi.fn();
+  const spawnInteractiveSession = vi.fn(async () => { running = [{ id: 'sess-1', tmuxSession: 'tm-setup' }]; return 'tm-setup'; });
+  let running: { id: string; tmuxSession: string }[] = [];
+  const findOrCreateForumTopic = vi.fn(async () => ({ topicId: 321, name: 'x' }));
+  const topicSessions = new Map<number, string>();
+  const registerTopicSession = vi.fn((topicId: number, name: string) => { topicSessions.set(topicId, name); });
+  const claimOwnership = vi.fn();
+  const killSession = vi.fn();
+  const record = vi.fn(() => ({ id: 'CMT-9' }));
+  const deliver = vi.fn();
+  const withdraw = vi.fn();
   const ledger = new RecommendedServicesLedger({ stateDir: dir, signer, keyLookup: (() => ({ status: 'unknown' })) as unknown as MachineKeyLookup });
   const ctx = {
     config: { projectName: 'test', projectDir: dir, stateDir: dir, port: 0, users: [], sessions: {}, scheduler: {}, messaging: [], dashboardPin: '654321' },
-    sessionManager: { listRunningSessions: () => [], clearInjectionTracker: () => undefined },
+    sessionManager: { listRunningSessions: () => running, clearInjectionTracker: () => undefined, spawnInteractiveSession, killSession: (id: string) => { killSession(id); running = []; return true; } },
     state: { getJobState: () => null, getSession: () => null },
-    telegram: { getLifelineTopicId: () => 55, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
+    telegram: { findOrCreateForumTopic, registerTopicSession, getSessionForTopic: (topicId: number) => topicSessions.get(topicId) ?? null, updateAttentionStatus: async () => true, getOwnerUserId: () => ownerUid, setCallbackApproverResolver: () => undefined, getTopicHistory: () => [] },
     recommendedServicesLedger: ledger,
+    claimTopicOwnershipOnSpawn: claimOwnership,
     recommendedServicesCatalog: RECOMMENDED_SERVICE_CATALOG.map((r) => (r.id === 'jev' ? { ...r, setupRecipe: 'jev-v1' } : r)),
     approvalLedger: { recordApproval },
-    commitmentTracker: { record },
+    commitmentTracker: { record, deliver, withdraw },
     scheduler: null, relationships: null, feedback: null, dispatches: null,
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,
     publisher: null, viewer: null, tunnel: null, evolution: null, watchdog: null,
@@ -53,7 +64,7 @@ function fixture(ownerUid: number | undefined) {
   const app = express();
   app.use(express.json());
   app.use('/', createRoutes(ctx));
-  return { app, ctx, ledger, recordApproval, record };
+  return { app, ctx, ledger, recordApproval, record, spawnInteractiveSession, killSession, registerTopicSession, claimOwnership, deliver, withdraw };
 }
 
 describe('recommended services confirm wiring', () => {
@@ -71,10 +82,10 @@ describe('recommended services confirm wiring', () => {
     const grant = ledger.activeGrant('jev', 'm_w')!;
     expect(grant.principal).toBe('777');
     expect(recordApproval).toHaveBeenCalledWith(expect.objectContaining({ subject: 'recommended-service:jev', mode: 'approved-as-is', evidenceRef: grant.eventId }));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ type: 'one-time-action', beaconEnabled: true, topicId: 55, userRequest: expect.stringContaining('Jev') }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ type: 'one-time-action', userRequest: expect.stringContaining('Jev') }));
   });
 
-  it('the confirm route holds the unlock limits: insecure connection and the global cap', async () => {
+  it('the confirm route: refused on an insecure connection; limited per live token, never by the strangers\' cap (identity-security-piece1c)', async () => {
     const f = fixture(777);
     const { body: page } = await request(f.app).get(PATH);
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => true;
@@ -83,12 +94,15 @@ describe('recommended services confirm wiring', () => {
     expect(insecure.body.error).toBe('insecure-connection');
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => false;
     const failures: string[] = [];
-    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: (key: string) => key === GLOBAL_PIN_KEY, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
+    // its own per-token count full → 429
+    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: (key: string) => key.startsWith('req:'), recordFailure: (k: string) => { failures.push(k); return 0; }, recordSuccess: () => undefined };
     const capped = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321', answer: 'yes' });
     expect(capped.status).toBe(429);
-    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
+    // a wrong PIN is charged to this token's own count, never the strangers' cap
+    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => { failures.push(k); return 4; }, recordSuccess: () => undefined };
     await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000', answer: 'yes' });
-    expect(failures).toContain(GLOBAL_PIN_KEY);
+    expect(failures.some((k) => k.startsWith('req:'))).toBe(true);
+    expect(failures).not.toContain(GLOBAL_PIN_KEY);
   });
 
   it('an empty PIN never charges the cap every address shares', async () => {
@@ -107,6 +121,20 @@ describe('recommended services confirm wiring', () => {
     expect(page.status).toBe(403);
     expect(page.body.error).toBe('insecure-connection');
     expect(page.body.token).toBeUndefined();
+  });
+
+  it('a yes starts the setup session, and a no stops it and withdraws the promise', async () => {
+    const f = fixture(777);
+    const yes = async () => request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: (await request(f.app).get(PATH)).body.token, pin: '654321', answer: 'yes' });
+    expect((await yes()).status).toBe(200);
+    await vi.waitFor(() => expect(f.spawnInteractiveSession).toHaveBeenCalledWith(expect.stringContaining('console.typesafe.ai'), 'setup-jev', { telegramTopicId: 321, awaitInitialInjection: true }));
+    await vi.waitFor(() => expect(readSetupStates(dir).jev?.sessionName).toBe('tm-setup'));
+    expect(f.registerTopicSession).toHaveBeenCalledWith(321, 'tm-setup', expect.stringContaining('Jev'));
+    expect(f.claimOwnership).toHaveBeenCalledWith(321);
+    const no = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: (await request(f.app).get(PATH)).body.token, pin: '654321', answer: 'no' });
+    expect(no.status).toBe(200);
+    expect(f.killSession).toHaveBeenCalledWith('sess-1');
+    expect(f.withdraw).toHaveBeenCalledWith('CMT-9', expect.any(String));
   });
 
   it('with no owner the page gives no token', async () => {

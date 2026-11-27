@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-07T18:38:29.538Z",
+  "slug": "conversation-graph-bounded-source-records",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphSourceInventory.ts",
+      "src/core/ConversationGraphSourceSweep.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts",
+      "src/server/ConversationGraphSourceInventoryRuntime.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

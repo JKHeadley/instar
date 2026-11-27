@@ -396,3 +396,34 @@ describe('governor generalization — every registered controller honors its cou
     }
   });
 });
+
+
+// Actual async worker, real durable archive: the registry proof must agree with runtime restart behavior.
+describe('evolution archive sync — actual worker convergence across restart', () => {
+  it('makes six requests at N and 2N even when reconstructed before every presence tick', async () => {
+    const os = await import('node:os');
+    const { EvolutionArchive } = await import('../../src/core/EvolutionArchive.js');
+    const { EvolutionArchiveSync } = await import('../../src/core/EvolutionArchiveSync.js');
+    const attempts: number[] = [];
+    for (const ticks of [120, 240]) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-runtime-ratchet-'));
+      let now = 0, count = 0;
+      try {
+        for (let tick = 0; tick < ticks; tick++) {
+          const worker = new EvolutionArchiveSync(new EvolutionArchive(tmp), {
+            now: () => now,
+            fetchPage: async () => { count++; throw new Error('persistent peer refusal'); },
+          });
+          await worker.onPeerRecorded('peer', 'https://archive-peer.example');
+          worker.stop();
+          now += 30_000;
+        }
+        expect(new EvolutionArchive(tmp).read().syncPeers?.peer.parked).toBe(true);
+        attempts.push(count);
+      } finally {
+        SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/self-action-convergence.test.ts:archive-runtime-ratchet' });
+      }
+    }
+    expect(attempts).toEqual([6, 6]);
+  });
+});

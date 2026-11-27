@@ -74,6 +74,37 @@ describe('/corrections routes (integration)', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/corrections-routes.test.ts:afterEach' });
   });
 
+  it('keeps failure cases open until complete diagnosis and repeat-prevention receipts, with CAS', async () => {
+    ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 'failure-http' });
+    const app = appWith(ctxFor(stateDir, ledger));
+    const context = { turns: [{ text: 'Please create the group yourself', fromUser: false, at: 0 }, { text: 'You gave me your task', fromUser: true, at: 1 }], instructions: ['Operator approves, agent does setup'], decisions: ['Brief restriction was agent-authored'], sourceRefs: ['telegram:135786:139231'], missing: [] };
+    const created = await request(app).post('/corrections').set(auth()).set('X-Instar-Request', '1')
+      .send({ learning: 'Keep setup agent-owned', kind: 'infra-gap', severity: 'failure-callout', failureContext: context });
+    expect(created.status).toBe(201);
+    const endpoint = `/corrections/${created.body.id}/failure-case`;
+    expect((await request(app).patch(endpoint).set(auth()).send({ version: 1, context })).status).toBe(403);
+    expect((await request(app).patch(endpoint).set(auth()).set('X-Instar-Request', '1').send({ version: 1, verification: { replayPassed: true } })).status).toBe(400);
+    const investigation = { classification: 'enforcement-gap', standardRefs: ['The Person Decides'], rootCause: 'Warning was overridden with an agent restriction', classFix: 'Trace restriction provenance at the handoff boundary', fixRefs: ['guard-change'] };
+    const diagnosed = await request(app).patch(endpoint).set(auth()).set('X-Instar-Request', '1').send({ version: created.body.version, investigation });
+    expect(diagnosed.status).toBe(200);
+    expect(diagnosed.body.failureCase.state).toBe('investigated');
+    const stale = await request(app).patch(endpoint).set(auth()).set('X-Instar-Request', '1').send({ version: created.body.version, context });
+    expect(stale.status).toBe(409);
+    expect(stale.body.current.learning).toBeUndefined();
+    expect(stale.body.current.sessionId).toBeUndefined();
+    const verified = await request(app).patch(endpoint).set(auth()).set('X-Instar-Request', '1').send({ version: diagnosed.body.version,
+      verification: { scenario: 'same approved group', baselineRef: '139229', replayRef: 'real-replay-output', allowedCaseRef: 'missing-approval-output', replayPassed: true, allowedCasePassed: true } });
+    expect(verified.status).toBe(200);
+    expect(verified.body.failureCase.state).toBe('verified');
+    const list = await request(app).get('/corrections?severity=failure-callout').set(auth());
+    expect(list.body.records[0]).toMatchObject({ severity: 'failure-callout', failureState: 'verified' });
+    expect(JSON.stringify(list.body)).not.toContain('You gave me your task');
+    const repeat = await request(app).post('/corrections').set(auth()).set('X-Instar-Request', '1')
+      .send({ learning: 'Keep setup agent-owned', kind: 'infra-gap' });
+    expect(repeat.body.failureCase.state).toBe('reopened');
+    expect(repeat.body.failureCase.verification).toBeUndefined();
+  });
+
   it('401 without a bearer token', async () => {
     ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
     const res = await request(appWith(ctxFor(stateDir, ledger))).get('/corrections');
@@ -139,6 +170,8 @@ describe('/corrections routes (integration)', () => {
     const app = appWith(ctxFor(stateDir, ledger));
     const res = await request(app).post('/corrections').set(auth()).set('X-Instar-Request', '1').send({ learning: 'x', kind: 'admin-override' });
     expect(res.status).toBe(400);
+    const severity = await request(app).post('/corrections').set(auth()).set('X-Instar-Request', '1').send({ learning: 'x', kind: 'infra-gap', severity: 'urgent-admin' });
+    expect(severity.status).toBe(400);
   });
 
   it('records an exact-key class-review shell before returning a correction and exposes scrubbed lifecycle state', async () => {

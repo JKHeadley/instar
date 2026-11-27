@@ -194,6 +194,28 @@ describe('firstPaint: a placeholder never replaces real content', () => {
 });
 
 describe('arrivalScroll: once per arrival', () => {
+  it('restores a Back position once and leaves subsequent user scrolling alone', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(callback => { frames.push(callback); return frames.length; });
+    expect(ui.arrivalScrollPosition(120)).toBe(true);
+    expect(ui.arrivalScrollPosition(120)).toBe(false);
+    expect(frames).toHaveLength(1);
+    frames[0](0);
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 120);
+    (window.scrollTo as any).mockClear();
+    expect(ui.arrivalScrollPosition(120)).toBe(false);
+    expect(window.scrollTo).not.toHaveBeenCalled();
+  });
+  it('does not apply a queued Back restoration after another route arrives', () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(callback => { frames.push(callback); return frames.length; });
+    expect(ui.arrivalScrollPosition(120)).toBe(true);
+    ui.newArrival();
+    frames[0](0);
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(ui.arrivalScrollPosition(Infinity)).toBe(false);
+    expect(ui.arrivalScrollPosition(-1)).toBe(false);
+  });
   it('scrolls once, however many renders follow, and again only for a new arrival', () => {
     const n = document.createElement('section');
     const spy = n.scrollIntoView as any;
@@ -347,10 +369,11 @@ describe('NEGATIVE CONTROL: the same check catches a page that breaks the floor'
 });
 
 // A page must not bypass the helpers. files.js scrolls the file tree it owns after an
-// operator's click, which is not a refresh path.
+// operator's click, and chats.js jumps to a pinned message when the operator taps the
+// pinned bar (conversation-pinned-messages); neither is a refresh path.
 const RAW = /\bmain\.replaceChildren\(|\.scrollIntoView\(|\bwindow\.scrollTo\(/;
 function rawViolations(src: string) { return src.split('\n').filter((l) => RAW.test(l)); }
-const OWN_SCROLLS: Record<string, number> = { 'ui.js': 3, 'console.js': 3, 'files.js': 1 };
+const OWN_SCROLLS: Record<string, number> = { 'ui.js': 3, 'console.js': 3, 'files.js': 1, 'chats.js': 1 };
 
 describe('static floor: no page bypasses the helpers', () => {
   const files = fs.readdirSync(CONSOLE).filter((f) => f.endsWith('.js') && !f.endsWith('-model.js'));

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "close-header-on-unread-error",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-19T22:27:32.055Z",
+  "artifactPath": "upgrades/side-effects/close-header-on-unread-error.md",
+  "artifactSha256": "0f27cbfbcdac051c6ddc23bd282f1eaf68e6242c8a0614e5dd2a0bf222fecb00",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-19T22-27-23-353Z-close-header-on-unread-error.json",
+    ".instar/instar-dev-traces/2026-11-19T22-26-44-881Z-close-header-on-unread-error-c41e236a.json",
+    "docs/specs/close-header-on-unread-error.eli16.md",
+    "src/server/bodyBudget.ts",
+    "tests/e2e/close-unread-body-alive.test.ts",
+    "tests/unit/body-budget-before-auth.test.ts",
+    "upgrades/next/close-header-on-unread-error.md",
+    "upgrades/side-effects/close-header-on-unread-error.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small connection-handling polish (SEC-118-R2): add Connection: close to error answers to unread bodies; one wrapper, no admission change, reversible by revert; independent review concurred. Whole-PR trace.",
+  "eli16Path": "docs/specs/close-header-on-unread-error.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/close-header-on-unread-error.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

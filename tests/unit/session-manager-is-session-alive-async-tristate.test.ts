@@ -133,6 +133,53 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
     expect(v).not.toBe(false);
   });
 
+  it('returns false when there is no tmux socket at all (no server, so no session)', async () => {
+    // What tmux 3.7c prints when the socket file is gone (after a reboot, or a cleaned temp directory).
+    const noSocket = (): Error => {
+      const e = new Error('Command failed') as Error & { stderr?: string };
+      e.stderr = 'error connecting to /private/tmp/tmux-501/default (No such file or directory)';
+      return e;
+    };
+    opHandlers = { 'has-session': () => ({ reject: noSocket() }) };
+    expect(await probe(manager).isSessionAliveAsync('gone-with-the-server')).toBe(false);
+    expect(await manager.isSessionAliveNonBlocking('gone-with-the-server')).toBe(false);
+  });
+
+  it('stays INDETERMINATE when the socket exists but cannot be reached', async () => {
+    for (const stderr of [
+      'error connecting to /private/tmp/tmux-501/default (Permission denied)',
+      'error connecting to /private/tmp/tmux-501/default (Connection refused)',
+    ]) {
+      const e = new Error('Command failed') as Error & { stderr?: string };
+      e.stderr = stderr;
+      opHandlers = { 'has-session': () => ({ reject: e }) };
+      expect(await probe(manager).isSessionAliveAsync('unreachable'), stderr).toBe('indeterminate');
+    }
+  });
+
+  it('isSessionAliveNonBlocking is the same tri-state read under a public name', async () => {
+    opHandlers = { 'has-session': () => ({ reject: absentErr() }) };
+    expect(await manager.isSessionAliveNonBlocking('dead')).toBe(false);
+    opHandlers = { 'has-session': () => ({ reject: timeoutErr() }) };
+    expect(await manager.isSessionAliveNonBlocking('slow')).toBe('indeterminate');
+    opHandlers = { 'has-session': () => ({ ok: '' }), 'display-message': () => ({ ok: 'claude||claude' }) };
+    expect(await manager.isSessionAliveNonBlocking('live')).toBe(true);
+  });
+
+  it('two captures of the same pane at different depths are separate reads; the same depth is shared', async () => {
+    const depths: string[] = [];
+    opHandlers = { 'capture-pane': (args) => { const depth = args[args.indexOf('-S') + 1]; depths.push(depth); return { ok: `screen at ${depth}` }; } };
+    const [twelve, thirty, thirtyAgain] = await Promise.all([
+      manager.captureOutputAsync('pane', 12),
+      manager.captureOutputAsync('pane', 30),
+      manager.captureOutputAsync('pane', 30),
+    ]);
+    expect(twelve).toBe('screen at -12');
+    expect(thirty).toBe('screen at -30');
+    expect(thirtyAgain).toBe('screen at -30');
+    expect(depths.sort()).toEqual(['-12', '-30']); // three callers, two subprocesses
+  });
+
   it('returns true when the pane is a live claude process', async () => {
     opHandlers = {
       'has-session': () => ({ ok: '' }),
@@ -212,6 +259,43 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
 
     expect(state.getSession('keep-me')!.status).toBe('running'); // still alive — NOT reaped
     expect(completed).toBe(0);
+  });
+
+  it.each([false, true])('waits for a dead pane exit status before classifying a Codex 429 (async=%s)', async (enabled) => {
+    const subject = makeManager(tmpDir, state, enabled);
+    state.saveSession({ ...runningSession('pending-exit', 'pending-exit'), framework: 'codex-cli' });
+    let exitStatus = '';
+    opHandlers = {
+      'has-session': () => ({ ok: '' }),
+      // tmux can close the pane fd before waitpid supplies its exit status.
+      'display-message': () => ({ ok: `codex||codex||1||${exitStatus}||` }),
+      'capture-pane': () => ({ ok: 'exceeded retry limit, last status: 429 Too Many Requests' }),
+    };
+    const notices: Session[] = [];
+    subject.on('codexRateLimitExit', (s) => notices.push(s));
+    try {
+      expect(subject.isSessionAlive('pending-exit')).toBe(true);
+      expect(await probe(subject).isSessionAliveAsync('pending-exit')).toBe('indeterminate');
+      await maintenanceTicks.get(subject)!();
+      expect(state.getSession('pending-exit')!.status).toBe('running');
+      expect(notices).toHaveLength(0);
+
+      exitStatus = '1';
+      await maintenanceTicks.get(subject)!();
+      expect(state.getSession('pending-exit')).toMatchObject({ status: 'failed', endedReason: 'codex-rate-limited' });
+      expect(subject.listRunningSessions()).toHaveLength(0);
+      await maintenanceTicks.get(subject)!();
+      expect(notices).toHaveLength(1);
+    } finally { subject.stopMonitoring(); }
+  });
+
+  it.each([false, true])('recognizes a signal-terminated pane without an exit status (async=%s)', async (enabled) => {
+    const subject = makeManager(tmpDir, state, enabled);
+    opHandlers = { 'display-message': () => ({ ok: 'codex||codex||1||||TERM' }) };
+    try {
+      expect(subject.isSessionAlive('signaled')).toBe(false);
+      expect(await probe(subject).isSessionAliveAsync('signaled')).toBe(false);
+    } finally { subject.stopMonitoring(); }
   });
 
   it('off-path (tmuxAsyncEnabled:false) retains the legacy false-on-timeout behavior', async () => {

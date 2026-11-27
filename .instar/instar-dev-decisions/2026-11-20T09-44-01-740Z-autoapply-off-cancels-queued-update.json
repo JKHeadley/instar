@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-20T09:44:01.740Z",
+  "slug": "autoapply-off-cancels-queued-update",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AutoUpdater.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

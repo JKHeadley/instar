@@ -31,18 +31,29 @@ describe('notice author custody', () => {
     const call = send.mock.calls[0] as unknown as [number, string, string | undefined, BatcherOrigin];
     expect(call[3]).toMatchObject({ producerId: 'quota-notifier', author: { model: { status: 'not-applicable' } } });
   });
-  it('composes unknown contributors for mixed sources, including deduplicated shapes', async () => {
+  it('keeps distinct producer provenance for mixed sources, including identical shapes', async () => {
     for (const sameShape of [false, true]) {
       const batcher = new NotificationBatcher(), send = vi.fn(async () => ({ messageId: 1 }));
       batcher.setSendFunction(send);
       await batcher.enqueue(note(quota()));
       await batcher.enqueue(note(undefined, sameShape ? 'Quota threshold reached' : 'A generated report with different wording'));
       await batcher.flush('SUMMARY');
-      const origin = (send.mock.calls[0] as unknown as [number, string, string, BatcherOrigin])[3];
-      expect(origin.producerId).toBe('notification-batcher');
-      expect(origin.author.model.status).toBe('unknown');
-      expect(origin.author.authorContributors?.map(value => value.model.status)).toEqual(['not-applicable', 'unknown']);
+      expect(send).toHaveBeenCalledTimes(2);
+      const calls = send.mock.calls as unknown as [number, string, string, BatcherOrigin?][];
+      expect(calls[0][3]).toMatchObject({ producerId: 'quota-notifier', author: { model: { status: 'not-applicable' } } });
+      expect(calls[1][3]).toBeUndefined();
     }
+  });
+  it('does not suppress another producer after the same shape was delivered', async () => {
+    const batcher = new NotificationBatcher(), send = vi.fn(async () => ({ messageId: 1 }));
+    batcher.setSendFunction(send);
+    await batcher.enqueue(note(quota())); await batcher.flush('SUMMARY');
+    await batcher.enqueue(note()); await batcher.flush('SUMMARY');
+    expect(send).toHaveBeenCalledTimes(2);
+    expect((send.mock.calls[1] as unknown as unknown[])[3]).toBeUndefined();
+    await batcher.enqueue(note(quota())); await batcher.enqueue(note());
+    expect(await batcher.flush('SUMMARY')).toBe(0);
+    expect(send).toHaveBeenCalledTimes(2);
   });
   it('keeps generic notifications unbound and does not infer authors from quota category or text', async () => {
     const batcher = new NotificationBatcher(), send = vi.fn(async () => ({ messageId: 1 })); batcher.setSendFunction(send);

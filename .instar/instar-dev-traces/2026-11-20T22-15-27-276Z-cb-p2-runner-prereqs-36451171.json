@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "cb-p2-runner-prereqs",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T22:15:27.276Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-runner-prereqs.md",
+  "artifactSha256": "cddb8dad32b322b34f1e0a12188b53da4b678002c4fedb5beffa099fc48038c2",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/devGatedFeatures.ts",
+    "src/data/awareness/context-budget-shadow-folds.md",
+    "src/monitoring/FoldCoordinator.ts",
+    "src/monitoring/contextLayers/promptContext.ts",
+    "src/monitoring/foldAudit.ts",
+    "src/monitoring/foldCleanStop.ts",
+    "src/monitoring/foldHandoff.ts",
+    "src/monitoring/foldMarker.ts",
+    "src/monitoring/foldShadowLog.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/integration/fold-shadow-route.test.ts",
+    "tests/unit/fold-audit.test.ts",
+    "tests/unit/fold-clean-stop.test.ts",
+    "tests/unit/fold-runner-prereqs.test.ts",
+    "upgrades/next/cb-p2-runner-prereqs.md",
+    "upgrades/side-effects/cb-p2-runner-prereqs.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice: runner prerequisites (switch, coordinator lock window/renew, suppression, audit, clean stop, brakes, record + route); second-pass reviewed in three rounds.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

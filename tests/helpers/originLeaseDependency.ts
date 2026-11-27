@@ -20,7 +20,9 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean;
   /** Wire the production mesh resolver so signed accept-acks are verified (the ack-capable path). */
   mesh?: boolean;
   /** Solo-captain hold inputs (preferred captain + whether every peer is presumed gone). */
-  soloCaptain?: { allPeersPresumedGone: boolean } } = {}) {
+  soloCaptain?: { allPeersPresumedGone: boolean };
+  /** Behave as a store other machines also read, where renewal stays opt-in. */
+  sharedStore?: boolean } = {}) {
   const root = await mkdtemp('/tmp/origin-lease-dependency-'), stateDir = path.join(root, '.instar');
   await mkdir(stateDir);
   const identities = new MachineIdentityManager(stateDir);
@@ -49,6 +51,7 @@ export async function originLeaseDependencyFixture(options: { enroll?: boolean;
       priorityLan: 20, priorityCloudflare: 30, tailscaleEnabled: true, lanSubnetGate: false, unhealthyAfterFailures: 3,
       endpointEvictionMs: 3_600_000, maxProbeBackoffMs: 300_000, requestTimeoutMs: 30_000 } }) } : {}) });
   const store = new LocalLeaseStore({ filePath: path.join(stateDir, 'state/fenced-lease.json') });
+  if (options.sharedStore) store.hasNoSharedMedium = () => false;
   const lc = new LeaseCoordinator({ lease, store, tunnel: transport, presumedDeadHolders: () => new Set(), now,
     ...(options.clock ? { monotonicNow: now } : {}),
     ...(options.soloCaptain ? { soloCaptainHold: () => ({ enabled: true }), isPreferredAwakeAgreed: () => true,

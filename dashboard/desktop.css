@@ -42,10 +42,13 @@ body.desktop-live #localCursor{display:block}
 .setup-note:empty { display: none; }
 .setup-quiet { background: none; border: none; color: inherit; opacity: 0.7; text-decoration: underline; }
 
-#lockedPassword{position:absolute;z-index:8;left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));top:max(.5rem,env(safe-area-inset-top));display:grid;gap:.4rem;padding:.6rem;background:#111827f2;border:1px solid #64748b;border-radius:10px;color:#f1f5f9}
+#lockedPassword{position:absolute;z-index:8;left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));top:calc(max(.35rem,env(safe-area-inset-top)) + 2.9rem);display:grid;gap:.4rem;padding:.6rem;background:#111827f2;border:1px solid #64748b;border-radius:10px;color:#f1f5f9}
+/* Start below .desktop-bar so the Stop button stays clickable while the password box shows. */
 #lockedPassword[hidden],#leaveUnlockedButton[hidden]{display:none}
 #lockedPassword input{width:100%;font-size:16px;padding:.55rem}
 #lockedPassword p{margin:0;font-size:.8rem}
+#lockedPasswordReason{position:absolute;z-index:8;left:max(.5rem,env(safe-area-inset-left));right:max(.5rem,env(safe-area-inset-right));top:calc(max(.35rem,env(safe-area-inset-top)) + 2.9rem);margin:0;padding:.6rem;background:#111827f2;border:1px solid #64748b;border-radius:10px;color:#f1f5f9;font-size:.85rem;pointer-events:none}
+#lockedPasswordReason[hidden]{display:none}
 #leaveUnlockedButton{position:absolute;z-index:8;right:max(.5rem,env(safe-area-inset-right));bottom:4rem;padding:.55rem .8rem}
 #lockedCard{margin-top:.8rem}
 #lockedCard[hidden]{display:none}

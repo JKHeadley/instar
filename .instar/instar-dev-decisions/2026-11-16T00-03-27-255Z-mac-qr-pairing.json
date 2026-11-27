@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-16T00:03:27.255Z",
+  "slug": "mac-qr-pairing",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 89,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/MobilePairing.ts",
+      "src/data/awareness/mac-qr-pairing.md",
+      "src/server/mobilePairingApproval.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 68,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -14,11 +14,24 @@
  * Haiku tier for cost efficiency — summaries don't need deep reasoning.
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import type { IntelligenceProvider } from '../core/types.js';
 import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_TOPIC_SUMMARIZE } from '../data/provenanceCoverage.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
+import { TopicSummaryTable } from './TopicSummaryTable.js';
+
+/**
+ * Per-message bound in the summarization prompt. The summary becomes the topic's
+ * standing context, and the prompt asks it to preserve specific details, so a
+ * silent cut could drop a detail from the summary for good. Derived: up to 200
+ * messages go into one prompt (maxMessagesPerPrompt), so the 1000 characters of
+ * content per message stay; disclosure room is added so a cut message says so
+ * and the summary can note it, rather than read the fragment as the whole.
+ */
+const SUMMARIZER_MESSAGE_CHARS = 1000 + BOUNDED_INPUT_MIN_CHARS;
 
 export const TOPIC_SUMMARIZER_PROMPT_ID = 'topic-summarize-v1';
 
@@ -122,8 +135,7 @@ function buildSummaryPrompt(
   for (const m of messages) {
     const sender = m.fromUser ? 'User' : 'Agent';
     const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(0, 16).replace('T', ' ') : '';
-    // Truncate very long messages to keep prompt manageable
-    const text = m.text.length > 1000 ? m.text.slice(0, 1000) + '...' : m.text;
+    const text = boundedHead(m.text, SUMMARIZER_MESSAGE_CHARS);
     lines.push(`[${ts}] ${sender}: ${text}`);
   }
 
@@ -153,15 +165,29 @@ export class TopicSummarizer {
   private intelligence: IntelligenceProvider;
   private topicMemory: TopicMemory;
   private config: TopicSummarizerConfig;
+  private table: TopicSummaryTable;
 
+  /**
+   * `table` is the summary table's single-writer funnel (context budget §6).
+   * Omitted ⇒ the legacy owner (layers off): exactly today's behaviour. With
+   * the context layers on the table belongs to H3 and this writer is disabled:
+   * `summarize` returns null before any model call.
+   */
   constructor(
     intelligence: IntelligenceProvider,
     topicMemory: TopicMemory,
     config?: Partial<TopicSummarizerConfig>,
+    table?: TopicSummaryTable,
   ) {
     this.intelligence = intelligence;
     this.topicMemory = topicMemory;
     this.config = mergeDefaults(DEFAULT_CONFIG, config);
+    this.table = table ?? new TopicSummaryTable(topicMemory, () => false);
+  }
+
+  /** False when the summary table belongs to H3 (context layers on): this writer is disabled. */
+  enabled(): boolean {
+    return this.table.admits('topic-summarizer');
   }
 
   /**
@@ -169,6 +195,8 @@ export class TopicSummarizer {
    * Returns null if the topic doesn't need a summary update.
    */
   async summarize(topicId: number, force?: boolean): Promise<SummarizeResult | null> {
+    // Disabled while H3 owns the table (context layers on): no model call, no write.
+    if (!this.enabled()) return null;
     const needsUpdate = force || this.topicMemory.needsSummaryUpdate(topicId, this.config.messageThreshold);
     if (!needsUpdate) return null;
 
@@ -211,7 +239,7 @@ export class TopicSummarizer {
     });
 
     if (!summary || summary.trim().length < 10) {
-      throw new Error(`Summary generation returned empty/invalid result for topic ${topicId}`);
+      throw new Error(`Summary generation returned empty/invalid result for ${topicRef(topicId)}`);
     }
 
     // Parse purpose from the response (first line starting with "PURPOSE:")
@@ -222,13 +250,16 @@ export class TopicSummarizer {
     const totalMessages = this.topicMemory.getMessageCount(topicId);
 
     // Save the summary
-    this.topicMemory.saveTopicSummary(
+    const saved = this.table.write(
+      'topic-summarizer',
       topicId,
       body,
       totalMessages,
       lastMessage?.messageId ?? existingSummary?.lastMessageId ?? 0,
       purpose,
     );
+    // H3 took the table between the check above and here (a restart flips the owner only at boot, so this is defensive).
+    if (!saved.written) return null;
 
     return {
       topicId,
@@ -253,7 +284,7 @@ export class TopicSummarizer {
         const result = await this.summarize(topic.topicId);
         if (result) results.push(result);
       } catch (err) {
-        console.error(`[TopicSummarizer] Failed to summarize topic ${topic.topicId}: ${err}`);
+        console.error(`[TopicSummarizer] Failed to summarize ${topicRef(topic.topicId)}: ${err}`);
       }
     }
 

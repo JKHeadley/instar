@@ -112,6 +112,18 @@ describe('pickPrimaryLanIp', () => {
     };
     expect(pickPrimaryLanIp(ifaces)).toBe('10.0.0.5');
   });
+  it.each(['enp7s0', 'ens3', 'eno1', 'wlp2s0', 'wlan0', 'en0', 'eth1'])('reads a private address on %s', (name) => {
+    expect(pickPrimaryLanIp({ [name]: [{ address: '10.77.0.2', family: 'IPv4', internal: false }] })).toBe('10.77.0.2');
+  });
+  it('a machine with a plain name keeps it, whatever else it has', () => {
+    expect(pickPrimaryLanIp({
+      wlp2s0: [{ address: '10.1.1.1', family: 'IPv4', internal: false }],
+      eth1: [{ address: '10.2.2.2', family: 'IPv4', internal: false }],
+    })).toBe('10.2.2.2');
+  });
+  it.each(['docker0', 'br-abc', 'veth12', 'virbr0', 'utun3'])('ignores %s, which no other machine can dial', (name) => {
+    expect(pickPrimaryLanIp({ [name]: [{ address: '10.77.0.2', family: 'IPv4', internal: false }] })).toBeNull();
+  });
   it('returns null when no private IPv4 present', () => {
     const ifaces: NetIfaces = { en0: [{ address: '8.8.8.8', family: 'IPv4', internal: false }] };
     expect(pickPrimaryLanIp(ifaces)).toBeNull();

@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -189,6 +190,8 @@ export interface WindowRunLivenessDocument {
     message: string;
   };
   notificationDeliveredAt?: string;
+  notificationQuietId?: string;
+  notificationRecordedAt?: string;
 }
 
 export interface WindowRunLivenessRegistration {
@@ -251,7 +254,7 @@ export interface WindowRunLivenessDeps {
   projectStatus?: (state: Readonly<WindowRunLivenessDocument>, status: WindowRunLivenessStatus) => string;
   /** Rebinds the server-owned run association before recovery verification. */
   rebindExecutor?: (state: Readonly<WindowRunLivenessDocument>, replacementExecutorId: string) => string;
-  notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<boolean>;
+  notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<boolean | QuietReceipt>;
   /** Requery the delivery authority for a previously persisted notification marker. */
   notificationAlreadyDelivered?: (state: Readonly<WindowRunLivenessDocument>, marker: string) => Promise<boolean> | boolean;
   now?: () => string;
@@ -886,7 +889,7 @@ export class WindowRunLivenessAuthority {
   }
 
   private async notifyOnce(state: WindowRunLivenessDocument, message: string): Promise<void> {
-    if (this.cfg.dryRun || state.notificationDeliveredAt || !this.deps.notifyFailure) return;
+    if (this.cfg.dryRun || state.notificationDeliveredAt || state.notificationQuietId || !this.deps.notifyFailure) return;
     if (!state.notificationIntent) {
       const marker = `window-run-liveness-notice:${digest({ windowId: state.windowId, autonomousRunId: state.autonomousRunId, lifecycleRunId: state.lifecycleRunId, status: state.status, finalSnapshot: state.finalSnapshot }).slice(0, 24)}`;
       state.notificationIntent = { marker, createdAt: this.now(), message: `${message}\n[${marker}]` };
@@ -896,7 +899,9 @@ export class WindowRunLivenessAuthority {
     try {
       alreadyDelivered = await this.deps.notificationAlreadyDelivered?.(structuredClone(state), state.notificationIntent.marker) === true;
     } catch { /* @silent-fallback-ok — authority requery failure preserves at-least-once delivery by retrying */ }
-    if (alreadyDelivered || await this.deps.notifyFailure(structuredClone(state), state.notificationIntent.message)) {
+    const result = alreadyDelivered || await this.deps.notifyFailure(structuredClone(state), state.notificationIntent.message);
+    if (isQuietReceipt(result)) { state.notificationQuietId = result.quietId; state.notificationRecordedAt = this.now(); this.store.save(state); return; }
+    if (result === true) {
       state.notificationDeliveredAt = this.now();
       this.store.save(state);
     }

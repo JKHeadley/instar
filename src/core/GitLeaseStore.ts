@@ -1,3 +1,4 @@
+import {syncNativeLeaseFile} from './NativeLeaseDurability.js';
 /**
  * GitLeaseStore — the durable (git-backed) LeaseStore for LeaseCoordinator.
  *
@@ -33,11 +34,21 @@ export interface GitLeaseStoreDeps {
    * Absent or false keeps a failed push a lost CAS (docs/specs/lease-takeover-no-shared-medium.md).
    */
   localCommitIsFinal?: () => boolean;
+  /**
+   * True when the repository has no git remote, so this store holds only this machine's copy
+   * (as LocalLeaseStore does); false or null (unreadable) keeps today's behaviour.
+   */
+  hasNoRemote?: () => boolean | null;
+  /** Clock for the remote-check cache (tests). */
+  now?: () => number;
   logger?: (msg: string) => void;
 }
 
+const NO_REMOTE_CACHE_MS = 60_000;
+
 export class GitLeaseStore implements LeaseStore {
   private readonly d: GitLeaseStoreDeps;
+  private noRemoteCache: { at: number; value: boolean } | null = null;
 
   constructor(deps: GitLeaseStoreDeps) {
     this.d = deps;
@@ -45,6 +56,26 @@ export class GitLeaseStore implements LeaseStore {
 
   private log(m: string): void {
     this.d.logger?.(`[git-lease] ${m}`);
+  }
+
+  /** Supplements the actual commit/push CAS with local crash durability. */
+  syncDurably(expected:LeaseRecord|null=this.read().lease):void{syncNativeLeaseFile(this.d.registryAbsPath,expected,document=>(document as MachineRegistry).lease??null);}
+  get durabilityPath():string{return this.d.registryAbsPath;}
+  /**
+   * No remote means no shared medium: a peer learns of this lease only over the lease wire, as
+   * with LocalLeaseStore, so the coordinator applies the same rules (ask before claiming, fold a
+   * live peer lease over an expired own copy, renew, confirm on a peer pull). Without this a
+   * restarted machine on a git home with no remote claims without asking and ties with the live
+   * holder (proof-2, 2026-11-08; fb-c51067c6-148 follow-up). Read often, so the answer is kept
+   * for a minute: adding a remote takes effect within a minute, with no restart.
+   */
+  hasNoSharedMedium(): boolean {
+    const now = (this.d.now ?? Date.now)();
+    if (this.noRemoteCache && now - this.noRemoteCache.at < NO_REMOTE_CACHE_MS) return this.noRemoteCache.value;
+    let value = false;
+    try { value = this.d.hasNoRemote?.() === true; } catch { value = false; } // @silent-fallback-ok: unreadable keeps today's behaviour
+    this.noRemoteCache = { at: now, value };
+    return value;
   }
 
   read(): { lease: LeaseRecord | null; epoch: number } {

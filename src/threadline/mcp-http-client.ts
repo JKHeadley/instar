@@ -19,6 +19,7 @@ import type {
 } from './ThreadlineMCPServer.js';
 import { Agent } from 'undici';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
+import type { ApprovedDeleteResult } from './performApprovedDelete.js';
 
 /**
  * The inner relay-send call holds its request open for up to the reply wait
@@ -157,6 +158,7 @@ export async function sendMessageViaHttp(
       forwardedTo?: string;
       replyArrivesIn?: string;
       peerDark?: { since: string | null; queuedCount: number; expiresAt: string | null; connectedNow: boolean | null; connectedNowReason?: 'no-row' | 'relay-down' | 'stale' | null; connectedAsOf?: string | null; handedUnackedCount?: number };
+      receipt?: SendMessageResult['receipt'];
     } = {};
     if (raw) {
       try {
@@ -190,6 +192,8 @@ export async function sendMessageViaHttp(
         ...(parsed.replyArrivesIn !== undefined ? { replyArrivesIn: parsed.replyArrivesIn } : {}),
         // §3.2: a send to a dark peer carries the evidence object, additively.
         ...(parsed.peerDark && typeof parsed.peerDark === 'object' ? { peerDark: parsed.peerDark } : {}),
+        // a2a-required-acknowledgment D6: what the peer's side said, on a wait timeout.
+        ...(parsed.receipt && typeof parsed.receipt === 'object' ? { receipt: parsed.receipt } : {}),
       };
     }
 
@@ -297,59 +301,124 @@ export async function getThreadHistoryViaHttp(
 }
 
 /**
- * Sealed-handoff keystone — self-mint a Secret Drop request via the agent
- * server's loopback `/threadline/secrets/request` route.
+ * a2a-required-acknowledgment D4: `threadline_ack` on both transports. Stdio tools run
+ * in a subprocess with no tracker, so the watch and pending rows live behind this route.
+ */
+export async function acknowledgeViaHttp(
+  params: { threadId?: string; ackRefs: string[]; summary: string },
+  serverPort: number,
+  agentToken: string,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`http://localhost:${serverPort}/threadline/ack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+    body: JSON.stringify(params),
+  });
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status >= 400 && typeof body.error === 'string') throw new Error(body.error);
+  if (response.status >= 400) throw new Error(`The agent server answered ${response.status}`);
+  return body;
+}
+
+/**
+ * SEC-018 companion: the stdio helper's gated delete. Calls the loopback
+ * `POST /threadline/approved-delete` (Bearer agent-token, like every sibling here) so the
+ * consume + the irreversible mutation happen at the authority in the server process. Returns
+ * the server's `ApprovedDeleteResult` on a clean 200. On a transport failure, a non-2xx, or an
+ * unparseable/ambiguous answer, THROWS — the handler maps that to OUTCOME-UNKNOWN and never
+ * falls back to a local delete (the server MAY have deleted before the answer was lost).
+ */
+export async function approvedDeleteViaHttp(
+  threadId: string,
+  serverPort: number,
+  agentToken: string,
+): Promise<ApprovedDeleteResult> {
+  let response: Response;
+  try {
+    response = await fetch(`http://localhost:${serverPort}/threadline/approved-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${agentToken}` },
+      body: JSON.stringify({ threadId }),
+    });
+  } catch {
+    throw new Error(OUTCOME_UNKNOWN_ERROR); // the request may or may not have reached/applied
+  }
+  if (!response.ok) {
+    throw new Error(OUTCOME_UNKNOWN_ERROR); // 5xx etc: the server may have deleted before erroring
+  }
+  const body = (await response.json().catch(() => null)) as ApprovedDeleteResult | null;
+  if (body && typeof body === 'object' && 'ok' in body) return body;
+  throw new Error(OUTCOME_UNKNOWN_ERROR); // unparseable/ambiguous → do not assume failure
+}
+
+/** a2a-required-acknowledgment D6: receipts on a thread. An unreadable answer is no receipts. */
+export async function getThreadReceiptsViaHttp(threadId: string, serverPort: number, agentToken: string): Promise<Array<Record<string, unknown>>> {
+  try {
+    const response = await fetch(`http://localhost:${serverPort}/threadline/threads/${encodeURIComponent(threadId)}/receipts`, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+    });
+    if (!response.ok) return [];
+    const body = (await response.json()) as { receipts?: Array<Record<string, unknown>> };
+    return Array.isArray(body.receipts) ? body.receipts : [];
+  } catch {
+    return []; // @silent-fallback-ok — history still answers without receipts
+  }
+}
+
+/**
+ * Mint a Secret Drop request for this agent (sealed-handoff keystone).
  *
- * Deliberately sends NO Authorization header: this route is one of the few
- * exact `/threadline/*` routes the bearer gate leaves public (middleware.ts
- * THREADLINE_PUBLIC_ROUTES) and it enforces loopback-only itself. It predates
- * the stdio helper's vault-aware token resolution (mcpAuthToken.ts) and stays
- * token-free so a helper with NO resolvable token can still mint a sealed
- * handoff — which is the exact gap this route closes.
+ * With the agent's key (`agentToken`), the request goes to the key-gated
+ * `/secrets/request`, so it may name this conversation and its "secret received"
+ * message reaches the session (docs/specs/secret-drop-self-mint-hardening.md).
+ * With no key, or if the key is refused (401), it falls back to the keyless loopback
+ * route: the link still works, but no receipt message can reach a conversation, and
+ * the server's answer carries a plain `notice` saying so.
  * The mint goes through the server's durable SecretDrop store, so the request
  * survives session churn.
  */
 export async function requestSecretViaHttp(
   params: RequestSecretParams,
   serverPort: number,
+  agentToken?: string | null,
 ): Promise<RequestSecretResult> {
-  try {
-    const response = await fetch(`http://localhost:${serverPort}/threadline/secrets/request`, {
+  const body = JSON.stringify({
+    label: params.label,
+    description: params.description,
+    fields: params.fields,
+    topicId: params.topicId,
+    ttlMs: params.ttlMs,
+    senderVerification: params.senderVerification,
+  });
+  const attempt = async (path: string, token?: string | null): Promise<{ status: number; parsed: { token?: string; localUrl?: string; tunnelUrl?: string | null; expiresIn?: number; error?: string; notice?: string } }> => {
+    const response = await fetch(`http://localhost:${serverPort}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: params.label,
-        description: params.description,
-        fields: params.fields,
-        topicId: params.topicId,
-        ttlMs: params.ttlMs,
-        senderVerification: params.senderVerification,
-      }),
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body,
     });
-
     const raw = await response.text();
-    let parsed: {
-      token?: string;
-      localUrl?: string;
-      tunnelUrl?: string | null;
-      expiresIn?: number;
-      error?: string;
-    } = {};
+    let parsed: { token?: string; localUrl?: string; tunnelUrl?: string | null; expiresIn?: number; error?: string; notice?: string } = {};
     try {
       parsed = raw ? JSON.parse(raw) : {};
     } catch {
       /* tolerate a non-JSON body */
     }
-
-    if (!response.ok) {
-      return { success: false, error: parsed.error || `HTTP ${response.status}` };
+    return { status: response.status, parsed };
+  };
+  try {
+    let r = agentToken ? await attempt('/secrets/request', agentToken) : null;
+    // A refused key (401) or a stale one (403, e.g. after a key rotation) falls back to the keyless route.
+    if (!r || r.status === 401 || r.status === 403) r = await attempt('/threadline/secrets/request');
+    if (r.status < 200 || r.status >= 300) {
+      return { success: false, error: r.parsed.error || `HTTP ${r.status}` };
     }
     return {
       success: true,
-      token: parsed.token,
-      localUrl: parsed.localUrl,
-      tunnelUrl: parsed.tunnelUrl ?? null,
-      expiresIn: parsed.expiresIn,
+      token: r.parsed.token,
+      localUrl: r.parsed.localUrl,
+      tunnelUrl: r.parsed.tunnelUrl ?? null,
+      expiresIn: r.parsed.expiresIn,
+      ...(r.parsed.notice ? { notice: r.parsed.notice } : {}),
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -444,8 +513,8 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
         headers: { 'Authorization': `Bearer ${token()}` },
       });
       if (!res.ok) return (lastState = 'unavailable');
-      const body = await res.json() as { relay?: { connected?: boolean } };
-      lastState = body.relay?.connected ? 'connected' : 'disconnected';
+      const body = await res.json() as { agent?: { state?: string } };
+      lastState = body.agent?.state === 'reachable' ? 'connected' : body.agent?.state === 'unreachable' ? 'disconnected' : 'unavailable';
       return lastState;
     } catch {
       return (lastState = 'unavailable');
@@ -455,9 +524,8 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
     get connectionState(): string { return lastState; },
     async discover(filter) {
       const state = await refreshState();
-      if (state !== 'connected') return [];
-      try {
-        const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
+      if (state !== 'connected') throw new Error(`agent relay ${state}`);
+      const res = await fetch(`http://localhost:${serverPort}/threadline/relay-discover`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -465,18 +533,16 @@ export function createHttpRelayDiscoverer(serverPort: number, agentToken: string
           },
           body: JSON.stringify({ filter }),
         });
-        if (!res.ok) return [];
-        const body = await res.json() as {
+      if (!res.ok) throw new Error(`relay discover HTTP ${res.status}`);
+      const body = await res.json() as {
           success?: boolean;
           agents?: Array<{
             agentId: string; name: string; publicKey?: string;
             framework?: string; capabilities?: string[]; lastSeen?: string;
           }>;
         };
-        return body.success && Array.isArray(body.agents) ? body.agents : [];
-      } catch {
-        return [];
-      }
+      if (!body.success || !Array.isArray(body.agents)) throw new Error('relay discover failed');
+      return body.agents;
     },
   };
 }

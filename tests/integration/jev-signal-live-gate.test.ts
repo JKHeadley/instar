@@ -120,7 +120,7 @@ describe('jev-signal-live — through the real outbound route', () => {
       config: { authToken: 'test', stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'jev-live-route-')), port: 0, projectName: 'echo' },
       messagingToneGate: e.gate,
       topicOperatorStore: { asVerifiedOperator: () => ({ uid: 'u', displayName: 'Op' }), all: () => ({}) },
-      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); } },
+      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); return { messageId: sent.length, topicId: _t }; } },
       sessionManager: { clearInjectionTracker: () => {} },
     } as never));
     const srv = await new Promise<import('node:http').Server>((r) => { const s = app.listen(0, () => r(s)); });

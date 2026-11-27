@@ -45,7 +45,7 @@ async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeou
     projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: botToken, chatId: '-100123', lifelineTopicId: 7848 } }] },
     telegramOrigin: runtime, verifyDashboardOperatorSession: (proof: string) => proof === 'operator-test',
     telegram: { sendToTopic: async (topicId: number, text: string) => {
@@ -62,6 +62,26 @@ async function harness(storageTimeouts: { requestTimeoutMs?: number; stallTimeou
 }
 
 describe('Telegram reply path across an origin worker stall', () => {
+  it('delivers a queued reply even when a newer message exists in its topic (native-conversation-base §3a, causal rule)', async () => {
+    const h = await harness();
+    h.runtime.service.options.authorize = async () => false;
+    const held = await h.reply('Status written before the conversation moved on.');
+    expect(held.status).toBe(409);
+    expect(h.network).not.toHaveBeenCalled();
+    // The session's own acknowledgment and a newer user message exist; neither ends the reply.
+    h.runtime.service.options.authorize = async () => true;
+    expect((await h.reply('A newer acknowledgment from the same session.')).status).toBe(200);
+    expect(h.network).toHaveBeenCalledTimes(1);
+
+    await h.runtime.recoverHeld();
+
+    expect(h.network).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(h.network.mock.calls[1][1].body as string).text).toContain('Status written before the conversation moved on.');
+    const records = (await h.runtime.store.listOrigins()).records;
+    expect(records.map(r => r.operation?.state).sort()).toEqual(['accepted', 'accepted']);
+    expect(records.some(r => r.operation?.state === 'suppressed')).toBe(false);
+  });
+
   it('holds during the stall and delivers again after automatic recovery, with no server restart', async () => {
     const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => undefined);
     const h = await harness();

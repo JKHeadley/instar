@@ -9,8 +9,9 @@
 // are browser-native ESM with no DOM access so the unit tests exercise the
 // shipped code directly.
 
-import { verifiedDisplayName } from './display-identity.js';
+import { verifiedDisplayName, plainReferenceText } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export const FRESH_MS = 5 * 60 * 1000;
 export const MAX_ROWS = 3;
@@ -51,13 +52,26 @@ export function machineLabel(f, names = {}) {
   return verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || verifiedDisplayName(names[f.machineId], f.machineId) || 'a machine with no name on file';
 }
 
-/** "Couldn't reach Mac Mini, so its items may be missing." Empty when every machine answered. */
-export function unreachedLine(failed, names, what) {
+/**
+ * "Couldn't reach Mac Mini for 3 hours; reconnecting by itself. Its items may be missing."
+ * Each machine says how long and whether anything is fixing it (CMT-1541), read from the /pool
+ * rows `machineNames` carries. Empty when every machine answered.
+ */
+export function unreachedLine(failed, names, what, now = Date.now()) {
   if (!failed || failed.length === 0) return '';
-  const labels = [...new Set(failed.map((f) => machineLabel(f, names)))];
-  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-  return `Couldn't reach ${list}, so ${failed.length === 1 ? 'its' : 'their'} ${what} may be missing.`;
+  const seen = new Set();
+  const sentences = [];
+  for (const f of failed) {
+    const label = machineLabel(f, names);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    sentences.push(unreachableSentence(label, poolMachine({ machines: (names && names[POOL_ROWS]) || [] }, f && f.machineId), f, now));
+  }
+  return `${sentences.join(' ')} ${seen.size === 1 ? 'Its' : 'Their'} ${what} may be missing.`;
 }
+
+/** The /pool rows behind a name map, kept off its enumerable keys so it still reads as id → name. */
+export const POOL_ROWS = '__poolRows';
 
 /** Name map from a /pool answer: machineId → nickname. */
 export function machineNames(poolRes) {
@@ -67,6 +81,7 @@ export function machineNames(poolRes) {
     const name = verifiedDisplayName(m.nickname, m.machineId) || verifiedDisplayName(m.name, m.machineId);
     if (name) out[m.machineId] = name;
   }
+  Object.defineProperty(out, POOL_ROWS, { value: ms, enumerable: false });
   return out;
 }
 
@@ -96,7 +111,9 @@ export function buildReach(res, now = Date.now()) {
   if (now - observedAt > FRESH_MS) {
     return { state: 'stale', value: count === 0 && expired === 0 ? 'Nothing held' : plural(count + expired, 'message', 'messages'), line: `Last checked ${age}; this may be out of date.`, rows, age };
   }
+  // warning-exempt: buildReach is not shown on any page; Home has no reach card today
   if (expired > 0) return { state: 'bad', value: `${expired} expired`, line: 'Some messages expired without confirmed delivery.', rows, age };
+  // warning-exempt: buildReach is not shown on any page; Home has no reach card today
   if (count > 0) return { state: 'attn', value: `${count} held`, line: 'I need to restore or verify delivery.', rows, age };
   return { state: 'ok', value: 'No messages held', line: 'No messages are held on this machine.', rows, age };
 }
@@ -124,6 +141,11 @@ export function needsOperator(item) {
 export function needAction(item) {
   if (item && item.topicId != null && Number.isFinite(Number(item.topicId))) return { kind: 'topic', topicId: Number(item.topicId) };
   const cat = String((item && item.category) || '');
+  // The Mac permission problem is explained, with its one fix, on that machine's own Machines card;
+  // the remote desktop page only asks for the PIN and says nothing about the permission.
+  if (/^desktop$/i.test(cat) && item.machineId && /^desktop-helper-permission/.test(String(item.sourceContext || item.conditionKey || item.id || ''))) {
+    return { kind: 'href', href: `#/capacity/machines?m=${encodeURIComponent(item.machineId)}&fix=desktop-permission` };
+  }
   if (/^desktop$/i.test(cat)) {
     const q = item.machineId ? `?machineId=${encodeURIComponent(item.machineId)}` : '';
     return { kind: 'href', href: `/dashboard/desktop.html${q}` };
@@ -171,6 +193,7 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
       sub: [g.items.length > 1 ? `${g.items.length} copies` : null,
         [...g.machines].filter((m) => !String(top.title || top.summary || '').startsWith(`${m}:`)).join(', ') || null].filter(Boolean).join(' · '),
       end: (ago(g.last, now) || '').replace(' ago', '') ? `${ago(g.last, now)}` : '',
+      // warning-path: row
       tone: stale ? 'unknown' : (top.priority === 'URGENT' ? 'bad' : 'attn'),
       detail: top.description || top.body || '',
       expandable: true,
@@ -188,11 +211,12 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
   const tail = '';
   const partialLine = unreachedLine(failed, names, 'items');
   if (current.length === 0) {
-    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
+    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, unanswered: failed.length, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
   }
   return {
+    // warning-path: row
     state: partial ? 'partial' : 'attn', count: current.length,
-    coverage: partial ? 'partial view' : null,
+    coverage: partial ? 'partial view' : null, unanswered: failed.length,
     value: plural(current.length, 'thing', 'things'), valueTone: 'attn',
     // Machine coverage belongs under agent status, away from the request.
     line: '', note: null, statusNote: partialLine || null, rows, all,
@@ -280,7 +304,7 @@ export function needsPromiseReview(c, now = Date.now()) {
   return !!c && c.status === 'violated' && !isMissed(c, now);
 }
 
-export function buildPromised(res, now = Date.now(), expectedPeers = null) {
+export function buildPromised(res, now = Date.now(), expectedPeers = null, { topicNames = {}, machineNames: mNames = {} } = {}) {
   if (!res.ok) return unknownCard(`Couldn't read commitments: ${res.reason}.`);
   if (res.data && res.data.enabled === false) return unknownCard('Commitment tracking is switched off on this agent.');
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments
@@ -302,9 +326,9 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
-    main: (tone === 'attn'
+    main: plainReferenceText((tone === 'attn'
       ? verifiedDisplayName(c.userRequest, c.id) || verifiedDisplayName(c.agentResponse, c.id)
-      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable',
+      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable', { topicNames, machineNames: mNames }),
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : '',
       isMissed(c, now) ? `due ${new Date(Date.parse(c.hardDeadlineAt)).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '',
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
@@ -362,13 +386,16 @@ export function machineState(m, now = Date.now()) {
   const heard = Date.parse(m.routerReceivedAt || m.selfReportedLastSeen || m.lastSeen);
   const age = Number.isFinite(heard) ? ago(heard, now) : null;
   const rope = m.ropeCondition;
+  // warning-path: #/capacity/machines
   if (rope === 'peer-offline') return { state: 'bad', label: 'unreachable', age };
   if (!Number.isFinite(heard)) return { state: 'unknown', label: 'no reading', age: null };
   const since = now - heard;
+  // warning-path: #/capacity/machines
   if (since > STALE_MS) return { state: 'bad', label: 'not answering', age };
   if (since > LIVE_MS) return { state: 'stale', label: 'quiet', age };
   const cores = m.hardware && Number(m.hardware.cpuCores);
   const perCore = cores > 0 && Number.isFinite(Number(m.loadAvg)) ? Number(m.loadAvg) / cores : null;
+  // warning-path: #/capacity/machines
   if (rope === 'degraded' || rope === 'urgent' || (perCore !== null && perCore > 2)) return { state: 'attn', label: 'struggling', age, perCore };
   if (m.online === false) return { state: 'unknown', label: 'no reading', age };
   return { state: 'ok', label: 'live', age, perCore };
@@ -427,7 +454,9 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
     mandates = list.filter((m) => m && !m.revoked && (!m.expiresAt || Date.parse(m.expiresAt) > now)).length;
   }
   const rows = [];
+  // warning-path: #/settings/allowed
   if (offWrong) rows.push({ main: `${plural(offWrong, 'safety check')} off that should be on`, tone: 'attn' });
+  // warning-path: #/settings/allowed
   if (gaps) rows.push({ main: `${plural(gaps, 'critical path')} without its guard`, tone: 'attn' });
   rows.push({ main: mandates === null ? "Can't tell which permission slips are active" : `${plural(mandates, 'permission slip')} active`, tone: mandates === null ? 'unknown' : undefined });
   const guards = Array.isArray(guardsRes.data.guards) ? guardsRes.data.guards : [];
@@ -438,11 +467,14 @@ export function buildAllowed(guardsRes, mandateRes, now = Date.now()) {
   const all = notOn.map((g) => ({
     main: g.criticalPath || g.key || 'A safety check',
     sub: g.criticalPath ? g.key : '',
+    // warning-path: #/settings/allowed
     end: byDesign(g) ? 'off by design' : (GUARD_WORD[g.effective] || String(g.effective).replace(/-/g, ' ')),
+    // warning-path: #/settings/allowed
     tone: byDesign(g) || g.effective === 'on-dry-run' ? undefined : 'attn',
     mono: true,
   }));
   return {
+    // warning-path: #/settings/allowed
     state: offWrong || gaps ? 'attn' : (mandates === null ? 'partial' : 'ok'),
     coverage: mandates === null ? 'partial view' : null,
     value: `${on} of ${total} on`, all,
@@ -464,6 +496,66 @@ export function pullRequestRefs(row) {
   const out = new Set();
   for (const m of text.matchAll(/(?:\bPR\s*#?|\bpull request\s*#?|\/pull\/)(\d{2,6})\b/gi)) out.add(m[1]);
   return [...out];
+}
+
+/** The words a row is known by, for spotting the same thing listed twice. */
+export function repeatKey(row) {
+  return String((row && row.main) || '').toLowerCase().replace(/\s+/g, ' ').replace(/[.\s…]+$/, '').trim();
+}
+
+/**
+ * One row per real thing: rows with the same words collapse into the first one, which says how
+ * many there are. `counted` is the set of rows that count toward "N things need you"; the
+ * result's `counted` is how many collapsed rows hold at least one of them.
+ */
+export function collapseRepeats(list, counted = null) {
+  const groups = new Map();
+  for (const r of list || []) {
+    if (!r) continue;
+    const k = repeatKey(r) || `\u0000${r.key || groups.size}`;
+    const g = groups.get(k);
+    if (g) { g.members.push(r); continue; }
+    groups.set(k, { first: r, members: [r] });
+  }
+  const rows = [];
+  let n = 0;
+  for (const g of groups.values()) {
+    if (!counted || g.members.some((m) => counted.has(m))) n++;
+    if (g.members.length === 1) { rows.push(g.first); continue; }
+    // The merged row keeps the place of the first one, and the words and link of the first one
+    // that links somewhere, so collapsing never loses a way to act.
+    const lead = g.members.find((m) => m.action && m.action.kind && m.action.kind !== 'attention') || g.first;
+    rows.push({ ...lead, repeats: g.members.length, keys: g.members.map((m) => m.key),
+      // The count, unless the words already start with it ("2 fixes need your look").
+      sub: [String(lead.main || '').trim().startsWith(`${g.members.length} `) ? null : `${g.members.length} of these`, lead.sub].filter(Boolean).join(' · '),
+      // warning-path: row
+      tone: g.members.some((m) => m.tone === 'bad') ? 'bad' : lead.tone });
+  }
+  return { rows, counted: n };
+}
+
+/** Why "What needs you" may be incomplete, in plain words for the card's corner. */
+export function partialWords({ unanswered = 0, unreadQueue = false, surfacedFailed = false, promisesUnread = false } = {}) {
+  const parts = [];
+  if (unanswered > 0) parts.push(unanswered === 1 ? 'a machine did not answer' : `${unanswered} machines did not answer`);
+  if (unreadQueue) parts.push('the notice list did not answer');
+  if (surfacedFailed && !parts.length) parts.push('some pages did not answer');
+  if (promisesUnread) parts.push('promises not checked');
+  const text = parts.length ? parts.join(', ') : 'some checks did not answer';
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * The rows the "What needs you" card lists. The headline already names the first item and links
+ * to it, so the card does not list that item again; when the headline is not a link (no action),
+ * the card keeps it so its detail can still be opened.
+ */
+export function needsCardList(model, leadIsLink) {
+  const all = (model && model.all) || [];
+  const rows = (model && model.rows) || [];
+  if (!model || !model.combined || !(model.count > 0) || !leadIsLink || !all.length) return { rows, all };
+  const rest = all.slice(1);
+  return { rows: rest.slice(0, MAX_ROWS), all: rest };
 }
 
 /**
@@ -495,9 +587,16 @@ export function combineNeeds(needs, promised, surfaced) {
   const waiting = waitingAll.filter((r) => !pullRequestRefs(r).some((ref) => queueRefs.has(ref)))
     .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
   const promisesKnown = !promisesRead || Number.isFinite(promised.count);
-  const count = needs.count + rows.length + waiting.length;
+  // A queue notice that a sign-in repair is waiting says the same thing as the Accounts rows that
+  // name each sign-in: the named rows carry the action, so the general notice is not listed again.
+  const accountRows = rows.some((r) => String(r.key || '').startsWith('need:account:'));
+  const queueShown = accountRows ? queue.filter((r) => !/^subscription-relogin\|/i.test(String(r.key || ''))) : queue;
   // Urgent queue items lead (the headline names the first row), then what is surfaced, then promises, then the rest.
-  const all = [...queue.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
+  // A queue row is counted unless it is stale; surfaced rows and waiting promises are always counted.
+  const counted = new Set([...rows, ...waiting, ...queueShown.filter((r) => !r.stale)]);
+  const merged = collapseRepeats([...queueShown.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queueShown.filter((r) => r.tone !== 'bad')], counted);
+  const all = merged.rows;
+  const count = merged.counted;
   const notes = !promisesKnown ? "Couldn't check for promises waiting on you."
     : promisesRead && promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
   const queueLine = needs.line === 'The queue is clear.' || needs.line === 'Waiting on you.' ? null : needs.line;
@@ -508,6 +607,9 @@ export function combineNeeds(needs, promised, surfaced) {
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
+    // What "partial" means here, in plain words, for the card's corner tag.
+    coverageWords: partial ? partialWords({ unanswered: needs.unanswered, unreadQueue: needs.unreadQueue, surfacedFailed: failed, promisesUnread: !promisesKnown || (promisesRead && (promised.state === 'stale' || !!promised.coverage)) }) : null,
+    // warning-path: row
     state: count > 0 ? (partial ? 'partial' : 'attn') : (partial ? 'partial' : 'ok'),
     value: count > 0 ? plural(count, 'thing', 'things') : (partial ? 'Nothing here' : 'Nothing needs you'),
     valueTone: count > 0 ? 'attn' : needs.valueTone,
@@ -536,7 +638,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.surfacedCount > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && (cards.needs.authoritative || cards.needs.surfacedCount > 0))) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
@@ -551,7 +653,8 @@ export function headline(allCards) {
     const withContext = action && /^(.*?)\s*\(([^)]+)\)$/.exec(action);
     const title = withContext ? withContext[1] : action;
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
-    return { text: title || 'Open what needs your attention', tone: 'attn',
+    // warning-path: inline
+    return { text: title || (cards.needs?.authoritative ? `${plural(count, 'request')} ${count === 1 ? 'needs' : 'need'} your attention` : 'Open what needs your attention'), tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
         count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
       action: first?.action || null };
@@ -576,6 +679,7 @@ export function headline(allCards) {
       : BAD_HEADLINE[id] || `${AREA_NAME[id] || 'An area'} is failing.`;
     const action = id === 'promised' ? model.rows?.find((r) => r.tone === 'bad' && r.action)?.action : null;
     const due = missed && firstMiss ? model.rows?.find((r) => r.tone === 'bad' && r.action)?.sub?.match(/\bdue ([^·]+)/)?.[1]?.trim() : null;
+    // warning-path: inline
     return { text, tone: 'bad', sub: due ? `Due ${due}.` : '',
     action, href: action ? null : BAD_DESTINATION[id] || null,
     linkLabel: id === 'promised' ? missed ? 'Open a missed promise' : 'Open a promise needing an update' : id === 'running' ? 'Inspect the machine' : 'Inspect the issue' };
@@ -589,6 +693,7 @@ export function headline(allCards) {
     const area = AREA_NAME[id] || id;
     if (model.retrying) return { text: `Still checking ${area}.`, tone: 'muted',
       sub: 'The answer is delayed. Checking again automatically.', href: CHECK_DESTINATION[id] || null, linkLabel: `Open ${area}` };
+    // warning-path: inline
     return { text: model.state === 'stale' ? `Couldn't refresh ${area}.` : `Couldn't check ${area}.`, tone: 'attn',
       sub: model.state === 'stale' ? 'Showing the last successful result.' : 'The result is unknown.',
       href: CHECK_DESTINATION[id] || null, linkLabel: `Open ${area}` };

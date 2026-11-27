@@ -45,6 +45,7 @@ export type GrowthDigestTrigger = 'cron' | 'catchup' | 'manual';
 
 export interface DeliveryResult {
   ok: boolean;
+  recorded?: boolean;
   /** Why a non-send happened (dedup/budget/tone block, no-updates-topic, …). A
    *  block is a NORMAL outcome, never an error — the publisher never re-acts. */
   reason?: string;
@@ -54,6 +55,7 @@ export interface GrowthDigestAuditEntry {
   ts: string;
   action:
     | 'sent'
+    | 'quiet-recorded'
     | 'send-blocked'
     | 'dry-run'
     | 'skipped-standby'
@@ -478,7 +480,7 @@ export class GrowthDigestPublisher {
       if (result.ok) {
         const entry: GrowthDigestAuditEntry = {
           ts: now.toISOString(),
-          action: 'sent',
+          action: result.recorded ? 'quiet-recorded' : 'sent',
           trigger,
           window,
           reason: result.reason,

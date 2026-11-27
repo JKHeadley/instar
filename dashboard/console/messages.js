@@ -43,6 +43,7 @@ export async function renderMessages(main, ctx) {
       el('span', { class: 'need-sub', text: 'Who wrote each message is private to you. One unlock lasts about 15 minutes in this page.' }),
       el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Unlock', onclick: async () => { const a = await askPin({ title: 'Message records', explain: 'Unlock message records. Your PIN is not kept; the unlock lives in this page until it expires.', adapter: 'session' }); if (a) refresh(); } })) : null;
     setKids(main, el('div', { class: 'msg-page' },
+      // warning-path: pageHead
       pageHead({ eyebrow: 'People · Messages to you', headline: hf && hf.count ? heldHeadline(hf.count, hf.sessionReplies, hf.automaticMessages, hf.otherMessages) : 'Messages to you', sub: hf && hf.count ? 'I’m handling delivery. Unlock to see the individual records.' : '', tone: hf && hf.count ? 'attn' : 'muted' }),
       unlock || cantTell(page.reason), legacyLink()));
     return;

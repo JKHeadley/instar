@@ -70,6 +70,7 @@ export interface HarnessNode {
    * mock's session→topic map (what the route's platform enrichment reads).
    */
   addLiveSession: (topicId: number) => HarnessLiveSession;
+  addTopicHistory: (topicId: number, entry: { messageId: number; timestamp: string; fromUser: boolean; text: string; authorship?: string }) => void;
   /** Close a session (status completed) — it drops out of the default listing. */
   endSession: (tmux: string) => void;
   server: AgentServer;
@@ -160,9 +161,14 @@ export async function makeTwoNodeHarness(): Promise<TwoNodeHarness> {
     // The /sessions route's platform enrichment reads the telegram adapter's
     // session→topic map (optional-chained) — a two-method mock suffices.
     const sessionTopic = new Map<string, number>();
+    const topicHistory = new Map<number, Array<{ messageId: number; topicId: number; timestamp: string; fromUser: boolean; text: string; authorship?: string }>>();
+    const addTopicHistory = (topicId: number, entry: { messageId: number; timestamp: string; fromUser: boolean; text: string; authorship?: string }) => {
+      topicHistory.set(topicId, [...(topicHistory.get(topicId) ?? []), { ...entry, topicId }]);
+    };
     const telegramMock = {
       getTopicForSession: (tmux: string) => sessionTopic.get(tmux) ?? null,
       getTopicName: () => null,
+      getTopicHistory: (topicId: number, limit: number) => (topicHistory.get(topicId) ?? []).slice(-limit),
     };
     const server = new AgentServer({
       config: baseConfig(stateDir, tmpRoot),
@@ -213,6 +219,7 @@ export async function makeTwoNodeHarness(): Promise<TwoNodeHarness> {
       ownershipApplier,
       state,
       addLiveSession,
+      addTopicHistory,
       endSession,
       server,
       hopLatenciesMs: [],

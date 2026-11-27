@@ -12,6 +12,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { classifyRelayIngress } from '../../../src/threadline/relayIngressHistory.js';
+import { isAutoAckInbound } from '../../../src/threadline/autoAck.js';
+import { parseKindedAck } from '../../../src/threadline/requiredAck.js';
 
 const root = path.resolve(__dirname, '../../..');
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf-8');
@@ -28,11 +31,66 @@ describe('relay handler (src/commands/server.ts)', () => {
   });
 
   it('recognises acks structurally through the shared helper; the prefix test only spares the reply waiter', () => {
-    expect(handler).toContain('isAutoAckInbound({ type: msgType, text: textContent })');
+    // Hop 1: the handler takes textContent / msgType / isAutoAck from the ONE shared
+    // classifier, before the reply waiter and the ack stage, and never re-derives them.
+    expect(src).toContain("import { classifyRelayIngress, recordGatePassedIngress } from '../threadline/relayIngressHistory.js';");
+    const classify = handler.indexOf('const relayIngress = classifyRelayIngress(msg);');
+    const destructure = handler.indexOf('const { textContent, msgType, isAutoAck } = relayIngress;');
+    expect(classify).toBeGreaterThan(-1);
+    expect(destructure).toBeGreaterThan(classify);
+    expect(handler.indexOf('threadlineReplyWaiters.get(')).toBeGreaterThan(destructure);
+    expect(handler.indexOf('runRelayAckStage(')).toBeGreaterThan(destructure);
+    expect(handler.split('classifyRelayIngress(').length - 1).toBe(1);
+    expect(handler).not.toMatch(/\b(?:const|let|var)\s+(?:textContent|msgType|isAutoAck)\b/);
+    expect(handler).not.toMatch(/\b(?:textContent|msgType|isAutoAck)\s*=[^=]/);
+    // Hop 2: the classifier applies the structural helper to those same values.
+    const ingress = read('src/threadline/relayIngressHistory.ts');
+    const fnStart = ingress.indexOf('export function classifyRelayIngress(');
+    const fn = ingress.slice(fnStart, ingress.indexOf('\n}\n', fnStart));
+    expect(fnStart).toBeGreaterThan(-1);
+    expect(ingress).toContain("import { isAutoAckInbound } from './autoAck.js';");
+    expect(fn).toContain('const isAutoAck = isAutoAckInbound({ type: msgType, text: textContent });');
+    expect(fn).toContain('return { textContent, msgType, isAutoAck, kindedAck: parseKindedAck(msg.content) };');
+    expect(fn).not.toContain('looksLikeAutoAckText(');
+    // And at runtime the classifier's verdict IS the structural helper's verdict on
+    // the same inputs (boundary cases live in relayIngressHistory.test.ts).
+    for (const content of ['Message received, will respond shortly', 'hello', { type: 'ack', content: 'x' }, { type: 'chat', text: 'Message received' }]) {
+      const cls = classifyRelayIngress({ content });
+      expect(cls.isAutoAck).toBe(isAutoAckInbound({ type: cls.msgType, text: cls.textContent }));
+    }
     expect(handler).not.toMatch(/textContent\.startsWith\('Message received/);
-    expect(handler).toContain('if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent))');
+    expect(handler).toContain('if (waiter && waiterAllowed && !isAutoAck && !looksLikeAutoAckText(textContent))');
     // The loose test is used exactly once in the handler, and never to stop a message.
     expect(handler.split('looksLikeAutoAckText(').length - 1).toBe(1);
+  });
+
+  it('a2a-required-acknowledgment: capability, handle and settle sit in the real handler, in order', () => {
+    const stage = handler.indexOf('runRelayAckStage(');
+    const caps = handler.indexOf('_requiredAckService?.notePeerMessage(');
+    const prepare = handler.indexOf('_requiredAckService?.prepare(');
+    const router = handler.indexOf('threadlineRouter.handleInboundMessage(');
+    const settle = handler.indexOf('_requiredAckService?.settleRouterResult(requiredAckHandle, result)');
+    // The stage's kindedAck comes from the shared classifier (which parses the raw
+    // msg.content through parseKindedAck — pinned in the structural-ack test above).
+    const ackInput = handler.slice(handler.indexOf('const relayAckInput = {'), stage);
+    expect(ackInput).toContain('kindedAck: relayIngress.kindedAck,');
+    expect(handler.split('kindedAck:').length - 1).toBe(1);
+    expect(handler.indexOf('const relayIngress = classifyRelayIngress(msg);')).toBeLessThan(stage);
+    const ingress = read('src/threadline/relayIngressHistory.ts');
+    expect(ingress).toMatch(/import \{ parseKindedAck, type KindedAckWire \} from '\.\/requiredAck\.js';/);
+    const kinded = { type: 'ack', ack: { kind: 'received', refMessageIds: ['m1'] } };
+    expect(classifyRelayIngress({ content: kinded }).kindedAck).not.toBeNull();
+    expect(classifyRelayIngress({ content: kinded }).kindedAck).toEqual(parseKindedAck(kinded));
+    expect(classifyRelayIngress({ content: 'hello' }).kindedAck).toBeNull();
+    expect(handler).toContain('_requiredAckService?.consumeInboundAck(');
+    expect(stage).toBeGreaterThan(-1);
+    expect(caps).toBeGreaterThan(stage);
+    expect(prepare).toBeGreaterThan(caps);
+    expect(router).toBeGreaterThan(prepare);
+    expect(settle).toBeGreaterThan(router);
+    // The pipe and listener hand-offs both return before a handle is taken.
+    expect(handler.indexOf("relayAck.settle('pipe-spawned')")).toBeLessThan(prepare);
+    expect(handler.indexOf('listenerManager.writeToInbox(')).toBeLessThan(prepare);
   });
 
   it('runs the ack stage before every side effect and every router', () => {
@@ -113,7 +171,8 @@ describe('relay handler (src/commands/server.ts)', () => {
 
   it('ACT-091: the listener path is taken only on ListenerSessionManager\'s own decision, and its ack follows the reader\'s liveness', () => {
     // The "is a live reader proven?" decision lives in the manager, not inline here.
-    expect(handler).toContain('if (listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {');
+    // Memory privacy (memory-privacy-agent-places §3): skipped on a multi-person agent.
+    expect(handler).toContain('if (!peerPlaceActive && listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {');
     expect(handler.split('listenerManager.writeToInbox(').length - 1).toBe(1);
     const cond = handler.indexOf('listenerManager.shouldUseListener(');
     const write = handler.indexOf('listenerManager.writeToInbox(');
@@ -221,6 +280,21 @@ describe('POST /threadline/messages/receive (src/threadline/ThreadlineEndpoints.
 describe('the unknown-sender decode and the client share one wire format', () => {
   it('ThreadlineBootstrap decodes with decodePlaintextPayload; the client encodes with encodePlaintextPayload', () => {
     expect(read('src/threadline/ThreadlineBootstrap.ts')).toContain('decodePlaintextPayload(envelope.payload)');
-    expect(read('src/threadline/client/ThreadlineClient.ts')).toContain('encodePlaintextPayload(content, type, resend)');
+    expect(read('src/threadline/client/ThreadlineClient.ts')).toContain('encodePlaintextPayload(content, type, resend, {');
+  });
+});
+
+describe('an undecodable relay message is not routed', () => {
+  it('the unknown-sender handler returns before building a message from a body it cannot decode', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/threadline/ThreadlineBootstrap.ts'), 'utf-8');
+    const start = src.indexOf("relayClient.on('unknown-sender'");
+    const decode = src.indexOf('decodePlaintextPayload(envelope.payload)', start);
+    const drop = src.indexOf('undecryptableDropped++', decode);
+    const route = src.indexOf('handleRelayUnknownSender(', decode);
+    expect(start).toBeGreaterThan(-1);
+    expect(drop).toBeGreaterThan(decode);
+    expect(drop).toBeLessThan(route);
+    expect(src.slice(drop, route)).toContain('return;');
+    expect(src).not.toContain('[undecryptable relay message');
   });
 });

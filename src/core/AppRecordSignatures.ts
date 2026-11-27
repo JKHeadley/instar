@@ -193,6 +193,8 @@ export interface LedgerKey {
   approvedVia: string;
   activatedAt: string;
   revokedAt: string | null;
+  /** `'browser'` when the signed activation row says so (dashboard-conversations-browser-device §4.3). */
+  client?: 'browser';
 }
 
 /** The ledger as a reader sees it, keyed by `ledgerViewKey(keyHash, deviceId)`; null means it could not be read. */

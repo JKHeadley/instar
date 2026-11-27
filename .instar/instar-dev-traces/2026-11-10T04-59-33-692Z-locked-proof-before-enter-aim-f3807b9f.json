@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "locked-proof-before-enter-aim",
+  "sessionId": "3ec30986-f965-43c5-a211-e68dbea1bcdd",
+  "timestamp": "2026-11-10T04:59:33.692Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-before-enter-aim.md",
+  "artifactSha256": "868c12fd533b6caacccd39fe2346a21d37e324cc3a297bc56261d783c967d78d",
+  "coveredFiles": [
+    "docs/specs/locked-proof-before-enter-aim.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-before-enter-aim.md",
+    "upgrades/side-effects/locked-proof-before-enter-aim.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-driver and unit-test change under scripts/locked-proof plus its ELI16, side-effects and release notes; no runtime surface, a revert fully undoes it.",
+  "eli16Path": "docs/specs/locked-proof-before-enter-aim.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-before-enter-aim.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

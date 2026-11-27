@@ -16,7 +16,7 @@ afterEach(() => { h.cleanup(); });
 describe('K3 Merkle chain on binding-history-log', () => {
   it('appendHistoryEvent populates prevEntrySha forming a valid chain', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:19' }).trim();
+    const treeHash = SafeGitExecutor.execSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:19' }).trim();
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
 
@@ -25,7 +25,7 @@ describe('K3 Merkle chain on binding-history-log', () => {
 
   it('detects breach when an entry is dropped (rebase-style tampering)', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:29' }).trim();
+    const treeHash = SafeGitExecutor.execSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:29' }).trim();
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
@@ -43,7 +43,7 @@ describe('K3 Merkle chain on binding-history-log', () => {
 
   it('detects breach when a single line is corrupted (HMAC mismatch)', async () => {
     const s = await h.spawn({ topicId: 2317, mode: 'dev' });
-    const treeHash = SafeGitExecutor.readSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:48' }).trim();
+    const treeHash = SafeGitExecutor.execSync(['-C', s.cwd!, 'write-tree'], { encoding: 'utf-8', operation: 'tests/unit/WorktreeManager-merkle.test.ts:48' }).trim();
     h.manager.signTrailer({ sessionId: s.sessionId, fencingToken: s.fencingToken!, treeHash, parents: ['0'.repeat(40)] });
 
     const logPath = path.join(h.stateDir, 'state', 'binding-history-log.jsonl');

@@ -29,7 +29,8 @@ describe('recommended services routes', () => {
       stateDir: dir,
       owner: () => '42',
       recordApproval: () => undefined,
-      openCommitment: () => undefined,
+      openCommitment: () => null,
+      finishCommitment: () => undefined, withdrawCommitment: () => undefined, startSetup: async () => ({ sessionName: 's', topicId: 1 }), stopSetup: () => true, isSetupRunning: () => false, notifyStuck: async () => true, clearStuck: () => undefined, tellOwner: () => undefined, writeSecret: () => undefined, readSecret: () => null, port: 0,
       checkPin: (req, res) => {
         if ((req.body as { pin?: string }).pin === '1234') return true;
         res.status(403).json({ error: 'pin' });
@@ -52,7 +53,8 @@ describe('recommended services routes', () => {
     expect(res.body.offersLive).toBe(false);
     expect(res.body.services.map((s: { service: string }) => s.service)).toContain('jev');
     const jev = res.body.services.find((s: { service: string }) => s.service === 'jev');
-    expect(jev).toMatchObject({ backupStatus: 'specified', available: false, choice: 'unset' });
+    // Jev's recipe is proven, so it is available on every agent; nothing else about the row changes.
+    expect(jev).toMatchObject({ backupStatus: 'specified', available: true, choice: 'unset' });
     expect(jev.dataLeaves).toContain('TypeSafe');
     expect(jev).not.toHaveProperty('setupRecipe');
   });

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-13T18:47:03.723Z",
+  "slug": "feedback-clone-delete-off-event-loop",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeFsExecutor.ts matches SafeFsExecutor (destructive-fs funnel)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 110,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SafeFsExecutor.ts",
+      "src/feedback-factory/execute/attemptFs.ts"
+    ],
+    "addedLines": 103,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

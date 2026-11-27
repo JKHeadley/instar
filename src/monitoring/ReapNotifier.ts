@@ -45,6 +45,7 @@ import type { Session } from '../core/types.js';
 import type { ReapNotifyOutcome } from './ReapLog.js';
 import { buildReapNotifyDeliveryId } from '../messaging/reap-notice-delivery-id.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface ReapEvent {
   session: Pick<Session, 'name' | 'tmuxSession'>;
@@ -538,7 +539,7 @@ export class ReapNotifier {
     });
     try {
       this.deps.reportDegradation?.(
-        `reap-notice enqueue failed for topic ${topicId}${enqueueError ? ` (${enqueueError})` : ''}`,
+        `reap-notice enqueue failed for ${topicRef(topicId)}${enqueueError ? ` (${enqueueError})` : ''}`,
         `The durable-delivery guarantee degraded to one direct attempt (${sendResult}).`,
       );
     } catch {
@@ -603,7 +604,7 @@ export class ReapNotifier {
 
   private formatCrossTopicIndex(affected: Map<number, TopicAggregate>, overflow: number): string {
     const total = [...affected.values()].reduce((n, a) => n + a.count, 0);
-    const parts = [...affected.entries()].slice(0, 20).map(([topicId, agg]) => `topic ${topicId} (${agg.count})`);
+    const parts = [...affected.entries()].slice(0, 20).map(([topicId, agg]) => `${topicRef(topicId)} (${agg.count})`);
     const more = affected.size > 20 ? `, +${affected.size - 20} more topics` : '';
     const overflowNote = overflow > 0 ? ` (+${overflow} past the tracking cap)` : '';
     return `Index: ${total} session${total === 1 ? '' : 's'} across ${affected.size} topics${overflowNote} — ${parts.join(', ')}${more}. Each affected topic got its own notice.`;

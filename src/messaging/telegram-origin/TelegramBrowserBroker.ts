@@ -8,6 +8,7 @@ import {
   validBrowserMessageId, type BrowserCanary, type BrowserOutcome, type PreparedBrowserChild,
   type TelegramBrowserDriver,
 } from './BrowserTypes.js';
+import { TestGroupKnownStop, type TestGroupOperationOutcome, type TestGroupStep } from './TelegramTestGroups.js';
 
 export class TelegramRpcRefusal extends Error {
   constructor(readonly code: number) { super('telegram-rpc-refusal'); }
@@ -80,10 +81,10 @@ export class TelegramBrowserBroker {
    * through the durable recovery latch. Before this, an unsupported build on a
    * read threw without recording anything while `begin` had already armed the
    * 15-minute floor: a silent hold with no attention (2026-10-16, build 679). */
-  private async verifiedReadDriver(): Promise<TelegramBrowserDriver> {
+  private async verifiedReadDriver(deadlineMs?: number): Promise<TelegramBrowserDriver> {
     let driver = await this.getDriver();
     for (let attempt = 0; attempt < 2; attempt++) {
-      this.lastCanary = await driver.canary();
+      this.lastCanary = deadlineMs === undefined ? await driver.canary() : await driver.canary(deadlineMs);
       this.lastCanaryAt = this.now();
       if (this.lastCanary.supported) {
         this.unsupportedCanaries = 0; this.lastUnsupportedBuild = undefined;
@@ -110,6 +111,52 @@ export class TelegramBrowserBroker {
     this.held = 'unsupported-browser-build';
     this.notifyHeld(this.held);
     throw new Error('browser-peer-canary-unavailable');
+  }
+  /** Anything queued or running on the one browser process (sends, reads, test groups). */
+  isBusy(): boolean { return this.queued > 0; }
+  /** Test-group operations (docs/specs/telegram-test-groups.md section 6). Shares the one
+   * queue, the exclusive-ownership check and the build canary with sends. `authorize` runs
+   * again before every page evaluation. An error before a mutating evaluation is known;
+   * after one it is unknown. A typed stop leaves a healthy driver open. */
+  runTestGroupOperation<T>(options: { expectedAccountId: string; authorize: () => string | null; operationMs: number; evaluationMs: number },
+    body: (step: TestGroupStep) => Promise<T>): Promise<TestGroupOperationOutcome<T>> {
+    return this.enqueue(async (): Promise<TestGroupOperationOutcome<T>> => {
+      if (this.closed) return { state: 'known-failed', reason: 'browser-closed' };
+      if (!this.options.isProfileExclusivelyOwned()) { await this.closeDriver(); return { state: 'known-failed', reason: 'browser-profile-unavailable' }; }
+      let evaluated = false;
+      try {
+        const driver = await this.verifiedReadDriver(this.now() + options.operationMs);
+        if (this.lastCanary?.accountId !== options.expectedAccountId) return { state: 'known-failed', reason: 'browser-account-mismatch' };
+        const operationEnd = this.now() + options.operationMs;
+        const step: TestGroupStep = async (input, call) => {
+          const now = this.now(), remaining = operationEnd - now;
+          if (remaining < (input.minRemainingMs ?? 1000)) throw new TestGroupKnownStop('budget');
+          const denied = options.authorize();
+          if (denied) throw new TestGroupKnownStop(denied);
+          if (this.closed || !this.options.isProfileExclusivelyOwned()) throw new TestGroupKnownStop('browser-profile-unavailable');
+          const deadline = now + Math.min(options.evaluationMs, remaining);
+          if (input.mutating) evaluated = true;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([call(driver, deadline), new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('browser-read-deadline')), Math.max(1, deadline - this.now() + 1000));
+            })]);
+          } finally { if (timer) clearTimeout(timer); }
+        };
+        return { state: 'done', value: await body(step) };
+      } catch (error) {
+        if (error instanceof TestGroupKnownStop) return { state: 'known-failed', reason: error.reason };
+        // A failing close must not turn an unknown outcome into a rejection the caller reads as known.
+        await this.closeDriver().catch(() => undefined);
+        const message = error instanceof Error && /^browser-[a-z-]{1,60}$/.test(error.message) ? error.message : 'browser-transport-failed';
+        return { state: evaluated ? 'unknown' : 'known-failed', reason: message };
+      }
+    }).catch((error): TestGroupOperationOutcome<T> => {
+      // Only reached before any page evaluation (closed broker, full queue, or a failed
+      // close of a profile that lost exclusive ownership): nothing on the account changed.
+      const message = error instanceof Error && /^browser-[a-z-]{1,60}$/.test(error.message) ? error.message : 'browser-transport-failed';
+      return { state: 'known-failed', reason: message };
+    });
   }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error('browser-closed'));

@@ -220,6 +220,7 @@ export function buildActivity(res, { chip = 'all', kind = null, counterparty = n
     tiles: [
       { n: counts.decision, label: counts.decision === 1 ? 'decision' : 'decisions' },
       { n: counts.agreement, label: counts.agreement === 1 ? 'agreement' : 'agreements' },
+      // warning-exempt: a count in the section's own tiles; the rows it counts are directly below it
       { n: counts.opened + counts.closed + counts.abandoned, label: 'thread events', tone: counts.abandoned ? 'attn' : null },
     ],
     tilesNote: n ? `of the last ${n}` : null,
@@ -333,6 +334,7 @@ export const CATEGORY_WORDS = {
 };
 export function categoryWords(c) { return CATEGORY_WORDS[c] || 'A problem'; }
 export const FAILURE_STATUS_WORDS = { open: 'Still looking into it', reopened: 'Came back', attributed: 'Cause known', analyzed: 'Looked into', resolved: 'Worked out' };
+// warning-path: row
 export function failureOpen(f) { return f && (f.status === 'open' || f.status === 'reopened'); }
 export const INSIGHT_STATUS_WORDS = {
   discovered: 'Just noticed', 'acted-on': 'Being looked into', 'verified-effective': 'Fixed, and it stayed fixed',
@@ -340,6 +342,7 @@ export const INSIGHT_STATUS_WORDS = {
 };
 /** A pattern still repeating: not confirmed fixed and not set aside. */
 export function insightActive(i) { return i && i.status !== 'verified-effective' && i.status !== 'dismissed'; }
+// warning-path: row
 export function insightCameBack(i) { return i && (i.status === 'verified-ineffective' || (Number(i.reopenCount) || 0) > 0); }
 export const STAGE_WORDS = {
   dark: 'Not switched on', 'capture-only': 'Watching quietly (no alerts)', 'insight-push': 'Watching, and flagging repeats to you', 'default-on': 'On for everyone',
@@ -360,6 +363,7 @@ export function failureRow(f, now = Date.now()) {
   return {
     key: `fail:${f.id}`, id: f.id, main: `${categoryWords(f.category)}: ${clean(f.summary) || 'no summary recorded'}`,
     sub: `${FAILURE_STATUS_WORDS[f.status] || 'Status not recorded'} · ${times}`, end: ago(f.detectedAt, now) || '',
+    // warning-path: row
     tone: f.status === 'reopened' ? 'attn' : failureOpen(f) ? null : 'unknown', record: f,
   };
 }
@@ -369,6 +373,7 @@ export function patternRow(i, now = Date.now()) {
   return {
     key: `pat:${i.id}`, id: i.id, main: clean(i.summary) || 'A repeating problem',
     sub: `${INSIGHT_STATUS_WORDS[i.status] || 'Status not recorded'} · seen in ${plural(ds, 'change')}${since ? ` since ${since.toLocaleDateString([], { day: 'numeric', month: 'short' })}` : ''}`,
+    // warning-path: row
     end: ago(i.discoveredAt, now) || '', tone: insightCameBack(i) ? 'attn' : insightActive(i) ? null : 'unknown', record: i,
   };
 }
@@ -431,6 +436,7 @@ export function buildProblems({ insights, pages, week, all }, { lastGood = null,
     ok: true, off: false, stale: false, line, rows, patterns, openShown, weekTotal, oldest, moreFailed,
     stageWords: stage ? STAGE_WORDS[stage] || 'Stage not recorded' : 'Stage not recorded', stage: stage || null,
     tiles: [
+      // warning-exempt: a count in the section's own tiles; the rows it counts are directly below it
       patterns.ok ? { n: patterns.active.length, label: 'repeating', tone: patterns.cameBack.length ? 'attn' : null } : { n: '?', label: 'repeating', tone: 'unknown' },
       weekTotal != null ? { n: weekTotal, label: 'this week' } : { n: '?', label: 'this week', tone: 'unknown' },
       { n: openShown, label: 'still open among those shown' },
@@ -514,6 +520,7 @@ export function classifyAudit(r) {
   if (r.evaluated === false) return 'not-evaluated';
   return null;
 }
+// warning-path: row
 export function claimSentence(r) {
   if (r.predicate && PREDICATE_WORDS[r.predicate]) return `Said ${PREDICATE_WORDS[r.predicate]}`;
   if (r.actionKind && ACTION_WORDS[r.actionKind]) return `Said ${ACTION_WORDS[r.actionKind]}`;
@@ -536,6 +543,7 @@ export function buildClaims(res, { limit = CLAIMS_PAGE, now = Date.now() } = {})
     if (!b) continue;
     const when = ago(auditTime(r), now) || '';
     if (b === 'coverage') coverage.push({ key: `cov:${r.eventUuid || i}`, main: EVENT_WORDS[r.event] || (r.reason ? `Not checked: ${clean(r.reason, 'label')}` : 'A coverage note'), sub: ADVISORY, end: when, tone: 'unknown', record: r });
+    // warning-path: row
     else observations.push({ key: `claim:${r.eventUuid || r.claimId || i}`, bucket: b, main: claimSentence(r), sub: `${VERDICT_WORDS[b]} · ${ADVISORY}`, end: when, tone: b === 'contradicts' ? 'bad' : b === 'supports' ? null : 'unknown', record: r });
   }
   const contradicted = observations.filter((o) => o.bucket === 'contradicts').length;
@@ -550,6 +558,7 @@ export const CLAIM_KEYS = ['verdict', 'evaluated', 'kind', 'predicate', 'actionK
 
 const REVIEW_WORDS = {
   covered: 'Covered by an existing standard', 'needs-upgrade': 'A standard needs an upgrade', 'new-standard-needed': 'A new standard is needed',
+  // warning-path: row
   'not-applicable': 'No standard change needed', 'process-gap': 'A gap in how I work', pending: 'Review pending', filled: 'Reviewed', 'dead-lettered': 'Review failed; needs a retry',
 };
 const LIFECYCLE_WORDS = { open: 'Open', parked: 'Parked for later', resolved: 'Resolved', superseded: 'Combined into another review', reopened: 'Reopened' };
@@ -569,6 +578,7 @@ export function buildReviews(res, { now = Date.now() } = {}) {
   const rows = records.filter((r) => r && typeof r.dedupeKey === 'string').sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)).map((r) => ({
     key: `rev:${r.dedupeKey}`, main: reviewVerdictWords(r),
     sub: `${LIFECYCLE_WORDS[r.reviewLifecycle] || 'Open'}${Number(r.recurrenceCount) > 1 ? ` · seen ${r.recurrenceCount} times` : ''}`,
+    // warning-path: row
     end: ago(r.updatedAt, now) || '', tone: r.fillState === 'dead-lettered' ? 'attn' : null, record: r,
   }));
   return { ok: true, off: false, rows, open: Number.isFinite(res.data.open) ? res.data.open : null, last: rows[0] ? rows[0].main : null };
@@ -637,6 +647,7 @@ export function buildLookup(res, { kind, scope = 'private', now = Date.now() } =
     const ev = Array.isArray(d.evidence) ? d.evidence : null;
     if (!ev) return { ok: false, off: false, reason: 'Can’t tell: the answer had no sources.' };
     const rows = ev.map((e) => evidenceRow(e, now));
+    // warning-exempt: an empty search result, not a problem; the search box is the next step
     return { ok: true, mode: 'sources', rows, tone: rows.length ? null : 'attn',
       words: rows.length ? `Based on ${plural(rows.length, 'source')}, from this machine’s memory.` : narrowed ? `Nothing is visible to ${scopeWords(scope)}.` : 'No sources recorded for this, so I can’t show why.' };
   }
@@ -659,8 +670,11 @@ export function insideHeadline({ activity, problems, claims, reviews }) {
   const coverage = unread.length ? `Couldn’t read: ${unread.join(', ')}.` : null;
   const allDown = [activity, problems, claims].every((s) => !s || !s.ok);
   if (allDown && unread.length) return { text: 'Can’t tell how I’m doing inside.', tone: 'muted', sub: coverage };
+  // warning-path: pageHead
   if (claims && claims.ok && claims.contradicted) return { text: `${claims.contradicted === 1 ? 'One of my recent claims was' : `${claims.contradicted} of my recent claims were`} contradicted by the evidence.`, tone: 'attn', sub: coverage };
+  // warning-path: pageHead
   if (problems && problems.ok && problems.patterns.ok && problems.patterns.cameBack.length) return { text: 'A problem I thought was fixed came back.', tone: 'attn', sub: coverage };
+  // warning-path: pageHead
   if (problems && problems.ok && problems.patterns.ok && problems.patterns.active.length) return { text: problems.line, tone: 'attn', sub: coverage };
   const offs = [problems && problems.off ? 'Failure watching is off on this agent.' : null].filter(Boolean);
   const bits = [];
@@ -675,8 +689,10 @@ export function insideFacts({ activity, problems, claims, reviews }) {
   const facts = [];
   if (activity && activity.ok) facts.push({ n: activity.n, label: 'recent records', href: '#/settings/inside?s=activity' });
   else if (!activity || !activity.off) facts.push({ n: '?', label: 'recent records', tone: 'unknown' });
+  // warning-path: inline
   if (problems && problems.ok && problems.patterns.ok) facts.push({ n: problems.patterns.active.length, label: 'repeating', tone: problems.patterns.active.length ? 'attn' : null, href: '#/settings/inside?s=problems' });
   else if (!problems || !problems.off) facts.push({ n: '?', label: 'repeating', tone: 'unknown' });
+  // warning-path: inline
   if (claims && claims.ok) facts.push({ n: claims.contradicted, label: 'contradicted', tone: claims.contradicted ? 'bad' : null, href: '#/settings/inside?s=claims' });
   else if (!claims || !claims.off) facts.push({ n: '?', label: 'contradicted', tone: 'unknown' });
   if (reviews && reviews.ok) facts.push({ n: reviews.rows.length, label: reviews.rows.length === 1 ? 'class review' : 'class reviews', href: '#/settings/inside?s=claims' });

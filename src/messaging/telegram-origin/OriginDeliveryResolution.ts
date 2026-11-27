@@ -3,12 +3,13 @@ import type { OriginAuditRecord } from './StoreTypes.js';
 import type { OriginMeshCommand } from './OriginMesh.js';
 import type { TelegramOriginRecord } from './types.js';
 import { wireDigest } from './CanonicalOrigin.js';
+import { receiptMessageIds } from './OriginOperationOutcome.js';
 
 /** Positive confirmation requires every child and its platform receipt. */
 export function originAuditDeliveryConfirmed(audit: OriginAuditRecord | null): boolean {
   return !!audit && audit.operation?.state === 'accepted' && audit.children.length > 0 &&
     audit.children.every(child => child.state === 'accepted' && audit.attempts.some(attempt =>
-      attempt.childId === child.childId && attempt.outcome === 'accepted' && !!attempt.receiptJson));
+      attempt.childId === child.childId && attempt.outcome === 'accepted' && receiptMessageIds(attempt.receiptJson).length > 0));
 }
 
 export interface OriginReceiptPeer {

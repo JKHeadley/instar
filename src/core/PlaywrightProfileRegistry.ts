@@ -1,3 +1,4 @@
+import { isSigninProfile } from './SigninProfileGuard.js';
 /**
  * PlaywrightProfileRegistry — the durable per-agent map of which Playwright
  * browser PROFILE holds which logged-in ACCOUNT, plus the compact boot-awareness
@@ -227,7 +228,10 @@ export const MAX_IDENTITY_CHARS = 128;
 export const MAX_NOTE_CHARS = 256;
 const PROFILE_ID_RE = /^[a-z0-9-]{1,64}$/;
 const MUTATE_CAS_MAX_RETRIES = 5;
-export const DEFAULT_BLOCK_MAX_BYTES = 800;
+// 2400 (was 800): at 800 a machine with a dozen profiles showed only the first 3 at session
+// start, hiding the operator accounts an agent most needs to know it can act through
+// (Echo Bugs topic 10000002506). Still a hard cap; `full` bypasses it.
+export const DEFAULT_BLOCK_MAX_BYTES = 2400;
 
 const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'session-cookie',
@@ -408,6 +412,29 @@ export class PlaywrightProfileRegistry {
   }
 
   // ── Reads ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * The LIGHT accounts view (sibling-machine-reach §3.2): each profile's accounts with
+   * service, identity, owner and the last-asserted login state ONLY. Reads the registry
+   * file and nothing else: NO vault read (no keychain call), NO seeding, NO write. An
+   * absent file answers []. A corrupt file throws like every other read.
+   */
+  listAccountsLight(): Array<{
+    id: string;
+    accounts: Array<{ service: string; identity: string; owner: PlaywrightAccountOwner; lastAsserted: boolean; lastVerifiedAt: string | null }>;
+  }> {
+    if (!fs.existsSync(this.filePath())) return [];
+    return this.read().profiles.map((p) => ({
+      id: p.id,
+      accounts: p.accounts.map((a) => ({
+        service: a.service,
+        identity: a.identity,
+        owner: a.owner,
+        lastAsserted: a.lastAsserted === true,
+        lastVerifiedAt: a.lastVerifiedAt ?? null,
+      })),
+    }));
+  }
 
   /** The FULL detail surface (GET-only): every account, vault NAMES, dangling-ref flags (D17). */
   listProfiles(): PlaywrightProfileDetail[] {
@@ -816,6 +843,7 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (isSigninProfile(profile) || (profile.userDataDir && store.profiles.some(other => isSigninProfile(other) && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === canonicalProfileDirectory(profile.userDataDir!)))) throw new PlaywrightRegistryError('registered sign-in profile refuses automation; use normal Chrome and subscription-signin', 409);
     if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
     if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 
@@ -909,6 +937,8 @@ export class PlaywrightProfileRegistry {
       'Profiles live on THIS machine only. Login state is LAST-ASSERTED, never a guarantee —',
       're-verify in-browser before any privileged action, especially operator-owned accounts.',
       'Full detail + vault key names: GET /playwright-profiles · pick one: GET /playwright-profiles/resolve',
+      'Before asking the operator to look at or check something: if an account below or your own server',
+      'key reaches it, look yourself. Mark anything you send as the operator: [Sent by <agent> on <operator>\'s behalf].',
       '',
     ];
     const footer = [
@@ -956,6 +986,15 @@ export class PlaywrightProfileRegistry {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * The live vault secret NAMES (never values), best-effort: null when the vault is
+   * unreadable. Read by the agent-reach builder so the outbound gate can see what the
+   * agent already holds (Echo Bugs topic 10000002770).
+   */
+  vaultNames(): string[] | null {
+    return this.safeVaultNames();
+  }
 
   /** Best-effort vault names for READ paths — swallows the unreadable case to null. */
   private safeVaultNames(): string[] | null {

@@ -11,6 +11,7 @@ import path from 'node:path';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { MemoryPrivacy } from '../../src/users/MemoryPrivacy.js';
+import { MemoryPrivacyRecovery } from '../../src/users/MemoryPrivacyRecovery.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
@@ -20,6 +21,13 @@ describe('memory privacy routes (integration)', () => {
   let sessionToken: string;
   let noneToken: string;
   const agentToken = 'agent-token-for-test';
+  let repairs = 0;
+  const recovery = new MemoryPrivacyRecovery({
+    facts: () => ({ blocker: 'claude-too-old', platform: 'darwin', floor: '2.1.316', haveVersion: '2.1.300', candidate: '/opt/<b>/claude' }),
+    repair: async () => { repairs += 1; return true; },
+    linkFor: (p) => p,
+  });
+  const freshLink = () => /\/memory-privacy\/fix\/[A-Za-z0-9_-]{43}/.exec(recovery.ownerMessage())?.[0] as string;
 
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-privacy-routes-'));
@@ -44,6 +52,7 @@ describe('memory privacy routes (integration)', () => {
         listRunningSessions: () => [], getSession: () => null,
         memoryPrivacyStatus: () => ({ enabled: true, multiPerson: true, ownerUserId: null, sandboxReady: true }),
         memoryAudienceKind: () => 'open',
+        memoryPrivacyRecovery: () => recovery,
       } as never,
     });
     app = server.getApp();
@@ -51,6 +60,54 @@ describe('memory privacy routes (integration)', () => {
   afterAll(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/memory-privacy-routes.test.ts' }));
 
   const as = (token: string, route: string) => request(app).get(route).set('Authorization', `Bearer ${token}`);
+
+  it('the owner link opens with no token, shows the cause escaped, and changes nothing', async () => {
+    const link = freshLink();
+    const before = repairs;
+    for (let i = 0; i < 2; i++) {
+      const page = await request(app).get(link);
+      expect(page.status).toBe(200);
+      expect(page.text).toContain('2.1.300');
+      expect(page.text).not.toContain('<b>');
+      expect(page.headers['cache-control']).toContain('no-store');
+    }
+    expect(repairs).toBe(before);
+  });
+
+  it('a cause with no repair still opens a page, with no button to press', async () => {
+    const link = /\/memory-privacy\/fix\/[A-Za-z0-9_-]{43}/.exec(recovery.ownerMessage('framework'))?.[0] as string;
+    const page = await request(app).get(link);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('needs Claude Code');
+    expect(page.text).not.toContain('<form');
+  });
+
+  it('the owner link repairs on POST and only once', async () => {
+    const link = freshLink();
+    const before = repairs;
+    expect((await request(app).post(link)).status).toBe(200);
+    expect(repairs).toBe(before + 1);
+    expect((await request(app).post(link)).status).toBe(410);
+    expect((await request(app).get(link)).status).toBe(410);
+    expect(repairs).toBe(before + 1);
+  });
+
+  it('a well-formed guess is refused and repairs nothing', async () => {
+    const before = repairs;
+    freshLink();
+    const guess = `/memory-privacy/fix/${'a'.repeat(43)}`;
+    expect((await request(app).get(guess)).status).toBe(410);
+    expect((await request(app).post(guess)).status).toBe(410);
+    expect(repairs).toBe(before);
+  });
+
+  it.each(['/memory-privacy/fix/short', `/memory-privacy/fix/${'a'.repeat(43)}/more`, '/memory-privacy/fix/'])('%s stays behind the normal auth wall', async (route) => {
+    expect((await request(app).post(route)).status).toBe(401);
+  });
+
+  it('the auth exemption does not reach the status route', async () => {
+    expect((await request(app).get('/memory-privacy')).status).toBe(401);
+  });
 
   it('reports status to the agent token', async () => {
     const res = await as(agentToken, '/memory-privacy');

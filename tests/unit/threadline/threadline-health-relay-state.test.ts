@@ -140,7 +140,7 @@ describe('GET /threadline/health — relay reporting', () => {
   let stateDir: string;
   let manager: HandshakeManager;
 
-  const appWith = (relayStatus?: RelayStatus): express.Express => {
+  const appWith = (relayStatus?: RelayStatus, agentRelayStatus?: () => Promise<import('../../../src/threadline/agentRelayStatus.js').AgentRelayStatus>, authToken: string | undefined = 'test-token'): express.Express => {
     const app = express();
     app.use(express.json());
     app.use(createThreadlineRoutes(manager, null, {
@@ -148,6 +148,8 @@ describe('GET /threadline/health — relay reporting', () => {
       version: '1.0',
       stateDir,
       relayStatus,
+      agentRelayStatus,
+      agentRelayAuthToken: authToken,
     }));
     return app;
   };
@@ -206,5 +208,24 @@ describe('GET /threadline/health — relay reporting', () => {
     })) as RelayStatus)).get('/threadline/health');
     expect(res.body.status).toBe('ok');
     expect(res.body.relay.state).toBe('connected');
+  });
+
+  it('leads with agent reachability while preserving the local relay probe for holder discovery', async () => {
+    const agentRelayStatus = async () => ({ state: 'reachable' as const, throughMachine: 'Studio', throughMachineId: 'studio',
+      reason: 'Verified holder', ifMachineAway: 'Another machine must acquire the lease.', peersChecked: 1, peersUnknown: 0 });
+    const app = appWith(() => ({ connectionState: 'disconnected', lastEvent: null }), agentRelayStatus);
+    const publicView = await request(app).get('/threadline/health');
+    expect(publicView.body.agentRelay.state).toBe('unknown');
+    expect(publicView.body.agentRelay.throughMachine).toBeNull();
+    const tokenless = await request(appWith(() => ({ connectionState: 'disconnected', lastEvent: null }), agentRelayStatus, ''))
+      .get('/threadline/health');
+    expect(tokenless.body.agentRelay.throughMachine).toBeNull();
+    const whole = await request(app).get('/threadline/health').set('Authorization', 'Bearer test-token');
+    expect(whole.body.agentRelay.state).toBe('reachable');
+    expect(whole.body.agentRelay.throughMachine).toBe('Studio');
+    expect(whole.body.relay.state).toBe('never-connected');
+    const local = await request(app).get('/threadline/health?scope=local');
+    expect(local.body).not.toHaveProperty('agentRelay');
+    expect(local.body.relay.state).toBe('never-connected');
   });
 });

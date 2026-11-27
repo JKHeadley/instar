@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "quota-pacing-forecast",
+  "sessionId": "66a3042b-e6a6-4644-a4fe-6f7522b2d409",
+  "timestamp": "2026-11-18T04:53:15.640Z",
+  "artifactPath": "upgrades/side-effects/quota-pacing-forecast.md",
+  "artifactSha256": "efc36c1ab177b0c10c17700eda8cae2faa1b4604657f94670bf4b1bf83fb98c7",
+  "specPath": "docs/specs/quota-pacing-forecast.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/quota-pacing-forecast.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Narrow layout repair within existing converged forecast PR; three-line move preserves disjoint router semantics. Source guard red/green and tsc passed; full Local Verify required before merge.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

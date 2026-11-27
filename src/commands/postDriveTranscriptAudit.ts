@@ -1,7 +1,9 @@
+import { topicRef, TopicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import pc from 'picocolors';
 import { loadConfig, getInstarVersion } from '../core/Config.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import type { IssueBucket, IssueSeverity } from '../monitoring/FrameworkIssueLedger.js';
 
 export type TranscriptUxCategory =
@@ -128,7 +130,7 @@ const CATEGORY_REASON: Record<TranscriptUxCategory, string> = {
 };
 
 const RELATED_SPEC = 'Observation Needs Structure (PR #861); UX-blindspot arc / operatorSeatUx gate (PR #856)';
-const DEFAULT_FRAMEWORK = 'codex-cli';
+const DEFAULT_FRAMEWORK = CODEX_CLI_FRAMEWORK;
 
 const ASK_OF_USER_RE =
   /\b(?:re-?send|send (?:it|that|this|the file|the screenshot) again|try again|retry|re-?paste|paste (?:it|that|this) again|upload (?:it|that|this) again|can you send|could you send|please send).{0,80}\b(?:again|retry|re-?paste|re-?send)?/i;
@@ -141,6 +143,9 @@ const CONTENT_FREE_RE =
 
 const SECRET_SHAPES: RegExp[] = [
   /\b(?:sk|pk|rk)-[A-Za-z0-9]{16,}\b/,
+  // Hyphenated sk-family keys (Anthropic sk-ant-api03-…, OpenAI sk-proj-… and kin): the
+  // line above needs 16 unbroken alphanumerics after `sk-`, so it never sees these.
+  /(?<![A-Za-z0-9])(?:sk-ant-[a-z]+\d{1,3}-|sk-(?:proj|svcacct|admin|None|or-v1)-)[A-Za-z0-9_-]{16,}/,
   /\bBearer\s+[A-Za-z0-9._-]{12,}\b/i,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
@@ -400,7 +405,7 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
       readTopicHistory: async (topicId, limit) => {
         const data = await fetchJson(`${historyBaseUrl}/telegram/topics/${topicId}/messages?limit=${limit}`, { headers: historyHeaders });
         const messages = (data as { messages?: unknown }).messages;
-        if (!Array.isArray(messages)) throw new Error(`Topic ${topicId} history response did not include messages[]`);
+        if (!Array.isArray(messages)) throw new Error(`${TopicRef(topicId)} history response did not include messages[]`);
         return messages as TranscriptMessage[];
       },
       observeFinding: async (input) => {
@@ -428,7 +433,7 @@ export async function runPostDriveTranscriptAuditCli(options: PostDriveTranscrip
   for (const finding of report.findings) {
     const obs = report.observations.find((o) => o.dedupKey === finding.dedupKey);
     const filed = obs?.filed ? (obs.episodeRecorded === false ? 'deduped' : 'filed') : options.dryRun ? 'dry-run' : 'not filed';
-    process.stdout.write(`\n- [${finding.category}] topic ${finding.topicId} ${filed}\n`);
+    process.stdout.write(`\n- [${finding.category}] ${topicRef(finding.topicId)} ${filed}\n`);
     process.stdout.write(`  ${finding.reason}\n`);
     process.stdout.write(`  evidence: ${finding.frameworkIssue.evidence}\n`);
     process.stdout.write(`  dedupKey: ${finding.dedupKey}\n`);

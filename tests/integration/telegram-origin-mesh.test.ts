@@ -18,7 +18,7 @@ let worker: URL;
 beforeAll(async () => { worker = await compileOriginWorker(); });
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.unstubAllGlobals(); });
-async function boot(extra: { source?: Record<string, unknown>; owner?: Record<string, unknown> } = {}) {
+async function boot(extra: { source?: Record<string, unknown>; owner?: Record<string, unknown>; deliveryReports?: import('../../src/messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onSessionDeliveryHeld'] } = {}) {
   const keys = generateKeyPairSync('ed25519');
   const privateKey = keys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
   const publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -26,14 +26,14 @@ async function boot(extra: { source?: Record<string, unknown>; owner?: Record<st
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'owner', originMachineName: 'Delivery machine' },
     signingKey: { privateKey, keyId: 'owner:1', keyEpoch: 1 }, bot: { accountId: '123', token: `123:${randomUUID()}` },
     display: () => ({ agent: { enabled: true } }), authorize: request => request.destination.chatId === '-100123',
-    authorizeOrigin: () => true,
+    authorizeOrigin: () => true, onSessionDeliveryHeld: extra.deliveryReports,
     diagnoseUnknown: async () => undefined, alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined });
   let lifecycle: any;
   const source = await TelegramOriginRuntime.open({ ...owner.options,
     storage: { stateDir: temporaryState(), agentId: 'echo' }, bot: { accountId: 'unresolved' },
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'source', originMachineName: 'Origin machine' },
     signingKey: { privateKey, keyId: 'source:1', keyEpoch: 1 }, display: () => ({ agent: { enabled: false } }),
-    attachSessionLifecycle: value => { lifecycle = value; }, isSessionLive: () => true });
+    attachSessionLifecycle: value => { lifecycle = value; }, isSessionLive: () => true, onSessionDeliveryHeld: undefined });
   const credential = await lifecycle.issue({ sessionId: 'origin-session', harnessId: 'codex-cli', projectDir: process.cwd(), configuredModel: 'gpt-6-astra' });
   createRoutes({ config: { authToken: 'test', stateDir: source.options.storage.stateDir, port: 0 },
     telegramOrigin: source, ...extra.source } as any);
@@ -70,6 +70,20 @@ async function boot(extra: { source?: Record<string, unknown>; owner?: Record<st
   return { owner, source, credential, send, sendOther, botNetwork, auditAssertion, revoke: () => { attestationRevoked = true; } };
 }
 describe('Telegram origin signed mesh HTTP pipeline', () => {
+  it('keeps holder-side failures record-only without a live local session capability', async () => {
+    const reports = vi.fn(async () => undefined);
+    const h = await boot({ deliveryReports: reports });
+    const admit = vi.spyOn(h.owner.store, 'admit').mockRejectedValue(new Error('fixture admission unavailable'));
+    try {
+      await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+        topicId: 42, chatId: '-100123', text: 'An original session answer submitted to its credential holder.', send: h.send })))
+        .rejects.toMatchObject({ reason: 'execution-admission-unavailable' });
+      expect(h.owner.service.hasProducerContext()).toBe(false);
+      expect(reports).toHaveBeenCalledWith(expect.objectContaining({ source: 'scan', state: 'held' }));
+      expect(h.botNetwork).not.toHaveBeenCalled();
+    } finally { admit.mockRestore(); }
+  });
+
   it('starts the holder network clock only after signed mesh admission and current policy', async () => {
     const h = await boot();
     const deadline = new AbortController();
@@ -118,8 +132,13 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(await originDeliveryConfirmed(h.source.store, heldOperation, { selfMachineId: 'source', agentId: 'echo', send: query })).toBe(true);
     expect(query).toHaveBeenCalledOnce(); expect(h.botNetwork).toHaveBeenCalledOnce();
     const receipt = await h.send({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
-    expect(receipt.result).toEqual({ ok: true, operationId: heldOperation, originId: source!.record.originId,
-      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true });
+    expect(receipt.result).toMatchObject({ ok: true, operationId: heldOperation, originId: source!.record.originId,
+      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'],
+      // native-conversation-base §3b — the classified verdict travels beside the raw state.
+      role: 'execution-owner', outcome: 'delivered', safeToResend: false, originMachineId: 'source' });
+    // A third machine is refused without `reader` and answered with it.
+    expect((await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation, reader: true })).result)
+      .toMatchObject({ ok: true, role: 'execution-owner', outcome: 'delivered', messageIds: ['321'] });
     const intruder = await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
     expect(intruder.result).toEqual({ ok: false, reason: 'origin-receipt-unavailable' });
     const lookup = h.owner.store.getOperation.bind(h.owner.store);
@@ -251,6 +270,30 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(JSON.parse(records.records[0].record.envelopeJson)).toMatchObject({ originMachineId: 'source', sessionId: 'origin-session',
       model: { value: 'gpt-6-astra', status: 'configured' }, display: { enabled: false } });
     expect((await h.source.store.listOrigins()).records[0].operation).toBeNull();
+  });
+  it('records a delivered peer reply in the holder topic history with the original text and author', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: '**Decision needed** from the M5', send: h.send }));
+    expect(result.messageId).toBe(321);
+    expect(recorded).toEqual([{ chatId: '-100123', threadId: 42, text: '**Decision needed** from the M5', messageId: 321, producerKind: 'session' }]);
+  });
+  it('keeps a delivered peer reply delivered when the holder history recorder throws', async () => {
+    const h = await boot();
+    h.owner.options.onForwardedDelivered = () => { throw new Error('history store down'); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Still delivered', send: h.send }));
+    expect(result.messageId).toBe(321); expect(h.botNetwork).toHaveBeenCalledOnce();
+  });
+  it('records nothing in holder history when the holder refuses the reply', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Open http://localhost:4042/private', send: h.send }))).rejects.toBeTruthy();
+    expect(recorded).toEqual([]);
   });
   it('refuses a revoked source attestation before owner admission or network dispatch', async () => {
     const h = await boot(); h.revoke();

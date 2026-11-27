@@ -20,7 +20,7 @@ import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
-import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { signLeaseAck } from '../../src/server/machineAuth.js';
 import type { LeasePeer } from '../../src/core/HttpLeaseTransport.js';
@@ -72,11 +72,12 @@ async function sendAfter70s(opts: Parameters<typeof originLeaseDependencyFixture
     noticeOwner: true, holdsLease: () => lease.coordinator.holdsLease(), isSessionLive: () => true,
     attachSessionLifecycle: value => { lifecycle = value; }, diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
   cleanup.push(() => boot.close());
+  allowSlowOriginRecording(boot.runtime.service);
   const token = await lifecycle!.issue({ sessionId: 'session', harnessId: 'codex-cli', projectDir: lease.root, configuredModel: 'fixture-model' });
   const telegram = new TelegramAdapter(telegramConfig, lease.stateDir, { suppressLifelineAutoCreate: true });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer fixture-auth') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
+  app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram, sessionManager: { clearInjectionTracker: () => undefined } } as never));
   await waitForOriginDisplayReady(boot.runtime, { chatId: '-100123', topicId: '42' });
   const wire = vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { message_id: 10, chat: { id: -100123 }, message_thread_id: 42 } })));
   vi.stubGlobal('fetch', wire);

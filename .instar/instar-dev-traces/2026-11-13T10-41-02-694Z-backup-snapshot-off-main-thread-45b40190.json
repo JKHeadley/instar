@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "backup-snapshot-off-main-thread",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T10:41:02.694Z",
+  "artifactPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "artifactSha256": "549d3d4db89a263b0dd2b0b3d719dc3ce98bf2301fa16bb0cf0b909265f94340",
+  "coveredFiles": [
+    "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+    "src/core/BackupManager.ts",
+    "src/core/backupSnapshot.worker.ts",
+    "src/core/backupSnapshotJob.ts",
+    "src/feedback-factory/drain/FeedbackDrainBackupCadence.ts",
+    "src/server/AgentServer.ts",
+    "tests/integration/backup-snapshot-worker.test.ts",
+    "tests/unit/BackupManager-staged-sources.test.ts",
+    "tests/unit/feedback-drain-backup-cadence.test.ts",
+    "upgrades/next/backup-snapshot-off-main-thread.md",
+    "upgrades/side-effects/backup-snapshot-off-main-thread.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves one hourly, development-agent-only snapshot's copy to a worker thread; snapshot format, config and stored data unchanged; a revert undoes it. It touches backup consistency, so it had an independent review (three reads, concur).",
+  "eli16Path": "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

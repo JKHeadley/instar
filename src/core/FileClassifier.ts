@@ -17,6 +17,7 @@ import { KEY_MATERIAL_SECRET_PATTERNS } from './keyMaterialPaths.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from './IdentityStore.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { IMPORTED_HISTORY_PROJECT_PATH } from './importedHistoryPaths.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -188,6 +189,17 @@ const DEFAULT_GENERATED_PATTERNS = [
   // Classified MACHINE-LOCAL with git-sync-excluded as the file-level arm.
   '.instar/state/job-anomaly-episodes.json',
   '.instar/state/job-triage-state.json',
+  // Portable-job approvals, replay ledger, inbox, and import journal are local to
+  // one exact agent root. Git-sync must not carry consent or staged bundles.
+  '.instar/state/job-portable-*',
+  // Disk Steward (docs/specs/disk-steward.md): samples, cadence, prune run records
+  // and results describe THIS machine's disk (hardware-bound); another machine
+  // reading them would watch the wrong disk or recover the wrong process group.
+  '.instar/state/disk-steward/',
+  // Quota pacing (docs/specs/quota-pacing-forecast.md §4): each machine's own quota-reading
+  // history. Merged live on read through GET /quota-pacing, so syncing it would only create
+  // conflicts; it is derived telemetry and rebuilds after a restore.
+  '.instar/state/quota-history/',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
@@ -210,6 +222,12 @@ const DEFAULT_SECRET_PATTERNS = [
   '.instar/machine/identity.json',
   '.instar/machine/*key*',
   '.instar/secrets/',
+  // Signed-in Chrome profiles and the Linux driver's per-machine install state:
+  // the same folders the file routes and backups refuse.
+  '.instar/state/playwright-profiles/',
+  '.instar/state/xdrive/',
+  // A person's imported Claude/ChatGPT history stays on this machine only.
+  IMPORTED_HISTORY_PROJECT_PATH,
   // Key material as PREFIXES (a2a-single-agent-identity §5.3): the exact
   // `.instar/identity.json` match above left `identity.json.superseded-*`
   // syncable; these cover every sibling and the other key files by the same

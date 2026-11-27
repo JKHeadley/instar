@@ -121,18 +121,30 @@ describe('ApprovalLedger (Approval-as-Data Part B)', () => {
     expect(ledger.summaryForClass('governance-safety').streak).toBe(1);
   });
 
-  it('autoApprovalEligible holds only when ratio + streak + total ALL clear the policy', () => {
+  it('autoApprovalEligible holds only when ratio + streak + total ALL clear the policy (person-verified rows)', () => {
     const policy = { minRatio: 0.9, minStreak: 3, minTotal: 3 };
+    const v = { provenance: 'person-verified' as const };
     // 2 as-is: total<minTotal AND streak<minStreak → not eligible
-    ledger.recordApproval(asIs());
-    ledger.recordApproval(asIs());
+    ledger.recordApproval(asIs(v));
+    ledger.recordApproval(asIs(v));
     expect(ledger.summaryForClass('governance-safety', policy).autoApprovalEligible).toBe(false);
     // 3rd as-is: total=3, streak=3, ratio=1 → eligible
-    ledger.recordApproval(asIs());
+    ledger.recordApproval(asIs(v));
     expect(ledger.summaryForClass('governance-safety', policy).autoApprovalEligible).toBe(true);
     // a with-change drops streak to 0 → not eligible even though total grows
-    ledger.recordApproval(withChange());
+    ledger.recordApproval(withChange(v));
     expect(ledger.summaryForClass('governance-safety', policy).autoApprovalEligible).toBe(false);
+  });
+
+  it('agent-reported and unlabelled rows are counted but never make a class eligible (trust-journey section 6)', () => {
+    const policy = { minRatio: 0.9, minStreak: 3, minTotal: 3 };
+    for (let i = 0; i < 5; i++) ledger.recordApproval(asIs({ provenance: 'agent-reported' as const }));
+    for (let i = 0; i < 5; i++) ledger.recordApproval(asIs());
+    const s = ledger.summaryForClass('governance-safety', policy);
+    expect(s.total).toBe(10);
+    expect(s.approvedAsIs).toBe(10);
+    expect(s.agentReported).toBe(10);
+    expect(s.autoApprovalEligible).toBe(false);
   });
 
   it('aggregates divergence-category counts per class', () => {

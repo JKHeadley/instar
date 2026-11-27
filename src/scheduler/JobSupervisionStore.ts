@@ -282,6 +282,15 @@ export class JobSupervisionStore {
         reason TEXT NOT NULL,
         held_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS held_slug_releases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        hold_reason TEXT NOT NULL,
+        held_at TEXT NOT NULL,
+        released_at TEXT NOT NULL,
+        released_by TEXT NOT NULL,
+        release_reason TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS expected_machines (
         machine_id TEXT PRIMARY KEY,
         first_observed_at TEXT NOT NULL,
@@ -351,6 +360,81 @@ export class JobSupervisionStore {
     const rows = this.db.prepare('SELECT slug,reason,held_at FROM held_slugs ORDER BY held_at')
       .all() as Array<{ slug: string; reason: string; held_at: string }>;
     return rows.map(r => ({ slug: r.slug, reason: r.reason, heldAt: r.held_at }));
+  }
+
+  /**
+   * Release a hold with an audit row (CMT-1610). The hold row is removed and
+   * the release — who, why, and the original hold reason and time — is kept
+   * in `held_slug_releases`. Never a silent delete. Returns the released
+   * hold, or null when the slug was not held.
+   */
+  releaseHold(slug: string, input: { by: string; reason: string; now?: number }): { slug: string; reason: string; heldAt: string } | null {
+    const by = input.by.trim().slice(0, 64);
+    const why = input.reason.trim().slice(0, 500);
+    if (!by || !why) throw new Error('a hold release needs who released it and why');
+    const at = new Date(input.now ?? Date.now()).toISOString();
+    let released: { slug: string; reason: string; heldAt: string } | null = null;
+    this.db.transaction(() => {
+      const row = this.db.prepare('SELECT slug,reason,held_at FROM held_slugs WHERE slug=?').get(slug) as
+        { slug: string; reason: string; held_at: string } | undefined;
+      if (!row) return;
+      this.db.prepare(`INSERT INTO held_slug_releases(slug,hold_reason,held_at,released_at,released_by,release_reason)
+        VALUES (?,?,?,?,?,?)`).run(row.slug, row.reason, row.held_at, at, by, why);
+      this.db.prepare('DELETE FROM held_slugs WHERE slug=?').run(slug);
+      released = { slug: row.slug, reason: row.reason, heldAt: row.held_at };
+    })();
+    return released;
+  }
+
+  /** The audit trail of released holds, newest first. */
+  holdReleases(slug?: string, limit = 50): Array<{ slug: string; holdReason: string; heldAt: string; releasedAt: string; releasedBy: string; releaseReason: string }> {
+    const rows = (slug
+      ? this.db.prepare('SELECT * FROM held_slug_releases WHERE slug=? ORDER BY id DESC LIMIT ?').all(slug, limit)
+      : this.db.prepare('SELECT * FROM held_slug_releases ORDER BY id DESC LIMIT ?').all(limit)) as Array<Record<string, string>>;
+    return rows.map(r => ({ slug: r.slug, holdReason: r.hold_reason, heldAt: r.held_at,
+      releasedAt: r.released_at, releasedBy: r.released_by, releaseReason: r.release_reason }));
+  }
+
+  /**
+   * Close the attempt of a script run whose process is gone and never settled
+   * (server restart or crash mid-run, CMT-1610). The attempt is completed as
+   * a `failure` with reason `interrupted`, matching the run history that the
+   * scheduler settles the same way. Inserts a recovered row when the process
+   * died between the history start and registration. A row that already has
+   * a completion is never touched (it is a real disagreement unless it is
+   * this same interrupted settlement). Returns whether the row is closed as
+   * interrupted.
+   */
+  settleInterruptedRun(input: { runId: string; slug: string; machineId?: string | null; startedAt: string; now?: number }): boolean {
+    const now = input.now ?? Date.now();
+    const at = new Date(now).toISOString();
+    let closed = false;
+    this.db.transaction(() => {
+      const existing = this.findByRunId(input.runId);
+      if (!existing) {
+        const id = attemptIdAt(now);
+        this.db.prepare(`INSERT INTO attempts
+          (attempt_id,run_id,fire_id,slug,machine_id,registered_at,completed_at,result,status,reason,evidence_policy)
+          VALUES (?,?,?,?,?,?,?,'failure','unchecked','interrupted','recovered-unknown')`).run(
+          id, input.runId, `recovered:${input.runId}`, input.slug, input.machineId ?? null, input.startedAt, at);
+        this.transition(id, at, 'interrupted-settled', 'interrupted', 0);
+        closed = true;
+        return;
+      }
+      if (existing.slug !== input.slug) return;
+      if (existing.completedAt) {
+        // Idempotent: a prior settle that closed this row but whose history
+        // write did not land is reported closed so the history can be retried.
+        closed = existing.reason === 'interrupted' && existing.result === 'failure';
+        return;
+      }
+      this.db.prepare(`UPDATE attempts SET completed_at=?, result='failure', reason='interrupted',
+        status=CASE WHEN status='pending' THEN 'unchecked' ELSE status END,
+        lease_until=NULL, next_retry_at=NULL, receipt_token_hash=NULL WHERE attempt_id=?`).run(at, existing.attemptId);
+      this.transition(existing.attemptId, at, 'interrupted-settled', 'interrupted', existing.epoch);
+      closed = true;
+    })();
+    return closed;
   }
 
   /** A hold written after startup must still close the next script admission. */

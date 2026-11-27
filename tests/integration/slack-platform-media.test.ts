@@ -8,7 +8,7 @@
  * conversation this machine does not hold, or a malformed ref answers 404; a bearer read keeps
  * the raw row; the unified list's preview has no path.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,14 +27,20 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { recordPlatformMedia, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../../src/core/appPlatformMedia.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { AppMediaStore } from '../../src/core/AppMediaStore.js';
 
 const HOST = 'echo.example.dev';
 const OWNER = 'U0OWNER1';
 const CHANNEL = 'C0123ABC';
 const dirs: string[] = [];
 const cleanups: Array<() => void> = [];
-beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
+beforeAll(() => {
+  ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null);
+  // These tests cover media references, not the host's disk-capacity guard.
+  vi.spyOn(AppMediaStore.prototype, 'diskSpace').mockReturnValue({ free: 50 * 1024 ** 3, total: 100 * 1024 ** 3 });
+});
 afterAll(() => {
+  vi.restoreAllMocks();
   ProcessIntegrity.reset();
   for (const c of cleanups) c();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/slack-platform-media.test.ts' });

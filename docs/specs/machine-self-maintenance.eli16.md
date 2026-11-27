@@ -43,6 +43,12 @@ after its judgment has been proven; until then Justin gets the notice with a Res
 operating-system command that a frozen app cannot block. There are hard limits on how often this can
 happen, so a machine can never get stuck restarting over and over.
 
+**The gentlest fix comes first.** Sometimes a Mac starts an app but leaves it frozen, so it never
+opens. The agent's own test app shows when this is happening. The agent then sends each of the user's
+frozen apps a "carry on" signal. It only does this for an app that the system started, that sits in a
+normal app folder, and that has been frozen for at least a minute. It tries at most twice per app. The
+signal cannot close anything or lose work. At first it only writes down what it would have un-frozen.
+
 **Tidier browsers.** Agents now record every browser they open and close it when finished. A sweep
 closes any left behind, but only ones Instar opened, and the operator's own Chrome can never match.
 Being old is not enough: a browser closes only if its task said it was done, its time limit ran out

@@ -41,6 +41,7 @@ Why these merges:
   different time windows (24 h, 7 d, daily grain). LLM activity promises "what it cost" and never
   shows it (`index.html:3733`). One view with one time control and a named source on every
   number fixes all of that.
+- **"Needs you" means an action only the operator can take.** An unconfirmed sign-in, or a repair blocked by something the agent owns, is shown but not counted. A wrong login in a slot counts after a day; a login gone from the machine and a device-limit stop always count.
 - **Accounts stays on its own.** It is the action-heavy screen (sign-in repair, setup, approve),
   and money is a different decision from allowance. The cost view links to it for "covered by
   your subscription".
@@ -365,8 +366,14 @@ does any sign-in need me?"*
 - "Tap Switch account" refers to a button on the provider's page without saying so.
 
 **The new design.**
-- *Arrival (glance):* **"Plenty left: the busiest account is at 62% of its 5-hour limit."** /
-  **"1 sign-in needs you."** / **"Claude is nearly out until 4:10pm; Codex has room."** Facts:
+- *Arrival (glance):* **"1 sign-in needs you."** when one does, else just **"Accounts"**. Under it,
+  the notice spot (operator 2026-11-06, topic 134088: "only show a message if it's actually useful
+  and important"): empty and hidden unless a machine has no signed-in account ("Mac Mini has no
+  signed-in account, so nothing can run there.", action: the sign-in) or every usable account, or
+  every usable account of one kind, is at or over 90% ("All 2 Claude accounts are used up." with
+  when room returns, action: ask the agent). One account full while others have room is on its
+  row and is never a notice, and a sign-in that is only waiting gets no line at the top either. Same rules as the phone's `notices` (`accountNotices` in
+  `src/server/mobileCapacityRoutes.ts`). Facts:
   *Needs you* (sign-ins, approvals; hidden at zero), *Most used* (account + % + resets in),
   *Accounts* (n working of m), *In use now* (which account this machine is serving with).
 - *Layout:*
@@ -389,8 +396,13 @@ does any sign-in need me?"*
      Grouping by machine is how it was built
      (`dashboard/console/accounts.js:32`–`:41`): when a machine loses its sign-ins, they all go
      at once, and five cards for one cause read as five problems.
-  2. **Allowance**: one row per account, grouped Claude / Codex / other: name, a single bar for
-     the tightest window with "62% · resets 4:10pm", second window in small type. Tap → account
+  2. **Allowance**: one row per account, grouped Claude / Codex / other: name and its tightest
+     share, then one labelled line per limit that applies, each with its own bar, share and reset
+     ("5-hour ▓▓░ 62% resets 4:10 PM (in 2h)", "Weekly ▓░░ 31% resets Thu 9:00 AM"). The 5-hour
+     line shows only when the account's reading has a 5-hour window; a window whose reset passed
+     after the reading shows "reset since the last reading" and never counts as tightest; a reset
+     more than 6 days out carries its date (operator report 2026-11-10, topic 33890: one bar and
+     one unlabelled reset read as the weekly limit). Tap → account
      detail: both windows, reading age, which machines it works on, recent sign-in history (from
      `login-history`, read-only), why it last moved a session (from `proactive-swap`, read-only).
   3. **On each machine**: the grid becomes, on phone, a list per account of machine chips ("✓
@@ -431,8 +443,9 @@ does any sign-in need me?"*
 │   Codex · justin@…  [Repair]  │
 ├──────────────────────────────┤
 │ Allowance                     │
-│ Claude · echo   ▓▓▓▓▓░ 62%    │
-│   resets 4:10pm · weekly 31%› │
+│ Claude · echo           62%  ›│
+│  5-hour ▓▓▓▓░ 62% resets 4:10p│
+│  Weekly ▓▓░░░ 31% resets Thu  │
 │ Codex · justin  ▓░░░░░ 12%   ›│
 ├──────────────────────────────┤
 │ On each machine               │

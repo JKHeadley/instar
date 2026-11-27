@@ -103,7 +103,9 @@ export class FailedFileDiagnosisPeerService {
     // Before the child writes its PID it has not created a worktree. A scan
     // closes the tiny window where it was spawned but has not run its first line.
     const output = await new Promise<string | null>((resolve) => {
-      execFile('ps', ['-A', '-o', 'pid=,pgid=,command='], { encoding: 'utf8', timeout: 2_000 },
+      // Agent prompts in command arguments can make a healthy process table exceed
+      // Node's 1 MiB default. Keep a bounded scan and treat any overflow as unknown.
+      execFile('ps', ['-A', '-o', 'pid=,pgid=,command='], { encoding: 'utf8', timeout: 2_000, maxBuffer: 8 * 1024 * 1024 },
         (error, stdout) => resolve(error ? null : stdout));
     });
     if (output === null) return 'unknown';

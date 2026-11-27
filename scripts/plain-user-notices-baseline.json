@@ -1,6 +1,6 @@
 {
   "src/commands/server.ts": 3,
   "src/lifeline/TelegramLifeline.ts": 1,
-  "src/messaging/TelegramAdapter.ts": 6,
+  "src/messaging/TelegramAdapter.ts": 5,
   "src/messaging/slack/SlackAdapter.ts": 2
 }

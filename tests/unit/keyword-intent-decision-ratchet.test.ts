@@ -176,7 +176,9 @@ const ALLOWLIST: Record<string, string> = {
   // Agent's OWN outbound classified (not a user message) — signal-only, high-precision.
   'core/action-claim.ts': 'VERB_LEMMAS/FUTURE_LEAD — classifies the agent\'s own outbound "did I promise a future action"; audit "Related", not user-intent gating.',
   // Process / error-message signature matchers (classify a thrown error, not user text).
+  'core/storageMachineName.ts': 'isStorageError/isStorageFailure — recognizes local OS/SQLite error signatures only to name the originating machine; cosmetic diagnostic formatting, no user-intent or admission decision.',
   'core/crossModelReviewer.ts': 'classifyReviewFailure — classifies an error message (rate-limited/timeout); TIER_WORDS is a structured-output enum (survivor #3).',
+  'threadline/requiredAck.ts': 'refusalReason — maps this server\'s own spawn-refusal error text to a closed display reason, like classifyReviewFailure; decides nothing and never reads user or peer text (spec a2a-required-acknowledgment).',
   'core/CliLoginStatus.ts': 'classifyCodexLoginStatus — classifies the `codex login status` CLI process output ("Logged in" / "Not logged in"), a process-signature matcher like classifyReviewFailure; never reads user text (spec skill-driven-signin-repair).',
   // Structured LLM-output field parsing (parses the model\'s own response, never gates prose).
   'core/LLMConflictResolver.ts': 'content.match(/^Machine A intent:/m) — parses structured LLM output fields, not keyword-gating user intent.',
@@ -195,6 +197,12 @@ const ALLOWLIST: Record<string, string> = {
   // A2A reply-warrant heuristic (membership + openers) — decides whether to reply to a PEER agent.
   'threadline/WarrantsReplyGate.ts': 'CONTROL_PHRASES.has(norm) + opener regexes — A2A reply-warrant heuristic (whole-value membership, survivor #1); never swallows operator input.',
   // Task-NATURE scorer (coordination-vs-judgment), NOT message-intent — advisory readiness endpoint.
+  // Context budget (context-budget-layered-summaries): structural checks over Instar's OWN rendered text and enums.
+  'monitoring/contextLayers/chunkBuilder.ts': 'CHUNK_TRIGGERS/RETRIES_PER_TRIGGER — a closed enum of chunk-build triggers and a retry count; no text is classified.',
+  'monitoring/contextLayers/standingPacket.ts': 'verifyStandingPacket — checks the packet Instar itself rendered for its own `absent:` lines and `as of <ISO>` stamps; never reads a user message for intent.',
+  // Context-budget structure checks over Instar's OWN rendered text and enums (never a user message).
+  'monitoring/contextLayers/standingPacket.ts': 'verifyStandingPacket — checks the server\'s own rendered packet for its `as of <ISO>` freshness stamp and `absent:` placeholders (a format invariant the verifier enforces on its own output); never reads or gates user text.',
+  'monitoring/contextLayers/chunkBuilder.ts': 'CHUNK_TRIGGERS / RETRIES_PER_TRIGGER — a closed enum of internal chunk-build trigger names and a retry count, not a keyword list over any message; decides nothing about user intent.',
   'core/AgentReadinessScorer.ts': 'scoreText — scores a TASK\'s coordination-vs-judgment nature (COORDINATION_SIGNALS/JUDGMENT_SIGNALS density) for the advisory /agent-readiness endpoint; it grades work-nature for automation-readiness, never gates/reroutes/swallows a user message. Survivor, cleared class (CMT-1907).',
 };
 

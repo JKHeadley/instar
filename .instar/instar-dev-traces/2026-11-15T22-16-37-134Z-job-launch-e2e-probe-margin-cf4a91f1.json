@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "job-launch-e2e-probe-margin",
+  "sessionId": "c0d12928-cf85-4146-a56f-e4313af41416",
+  "timestamp": "2026-11-15T22:16:37.134Z",
+  "artifactPath": "upgrades/side-effects/job-launch-e2e-probe-margin.md",
+  "artifactSha256": "4c3341824c1d0db523bf9acb2a181ba5bbdf0c263dd26afef610d9dec06a6e4e",
+  "coveredFiles": [
+    "docs/specs/job-launch-e2e-probe-margin.eli16.md",
+    "tests/e2e/job-launch-lifecycle.test.ts",
+    "upgrades/next/job-launch-e2e-probe-margin.md",
+    "upgrades/side-effects/job-launch-e2e-probe-margin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line test fixture change (mock CLI answers its version in 0.2 s instead of 1 s); no product code; a revert fully undoes it.",
+  "eli16Path": "docs/specs/job-launch-e2e-probe-margin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-launch-e2e-probe-margin.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -239,6 +239,8 @@ export interface AutonomousRunMarkers {
   movedTo: string | null;
   /** Whether a `move_suspended_at` breadcrumb is present (mid-handoff). */
   moveSuspended: boolean;
+  /** Explicit stop takes precedence over stale pause or move markers. */
+  stopped: boolean;
   /** started_at parsed to epoch ms, or null when absent/unparseable. */
   startedAtMs: number | null;
   /** Stable run identity shared with the autonomous-run journal scanner. */
@@ -266,11 +268,34 @@ export function readAutonomousRunMarkers(
   return {
     movedTo: movedTo && movedTo.length > 0 ? movedTo : null,
     moveSuspended: /^move_suspended_at:/m.test(content),
+    stopped: /^stopped_at:/m.test(content),
     startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
     runId: startedAt && Number.isFinite(startedMs)
       ? autonomousRunId(startedAt, String(topic))
       : null,
   };
+}
+
+/** Local run records that still need a user-facing status, including an
+ * inactive record suspended for a machine move. A paused record remains
+ * reportable until explicitly stopped, even if its original timer elapsed. */
+export function reportableAutonomousJobs(stateDir: string, nowMs: number = Date.now()): Array<{
+  job: AutonomousJobSummary;
+  remainingSeconds: number;
+}> {
+  const result: Array<{ job: AutonomousJobSummary; remainingSeconds: number }> = [];
+  for (const job of listAutonomousJobs(stateDir)) {
+    if (job.topic == null || !job.startedAt) continue;
+    const markers = readAutonomousRunMarkers(stateDir, job.topic);
+    if (!markers || markers.stopped || !(job.active || markers.moveSuspended)) continue;
+    const startedAt = new Date(job.startedAt).getTime();
+    if (!Number.isFinite(startedAt)) continue;
+    const remainingSeconds = job.durationSeconds == null
+      ? 0 : Math.max(0, Math.round(job.durationSeconds - (nowMs - startedAt) / 1000));
+    if (job.durationSeconds != null && remainingSeconds <= 0 && !job.paused && !markers.moveSuspended) continue;
+    result.push({ job, remainingSeconds });
+  }
+  return result;
 }
 
 export interface CanStartDeps {

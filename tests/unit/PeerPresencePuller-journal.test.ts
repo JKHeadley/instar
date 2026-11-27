@@ -201,3 +201,63 @@ describe('forged-heartbeat-from-non-owner-rejected (U4.2 — freshness binds to 
     expect(recorded).not.toContain('m_owner');
   });
 });
+
+describe('PeerPresencePuller.pullKindFrom (ownership-nudge)', () => {
+  const stream = (entries: unknown[]): JournalDeltaStream => ({ kind: 'topic-placement', incarnation: 'inc-A', entries } as JournalDeltaStream);
+  function setup(head: number, perPage: number, deltaWired = true) {
+    let held = 0;
+    const requests: Array<{ kind: string; from: number }> = [];
+    const recorded: string[] = [];
+    const puller = new PeerPresencePuller({
+      selfMachineId: 'm_self',
+      listPeers: () => [],
+      fetchPeerCapacity: async () => ({
+        journalAdvert: {
+          'topic-placement': { incarnation: 'inc-A', lastSeq: head },
+          'other-kind': { incarnation: 'inc-A', lastSeq: 99 },
+        },
+      }),
+      recordHeartbeat: (o) => recorded.push(o.machineId),
+      ...(deltaWired ? {
+        requestJournalDelta: async (_m: string, _u: string, kind: string, from: number) => { requests.push({ kind, from }); return stream([]); },
+        applyDelta: () => { held = Math.min(head, held + perPage); },
+        localAdvertFor: () => ({ 'topic-placement': { incarnation: 'inc-A', lastSeq: held } }),
+      } : {}),
+    });
+    return { puller, requests, recorded };
+  }
+
+  it('walks pages to the head, asks for that kind only, and records no presence', async () => {
+    const { puller, requests, recorded } = setup(30, 10);
+    expect(await puller.pullKindFrom('m_mini', URL_MINI, 'topic-placement')).toBe(true);
+    expect(requests.map((r) => r.kind)).toEqual(['topic-placement', 'topic-placement', 'topic-placement']);
+    expect(requests.map((r) => r.from)).toEqual([0, 10, 20]);
+    expect(recorded).toEqual([]);
+  });
+
+  it('a claim past page 3 stops there and reads false', async () => {
+    const { puller, requests } = setup(31, 10);
+    expect(await puller.pullKindFrom('m_mini', URL_MINI, 'topic-placement')).toBe(false);
+    expect(requests).toHaveLength(3);
+  });
+
+  it('a kind the peer does not advertise asks for nothing and reads false', async () => {
+    const { puller, requests } = setup(0, 10);
+    expect(await puller.pullKindFrom('m_mini', URL_MINI, 'missing-kind')).toBe(false);
+    expect(requests).toEqual([]);
+  });
+
+  it('reads false with replication off, or when the peer cannot be reached', async () => {
+    expect(await setup(5, 5, false).puller.pullKindFrom('m_mini', URL_MINI, 'topic-placement')).toBe(false);
+    const dead = new PeerPresencePuller({
+      selfMachineId: 'm_self',
+      listPeers: () => [],
+      fetchPeerCapacity: async () => { throw new Error('fetch failed'); },
+      recordHeartbeat: () => {},
+      requestJournalDelta: async () => null,
+      applyDelta: () => {},
+      localAdvertFor: () => ({}),
+    });
+    expect(await dead.pullKindFrom('m_mini', URL_MINI, 'topic-placement')).toBe(false);
+  });
+});

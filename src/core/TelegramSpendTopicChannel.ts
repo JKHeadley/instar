@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/core/TelegramSpendTopicChannel.ts');
 /**
  * TelegramSpendTopicChannel — the Increment-C concrete AlertChannel (FD-6):
  * delivers each already-deduped/coalesced spend alert as a MESSAGE into the
@@ -20,14 +22,16 @@
  * alerts (the knob still cannot touch money admission).
  */
 
+import type { QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import crypto from 'node:crypto';
 import type { AlertChannel } from './SpendAlertDispatcher.js';
 import type { SpendAlertResolver } from './SpendAlertResolver.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export interface TelegramSpendTopicChannelDeps {
   resolver: SpendAlertResolver;
   /** Direct Telegram send; resolves true on confirmed delivery. */
-  sendToTopic: (topicId: number, text: string) => Promise<boolean>;
+  sendToTopic: (topicId: number, text: string) => Promise<boolean | QuietReceipt>;
   /** The always-existing system topic (emergency fallback). */
   lifelineTopicId: () => number | undefined;
   /**
@@ -49,7 +53,7 @@ export class TelegramSpendTopicChannel implements AlertChannel {
     this.d = deps;
   }
 
-  async deliver(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'failed'> {
+  async deliver(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'quiet-recorded' | 'failed'> {
     await this.announceRepointIfChanged();
     const topicId = await this.d.resolver.resolveTopicId();
     if (topicId !== undefined) {
@@ -66,7 +70,9 @@ export class TelegramSpendTopicChannel implements AlertChannel {
         }
       }
       try {
-        if (await this.d.sendToTopic(topicId, text)) return 'sent';
+        const result = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(topicId, text));
+        if (typeof result === 'object' && result.recorded) return 'quiet-recorded';
+        if (result === true) return 'sent';
       } catch {
         // @silent-fallback-ok: a set-but-wrong/deleted topic id is a FALLBACK
         // case, not a black hole — the lifeline path below is the designed
@@ -84,7 +90,9 @@ export class TelegramSpendTopicChannel implements AlertChannel {
         }
       }
       try {
-        if (await this.d.sendToTopic(lifeline, text)) return 'sent-lifeline';
+        const result = await withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(lifeline, text));
+        if (typeof result === 'object' && result.recorded) return 'quiet-recorded';
+        if (result === true) return 'sent-lifeline';
       } catch {
         // @silent-fallback-ok: terminal 'failed' is returned below and the
         // dispatcher leaves the alert UN-latched (eligible for re-send).
@@ -105,10 +113,10 @@ export class TelegramSpendTopicChannel implements AlertChannel {
     const old = this.lastConfiguredId;
     this.lastConfiguredId = configured;
     if (old === undefined || configured === undefined) return; // first observation / unset — nothing to announce
-    const note = `🔀 Spend alerts now route to topic ${configured} (was ${old}). If you didn't change routingSpend.alerts.telegramTopicId, check your config.`;
+    const note = `🔀 Spend alerts now route to ${topicRef(configured)} (was ${topicRef(old)}). If you didn't change routingSpend.alerts.telegramTopicId, check your config.`;
     this.d.audit?.({ channel: this.id, outcome: 'repoint', from: old, to: configured });
     // Both topics, best-effort — the announcement must never block a delivery.
-    await Promise.allSettled([this.d.sendToTopic(old, note), this.d.sendToTopic(configured, note)]);
+    await Promise.allSettled([withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(old, note)), withNotificationEnvelope(stampNotification(), async () => (this.d)!.sendToTopic(configured, note))]);
   }
 }
 

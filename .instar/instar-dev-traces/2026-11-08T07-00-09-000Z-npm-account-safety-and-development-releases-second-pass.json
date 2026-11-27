@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "npm-account-safety-and-development-releases",
+  "sessionId": "38f44e9a-e45e-42ee-a1f0-95cd4bfa7a2a",
+  "timestamp": "2026-11-08T07:00:09.000Z",
+  "artifactPath": "upgrades/side-effects/npm-account-safety-and-development-releases.md",
+  "artifactSha256": "6e0f122605e73a6d68cb30d18b7219b4ce2907bdfa99f73b993b7d63548450ee",
+  "specPath": "docs/specs/npm-account-safety-and-development-releases.md",
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Independent second pass of the opt-in development release workflow; applies the reviewer's least-privilege checkout fix (persist-credentials false) and records the review.",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "coveredFiles": [
+    ".github/workflows/development-release.yml",
+    "upgrades/side-effects/npm-account-safety-and-development-releases.md"
+  ],
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Manually dispatched one-shot workflow; no self-triggered controller"
+  }
+}

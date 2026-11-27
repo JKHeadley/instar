@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "bounded-input-review-b3",
+  "sessionId": "ab37123e-d49d-4151-b255-ed7a66ad40b2",
+  "timestamp": "2026-11-18T15:29:16.758Z",
+  "artifactPath": "upgrades/side-effects/bounded-input-review-b3.md",
+  "artifactSha256": "a8ed62ca03a5111ab915d98c085678796e1921ede8fc9326506845584d544f7d",
+  "coveredFiles": [
+    "docs/audits/bounded-input-review/batch-3.md",
+    "docs/bounded-judgment-input-baseline.json",
+    "src/core/SharedStateLedger.ts",
+    "src/monitoring/CollaborationRedriveEngine.ts",
+    "src/monitoring/PromptGate.ts",
+    "src/monitoring/SessionWatchdog.ts",
+    "src/server/routes.ts",
+    "tests/unit/CollaborationRedriveEngine.test.ts",
+    "tests/unit/SessionWatchdog-failclosed.test.ts",
+    "tests/unit/SessionWatchdog-pipeline.test.ts",
+    "tests/unit/sharedStateRoutesV2.test.ts",
+    "upgrades/next/bounded-input-review-b3.md",
+    "upgrades/side-effects/bounded-input-review-b3.eli16.md",
+    "upgrades/side-effects/bounded-input-review-b3.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Ten baseline entries: the watchdog only loses early-interrupt power on inputs it cannot see whole and its documented ceiling fallback is repaired; one API refusal on an unshipped-caller route; the rest are comments or disclosed cuts. No stored state, config or migration; a revert undoes it fully.",
+  "eli16Path": "upgrades/side-effects/bounded-input-review-b3.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/bounded-input-review-b3.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

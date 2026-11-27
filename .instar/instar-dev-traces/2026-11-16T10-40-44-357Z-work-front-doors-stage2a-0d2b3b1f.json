@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2a",
+  "sessionId": "9ff214e1-274c-4f8e-a770-7b331015831c",
+  "timestamp": "2026-11-16T10:40:44.357Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2a.md",
+  "artifactSha256": "e2795743cab7bb7441f5462439a17aa2ab6e8d75cd5e736a618926748e18cf16",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "dashboard/console/projects-model.js",
+    "dashboard/console/projects.js",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/server/workProjectsRoutes.ts",
+    "tests/e2e/work-projects-alive.test.ts",
+    "tests/unit/work-projects-read.test.ts",
+    "upgrades/side-effects/work-front-doors-stage2a.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

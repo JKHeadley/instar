@@ -72,9 +72,9 @@ describe('evidence readers', () => {
 
 describe('settings', () => {
   it('dry-run defaults true and the notice defaults off; only an explicit false or true changes them', () => {
-    expect(normalizeWedgeSettings(undefined)).toEqual({ dryRun: true, dryRunNotice: false });
-    expect(normalizeWedgeSettings({ dryRun: 'no', dryRunNotice: 'yes' })).toEqual({ dryRun: true, dryRunNotice: false });
-    expect(normalizeWedgeSettings({ dryRun: false, dryRunNotice: true })).toEqual({ dryRun: false, dryRunNotice: true });
+    expect(normalizeWedgeSettings(undefined)).toEqual({ dryRun: true, dryRunNotice: false, gentleResume: 'dry-run' });
+    expect(normalizeWedgeSettings({ dryRun: 'no', dryRunNotice: 'yes' })).toEqual({ dryRun: true, dryRunNotice: false, gentleResume: 'dry-run' });
+    expect(normalizeWedgeSettings({ dryRun: false, dryRunNotice: true })).toEqual({ dryRun: false, dryRunNotice: true, gentleResume: 'dry-run' });
   });
 });
 

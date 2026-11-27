@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "cb-framework-constants-1115",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-15T18:36:03.528Z",
+  "artifactPath": "upgrades/side-effects/cb-framework-constants-1115.md",
+  "artifactSha256": "f5ce22a5518c4304514d88a9326f0901127ab48617755ee85023839fe7fa42a0",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "scripts/framework-name-ratchet-baseline.json",
+    "src/commands/postDriveTranscriptAudit.ts",
+    "src/core/frameworkFacts.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

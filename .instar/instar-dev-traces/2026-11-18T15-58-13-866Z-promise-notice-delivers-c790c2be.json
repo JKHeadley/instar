@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "promise-notice-delivers",
+  "sessionId": "5f47b83a-35db-4fb9-abca-d28ac6aabbaa",
+  "timestamp": "2026-11-18T15:58:13.866Z",
+  "artifactPath": "upgrades/side-effects/promise-notice-delivers.md",
+  "artifactSha256": "9af517b78e78d0212efb530a529b7dc02bda4e683f71e6f435c37ed9bb5ee95b",
+  "specPath": "docs/specs/overdue-promise-follow-through.md",
+  "coveredFiles": [
+    "docs/specs/overdue-promise-follow-through.eli16.md",
+    "docs/specs/overdue-promise-follow-through.md",
+    "scripts/lint-notification-selectivity.mjs",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/messaging/notificationCategories.ts",
+    "src/messaging/notificationStampers.ts",
+    "src/monitoring/CheckInReminderReconciler.ts",
+    "src/server/routes.ts",
+    "tests/unit/promise-notice-delivery.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "check-in-reminder pass is registered (selfActionRegistry checkInReminderPass). The only new self-action is a retry when a send is held quiet: it reuses the existing per-time attempt budget (LATE_NOTICE_MAX_ATTEMPTS 5, CHECK_IN_MAX_ATTEMPTS) and then stamps lateNoticeFailedAt/checkInReminderFailedAt, which removes the row from eligibility (brake). Steady state: at most 3 topics per pass, 12 per hour, one late message per topic per hour, and a gate backstop of 6 promise-notice sends per topic per 10 min."
+    }
+  }
+}

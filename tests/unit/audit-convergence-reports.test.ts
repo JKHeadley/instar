@@ -26,11 +26,14 @@ const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: '
 const GRANDFATHERED_AUDIT_SLUGS: string[] = [];
 
 function committedDocsMd(): string[] {
-  const out = execFileSync('git', ['ls-files', 'docs/**/*.md'], { cwd: ROOT, encoding: 'utf8' });
+  const out = execFileSync('git', ['ls-files', 'docs/**/*.md'], { cwd: ROOT, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER });
   return out.split('\n').map((s) => s.trim()).filter(Boolean);
 }
+// The full tracked-file list passed Node's 1 MiB default buffer on 2026-11-04 (ENOBUFS),
+// so both listings read with an explicit, generous buffer.
+const LS_FILES_MAX_BUFFER = 64 * 1024 * 1024;
 function trackedSet(): Set<string> {
-  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' });
+  const out = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER });
   return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
 }
 function read(rel: string): string {

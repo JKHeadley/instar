@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T17:05:15.802Z",
+  "slug": "feedback-last-mile",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 175,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/commands/server.ts",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/claudeChildAuth.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/feedback-factory/execute/independentReview.ts"
+    ],
+    "addedLines": 150,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

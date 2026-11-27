@@ -17,7 +17,9 @@ import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import {
   jobDeclaredFailurePath,
+  jobDeclaredSkipPath,
   readJobDeclaredFailure,
+  readJobDeclaredSkip,
   sanitizeDeclaredFailureReason,
   JOB_DECLARED_FAILURE_AWARENESS,
 } from '../../src/scheduler/jobDeclaredFailure.js';
@@ -91,6 +93,21 @@ function run(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateFramewor
   (m as unknown as Record<string, (r: MigrationResult) => void>)[method](result);
   return result;
 }
+
+describe('jobDeclaredSkip', () => {
+  it('sits next to the failure file, reads once and removes, and never reads the failure file', () => {
+    const skip = jobDeclaredSkipPath(dir, 'echo-job-x');
+    expect(path.dirname(skip)).toBe(path.dirname(jobDeclaredFailurePath(dir, 'echo-job-x')));
+    expect(skip).not.toBe(jobDeclaredFailurePath(dir, 'echo-job-x'));
+    expect(readJobDeclaredSkip(dir, 'echo-job-x')).toBeNull();
+    declare('echo-job-x', 'a failure');
+    expect(readJobDeclaredSkip(dir, 'echo-job-x')).toBeNull();
+    fs.writeFileSync(skip, 'server too busy\nto answer');
+    expect(readJobDeclaredSkip(dir, 'echo-job-x')).toBe('server too busy to answer');
+    expect(fs.existsSync(skip)).toBe(false);
+    expect(readJobDeclaredFailure(dir, 'echo-job-x')).toBe('a failure');
+  });
+});
 
 describe('feedback-inbox token awareness', () => {
   const OLD_SECTION = `**Feedback-Inbox Receiving End (operated feedback factory)** — When this install runs an operated feedback-factory instance, the receiving end is: ... ${FEEDBACK_INBOX_TOKEN_SENTENCE_OLD}\n- Status (read-only counters): \`curl http://localhost:4042/feedback-inbox/status\`\n`;

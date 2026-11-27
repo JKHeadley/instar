@@ -252,4 +252,65 @@ describe('ReplicatedPeerStreamReader', () => {
     // Single-origin: a request for a foreign origin returns nothing.
     expect(reader.loadOwnEntries(LEARNING_STORE_KEY, PEER)).toEqual({});
   });
+
+  describe('fold cache', () => {
+    const write = (id: string, physical: number, seq: number) => applyPeerRecord(applier,
+      buildLearningRecordData({ record: learning({ id, title: id }), hlc: hlc(physical, PEER), origin: PEER })!, seq);
+    const keys = () => reader.listRecordKeys(LEARNING_STORE_KEY);
+    const counted = () => {
+      const c = countingFs();
+      return { c, r: new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: c.io, autoRebuild: false }) };
+    };
+
+    it('an unchanged store is read once, however many keys are asked for', () => {
+      write('LRN-001', 1000, 1);
+      const { c, r } = counted();
+      const [key] = r.listRecordKeys(LEARNING_STORE_KEY);
+      expect(c.reads()).toBeGreaterThan(0);
+      c.reset();
+      for (let i = 0; i < 5; i++) r.loadOriginRecords(LEARNING_STORE_KEY, key);
+      r.loadAllOriginRecords(LEARNING_STORE_KEY);
+      expect(c.reads()).toBe(0);
+    });
+
+    it('a write is seen by the very next read', () => {
+      write('LRN-001', 1000, 1);
+      expect(keys()).toHaveLength(1);
+      write('LRN-002', 2000, 2);
+      expect(keys()).toHaveLength(2);
+    });
+
+    it('a new peer stream file is seen', () => {
+      expect(keys()).toHaveLength(0);
+      write('LRN-001', 1000, 1);
+      expect(keys()).toHaveLength(1);
+    });
+
+    it('what a caller changes never reaches the next caller', () => {
+      write('LRN-001', 1000, 1);
+      const [key] = keys();
+      const first = reader.loadOriginRecords(LEARNING_STORE_KEY, key);
+      (first[0].data as Record<string, unknown>).title = 'changed';
+      first[0].envelope.origin = 'someone-else';
+      reader.loadAllOriginRecords(LEARNING_STORE_KEY).get(key)![0].envelope.origin = 'someone-else';
+      const again = reader.loadOriginRecords(LEARNING_STORE_KEY, key);
+      expect(again[0].envelope.origin).toBe(PEER);
+      expect((again[0].data as Record<string, unknown>).title).not.toBe('changed');
+    });
+
+    it('a failed read is not remembered as an empty store', () => {
+      write('LRN-001', 1000, 1);
+      const io = { ...fs } as unknown as JournalFs;
+      let fail = true;
+      const realRead = fs.readSync;
+      io.readSync = ((...args: Parameters<typeof fs.readSync>) => {
+        if (fail) throw new Error('EIO');
+        return realRead(...args);
+      }) as typeof fs.readSync;
+      const r = new ReplicatedPeerStreamReader({ stateDir: dir, registry: reg(), selfMachineId: SELF, fsImpl: io, autoRebuild: false });
+      expect(r.listRecordKeys(LEARNING_STORE_KEY)).toHaveLength(0);
+      fail = false;
+      expect(r.listRecordKeys(LEARNING_STORE_KEY)).toHaveLength(1);
+    });
+  });
 });

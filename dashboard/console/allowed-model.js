@@ -8,6 +8,34 @@
 
 import { ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
+
+/** Open exact-change requests, shared by the Allowed page and Needs-you. No approval authority here. */
+export function buildTrustRequests(res, now = Date.now()) {
+  if (!res || !res.ok) return { ok: false, reason: res && res.reason || 'The approval requests could not be read.', rows: [] };
+  const d = res.data;
+  if (!d || !Array.isArray(d.requests)) return { ok: false, reason: 'The approval request answer was incomplete.', rows: [] };
+  const delivery = d.approvalDelivery;
+  const state = delivery && ['accepted', 'setup', 'none', 'unknown'].includes(delivery.state) ? delivery.state : 'unknown';
+  const message = delivery && typeof delivery.message === 'string' && delivery.message.trim() ? delivery.message.trim() : null;
+  const rows = d.requests.filter((r) => r && r.status === 'open' && typeof r.requestId === 'string'
+    && Number.isFinite(Date.parse(r.expiresAt)) && Date.parse(r.expiresAt) > now).map((r) => {
+    const summary = Array.isArray(r.summary) ? r.summary.filter((s) => typeof s === 'string') : [];
+    let continuation;
+    if (state === 'accepted') continuation = message || 'Open Changes to approve in the paired Instar app to review this request.';
+    else if (state === 'setup') continuation = message || 'Set up approvals in the paired Instar app before approving this request.';
+    else if (state === 'unknown') continuation = message || 'I could not check which device can approve right now. Refresh this list against the machine deciding approvals.';
+    else if (r.delivered === true && (r.adapter === 'telegram' || r.adapter === 'slack')) continuation = 'Open the private approval chat and reply to this exact request card.';
+    else if (r.adapter === 'device') continuation = message || 'No approving device is reachable. Reconnect your approving iPhone or a Mac with Touch ID.';
+    else continuation = message || 'Chat delivery is unconfirmed. Set up approvals in the Instar app, or check your private approval chat.';
+    const unconfirmed = r.adapter !== 'device' && r.delivered !== true;
+    return { key: `trust:${r.requestId}`, requestId: r.requestId, summary,
+      main: ({ 'board-policy': 'Review how the agent starts work cards', 'one-action': 'Review an action the agent wants to take once', 'trust-grant': 'Review what the agent may do' })[r.changeKind] || 'Review a requested change', continuation,
+      sub: `${unconfirmed && !continuation.startsWith('Chat delivery is unconfirmed.') ? 'Chat delivery is unconfirmed. ' : ''}${continuation}`,
+      expiresAt: r.expiresAt, deliveryState: state };
+  });
+  return { ok: true, rows, deliveryState: state };
+}
 
 // ── Profile ───────────────────────────────────────────────────────────────
 export const PROFILES = ['cautious', 'supervised', 'collaborative', 'autonomous'];
@@ -127,8 +155,19 @@ export function needsLook(g) {
   return NEEDS_LOOK.has(g.effective);
 }
 
-function humanKey(key) {
-  return String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
+const ACRONYMS = { pr: 'PR', prs: 'PRs', ci: 'CI', llm: 'LLM', api: 'API', url: 'URL', id: 'ID', a2a: 'A2A', mcp: 'MCP', tcc: 'TCC', ssh: 'SSH', os: 'OS' };
+/** A setting key as words: "greenPrAutoMerge" → "Green PR auto merge", "modelTierEscalation.dryRun" → "Model tier escalation dry run". */
+export function humanKey(key) {
+  const words = String(key || 'A safety check').replace(/^monitoring\./, '').replace(/\.enabled$/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[._-]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+    .map((w) => ACRONYMS[w.toLowerCase()] || w.toLowerCase());
+  const text = words.join(' ') || 'a safety check';
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A row title without the trailing dated incident tag ("… (2026-07-02 load-stall kill cascade)"); the detail sheet keeps the full text. */
+export function guardTitle(text) {
+  return String(text || '').replace(/\s*\(\s*\d{4}-\d{2}-\d{2}\b[^)]*\)\s*$/, '').trim() || String(text || '');
 }
 
 /** Which writes a row offers. Only this machine's rows can be written; peers never. */
@@ -144,9 +183,10 @@ function guardRow(g, machine, local) {
   return {
     key: `${machine.id || 'self'}:${g.key}`,
     guardKey: g.key,
-    main: g.criticalPath ? `${g.criticalPath}` : humanKey(g.key),
+    main: g.criticalPath ? guardTitle(g.criticalPath) : humanKey(g.key),
     sub: [guardWord(g), machine.name].filter(Boolean).join(' · '),
     end: '',
+    // warning-path: row
     tone: look ? 'attn' : g.loadBearingAccepted ? 'unknown' : undefined,
     local, machine: machine.name, where: machine.name || machine.here || 'this machine', needsLook: look, record: g, actions: guardActions(g, local),
   };
@@ -156,7 +196,7 @@ function guardRow(g, machine, local) {
  * Every guard row, this machine first. `res` is GET /guards (optionally ?scope=pool).
  * Returns { ok, look, others, failed, multi, selfName, counts }.
  */
-export function buildGuards(res) {
+export function buildGuards(res, { pool: poolRows = null, now = Date.now() } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read the safety checks: ${res.reason}.` };
   const d = res.data || {};
   if (!Array.isArray(d.guards)) return { ok: false, reason: 'The safety checks answered without their list.' };
@@ -176,10 +216,12 @@ export function buildGuards(res) {
   const accepted = rows.filter((r) => r.record.loadBearingAccepted);
   return {
     ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
+    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(poolMachine(poolRows, f.machineId)?.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${GUARD_UNREACHED.has(f.reason) ? unreachableClause(poolMachine(poolRows, f.machineId), f, now) : FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
     counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
   };
 }
+// Out of reach: say for how long and whether anything is fixing it (CMT-1541).
+const GUARD_UNREACHED = new Set(['offline', 'timeout', 'unreachable']);
 const FAILED_WORDS = {
   'no-known-url': 'no address known for it', offline: 'it is offline', 'url-rejected': 'its address was refused',
   'route-missing': 'it needs an update to report', unauthorized: 'it refused the request', timeout: 'no answer in time',
@@ -403,6 +445,7 @@ export function canUndoOff(f) { return !needsConsent(f.tier); }
 export function facts({ profile, guards, features, suggestions }) {
   const out = [];
   if (profile && profile.ok) out.push({ n: PROFILE_LABEL[profile.profile], label: 'profile' });
+  // warning-path: inline
   if (guards && guards.ok && guards.counts.look) out.push({ n: guards.counts.look, label: guards.counts.look === 1 ? 'check needs a look' : 'checks need a look', tone: 'attn', href: '#/settings/allowed?s=guards' });
   if (features && features.ok) out.push({ n: `${features.on} of ${features.total}`, label: 'features on', href: '#/settings/allowed?s=features' });
   if (suggestions && suggestions.ok && suggestions.items.length) out.push({ n: suggestions.items.length, label: suggestions.items.length === 1 ? 'suggestion' : 'suggestions' });

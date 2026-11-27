@@ -82,14 +82,19 @@ export function agentOwnedStop(w) {
 
 export function watcherLine(w, now = Date.now()) {
   if (!w) return { text: 'Merge watcher: no reading.', tone: 'unknown' };
+  // warning-path: askLink
   if (w.invariantOk === false) return { text: 'Merge watcher: its safety invariant failed; it will not arm anything until that clears.', tone: 'bad' };
+  // warning-path: askLink
   if (w.breaker && w.breaker.open) return { text: 'Merge watcher paused itself after repeated failures.', tone: 'bad' };
   const gate = w.gate || {};
   const stops = Array.isArray(gate.rollbackStops) ? gate.rollbackStops : [];
+  // warning-path: askLink
   if (stops.length && stops.every((s) => s && s.class === 'agent')) return { text: 'Auto-merging is stopped by the agent for its own reason. It releases this itself when its condition is met; you can also turn it back on here.', tone: 'attn', stopped: true };
+  // warning-path: askLink
   if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back).', tone: 'attn', stopped: true };
   if (!w.lastTickAt) return { text: 'Merge watcher has not checked yet.', tone: 'unknown' };
   const age = now - w.lastTickAt;
+  // warning-path: askLink
   if (age > 2 * WATCHER_CADENCE_MS) return { text: `Merge watcher last checked ${ago(w.lastTickAt, now)}, usually every ${Math.round(WATCHER_CADENCE_MS / 60000)} min.`, tone: 'attn' };
   return { text: `Merge watcher checked ${ago(w.lastTickAt, now)}.`, tone: 'ok' };
 }
@@ -100,9 +105,11 @@ export function releaseLine(res, now = Date.now()) {
   if (st === 'off') return { text: 'Release watchdog: off on this agent.', tone: 'off' };
   if (st === 'failed') return { text: `Release watchdog: can’t tell (${reasonOf(res)}).`, tone: 'unknown' };
   const d = res.data || {};
+  // warning-path: askLink
   if (d.disabled) return { text: 'Release watchdog: switched off.', tone: 'attn' };
   const when = d.lastTickAt ? ` · last checked ${ago(d.lastTickAt, now)}` : ' · not checked yet';
   const n = Number(d.openEpisodes) || 0;
+  // warning-path: askLink
   if (n > 0) return { text: `Release watchdog: ${plural(n, 'unresolved episode')}${when}.`, tone: 'attn', attentionId: d.openAttentionId || null, sha: d.oldestOpenSha || null };
   return { text: `Release watchdog: nothing unresolved${when}.`, tone: 'ok' };
 }
@@ -192,8 +199,11 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   }
   const armedPrs = w && Array.isArray(w.armed) ? w.armed.map((a) => a.pr) : [];
   return {
+    // warning-path: pageHead
     state: 'ok', headline, tone: wl && wl.stopped && tone !== 'bad' ? 'attn' : tone, tiles, rows, moving, watcher: wl, release: releaseLine(release, now),
+    // warning-path: pageHead
     partial: !w || !v, armedPrs, stopped: Boolean(wl && wl.stopped), rollbackLatches: (w && w.gate && Array.isArray(w.gate.rollback)) ? w.gate.rollback : [],
+    // warning-path: pageHead
     line: !w ? 'Shipping: can’t tell' : `Shipping: ${wl && wl.stopped ? 'auto-merge stopped, ' : ''}${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${needs ? '' : ''}${stuck} stuck` : ''}`,
     repoKnown: Boolean(repo),
   };
@@ -387,6 +397,8 @@ export function authorityCard(kind, p) {
     envelope: { maxBatch: env.maxBatch, maxTokens: env.maxTokens, maxDailySpendUsd: env.maxDailySpendUsd },
     boundTo: p && p.proposal ? `agent ${p.proposal.agentId} · machine ${p.proposal.ownerMachineId} (epoch ${p.proposal.ownerEpoch}) · model ${p.proposal.modelFamily} via ${p.proposal.provider}` : '',
     approveAction: (p && p.approveAction) || null,
+    // Sent back with the approval so the server binds exactly the model shown here.
+    shownModelFamily: (p && p.proposal && p.proposal.modelFamily) || null,
     approveLabel: p && p.approveAction === 'restore' ? 'Approve (restore)' : 'Approve',
     restoreNote: p && p.approveAction === 'restore' ? 'Restore brings back the last approved limits. To change them, restore first, then save new limits.' : null,
     canSaveLimits: Boolean(p && p.status === 'active' && !p.approveAction && (p.blockers || []).length === 0),
@@ -394,13 +406,54 @@ export function authorityCard(kind, p) {
   };
 }
 
+function consumerPromotionState(proposal) {
+  // A follower can show the owner’s status, but the owner’s PIN may only be sent locally.
+  return proposal?.state === 'pending' && proposal.localAction === false ? 'non-owner' : proposal?.state;
+}
+
+/** The console only surfaces an actionable proposal from the serving drain. */
+function pendingConsumerPromotion(response) {
+  const proposal = sourceState(response) === 'ok' ? response.data : null;
+  if (proposal?.state !== 'pending' || proposal.localAction !== true) return null;
+  const { proposalSetHash, approvedBatchBound, items } = proposal;
+  if (typeof proposalSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(proposalSetHash) ||
+      !Number.isSafeInteger(approvedBatchBound) || approvedBatchBound < 1 || approvedBatchBound > 50 ||
+      !Array.isArray(items) || items.length !== approvedBatchBound) return null;
+  if (!items.every((item) => item && typeof item.workId === 'string' && item.workId.length > 0 &&
+    typeof item.title === 'string' && item.title.length > 0 &&
+    typeof item.priority === 'string' && item.priority.length > 0 &&
+    Number.isSafeInteger(item.reportCount) && item.reportCount > 0) ||
+    new Set(items.map((item) => item.workId)).size !== items.length) return null;
+  return { evidenceHash: proposalSetHash, approvedBatchBound, items };
+}
+
+export function consumerPromotionSummary(batch) {
+  return `Turn on feedback processing. It starts with this batch and can create up to ${plural(batch, 'work item')} per run.`;
+}
+
+const PROMOTION_NOTES = {
+  'configured-simulation': 'Feedback processing is set to practice mode. The agent needs to prepare it for promotion.',
+  'no-work': 'There are no approved feedback items ready for promotion yet.',
+  'non-owner': 'Feedback promotion is available from the machine that runs feedback processing.',
+  restore: 'Feedback promotion will be available once restoration is complete.',
+  unavailable: 'Feedback promotion is currently unavailable.',
+};
+
 /** Everything on this page that is the operator's to do, most important first. */
-export function operatorTodos({ readiness, triageProposal, execute, queue } = {}) {
+export function operatorTodos({ readiness, triageProposal, execute, queue, consumerPromotion } = {}) {
   const todos = [];
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
   if (pending(r)) todos.push({ kind: 'readiness-authority', action: r.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: `Approve which model sorts incoming reports.${r.status === 'proposal-only' ? ` It was paused: ${r.pausedBecause || 'a safety brake fired.'}` : r.status === 'revoked' ? ' You turned it off earlier.' : ''}`, button: r.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: r });
   const t = sourceState(triageProposal) === 'ok' ? triageProposal.data : null;
   if (pending(t)) todos.push({ kind: 'triage-authority', action: t.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: 'Approve which model decides which reports get fixed.', button: t.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: t });
+  const promotion = pendingConsumerPromotion(consumerPromotion);
+  if (promotion) todos.push({
+    kind: 'consumer-promotion', sentence: 'Feedback needs your approval to create work items.',
+    detail: consumerPromotion.data.promotionRecord?.requiresReapproval === true
+      ? 'The previous approval needs to be renewed before feedback processing can create work items.'
+      : 'Feedback processing is currently in practice mode.',
+    proposal: promotion,
+  });
   const x = sourceState(execute) === 'ok' ? execute.data : null;
   if (x && x.reason === 'approver-not-independent') todos.push({ kind: 'plan', action: 'accept-approver-dependence', sentence: 'The fix worker needs your one-time OK to run.', detail: 'This agent could approve its own fixes on GitHub, so it waits for you. Every fix still needs your GitHub approval to merge.', button: 'Let it run anyway…' });
   const held = ((x && x.attempts) || []).filter((a) => a.state === 'held' && a.reason === 'needs-review-secret-shape');
@@ -417,9 +470,11 @@ export function progressLine(drain, readiness, now = Date.now()) {
   if (ds === 'off') return { tone: 'off', text: 'The feedback drain is off on this agent.', n: 'off' };
   const d = drain.data || {};
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
+  // warning-path: askLink
   if (r && r.status === 'proposal-only') return { tone: 'attn', text: `Sorting is paused: ${r.pausedBecause || 'a safety brake fired.'} Only your approval restarts it.`, n: 'paused' };
   const p = d.readinessProgress;
   if (!p) return { tone: 'unknown', text: 'No sorting model is approved yet, so there is no progress to measure.', n: 'not set up' };
+  // warning-path: askLink
   if ((p.consecutiveFailedTicks || 0) >= STALL_TICKS) return { tone: 'attn', text: `Sorting hasn’t produced a usable answer since ${p.stalledSince ? at(p.stalledSince) : 'a while'} (${plural(p.consecutiveFailedTicks, 'run')} in a row; a provider problem — nothing is paused).`, n: `no answer for ${plural(p.consecutiveFailedTicks, 'run')}` };
   if (p.lastSuccessAt) return { tone: 'ok', text: `Last sorted ${ago(p.lastSuccessAt, now)}${p.consecutiveFailedTicks ? `; ${plural(p.consecutiveFailedTicks, 'run')} since produced no usable answer` : ''}.`, n: ago(p.lastSuccessAt, now) };
   return { tone: 'unknown', text: 'No sorting run has produced an answer yet.', n: 'none yet' };
@@ -447,6 +502,18 @@ export function buildFeedback(res = {}, now = Date.now()) {
   const todoFeeds = ['readiness', 'triageSummary', 'triageProposal', 'execute', 'queue'];
   const allOff = todoFeeds.every((k) => states[k] === 'off');
   const drainOff = states.drain === 'off' || (states.drain === 'ok' && res.drain.data && res.drain.data.posture && res.drain.data.posture.state === 'unavailable');
+  const promotionRead = res.consumerPromotion;
+  const promotionState = consumerPromotionState(promotionRead?.data);
+  const promotionBadRead = promotionRead && ![404, 503].includes(promotionRead.status) && (
+    !promotionRead.ok || (promotionState === 'pending' && !pendingConsumerPromotion(promotionRead)) ||
+    (promotionState !== 'pending' && promotionState !== 'already-live' && !Object.hasOwn(PROMOTION_NOTES, promotionState))
+  );
+  if (promotionBadRead) {
+    states.consumerPromotion = 'failed';
+    names.consumerPromotion = 'the feedback promotion proposal';
+    failed.push('consumerPromotion');
+    todoFeeds.push('consumerPromotion');
+  }
   const todos = operatorTodos(res);
   const progress = progressLine(res.drain, res.readiness, now);
   const summary = states.triageSummary === 'ok' ? (res.triageSummary.data || {}) : null;
@@ -456,6 +523,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
   const waiting = counts ? (counts.untriaged || 0) + (counts.queued || 0) : null;
 
   const tiles = [
+    // warning-path: row
     { key: 'needs', label: 'Needs you', n: failed.some((k) => todoFeeds.includes(k)) && !todos.length ? 'Can’t tell' : todos.length, tone: todos.length ? 'attn' : failed.length ? 'unknown' : null },
     { key: 'fixing', label: 'Being fixed', n: exec ? (Number(exec.live) || 0) + (Number(exec.openPrs) || 0) : states.execute === 'off' ? 'off' : 'Can’t tell', tone: exec ? null : states.execute === 'off' ? 'off' : 'unknown', reason: exec ? `${plural(Number(exec.live) || 0, 'attempt')} running, ${plural(Number(exec.openPrs) || 0, 'fix', 'fixes')} waiting for review` : states.execute === 'off' ? 'the fix worker is off on this agent' : reasonOf(res.execute) },
     { key: 'sorting', label: 'Waiting to sort', n: waiting === null ? (states.triageSummary === 'off' ? 'off' : 'Can’t tell') : waiting, tone: waiting === null ? (states.triageSummary === 'off' ? 'off' : 'unknown') : null, reason: waiting === null ? (states.triageSummary === 'off' ? 'triage is off on this agent' : reasonOf(res.triageSummary)) : null },
@@ -484,6 +552,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
   }
 
   const notes = [];
+  if (promotionRead?.ok && Object.hasOwn(PROMOTION_NOTES, promotionState)) notes.push(PROMOTION_NOTES[promotionState]);
   if (summary && summary.quotaPause && summary.quotaPause.at) notes.push('Triage is paused for now: the account serving it is near its usage limit.');
   if (summary && summary.ignoreBrake && summary.ignoreBrake.engaged) notes.push('Ignores are braked: the ignore rate rose sharply, so new ignores are being held.');
   if (states.drain === 'ok' && res.drain.data && res.drain.data.restorePending) notes.push('A failover restore is pending; writes are refused until it is finalized.');
@@ -524,10 +593,11 @@ export function newDecisionRef(prefix = 'console', now = new Date(), rand = Math
 }
 
 /** POST /feedback-factory/readiness-authorities body (create/replace/restore/revoke). An emptied limit means "use the default", never 0. */
-export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
@@ -536,10 +606,11 @@ export function readinessAuthorityRequest(action, envelope, pin, operatorDecisio
   return body;
 }
 /** POST /feedback-factory/triage/authority body: the server fills every binding field from its proposal. */
-export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
@@ -580,16 +651,58 @@ export function developmentHeadline({ shipping, feedback, pace } = {}) {
   const needs = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'needs') : [];
   if (feedback && feedback.todos && feedback.todos.length) {
     const n = feedback.todos.length + needs.length + (stopped ? 1 : 0);
+    // warning-path: pageHead
     return { text: n === 1 ? 'One thing needs you.' : `${n} things need you.`, tone: 'attn', sub: stopped ? 'Automatic merging is stopped.' : feedback.todos[0].sentence };
   }
   // Stopped is never "Nothing here needs you": it comes before every calmer reading below.
+  // warning-path: pageHead
   if (stopped) return { text: needs.length ? `${needs.length + 1} things need you.` : 'Automatic merging is stopped.', tone: 'attn', sub: needs.length ? 'Automatic merging is stopped.' : shipping.line };
+  // warning-path: pageHead
   if (needs.length) return { text: needs.length === 1 ? 'One pull request needs your approval on GitHub.' : `${needs.length} pull requests need your approval on GitHub.`, tone: 'attn', sub: shipping.line };
   if (feedback && feedback.state === 'cant-tell') return { text: 'Can’t tell whether anything needs you.', tone: 'muted', sub: feedback.headline };
   const stuck = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'stuck').length : 0;
+  // warning-path: pageHead
   if (stuck) return { text: `${plural(stuck, 'pull request')} ${stuck === 1 ? 'is' : 'are'} stuck.`, tone: 'bad', sub: shipping.headline };
   const lines = [shipping && shipping.line, feedback && feedback.line, pace && pace.line].filter(Boolean);
   const allOff = (!shipping || shipping.state === 'off') && (!feedback || feedback.state === 'off');
   if (allOff) return { text: 'Development tools aren’t set up on this machine.', tone: 'muted', sub: 'Shipping and the feedback factory run on a machine with the Instar source checkout.' };
   return { text: 'Nothing here needs you.', tone: 'ok', sub: lines.join(' · ') };
+}
+
+// ── Borrowed machines on the run machine (docs/specs/local-verify-borrowed-slices-count.md, G) ──
+const BORROWED_LANE_WORDS = Object.freeze({ unit: 'quick tests', integration: 'integration tests', e2e: 'end-to-end tests' });
+
+/** One lane's state in plain words. */
+export function borrowedLaneWords(x) {
+  const l = x && typeof x === 'object' ? x : {};
+  if (l.proven === false || !l.evidence) return 'not tried yet (no dry run)';
+  if (l.state === 'counting') return 'its passing results count';
+  if (l.state === 'suspended') return 'paused after many disagreements in one run';
+  if (typeof l.state === 'string' && l.state.startsWith('lapsed')) return 'back to practice after a problem';
+  const ev = l.evidence;
+  const done = ['coverage', 'spread', 'failingDirection', 'checkSlice', 'wrongPassWindow'].filter((k) => ev[k] && ev[k].complete).length;
+  return `practising (${done} of 5 checks met)`;
+}
+
+/**
+ * The run machine's borrowed helpers in plain words: a title, then per helper its lanes, what the
+ * last run sent and it finished, and a dry run in progress. Null when no helper is set up here.
+ */
+export function borrowedSummary(b) {
+  if (!b || typeof b !== 'object' || !b.mode || b.mode === 'off' || !Array.isArray(b.helpers) || b.helpers.length === 0) return null;
+  const rows = b.helpers.filter((h) => h && typeof h.machineId === 'string').map((h) => {
+    const lanes = h.lanes && typeof h.lanes === 'object' ? h.lanes : {};
+    const laneLines = ['unit', 'integration', 'e2e'].map((k) => `${BORROWED_LANE_WORDS[k]}: ${borrowedLaneWords(lanes[k])}`);
+    const lasts = ['unit', 'integration', 'e2e'].map((k) => lanes[k] && lanes[k].lastVerify).filter((x) => x && typeof x.sent === 'number');
+    lasts.sort((a, c) => String(c.at).localeCompare(String(a.at)));
+    const last = lasts[0] ? `Last run: it was given ${plural(lasts[0].sent, 'file')} and finished ${lasts[0].finished}.` : 'It has not been given any work yet.';
+    const intent = h.dryRunIntent && h.dryRunIntent.state;
+    const dry = h.dryRunRunning ? 'A dry run is going on.' : intent === 'requested' ? 'A dry run is waiting to start.' : null;
+    return { machine: h.machineId, lanes: laneLines, last, dry };
+  });
+  return {
+    title: b.mode === 'count' ? 'Borrowed machines help the test line' : 'Borrowed machines practise for the test line',
+    sub: 'Their answers are compared with this machine’s own; a lane counts only after it has proven itself and the line’s session records that decision.',
+    rows,
+  };
 }

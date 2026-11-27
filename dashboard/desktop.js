@@ -415,11 +415,19 @@ let controlSequence = 0n;
 let lockedSealKey = '';
 let lockedScreenState = '';
 let lockedBoxAllowed = false;
+let lockedBoxRefusal = '';
 let secretSequence = 0;
 function syncLockedPassword() {
-  const show = lockedBoxAllowed && lockedScreenState === 'locked-in-session' && !!lockedSealKey;
+  const locked = lockedScreenState === 'locked-in-session';
+  const show = lockedBoxAllowed && !lockedBoxRefusal && locked && !!lockedSealKey;
   $('lockedPassword').hidden = !show;
   if (!show) $('lockedPasswordInput').value = '';
+  // A locked Mac whose box cannot work says why, rather than showing nothing.
+  const reason = $('lockedPasswordReason');
+  if (reason) {
+    reason.hidden = !(locked && lockedBoxRefusal);
+    reason.textContent = locked && lockedBoxRefusal ? lockedMessage(lockedBoxRefusal) : '';
+  }
 }
 function lockedMessage(reason) {
   return { 'relock-pending': 'This Mac is finishing a relock. Try again in a couple of minutes.',
@@ -428,7 +436,30 @@ function lockedMessage(reason) {
     aborted: 'Stopped before the password finished. Type it again.',
     'field-dirty': 'Clearing the password field. Try again in a moment.',
     'browser-box-off': 'Password entry from a browser is off for this Mac.',
-    'tunnel-not-first-tier': 'Password entry is off while the backup connection is in use.' }[reason]
+    'tunnel-not-first-tier': 'Password entry is off while the backup connection is in use.',
+    'tunnel-not-active': 'Password entry from a browser is off until this Mac\'s secure tunnel is up. This page updates when it is.',
+    'retained-helper-required': 'Password entry needs Instar\'s kept desktop helper on this Mac, and this install does not have one.',
+    'own-input-grant-required': 'Password entry needs macOS Accessibility permission for Instar\'s own desktop helper on this Mac.',
+    'unsupported-macos': 'Password entry is not available on this Mac\'s macOS version.',
+    'helper-unprobed': 'This Mac\'s desktop helper has not answered yet, so password entry is not ready.',
+    'shield-not-confirmed': 'This Mac\'s lock screen is not ready for a password right now. Wake the screen and try again.',
+    'not-at-the-lock-screen': 'This Mac is not at its lock screen, so the password was not typed.',
+    'not-locked': 'This Mac is not locked, so there is nothing to unlock.',
+    'not-available': 'Password entry is not available in this session.',
+    'grant-ended': 'This remote session has ended. Start a new one to try again.',
+    'repeat': 'That password was already sent. Type it again to retry.',
+    'too-long': 'That password is too long to type here.',
+    'character-not-typable': 'That password has a character this Mac\'s keyboard layout cannot type from here.',
+    'state-unavailable': 'This Mac could not read its relock record. Try again in a moment.',
+    'relock-not-owed': 'This Mac is not ready for a password in this session. Start a new session.',
+    relocking: 'This Mac is relocking now. Try again in a couple of minutes.',
+    'relock-pending-unconfirmed': 'This Mac is finishing a relock. Try again in a couple of minutes.',
+    'relock-failed': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'relock-failed-producer-alive': 'This Mac could not confirm its last relock. Check it before trying again.',
+    'guard-not-alive': 'This Mac\'s relock guard is not running, so password entry is paused. Try again shortly.',
+    disabled: 'Locked-screen access is turned off on this Mac.',
+    busy: 'This Mac is busy with another password. Try again in a moment.',
+    'state-unknown': 'This Mac\'s lock state is unclear right now. Try again in a moment.' }[reason]
     ?? 'This Mac did not accept that. Try again.';
 }
 async function receiveControl(record) {
@@ -440,7 +471,11 @@ async function receiveControl(record) {
   controlSequence = sequence;
   const value = JSON.parse(new TextDecoder().decode(plain));
   if (value.type === 'seal') lockedSealKey = value.key;
-  if (value.type === 'state') { lockedScreenState = value.state; lockedBoxAllowed = value.box === true; }
+  if (value.type === 'state') {
+    lockedScreenState = value.state;
+    lockedBoxAllowed = value.box === true;
+    lockedBoxRefusal = typeof value.boxRefusal === 'string' ? value.boxRefusal : '';
+  }
   if (value.type === 'secret-result' && value.refused) status(lockedMessage(value.refused));
   if (value.type === 'secret-result' && value.sent) { $('leaveUnlockedButton').hidden = false; }
   if (value.type === 'relock') status(value.phase === 'left-unlocked' ? 'This Mac will stay unlocked.' : 'Relocking has begun.');
@@ -503,6 +538,10 @@ function clearFrame() {
   $('screen').removeAttribute('src');
   $('screen').hidden = false;
 }
+function showMachinePicker() {
+  $('request').hidden = false;
+  $('retryButton').hidden = ![...$('machine').options].some(option => option.disabled);
+}
 function leave(message) {
   streamEpoch++;
   inputEnabled = false;
@@ -537,7 +576,7 @@ function leave(message) {
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   document.body.classList.remove('desktop-live', 'trackpad');
   $('control').hidden = true;
-  if (token) $('request').hidden = false;
+  if (token) showMachinePicker();
   status(message);
 }
 function unexpectedDisconnect(streamSocket) {
@@ -547,6 +586,7 @@ function unexpectedDisconnect(streamSocket) {
   // Stop remains reachable while the target decides whether this interruption
   // may resume. The browser cannot create a new grant on its own.
   $('request').hidden = true;
+  $('retryButton').hidden = true;
   $('control').hidden = false;
   document.body.classList.add('desktop-live');
   syncVisualViewport();
@@ -660,8 +700,28 @@ async function resumeDesktop(generation) {
       return;
     }
     resumeAttempt = null;
-    leave(error.message || 'Desktop access cannot resume.');
+    void leaveExplained(error.message || 'Desktop access cannot resume.');
   }
+}
+/** A session the machine itself ended (a Windows PC that locked, a Mac whose
+ * screen went away) says why, not only that it ended: the machine list is read
+ * again and that machine's own reason replaces the generic line. */
+async function leaveExplained(message) {
+  const endedMachineId = machineId;
+  const endedRequestId = requestId;
+  leave(message);
+  if (!token || !endedMachineId) return;
+  // A new request (even one still connecting) keeps its own status line.
+  const superseded = () => !!socket || requestId !== endedRequestId;
+  try {
+    const targets = await api('/desktop/targets');
+    if (superseded()) return;
+    const ended = (targets.machines || []).find(target => target.machineId === endedMachineId);
+    if (!ended || ended.ready || !ended.unavailableReason) return;
+    await loadTargetsAndMaybeOpen({ open: false, targets });
+    if (superseded()) return;
+    status(ended.unavailableReason);
+  } catch { /* @silent-fallback-ok — the generic line above already says the session ended. */ }
 }
 async function api(path, method = 'GET', body, signal) {
   let response;
@@ -741,9 +801,11 @@ async function loadDesktopPage(options) {
   await refreshSetup();
 }
 
-async function loadTargetsAndMaybeOpen({ open = true } = {}) {
-  const targets = await api('/desktop/targets');
+async function loadTargetsAndMaybeOpen({ open = true, targets } = {}) {
+  targets ??= await api('/desktop/targets');
   const machines = targets.machines || [];
+  const previousOption = $('machine').selectedOptions[0];
+  const selectedMachine = previousOption && !previousOption.disabled ? previousOption.value : null;
   $('machine').replaceChildren();
   $('machineNotes')?.replaceChildren();
   trustedTargetKeys.clear();
@@ -777,7 +839,9 @@ async function loadTargetsAndMaybeOpen({ open = true } = {}) {
   $('unlock').hidden = true;
   const ready = [...$('machine').options].filter(option => !option.disabled);
   $('requestButton').disabled = ready.length === 0;
-  if (!preferredMachine && ready.length > 0) $('machine').value = ready[0].value;
+  if (!preferredMachine && ready.length > 0) {
+    $('machine').value = trustedTargetKeys.has(selectedMachine) ? selectedMachine : ready[0].value;
+  }
   if (preferredMachine && !hasPreferredMachine) {
     $('request').hidden = machines.length === 0;
     $('retryButton').hidden = false;
@@ -791,13 +855,12 @@ async function loadTargetsAndMaybeOpen({ open = true } = {}) {
     status(reason || 'This machine’s desktop is not available right now.');
     return;
   }
-  $('retryButton').hidden = true;
-  if (open && (hasPreferredMachine || (machines.length === 1 && ready.length === 1))) {
+  if (open && (hasPreferredMachine || (!selectedMachine && machines.length === 1 && ready.length === 1))) {
     if (!hasPreferredMachine) $('machine').value = ready[0].value;
     status(`Opening ${$('machine').selectedOptions[0].textContent}…`);
     await requestDesktop();
   } else {
-    $('request').hidden = false;
+    showMachinePicker();
     status('Choose a machine to open.');
   }
 }
@@ -827,14 +890,20 @@ $('unlockButton').addEventListener('click', async () => {
 
 $('retryButton').addEventListener('click', async () => {
   $('retryButton').disabled = true;
+  const openWasDisabled = $('requestButton').disabled;
+  $('requestButton').disabled = true;
   try { await loadDesktopPage(); }
   catch (error) {
     if (/dashboard operator session|dashboard PIN session/i.test(error.message || '')) requirePinAgain();
-    else status(error.message || 'Could not check this machine.');
+    else {
+      $('requestButton').disabled = openWasDisabled;
+      status(error.message || 'Could not check this machine.');
+    }
   } finally { $('retryButton').disabled = false; }
 });
 
 async function requestDesktop() {
+  $('retryButton').hidden = true;
   reconnectAttempts = 0;
   resumeTransportFailures = 0;
   stopping = false;
@@ -893,7 +962,7 @@ async function requestDesktop() {
     if (/dashboard operator session|dashboard PIN session/i.test(message)) {
       requirePinAgain();
     } else {
-      $('request').hidden = false;
+      showMachinePicker();
       status(message);
     }
   }
@@ -934,6 +1003,7 @@ async function openStream(result, resume = null) {
   socket.binaryType = 'arraybuffer';
   controlSequence = 0n;
   lockedSealKey = '';
+  lockedBoxRefusal = '';
   secretSequence = 0;
   syncLockedPassword();
   return new Promise((resolve, reject) => {

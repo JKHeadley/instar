@@ -43,6 +43,14 @@ const TEXT_FIELDS = [
   'resolution',
   'escalationDetail',
   'followThroughOptOutReason',
+  // promise-review-and-priority §2.1 — new free-text fields travel redacted too.
+  'priorityReason',
+  'reopenReason',
+  'shadowDecision',
+  // agent-work-cards-default §3: the owner's whole request text travels redacted like every free-text field.
+  'requestText',
+  'recommendation',
+  'whyYou',
 ] as const;
 
 // ── Wire shapes ─────────────────────────────────────────────────────
@@ -138,6 +146,15 @@ function serveRecord(c: Commitment, ownMachineId: string): ReplicatedCommitment 
       }
     }
   }
+  // promise-review-and-priority: the nested evidence reference is free text too.
+  const ref = (served as unknown as { evidenceRef?: { kind?: unknown; ref?: unknown } }).evidenceRef;
+  if (ref && typeof ref.ref === 'string') {
+    const r = redactForLiveTail(ref.ref);
+    if (r.redactedCount > 0) {
+      (served as unknown as Record<string, unknown>).evidenceRef = { ...ref, ref: r.text };
+      redacted = true;
+    }
+  }
   if (redacted) served.textRedacted = true;
   return served;
 }
@@ -152,14 +169,44 @@ function serveRecord(c: Commitment, ownMachineId: string): ReplicatedCommitment 
 // well-formed.)
 const OWNER_VALUES = new Set(['agent', 'user']);
 const BLOCKED_ON_VALUES = new Set(['none', 'external', 'user-input', 'user-authorization']);
-function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitment {
+export function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitment {
   const owner = OWNER_VALUES.has(((row as { owner?: string }).owner ?? '')) ? row.owner : 'agent';
   const blockedOn = BLOCKED_ON_VALUES.has(((row as { blockedOn?: string }).blockedOn ?? ''))
     ? row.blockedOn
     : 'none';
-  if (owner === row.owner && blockedOn === row.blockedOn) return row;
-  return { ...row, owner, blockedOn } as ReplicatedCommitment;
+  // promise-review-and-priority §2.1: priority / closedBy are enum-clamped
+  // (unknown → removed), the new free-text fields are length-clamped, so a peer
+  // can neither inject an unknown priority nor forge a review closure marker
+  // the dashboard would treat as reopenable (reopen is own-row-only anyway).
+  const r = row as ReplicatedCommitment & Record<string, unknown>;
+  const priorityOk = r.priority === undefined || PRIORITY_VALUES.has(String(r.priority));
+  const closedByOk = r.closedBy === undefined || r.closedBy === 'promise-review';
+  const lengthsOk = (typeof r.priorityReason !== 'string' || r.priorityReason.length <= 200)
+    && (typeof r.reopenReason !== 'string' || r.reopenReason.length <= 500)
+    && (typeof r.shadowDecision !== 'string' || r.shadowDecision.length <= 300);
+  const ev = r.evidenceRef as { kind?: unknown; ref?: unknown } | undefined;
+  const evidenceOk = ev === undefined || (typeof ev === 'object' && ev !== null
+    && ['commitment', 'file', 'commit', 'pr', 'message', 'other'].includes(String(ev.kind))
+    && typeof ev.ref === 'string' && ev.ref.length <= 300);
+  // agent-work-cards-default §3: the request text is clamped at the card store's `need` ceiling (64,000) and the
+  // milestones list at the done-item bound, so a peer cannot ship a row the card store would refuse.
+  const requestOk = (typeof r.requestText !== 'string' || r.requestText.length <= REQUEST_TEXT_MAX)
+    && (r.milestones === undefined || (Array.isArray(r.milestones) && r.milestones.length <= 256 && r.milestones.every((m) => typeof m === 'string' && m.length <= 8000)));
+  if (owner === row.owner && blockedOn === row.blockedOn && priorityOk && closedByOk && lengthsOk && evidenceOk && requestOk) return row;
+  const out: Record<string, unknown> = { ...row, owner, blockedOn };
+  if (typeof out.requestText === 'string' && (out.requestText as string).length > REQUEST_TEXT_MAX) { delete out.requestText; delete out.requestTextHash; out.sourceVerified = false; out.sourceUnverifiedReason = 'request-too-long'; }
+  if (out.milestones !== undefined && !(Array.isArray(out.milestones) && out.milestones.length <= 256 && (out.milestones as unknown[]).every((m) => typeof m === 'string' && m.length <= 8000))) delete out.milestones;
+  if (!priorityOk) delete out.priority;
+  if (!closedByOk) delete out.closedBy;
+  if (typeof out.priorityReason === 'string') out.priorityReason = (out.priorityReason as string).slice(0, 200);
+  if (typeof out.reopenReason === 'string') out.reopenReason = (out.reopenReason as string).slice(0, 500);
+  if (typeof out.shadowDecision === 'string') out.shadowDecision = (out.shadowDecision as string).slice(0, 300);
+  if (!evidenceOk) delete out.evidenceRef;
+  return out as unknown as ReplicatedCommitment;
 }
+const PRIORITY_VALUES = new Set(['high', 'normal', 'low']);
+/** `SCHEMA_MAX.need` of the work-card store (kept in step by tests/unit/agent-work-cards-store.test.ts). */
+const REQUEST_TEXT_MAX = 64_000;
 
 // ── Receive side (§3.2) ─────────────────────────────────────────────
 
@@ -337,6 +384,10 @@ export interface MergedCommitmentRow extends Commitment {
   originMachineId: string;
   /** Replica rows only: now − replica.receivedAt. */
   stalenessMs?: number;
+  /** Replica rows only: the machine whose replica file carried this row (the
+   *  publisher). Differs from originMachineId when a peer's store holds a
+   *  restored/copied record that originated elsewhere. */
+  replicaOwnerMachineId?: string;
   /** Computed at merge time from the pending-mutation ledger — never stored. */
   pendingMutation?: boolean;
   /** Heuristic duplicate signal (§3.3a) — composite keys of suspects. */
@@ -382,6 +433,7 @@ export function mergeCommitmentViews(deps: MergeDeps): MergedCommitmentRow[] {
         ...c,
         viewSource: 'replica',
         stalenessMs: staleness,
+        replicaOwnerMachineId: rep.ownerMachineId,
         ...(deps.pendingKeys?.has(compositeKey(c.originMachineId, c.id)) ? { pendingMutation: true } : {}),
       });
     }
@@ -416,14 +468,38 @@ function annotateDuplicates(rows: MergedCommitmentRow[]): void {
  * §3.1 — bare-id resolution over the merged view: exactly one match → the
  * row; several → 'ambiguous' (the route answers 409 listing candidates);
  * none → null.
+ *
+ * Same-origin collapse (fb-6a8328a1): several rows can share ONE
+ * (id, originMachineId) — e.g. a rebuilt machine restored a peer's
+ * commitments into its own store, so the merged view holds the restored own
+ * copy AND the origin's replica of the same record. Those are copies of one
+ * commitment, not a collision, so when `ownMachineId` is given and every match
+ * names the same origin, the row PUBLISHED BY THAT ORIGIN wins: our own row
+ * when the origin is us, else the origin's replica row (the caller forwards
+ * the mutation there). If no match was published by the origin itself the
+ * result stays 'ambiguous' — copies held only by third parties are never
+ * guessed between.
  */
 export function resolveBareId(
   rows: MergedCommitmentRow[],
   id: string,
   origin?: string,
+  ownMachineId?: string,
 ): MergedCommitmentRow | 'ambiguous' | null {
   const matches = rows.filter((r) => r.id === id && (!origin || r.originMachineId === origin));
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1) return 'ambiguous';
-  return null;
+  if (matches.length === 0) return null;
+  if (ownMachineId) {
+    const origins = new Set(matches.map((r) => r.originMachineId));
+    if (origins.size === 1) {
+      const theOrigin = matches[0].originMachineId;
+      const authoritative = matches.filter((r) =>
+        theOrigin === ownMachineId
+          ? r.viewSource === 'own'
+          : r.viewSource === 'replica' && r.replicaOwnerMachineId === theOrigin,
+      );
+      if (authoritative.length === 1) return authoritative[0];
+    }
+  }
+  return 'ambiguous';
 }

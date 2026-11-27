@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "lease-scheduler-role-continuity",
+  "sessionId": "42912913-074b-480a-9565-222edcd29edc",
+  "timestamp": "2026-11-05T04:55:05.903Z",
+  "artifactPath": "upgrades/side-effects/lease-scheduler-role-continuity.md",
+  "artifactSha256": "c3ebdea92b7aa667d1d0b086ec05baaab08428e3865fca6ebccc18b5f071a05c",
+  "coveredFiles": [
+    "docs/specs/lease-scheduler-role-continuity.eli16.md",
+    "src/commands/server.ts",
+    "src/core/roleFollowRestart.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/e2e/role-restart-wiring.test.ts",
+    "tests/unit/job-scheduler-standby-startup.test.ts",
+    "tests/unit/roleFollowRestart.test.ts",
+    "upgrades/next/lease-scheduler-role-continuity.md",
+    "upgrades/side-effects/lease-scheduler-role-continuity.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible lease-role bug fix using the existing bounded restart path and a post-gate authority fence; a revert fully restores prior behavior.",
+  "eli16Path": "docs/specs/lease-scheduler-role-continuity.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-scheduler-role-continuity.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

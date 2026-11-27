@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-linux-replies",
+  "sessionId": "3a99cf1c-d003-481f-92ab-ed8dcec0da8f",
+  "timestamp": "2026-11-05T00:50:45.203Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-linux-replies.md",
+  "artifactSha256": "88b264faaeed7a01328d6db77764547fedee910185d4fda0861a76a00ad6fd85",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-05T00-50-05-100Z-owner-checks-fail-closed.json",
+    "docs/specs/memory-privacy.eli16.md",
+    "docs/specs/memory-privacy.md",
+    "src/core/SessionManager.ts",
+    "src/core/memorySessionPolicy.ts",
+    "tests/integration/memory-privacy-spawn.test.ts",
+    "tests/unit/memory-session-policy.test.ts",
+    "upgrades/next/memory-privacy-linux-replies.md",
+    "upgrades/side-effects/memory-privacy-linux-replies.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow Linux-only bug fix inside an opt-in feature; one env var at spawn; no new reach, no block/allow surface; a revert fully undoes it",
+  "eli16Path": "docs/specs/memory-privacy.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/memory-privacy-linux-replies.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

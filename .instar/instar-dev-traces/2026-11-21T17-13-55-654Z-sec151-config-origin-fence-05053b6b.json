@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "sec151-config-origin-fence",
+  "sessionId": "3baab194-1525-46e9-b5f9-9a9e8d6465e3",
+  "timestamp": "2026-11-21T17:13:55.654Z",
+  "artifactPath": "upgrades/side-effects/sec151-config-origin-fence.md",
+  "artifactSha256": "c2b907c0258eb6c3cea20f09870814ffb5ecc76f4d8b8b289abf49329bf97989",
+  "coveredFiles": [
+    "docs/specs/sec151-config-origin-fence.eli16.md",
+    "src/config/bearerConfigWrite.ts",
+    "src/server/routes.ts",
+    "tests/unit/sec151-config-origin-fence.test.ts",
+    "upgrades/next/sec151-config-origin-fence.md",
+    "upgrades/side-effects/sec151-config-origin-fence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-151 security fix: only removes a way to change operator-only settings through the API; no state written, no migration; independent reviewer concurred on second pass.",
+  "eli16Path": "docs/specs/sec151-config-origin-fence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec151-config-origin-fence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

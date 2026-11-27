@@ -2,9 +2,10 @@
  * poolReadiness — a read-only report of whether this agent's machines could serve
  * conversations across each other (docs/specs/session-pool-default-on.md, step 1).
  *
- * Every line is a signal. Nothing reads this report to allow or block anything: it
- * writes no signed result, no config and no stage, so it cannot affect routing or
- * promotion. `ready` says the known prerequisites look met; it does not prove a real
+ * Every line is a signal. The report itself writes no signed result, no config and no
+ * stage. One reader acts on it: a pool started at pairing records its stage-0 green when
+ * `ready` has held (sessionPoolPairGreen.ts), and everywhere else nothing reads it to
+ * allow or block anything. `ready` says the known prerequisites look met; it does not prove a real
  * placement works, which only a real test can.
  */
 
@@ -45,6 +46,8 @@ export interface PoolReadinessDeps {
   duplicateCheck: () => { enabled: boolean; substrate: { ready: boolean; reason?: string } } | null;
   /** Boot-cached: 'failing' when the lease store is git with no remote. */
   takeover: () => ReadinessLine;
+  /** Why a first pairing left sharing off, when it did. */
+  pairingDeclined?: () => string | null;
   now?: () => number;
 }
 
@@ -135,7 +138,9 @@ export function computePoolReadiness(d: PoolReadinessDeps): PoolReadinessReport 
   if (ids.length === 0) return SINGLE_MACHINE_READINESS;
   const caps = ids.map((id) => d.capacity(id));
   const dup = d.duplicateCheck();
+  const declined = d.pairingDeclined?.() ?? null;
   const thisMachine = {
+    ...(declined ? { pairing: line('failing', `sharing stayed off at pairing: ${declined}`) } : {}),
     takeover: d.takeover(),
     ownership: d.durableOwnership() ? line('ok', 'ownership survives a restart') : line('failing', 'ownership is held in memory'),
     duplicateCheck: !dup

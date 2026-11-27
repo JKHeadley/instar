@@ -20,7 +20,7 @@ import { TelegramOriginRuntime } from '../../src/messaging/telegram-origin/Teleg
 import { handleOriginMesh } from '../../src/messaging/telegram-origin/OriginMesh.js';
 import type { OriginMeshCommand } from '../../src/messaging/telegram-origin/OriginMesh.js';
 import { applyTelegramFormatter } from '../../src/messaging/TelegramAdapter.js';
-import { forwardReplyToHolder, recoverForwardedHold, submitOriginToHolder, HOLD_REASON_LEASE_NOT_HELD, heldForwardNoticeText } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
+import { forwardReplyToHolder, recoverForwardedHold, confirmedRecoveredForward, submitOriginToHolder, HOLD_REASON_LEASE_NOT_HELD, heldForwardNoticeText } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import type { ForwardDeps, ForwardLeaseView, HeldForwardDetail } from '../../src/messaging/telegram-origin/OriginForwardToHolder.js';
 import { relayOriginBot } from '../../src/messaging/telegram-origin/OriginMeshRelay.js';
 import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
@@ -127,9 +127,9 @@ async function boot() {
     receipt: async (machineId, operationId) => {
       try {
         const reply = await sendToHolder(machineId)({ type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'receipt', operationId });
-        const result = reply.result as { ok?: boolean; state?: string; originReceiptConfirmed?: boolean } | undefined;
+        const result = reply.result as { ok?: boolean; state?: string; originReceiptConfirmed?: boolean; messageIds?: string[] } | undefined;
         if (reply.ok && result?.ok) {
-          if (result.state === 'accepted' && result.originReceiptConfirmed) return { state: 'accepted', receiptJson: JSON.stringify({ confirmedVia: 'receipt' }) };
+          if (result.state === 'accepted' && result.originReceiptConfirmed && result.messageIds?.length === 1) return { state: 'accepted', receiptJson: JSON.stringify({ messageId: result.messageIds[0], confirmedVia: 'receipt' }) };
           if (['no-record', 'not-admitted', 'known-failed', 'expired', 'suppressed', 'superseded'].includes(String(result.state))) return { state: 'not-accepted' };
           if (['admitted', 'held', 'partial', 'accepted'].includes(String(result.state))) return { state: 'owned-by-holder' };
           if (result.state === 'outcome-unknown') return { state: 'outcome-unknown' };
@@ -139,7 +139,7 @@ async function boot() {
     },
     resolve: (operationId, deliveryMachineId, receiptJson) => standby.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
     settleUnknown: (operationId, deliveryMachineId) => standby.store.recordForwardedOutcomeUnknown({ operationId, deliveryMachineId }),
-    rehold: async (operationId, detail) => { await standby.store.recordOperationState({ operationId, state: 'held', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }); },
+    rehold: async (operationId, detail) => standby.store.recordOperationState({ operationId, state: 'held', holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
     supersede: (operationId, next, detail) => standby.store.supersedeWithAdmission({ operationId, admission: next.admission, holdReason: HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
     sendLocal: async () => { throw new Error('the standby never holds the lease in this fixture'); },
   }, row, operation);
@@ -169,6 +169,7 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     const outcome = await forwardReplyToHolder(h.deps, { topicId: 42, chatId: '-100123', text: 'A reply whose arrival nobody can confirm.' });
     expect(outcome).toMatchObject({ kind: 'held', holder: 'owner', lastAttempt: 'outcome-unknown' });
     const operationId = (outcome as { operationId: string }).operationId;
+    const heldRow = (await h.standby.store.listHeldOperations())[0];
     expect((await h.health()).telegramOrigin?.heldForward?.count).toBe(1);
     const nextAt = ((await h.standby.store.getOperation(operationId))?.operation?.holdDetail as HeldForwardDetail).ladder.nextAt!;
     expect(await h.standby.runForwardLadder(nextAt)).toMatchObject({ processed: 1 });
@@ -177,6 +178,7 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     expect(settled?.operation?.state).toBe('outcome-unknown');
     // "Did it arrive?" answers unknown and forbids a resend.
     expect(classifyOperationOutcome(operationId, settled, [])).toMatchObject({ outcome: 'unknown', safeToResend: false });
+    expect(await confirmedRecoveredForward(heldRow, id => h.standby.store.getOperation(id))).toBeNull();
     expect((await h.health()).telegramOrigin?.heldForward?.count).toBe(0);
     // A second tick has nothing left to do.
     expect(await h.standby.runForwardLadder(nextAt + 60_000)).toEqual({ processed: 0, recovered: 0 });
@@ -192,6 +194,7 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     expect(h.botNetwork).not.toHaveBeenCalled();
     const operationId = (outcome as { operationId: string }).operationId;
     const held = await h.standby.store.getOperation(operationId);
+    const heldRow = (await h.standby.store.listHeldOperations())[0];
     expect((held?.operation?.holdDetail as HeldForwardDetail).ladder).toMatchObject({ attempts: 0 });
     const nextAt = (held?.operation?.holdDetail as HeldForwardDetail).ladder.nextAt!;
     // Not due yet: the tick does nothing.
@@ -202,6 +205,8 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     expect(h.botNetwork).toHaveBeenCalledOnce();
     expect((await h.owner.store.getOperation(operationId))?.operation).toMatchObject({ operationId, state: 'accepted' });
     expect((await h.standby.store.getOperation(operationId))?.operation).toMatchObject({ state: 'accepted' });
+    expect(await confirmedRecoveredForward(heldRow, id => h.standby.store.getOperation(id)))
+      .toMatchObject({ topicId: 42, text: 'After the lease moved.', messageId: expect.any(Number) });
     expect(h.notify).toHaveBeenCalledWith('owner', 42); // the notice went through the holder at hold time (refused there too, honestly)
     expect(await h.standby.runForwardLadder(nextAt + 60_000)).toEqual({ processed: 0, recovered: 0 });
     expect(h.botNetwork).toHaveBeenCalledOnce();
@@ -213,6 +218,7 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     const outcome = await forwardReplyToHolder(h.deps, { topicId: 42, chatId: '-100123', text: 'Bound to the old owner.' });
     expect(outcome).toMatchObject({ kind: 'held', holder: 'owner-old', lastAttempt: 'unreachable' });
     const oldId = (outcome as { operationId: string }).operationId;
+    const heldRow = (await h.standby.store.listHeldOperations())[0];
     const nextAt = ((await h.standby.store.getOperation(oldId))?.operation?.holdDetail as HeldForwardDetail).ladder.nextAt!;
     // The lease moved to the reachable owner.
     h.setLeaseHolder('owner');
@@ -224,6 +230,8 @@ describe('Telegram origin forward-to-holder over the signed mesh pipeline (ACT-0
     expect(newId).not.toBe(oldId);
     expect((await h.standby.store.getOperation(newId))?.operation).toMatchObject({ state: 'accepted' });
     expect((await h.owner.store.getOperation(newId))?.operation).toMatchObject({ state: 'accepted' });
+    expect(await confirmedRecoveredForward(heldRow, id => h.standby.store.getOperation(id)))
+      .toMatchObject({ topicId: 42, text: 'Bound to the old owner.', messageId: expect.any(Number) });
     expect(await h.owner.store.getOperation(oldId)).toBeNull(); // the old record never reached the new owner
     expect((await h.status()).heldForward.count).toBe(0);
     // Neither tick nor schedule re-sends anything.

@@ -138,6 +138,14 @@ PY
     if echo "$URL_HOST" | grep -qE '(^|\.)ts\.net$'; then
       continue
     fi
+    # Skip Tailscale's own sign-in host. The Tailscale setup recipe must hand the person
+    # the one-tap link "tailscale up" prints, and that is the whole of their part. A live
+    # setup run (2026-11-06) was refused here even after the link came from tool output
+    # and resolved, and the session then edited this script to get past it. Exact host
+    # only: other tailscale.com pages stay checked.
+    if [ "$URL_HOST" = "login.tailscale.com" ]; then
+      continue
+    fi
     # Skip well-known service domains + common agent tunnel domains.
     if echo "$url" | grep -qE '(github\.com|vercel\.app|vercel\.com|netlify\.app|netlify\.com|npmjs\.com|npmjs\.org|cloudflare\.com|google\.com|twitter\.com|x\.com|youtube\.com|reddit\.com|discord\.com|discord\.gg|telegram\.org|t\.me|localhost|127\.0\.0\.1|stackoverflow\.com|developer\.mozilla\.org|docs\.anthropic\.com|anthropic\.com|openai\.com|grok\.com|x\.ai|claude\.ai|claude\.com|notion\.so|linear\.app|fly\.io|render\.com|railway\.app|heroku\.com|amazonaws\.com|azure\.com|gitlab\.com|bitbucket\.org|docker\.com|hub\.docker\.com|pypi\.org|crates\.io|rubygems\.org|pkg\.go\.dev|wikipedia\.org|medium\.com|substack\.com|circle\.so|ghost\.io|telegraph\.ph)'; then
       continue
@@ -200,7 +208,8 @@ fi
 # guaranteed by skills/spec-converge/scripts/publish-spec-review.mjs. Narrow by
 # design (this blocks the send): fires only on an unambiguous spec handoff —
 # a docs/specs/*.md reference, OR a GitHub PR mentioned with the word "spec" —
-# in an explicit review/approval handoff, with no /view/ link present. An
+# in an explicit review/approval handoff, with no /view/ or /docs/ link present (a document
+# replaces the page where documents serve, instar-document-viewer §3.9b). An
 # ordinary code-PR mention does not fire.
 SPEC_HANDOFF=""
 if echo "$CONTENT" | grep -qiE "docs/specs/[^ )]+\.md"; then
@@ -210,7 +219,7 @@ elif echo "$CONTENT" | grep -qiE "github\.com/[^ )]+/pull/[0-9]+" && echo "$CONT
 fi
 if [ -n "$SPEC_HANDOFF" ] \
   && echo "$CONTENT" | grep -qiE "\b(review|approv|sign[- ]?off|take a look|for your|ready for)\b" \
-  && ! echo "$CONTENT" | grep -qiE "/view/[0-9a-f-]{8,}"; then
+  && ! echo "$CONTENT" | grep -qiE "/(view|docs)/[0-9a-f-]{8,}"; then
   ISSUES+=("SPEC_REVIEW_LINK: You're handing a spec over for review with no rendered ELI16 tunnel link the operator can open. Deliver spec reviews via skills/spec-converge/scripts/publish-spec-review.mjs — it renders the ELI16, verifies the link (HTTP 200), and includes it. Don't send a spec for review without the rendered link.")
   ISSUE_COUNT=$((ISSUE_COUNT + 1))
 fi

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "team-switches-agent-wide",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T03:17:59.603Z",
+  "artifactPath": "upgrades/side-effects/team-switches-agent-wide.md",
+  "artifactSha256": "33ddeb2ddff7707a55731f02679894340716d9a6ae81c78902afee4e5e6b55d0",
+  "specPath": "docs/specs/team-switches-agent-wide.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-10T03-17-41-303Z-team-switches-agent-wide.json",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/team-switches-agent-wide.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same change: registers the new CLAUDE.md line with the Codex/Gemini shadow markers and the section-parity list.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

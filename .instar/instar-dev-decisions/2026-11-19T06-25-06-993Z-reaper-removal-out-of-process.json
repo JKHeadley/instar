@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-19T06:25:06.993Z",
+  "slug": "reaper-removal-out-of-process",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeFsExecutor.ts matches SafeFsExecutor (destructive-fs funnel)",
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1665,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/AgentWorktreeDetector.ts",
+      "src/core/InstarWorktreeManager.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SafeFsExecutor.ts",
+      "src/core/ScopeAccretionSweep.ts",
+      "src/data/awareness/worktree-reaper-background-reclaim.md",
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/agentWorktreeReclaimMain.ts",
+      "src/monitoring/agentWorktreeReclaimRunner.ts"
+    ],
+    "addedLines": 1605,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

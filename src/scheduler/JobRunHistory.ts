@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import type { JobRunLaunch } from '../core/types.js';
 
 // capacity-enforcement-contract: job-run-history-row@1
 
@@ -36,6 +37,26 @@ export interface JobRunReflection {
   purposeDrift: string | null;
   /** Suggested changes to the job definition */
   suggestedChanges: string[];
+}
+
+/** The launch record (job-launch-intent-record §4); the shape lives in core/types.ts. */
+export type { JobRunLaunch } from '../core/types.js';
+
+/** Max entries kept in each of launch.applied / launch.dropped. */
+export const LAUNCH_ENTRY_CAP = 8;
+
+/** Bound a launch record to the frozen shape: first 8 entries of each array, the rest counted. */
+export function boundLaunchRecord(launch: JobRunLaunch): JobRunLaunch {
+  const applied = Array.isArray(launch.applied) ? launch.applied : [];
+  const dropped = Array.isArray(launch.dropped) ? launch.dropped : [];
+  const removed = Math.max(0, applied.length - LAUNCH_ENTRY_CAP) + Math.max(0, dropped.length - LAUNCH_ENTRY_CAP);
+  const out: JobRunLaunch = {
+    ...launch,
+    applied: applied.slice(0, LAUNCH_ENTRY_CAP),
+    dropped: dropped.slice(0, LAUNCH_ENTRY_CAP),
+  };
+  if (removed > 0) out.omitted = (launch.omitted ?? 0) + removed;
+  return out;
 }
 
 export interface JobRun {
@@ -107,9 +128,26 @@ export interface JobRun {
   /** Whether the resolver clamped the requested allowlist to [Read]
    *  because the unrestricted-tools two-flag guard failed. */
   clampedAllowlist?: boolean;
+  /** EVO-008: true only when the launched session carried the confined launch form (no
+   *  bypass flag; dontAsk + --tools) — read from the session, never from the request.
+   *  Absent on old rows and on spawn errors: unknown, never "confined". */
+  toolsConfined?: boolean;
+  /** EVO-008: why the tool list was or was not applied (`confined`, `confined-with-shell`,
+   *  `gate-off`, `config-unreadable`, `no-declared-allowlist`, `read-only-default`,
+   *  `unsupported-tool-names`, `not-applied:<framework>`, `not-applicable`, and on a spawn
+   *  error `confine-refused` / `confine-failed`). */
+  toolEnforcement?: string;
   /** When the row exceeded the 2 KB cap, non-essential fields are
    *  truncated and this flag is set. */
   truncated?: boolean;
+  /**
+   * docs/specs/backup-email-sending.md: the email outbox row for this run's report, written in the same completion
+   * bookkeeping. `quiet` means the run had nothing to report (Quiet by Default). It outlives the row's tombstone, so
+   * a marked run is never reconciled again; an unmarked completed run of an emailing job is.
+   */
+  emailOutboxId?: string;
+  /** The launch record (job-launch-intent-record §4). Optional and sheddable by the row cap. */
+  launch?: JobRunLaunch;
 }
 
 export interface JobRunStats {
@@ -173,6 +211,9 @@ const TRUNCATABLE_FIELDS = [
   'stateSnapshot',
   'handoffNotes',
   'reflection',
+  // job-launch-intent-record D9: shed LAST among the optional fields, before any essential one.
+  // A shed launch reads as "no launch record".
+  'launch',
 ] as const;
 
 export class JobRunHistory {
@@ -242,6 +283,9 @@ export class JobRunHistory {
     toolAllowlist?: string[] | '*' | null;
     unrestrictedTools?: boolean;
     clampedAllowlist?: boolean;
+    toolsConfined?: boolean;
+    toolEnforcement?: string;
+    launch?: JobRunLaunch;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -267,9 +311,27 @@ export class JobRunHistory {
       toolAllowlist: opts.toolAllowlist ?? null,
       unrestrictedTools: opts.unrestrictedTools ?? false,
       clampedAllowlist: opts.clampedAllowlist ?? false,
+      ...(opts.toolsConfined !== undefined ? { toolsConfined: opts.toolsConfined } : {}),
+      ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
+      ...(opts.launch !== undefined ? { launch: boundLaunchRecord(opts.launch) } : {}),
     };
     this.appendLine(run);
     return runId;
+  }
+
+  /**
+   * Patch the launched CLI version onto a run (job-launch-intent-record §4, "Never waits").
+   * Copies the LATEST row for the run whole and changes only `launch.cliVersion`, so a completion
+   * (or reflection) row that landed while the probe was pending is never overwritten. Does nothing
+   * when the latest row has no `launch` (shed by the row cap, or never set) — it never invents one.
+   */
+  recordLaunchVersion(runId: string, cliVersion: string): void {
+    const run = this.findRun(runId);
+    if (!run || !run.launch) return;
+    if (run.launch.cliVersion === cliVersion) return;
+    // A failed probe never downgrades a version the start row already knew.
+    if (cliVersion === 'unknown' && run.launch.cliVersion !== 'unknown') return;
+    this.appendLine({ ...run, launch: { ...run.launch, cliVersion } });
   }
 
   /**
@@ -288,6 +350,7 @@ export class JobRunHistory {
     result: 'success' | 'failure' | 'timeout' | 'skipped';
     error?: string;
     outputSummary?: string;
+    emailOutboxId?: string;
   }): void {
     // Find the pending entry to get start time
     const pending = this.findRun(opts.runId);
@@ -313,8 +376,19 @@ export class JobRunHistory {
       result: opts.result,
       error: opts.error,
       outputSummary: opts.outputSummary,
+      ...(opts.emailOutboxId ? { emailOutboxId: opts.emailOutboxId } : {}),
     };
     this.appendLine(completed);
+  }
+
+  /**
+   * Marks a completed run with its email outbox row (docs/specs/backup-email-sending.md): the reconciliation sweep's
+   * write for a run whose completion bookkeeping did not get to it. Appends a new version of the row.
+   */
+  recordEmailOutboxId(runId: string, emailOutboxId: string): void {
+    const run = this.findRun(runId);
+    if (!run || run.emailOutboxId) return;
+    this.appendLine({ ...run, emailOutboxId });
   }
 
   /**
@@ -344,6 +418,7 @@ export class JobRunHistory {
     trigger: string;
     error: string;
     model?: string;
+    toolEnforcement?: string;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const now = new Date().toISOString();
@@ -359,6 +434,7 @@ export class JobRunHistory {
       error: opts.error,
       model: opts.model,
       machineId: this.machineId ?? undefined,
+      ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
     };
     this.appendLine(run);
     return runId;

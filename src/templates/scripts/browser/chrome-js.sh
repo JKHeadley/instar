@@ -1,6 +1,8 @@
 #!/bin/bash
 # chrome-js.sh — run JavaScript in the active tab of one profile's normal Chrome; prints the result.
 # Usage: chrome-js.sh <profile-id|/absolute/user-data-dir> '<js>' [expected-origin]
+# After reviewing a flagged page: append --reviewed-page <fingerprint> --review-reason <nonsecret-reason>
+# Read-only: chrome-js.sh <profile> --read-page <expected-origin> [offset]
 # With expected-origin (e.g. https://claude.ai) the code runs only if the active tab is on that
 # origin; otherwise it prints ERR wrong-origin and exits 3, so a click never lands on the wrong page.
 # Targets the Chrome process by PID (a pid-addressed Apple Event), so several profiles can be
@@ -8,7 +10,7 @@
 # isolated world: it sees the DOM, not the page's own JS objects (use chrome-mainworld.sh).
 # macOS only (Apple Events). Installed by instar into .instar/scripts/browser/.
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s)" >&2
+  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s). On Linux use xdrive.sh in this same folder." >&2
   exit 2
 fi
 [ -z "$1" ] || [ -z "$2" ] && { echo "usage: chrome-js.sh <profile-id|/absolute/user-data-dir> '<js>' [expected-origin]" >&2; exit 64; }
@@ -73,10 +75,31 @@ OSA
 # value that happens to start with "ERR" is just a value. Anything not carrying the nonce (nil,
 # an Apple Event failure) is reported as an ERR by this script itself.
 NONCE="nc$(/usr/bin/python3 -I -c 'import secrets; print(secrets.token_hex(8))')" || { echo "ERR wrap-failed" >&2; exit 1; }
-WRAPPED="$(NONCE="$NONCE" EXP="$3" CODE="$2" /usr/bin/python3 -I -c '
+REVIEW_PAGE=""
+REVIEW_REASON=""
+if [ "$2" != "--read-page" ] && [ -n "${4:-}" ]; then
+  [ "$4" = "--reviewed-page" ] && [ "${6:-}" = "--review-reason" ] && [ -n "${5:-}" ] && [ -n "${7:-}" ] && [ "$#" -eq 7 ] \
+    || { echo "ERR review-arguments: append --reviewed-page <fingerprint> --review-reason <nonsecret-reason>" >&2; exit 64; }
+  REVIEW_PAGE="$5"
+  REVIEW_REASON="$7"
+fi
+WRAPPED="$(NONCE="$NONCE" EXP="$3" CODE="$2" OFFSET="${4:-0}" SAFETY="$(dirname "$0")/account-page-safety.js" REVIEW_PAGE="$REVIEW_PAGE" REVIEW_REASON="$REVIEW_REASON" /usr/bin/python3 -I -c '
 import json, os
 n, exp, code = os.environ["NONCE"], os.environ["EXP"], os.environ["CODE"]
-run = "(function(){try{return " + json.dumps(n + "ok:") + "+String(eval(" + json.dumps(code) + "))}catch(e){return " + json.dumps(n + "err:") + "+e}})()"
+safety = open(os.environ["SAFETY"]).read()
+read_only = code == "--read-page"
+if read_only:
+    if not exp: raise ValueError("--read-page requires expected-origin")
+    offset = int(os.environ["OFFSET"])
+    body = "(" + safety + ")(true," + str(offset) + ")"
+else:
+    preflight = "(" + safety + ")(false,0," + json.dumps(os.environ["REVIEW_PAGE"]) + "," + json.dumps(os.environ["REVIEW_REASON"]) + ")"
+    body = "(function(){var signal=" + preflight + ";if(signal)return JSON.stringify(signal);return eval(" + json.dumps(code) + ")})()"
+    if os.environ["REVIEW_PAGE"]:
+        import hashlib, sys
+        # Content-free review evidence: the reasoning remains in the invocation transcript.
+        print(json.dumps({"accountActionReviewSubmitted": {"pageFingerprint": os.environ["REVIEW_PAGE"], "reasonSha256": hashlib.sha256(os.environ["REVIEW_REASON"].encode()).hexdigest()}}), file=sys.stderr)
+run = "(function(){try{return " + json.dumps(n + "ok:") + "+String(" + body + ")}catch(e){return " + json.dumps(n + "err:") + "+e}})()"
 if exp:
     # One evaluation: the origin is checked in the same task that runs the code, so a navigation
     # cannot land between the check and the action.

@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { QuietRecordedError } from '../../src/messaging/NotificationSelectivityGate.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { createTempProject } from '../helpers/setup.js';
 
@@ -31,15 +32,35 @@ describe('TelegramAdapter — token redaction', () => {
     }
   });
 
-  it('send() only retries on 400 errors (parse failures)', () => {
-    const source = fs.readFileSync(
-      path.join(process.cwd(), 'src/messaging/TelegramAdapter.ts'),
-      'utf-8',
-    );
+  it.each([400, 403])('generic send retries only a rejected parse (%s)', async status => {
+    const project = createTempProject();
+    const adapter = new TelegramAdapter({ token: '123:retry-fixture', chatId: '-100123' }, project.stateDir,
+      { suppressLifelineAutoCreate: true });
+    const api = vi.spyOn(adapter as never, 'apiCall' as never)
+      .mockRejectedValueOnce(new Error(`Telegram API error (${status})`))
+      .mockResolvedValue({ message_id: 42 } as never);
+    try {
+      const result = adapter.send({ content: 'The requested result is ready.', channel: { identifier: '10' } } as never);
+      if (status === 400) {
+        await expect(result).resolves.toMatchObject({ messageId: 42 });
+        expect(api).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(result).rejects.toThrow('(403)');
+        expect(api).toHaveBeenCalledTimes(1);
+      }
+    } finally { api.mockRestore(); await adapter.stop(); project.cleanup(); }
+  });
 
-    // Should check for 400 status before retrying
-    expect(source).toContain("(400)");
-    expect(source).toContain('parse_mode');
+  it('a delegated quiet receipt is terminal before any formatting retry', async () => {
+    const project = createTempProject();
+    const adapter = new TelegramAdapter({ token: '123:quiet-fixture', chatId: '-100123' }, project.stateDir,
+      { suppressLifelineAutoCreate: true });
+    const receipt = { recorded: true as const, delivered: false as const, quietId: 'quiet-origin' };
+    const api = vi.spyOn(adapter as never, 'apiCall' as never).mockRejectedValue(new QuietRecordedError(receipt));
+    try {
+      await expect(adapter.sendToTopic(10, 'Routine report.')).resolves.toEqual(receipt);
+      expect(api).toHaveBeenCalledTimes(1);
+    } finally { api.mockRestore(); await adapter.stop(); project.cleanup(); }
   });
 
   it('onTopicMessage has try/catch like the general handler', () => {

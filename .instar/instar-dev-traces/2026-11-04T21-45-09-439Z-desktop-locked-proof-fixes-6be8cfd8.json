@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "desktop-locked-proof-fixes",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T21:45:09.439Z",
+  "artifactPath": "upgrades/side-effects/desktop-locked-proof-fixes.md",
+  "artifactSha256": "87a464a8f1a1502093fa062745c123b99e71bb23b8b5985524140124edf264ba",
+  "specPath": "docs/specs/desktop-locked-proof-fixes.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-04T21-44-50-800Z-desktop-locked-proof-fixes.json",
+    ".instar/instar-dev-traces/2026-11-04T21-44-33-646Z-desktop-locked-proof-fixes-99cc8e3e.json",
+    "dashboard/desktop.js",
+    "docs/specs/desktop-locked-proof-fixes.eli16.md",
+    "docs/specs/desktop-locked-proof-fixes.md",
+    "docs/specs/reports/desktop-locked-proof-fixes-convergence.md",
+    "src/core/DesktopAccessAudit.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "tests/unit/DirectDesktopAccess.locked.test.ts",
+    "tests/unit/desktop-helper-state-op.test.ts",
+    "tests/unit/desktop-locked-proof-fixes.test.ts",
+    "upgrades/next/desktop-locked-proof-fixes.md",
+    "upgrades/side-effects/desktop-locked-proof-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Native helper secure-input check on the password path, plus refusal audit; security-sensitive",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/desktop-locked-proof-fixes-convergence.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}

@@ -131,8 +131,9 @@ describe('SafeGitExecutor.sourceTreeReadOk', () => {
     expect(SOURCE_TREE_READ_TIER_VERBS.has('status')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('cherry')).toBe(true);
     expect(SOURCE_TREE_READ_TIER_VERBS.has('ls-files')).toBe(true);
+    expect(SOURCE_TREE_READ_TIER_VERBS.has('check-ignore')).toBe(true);
     // Bounded — adding to this set requires a spec edit + side-effects review.
-    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(13);
+    expect(SOURCE_TREE_READ_TIER_VERBS.size).toBeLessThanOrEqual(14);
   });
 
   it('readSync path honors sourceTreeReadOk — diff on a source tree passes', () => {

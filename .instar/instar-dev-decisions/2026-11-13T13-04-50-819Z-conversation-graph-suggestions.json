@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-13T13:04:50.819Z",
+  "slug": "conversation-graph-suggestions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphSuggestions.ts",
+      "src/core/conversationGraphRead.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/server/ConversationGraphSuggestionService.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "user-driven: a suggestion build starts only when the owner opens the suggestions list (at most once per 24 h) or taps Refresh (at most once per 10 min, single-flight); nothing re-triggers it"
+  },
+  "verdict": "pass"
+}

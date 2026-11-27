@@ -42,19 +42,20 @@ export async function renderSchedule(main, ctx) {
   const ms = machines.ok && Array.isArray(machines.data && machines.data.machines) ? machines.data.machines : [];
   const names = Object.fromEntries(ms.map((m) => [m.machineId, verifiedDisplayName(m.nickname, m.machineId) || 'another machine']));
   const selfMachineId = machines.ok && machines.data ? machines.data.selfMachineId : null;
-  last = { res: { local, pool, history, migration, reconcile }, names, selfMachineId, main, ctx };
+  last = { res: { local, pool, history, migration, reconcile }, names, poolMachines: ms, selfMachineId, main, ctx };
   connectLive();
   paint();
 }
 
 function paint() {
-  const { res, names, selfMachineId, main, ctx } = last;
-  const page = buildSchedulePage(res, Date.now(), { names, selfMachineId, filter, dismissed });
+  const { res, names, poolMachines, selfMachineId, main, ctx } = last;
+  const page = buildSchedulePage(res, Date.now(), { names, poolMachines, selfMachineId, filter, dismissed });
   const refresh = () => renderSchedule(main, ctx);
   if (!page.ok) { setKids(main, el('div', { class: 'schedule-page' }, pageHead({ eyebrow: EYEBROW, headline: 'Schedule', tone: 'muted' }), cantTell(page.reason), setupSection(page.setup || { items: [], notes: [], count: 0 }, refresh), legacyLink())); return; }
   const { sections: s, counts: n } = page;
   const open = (r) => openJob(r, { get: ctx.get, refresh });
 
+  // warning-path: row
   const needs = section({ id: 'needs', title: 'Needs a look', tone: n.failing ? 'bad' : 'attn', rows: s.needs, empty: 'Nothing is late, failing or running long.', onRow: open });
   const coming = section({ id: 'coming', title: 'Coming up', rows: s.coming, empty: n.total ? 'No job has a recorded next run.' : 'Nothing is scheduled.', onRow: open });
 

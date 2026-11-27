@@ -1,0 +1,592 @@
+/**
+ * Work Board routes (docs/specs/work-board-asks.md §4, §7).
+ *
+ *   Agent (Bearer) / scoped session (mps_, its own card only):
+ *     GET  /work-board                      lanes, pending pickups, behind
+ *     GET  /work-board/cards/:id
+ *     POST /work-board/cards                create (agent)
+ *     POST /work-board/cards/:id/records    edited | waiting-on | evidence | claimed-done
+ *     GET  /work-board/lessons              "Not important" reasons, read before raising a card (bearer only)
+ *   Team owner from the console (dashboard PIN):
+ *     POST /work-board/cards                create (person-written)
+ *     POST /work-board/cards/:id/records    edited (person-written)
+ *     POST /work-board/cards/:id/tap        every tap
+ *     POST /work-board/settings             limits and the `policy` record
+ *   Phone (device principal; tap = active owner phone + presence signature):
+ *     GET  /mobile/work-board
+ *     GET  /mobile/work-board/cards/:id     owner phone (docs/specs/phone-work-cards.md)
+ *     POST /mobile/work-board/cards         owner phone create from a message (mounted in mobilePermissionsRoutes)
+ *     POST /mobile/work-board/cards/:id/tap
+ *
+ * The route decides who the caller is from how the request authenticated, never from a body
+ * field: a body's `by` is ignored. With the feature off every route answers 503
+ * `work-board-disabled`. A card a person may not read does not exist for them (404, never 403).
+ */
+
+import type { Router, Request, Response } from 'express';
+import type { WorkBoardService, WorkPrincipal, WorkBoardSettings, CardView } from '../core/WorkBoardService.js';
+import { validateSettingsPatch, transcriptLineFor, lineIdFor } from '../core/WorkBoardService.js';
+import { cardJson, boardJson, type Viewer, type BehindInfo } from '../core/workBoardViews.js';
+import { sourceCardQuery, sourceCardsJson } from '../core/workSourceCards.js';
+import type { WorkBoardPickupController } from '../core/WorkBoardPickupController.js';
+import { isAgentInternalCard, isCardId, isRestrictingTap, type WorkRecordType } from '../core/WorkCardStore.js';
+import { boardPolicyRaises, raiseRefusal } from '../core/TrustRaiseGuard.js';
+// agent-work-cards-default: POST /work-board/cards/:id/notes (agent / scoped session bound to the card or its source);
+// POST /work-board/not-started/approve and /approve-and-widen (the team owner's aggregated-row controls, PIN).
+
+/**
+ * How the request authenticated. `bearer` is the server token, which both the agent and the
+ * console hold: a bearer request is the AGENT unless it also proves the dashboard PIN, which is
+ * what makes it the team owner (the existing Approvals posture; §4 "Limits of the proof").
+ */
+export type ResolvedCaller =
+  | { kind: 'bearer' }
+  /** `placeKey`: the session's raw binding (`app:<key>`, `telegram:<topic>`, …), for the source-conversation admission (agent-work-cards-default §2). */
+  | { kind: 'session'; conversationKey: string | null; placeKey?: string | null }
+  | { kind: 'device'; personKey: string | null; isOwner: boolean; mayRead: (conversationKey: string) => boolean }
+  | { kind: 'none' };
+
+/** Does a scoped session's binding name this source conversation (`telegram:<n>` ↔ `telegram:<n>` / `telegram:topic:<n>`; an app key ↔ `app:<key>`)? */
+export function bindingNamesConversation(placeKey: string | null | undefined, conversationKey: string): boolean {
+  if (!placeKey) return false;
+  if (placeKey === `app:${conversationKey}` || placeKey === conversationKey) return true;
+  const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+  if (tg) return placeKey === `telegram:${tg[1]}` || placeKey === `telegram:topic:${tg[1]}`;
+  return false;
+}
+
+export interface WorkBoardRouteDeps {
+  enabled: () => boolean;
+  svc: () => WorkBoardService | null;
+  controller: () => WorkBoardPickupController | null;
+  settings: () => WorkBoardSettings;
+  /** How the request authenticated (the middleware's principal). */
+  caller: (req: Request) => ResolvedCaller;
+  /** The team owner's personKey. */
+  ownerPersonKey: () => string | null;
+  /** Dashboard PIN check (createMandatePinCheck). Writes the refusal and returns false when it fails. */
+  requirePin: (req: Request, res: Response, message: string) => boolean;
+  displayName: (personKey: string) => string;
+  /** Append one server-written `Work board:` line (role agent + systemSource) to the card's conversation. */
+  appendLine: (conversationKey: string, lineId: string, text: string) => Promise<void>;
+  /** Create the card's conversation (idempotent: the key is derived from the card id). */
+  ensureConversation: (cardId: string, conversationKey: string, title: string) => Promise<void>;
+  /** Read-only: whether this card has a materialized conversation worth opening. */
+  conversationAvailable?: (cardId: string) => boolean;
+  /** Remove the card's conversation and its files after a redact. */
+  removeConversation: (conversationKey: string) => Promise<void>;
+  behind: () => BehindInfo | null;
+  lastWrittenOn: (v: CardView) => string | null;
+  repliedAfterQuestion: (v: CardView) => boolean;
+  brokenAttachments: (v: CardView) => string[];
+  when: (iso: string) => string;
+  /** True on the lease holder (the graduation record is written there). Absent ⇒ single machine. */
+  holdsLease?: () => boolean;
+  /** One `Work board:` line on each card a policy change made workable. */
+  afterPolicy?: (policyRecordData: Record<string, unknown>, cardIds: string[]) => Promise<void>;
+  /** Persist a settings change (live config); returns false on failure. */
+  saveSettings: (patch: Record<string, unknown>) => boolean;
+  log?: (event: string, detail: Record<string, unknown>) => void;
+  /** Receives the board read (as a status and body) so the Needs-you read can ask it as the same caller. */
+  exposeBoardRead?: (read: (req: Request, opts?: { full?: boolean }) => { status: number; body: unknown }) => void;
+  /**
+   * B25 (Echo Bugs topic 10000002750): judge an AGENT-written card text — does it ask
+   * the owner to approve a spec or design without carrying its constitution check
+   * result? A hold refuses the write with 422 and the way through. Absent ⇒ no judge.
+   */
+  specApprovalJudge?: (text: string) => Promise<{ hold: boolean; issue?: string; suggestion?: string; unavailable?: boolean; noProvider?: boolean }>;
+  /**
+   * Project apps part 2 (docs/specs/project-apps-sandbox.md §3.4): a server-owned, phone-only card (a
+   * custom app's version card). Its fields are the server's, so no caller's record lands on it, and a
+   * console (PIN) tap is refused except withdraw-approval, which only stops an app. Absent ⇒ none.
+   */
+  phoneOnlyCard?: (cardId: string) => boolean;
+  /**
+   * agent-work-cards-default §2: the runtime's note writer (conversation event first, pointer by the holder) and the
+   * card's last note. Absent ⇒ the notes route answers 503 `notes-unavailable`.
+   */
+  notes?: {
+    write: (p: WorkPrincipal, cardId: string, text: unknown, writerBinding: string) => { ok: true; eventId: string; conversationKey: string } | { ok: false; status: number; error: string; detail?: Record<string, unknown> };
+    last: (cardId: string) => { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null;
+  };
+  /**
+   * agent-work-cards-default §5: raise the `board-policy` trust request (the owner's path to the lighter policy) with the
+   * record it rests on. Absent ⇒ "Approve and widen" approves the cards and says the request could not be raised here.
+   */
+  proposeBoardPolicy?: (record: { approvedUnchanged: number; changed: number; declined: number; waiting: number }) => Promise<{ status: string; requestId?: string; message?: string }>;
+}
+
+/** The card text an approval ask lives in: the fields a person reads to decide. */
+export function cardTextForSpecJudge(fields: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const k of ['title', 'need', 'recommendation', 'question', 'options', 'doneWhen']) {
+    const v = fields[k];
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
+  }
+  return parts.join('\n');
+}
+
+function disabled(res: Response): void { res.status(503).json({ error: 'work-board-disabled' }); }
+
+export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps): void {
+  const gate = (res: Response): WorkBoardService | null => {
+    if (!deps.enabled()) { disabled(res); return null; }
+    const svc = deps.svc();
+    if (!svc) { res.status(503).json({ error: 'work-board-starting' }); return null; }
+    return svc;
+  };
+
+  /**
+   * B25 hold for agent writes. Returns true when the write may proceed; on a hold it
+   * has written the 422 (or a retryable 503 when the judge could not answer). A
+   * person's own write is never judged.
+   */
+  const specApprovalAllows = async (p: WorkPrincipal, fields: Record<string, unknown>, res: Response): Promise<boolean> => {
+    if (p.kind === 'person' || !deps.specApprovalJudge) return true;
+    const text = cardTextForSpecJudge(fields);
+    if (!text.trim()) return true;
+    const v = await deps.specApprovalJudge(text);
+    if (v.noProvider) {
+      // No LLM provider on this agent at all: no judgment is possible anywhere, and a
+      // standing refusal would block every agent card. Named in the log, not silent.
+      deps.log?.('spec-approval-judge-no-provider', {});
+      return true;
+    }
+    if (v.unavailable) {
+      // Fail closed, named and retryable: the judge tried two model tiers and could not answer.
+      deps.log?.('spec-approval-judge-unavailable', {});
+      res.status(503).json({
+        error: 'spec-approval-judge-unavailable',
+        rule: 'B25_SPEC_APPROVAL_UNCHECKED',
+        retryable: true,
+        message: 'The check that reads agent-written cards for a spec or design approval ask could not answer just now. Nothing was written; write the card again in a minute.',
+      });
+      return false;
+    }
+    if (!v.hold) return true;
+    deps.log?.('spec-approval-held', { issue: v.issue });
+    res.status(422).json({
+      error: 'spec-approval-unchecked',
+      rule: 'B25_SPEC_APPROVAL_UNCHECKED',
+      issue: v.issue,
+      suggestion: v.suggestion,
+      message: 'This card asks the owner to approve a spec or design without its constitution check result. Run the built-in constitution check on it, then write the card again with one line giving the result.',
+    });
+    return false;
+  };
+
+  const viewerFor = (c: ResolvedCaller): Viewer | null => {
+    const owner = deps.ownerPersonKey();
+    switch (c.kind) {
+      case 'bearer': return { personKey: owner, isOwner: false, isAgent: true };
+      case 'session': return { personKey: null, isOwner: false, isAgent: true };
+      case 'device': return c.isOwner ? { personKey: owner, isOwner: true, isAgent: false } : (c.personKey ? { personKey: c.personKey, isOwner: false, isAgent: false } : null);
+      default: return null;
+    }
+  };
+
+  const extraFor = (svc: WorkBoardService) => (v: CardView) => ({
+    behind: deps.behind(), lastWrittenOn: deps.lastWrittenOn(v), repliedAfterQuestion: deps.repliedAfterQuestion(v),
+    capacity: (() => { const p = v.pickups.find((x) => x.status === 'pending' && svc.capacityWait.has(x.cause.id)); return p ? svc.capacityWait.get(p.cause.id)! : null; })(),
+    brokenAttachments: deps.brokenAttachments(v),
+    phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
+    conversationAvailable: deps.conversationAvailable?.(v.card.cardId),
+    lastNote: deps.notes?.last(v.card.cardId) ?? null,
+  });
+
+  /** A scoped session may act on a card bound as the card's own conversation OR as the card's recorded source conversation (§2). */
+  const sessionMayUse = (c: ResolvedCaller, v: CardView): boolean => {
+    if (c.kind !== 'session') return true;
+    if (c.conversationKey && c.conversationKey === v.card.conversationKey) return true;
+    return !!v.card.source && bindingNamesConversation(c.placeKey, v.card.source.conversationKey);
+  };
+
+  /** Visible to this viewer? The owner and the agent see every card; others need read access to its conversation. */
+  const visible = (c: ResolvedCaller, viewer: Viewer, v: CardView): boolean => viewer.isAgent || viewer.isOwner || (c.kind === 'device' && c.mayRead(v.card.conversationKey));
+
+  const writeLine = async (svc: WorkBoardService, cardId: string, recordId: string, type: WorkRecordType, data: Record<string, unknown>, ctx: { materialChanged?: string[]; voidedApproval?: boolean } = {}) => {
+    const v = svc.view(cardId); if (!v || v.card.redacted) return;
+    const line = transcriptLineFor(type, data, { name: deps.displayName, when: deps.when, ...ctx });
+    if (!line) return;
+    try { await deps.appendLine(v.card.conversationKey, lineIdFor(recordId), line); }
+    catch (err) { /* @silent-fallback-ok: logged; the record stands and the line is presentation */ deps.log?.('work-board-line-failed', { cardId, error: (err as Error)?.message }); }
+  };
+
+  const send = (res: Response, result: { ok: boolean }, okStatus = 200) => {
+    const r = result as { ok: boolean; status?: number; error?: string; detail?: Record<string, unknown> } & Record<string, unknown>;
+    if (r.ok) { const { ok: _ok, ...rest } = r; res.status(okStatus).json(rest); return; }
+    res.status(r.status ?? 400).json({ error: r.error, ...(r.detail ?? {}) });
+  };
+
+  // ── reads ──────────────────────────────────────────────────────────────────
+
+  /** The board as this request's caller sees it, as a status and a body (the Needs-you read uses it too). */
+  const boardRead = (req: Request, opts: { full?: boolean; agentCardsOnly?: boolean } = {}): { status: number; body: unknown } => {
+    if (!deps.enabled()) return { status: 503, body: { error: 'work-board-disabled' } };
+    const svc = deps.svc();
+    if (!svc) return { status: 503, body: { error: 'work-board-starting' } };
+    const c = deps.caller(req);
+    if (c.kind === 'session') return { status: 403, body: { error: 'scoped-session-reads-its-own-card-only' } };
+    const viewer = viewerFor(c);
+    if (!viewer) return { status: 401, body: { error: 'unauthorized' } };
+    if (opts.agentCardsOnly && !viewer.isOwner && !viewer.isAgent) return { status: 403, body: { error: 'owner-only' } };
+    const donePage = Number.parseInt(String(req.query?.donePage ?? '0'), 10) || 0;
+    const board = boardJson(svc, viewer, (ck) => c.kind === 'device' && c.mayRead(ck), deps.displayName, { softOpenCards: deps.settings().softOpenCards, donePage, extraFor: extraFor(svc), full: opts.full === true, agentCardsOnly: opts.agentCardsOnly === true });
+    const ctl = deps.controller();
+    // `viewer.canTap`: the team owner (a phone proves each tap with Face ID; the console with the PIN).
+    return { status: 200, body: { ...board, viewer: { isOwner: viewer.isOwner || c.kind === 'bearer', canTap: viewer.isOwner || c.kind === 'bearer' }, ...(viewer.isAgent || viewer.isOwner ? { pickups: ctl?.status(v => isAgentInternalCard(v.card) === (opts.agentCardsOnly === true)) ?? null } : {}), behind: deps.behind(), settings: viewer.isOwner || viewer.isAgent ? deps.settings() : undefined } };
+  };
+  deps.exposeBoardRead?.(boardRead);
+  const listBoard = (req: Request, res: Response) => {
+    const source = sourceCardQuery(req.query);
+    // Keep the shared Needs-you/Projects board reader independent of public query routing.
+    if (source.kind !== 'board') {
+      const svc = gate(res); if (!svc) return;
+      const caller = deps.caller(req);
+      if (caller.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
+      const viewer = viewerFor(caller);
+      if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
+      if (!viewer.isOwner && !viewer.isAgent) { res.status(403).json({ error: 'source-cards-owner-required' }); return; }
+      if (source.kind === 'invalid') { res.status(400).json({ error: 'invalid-source-card-query' }); return; }
+      res.json({ ...sourceCardsJson(svc, viewer, source.key, source.page, deps.displayName, extraFor(svc)), behind: deps.behind() });
+      return;
+    }
+    if (req.query.view !== undefined && req.query.view !== 'agent') { res.status(400).json({ error: 'invalid-work-board-view' }); return; }
+    const r = boardRead(req, { agentCardsOnly: req.query.view === 'agent' }); // explicit board navigation only
+    res.status(r.status).json(r.body);
+  };
+  router.get('/work-board', listBoard);
+  router.get('/mobile/work-board', listBoard);
+
+  /**
+   * One card, as the board shows it. The console path and the owner phone's path (docs/specs/phone-work-cards.md)
+   * run this one handler; the phone path refuses a scoped session as the phone's board read does.
+   */
+  const readOneCard = (phonePath: boolean) => (req: Request, res: Response) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    if (phonePath && c.kind === 'session') { res.status(403).json({ error: 'scoped-session-reads-its-own-card-only' }); return; }
+    const viewer = viewerFor(c);
+    if (!viewer) { res.status(401).json({ error: 'unauthorized' }); return; }
+    const id = String(req.params.id);
+    const v = isCardId(id) ? svc.view(id) : null;
+    if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
+    if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    if (!visible(c, viewer, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    res.json({ card: cardJson(svc, v, viewer, deps.displayName, extraFor(svc)(v)) });
+  };
+  router.get('/work-board/cards/:id', readOneCard(false));
+  router.get('/mobile/work-board/cards/:id', readOneCard(true));
+
+  // ── writes ─────────────────────────────────────────────────────────────────
+
+  /** Agent / scoped session / console-PIN owner. Returns the principal or writes a refusal. */
+  const writerOf = (req: Request, res: Response, pinMessage: string): WorkPrincipal | null => {
+    const c = deps.caller(req);
+    if (c.kind === 'session') {
+      if (!c.conversationKey) { res.status(403).json({ error: 'session-not-bound' }); return null; }
+      return { kind: 'session', conversationKey: c.conversationKey };
+    }
+    if (c.kind === 'bearer') {
+      // No PIN offered ⇒ the agent. A PIN offered ⇒ it must be right, and the write is the team owner's.
+      if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) return { kind: 'agent' };
+      if (!deps.requirePin(req, res, pinMessage)) return null;
+      const owner = deps.ownerPersonKey();
+      if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return null; }
+      return { kind: 'person', personKey: owner, proof: 'pin', isOwner: true };
+    }
+    res.status(401).json({ error: 'unauthorized' });
+    return null;
+  };
+
+  router.post('/work-board/cards', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const p = writerOf(req, res, 'Enter your dashboard PIN to add this card'); if (!p) return;
+    const { pin: _pin, ...body } = (req.body ?? {}) as Record<string, unknown>;
+    const ask = svc.askFieldsRefusal(p, body, null); if (ask) { send(res, ask); return; }
+    if (!(await specApprovalAllows(p, body, res))) return;
+    const r = svc.createCard(p, body);
+    if (!r.ok) { send(res, r); return; }
+    await afterCardCreate(deps, r.cardId, r.conversationKey, String(body.title ?? ''));
+    const v = svc.view(r.cardId)!;
+    // The agent sees the owner's recent "Not important" reasons at the moment it raises a card (work-front-doors §6).
+    const lessons = p.kind === 'agent' ? { lessons: lessonsJson(svc, deps.displayName, 10) } : {};
+    res.status(201).json({ cardId: r.cardId, conversationKey: r.conversationKey, card: cardJson(svc, v, viewerFor(deps.caller(req))!, deps.displayName), ...(r.overSoftBudget ? { overSoftBudget: r.overSoftBudget } : {}), ...lessons });
+  });
+
+  router.post('/work-board/cards/:id/records', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const kind = body.kind ?? body.recordType;
+    if (kind === 'dispatching' || kind === 'dispatched' || kind === 'policy' || kind === 'tap' || kind === 'created') {
+      res.status(400).json({ error: 'record-kind-not-allowed', message: 'Pickup records are written only by the pickup controller, the policy only by the settings route, and taps only by the tap route.' });
+      return;
+    }
+    if (deps.phoneOnlyCard?.(String(req.params.id))) {
+      res.status(403).json({ error: 'server-owned-card', message: 'This card is written by Instar itself (an app version waiting for your phone); it cannot be changed here.' });
+      return;
+    }
+    let p = writerOf(req, res, 'Enter your dashboard PIN to change this card'); if (!p) return;
+    const id = String(req.params.id);
+    // A session bound to the card's SOURCE conversation (the Telegram topic that recorded the request) writes on it as if
+    // bound to the card's own conversation (agent-work-cards-default §2); any other binding never finds the card.
+    if (p.kind === 'session') {
+      const c = deps.caller(req); const v0 = isCardId(id) ? svc.view(id) : null;
+      if (!v0 || !v0.card.created || !sessionMayUse(c, v0)) { res.status(404).json({ error: 'not-found' }); return; }
+      p = { kind: 'session', conversationKey: v0.card.conversationKey };
+    }
+    const { pin: _pin, kind: _k, recordType: _rt, ...rest } = body;
+    const fields = (body.fields && typeof body.fields === 'object' ? body.fields : rest) as Record<string, unknown>;
+    if (p.kind === 'person' && kind !== 'edited') { res.status(403).json({ error: 'agent-only' }); return; }
+    if ((kind === 'edited' || kind === 'waiting-on') && !(await specApprovalAllows(p, fields, res))) return;
+    const before = svc.view(id);
+    const wasApproved = !!before?.card.approvalValid;
+    switch (kind) {
+      case 'edited': {
+        const ask = svc.askFieldsRefusal(p, fields, id); if (ask) { send(res, ask); return; }
+        const r = svc.edit(p, id, fields);
+        if (r.ok && r.recordId) {
+          const after = svc.view(id)!;
+          const rec = svc.recordsOf(id).find((x) => x.id === r.recordId);
+          const material = after.card.lastMaterialChangeFields;
+          if (rec && wasApproved && !after.card.approvalValid) await writeLine(svc, id, r.recordId, 'edited', rec.d, { materialChanged: material, voidedApproval: true });
+          deps.controller()?.poke();
+        }
+        send(res, r); return;
+      }
+      case 'waiting-on': {
+        // agent-work-cards-default §1: waiting on a person makes an agent-work card an ask, so both ask fields must be on
+        // the card or on this record; when the record carries them they are written as an edit first.
+        const ask = svc.waitingOnAskRefusal(p, id, fields as never); if (ask) { send(res, ask); return; }
+        const carried: Record<string, unknown> = {};
+        if (typeof fields.recommendation === 'string') carried.recommendation = fields.recommendation;
+        if (typeof fields.whyYou === 'string') carried.whyYou = fields.whyYou;
+        if (Object.keys(carried).length) { const e = svc.edit(p, id, carried); if (!e.ok) { send(res, e); return; } }
+        const { recommendation: _r, whyYou: _w, ...waitFields } = fields;
+        const r = svc.setWaitingOn(p, id, waitFields as never);
+        if (r.ok) { const rec = svc.recordsOf(id).find((x) => x.id === r.questionId); if (rec?.d.supersedes) await writeLine(svc, id, r.questionId, 'waiting-on', rec.d); }
+        send(res, r); return;
+      }
+      case 'evidence': send(res, svc.addEvidence(p, id, fields as never)); return;
+      case 'claimed-done': send(res, svc.claimDone(p, id)); return;
+      default: res.status(400).json({ error: 'unknown-record-kind', allowed: ['edited', 'waiting-on', 'evidence', 'claimed-done'] });
+    }
+  });
+
+  // ── progress notes (agent-work-cards-default §2) ───────────────────────────
+  router.post('/work-board/cards/:id/notes', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    const id = String(req.params.id);
+    if (c.kind === 'device') { res.status(403).json({ error: 'agent-only', message: 'A person writes in the card\'s conversation directly.' }); return; }
+    if (c.kind === 'none') { res.status(401).json({ error: 'unauthorized' }); return; }
+    const v = isCardId(id) ? svc.view(id) : null;
+    if (!v || !v.card.created) { res.status(404).json({ error: 'not-found' }); return; }
+    // The binding is checked HERE (the guard's `place` is a path check): the card's own conversation, or its source conversation.
+    if (c.kind === 'session' && !sessionMayUse(c, v)) { res.status(404).json({ error: 'not-found' }); return; }
+    if (!deps.notes) { res.status(503).json({ error: 'notes-unavailable', message: 'Progress notes are not wired on this machine yet.' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.pin !== undefined) { res.status(403).json({ error: 'agent-only', message: 'A note is the agent\'s; a person writes in the conversation.' }); return; }
+    const p: WorkPrincipal = c.kind === 'session' ? { kind: 'session', conversationKey: c.conversationKey ?? v.card.conversationKey } : { kind: 'agent' };
+    const binding = c.kind === 'session' ? `session:${c.placeKey ?? c.conversationKey ?? 'unbound'}` : 'bearer:agent';
+    const r = deps.notes.write(p, id, body.text, binding);
+    if (!r.ok) { res.status(r.status).json({ error: r.error, ...(r.detail ?? {}) }); return; }
+    res.status(201).json({ eventId: r.eventId, conversationKey: r.conversationKey, note: 'The note is in the card\'s conversation now; its pointer record follows on the board\'s next tick.' });
+  });
+
+  // ── the aggregated row's controls (agent-work-cards-default §1, §5): the team owner's, from the console with the PIN ──
+  /** N signed approve taps, one per card the row rendered, each bound to that card's hashes; per-card results. */
+  const approveShown = async (svc: WorkBoardService, body: Record<string, unknown>, p: WorkPrincipal): Promise<Array<Record<string, unknown>>> => {
+    const cards = Array.isArray(body.cards) ? (body.cards as Array<Record<string, unknown>>) : [];
+    const results: Array<Record<string, unknown>> = [];
+    for (const card of cards.slice(0, 10)) {
+      const id = String(card?.id ?? '');
+      if (!isCardId(id)) { results.push({ id, status: 400, error: 'not-found' }); continue; }
+      const r = await performOwnerTap(deps, svc, id, { action: 'approve', materialHash: card.materialHash, titleHash: card.titleHash }, p);
+      results.push({ id, status: r.status, ...(r.status === 200 ? { approved: true } : { error: r.body.error }) });
+    }
+    return results;
+  };
+  const ownerFromPin = (req: Request, res: Response, message: string): WorkPrincipal | null => {
+    const c = deps.caller(req);
+    if (c.kind !== 'bearer') { res.status(403).json({ error: c.kind === 'device' ? 'owner-only' : 'person-required', message: 'Only the team owner approves, from the console with the PIN or from their own phone.' }); return null; }
+    if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'This is a person\'s tap: it needs the dashboard PIN. The agent cannot approve its own cards.' }); return null; }
+    if (!deps.requirePin(req, res, message)) return null;
+    const owner = deps.ownerPersonKey();
+    if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return null; }
+    return { kind: 'person', personKey: owner, proof: 'pin', isOwner: true };
+  };
+  router.post('/work-board/not-started/approve', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const p = ownerFromPin(req, res, 'Enter your dashboard PIN to approve these cards'); if (!p) return;
+    const results = await approveShown(svc, (req.body ?? {}) as Record<string, unknown>, p);
+    const stale = results.filter((r) => r.error === 'stale-card').map((r) => r.id);
+    res.json({ results, ...(stale.length ? { stale, message: 'Some cards changed between display and tap; reopen the row for those.' } : {}), notStarted: svc.notStartedCardIds().length });
+  });
+  router.post('/work-board/not-started/approve-and-widen', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const p = ownerFromPin(req, res, 'Enter your dashboard PIN to approve these cards and ask to start internal cards without asking'); if (!p) return;
+    const results = await approveShown(svc, (req.body ?? {}) as Record<string, unknown>, p);
+    // The record the request rests on (§5): taps so far on agent-work cards, and what waits now.
+    let approvedUnchanged = 0; let changed = 0; let declined = 0;
+    for (const id of svc.cardIds()) {
+      const v = svc.view(id); if (!v || !v.card.agentWork) continue;
+      const approve = v.card.taps.find((t) => t.action === 'approve');
+      if (approve) { if (v.card.taps.some((t) => t.action === 'approve' && t.materialHash === v.card.materialHash) && v.card.lastMaterialChangeFields.length === 0) approvedUnchanged++; else changed++; }
+      else if (v.card.closeout?.as === 'not-important') declined++;
+    }
+    const waiting = svc.notStartedCardIds().length;
+    let request: { status: string; requestId?: string; message?: string };
+    if (!deps.proposeBoardPolicy) request = { status: 'not-raised', message: 'request not raised: the trust path is not available on this machine' };
+    else {
+      try { request = await deps.proposeBoardPolicy({ approvedUnchanged, changed, declined, waiting }); }
+      catch (err) { request = { status: 'not-raised', message: `request not raised: ${(err as Error)?.message ?? 'unknown error'}` }; }
+    }
+    const raised = request.status === 'sent' || request.status === 'awaiting-acceptance';
+    res.json({ results, request, message: raised ? 'The cards shown are approved. The request to start internal cards without asking is raised; answer it in your chat or on your phone.' : `The cards shown are approved. ${request.message ?? `request not raised: ${request.status}`}`, notStarted: waiting });
+  });
+
+  const applyTap = async (svc: WorkBoardService, req: Request, res: Response, p: WorkPrincipal) => {
+    const r = await performOwnerTap(deps, svc, String(req.params.id), (req.body ?? {}) as Record<string, unknown>, p);
+    res.status(r.status).json(r.body);
+  };
+
+  router.post('/work-board/cards/:id/tap', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    // A scoped session or a phone has no console PIN path; a bearer request must prove the PIN.
+    if (c.kind !== 'bearer') { res.status(403).json({ error: 'person-required' }); return; }
+    // A phone-only card (project-apps-sandbox §3.4): a PIN tap could make it read approved while nothing
+    // runs, and the PIN is available to the agent. Only withdraw-approval (it only stops an app) is taken here.
+    if (deps.phoneOnlyCard?.(String(req.params.id)) && (req.body as { action?: unknown } | undefined)?.action !== 'withdraw-approval') {
+      res.status(403).json({ error: 'phone-only-card', message: 'Approve this on your phone' });
+      return;
+    }
+    if ((req.body as { pin?: unknown } | undefined)?.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'A tap is a person\'s: it needs the dashboard PIN (console) or Face ID (phone). The agent cannot tap.' }); return; }
+    if (!deps.requirePin(req, res, 'Enter your dashboard PIN to confirm')) return;
+    const owner = deps.ownerPersonKey();
+    if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return; }
+    await applyTap(svc, req, res, { kind: 'person', personKey: owner, proof: 'pin', isOwner: true });
+  });
+
+  // ── dismissal lessons (work-front-doors §6): the agent's own read; a phone or a scoped session gets none ──
+  router.get('/work-board/lessons', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(req.query?.limit ?? '50'), 10) || 50));
+    res.json({ lessons: lessonsJson(svc, deps.displayName, limit) });
+  });
+
+  // ── graduation (Maturation plan): the pilot's own measurement, written by the scheduled job ──
+  router.get('/work-board/graduation', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    res.json({ ...svc.graduationState(), current: svc.graduationMetrics(7) });
+  });
+  router.post('/work-board/graduation/pass', (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    if (deps.caller(req).kind !== 'bearer') { res.status(403).json({ error: 'not-available-to-this-caller' }); return; }
+    // The lease holder writes the record; any other machine reports what is due and writes nothing.
+    if (deps.holdsLease && !deps.holdsLease()) { res.json({ written: [], due: svc.graduationState().due, skipped: 'not-lease-holder' }); return; }
+    res.json(svc.graduationPass());
+  });
+
+  router.post('/work-board/settings', async (req, res) => {
+    const svc = gate(res); if (!svc) return;
+    const c = deps.caller(req);
+    if (c.kind !== 'bearer') { res.status(403).json({ error: 'person-required' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.preview === true && body.policy) {
+      // The PIN prompt says how many waiting cards would start at once (§7); no PIN for the count.
+      res.json({ wouldStart: svc.cardsStartingUnder(body.policy === 'outward-only' ? 'outward-only' : 'every-agent-card') });
+      return;
+    }
+    if (body.pin === undefined) { res.status(403).json({ error: 'person-required', message: 'Only the team owner changes the work board settings, with the dashboard PIN.' }); return; }
+    if (!deps.requirePin(req, res, 'Enter your dashboard PIN to change the work board settings')) return;
+    const owner = deps.ownerPersonKey();
+    if (!owner) { res.status(409).json({ error: 'no-team-owner' }); return; }
+    const { pin: _pin, policy, preview: _pv, ...patch } = body;
+    // Validate EVERYTHING before anything is written: a request with a policy and one bad setting changes nothing.
+    if (policy !== undefined && policy !== 'every-agent-card' && policy !== 'outward-only') { res.status(400).json({ error: 'unknown-policy' }); return; }
+    if (Object.keys(patch).length) {
+      const v = validateSettingsPatch(patch);
+      if (!v.ok) { res.status(400).json({ error: 'invalid-setting', field: v.field, message: 'Settings are positive whole numbers with known names; the free check cannot run more often than once a minute, and the attempt cap is at least 1.' }); return; }
+    }
+    // After validation (a malformed request is a 400, never a 403). Any board policy other than `every-agent-card` lets cards start without their own approval,
+    // so moving to it is a raise (trust-journey decision 4). The PIN is not the person's proof
+    // (the agent can reach it), so this route accepts only the strict policy or no change.
+    if (policy !== undefined && policy !== svc.policy() && boardPolicyRaises(policy).length > 0) {
+      res.status(403).json(raiseRefusal(boardPolicyRaises(policy)));
+      return;
+    }
+    let policyResult: unknown = null;
+    if (policy !== undefined) {
+      const before = svc.cardIds().filter((id) => { const v = svc.view(id); return !!v && !v.card.workable && !v.card.redacted; });
+      const r = svc.setPolicy({ kind: 'person', personKey: owner, proof: 'pin', isOwner: true }, policy);
+      if (!r.ok) { send(res, r); return; }
+      policyResult = { recordId: r.recordId, wouldStart: r.wouldStart };
+      const started = before.filter((id) => svc.view(id)?.card.workable);
+      const rec = svc.policyRecords().find((x) => x.id === r.recordId);
+      if (rec && started.length) await deps.afterPolicy?.(rec.d, started).catch(() => { /* @silent-fallback-ok: the line is presentation; the policy record stands */ });
+      deps.controller()?.poke();
+    }
+    if (Object.keys(patch).length && !deps.saveSettings(patch)) { res.status(500).json({ error: 'settings-not-saved' }); return; }
+    res.json({ settings: deps.settings(), policy: svc.policy(), ...(policyResult ? { policyChange: policyResult } : {}) });
+  });
+}
+
+/** The dismissal lessons as the agent reads them: the reason, who gave it, and where it came from. */
+export function lessonsJson(svc: WorkBoardService, name: (personKey: string) => string, limit: number): Array<Record<string, unknown>> {
+  return svc.dismissalLessons(limit).map((l) => ({
+    reason: l.reason, at: l.at, cardId: l.cardId, cardTitle: l.title, ...(l.currentTitle !== undefined ? { cardTitleNow: l.currentTitle, retitledAfterClose: true } : {}), ...(l.titleUnconfirmed ? { titleUnconfirmed: true } : {}), tapId: l.tapId, conversationKey: l.conversationKey,
+    by: l.by.kind === 'person' ? { personKey: l.by.personKey, name: name(l.by.personKey) } : { kind: l.by.kind },
+  }));
+}
+
+/**
+ * The steps after a card is written: its conversation (idempotent: the key is derived from the card id) and a
+ * poke to the pickup controller. Shared by the console create and the owner phone's create, which also runs it
+ * on a replay so an interrupted create finishes on retry (docs/specs/phone-work-cards.md).
+ */
+export async function afterCardCreate(deps: Pick<WorkBoardRouteDeps, 'ensureConversation' | 'controller' | 'log'>, cardId: string, conversationKey: string, title: string): Promise<void> {
+  try { await deps.ensureConversation(cardId, conversationKey, title); }
+  catch (err) { /* @silent-fallback-ok: logged; the card exists and its chat is created at the next write or boot (the key is derived) */ deps.log?.('work-board-conversation-create-failed', { cardId, error: (err as Error)?.message }); }
+  deps.controller()?.poke();
+}
+
+/**
+ * Apply one person-proven tap: the record, its transcript line (or the conversation's removal for a
+ * redact), a poke to the pickup controller. Shared by the console route (PIN) and the phone route
+ * (presence signature, mounted in mobilePermissionsRoutes behind the write gate).
+ */
+export async function performOwnerTap(deps: Pick<WorkBoardRouteDeps, 'displayName' | 'when' | 'appendLine' | 'removeConversation' | 'controller' | 'ownerPersonKey' | 'log' | 'phoneOnlyCard'>, svc: WorkBoardService, cardId: string, body: Record<string, unknown>, p: WorkPrincipal): Promise<{ status: number; body: Record<string, unknown> }> {
+  // A tap that PERMITS something must name the title the person saw (its hash): the title is what
+  // they read on screen, and an answer, a release or a Try again is bound to nothing else that shows it.
+  if (!isRestrictingTap(String(body.action)) && !(typeof body.titleHash === 'string' && /^[0-9a-f]{64}$/.test(body.titleHash))) {
+    return { status: 400, body: { error: 'title-hash-required', message: 'Send titleHash (the card\'s titleHash as shown) with this tap.' } };
+  }
+  // A stopped project app's serve card (project-apps-sandbox §3.4): an approve here would read as
+  // "running" while the app stays off, because turning it back on is a separate card not built yet
+  // (stage 2, CMT-1882). The phone and the console both arrive here.
+  if (body.action === 'approve' && deps.phoneOnlyCard?.(cardId) && svc.isStoppedAppCard(cardId)) {
+    return { status: 409, body: { error: 'app-stopped', message: 'You stopped this app. Approving this card does not turn it back on; turning it back on comes in a later update.' } };
+  }
+  const r = svc.tap(p, cardId, body);
+  if (!r.ok) return { status: r.status, body: { error: r.error, ...(r.detail ?? {}) } };
+  if (r.recordId) {
+    const rec = svc.recordsOf(cardId).find((x) => x.id === r.recordId);
+    const v = svc.view(cardId);
+    if (rec && v) {
+      if (rec.d.action === 'redact') {
+        await deps.removeConversation(v.card.conversationKey).catch((err) => deps.log?.('work-board-redact-conversation-failed', { cardId, error: (err as Error)?.message }));
+      } else {
+        const line = transcriptLineFor('tap', rec.d, { name: deps.displayName, when: deps.when });
+        if (line) await deps.appendLine(v.card.conversationKey, lineIdFor(r.recordId), line).catch((err) => deps.log?.('work-board-line-failed', { cardId, error: (err as Error)?.message }));
+      }
+    }
+  }
+  deps.controller()?.poke();
+  const v = svc.view(cardId)!;
+  return { status: 200, body: { recordId: r.recordId, card: cardJson(svc, v, { personKey: deps.ownerPersonKey(), isOwner: true, isAgent: false }, deps.displayName, { phoneOnly: deps.phoneOnlyCard?.(cardId) === true }) } };
+}

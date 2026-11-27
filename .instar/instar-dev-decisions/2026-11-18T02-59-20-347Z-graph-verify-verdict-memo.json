@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T02:59:20.347Z",
+  "slug": "graph-verify-verdict-memo",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 107,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphLocalErasure.ts",
+      "src/core/ConversationGraphReplication.ts"
+    ],
+    "addedLines": 92,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

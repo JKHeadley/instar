@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-04T13:26:26.841Z",
+  "slug": "session-pool-no-silent-drop",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/DeliverMessageHandler.ts",
+      "src/core/PendingInboundStore.ts",
+      "src/core/QueueDrainLoop.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

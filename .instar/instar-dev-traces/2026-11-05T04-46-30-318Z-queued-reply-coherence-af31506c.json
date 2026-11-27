@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "queued-reply-coherence",
+  "sessionId": "7c3c0b47-1ffe-4674-a3a3-26072f48ed08",
+  "timestamp": "2026-11-05T04:46:30.318Z",
+  "artifactPath": "upgrades/side-effects/queued-reply-coherence.md",
+  "artifactSha256": "e3200ca15867a5c601e4d0101e1ad0d40d1b1a07442634534c006d514ed5e1ad",
+  "coveredFiles": [
+    "docs/specs/queued-reply-coherence.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/QueuedReplySupersession.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/telegram-origin-worker-recovery.test.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "tests/unit/telegram-origin/queued-reply-supersession.test.ts",
+    "tests/unit/topic-name-probe-backoff.test.ts",
+    "upgrades/next/queued-reply-coherence.md",
+    "upgrades/side-effects/queued-reply-coherence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow recovery and topic-name fix using existing storage transitions; no schema or new transport authority. A suppressed draft cannot be restored by revert, disclosed in review, but the check is confined to unsent operations and is covered by integration tests.",
+  "eli16Path": "docs/specs/queued-reply-coherence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/queued-reply-coherence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder",
+      "howCaught": "The existing forward ladder has a deadline and bounded attempts; the new chronology gate either holds for a later reserved attempt or makes one terminal suppression transition."
+    }
+  }
+}

@@ -184,20 +184,25 @@ export function vaultBroken(keys, sync) {
 export const VAULT_BROKEN_WORDS = 'I can’t open my saved keys on this machine — don’t change anything; tell me.';
 
 export function secretsHeadline({ requests, keys, sync }) {
+  // warning-path: pageHead
   if (vaultBroken(keys, sync)) return { text: VAULT_BROKEN_WORDS, tone: 'bad' };
   if (!requests || !requests.ok) return { text: 'Can’t tell whether the agent is waiting on a password.', tone: 'muted' };
   const n = requests.counts.waiting;
   if (n === 0) return { text: 'Nothing is waiting.', tone: 'ok' };
+  // warning-path: pageHead
   return { text: `The agent is waiting on ${n === 1 ? '1 password' : `${n} passwords`}.`, tone: 'attn' };
 }
 
 export function secretsFacts({ requests, keys, sync }) {
   const facts = [];
   if (requests && requests.ok) {
+    // warning-path: pageHead
     facts.push({ n: requests.counts.waiting, label: 'waiting', tone: requests.counts.waiting ? 'attn' : null });
+    // warning-path: pageHead
     if (requests.counts.soon) facts.push({ n: requests.counts.soon, label: 'expiring within 5 min', tone: 'attn' });
   } else facts.push({ n: '?', label: 'waiting' });
   if (keys && keys.ok) facts.push({ n: keys.names.length, label: keys.names.length === 1 ? 'key held' : 'keys held' });
+  // warning-path: pageHead
   else facts.push({ n: '?', label: 'keys held', tone: keys && keys.decryptFailed ? 'bad' : null });
   if (sync && sync.on) facts.push({ n: sync.count, label: sync.push ? (sync.count === 1 ? 'machine synced to' : 'machines synced to') : 'receiving from others' });
   return facts.slice(0, 4);

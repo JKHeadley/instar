@@ -14,12 +14,25 @@
  *    home and the temp roots and re-allows an exact list.
  */
 
+import { setAsideUnlessRealFolder } from '../users/MemoryPrivacy.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const INBOUND_FILE_MAX_AGE_MS = 10 * 60_000;
 
 export const MEMORY_SESSION_TOOLS = ['Bash', 'Read', 'Edit', 'Write', 'Skill', 'WebFetch', 'WebSearch', 'TodoWrite'] as const;
+
+/** All adapter-owned locations that can contain a file in an inbound message. */
+export function memorySessionInboundRoots(state: string): string[] {
+  return [
+    path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-documents'),
+    path.join(state, 'telegram-files'), path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'),
+    // SEC-138: Slack context and long-message files moved from /tmp/instar-slack into telegram-inbound;
+    // a shared /tmp folder is no longer a trusted source of inbound files.
+    path.join(state, 'state', 'dashboard-uploads'),
+  ];
+}
 
 /** Top-level entries of the agent home a session must still be able to read. */
 const READABLE_HOME_ENTRIES = new Set(['CLAUDE.md', '.claude']);
@@ -76,6 +89,29 @@ export function buildMemorySessionSettings(p: MemorySessionPaths): Record<string
   };
 }
 
+/**
+ * Linux only: let the session's curl reach the agent server. bubblewrap gives the
+ * session its own network namespace, so localhost inside it is not the agent's
+ * server, and the sandbox's NO_PROXY sends localhost past the proxy that could
+ * carry it. Every reply script uses plain curl, so a curl config that clears
+ * NO_PROXY sends localhost through the sandbox proxy, which allows it (it is in
+ * allowedDomains). Reach is the same as on macOS, where the session shares the
+ * host's loopback. Measured with Claude Code 2.1.318 on Ubuntu 24.04: without
+ * this, curl exit 7; with it, HTTP 200 from the server and outside hosts unchanged.
+ * Returns the folder to pass as CURL_HOME, or null where nothing is needed.
+ */
+export function prepareSessionCurlHome(scopeDir: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'linux') return null;
+  const curlHome = path.join(scopeDir, '.curl');
+  // The folder is the session's own, so it may have left a link here, and this runs unsandboxed.
+  setAsideUnlessRealFolder(curlHome);
+  fs.mkdirSync(curlHome, { recursive: true, mode: 0o700 });
+  const staged = path.join(curlHome, `.curlrc-${randomUUID()}`);
+  fs.writeFileSync(staged, 'noproxy = ""\n', { mode: 0o600, flag: 'wx' });
+  fs.renameSync(staged, path.join(curlHome, '.curlrc')); // replaces a link rather than following it
+  return curlHome;
+}
+
 /** `--allowedTools` entries: the plain tools, and file tools on the scope folder only. */
 export function memorySessionAllowedTools(scopeDir: string): string[] {
   return [
@@ -109,31 +145,70 @@ export function applyMemorySessionLaunch(argv: string[], settingsPath: string, s
 }
 
 /**
+ * Where the unsandboxed server may safely put a file in a session's inbox. The session can write to
+ * its own scope folder, so it can plant links there: the inbox must be a real folder in the scope, and
+ * the name is unguessable, to be written with an exclusive flag so nothing planted can be followed.
+ * Throws when the inbox is not safe.
+ */
+export function safeInboxTarget(inbox: string, name: string): string {
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  const info = fs.lstatSync(inbox);
+  if (info.isSymbolicLink() || !info.isDirectory() || fs.realpathSync(inbox) !== path.join(fs.realpathSync(path.dirname(inbox)), path.basename(inbox))) {
+    throw new Error('session-inbox-not-safe');
+  }
+  return path.join(inbox, `${randomUUID()}-${path.basename(name)}`);
+}
+
+/**
  * Copy files named in an inbound message into the session's own inbox and point
  * the text at the copies. A person's long messages and attachments are saved
  * under shared folders the session cannot read; without this the agent would
  * answer them blind. Only paths under `roots` are touched, so a path a person
  * typed elsewhere stays plain text and cannot pull in another file.
  */
-export function moveInboundFilesIntoScope(text: string, scopeDir: string, roots: readonly string[], now: number = Date.now()): string {
-  let out = text;
-  for (const root of roots) {
-    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`${escaped}/[^\\s"'\`)\\]]+`, 'g');
-    out = out.replace(pattern, (match) => {
-      const resolved = path.resolve(match);
-      if (!resolved.startsWith(`${root}/`)) return match;
-      const target = path.join(scopeDir, 'inbox', path.basename(resolved));
-      try {
-        // Only what just arrived: a person cannot pull in an older attachment by typing its path.
-        if (now - fs.statSync(resolved).mtimeMs > INBOUND_FILE_MAX_AGE_MS) return match;
-        fs.copyFileSync(resolved, target);
-        return target;
-      } catch {
-        // @silent-fallback-ok — no such file: the text is left as it was typed.
-        return match;
-      }
-    });
-  }
-  return out;
+export function moveInboundFilesIntoScope(text: string, scopeDir: string, roots: readonly string[], now: number = Date.now(), authorized: (realPath: string, info: fs.Stats) => boolean = () => false): string {
+  // A generated long-message file can itself name an attachment. Rewrite its
+  // contents in the copied file, since the session cannot read the original.
+  const allowedRoots = roots.map((root) => {
+    try { return fs.realpathSync(root); }
+    catch { return path.resolve(root); }
+  });
+  const visited = new Set<string>();
+  const staged = new Map<string, string>();
+  const rewrite = (input: string, depth: number): string => {
+    let out = input;
+    // Match candidate absolute paths, then authorize by the canonical target.
+    // This handles /var versus /private/var and symlinked agent homes.
+    out = out.replace(/\/[^\s"'`)\]]+/g, (match) => {
+        const resolved = path.resolve(match);
+        try {
+          const real = fs.realpathSync(resolved);
+          if (!allowedRoots.some((r) => real.startsWith(`${r}${path.sep}`))) return match;
+          const info = fs.lstatSync(resolved);
+          if (!info.isFile() || info.nlink !== 1) return match;
+          if (!authorized(real, info)) return match;
+          // Only what just arrived: a typed path cannot pull in an older attachment.
+          if (now - info.mtimeMs > INBOUND_FILE_MAX_AGE_MS) return match;
+          const previous = staged.get(real);
+          if (previous) return previous;
+          const inbox = path.join(scopeDir, 'inbox');
+          if (!fs.lstatSync(inbox).isDirectory() || fs.realpathSync(inbox) !== path.join(fs.realpathSync(scopeDir), 'inbox')) return match;
+          const target = path.join(inbox, `${randomUUID()}-${path.basename(resolved)}`);
+          if (depth < 2 && /^(?:bootstrap|msg|ctx)-[^/]+\.txt$/.test(path.basename(resolved)) && !visited.has(real)) {
+            visited.add(real);
+            const contents = fs.readFileSync(resolved, 'utf8');
+            fs.writeFileSync(target, rewrite(contents, depth + 1), { flag: 'wx', mode: 0o600 });
+          } else {
+            fs.copyFileSync(resolved, target, fs.constants.COPYFILE_EXCL);
+          }
+          staged.set(real, target);
+          return target;
+        } catch {
+          // @silent-fallback-ok — missing or unreadable file: leave its path visible to the session.
+          return match;
+        }
+      });
+    return out;
+  };
+  return rewrite(text, 0);
 }

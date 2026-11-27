@@ -140,8 +140,9 @@ describe('Trust Elevation API Routes (integration)', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.recorded).toBe(true);
-      expect(body.acceptanceStats.totalDecided).toBe(1);
-      expect(body.acceptanceStats.approved).toBe(1);
+      // Reported through the agent's token: kept, but never counted (trust-journey section 6).
+      expect(body.acceptanceStats.totalDecided).toBe(0);
+      expect(body.acceptanceStats.approved).toBe(0);
     });
 
     it('records a rejection event', async () => {
@@ -157,7 +158,8 @@ describe('Trust Elevation API Routes (integration)', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.acceptanceStats.rejected).toBeGreaterThanOrEqual(1);
+      expect(body.recorded).toBe(true);
+      expect(body.acceptanceStats.rejected).toBe(0);
     });
 
     it('rejects missing required fields', async () => {
@@ -191,9 +193,10 @@ describe('Trust Elevation API Routes (integration)', () => {
       expect(res.status).toBe(200);
 
       const body = await res.json();
-      expect(body.totalDecided).toBeGreaterThan(0);
-      expect(typeof body.acceptanceRate).toBe('number');
-      expect(typeof body.recentAcceptanceRate).toBe('number');
+      // Only token-reported rows were recorded above, so nothing counts yet.
+      expect(body.totalDecided).toBe(0);
+      expect(body.acceptanceRate).toBeNull();
+      expect(body.recentAcceptanceRate).toBeNull();
     });
   });
 
@@ -236,16 +239,15 @@ describe('Trust Elevation API Routes (integration)', () => {
   // ── POST /autonomy/elevation/dismiss-rubber-stamp ──────────────
 
   describe('POST /autonomy/elevation/dismiss-rubber-stamp', () => {
-    it('dismisses rubber-stamp alert', async () => {
+    it('refuses to hide the rubber-stamp alert from the token (trust-journey section 6)', async () => {
       const res = await fetch(`${baseUrl}/autonomy/elevation/dismiss-rubber-stamp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ days: 60 }),
       });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.dismissed).toBe(true);
-      expect(body.rubberStamp).toBeDefined();
+      expect(body.error).toBe('operator-approval-required');
     });
   });
 

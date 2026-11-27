@@ -113,7 +113,7 @@ The audience is computed in one place, `SessionManager.resolveSessionAudience`, 
 - Each session stores its `place`. Every respawn, resume and recovery recomputes from it. Places are also stored on the resume entries. A pre-existing resume entry has no place, so the place comes from the topic or channel binding.
 - Each place records its full audience: kind plus the person id or place key. If that differs in any part, the resume binding is dropped: the old transcript may hold what the new audience must not see.
 - Jobs pass `system`. On a multi-person agent, triage does not run on `person`, `place` or `none` sessions, because it runs with owner reach.
-- On a multi-person agent, inbound agent-to-agent sessions are refused. Trust levels limit what a peer may do, not what data its session can see, so a `verified` peer given owner reach could ask for a person's fact and pass it on, and scoped sessions have no MCP to reply with. Stated cost. An agent kept `open` by `sharedMemoryPeople` is unaffected.
+- On a multi-person agent, an inbound agent-to-agent conversation runs in a place of its own, keyed by the peer's authenticated fingerprint, with that place's memory only and a session-bound reply route (memory-privacy-agent-places.md). `memoryPrivacy.refuseAgentSessions: true` restores the refusal. An agent kept `open` by `sharedMemoryPeople` is unaffected.
 - Every inbound message checks the live session for its place and ends it if its audience differs, before the message reaches it, and any resume from a different audience is dropped. This close lifts the ordinary keep-guards, because a busy session is the one that would answer. If the session still cannot be ended, the message is not delivered and the sender gets the fixed reply. A same-name session is reused only for the same audience. That one rule covers sessions from before the update, a restart, and a place that lost its reader proof. Sessions that get no message are harmless until one arrives.
 - On a flip to multi-person, whatever caused it, every other interactive session whose audience would change is ended as well, once. Headless work is left alone.
 
@@ -146,6 +146,8 @@ The launch drops `--dangerously-skip-permissions` and uses `--permission-mode do
 
 Verified with real sessions on macOS, Claude Code 2.1.316, 2026-11-03: other scope folders, `.instar`, `history.jsonl` and all of `$HOME` refused from the shell and from file tools; own folder read and written; writes to the agent home refused; reply script ran; localhost and web reachable; `autoMemoryDirectory` honoured; `CLAUDE.md` still loads. `CLAUDE.md` does **not** load if the agent home's root is denied, which is why the deny lists top-level entries instead. On Ubuntu 24.04 the same read boundary was verified with the AppArmor profile in place.
 
+**Reaching the agent server on Linux.** bubblewrap gives the shell its own network namespace, so `localhost` inside it is not the agent's server, and the sandbox's `NO_PROXY` lists `localhost`, so curl goes direct and fails (exit 7). Every reply script uses plain curl. On Linux the spawn writes `<scope>/.curl/.curlrc` containing `noproxy = ""` (rewritten at every spawn) and sets `CURL_HOME` to that folder, so curl sends `localhost` through the sandbox proxy, which allows it because it is in `allowedDomains`. The session reaches nothing it could not reach on macOS, where it shares the host loopback. Measured with Claude Code 2.1.318 on Ubuntu 24.04, 2026-11-04, using the real settings and the real `slack-reply.sh` and `telegram-reply.sh`: without the file, curl exit 7 and no reply; with it, both replies reached the server with the session token, outside hosts still answered, and the agent home's files stayed unreadable. Forcing the proxy without its credentials gives 407, which is what an earlier probe misread as the proxy refusing localhost. macOS is unchanged.
+
 The shell denies whole `$HOME` and temp roots because `~/.claude*/history.jsonl` holds every prompt, and session temp folders hold task output. Unix sockets stay denied, so tmux cannot reach another session's token. Session temp goes to `<scope>/tmp`, started from a clean environment the way `applyClaudeConfinement` does.
 
 **Environment:** `INSTAR_AUTH_TOKEN` (session token), `INSTAR_PORT`, `INSTAR_AGENT_ID`, `INSTAR_MEMORY_SCOPE`, `INSTAR_BIND_TOKEN`, `INSTAR_CONVERSATION_ID`. Reply scripts use `INSTAR_PORT` and take the token from the environment even when `config.json` is unreadable, including the `slack-reply.sh` branch that today sets `AUTH` only inside a `config.json` test. Origin tokens are not refreshed for these sessions, since the refresh goes through tmux. The failed-send queue file is unreachable from the sandbox, so a reply that fails after retries is reported to the session rather than queued. Accepted cost.
@@ -156,6 +158,14 @@ The shell denies whole `$HOME` and temp roots because `~/.claude*/history.jsonl`
 
 **No working sandbox.** Boot runs a real probe and checks the Claude Code version. On Linux the sandbox needs `bubblewrap` and `socat`, and on Ubuntu 24.04 also an AppArmor profile. A fresh server has none of them, so boot installs them with `sudo -n` when it can, only if the probe failed. A shell limited by permission rules alone was tried and rejected: on a real session, a recursive `grep` over the working directory ran anyway, because read-only commands there are auto-allowed and deny rules match only named paths. Otherwise, and for frameworks with no such adapter, an inbound message that would start one of these sessions gets a fixed reply saying private memory isn't set up and to ask the agent's owner, plus one attention item naming the fix. It does not run unprotected. `memoryPrivacy.enabled: false` is the operator's explicit way out.
 
+**No agent is restricted by an update.** Decided by Justin on 2026-11-04, after the feature refused an owner and blocked an agent's reads. Memory privacy is on only when `memoryPrivacy.enabled` is exactly true, which only an owner sets. `migrateConfig` writes false where it is missing, keeping anything else in the block. The check does not rely on the migration: boot wires memory privacy from config loaded before the migration runs, so a missing value must already read as off, or the first boot after an update would restrict the agent. With it off, boot also ends any session still inside the boundary, because it would otherwise keep its sandbox and limited token. The cost is plain: an agent serving several people does not separate their facts until its owner opts in.
+
+**New agents stay off for now.** Justin's decision allowed new agents to start with it on. They do not yet, because the boundary is not sound across machines: `config.json` is not in the mesh repo, so a joined standby has no copy of the setting and would serve unprotected after failover. Once failover keeps the explicit setting, new agents can start on. Until then an owner who opts in must set it on every machine.
+
+**Owner recovery.** Boot names the real blocker: the sandbox, a Claude binary that will not run, or one below the floor. A Mac is a supported platform, so "no supported sandbox" is never the report there. Everyone but the owner still gets the fixed reply. The owner here means a verified person matching the owner id: operator keys are inferred at baseline and can hold a colleague, so they never count. An owner with no user profile gets the fixed reply, except the Telegram case below; the attention item and `GET /memory-privacy` still give the fix. The owner hears the cause only in private: in a direct message the reply carries it, and in a shared place the reply says only that a private message was sent, because paths and links must not reach other readers. Slack, Telegram and WhatsApp each send that private message. A failed send falls back to the fixed reply and can be tried again, so the channel never claims a message that did not go. When no owner profile resolves, the Telegram owner counts by the configured owner id too, because Telegram vouches for the sender and group senders often have no profile. A real owner profile always wins, and the Telegram message goes only when its fixed recipient is the person who asked. In the owner's own private chat private memory is not the cause, so a refusal there, such as a session that could not be reset, just asks them to try again.
+
+That message links to the solution for every cause, as Justin asked: a page, live for 30 minutes, gives the cause and the steps. When a binary at the floor is on the machine, the page also offers a one-click repair, and that link works once. The link is the credential, like Secret Drop. Opening it changes nothing, because apps fetch links to build previews; only the page's POST spends it. The request carries no input. The server chose the repair at boot and measures the binary again before using it: it sets `sessions.claudePath` and new sessions use that binary. Running sessions keep theirs. It cannot turn memory privacy off or run anything outside the sandbox. The address is the tunnel, so it opens on a phone. With no tunnel there is no such address, so the message says so and gives the manual step rather than a localhost link. `GET /memory-privacy` reports `blocker` and `fix`. The degradation report can leave the machine, so it carries no paths.
+
 ### 5. Routes: default deny
 
 The session token is a random value, like `ior1_` origin tokens (`OriginSessionRegistry.ts`). It maps to the session and its audience, persists in state across server restarts because a running session's environment cannot change, is never reissued, and is revoked at session end. The audience is in the in-memory map, so the guard does no disk read per request. A session token is **denied on every route unless listed**:
@@ -165,7 +175,8 @@ The session token is a random value, like `ior1_` origin tokens (`OriginSessionR
 | Reply and send routes for each channel | Own place only |
 | Hook event routes | Own session only |
 | `GET /internal/stop-gate/hot-path`, `POST /internal/stop-gate/evaluate`, `/messaging/preflight`, `/telegram/origins/operations/*`, `/events/delivery-failed` | Session plumbing; no remembered content. Other stop-gate routes show all sessions or change agent-wide state, so they are refused. `/internal/compaction-resume` is refused because it accepts any session name |
-| `GET /identity/soul/integrity`, `POST /feedback` | Unchanged; `GET /feedback` is refused, because it lists free text from all sessions |
+| `GET /identity/soul/integrity`, `POST /feedback` | Unchanged; `GET /feedback` is refused, because it lists free text from all sessions. `POST /feedback` and `POST /team/proposals` are refused to another agent's place |
+| `POST /threadline/session-reply` | Another agent's place only; the recipient comes from the session token (memory-privacy-agent-places.md §5) |
 
 A test enumerates every route on every mounted router and fails on any route not classified. Exact-compare sites (`routes.ts:21128, 39371, 20460, 20286, 5422, 18799`, `WebSocketManager.ts:316`) refuse a session token, which is the wanted result. Absence of an audience on a request is never read as owner; only the agent's own token is. `serendipity-capture.sh` gets its existing `SERENDIPITY_SIGNING_KEY` rather than deriving from the env token.
 
@@ -186,13 +197,22 @@ Legacy memory is owner scope. On an agent whose owner works only in a group with
 
 ### 8. Config and rollout
 
-`memoryPrivacy: { enabled: true, ownerUserId?, sharedMemoryPeople?, privateGroups? }`. On by default: this is a security fix, and `open` makes it inert for single-person agents.
+`memoryPrivacy: { enabled, ownerUserId?, sharedMemoryPeople?, privateGroups? }`. Off by default for every agent, new and existing: it is on only when an owner sets `enabled: true` (section 4, "No agent is restricted by an update", Justin 2026-11-04). With it on, `open` still makes it inert for single-person agents.
 
-`PostUpdateMigrator`: no config migration is needed, because unset means on; `migrateHooks` overwrites generated hooks and scripts; `migrateClaudeMd` adds an awareness section (template too); the bubblewrap profile attempt. On multi-person agents the first boot applies the flip handling in section 3.
+`PostUpdateMigrator`: `migrateConfig` writes `enabled: false` where it is missing, and the code reads a missing value as off without relying on that; `migrateHooks` overwrites generated hooks and scripts; `migrateClaudeMd` adds an awareness section (template too); the bubblewrap profile attempt. When an owner turns it on for a multi-person agent, the next boot applies the flip handling in section 3.
 
 Rollback: `enabled: false` restores today's behaviour for new sessions; scope folders are left in place and simply not loaded. A version downgrade ends session tokens; sessions respawn with the agent token.
 
 Multi-machine: enforcement is per machine and needs no replication. An older peer enforces nothing, so a multi-person agent with a peer on an older version raises one attention item until that peer updates. That is a remaining gap on such agents during a rollout.
+
+## What a confined session can make the server do
+
+A confined session is sandboxed, and the server that serves it is not. Anything the session can write or report is untrusted input to the server:
+
+- On the hook route a scoped session speaks only for itself, whatever the address names, and its events carry no file paths: consumers read those on the unsandboxed server.
+- A session id must be a plain id before it is stored or passed to a launch. It reaches a command line and a file path, so a leading dash, a slash or a dot is refused at each point.
+- The server never writes through a link in a scope folder. `.curlrc` is staged and renamed over, and a link or file where `inbox`, `tmp` or `.curl` should be is moved aside.
+- A confined session never feeds agent-wide digests, on the periodic scan or at session completion.
 
 ## Decision points touched
 
@@ -216,10 +236,11 @@ Multi-machine: enforcement is per machine and needs no replication. An older pee
 ## Maturation plan
 
 - **test-agent-live:** the E2E on the production wiring path, plus a live run on a throwaway Ubuntu server and with two real Slack people on a test agent: fresh session, shared channel, a session told the path of another person's folder, and a brand-new user.
-- **dev-agent-live:** live on release. Echo is checked first: `GET /memory-privacy` shows `multiPerson: false` and its sessions start unchanged.
-- **fleet:** the same release, default on. On one-person agents only channels with other readers change; nothing else is touched. Luna sets `sharedMemoryPeople` before or at that release.
-- **graduation criterion:** the two-person live proof passes on a test agent, Luna's retest passes, and no agent reports lost memory in the week after release.
-- **dark-window:** none; this is a security fix. If the live proof has not passed by 2026-11-06, the new date goes in the ledger under a 137333 heading by 2026-11-05.
+- **ladder:** memoryPrivacy
+- **dev-agent-live:** an owner opts a development agent in with `memoryPrivacy.enabled: true` and a restart. The first is the nimbus test agent (Linux), with two real Slack people, after a release carries PR 2766. On every other agent, an update leaves the setting off and sessions start unchanged.
+- **fleet:** stays off by recorded preference: `final: default-off-by-preference` in `src/data/feature-ladders.json`. Decided by Justin on 2026-11-04 in topic 137333, after 1.3.1652 restricted Luna: a feature that can refuse or wall off working access is the owner's choice, never an update's (class: opt-in cost). It stays available to every owner who turns it on and keeps its thresholds; a later move to default-on for new agents would be a new decision, recorded the same way.
+- **graduation criterion:** for the dev rung, the feature's own record: scoped sessions started and replies delivered from them, with no reply lost to the sandbox and no owner locked out (thresholds in the ladder entry). Before that: the two-person Slack proof passes on nimbus and Luna's retest passes. 2026-11-04 status: privacy held on nimbus, but on Linux no reply was delivered (fb-0fd50d5c-bad); PR 2766 fixes that and was proven on a throwaway Ubuntu server. The Slack rerun waits for its release.
+- **dark-window:** the dev rung must have its Slack proof by 2026-11-06. If it misses that, the new date goes in the ledger under a 137333 heading by 2026-11-05. Until the feature records evidence (tracked in the ladder entry), the dev rung is read from that proof and the ledger, not from logs.
 
 ## Multi-machine posture
 

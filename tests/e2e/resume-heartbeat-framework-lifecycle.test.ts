@@ -100,7 +100,8 @@ describe('resume lookups follow the session framework — production lifecycle',
     writeRollout(home, codexId, localPartitionOf(codexWhen), '2026-10-11T10-00-00');
     resetRolloutLookupState();
     project = createTempProject();
-    tmuxPath = writeTmuxStub(home);
+    // The heartbeat reads every session's pane with one list-sessions call: name the live ones.
+    tmuxPath = writeTmuxStub(home, ['echo-codex-topic', 'echo-instar-agent-management', 'echo-thread-claude', 'echo-thread-codex', 'echo-threadline-dev']);
     project.state.saveSession(sessionRecord('echo-instar-agent-management', 'claude-code', STALE_A));
     project.state.saveSession(sessionRecord('echo-threadline-dev', 'claude-code', STALE_B));
     project.state.saveSession(sessionRecord('echo-codex-topic', 'codex-cli', codexId));
@@ -121,7 +122,7 @@ describe('resume lookups follow the session framework — production lifecycle',
     const src = fs.readFileSync(path.join(ROOT, 'src', 'commands', 'server.ts'), 'utf8');
     expect(src).toContain("import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';");
     expect(src).toContain('runResumeHeartbeatTick({');
-    expect(src).toMatch(/frameworkResolver: \(sessionName\) => state\.listSessions\(\)\.find\(\(s\) => s\.tmuxSession === sessionName\)\?\.framework/);
+    expect(src).toMatch(/frameworkResolver: \(sessionName\) => state\.findSessionByTmux\(sessionName\)\?\.framework/);
     expect(src).toContain('new TopicResumeMap(config.stateDir, config.sessions.projectDir, config.sessions.tmuxPath)');
   });
 

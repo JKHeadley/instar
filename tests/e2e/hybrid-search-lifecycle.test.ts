@@ -18,7 +18,7 @@
  * to AgentServer — same as server.ts would do it.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -26,6 +26,7 @@ import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { SemanticMemory } from '../../src/memory/SemanticMemory.js';
 import { EmbeddingProvider } from '../../src/memory/EmbeddingProvider.js';
+import { createRealEmbeddingProvider } from '../helpers/realEmbeddingProvider.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -39,12 +40,6 @@ describe('Hybrid Search E2E lifecycle', () => {
   let server: AgentServer;
   let app: ReturnType<AgentServer['getApp']>;
   const AUTH_TOKEN = 'test-e2e-hybrid';
-  // See the integration sibling (hybrid-search.test.ts): the embedding model is
-  // fetched from the HuggingFace hub. A transient/environmental hub outage must
-  // NOT hard-fail the whole E2E suite — the beforeEach guard skips these
-  // model-dependent tests cleanly when init fails. Normal runs are unchanged.
-  let providerReady = false;
-
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hybrid-e2e-'));
     stateDir = path.join(tmpDir, '.instar');
@@ -54,20 +49,9 @@ describe('Hybrid Search E2E lifecycle', () => {
 
     // ── Initialize SemanticMemory with EmbeddingProvider (production mirror) ──
 
-    try {
-      embeddingProvider = new EmbeddingProvider();
-      await embeddingProvider.initialize();
-      await embeddingProvider.loadVecModule();
-      providerReady = true;
-    } catch (err) {
-      providerReady = false;
-      console.error(
-        '[hybrid-search-e2e] SKIPPING SUITE — embedding provider failed to initialize ' +
-        '(environmental, e.g. HuggingFace hub unreachable/rate-limited). This is NOT a ' +
-        'code failure. Error: ' + ((err as Error)?.message ?? String(err)),
-      );
-      return; // skip the remaining provider-dependent setup
-    }
+    embeddingProvider = createRealEmbeddingProvider();
+    await embeddingProvider.initialize();
+    await embeddingProvider.loadVecModule();
 
     semanticMemory = new SemanticMemory({
       dbPath: path.join(stateDir, 'semantic.db'),
@@ -100,17 +84,15 @@ describe('Hybrid Search E2E lifecycle', () => {
     });
 
     app = server.getApp();
-  }, 120_000); // Model download on first run
+  }, 120_000); // Local model load only.
 
-  // Skip every model-dependent test cleanly when the embedding provider could
-  // not initialize (see beforeAll). ctx.skip() throws the vitest skip signal.
-  beforeEach((ctx) => {
-    if (!providerReady) ctx.skip();
-  });
-
-  afterAll(() => {
-    semanticMemory?.close();
-    SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/hybrid-search-lifecycle.test.ts:91' });
+  afterAll(async () => {
+    try { await server?.stop(); }
+    finally {
+      semanticMemory?.close();
+      await embeddingProvider?.dispose();
+      if (tmpDir) SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/hybrid-search-lifecycle.test.ts:cleanup' });
+    }
   });
 
   // ─── Phase 1: Alive Check ──────────────────────────────────────

@@ -54,7 +54,8 @@ describe('recommended services confirm', () => {
         return false;
       },
       recordApproval: (subject, ref) => { if (approvalThrows) throw new Error('disk'); approvals.push([subject, ref]); },
-      openCommitment: (_name, service) => { commitments.push(service); },
+      openCommitment: (_name, service) => { commitments.push(service); return null; },
+      finishCommitment: () => undefined, withdrawCommitment: () => undefined, startSetup: async () => ({ sessionName: 's', topicId: 1 }), stopSetup: () => true, isSetupRunning: () => false, notifyStuck: async () => true, clearStuck: () => undefined, tellOwner: () => undefined, writeSecret: () => undefined, readSecret: () => null, port: 0,
     });
     a.use(router);
     return a;
@@ -84,7 +85,7 @@ describe('recommended services confirm', () => {
   });
 
   it('a service with no proven setup gets no token and no yes', async () => {
-    catalog = [RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'jev')!];
+    catalog = [{ ...RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'jev')!, setupRecipe: null }];
     const page = await request(app()).get(PATH);
     expect(page.status).toBe(409);
     expect(page.body.error).toBe('not-available');

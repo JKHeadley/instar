@@ -9,13 +9,13 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 94 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708) |
-| 2.0 rule rows | 119 (numbers 1 to 119, each once, with instar-2 #189) |
-| Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
+| 1.x articles with a `**Rule.**` line | 100 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Security Fixes Keep the Experience Whole from the security program, plus Trust Is Earned by Work and Granted Only by the Person from #3219) |
+| 2.0 rule rows | 123 (numbers 1 to 123, each once, with instar-2 #189, #190, #191 and #192, and #200) |
+| Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 14 Values |
 
-Map result: **49 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
+Map result: **55 aligned, 41 differs, 3 1.x-only**, plus 25 rule rows 2.0-only and 13 purpose rules 2.0-only (6 partial).
 
-Of the differs rows: 8 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
+Of the differs rows: 7 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
 
 ### Against the #2323 claim
 
@@ -46,7 +46,6 @@ Following one book would violate the other. Ranked by how direct the clash is an
 | 2 | When an audit is finished | #66, #72 vs R65 | Stopping at accepted residue breaks #66. Forcing a zero-new round or a two-round floor breaks "no fixed minimum round count". write-audit-convergence.mjs enforces the 1.x side. | #2305 landed the same day as #2323 and kept the 1.x bar on purpose. |
 | 3 | Whether work needs a parent standard | #50 vs R49 | Halting ordinary work breaks R49 and R116; shipping it breaks #50. precommit requires parent-principle on specs. | Touches every spec. |
 | 4 | How far structure goes | #1 vs R1 | Removing guards can fail the 1.x coverage ratchet; R1 says that is not a failure. Adding a check for every behaviour fails R116. | Standards Enforcement Coverage in CI enforces the 1.x side. |
-| 5 | Ownership vs grant | #18 vs R18, R104, sign-off rule | Asking before using a granted account of the person follows #18 and breaks "No ability inside a granted role prompts". | Affects daily operator asks. |
 | 6 | Holding a message when origin fails | #93 vs R95, R77 | Hold follows #93 and breaks "reachability to the user fails open". #93 claims precedence only inside 1.x, and the header says an amendment may not override the master. #2682 widened this to Slack and app today. | Newest and growing. |
 | 7 | Red tests and flakes | #37 vs R37 | A push blocked on a flake follows #37 and breaks "the work it interrupted proceeds". | Pre-push hook enforces the 1.x side. |
 | 8 | Losing a peer | #32 vs purpose single-machine rule | Refusing after peer loss follows 2.0 and may break "operate AS IS". 2.0 also says any one-available-machine reading that cannot function is wrong, so it may be internal. Unsure. | High blast radius, low certainty. |
@@ -57,7 +56,7 @@ Following one book would violate the other. Ranked by how direct the clash is an
 
 Lower-confidence conflicts are marked `CONFLICT?` in the map: #22/R22, #34/R34, #42/R41, #54/R53, #64/R63, #73/R70. One conflict sits outside any rule row: the rule-book preamble says "judge moments live only when the moment is irreversible" and the purpose repeats it as a Value, while 1.x says "OUTBOUND leak-gates fail CLOSED" and relies on live MessagingToneGate rules (B16, B18). Unsure how binding the preamble is.
 
-Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so treat the order there as rough.
+Rank 5 (ownership vs grant) was closed by #3219, which brought *Sovereignty* to R18; the other ranks keep their numbers so references to them stay valid. Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so treat the order there as rough.
 
 **One-sided additions** (not conflicts) are every `1x-extra`, `2.0-extra`, `both-extra` and `minor` row below, the three 1.x-only articles, and the 2.0-only tables.
 
@@ -72,6 +71,11 @@ Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so trea
 | 1.x #2305: fractal 80/20 | Added to #72 practice text, with proportion and triage | **Partly.** Fractal 80/20 is in R65. Proportion is loosely in R48. Triage is absent. 1.x keeps audits at zero-new while R65 applies 80/20 to audits, so they differ on the core case (conflict 2). |
 | 2.0 #182: Rule 118 | New rule, one provider is enough | **Yes.** Mirrored by #2380 in #30, not as its own article. |
 | 1.x #2708 and 2.0 #189: One Constitution, and the last rung | New article #94 and R119; #75 and R72 name default-on as the last rung | **Yes, as a pair.** R72 and #75 share the last rung and still differ, as row 75 says. |
+| 1.x #2734 and 2.0 #190: The Person Decides; the Agent Does the Rest | New article #95, a tree node under *Agent Proposes, Operator Approves*, and R120 | **Yes, as a pair.** Same obligation and the same two owed checks. 1.x keeps *Sovereignty*'s "if it's the human's, ask", which is conflict 5 and unchanged here. |
+| 1.x #2812 and 2.0 #191: Attributed Statements Trace to Their Source | New article #96, a tree node under *Truthful Provenance — Speak Only as Yourself*, and R121 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. R89 and article 92 keep their own difference, unchanged here. |
+| 1.x #2812 and 2.0 #192: No Feature May Require a Purchased Service | New article #97, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
+| 1.x #3046 and 2.0 #200: An Instar Agent Always Serves a Team | New article #98, a tree node under *An Instar Agent Is Always a Multi-Machine Entity*, and R123 | **Yes, as a pair.** Same approved wording in both books, except one sentence: 2.0 says it extends #31 and #113, and 1.x names the same thing in its own terms, *An Instar Agent Is Always a Multi-Machine Entity* and its cross-machine posture declaration. Neither is enforced yet. The pull request numbers are added here when the pull requests are opened. |
+| 1.x #3219 and 2.0 #204: the trust journey (changes 1 to 8, approved by Justin 2026-11-15 22:01 PST, telegram 142440) | New article #99, a tree node under *Agent Proposes, Operator Approves*; *Sovereignty* rewritten to the grant-based test; *Intelligence Infers, Keywords Only Guard* names what an approval covered. In 2.0: the role rule retitled with a narrowing condition, a new Value, the sign-off list's see-first item, the suggestions rule, Rules 10 and 104 | **Yes, as a pair.** Same approved wording in both books. Conflict 5 closes; row 18 is aligned. Neither is enforced yet. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -98,12 +102,12 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 15 | The Agent Is Always Reachable — A Guaranteed Reachability Floor | 15 | differs | 1x-extra | Resource-denial notice and never-dark heartbeat are 1.x only. | 1.x: "emits ONE clear, plain-English user notice"<br>2.0: "At least one live session must always exist that resource limits can never deny" |
 | 16 | Name the Gravity Wells | 16 | differs | minor | Same duty, but only 1.x holds an actual list; R16 lists none, and #2380 added a well there only. | 1.x: "deferral-to-the-cadence"<br>2.0: "The list's existence is checkable." |
 | 17 | Architectural Agency in the Gap | 17 | aligned | — | — | — |
-| 18 | Sovereignty — "I own what is mine" | 18 (104, purpose role + sign-off rules) | differs | CONFLICT | Different test: 1.x asks "is this mine, else ask"; 2.0 asks "is it inside a grant, else refuse", and granted accounts of the person need no asking. | 1.x: "If yes, act; if it's the human's, ask."<br>2.0: "including through the accounts granted with it, without asking again"; "Outside every grant it refuses and names the grant needed" |
+| 18 | Sovereignty — "I own what is mine" | 18 (104, purpose role + sign-off rules) | aligned | — | — | — |
 | 19 | The Right to Stand Ground | 19 | aligned | — | — | — |
 | 20 | A Wall Is a Hypothesis | 20 (99 extends) | aligned | — | — | — |
 | 21 | Never a False Blocker | 21 | differs | minor | 1.x has a closed list that an escalation must cite (adds CAPTCHA, grant-only accounts, value judgments); 2.0 gives three examples. Unsure whether 2.0 meant them as closed. | 1.x: "the closed set an escalation must name an item from"<br>2.0: "a password only they know, a payment, a physical action" |
 | 22 | The Stop Reason Is the Work | 22 (102 partial) | differs | CONFLICT? | 1.x forbids the stop (derive, proceed, flag); the R22 check accepts filing the item and exiting. R97 points the other way, so 2.0 may not mean it. Unsure. | 1.x: "write it down, proceed under it, and flag it for ratification"<br>2.0: "must file it as a work item before it exits" |
-| 23 | Self-Unblock Before Escalating | 23 (purpose: not knowing) | differs | 2.0-extra | "Find out and cite the source" is 2.0 only; the named three-rung ladder is 1.x only. | 1.x: "nothing (resolve it yourself) → an approval (a yes/no tap) → an operator-only credential"<br>2.0: "the agent finds out before answering and cites the source" |
+| 23 | Self-Unblock Before Escalating | 23 (purpose: not knowing) | differs | 2.0-extra | "Find out and cite the source" is 2.0 only; the named three-rung ladder is 1.x only. 1.x rung floor asks for every irreversible action; the master's sign-off list asks only outside the role. Unsure. | 1.x: "nothing (resolve it yourself) → an approval (a yes/no tap) → an operator-only credential"<br>2.0: "the agent finds out before answering and cites the source" |
 | 24 | Distrust Temporary Success — A Recurrence Is a Root Cause | 24 | aligned | — | — | — |
 | 25 | Remove What Demands Attention. Do Not Supply More Attention. | 25 | aligned | — | — | — |
 | 26 | Verify the State, Not Its Symbol | 26 | differs | 1x-extra | The 2026-08-06 duty on a check's account of itself is 1.x only. | 1.x: "(a) the condition it evaluates and (b) the claim its result will be read as certifying"<br>2.0: "A detector must confirm the real state of the world" |
@@ -119,7 +123,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 36 | Scrape/Parser Fixture Realness — feed the parser the REAL bytes | 36 | aligned | — | — | — |
 | 37 | Zero-Failure | 37 | differs | CONFLICT | 1.x deliberately refuses a gate-scoped reading and blocks the push on red; 2.0 scopes to main and merge, permits branch red, and lets interrupted work proceed past a quarantined flake. | 1.x: "A weaker wording ("green at every gate") would restore exactly the loophole"; "do not push or release the change without a verified green suite"<br>2.0: "red-then-green on a branch is fine"; "quarantined and a defect is filed, and the work it interrupted proceeds" |
 | 38 | LLM-Supervised Execution | 38 | differs | minor | 1.x says critical is author-decided; 2.0 glossary defines it. | 1.x: "a pipeline is critical when its author says so"<br>2.0: "The glossary defines critical for verification." |
-| 39 | Observability — you can't tune what you can't see | 39 | aligned | — | — | — |
+| 39 | Observability — you can't tune what you can't see | 39 | aligned | — | Outcome/baseline, repeated evaluation, visual history, material components and accountable review sharpened together in topic 139374; universal enforcement remains an implementation obligation. | — |
 | 40 | Expected Capacity Enforcement Is an Outcome, Not a Degradation | 40 | aligned | — | — | — |
 | 41 | Never Silently Cut the Data a Decision Depends On | NONE | 1.x-only | — | Proposed amendment, pending 1.x ratification. Nearest 2.0 is purpose Rule 2, which does not carry the derive/disclose/refuse duties. | — |
 | 42 | Observable Intelligence — No Autonomous LLM Action Is Unauditable | 41, 58 | differs | CONFLICT? | 1.x records metadata and is still pending ratification; the rule book calls full input/output an open decision while part 7 already requires it. Unsure which is current in 2.0. | 1.x: "the component, the resolved provider + model, the outcome"<br>2.0: "yes, the doorway keeps the full input and output by default"; "full input means the actual submitted input" |
@@ -155,7 +159,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 72 | Occam's Razor — Simplest Robust Route | 116 (65) | differs | 1x-extra | Rule text aligned. #2305 practice text adds proportion and on-the-spot triage (1.x only) and exempts audits from 80/20, which R65 does not. | 1.x: "A problem found during work is triaged on the spot"; "Audit-shaped sweeps keep the zero-new bar"<br>2.0: "Choose the simplest route that delivers the required behavior" |
 | 73 | Bug-Fix Evidence Bar (verify before you claim) | 70 | differs | CONFLICT? | 1.x always requires reproduction and rejects unit tests; 2.0 sets evidence by bug class. Could conflict for a class whose bar is a test. Unsure. | 1.x: "the original failure has been reproduced and verified to stop. Unit tests are not evidence."<br>2.0: "A fix carries evidence of the kind its class of bug requires" |
 | 74 | No Deferrals | 71 | aligned | — | — | — |
-| 75 | Maturation Path — Test Agent → Development Agent → Fleet | 72 | differs | 1x-extra | Shared since #2708 and instar-2 #189: the three-rung ladder, default-on for the fleet as the last rung, and thresholds that raise and never flip. 1.x alone has the feature ladder and the build failure on a switched-off flag with no entry (2.0's equivalent needs building), two independent readings before the review opens a fleet-default change, the reviewer-independence terms, and the ban on per-agent allowlists. 1.x states the *User-Facing Fixes Ship Live* exit in this article; 2.0 holds its exemption in R76, not in R72's sentence. | R72: "1.x holds the thresholds in its feature ladder and fails the build on a switched-off flag with no entry; 2.0's equivalent needs building." |
+| 75 | Maturation Path — Test Agent → Development Agent → Fleet | 72 | differs | 1x-extra | Shared since #2708 and instar-2 #189: the three-rung ladder, default-on for the fleet as the last rung, and thresholds that raise and never flip. 1.x alone has the feature ladder and the build failure on a switched-off flag with no entry (2.0's equivalent needs building), two independent readings before the review opens a fleet-default change, the reviewer-independence terms, the ban on per-agent allowlists, and clause (h) from #2872 (each rung names an owner and a review-due date, and the carriers that re-surface a stalled rung are proven awake by a positive control before the clock starts; both halves are named as unenforced: the dated-owner half under the clause (c)/(d) countdown, the proven-awake half under its own, both dated 2026-12-21). 1.x states the *User-Facing Fixes Ship Live* exit in this article; 2.0 holds its exemption in R76, not in R72's sentence. | R72: "1.x holds the thresholds in its feature ladder and fails the build on a switched-off flag with no entry; 2.0's equivalent needs building." |
 | 76 | A Dark Feature Guards Nothing | 73 | differs | 1x-extra | Incident-forced decision, recorded acceptance and mandatory postmortem question are 1.x only. | 1.x: "every postmortem must answer, as a mandatory section"<br>2.0: "It must have a date to graduate or be called what it is." |
 | 77 | Side-Effects Review Gate | 74 | aligned | — | — | — |
 | 78 | Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One | 75 | aligned | — | — | — |
@@ -175,6 +179,12 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 92 | Truthful Provenance — Speak Only as Yourself | 89 | differs | 2.0-extra | 1.x governs messages delivered into an agent; 2.0 covers every message and requires automatic signing. | 1.x: "Every message delivered into an agent carries an identity"<br>2.0: "Outbound messages carry signed provenance." |
 | 93 | Telegram Message Origin Is Mandatory; Its Display Is Optional | NONE | 1.x-only | — | Proposed amendment. Nearest is R89 and part 8 attributable reply facts. Widened to every platform by #2682. See conflict 6. | — |
 | 94 | One Constitution, Two Books Aligned | 119 | aligned | — | — | — |
+| 95 | The Person Decides; the Agent Does the Rest | 120 | aligned | — | — | — |
+| 96 | Attributed Statements Trace to Their Source | 121 | aligned | — | — | — |
+| 97 | No Feature May Require a Purchased Service | 122 | aligned | — | — | — |
+| 98 | An Instar Agent Always Serves a Team | 123 | aligned | — | — | — |
+| 99 | Security Fixes Keep the Experience Whole | — | 1.x-only | — | — | A security-program article (operator approval telegram 141385, 2026-11-15), a child of *The User Experience Is the Product*. No 2.0 rule-book counterpart. |
+| 100 | Trust Is Earned by Work and Granted Only by the Person | 104 (purpose role + suggestions rules) | aligned | — | — | — |
 
 ## 6. 2.0 rule rows with no 1.x article
 
@@ -195,7 +205,6 @@ Closest neighbours are named where they exist. R102 is not listed because #22 pa
 | 100 | A Secret Is Stored Before It Is Spent | 2.0-only | Secret Drop appears in 1.x as an example, not an obligation. |
 | 101 | Hooks Are Never Skipped Silently | 2.0-only | No --no-verify text in the registry. |
 | 103 | Boundaries Come From Governance, Not Self-Declaration | 2.0-only | Would apply to 1.x-only refusals such as #70. |
-| 104 | Every Authorization Is a Candidate Standing Grant | 2.0-only | Pulls against #18 (conflict 5). |
 | 105 | Channel Parity | 2.0-only | #63 touches Telegram AND Slack only; no register. |
 | 106 | A Link Handed to a Human Works | 2.0-only | No localhost or link rule in the registry. |
 | 107 | Each Gate Has Its Own Bar | 2.0-only | — |
@@ -218,13 +227,13 @@ Closest neighbours are named where they exist. R102 is not listed because #22 pa
 | a design question this document cannot decide is a gap | partial: #22, #50 | Same instinct, different outlet: amendment rather than "derive and proceed". Unsure. |
 | the agent never administers its own safeguards | 2.0-only | #85 display integrity is adjacent. |
 | least revelation | 2.0-only | May constrain #93 visible machine/model fields in groups. Unsure. |
-| a role is granted once, at onboarding | 2.0-only | Pulls against #18. |
+| a role starts at onboarding and grows only by the person's grant | partial: #99 | #18 follows the grant-based test since #3219. |
 | an irreversible act follows its durable cause | 2.0-only | — |
 | a single-machine installation must be fully functional | partial: #32 Amendment 1 | 1.x speaks of information, 2.0 of function. |
 | a single-machine installation is a supported deployment shape | 2.0-only | Replication-demand clause is the conflict 8 text. |
 | ordinary bounded operations retain their whole cause at least locally | 2.0-only | — |
-| automatic suggestions never widen themselves | 2.0-only | — |
-| sign-off is kept for a short, fixed list | 2.0-only | Pulls against #18. Different question from #21 (blockers, not effects). |
+| automatic suggestions never widen themselves | partial: #99 | — |
+| sign-off is kept for a short, fixed list | 2.0-only | Different question from #21 (blockers, not effects). |
 | Rule 1: no rule ships without the check that holds it | 2.0-only | 1.x "Judgment-bound" and "UNENFORCED SUB-OBLIGATION" labels address this differently. |
 | Rule 2: nothing that mattered is silently lost | partial: #7, #8, #41 | No detector-per-state duty in 1.x. |
 | Rule 3: no claim of done without evidence | partial: #63, #73 | "A person used it" is 2.0 only. |

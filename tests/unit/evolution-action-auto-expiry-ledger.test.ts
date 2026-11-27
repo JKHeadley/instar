@@ -119,10 +119,12 @@ describe('evolution action auto-expiry (CMT-1118)', () => {
       expect(ledger(dir)[0].items[0].applied).toBe(false);
     });
 
-    it('a damaged archive does not stop new actions', () => {
+    it('a damaged archive refuses allocation rather than reusing a historical ID', () => {
       const { dir, evo } = setup([], false);
       fs.writeFileSync(archivePath(dir), '{ not json');
-      expect(evo.addAction({ title: 'new', description: 'd' }).id).toBe('ACT-001');
+      expect(() => evo.addAction({ title: 'new', description: 'd' })).toThrow();
+      expect(evo.listActions()).toEqual([]);
+      expect(fs.readFileSync(archivePath(dir), 'utf8')).toBe('{ not json');
     });
 
     it('a held row is skipped until the hold clears', () => {

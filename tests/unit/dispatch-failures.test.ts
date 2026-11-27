@@ -488,6 +488,8 @@ describe('DispatchManager — concurrent dispatch checks', () => {
       };
     });
 
+    // An earlier poll happened: a first poll only records history (SEC-153).
+    fs.writeFileSync(dispatchFile.replace('.json', '-last-check.json'), JSON.stringify({ lastCheck: '2026-01-01T00:00:00.000Z' }));
     const manager = new DispatchManager({
       enabled: true,
       dispatchUrl: 'https://example.com/dispatches',

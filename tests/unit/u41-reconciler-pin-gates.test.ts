@@ -326,3 +326,76 @@ describe('pinStateOf — the verified placement-read state (§2D)', () => {
     } finally { rig.cleanup(); }
   });
 });
+
+describe('a pin on a Slack conversation never moves it (slack-conversations-stay-with-connection §2.1)', () => {
+  it('a stale or replicated Slack pin: no transfer, claim or adoption; counted as skipped', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, 'C0ABC123');
+      rig.pins.set('C0ABC123', PEER); // a pin left by a move tried before the fix
+      rig.pins.set('D0XYZ789:1730000000.000100', SELF); // a thread pinned to me with no record: would adopt
+      const rep = rig.tick();
+      expect(rep.transfers).toBe(0);
+      expect(rep.adoptions).toBe(0);
+      expect(rep.skippedSlackPins).toBe(2);
+      expect(rig.reg.read('C0ABC123')?.status).toBe('active');
+      expect(rig.reg.read('C0ABC123')?.ownerMachineId).toBe(SELF);
+      expect(rig.reg.read('D0XYZ789:1730000000.000100')).toBeNull();
+      // A Telegram topic with the same pin still moves.
+      ownActive(rig, '700');
+      rig.pins.set('700', PEER);
+      expect(rig.tick().transfers).toBe(1);
+    } finally { rig.cleanup(); }
+  });
+});
+
+describe('a Slack conversation caught mid-transfer goes back to its owner (slack-conversations-stay-with-connection §2.1)', () => {
+  it('the owner aborts it at once; no machine claims it', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, 'C0ABC123');
+      expect(rig.reg.cas({ type: 'transfer', to: PEER }, { sessionKey: 'C0ABC123', sender: SELF, nonce: 't-1' }).ok).toBe(true);
+      expect(rig.reg.read('C0ABC123')?.status).toBe('transferring');
+      const rep = rig.tick();
+      expect(rep.aborts).toBe(1);
+      expect(rep.claims).toBe(0);
+      expect(rig.reg.read('C0ABC123')).toMatchObject({ status: 'active', ownerMachineId: SELF });
+    } finally { rig.cleanup(); }
+  });
+  it('a target never claims a Slack conversation sent to it', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, 'C0ABC123', PEER);
+      expect(rig.reg.cas({ type: 'transfer', to: SELF }, { sessionKey: 'C0ABC123', sender: PEER, nonce: 't-2' }).ok).toBe(true);
+      const rep = rig.tick();
+      expect(rep.claims).toBe(0);
+      expect(rig.reg.read('C0ABC123')?.ownerMachineId).toBe(PEER);
+    } finally { rig.cleanup(); }
+  });
+});
+
+describe('nothing in the reconciler places an app conversation (app-conversations-in-the-pool §2.2)', () => {
+  const RK = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+  it('a leftover pin never moves one: no transfer, claim or adoption', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, RK);
+      rig.pins.set(RK, PEER);
+      const rep = rig.tick();
+      expect(rep.transfers).toBe(0);
+      expect(rep.examined).toBe(0);
+      expect(rig.reg.read(RK)).toMatchObject({ ownerMachineId: SELF, status: 'active' });
+    } finally { rig.cleanup(); }
+  });
+  it('a `transferring` record is left to its own owner: never claimed by the target, never aborted here', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, RK, PEER);
+      expect(rig.reg.cas({ type: 'transfer', to: SELF, drain: true }, { sessionKey: RK, sender: PEER, nonce: 't-1' }).ok).toBe(true);
+      const rep = rig.tick();
+      expect(rep.claims).toBe(0);
+      expect(rep.aborts).toBe(0);
+      expect(rig.reg.read(RK)).toMatchObject({ ownerMachineId: PEER, status: 'transferring' });
+    } finally { rig.cleanup(); }
+  });
+});

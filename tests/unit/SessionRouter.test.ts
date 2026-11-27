@@ -166,6 +166,26 @@ describe('SessionRouter.dispatch (§L4)', () => {
     expect(deps.raiseAttention).toHaveBeenCalled();
   });
 
+  it.each(['queued', 'already-queued', 'refused'] as const)(
+    'reports an offline active owner only with durable custody (%s)',
+    async custody => {
+      const reportOfflineOwnerHold = vi.fn();
+      const { router, deps } = makeRouter({
+        resolveOwnership: () => ({ owner: 'm_remote', epoch: 7, status: 'active' }),
+        isMachineAlive: machine => machine !== 'm_remote',
+        queueMessage: () => custody,
+        casClaimOwnership: () => ({ ok: false, epoch: 7 }),
+        reportOfflineOwnerHold,
+      });
+      expect(await router.route(msg({ enqueuedAt: '2026-11-26T04:42:34.000Z' }))).toMatchObject({
+        action: 'queued', detail: 'ownership-contention', acked: custody !== 'refused',
+      });
+      if (custody === 'refused') expect(reportOfflineOwnerHold).not.toHaveBeenCalled();
+      else expect(reportOfflineOwnerHold).toHaveBeenCalledWith('s1', 'm_remote', 7, '2026-11-26T04:42:34.000Z');
+      expect(deps.handleLocally).not.toHaveBeenCalled();
+    },
+  );
+
   it('unowned → CAS LOST → re-read → forward to the winning owner', async () => {
     let n = 0;
     const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);
@@ -327,6 +347,78 @@ describe('SessionRouter — channel-scope threading (placement-platform-workspac
     expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', expect.any(Number));
   });
 
+  describe('an unowned key with a live session on this machine', () => {
+    const cheaperPeer = [cap(SELF, { loadAvg: 9 }), cap('m_remote', { loadAvg: 0 })];
+
+    it('stays here even when a peer is cheaper, and the message is handled here', async () => {
+      const { router, deps } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      const out = await router.route(msg());
+      expect(out).toMatchObject({ action: 'handled-locally', owner: SELF, acked: true });
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', SELF, 0);
+      expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+    });
+    it('confirms the claim at once, so a later Slack or drained message is not queued behind placing', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => true, confirmClaim }, cheaperPeer);
+      await router.route(msg());
+      expect(confirmClaim).toHaveBeenCalledWith('s1', SELF);
+    });
+    it('an ordinary self-placement is not confirmed early', async () => {
+      const confirmClaim = vi.fn();
+      const { router } = makeRouter({ liveLocalSession: () => false, confirmClaim }, [cap(SELF, { loadAvg: 0 }), cap('m_remote', { loadAvg: 9 })]);
+      await router.route(msg());
+      expect(confirmClaim).not.toHaveBeenCalled();
+    });
+    it('a machine that lost the workspace does not keep the session: mandatory checks still hold', async () => {
+      const registry = [
+        cap(SELF, { servesChannels: { slack: { workspaceIds: ['W-other'] } }, loadAvg: 0 }),
+        cap('m_remote', { servesChannels: { slack: { workspaceIds: ['W-live'] } }, loadAvg: 5 }),
+      ];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg({ channel: { platform: 'slack', workspaceId: 'W-live', channelId: 'C1' } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a quota-blocked machine does not keep the session when a peer can take it', async () => {
+      const registry = [cap(SELF, { quotaState: { blocked: true } as MachineCapacity['quotaState'] }), cap('m_remote', { loadAvg: 5 })];
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, registry);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('with no live session, placement still chooses the cheaper peer', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => false }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('a preferred machine wins over the live session: that is a request to move', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => true }, cheaperPeer);
+      await router.route(msg({ topicMetadata: { preferredMachine: 'm_remote', pinned: true } }));
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('does not apply to a dead-owner re-placement', async () => {
+      const live = vi.fn(() => true);
+      const { deps, router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_dead', epoch: 3, status: 'active' }), isMachineAlive: (m) => m !== 'm_dead' }, cheaperPeer);
+      await router.route(msg());
+      expect(live).not.toHaveBeenCalled();
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 3);
+    });
+    it('a key that already has an owner is untouched', async () => {
+      const live = vi.fn(() => true);
+      const { router } = makeRouter({ liveLocalSession: live, resolveOwnership: () => ({ owner: 'm_remote', epoch: 1, status: 'active' }) }, cheaperPeer);
+      expect(await router.route(msg())).toMatchObject({ action: 'forwarded', owner: 'm_remote' });
+      expect(live).not.toHaveBeenCalled();
+    });
+    it('a read error leaves the decision to placement', async () => {
+      const { deps, router } = makeRouter({ liveLocalSession: () => { throw new Error('tmux gone'); } }, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+    it('without the dep, routing is unchanged', async () => {
+      const { deps, router } = makeRouter({}, cheaperPeer);
+      await router.route(msg());
+      expect(deps.casClaimOwnership).toHaveBeenCalledWith('s1', 'm_remote', 0);
+    });
+  });
+
   it('no channel (telegram/shared or legacy) → decide() gets no channel → fail-open (unchanged routing)', async () => {
     const decideSpy = vi.fn(() => ({ chosenMachine: SELF, score: 1, reason: 'least-loaded', outcome: 'placed' as const }));
     const { router } = makeRouter({
@@ -431,5 +523,138 @@ describe('SessionRouter — remote placement reads the spawn ACK', () => {
     const { router } = makeRouter({ spawnOnMachine: async () => ({ messageId: 'evt-1', accepted: 'sender-rejected' as const }), reclaimPlacement }, remoteFirst);
     expect(await router.route(msg())).toMatchObject({ action: 'rejected', detail: 'sender-deauthorized', acked: true });
     expect(reclaimPlacement).not.toHaveBeenCalled();
+  });
+});
+
+describe('routingOnly: a pool stepped down to dark never places', () => {
+  const msg = (over: Partial<InboundMessage> = {}): InboundMessage => ({ sessionKey: '7', messageId: 'm1', payload: 'hi', routingOnly: true, ...over });
+  const owned: OwnershipView = { status: 'active', owner: 'm_remote', epoch: 3 };
+
+  it('reaches a live owner', async () => {
+    const deliverMessage = vi.fn(async (): Promise<DeliverAck> => ({ messageId: 'm1', accepted: 'queued' }));
+    const { router } = makeRouter({ resolveOwnership: () => owned, deliverMessage, isMachineAlive: () => true });
+    expect((await router.route(msg())).action).toBe('forwarded');
+    expect(deliverMessage).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['a dead owner', { resolveOwnership: () => owned, isMachineAlive: () => false }],
+    ['an unowned conversation', {}],
+    ['an owner that stops answering', {
+      resolveOwnership: () => owned, isMachineAlive: () => true,
+      deliverMessage: async (): Promise<DeliverAck> => { throw new Error('down'); },
+    }],
+  ])('%s stays on this machine', async (_name, over) => {
+    const { router, deps } = makeRouter(over as Partial<SessionRouterDeps>);
+    const decide = vi.spyOn(deps.placement, 'decide');
+    const out = await router.route(msg());
+    expect(out.action).toBe('handled-locally');
+    expect(out.detail).toBe('routing-only');
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+    expect(decide).not.toHaveBeenCalled();
+    expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+  });
+  it('takes the record for itself when the owner is gone, or the queue would refuse local delivery', async () => {
+    const confirmClaim = vi.fn();
+    const { router, deps } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => false, confirmClaim });
+    await router.route(msg());
+    expect(deps.casClaimOwnership).toHaveBeenCalledWith('7', SELF, 3);
+    expect(confirmClaim).toHaveBeenCalledWith('7', SELF);
+  });
+  it('an unowned conversation claims nothing', async () => {
+    const { router, deps } = makeRouter();
+    await router.route(msg());
+    expect(deps.casClaimOwnership).not.toHaveBeenCalled();
+  });
+  it('a lost claim keeps the message in custody, never delivered here', async () => {
+    const { router, deps } = makeRouter({
+      resolveOwnership: () => owned, isMachineAlive: () => false,
+      casClaimOwnership: vi.fn(() => ({ ok: false, epoch: 4 })),
+      queueMessage: vi.fn(() => 'queued' as const),
+    });
+    expect(await router.route(msg())).toMatchObject({ action: 'queued', acked: true });
+    expect(deps.handleLocally).not.toHaveBeenCalled();
+  });
+});
+
+// fb-faa9d074-e09: a message waiting on an owner that cannot take it was left to expire unanswered.
+describe('a waiting message whose owner cannot take it is answered here (fb-faa9d074-e09)', () => {
+  const owned: OwnershipView = { status: 'active', owner: 'm_remote', epoch: 3 };
+
+  it('the forced attempt takes over from a live owner without durable receive', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router, deps } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => false, takeOverFromPeer });
+    expect(await router.forceReplace(msg({ sessionKey: '7' }))).toBe('local');
+    expect(takeOverFromPeer).toHaveBeenCalledWith('7', 'm_remote');
+    expect(deps.spawnOnMachine).not.toHaveBeenCalled();
+  });
+
+  it('a live owner WITH durable receive is never taken over (normal forced re-place)', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => true, takeOverFromPeer });
+    await router.forceReplace(msg({ sessionKey: '7' }));
+    expect(takeOverFromPeer).not.toHaveBeenCalled();
+  });
+
+  it('an unknown receive capability is never taken over', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => null, takeOverFromPeer });
+    await router.forceReplace(msg({ sessionKey: '7' }));
+    expect(takeOverFromPeer).not.toHaveBeenCalled();
+  });
+
+  it('a refused takeover falls back to the normal forced re-place', async () => {
+    const { router, deps } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => false, takeOverFromPeer: () => false });
+    const decide = vi.spyOn(deps.placement, 'decide');
+    await router.forceReplace(msg({ sessionKey: '7' }));
+    expect(decide).toHaveBeenCalled();
+  });
+
+  it('a live path message for a no-receive owner still waits in custody (no immediate steal)', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => false, takeOverFromPeer, queueMessage: vi.fn(() => 'queued' as const) });
+    expect(await router.route(msg({ sessionKey: '7' }))).toMatchObject({ action: 'queued', detail: 'owner-lacks-ws11-receive' });
+    expect(takeOverFromPeer).not.toHaveBeenCalled();
+  });
+
+  it('routing-only: a gone owner whose record a plain claim cannot move is taken over, not left to expire', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const confirmClaim = vi.fn();
+    const { router, deps } = makeRouter({
+      resolveOwnership: () => owned, isMachineAlive: () => false,
+      casClaimOwnership: vi.fn(() => ({ ok: false, epoch: 3 })), takeOverFromPeer, confirmClaim,
+    });
+    const out = await router.route(msg({ sessionKey: '7', routingOnly: true }));
+    expect(out).toMatchObject({ action: 'handled-locally', detail: 'routing-only' });
+    expect(takeOverFromPeer).toHaveBeenCalledWith('7', 'm_remote');
+    expect(confirmClaim).not.toHaveBeenCalled();
+    expect(deps.handleLocally).toHaveBeenCalledOnce();
+  });
+
+  it('a throwing takeover keeps the message in custody', async () => {
+    const { router, deps } = makeRouter({
+      resolveOwnership: () => owned, isMachineAlive: () => false,
+      casClaimOwnership: vi.fn(() => ({ ok: false, epoch: 3 })),
+      takeOverFromPeer: () => { throw new Error('registry down'); },
+      queueMessage: vi.fn(() => 'queued' as const),
+    });
+    expect(await router.route(msg({ sessionKey: '7', routingOnly: true }))).toMatchObject({ action: 'queued', detail: 'routing-only-claim-lost' });
+    expect(deps.handleLocally).not.toHaveBeenCalled();
+  });
+});
+
+describe('the forced takeover keeps placement policy (fb-faa9d074-e09 second-pass)', () => {
+  const owned: OwnershipView = { status: 'active', owner: 'm_remote', epoch: 3 };
+  it('a hard pin to the owner is never overridden by the takeover', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => false, takeOverFromPeer });
+    await router.forceReplace(msg({ sessionKey: '7', topicMetadata: { preferredMachine: 'm_remote', pinned: true } }));
+    expect(takeOverFromPeer).not.toHaveBeenCalled();
+  });
+  it('a machine that would refuse the session (offline here) never takes over', async () => {
+    const takeOverFromPeer = vi.fn(() => true);
+    const { router } = makeRouter({ resolveOwnership: () => owned, isMachineAlive: () => true, ownerSupportsForward: () => false, takeOverFromPeer },
+      [cap(SELF, { online: false }), cap('m_remote')]);
+    await router.forceReplace(msg({ sessionKey: '7' }));
+    expect(takeOverFromPeer).not.toHaveBeenCalled();
   });
 });

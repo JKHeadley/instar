@@ -130,6 +130,21 @@ describe('Local Verify fail-fast awareness', () => {
   });
 });
 
+describe('Local Verify waiting-list awareness (fb-7fde7f49-8ee)', () => {
+  it('the template and the migration line name the list, the audit row and the read surface; appended once', async () => {
+    const { LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    for (const text of [md, LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE]) {
+      for (const k of ['Local Verify waiting list', 'queue-full-waiting', 'firstRefusedAt', '`waiting`']) expect(text).toContain(k);
+    }
+    const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify waiting-list awareness');
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE);
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify waiting-list awareness');
+  });
+});
+
 describe('Local Verify balanced-shards awareness', () => {
   it('the template and the migration line name the setting and the rollback', async () => {
     const { LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
@@ -145,6 +160,17 @@ describe('Local Verify balanced-shards awareness', () => {
     expect(runMigrateClaudeMd(m).upgraded).toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
     expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE);
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify balanced-shards awareness');
+  });
+  it('refreshes the old shard limits in an existing generated agent guide once', () => {
+    const oldGuide = generateClaudeMd('fixture', 'Fixture', 4042, true)
+      .replace('integration 1..5 and e2e 1..4', '1..4 each');
+    const { projectDir, claudeMd } = project(oldGuide);
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    const receipt = 'CLAUDE.md: updated Local Verify integration shard limit';
+
+    expect(runMigrateClaudeMd(migrator).upgraded).toContain(receipt);
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain('integration 1..5 and e2e 1..4');
+    expect(runMigrateClaudeMd(migrator).upgraded).not.toContain(receipt);
   });
 });
 

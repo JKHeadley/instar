@@ -36,6 +36,8 @@ export function isComponentCategory(v: unknown): v is ComponentCategory {
 export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // ── Sentinels (background watchers that make small judgment calls) ──
   InputDetector: 'sentinel',
+  ConversationSilenceJudge: 'sentinel', // never-silent conversations: why a conversation went quiet (docs/specs/never-silent-conversation.md §3.2)
+  ChiefOfStaffLoop: 'sentinel', // Chief of Staff check-in judge (docs/specs/chief-of-staff-topic.md §2.5)
   InputGuard: 'sentinel',
   SessionActivitySentinel: 'sentinel',
   StallTriageNurse: 'sentinel',
@@ -62,11 +64,14 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   PromptGate: 'gate',
   AutoApprover: 'gate',
   IntegrationGate: 'gate',
+  OrgPolicyJudge: 'gate', // an organization's never rules checked against a joined agent's action (docs/specs/org-never-actions.md)
   ExternalOperationGate: 'gate',
   WarrantsReplyGate: 'gate',
   UnjustifiedStopGate: 'gate',
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
+  WorkBoardSpecApprovalJudge: 'gate', // B25: does an agent-written Work Board card ask approval of a spec/design without its constitution check result?
+  AttributionJudge: 'gate', // attribution-paper-trail: is this credited to a person, and do the logged words support it?
   CoherenceReviewer: 'gate',
   // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
   // message + recent conversation, replacing the anchored regexes that swallowed
@@ -105,6 +110,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // OFF Claude by default (Provider-Fallback Default Policy) — awareness-only
   // background summarization should never spend Anthropic quota.
   DashboardInsightEngine: 'reflector',
+  // Conversations suggestion step (docs/specs/conversation-graph-suggestions.md): one
+  // bounded grouping call per build; advice only, the owner accepts or rejects each.
+  ConversationGraphSuggestions: 'reflector',
 
   // ── Jobs (scheduled work) ──
   PipeSessionSpawner: 'job',
@@ -134,6 +142,10 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   GoalPriorityExtractor: 'reflector',    // extract verified operator priorities at intake
   AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
+  ContextLayerChunk: 'reflector',        // context-budget chunk / range summaries from an archived transcript span
+  FoldAudit: 'reflector',                // context-budget practice fold: checks a session's handoff note (background; family-pinned)
+  FoldProbe: 'reflector',                // context-budget practice fold: writes and grades the held-out quiz (family-pinned)
+  ContextLayerH3: 'reflector',           // context-budget H3 long-term view from a bounded chunk / C2 selection
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
   openConversationBrief: 'reflector',    // generate an A2A conversation brief
@@ -143,6 +155,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
+  'skillLearning.drafter': 'sentinel',   // skill-learning arbiter + drafter (capable tier; docs/specs/skill-learning-sentinel.md §3.3-3.5)
+  'skillLearning.reviewer': 'sentinel',  // skill-learning cross-family v1 reviewer (§3.5 table)
+  'skillLearning.classifier': 'reflector', // skill-learning sentinel: key operator requests + outcomeOfPrevRun (§3.1/§3.6)
 };
 
 /**

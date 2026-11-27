@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-04T21:23:13.004Z",
+  "slug": "session-pool-keep-and-recall",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 199,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/SessionRouter.ts",
+      "src/core/topicHistoryPull.ts"
+    ],
+    "addedLines": 184,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-13T08:28:52.498Z",
+  "slug": "sync-op-marker-cheap-mirror",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/InFlightSyncOpMarker.ts"
+    ],
+    "addedLines": 64,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

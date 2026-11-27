@@ -131,6 +131,7 @@ export function costRow(r) {
   if (r.notLiveYet) bits.push('route not open yet');
   return {
     key: `cost:${r.door}|${r.modelId}`, type: 'cost', main: `${modelWord(r.modelId)} · ${doorWord(r.door)}`, sub: bits.join(' · '),
+    // warning-path: row
     end: basis === 'unpriced' ? 'unpriced' : fmtUsd(usd), tone: basis === 'unpriced' ? 'unknown' : r.priceStale ? 'attn' : null,
     basis, usd: basis === 'unpriced' ? null : Number(usd) || 0, tokens, unpriced, record: r,
   };
@@ -195,6 +196,7 @@ export function buildLimits(capsRes, statusRes) {
       out.caps.rows = keys.filter((k) => k && typeof k === 'object').map((k) => {
         const word = routeStatusWord(k);
         return { key: `cap:${k.keyRef}`, type: 'cap', main: `${doorWord(k.provider)} · ${doorWord(k.door)}`, sub: committedLine(k), end: word, word,
+          // warning-path: row
           tone: word === 'Frozen' ? 'attn' : word === 'Open' ? null : 'unknown', record: k };
       });
       out.caps.storeError = typeof capsRes.data.storeError === 'string' ? capsRes.data.storeError : null;
@@ -216,6 +218,7 @@ export function buildLimits(capsRes, statusRes) {
     out.controls = { state: 'ok', reason: null, word, sentence: `${sentence}${machine ? ` (held by ${machine})` : ''}.`, machine, lifecycleState: s.lifecycleState || null, enforcementReady: s.enforcementReady === true, anyKeyFrozen: s.anyKeyFrozen === true, configEnabled: Boolean(s.enableSources && (s.enableSources.state === 'config-enabled' || s.enableSources.state === 'both-enabled')) };
   }
   const open = out.caps.rows.filter((r) => r.word === 'Open').length;
+  // warning-path: row
   const frozen = out.caps.rows.filter((r) => r.word === 'Frozen').length;
   out.openRoutes = open; out.frozenRoutes = frozen;
   out.routesSentence = out.caps.state !== 'ok' ? null : out.caps.rows.length === 0 ? 'No paid route is set up.' : open === 0 && frozen === 0 ? 'No paid route is open.' : [open ? `${open} paid ${open === 1 ? 'route is' : 'routes are'} open` : null, frozen ? `${frozen} frozen` : null].filter(Boolean).join('; ') + '.';
@@ -241,6 +244,7 @@ export function checkRow(f) {
   if (models.length) bits.push(`on ${models.join(', ')}`);
   return {
     key: `check:${f.feature}`, type: 'check', feature: f.feature, main: checkWord(f.feature), sub: bits.join(' · '), end: tokens ? `${fmtTokens(tokens)} tokens` : 'no tokens recorded',
+    // warning-path: row
     tone: errors > 0 ? 'bad' : skipShare >= 0.5 ? 'unknown' : null, real, calls, errors, shed, fired, noop, unclassified, tokens, skipShare,
     segments: [['acted', fired], ['quiet', noop], ['other', unclassified], ['skipped', shed], ['failed', errors]].filter(([, n]) => n > 0),
     // Order: anything that failed first (most failures first), then the checks that acted most, then volume.
@@ -425,11 +429,14 @@ export function buildCostsPage(res, now = Date.now(), { window = DEFAULT_WINDOW 
   subParts.push('Figures are this machine’s own ledger.');
 
   const facts = [];
+  // warning-path: pageHead
   if (recorded.state === 'ok') facts.push({ n: fmtUsd(recorded.netUsd), label: `recorded cost${recorded.bases.length ? ' · ' + recorded.bases.join(', ') : ''}`, tone: recorded.netUsd > 0 ? 'attn' : null });
   else facts.push({ n: recorded.state === 'off' ? 'off' : 'Can’t tell', label: 'recorded cost', tone: 'unknown' });
   if (recorded.state === 'ok' && recorded.unpricedTokens > 0) facts.push({ n: fmtTokens(recorded.unpricedTokens), label: 'tokens unpriced', tone: 'unknown' });
+  // warning-path: pageHead
   if (checks.state === 'ok') facts.push({ n: checks.real.toLocaleString('en-US'), label: `background checks${checks.errors ? ` · ${checks.errors} failed` : ''}`, tone: checks.errors ? 'attn' : null });
   else facts.push({ n: checks.state === 'off' ? 'off' : 'Can’t tell', label: 'background checks', tone: 'unknown' });
+  // warning-path: pageHead
   facts.push({ n: limits.controls.word || 'Can’t tell', label: 'limits', tone: limits.controls.state !== 'ok' ? 'unknown' : limits.controls.anyKeyFrozen ? 'attn' : null });
 
   const tone = recorded.state === 'failed' ? 'attn' : (limits.controls.anyKeyFrozen || (checks.state === 'ok' && checks.errors > 0)) ? 'attn' : recorded.state === 'off' ? 'muted' : 'ok';

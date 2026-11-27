@@ -42,13 +42,26 @@ on:
 # avoidable waste for a footgun. Scoping by event means push runs supersede push
 # runs (the 126-stale-run problem) while a review run can never cancel them.
 #
-# KNOWN AND DELIBERATELY NOT FIXED HERE: a review event therefore still starts its
-# own run, so approving a pull request costs a duplicate 13-job run. Narrowing that
-# needs job-level `if:` on the heavy jobs, and a job skipped by `if:` reports as
-# SUCCESS to required status checks — which would let a review-triggered run paint a
-# pull request green without the tests having run on that commit. That is a safety
-# hole, so it is a separate, carefully-designed change rather than a line slipped in
-# alongside a capacity fix.
+# A review event still starts its own run. Since 2026-11-21 (the block below) the
+# heavy jobs skip on `pull_request_review` as well as `pull_request`, so that run is
+# the fast checks only, and a skipped job's "success" satisfies nothing: none of the
+# heavy jobs is a required status check (the main ruleset requires only
+# `instar/local-verify`), so a review-triggered run cannot paint a pull request green.
+#
+# PULL REQUESTS SKIP THE HEAVY JOBS (2026-11-21). Local Verify runs the full unit,
+# integration and e2e suite on our own machines before anything merges, and the
+# ruleset on main requires only `instar/local-verify`. Running the same suite here
+# on every pull request asked GitHub for about twenty jobs per push against an
+# account that runs about four at once, so the publish workflow waited hours for a
+# runner. The unit shards, integration, e2e and, through `needs`, contract and build
+# now run on push to main and on workflow_dispatch only. Pull requests keep native
+# desktop packaging and the fast checks Local Verify does not cover: Type Check,
+# Repo Invariants, Docs Coverage, Cartographer Freshness and Standards Enforcement
+# Coverage. Native package checks remain because suite results alone do not prove
+# platform compilation, packaging or Windows-local transport.
+# A job skipped by `if:` reports as success; that is safe here only because none of
+# these jobs is a required status check. To restore the old behaviour, revert this
+# commit.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   # NEVER cancel main's post-merge run: that is the release gate and its record is
@@ -67,6 +80,8 @@ jobs:
   desktop-windows-package:
     name: Desktop Windows package
     runs-on: windows-latest
+    # Native packaging checks add coverage beyond the Mac test line's test suites.
+    if: github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +171,8 @@ jobs:
   desktop-macos-package:
     name: Desktop Mac package
     runs-on: macos-latest
+    # Native packaging checks add coverage beyond the Mac test line's test suites.
+    if: github.event_name != 'pull_request_review'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -432,6 +449,9 @@ jobs:
   unit:
     name: Unit Tests (node ${{ matrix.node-version }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 60
     strategy:
       # Don't cancel other shards if one fails — we want the full picture.
@@ -452,12 +472,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # vitest shard syntax: --shard=<index>/<total>. Each runner executes a
       # deterministic disjoint slice of the test files; union is the full suite.
@@ -482,7 +497,13 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
+    # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
+    # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
+    # multi-machine graph suites. Same bound as the E2E job.
+    timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. Both
     # results remain required branch checks before a PR can merge.
     steps:
@@ -492,12 +513,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       - run: npm run test:integration
       - name: Working-tree integrity check
@@ -512,6 +528,9 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
+    # Pull requests are tested in full by Local Verify (the only required check);
+    # this job runs on push to main and on workflow_dispatch. See the note above `concurrency`.
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
     timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. This
     # removes a serial CI phase without weakening the merge gate.
@@ -526,12 +545,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Ensure tmux
-        run: |
-          if ! command -v tmux >/dev/null 2>&1; then
-            timeout --kill-after=10s 180s sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
-            timeout --kill-after=10s 180s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
-          fi
-          tmux -V
+        run: bash .github/scripts/setup-ci-tmux.sh
       - run: npm ci
       # E2E subprocesses exercise the compiled CLI and registry in this checkout.
       # The separate build job has its own filesystem and cannot supply dist/.

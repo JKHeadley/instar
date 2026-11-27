@@ -16,6 +16,7 @@
  * Canary flag: --disk-free-override <percent>.
  */
 
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -182,7 +183,7 @@ function diskFreePercent() {
     if (!Number.isFinite(v) || v < 0 || v > 100) finish('failed', 'disk-free-override-invalid');
     return v;
   }
-  const stateDir = fs.existsSync('.instar') ? path.resolve('.instar') : process.cwd();
+  const stateDir = process.env.INSTAR_STATE_DIR || (fs.existsSync('.instar') ? path.resolve('.instar') : process.cwd());
   try {
     const s = fs.statfsSync(stateDir);
     if (!(s.blocks > 0)) return null;
@@ -191,6 +192,17 @@ function diskFreePercent() {
     // @silent-fallback-ok: reported below as a failed run (disk-unreadable)
     return null;
   }
+}
+
+function storageMachineName() {
+  try {
+    const root = process.env.INSTAR_STATE_DIR || path.resolve('.instar');
+    const { machineId } = JSON.parse(fs.readFileSync(path.join(root, 'machine', 'identity.json'), 'utf8'));
+    const { machines } = JSON.parse(fs.readFileSync(path.join(root, 'machines', 'registry.json'), 'utf8'));
+    const name = machines[machineId]?.nickname;
+    if (typeof name === 'string' && name.trim() && name !== machineId) return name.trim();
+  } catch { /* @silent-fallback-ok — a failing disk may also prevent identity reads; use the host name. */ }
+  return os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim() || os.hostname();
 }
 
 async function main() {
@@ -202,10 +214,10 @@ async function main() {
   if (!isObject(h.sessions)) finish('failed', 'health-unauthenticated: /health answered without its authenticated fields');
 
   const freePct = diskFreePercent();
-  if (freePct === null) finish('failed', 'disk-unreadable: could not read free space on the state volume');
+  if (freePct === null) finish('failed', `disk-unreadable: could not read free space on ${storageMachineName()}'s state volume`);
 
   const kinds = [];
-  const freeText = `${freePct.toFixed(1)}% free on the agent volume`;
+  const freeText = `${freePct.toFixed(1)}% free on ${storageMachineName()}`;
   if (freePct < 5) { anomaly('disk-critical', 3, freeText); kinds.push('disk-critical'); }
   else if (freePct < 10) { anomaly('disk-low', 2, freeText); kinds.push('disk-low'); }
 

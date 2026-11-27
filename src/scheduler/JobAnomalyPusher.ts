@@ -112,8 +112,9 @@ export interface JobAnomalyPusherDeps {
     author?: OriginAutomationAuthor, logicalSendId?: string) => Promise<ReplyResponseLike>;
   /** The deterministic topic-send path the cold-start lifeline notice uses. Resolves with the message id. */
   sendDeterministicTopic: (topicId: number, text: string) => Promise<{ messageId?: number } | null | undefined>;
-  /** PrivateViewer.create → the new view's id. Absent ⇒ no link. */
-  createPrivateView?: (title: string, markdown: string) => { id: string } | null;
+  /** PrivateViewer.create → the new view's id. Absent ⇒ no link. While documents replace pages
+   *  (instar-document-viewer §3.9b) it makes a document in the job's topic and returns its `url`. */
+  createPrivateView?: (title: string, markdown: string, topicId?: number) => { id: string; url?: string } | null;
   /** Shared viewTunnelUrl() — null with no tunnel. */
   viewTunnelUrl?: (viewId: string) => string | null;
   /** The job's existing topic, lazily created when missing (as notifyJobComplete does). Null ⇒ none. */
@@ -594,8 +595,8 @@ export class JobAnomalyPusher implements ScriptRunObserver {
       try {
         const md = [`# ${job.name} on ${machine}`, '', ...eps.map(e => `- **${e.reasonId}** (${e.class}), seen since ${e.firstSeen}`), '',
           '## Evidence', '', renderEvidenceBlock(eps.map(e => `${e.reasonId}: ${e.evidence}`))].join('\n');
-        const view = this.d.createPrivateView(`${job.name} on ${machine}`, md);
-        link = view ? this.d.viewTunnelUrl(view.id) : null;
+        const view = this.d.createPrivateView(`${job.name} on ${machine}`, md, topicId);
+        link = view ? (view.url ?? this.d.viewTunnelUrl(view.id)) : null;
       } catch {
         link = null; // @silent-fallback-ok: no link ⇒ the sentence points at the Jobs tab
       }

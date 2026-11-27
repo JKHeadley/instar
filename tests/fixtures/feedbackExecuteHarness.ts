@@ -32,9 +32,14 @@ export interface ExecHarness extends Harness {
   cfg: ExecuteLiveConfig;
   enabled: { value: boolean };
   epoch: { value: number };
-  repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
+  canonical: { value: boolean };
+  repo: { createdBodies: string[]; info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
+  /** Local Verify's answer to "does queued work need a restart?" (the attempt hold yields while true). */
+  localVerifyNeedsRestart: { fn: () => boolean };
+  /** Called inside the publish push (the attempt is `verifying` / `publishing` at that moment). */
+  onPush: { fn: () => void };
   /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
   spawnError: { value: Error | null };
   pushes: PushRecord[];
@@ -50,11 +55,15 @@ export interface ExecHarness extends Harness {
   closeFails: { value: number };
   commentFails: { value: number };
   /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
-  review: { outcomes: ReviewerOutcome[] | null; calls: string[]; leads: Array<'astra' | 'opus' | undefined> };
+  /** `verbatim`: bodies are returned as written; otherwise a body's leading `Verdict:` is written the
+   *  way the prompt asks, with this review's verdict code (SEC-097), as a reviewer following it would. */
+  review: { outcomes: ReviewerOutcome[] | null; calls: string[]; leads: Array<'astra' | 'opus' | undefined>; verbatim?: boolean };
   disarmed: number[];
   merges: Array<{ pr: number; sha: string }>;
   safeMergeExit: { code: number | null; stdout: string };
   release: { value: { tag: string; taggedAt: number } | 'none' | null };
+  /** The git port's commitInBase answer for a claimed commit (default: never in base). */
+  commitInBase: { fn: (commit: string, baseSha: string) => { sha: string; committedAt: number } | null };
   runs: ConfinedCommand[];
   runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
   runnerAvailable: { value: boolean };
@@ -103,10 +112,12 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
   h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
   h.enabled = { value: true };
-  h.epoch = { value: 1 };
-  h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
+  h.epoch = { value: 1 }; h.canonical = { value: true };
+  h.repo = { createdBodies: [], info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
+  h.localVerifyNeedsRestart = { fn: () => false };
+  h.onPush = { fn: () => {} };
   h.spawnError = { value: null };
   h.pushes = [];
   h.prs = new Map();
@@ -122,6 +133,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.merges = [];
   h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
   h.release = { value: 'none' };
+  h.commitInBase = { fn: () => null };
   h.runs = [];
   h.runScript = { fn: () => null };
   h.runnerAvailable = { value: true };
@@ -148,11 +160,13 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
         }
       };
       walk(clone);
+      h.onPush.fn();
       h.pushes.push({ branch: input.branch, message: input.message, remoteUrl: input.remoteUrl, files, credentialHelper: input.credentialHelper });
       return HEAD_SHA;
     },
     githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
     firstReleaseContaining: async () => h.release.value,
+    commitInBase: async (_src, commit, baseSha) => h.commitInBase.fn(commit, baseSha),
   };
   let nextPr = 100;
   const github: GitHubGateway = {
@@ -160,6 +174,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     viewerLogin: async () => h.repo.viewer,
     authAccounts: async () => h.repo.accounts,
     createPr: async (input) => {
+      h.repo.createdBodies.push(input.body);
       const number = nextPr++;
       h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head.replace(/^[^:]+:/, ''), createHead: input.head, labels: [input.label], title: input.title, body: input.body });
       return { number };
@@ -247,16 +262,23 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.execStore = new FeedbackExecuteStore(h.drain, h.store, { clock: () => h.now.value });
   h.exec = new FeedbackExecutorService({
     triageStore: h.store, store: h.execStore, audit: h.audit,
-    review: { run: async ({ prompt, lead }) => { h.review.calls.push(prompt); h.review.leads.push(lead); if (h.review.outcomes === null) throw new Error('reviewers-down'); return h.review.outcomes; } },
+    review: { run: async ({ prompt, lead }) => {
+      h.review.calls.push(prompt); h.review.leads.push(lead);
+      if (h.review.outcomes === null) throw new Error('reviewers-down');
+      const code = /VERDICT ([0-9a-f]{16}): CLEAN/.exec(prompt)?.[1];
+      if (h.review.verbatim || !code) return h.review.outcomes;
+      return h.review.outcomes.map((o) => (o.body ? { ...o, body: o.body.replace(/^Verdict:/, `VERDICT ${code}:`) } : o));
+    } },
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },
+    localVerifyNeedsRestart: () => h.localVerifyNeedsRestart.fn(),
     identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
     rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
     enabled: () => h.enabled.value,
     config: () => h.cfg,
     paths: { agentHome: h.agentHome, stateDir: path.join(h.agentHome, '.instar'), configPath: path.join(h.agentHome, '.instar', 'config.json'), testRunnerHoldersFile: path.join(base.dir, 'holders.json'), homeDir: base.dir },
-    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => true,
+    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => h.canonical.value,
     commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
     ghCredentialHelper: '!gh auth git-credential',
     raiseAttention: async (item) => { h.attentionExec.push(item); },

@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { HostMaintenanceStore } from '../../src/monitoring/machineMaintenance/HostMaintenanceStore.js';
 import {
-  PROBE_EXIT_GRACE_MS, WEDGE_CANARY_APP, makeProbeRunner, wedgeCanaryAvailable, type ExecLike, type ProbeResult, type ReadingName,
+  PROBE_EXIT_GRACE_MS, WEDGE_CANARY_APP, makeProbeRunner, parseCanaryProcesses, wedgeCanaryAvailable, type ExecLike, type ProbeResult, type ReadingName,
 } from '../../src/monitoring/machineMaintenance/readings.js';
 import {
   KALLOC_1024_LIMIT_BYTES, consoleSessionFromOwner, launchServicesError, parseKallocZone, readF1, readF2, readKallocZone,
@@ -193,8 +193,9 @@ describe('WedgeMonitor on macOS', () => {
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-canary-mon-')); clock = Date.parse('2026-11-03T12:00:00Z'); });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/machine-wedge-mac-canary.test.ts' }));
 
-  function make(probe: (name: ReadingName) => ProbeResult, over: { canary?: boolean; lock?: string | null } = {}): { m: WedgeMonitor; calls: ReadingName[] } {
+  function make(probe: (name: ReadingName) => ProbeResult, over: { canary?: boolean; lock?: string | null; ownUid?: number | null } = {}): { m: WedgeMonitor; calls: ReadingName[]; ended: number[] } {
     const calls: ReadingName[] = [];
+    const ended: number[] = [];
     const bootAt = clock - 3 * 24 * 60 * MIN;
     const m = new WedgeMonitor({
       agentName: 'echo', machineId: () => 'm_mac', platform: 'darwin',
@@ -206,10 +207,13 @@ describe('WedgeMonitor on macOS', () => {
       lockState: async () => over.lock ?? 'unlocked',
       canaryAvailable: () => over.canary ?? true,
       ownUser: 'me',
+      ownUid: over.ownUid === null ? undefined : (over.ownUid ?? 501),
+      endCanary: (pid) => { ended.push(pid); return true; },
+      settle: async () => {},
       loadReading: () => null, spawnSystemFailures30m: () => null, sessionsCount: () => 0,
       nextWindowRestartAt: (now) => now + 60 * MIN, judge: null, raiseNotice: null, now: () => clock,
     });
-    return { m, calls };
+    return { m, calls, ended };
   }
 
   it('runs the canary, the console owner and the kernel zone; a pass then a failure goes negative then positive', async () => {
@@ -217,7 +221,7 @@ describe('WedgeMonitor on macOS', () => {
     const { m, calls } = make((name) => (name === 'guiCanary' ? canary : name === 'consoleOwner' ? ok('me\n') : name === 'kernelZone' ? ok(ZPRINT_USER) : ok('S\n')));
     await m.tick();
     let st = m.status() as any;
-    expect(calls.sort()).toEqual(['consoleOwner', 'guiCanary', 'kernelZone', 'processStates']);
+    expect(calls.sort()).toEqual(['canaryProcesses', 'canaryProcesses', 'consoleOwner', 'guiCanary', 'kernelZone', 'processStates']);
     expect(st.families.F1).toMatchObject({ result: 'negative', reason: 'canary-passed' });
     expect(st.f1PassedThisBoot).toBe(true);
     expect(st.families.F2.detail).toMatchObject({ kernelZoneRead: true, kallocInUseBytes: 332120 * 1024 });
@@ -249,5 +253,57 @@ describe('WedgeMonitor on macOS', () => {
     clock += 10 * MIN;
     await m.tick();
     expect((m.status() as any).families.F1).toMatchObject({ result: 'ineligible', reason: 'canary-timed-out-no-console-session' });
+  });
+
+  // Mac Studio, 2026-11-16: `open` exited 0 while the canary sat stopped (STAT T), so F1 read
+  // "canary-passed" during a live GUI wedge, and every launch left one more stopped canary.
+  const CANARY = '/x/node_modules/instar/dist/native/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary';
+  it('exit 0 with this probe\'s canary left stopped is positive (canary-left-stopped), and the stopped canary is ended', async () => {
+    let table = '';
+    const { m, ended } = make((name) => (name === 'guiCanary' ? ok('') : name === 'consoleOwner' ? ok('me\n') : name === 'canaryProcesses' ? ok(table) : ok('S\n')));
+    await m.tick(); // a clean pass first, so a failure is eligible
+    expect((m.status() as any).families.F1).toMatchObject({ result: 'negative', reason: 'canary-passed' });
+    table = `51709   501 T    ${CANARY}\n`;
+    clock += 10 * MIN;
+    await m.tick();
+    expect((m.status() as any).families.F1).toMatchObject({ result: 'positive', reason: 'canary-left-stopped', detail: { canariesLeftStopped: 1 } });
+    expect(ended).toContain(51709);
+  });
+
+  it('leftovers from earlier launches are ended before the next launch, so the pile-up cannot grow', async () => {
+    const tables = [`100 501 T ${CANARY}\n200 501 T ${CANARY}\n`, ''];
+    const { m, ended } = make((name) => (name === 'guiCanary' ? ok('') : name === 'consoleOwner' ? ok('me\n') : name === 'canaryProcesses' ? ok(tables.shift() ?? '') : ok('S\n')));
+    await m.tick();
+    expect(ended.sort()).toEqual([100, 200]);
+    expect((m.status() as any).families.F1).toMatchObject({ result: 'negative', reason: 'canary-passed', detail: { canariesEnded: 2 } });
+  });
+
+  it('an unread process table after exit 0 is unknown, never a pass', async () => {
+    const { m } = make((name) => (name === 'guiCanary' ? ok('') : name === 'consoleOwner' ? ok('me\n') : name === 'canaryProcesses' ? timedOut(5000) : ok('S\n')));
+    await m.tick();
+    expect((m.status() as any).families.F1).toMatchObject({ result: 'unknown', reason: 'canary-exit-unread' });
+    expect((m.status() as any).f1PassedThisBoot).toBe(false);
+  });
+
+  it('a canary still running (not stopped) after the settle is unknown, not positive', async () => {
+    const { m } = make((name) => (name === 'guiCanary' ? ok('') : name === 'consoleOwner' ? ok('me\n') : name === 'canaryProcesses' ? ok(`300 501 R ${CANARY}\n`) : ok('S\n')));
+    await m.tick();
+    expect((m.status() as any).families.F1).toMatchObject({ result: 'unknown', reason: 'canary-still-running' });
+  });
+});
+
+describe('parseCanaryProcesses', () => {
+  const CANARY = '/a b/InstarWedgeCanary.app/Contents/MacOS/InstarWedgeCanary';
+  it('lists only this user\'s canary executables, with stopped state; never another user, an editor or a grep', () => {
+    const out = [
+      `  51709   501 T    ${CANARY}`,
+      `  51710   501 S    ${CANARY} -psn_0_1`,
+      `  51711   502 T    ${CANARY}`,
+      `  51712   501 S    /usr/bin/vim -R ${CANARY}`,
+      `  51713   501 S    grep InstarWedgeCanary`,
+      `  51714   501 T    /System/Applications/FaceTime.app/Contents/MacOS/FaceTime`,
+      'garbage',
+    ].join('\n');
+    expect(parseCanaryProcesses(out, 501)).toEqual([{ pid: 51709, stopped: true }, { pid: 51710, stopped: false }]);
   });
 });

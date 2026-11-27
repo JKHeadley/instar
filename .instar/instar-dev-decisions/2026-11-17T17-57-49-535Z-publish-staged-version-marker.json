@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-17T17:57:49.535Z",
+  "slug": "publish-staged-version-marker",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/release-local.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: scripts/resolve-publish-version.mjs touches publish script (fleet publish path)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/release-local.mjs",
+      "scripts/resolve-publish-version.mjs"
+    ],
+    "addedLines": 41,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

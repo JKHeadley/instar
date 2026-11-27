@@ -7,12 +7,15 @@
  * merge-failure classification (null status / signal / already-merged / closed).
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   parseArgs,
   UsageError,
   capabilities,
   classifyChecks,
+  dropForkVercelAuthorizationRefusal,
   codeOwnerReviewPending,
   evaluateRequiredContexts,
   classifyMergeFailure,
@@ -152,6 +155,45 @@ describe('noActionsChecksRan — zero checks is not green (PR #2302)', () => {
       { name: 'Vercel Preview Comments', conclusion: 'success', appSlug: 'vercel', workflowPath: null },
       { name: 'Type Check', conclusion: 'success', appSlug: 'github-actions', workflowPath: '.github/workflows/ci.yml' },
     ])).toBe(false);
+  });
+});
+
+describe('dropForkVercelAuthorizationRefusal', () => {
+  const refusal = { context: 'Vercel', state: 'failure', description: 'Authorization required to deploy.', target_url: 'https://vercel.com/git/authorize?team=x' };
+  const rows = [{ name: 'Vercel', bucket: 'fail' }, { name: 'E2E', bucket: 'pass' }];
+  const names = (r: Array<{ name: string }>) => r.map((x) => x.name);
+
+  it('drops only the Vercel row, for a fork, when every Vercel status is exactly the authorization refusal', () => {
+    expect(names(dropForkVercelAuthorizationRefusal(rows, { isCrossRepository: true, statuses: [refusal] }))).toEqual(['E2E']);
+    expect(classifyChecks(dropForkVercelAuthorizationRefusal(rows, { isCrossRepository: true, statuses: [refusal] })).failed).toEqual([]);
+  });
+
+  it('keeps a red GitHub Actions job that is merely named Vercel', () => {
+    const job = [{ name: 'Vercel', bucket: 'fail', workflow: 'ci.yml' }];
+    expect(classifyChecks(dropForkVercelAuthorizationRefusal(job, { isCrossRepository: true, statuses: [refusal] })).failed).toEqual(['Vercel: fail']);
+  });
+
+  it('safe-merge calls the exception at both places it reads checks', () => {
+    const script = fs.readFileSync(path.join(process.cwd(), 'scripts/safe-merge.mjs'), 'utf-8');
+    expect(script.match(/classifyChecks\(checksWithoutForkVercelRefusal\(/g)).toHaveLength(2);
+  });
+
+  it.each([
+    ['a same-repo PR', false, [refusal]],
+    ['an unknown fork state', undefined, [refusal]],
+    ['a real build failure', true, [{ ...refusal, description: 'Deployment has failed' }]],
+    ['a link elsewhere', true, [{ ...refusal, target_url: 'https://example.com/git/authorize?x' }]],
+    ['a status that is not failure', true, [{ ...refusal, state: 'error' }]],
+    ['a second Vercel status that differs', true, [refusal, { ...refusal, description: 'Deployment has failed' }]],
+    ['no Vercel status to confirm it', true, []],
+  ])('keeps the red row for %s', (_name, isCrossRepository, statuses) => {
+    const kept = dropForkVercelAuthorizationRefusal(rows, { isCrossRepository, statuses } as never);
+    expect(classifyChecks(kept).failed).toEqual(['Vercel: fail']);
+  });
+
+  it('never drops another red check, even on a fork with the refusal present', () => {
+    const red = [{ name: 'Vercel', bucket: 'fail' }, { name: 'Docs Coverage', bucket: 'fail' }];
+    expect(classifyChecks(dropForkVercelAuthorizationRefusal(red, { isCrossRepository: true, statuses: [refusal] })).failed).toEqual(['Docs Coverage: fail']);
   });
 });
 

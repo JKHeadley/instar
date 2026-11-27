@@ -19,6 +19,7 @@ import { loadStandardsRegistry, parseStandardsRegistry, runRegistryCanary, parse
 import type { RegistryResolution } from '../core/standardsRegistryPath.js';
 import { StandardsConformanceReviewer } from '../core/reviewers/standards-conformance.js';
 import { recordConformanceInvocationAt } from '../core/AutonomousRunStore.js';
+import { recordSpecConstitutionCheck, readSpecConstitutionChecks } from '../core/specConstitutionCheckLedger.js';
 
 /**
  * Derive the spec SLUG a conformance-check invocation is recorded under
@@ -199,7 +200,25 @@ export function createSpecReviewRoutes(deps: {
     } catch { /* @silent-fallback-ok — ceremony-record persistence is corroboration
                  evidence only; a miss fails toward keep-working (R21/R22) */ }
 
+    // B24 evidence (Echo Bugs topic 10000002750): the latest result per spec, read by
+    // the outbound tone gate and the Work Board judge when an approval of a spec or
+    // design is asked of the operator. Best-effort: a miss only means that ask is
+    // held until the check is re-run (the agent's own step, never the operator's).
+    try {
+      recordSpecConstitutionCheck(deps.stateDir, {
+        slug: conformanceSlugFor(markdown, typeof req.body?.specPath === 'string' ? req.body.specPath : undefined),
+        markdown,
+        report,
+      });
+    } catch { /* @silent-fallback-ok — record is evidence only; a miss fails toward re-running the check */ }
+
     res.json({ report, registryCanary: canary });
+  });
+
+  // This machine's recorded constitution checks (B24 proxied-on-read source). Local only:
+  // a peer asks each machine for its own records and merges them; this never fans out.
+  router.get('/spec/constitution-checks', (_req: Request, res: Response) => {
+    res.json({ records: readSpecConstitutionChecks(deps.stateDir) });
   });
 
   router.get('/spec/conformance-metrics', (_req: Request, res: Response) => {

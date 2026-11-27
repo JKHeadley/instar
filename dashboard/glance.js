@@ -50,6 +50,7 @@ export const GLANCE_ADOPTED_TABS = [
   'pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives',
   'origins', // real settings / recording / message drills in origin.js
   'feedback-drain', // operated summary reviewed against the F10/F11 floor
+  'notifications', // unread reports and confirmed push-choice drills
   'phones', // phones.js: waiting / paired drills (mobile-native-conversations §4.4)
 ];
 

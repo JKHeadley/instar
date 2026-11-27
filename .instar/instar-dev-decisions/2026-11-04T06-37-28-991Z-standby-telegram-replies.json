@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-04T06:37:28.991Z",
+  "slug": "standby-telegram-replies",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/OriginDeliveryResolution.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 98,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,3 +1,6 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
+import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from './boundedInput.js';
+
 /**
  * SeamlessOrchestratorEngine — the lease-gated tier-1 PRELOAD optimizer
  * (spec: llm-seamlessness-orchestrator.md, Phase 1 + the proposal core of Phase 2).
@@ -27,6 +30,15 @@
  *    (topic names / paths / focus are user-influenced — data to reason about, never
  *    instructions).
  */
+
+/**
+ * Per-field bound for the residual ranking prompt. Derived: the 200 characters
+ * of content each field always kept (a focus sentence, a file path), plus
+ * disclosure room, so a cut says it is a cut. Paths keep their END (the file
+ * name identifies the artifact; the old head cut dropped it); a focus keeps its
+ * start. Advisory ranker with a deterministic fallback, so disclose, not refuse.
+ */
+const RESIDUAL_FIELD_CHARS = 200 + BOUNDED_INPUT_MIN_CHARS;
 
 /** The two proposal actions (F-Design step 3). The LLM authors neither a move nor a suggestion. */
 export type OrchestratorAction = 'preload-artifact' | 'placement-signal';
@@ -282,11 +294,13 @@ export class SeamlessOrchestratorEngine {
   /** Assemble the residual-ranking prompt with the untrusted-data envelope. Overridable/callable-out in tests. */
   buildResidualPrompt(topics: TopicActivity[], deterministic: OrchestratorProposal[]): string {
     const neutralize = (s: string): string =>
-      String(s).split('').filter((c) => c.charCodeAt(0) > 31 && c !== '<' && c !== '>').join('').slice(0, 200);
-    const focusLines = topics.map((t) => `- topic ${t.topic}: ${neutralize(t.focus)}`).join(NL);
+      String(s).split('').filter((c) => c.charCodeAt(0) > 31 && c !== '<' && c !== '>').join('');
+    // Single-line fields: the disclosure's newline would break the line format.
+    const oneLine = (s: string): string => s.replace(/\n/g, ' ');
+    const focusLines = topics.map((t) => `- ${topicRef(t.topic)}: ${oneLine(boundedHead(neutralize(t.focus), RESIDUAL_FIELD_CHARS))}`).join(NL);
     const candLines = deterministic
       .slice(0, 20)
-      .map((c, i) => `${i}. topic ${c.targetTopic} → ${neutralize(c.detail)}`)
+      .map((c, i) => `${i}. ${topicRef(c.targetTopic)} → ${oneLine(boundedTail(neutralize(c.detail), RESIDUAL_FIELD_CHARS))}`)
       .join(NL);
     return [
       'You rank which already-produced artifacts a conversation will likely reference NEXT (preload).',

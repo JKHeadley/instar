@@ -56,7 +56,7 @@ describe('SessionMonitor: dead-session notice is once per death across restarts'
     const a = deadDeps('sess-1', userWaiting, ledger);
     await new SessionMonitor(a).poll();
     expect(a.sendToTopic).toHaveBeenCalledTimes(1);
-    expect(a.sendToTopic).toHaveBeenCalledWith(TOPIC, expect.stringContaining('session has stopped'));
+    expect(a.sendToTopic).toHaveBeenCalledWith(TOPIC, "I couldn't restore this conversation. Your message is saved.");
 
     // Server restart: new instance, same ledger, same dead session, same history.
     const b = deadDeps('sess-1', userWaiting, ledger);

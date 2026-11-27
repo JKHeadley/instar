@@ -51,7 +51,7 @@ describe('notify-on-stop Layer B — wiring integrity', () => {
     const src = read('src/commands/server.ts');
     const block = src.slice(src.indexOf('notify-on-stop Layer B'), src.indexOf('Response Review Pipeline'));
     expect(block).toMatch(/notifyTopic:\s*\(topicId, sessionId, text\)/);
-    expect(block).toMatch(/localTg\.sendToTopic\(Number\(topicId\), text\)/);
+    expect(block).toMatch(/withNotificationEnvelope\(stampNotification\(\), async \(\) => \(localTg\)!\.sendToTopic\(Number\(topicId\), text\)\)/);
     expect(block).toMatch(/log:\s*\(kind, sessionId, detail\)\s*=>\s*stopLog\(/);
     // The unnamed lifeline path is gone.
     expect(block).not.toMatch(/new SentinelNotifier\(/);

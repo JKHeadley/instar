@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-12T07:35:43.994Z",
+  "slug": "ncb-3e-input-durability",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/PeerStreamProxy.ts",
+      "src/server/WebSocketManager.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

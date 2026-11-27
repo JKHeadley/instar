@@ -58,6 +58,106 @@ export interface AgentAck {
   at: number;
 }
 
+/**
+ * One row of the host restart ledger (`restarts.jsonl`). This slice writes only
+ * `boot-observed`: one per OS boot, attributed to an episode once the actuator exists,
+ * else `unattributed`, or `first-seen` for the first boot the ledger ever saw.
+ */
+export interface RestartLedgerRow {
+  type: 'boot-observed';
+  bootAt: number;
+  previousBootAt: number | null;
+  attribution: 'unattributed' | 'first-seen' | string;
+  observedBy: string;
+  at: number;
+}
+
+/** A boot time this close to the ledger's last is the same boot. */
+const LEDGER_SAME_BOOT_MS = 60_000;
+
+// ── Restart episodes (Part D "Host store and exclusive authority", "What uses up restart budget") ──
+
+export type EpisodeKind = 'scheduled' | 'wedge' | 'operator' | 'lifeline';
+export type EpisodeState =
+  | 'reserved' | 'dispatched' | 'outcome-unknown'
+  | 'aborted-unclaimed' | 'aborted' | 'rolled' | 'refused' | 'restarted' | 'left-running';
+export type DispatchOutcome = 'unknown' | 'accepted' | 'refused';
+
+/** One transition of one episode. The latest row of an episode is its state. */
+export interface EpisodeRow {
+  type: 'episode';
+  episodeId: string;
+  generation: number;
+  kind: EpisodeKind;
+  state: EpisodeState;
+  /** The OS boot this episode was reserved on. A dispatch is only valid on this boot. */
+  bootAt: number;
+  expiresAt: number;
+  at: number;
+  by: string;
+  rung?: 1 | 2;
+  dispatch?: DispatchOutcome;
+  reason?: string;
+}
+
+export type LedgerRow = RestartLedgerRow | EpisodeRow;
+
+const TERMINAL: ReadonlySet<EpisodeState> = new Set(['aborted-unclaimed', 'aborted', 'rolled', 'refused', 'restarted', 'left-running']);
+export const isTerminal = (s: EpisodeState): boolean => TERMINAL.has(s);
+const AUTOMATIC: ReadonlySet<EpisodeKind> = new Set(['scheduled', 'wedge']);
+
+const H = 60 * 60_000;
+const D = 24 * H;
+/** Brakes (Part E table). Constants: the spec fixes them; config cannot loosen them. */
+export const BRAKES = {
+  recentBootMs: 6 * H,
+  wedgePer24h: 2,
+  wedgePer7d: 3,
+  scheduledPer5d: 1,
+  abortsPer7d: 3,
+} as const;
+
+export type BrakeId =
+  | 'episode-open' | 'outcome-unknown' | 'recent-boot' | 'wedge-24h' | 'wedge-7d' | 'scheduled-5d'
+  | 'abort-brake' | 'proof-failed' | 'ledger-unreadable';
+
+/** Latest row per episode, in first-seen order. */
+export function episodesOf(rows: LedgerRow[]): Map<string, { first: EpisodeRow; latest: EpisodeRow; rows: EpisodeRow[] }> {
+  const out = new Map<string, { first: EpisodeRow; latest: EpisodeRow; rows: EpisodeRow[] }>();
+  for (const r of rows) {
+    if (r.type !== 'episode') continue;
+    const e = out.get(r.episodeId);
+    if (e) { e.latest = r; e.rows.push(r); } else out.set(r.episodeId, { first: r, latest: r, rows: [r] });
+  }
+  return out;
+}
+
+/**
+ * The brakes, pure. An automatic request is refused by any of them. An operator request
+ * passes every brake except `recent-boot` (which needs `overrideRecentBoot`, the card's
+ * second confirmation); it never passes S1, S2 or the off switch, which `claimRung` checks.
+ */
+export function checkBrakes(rows: LedgerRow[], input: { kind: EpisodeKind; now: number; bootAt: number; proofFailed?: boolean; overrideRecentBoot?: boolean }): BrakeId | null {
+  const automatic = AUTOMATIC.has(input.kind);
+  const eps = [...episodesOf(rows).values()];
+  if (eps.some((e) => e.latest.state === 'outcome-unknown') && automatic) return 'outcome-unknown';
+  if (automatic && eps.some((e) => !isTerminal(e.latest.state) && input.now < e.latest.expiresAt)) return 'episode-open';
+  if (input.now - input.bootAt < BRAKES.recentBootMs && (automatic || !input.overrideRecentBoot)) return 'recent-boot';
+  if (!automatic) return null;
+  if (input.proofFailed) return 'proof-failed';
+  const spent = (kind: EpisodeKind, windowMs: number) => eps.filter((e) => e.first.kind === kind && e.rows.some((r) => r.state === 'dispatched') && input.now - e.first.at < windowMs).length;
+  if (input.kind === 'wedge' && spent('wedge', D) >= BRAKES.wedgePer24h) return 'wedge-24h';
+  if (input.kind === 'wedge' && spent('wedge', 7 * D) >= BRAKES.wedgePer7d) return 'wedge-7d';
+  if (input.kind === 'scheduled' && spent('scheduled', 5 * D) >= BRAKES.scheduledPer5d) return 'scheduled-5d';
+  const aborts = eps.filter((e) => (e.latest.state === 'aborted' || e.latest.state === 'refused') && input.now - e.latest.at < 7 * D).length;
+  if (aborts >= BRAKES.abortsPer7d) return 'abort-brake';
+  return null;
+}
+
+export type ClaimResult =
+  | { ok: true; row: EpisodeRow }
+  | { ok: false; reason: 'no-episode' | 'terminal' | 'stale-generation' | 'expired' | 'wrong-boot' | 'rung-claimed' | 'rung1-not-dispatched' | 'lock-unavailable' | string };
+
 export interface ReserveInput {
   openedBy: string;
   restartAt: number;
@@ -82,6 +182,16 @@ export type WedgeMaintainerClaim =
   | { self: true; maintainer: string; generation: number; tookOver: boolean }
   | { self: false; maintainer: string; heartbeatAt: number }
   | null;
+
+export type OperatorControlAction = 'skip' | 'unskip' | 'window' | 'window-reset';
+export interface OperatorControlChange { at: number; by: string; action: OperatorControlAction; skipUntil: number | null; window: { start: string; end: string } | null }
+export interface OperatorControls {
+  skipUntil: number | null;
+  window: { start: string; end: string } | null;
+  /** The last changes, newest last: who, what and when. */
+  history: OperatorControlChange[];
+}
+export const CONTROLS_HISTORY_KEPT = 20;
 
 export class HostMaintenanceStore {
   private readonly dir: string;
@@ -224,6 +334,194 @@ export class HostMaintenanceStore {
       atomicWriteFileSync(this.wedgeStatePath, JSON.stringify(state), { mode: 0o644, operation: 'HostMaintenanceStore.writeWedgeState' });
       return true;
     }) === true;
+  }
+
+  private get controlsPath(): string { return path.join(this.dir, 'controls.json'); }
+
+  /**
+   * The owner's controls for this machine (Part F): Skip once and Change window. One record
+   * per host, so every agent on the machine plans from the same answer. Missing or
+   * malformed reads as no controls.
+   */
+  readControls(): OperatorControls | null {
+    const raw = this.readJsonFile<OperatorControls>(this.controlsPath);
+    if (!raw || typeof raw !== 'object') return null;
+    const skipUntil = typeof raw.skipUntil === 'number' && Number.isFinite(raw.skipUntil) ? raw.skipUntil : null;
+    const w = raw.window && typeof raw.window === 'object' && typeof raw.window.start === 'string' && typeof raw.window.end === 'string' ? { start: raw.window.start, end: raw.window.end } : null;
+    const history = Array.isArray(raw.history) ? raw.history.slice(-CONTROLS_HISTORY_KEPT) : [];
+    return { skipUntil, window: w, history };
+  }
+
+  /** Change the controls under the host lock. Null when the lock cannot be taken. */
+  changeControls(by: string, action: OperatorControlAction, change: (c: OperatorControls) => OperatorControls): OperatorControls | null {
+    return this.withLock(() => {
+      const current = this.readControls() ?? { skipUntil: null, window: null, history: [] };
+      const next = change({ ...current, history: [...current.history] });
+      next.history = [...next.history, { at: this.now(), by, action, skipUntil: next.skipUntil, window: next.window }].slice(-CONTROLS_HISTORY_KEPT);
+      atomicWriteFileSync(this.controlsPath, JSON.stringify(next, null, 2), { mode: 0o644, operation: 'HostMaintenanceStore.changeControls' });
+      return next;
+    });
+  }
+
+  private get restartsPath(): string { return path.join(this.dir, 'restarts.jsonl'); }
+
+  /** The boot rows of the ledger, oldest first. A torn or foreign line is skipped. */
+  readRestartRows(): RestartLedgerRow[] {
+    return (this.readLedger() ?? []).filter((r): r is RestartLedgerRow => r.type === 'boot-observed');
+  }
+
+  /**
+   * Every readable ledger row, oldest first; a torn line is skipped. Null when the file
+   * exists but cannot be read at all: automatic restarts then fail closed.
+   */
+  readLedger(): LedgerRow[] | null {
+    let raw: string;
+    try { raw = fs.readFileSync(this.restartsPath, 'utf-8'); } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : null; // @silent-fallback-ok — absent is empty; unreadable is null (fail closed)
+    }
+    const rows: LedgerRow[] = [];
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line) as LedgerRow;
+        if (row?.type === 'boot-observed' && Number.isFinite(row.bootAt)) rows.push(row);
+        else if (row?.type === 'episode' && typeof row.episodeId === 'string' && Number.isFinite(row.generation)) rows.push(row);
+      } catch { /* @silent-fallback-ok — a torn line is skipped */ }
+    }
+    return rows;
+  }
+
+  private appendLedger(row: LedgerRow): void {
+    fs.appendFileSync(this.restartsPath, JSON.stringify(row) + '\n', { mode: 0o644 });
+    // fsync: the row must be on disk before anything it authorizes happens.
+    try { const fd = fs.openSync(this.restartsPath, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); } } catch { /* @silent-fallback-ok — append landed; fsync is best effort on odd filesystems */ }
+  }
+
+  /**
+   * reserve(): the first write of every restart episode, under the host lock. Checks the
+   * brakes, then either opens a new episode or, for an operator request, takes over the
+   * open one with a new generation. An automatic request never joins with authority.
+   */
+  reserveEpisode(input: { kind: EpisodeKind; by: string; bootAt: number; ttlMs: number; proofFailed?: boolean; overrideRecentBoot?: boolean }):
+    | { ok: true; episodeId: string; generation: number; tookOver: boolean }
+    | { ok: false; brake: BrakeId | 'lock-unavailable' } {
+    const r = this.withLock(() => {
+      const now = this.now();
+      const rows = this.readLedger();
+      if (rows === null) {
+        // Unreadable ledger: automatic refused; an operator sets the bad file aside and starts a new one.
+        if (AUTOMATIC.has(input.kind)) return { ok: false as const, brake: 'ledger-unreadable' as const };
+        try { fs.renameSync(this.restartsPath, `${this.restartsPath}.unreadable-${now}`); } catch { return { ok: false as const, brake: 'ledger-unreadable' as const }; }
+      }
+      const ledger = rows ?? [];
+      const brake = checkBrakes(ledger, { kind: input.kind, now, bootAt: input.bootAt, proofFailed: input.proofFailed, overrideRecentBoot: input.overrideRecentBoot });
+      if (brake) return { ok: false as const, brake };
+      const open = [...episodesOf(ledger).values()].find((e) => !isTerminal(e.latest.state) && (now < e.latest.expiresAt || e.latest.state === 'outcome-unknown'));
+      const episodeId = open ? open.first.episodeId : randomUUID();
+      const generation = open ? open.latest.generation + 1 : 1;
+      this.appendLedger({
+        type: 'episode', episodeId, generation, kind: input.kind, state: open?.latest.state === 'outcome-unknown' ? 'outcome-unknown' : 'reserved',
+        bootAt: input.bootAt, expiresAt: now + input.ttlMs, at: now, by: input.by,
+      });
+      return { ok: true as const, episodeId, generation, tookOver: !!open };
+    });
+    return r ?? { ok: false, brake: 'lock-unavailable' };
+  }
+
+  /**
+   * claimRung: immediately before a privileged command. Under the host lock: the episode is
+   * open, this generation is current, the plan has not expired, it was reserved on THIS boot,
+   * and the rung is unclaimed; then `fresh()` re-reads the off switch and the safety holds
+   * that no caller passes (S1, S2). Only then is the dispatch written as `unknown` and
+   * `spawn()` called, still inside the lock, so a takeover serializes with dispatch.
+   */
+  claimRung(input: { episodeId: string; generation: number; rung: 1 | 2; currentBootAt: number; by: string; fresh: () => string | null; spawn: () => void }): ClaimResult {
+    const r = this.withLock((): ClaimResult => {
+      const now = this.now();
+      const ep = episodesOf(this.readLedger() ?? []).get(input.episodeId);
+      if (!ep) return { ok: false, reason: 'no-episode' };
+      const latest = ep.latest;
+      if (isTerminal(latest.state)) return { ok: false, reason: 'terminal' };
+      if (latest.generation !== input.generation) return { ok: false, reason: 'stale-generation' };
+      if (now >= latest.expiresAt && latest.state !== 'outcome-unknown') return { ok: false, reason: 'expired' };
+      if (Math.abs(latest.bootAt - input.currentBootAt) > LEDGER_SAME_BOOT_MS) return { ok: false, reason: 'wrong-boot' };
+      if (ep.rows.some((x) => x.state === 'dispatched' && x.rung === input.rung && x.generation === input.generation)) return { ok: false, reason: 'rung-claimed' };
+      if (input.rung === 2) {
+        const r1 = [...ep.rows].reverse().find((x) => x.rung === 1 && x.dispatch && x.dispatch !== 'refused');
+        if (!r1) return { ok: false, reason: 'rung1-not-dispatched' };
+      }
+      const base = { type: 'episode' as const, episodeId: latest.episodeId, generation: latest.generation, kind: ep.first.kind, bootAt: latest.bootAt, expiresAt: latest.expiresAt, by: input.by };
+      const refusal = input.fresh();
+      if (refusal) {
+        // Before rung 1 nothing was asked of the OS: abort. Before rung 2, rung 1 may still land.
+        this.appendLedger({ ...base, state: input.rung === 1 ? 'aborted' : 'outcome-unknown', at: now, rung: input.rung, reason: refusal });
+        return { ok: false, reason: refusal };
+      }
+      const row: EpisodeRow = { ...base, state: 'dispatched', at: now, rung: input.rung, dispatch: 'unknown' };
+      this.appendLedger(row);
+      input.spawn();
+      return { ok: true, row };
+    });
+    return r ?? { ok: false, reason: 'lock-unavailable' };
+  }
+
+  /** The command's result. A refused rung 1 closes the episode; anything else stays open. */
+  recordDispatch(input: { episodeId: string; generation: number; rung: 1 | 2; outcome: DispatchOutcome; by: string; reason?: string }): boolean {
+    return this.withLock(() => {
+      const ep = episodesOf(this.readLedger() ?? []).get(input.episodeId);
+      if (!ep) return false;
+      const l = ep.latest;
+      const state: EpisodeState = input.outcome === 'refused' && input.rung === 1 ? 'refused' : l.state === 'outcome-unknown' ? 'outcome-unknown' : 'dispatched';
+      this.appendLedger({ type: 'episode', episodeId: l.episodeId, generation: input.generation, kind: ep.first.kind, state, bootAt: l.bootAt, expiresAt: l.expiresAt, at: this.now(), by: input.by, rung: input.rung, dispatch: input.outcome, ...(input.reason ? { reason: input.reason } : {}) });
+      return true;
+    }) === true;
+  }
+
+  /** Closes or moves an open episode. Refused for a stale generation, so a stale controller cannot undo a takeover. */
+  transitionEpisode(input: { episodeId: string; generation: number; state: EpisodeState; by: string; reason?: string }): boolean {
+    return this.withLock(() => {
+      const ep = episodesOf(this.readLedger() ?? []).get(input.episodeId);
+      if (!ep || isTerminal(ep.latest.state) || ep.latest.generation !== input.generation) return false;
+      const l = ep.latest;
+      this.appendLedger({ type: 'episode', episodeId: l.episodeId, generation: l.generation, kind: ep.first.kind, state: input.state, bootAt: l.bootAt, expiresAt: l.expiresAt, at: this.now(), by: input.by, ...(input.reason ? { reason: input.reason } : {}) });
+      return true;
+    }) === true;
+  }
+
+  /**
+   * Records this OS boot once, under the host lock, so co-resident agents never write it
+   * twice. Returns the row for this boot (new or already there) and the boot before it.
+   * Null when the lock cannot be taken this tick.
+   */
+  observeBoot(bootAt: number, agent: string): { row: RestartLedgerRow; previousBootAt: number | null; added: boolean } | null {
+    return this.withLock(() => {
+      const rows = this.readRestartRows();
+      const last = rows[rows.length - 1] ?? null;
+      if (last && Math.abs(last.bootAt - bootAt) <= LEDGER_SAME_BOOT_MS) {
+        return { row: last, previousBootAt: last.previousBootAt, added: false };
+      }
+      // A boot after an episode dispatched on the previous boot is that episode's restart.
+      const prevBoot = last?.bootAt ?? null;
+      const ledger = this.readLedger() ?? [];
+      const dispatched = prevBoot === null ? undefined : [...episodesOf(ledger).values()].find((e) =>
+        !['aborted-unclaimed', 'aborted', 'rolled', 'refused', 'restarted', 'left-running'].includes(e.latest.state)
+        && Math.abs(e.latest.bootAt - prevBoot) <= LEDGER_SAME_BOOT_MS
+        && e.rows.some((x) => x.state === 'dispatched'));
+      const row: RestartLedgerRow = {
+        type: 'boot-observed',
+        bootAt,
+        previousBootAt: prevBoot,
+        attribution: dispatched ? dispatched.first.episodeId : last ? 'unattributed' : 'first-seen',
+        observedBy: agent,
+        at: this.now(),
+      };
+      this.appendLedger(row);
+      if (dispatched) {
+        const l = dispatched.latest;
+        this.appendLedger({ type: 'episode', episodeId: l.episodeId, generation: l.generation, kind: dispatched.first.kind, state: 'restarted', bootAt: l.bootAt, expiresAt: l.expiresAt, at: this.now(), by: agent });
+      }
+      return { row, previousBootAt: row.previousBootAt, added: true };
+    });
   }
 
   private readJsonFile<T>(file: string): T | null {

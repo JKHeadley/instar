@@ -46,7 +46,9 @@
 import type { IntelligenceProvider } from '../core/types.js';
 import type { HubCommand } from './hubCommands.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
 import { DP_HUB_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
+import { topicNameFor, topicRef } from '../messaging/shared/topicRef.js';
 
 export const HUB_INTENT_PROMPT_ID = 'hub-intent-v1';
 
@@ -148,7 +150,7 @@ function normalizeTopics(topics: HubTopicCandidate[], max: number): HubTopicCand
   for (const t of topics) {
     if (!t || typeof t.topicId !== 'number' || !Number.isFinite(t.topicId)) continue;
     if (seen.has(t.topicId)) continue;
-    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : `topic ${t.topicId}`;
+    const name = typeof t.topicName === 'string' && t.topicName.trim() ? t.topicName.trim() : (topicNameFor(t.topicId) ?? topicRef(t.topicId));
     seen.add(t.topicId);
     out.push({ topicId: t.topicId, topicName: name });
     if (out.length >= max) break;
@@ -197,7 +199,10 @@ function buildContextBlock(
   return recent
     .map((t) => {
       const who = t.fromUser ? 'User' : 'Agent';
-      const body = (t.text ?? '').replace(/\s+/g, ' ').trim().slice(0, maxChars);
+      // Context turns corroborate the hub-intent read of the CURRENT message
+      // (which is passed whole). The configured per-turn content is kept and the
+      // disclosure is added on top, so a cut turn says so. Flattened to one line.
+      const body = boundedHead((t.text ?? '').replace(/\s+/g, ' ').trim(), maxChars + BOUNDED_INPUT_MIN_CHARS).replace(/\n/g, ' ');
       return `${who}: ${body}`;
     })
     .join('\n');
@@ -221,7 +226,7 @@ export function buildHubIntentDecisionContext(input: {
     contextWindowIdentitySha256: buildStructuredSha256Identity(visibleContext),
     contextWindowChars: visibleContext.length,
     contextTurnCount: Math.min(input.context.length, input.maxTurns),
-    maxContextCharsPerTurn: input.maxChars,
+    maxContextCharsPerTurn: input.maxChars + BOUNDED_INPUT_MIN_CHARS, // effective per-turn bound (content + disclosure room)
     bindableTopicCount: input.topics.length,
     bindableTopicSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.topics)),
     maxBindableTopics: input.maxTopics,

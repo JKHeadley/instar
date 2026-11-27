@@ -35,7 +35,7 @@ describe('promises page model', () => {
       c({ status: 'delivered', resolvedAt: minsAgo(60 * 24 * 10) }),
     ];
     const p = buildPromisesPage(mesh(rows), NOW, { expectedPeers: 0 });
-    expect(p.counts).toEqual({ waiting: 1, missed: 0, review: 0, dueSoon: 0, carrying: 4, handled: 1, closed: 1 });
+    expect(p.counts).toEqual({ waiting: 1, high: 0, missed: 0, review: 0, dueSoon: 0, carrying: 4, handled: 1, closed: 1 });
     expect(p.headline).toBe('1 promise is waiting on you.');
   });
 
@@ -186,6 +186,31 @@ describe('promises page in a DOM', () => {
     expect(sheet.querySelector('.sheet-actions button')).toBeNull();
     expect(sheet.querySelector('.sheet-actions a')?.textContent).toBe('View source conversation');
     expect(sheet.querySelector('.promise-backstory summary')?.textContent).toBe('How this came about');
+  });
+  it('shows the High priority section and filter chips; a review-closed row offers Undo — reopen', async () => {
+    dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'http://localhost:4040/dashboard/console/#/work/promises' });
+    Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location,
+      history: dom.window.history, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    const high = c({ priority: 'high', agentResponse: 'Send Justin the report', createdAt: minsAgo(60 * 24 * 40) });
+    const low = c({ priority: 'low', agentResponse: 'Tidy the notes' });
+    const closed = c({ status: 'withdrawn', resolvedAt: minsAgo(30), closedBy: 'promise-review', resolution: 'promise-review (obsolete): run ended', agentResponse: 'Old cadence row' });
+    const posts: string[] = [];
+    const main = dom.window.document.querySelector('main')!;
+    await renderPromises(main, {
+      getCommitments: async () => mesh([high, low, closed]),
+      get: async () => ok({ selfMachineId: 'm1', machines: [{ machineId: 'm1' }] }),
+      post: async (p: string) => { posts.push(p); return { ok: true, data: {} }; },
+    });
+    const rows = main.querySelectorAll('#sec-high button.row');
+    expect(rows.length).toBe(1);
+    expect(rows[0].textContent).toContain('Send Justin the report');
+    expect(rows[0].textContent).toContain('High priority');
+    const chips = [...main.querySelectorAll('.promise-filter .chip')].map((b) => b.textContent);
+    expect(chips).toEqual(['All 2', 'High 1', 'Low 1']);
+    (main.querySelector('#sec-closed button.row') as HTMLButtonElement).click();
+    const sheet = dom.window.document.querySelector('.sheet')!;
+    expect(sheet.textContent).toContain('Undo — reopen');
+    expect(sheet.textContent).toContain('My promise review');
   });
   it('tells the operator that a failed read is still being retried', async () => {
     dom = new JSDOM('<!doctype html><html><body><main></main></body></html>');

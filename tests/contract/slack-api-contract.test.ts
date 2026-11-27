@@ -21,6 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { encodeSlackRequest } from '../../src/messaging/slack/SlackApiClient.js';
 
 const BOT_TOKEN = process.env.SLACK_CONTRACT_BOT_TOKEN;
 const TEST_CHANNEL = process.env.SLACK_CONTRACT_CHANNEL;
@@ -34,13 +35,15 @@ async function slackAPI(method: string, params: Record<string, unknown> = {}): P
   scopes: string[];
   headers: Headers;
 }> {
+  // The same encoding production sends (SlackApiClient): form for the methods that reject JSON (fb-4db533fa-9d9).
+  const encoded = encodeSlackRequest(method, params);
   const response = await fetch(`https://slack.com/api/${method}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${BOT_TOKEN}`,
-      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Type': encoded.contentType,
     },
-    body: JSON.stringify(params),
+    body: encoded.body,
   });
 
   const scopes = (response.headers.get('x-oauth-scopes') ?? '').split(',').map(s => s.trim()).filter(Boolean);
@@ -266,5 +269,25 @@ describeWithToken('Slack API Contract Tests (LIVE)', () => {
         await slackAPI('files.delete', { file: uploadedFileId }).catch(() => {});
       }
     });
+  });
+});
+
+describeWithToken('Slack name lookups answer through the production encoding (fb-4db533fa-9d9)', () => {
+  it('users.info answers ok with a name for the bot user', async () => {
+    const who = await slackAPI('auth.test');
+    const userId = who.data.user_id as string;
+    expect(userId).toBeTruthy();
+    const r = await slackAPI('users.info', { user: userId });
+    expect(r.data.error).toBeUndefined();
+    expect(r.data.ok).toBe(true);
+    const user = r.data.user as { real_name?: string; name?: string };
+    expect(user.real_name || user.name).toBeTruthy();
+  });
+
+  it('conversations.info answers ok with the channel name', async () => {
+    if (!TEST_CHANNEL) return;
+    const r = await slackAPI('conversations.info', { channel: TEST_CHANNEL });
+    expect(r.data.error).toBeUndefined();
+    expect((r.data.channel as { name?: string }).name).toBeTruthy();
   });
 });

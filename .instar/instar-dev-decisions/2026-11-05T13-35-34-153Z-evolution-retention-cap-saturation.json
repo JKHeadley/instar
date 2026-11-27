@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-05T13:35:34.153Z",
+  "slug": "evolution-retention-cap-saturation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Unchanged archive retry reservation and durable six-failure park remain exercised under N/2N and reconstruction; all540 registry tests pass after placement-only move."
+    },
+    "component": "EvolutionArchiveSync"
+  },
+  "verdict": "pass"
+}

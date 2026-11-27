@@ -50,7 +50,8 @@ describe('must-surface providers', () => {
     const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];
     const result = parseJsonResult(stdout, (u) => usages.push(u));
     expect(result).toBe('the answer');
-    expect(usages).toEqual([{ inputTokens: 550, outputTokens: 30, cachedTokens: 400 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 550, outputTokens: 30, cachedTokens: 400 }]);
     // Pinned subset invariant: tokensCached ⊆ tokensIn.
     expect(usages[0].cachedTokens!).toBeLessThanOrEqual(usages[0].inputTokens);
   });
@@ -76,7 +77,8 @@ exit 0
     const usages: Array<{ inputTokens: number; outputTokens: number; cachedTokens?: number }> = [];
     const provider = new CodexCliIntelligenceProvider({ codexPath: script });
     await provider.evaluate('p', { onUsage: (u) => usages.push(u) });
-    expect(usages).toEqual([{ inputTokens: 90, outputTokens: 9, cachedTokens: 30 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 90, outputTokens: 9, cachedTokens: 30 }]);
     expect(usages[0].cachedTokens!).toBeLessThanOrEqual(usages[0].inputTokens);
   });
 

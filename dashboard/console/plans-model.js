@@ -48,6 +48,9 @@ export function projectNeedsOk(p) {
   if (!p || !OPEN_STATUSES.has(p.status)) return false;
   if ((Number(p.unacknowledgedAdvanceCount) || 0) > 0) return true;
   const cur = currentRoundIndex(p);
+  // A tracking-only project has not requested a launch. A real scheduled launch
+  // still requires acknowledgment, even when automatic advancement is disabled.
+  if (p.autoAdvance === false && !p.rounds?.[cur]?.autoAdvanceAt) return false;
   return cur === 0 && !p.firstLaunchAckAt;
 }
 
@@ -70,7 +73,9 @@ export function driftSentence(round) {
   const v = round && round.lastDriftVerdict;
   if (!v || !v.verdict) return { text: 'No plan check recorded yet.', tone: 'unknown' };
   if (v.verdict === 'no-drift') return { text: 'Last check: the plan still holds.', tone: 'ok' };
+  // warning-path: askLink
   if (v.verdict === 'minor-drift') return { text: 'Last check: the plan has drifted a little; still workable.', tone: 'attn' };
+  // warning-path: askLink
   if (v.verdict === 'premise-violated') return { text: 'The plan’s starting assumption no longer holds — the agent paused it.', tone: 'bad' };
   if (v.verdict === 'manual-review-required') return { text: `Needs a human look${v.reason ? ` (${String(v.reason).replace(/[-_]/g, ' ')})` : ''}.`, tone: 'unknown' };
   return { text: `Last check: ${String(v.verdict).replace(/[-_]/g, ' ')}.`, tone: 'unknown' };
@@ -132,6 +137,20 @@ export function initiativeLine(i, now = Date.now()) {
   return bits.join(' · ');
 }
 
+/** ": <round name>" when the round has one, so the ask says what the OK is for (2026-11-20 dashboard audit). */
+export function roundNameSuffix(p, index) {
+  const r = Array.isArray(p && p.rounds) ? p.rounds[index] : null;
+  const name = r && typeof r.name === 'string' ? r.name.replace(/\s+/g, ' ').trim() : '';
+  if (!name) return '';
+  return `: ${name.length > 80 ? `${name.slice(0, 79).replace(/\s+\S*$/, '')}…` : name}`;
+}
+
+/** Lead approval requests with the work's name, keeping internal round indices out of the lead. */
+export function planApprovalWords(p, index) {
+  const suffix = roundNameSuffix(p, index);
+  return suffix ? `Review and approve${suffix}` : `Review and approve step ${index + 1}`;
+}
+
 /** What a record waits for from the operator, or null when it does not. */
 export function needsYouWords(rec, detail) {
   if (!rec || !OPEN_STATUSES.has(rec.status)) return null;
@@ -139,7 +158,7 @@ export function needsYouWords(rec, detail) {
     const p = detail && detail.project ? detail.project : rec;
     if (projectNeedsOk(p)) {
       const cur = currentRoundIndex(p);
-      return cur === -1 ? 'Waiting for your OK' : `Waiting for your OK on round ${cur + 1}`;
+      return cur === -1 ? 'Waiting for your OK' : planApprovalWords(p, cur);
     }
   }
   if (rec.needsUser) return rec.needsUserReason ? `Waiting on you: ${rec.needsUserReason}` : 'Waiting on you';
@@ -276,8 +295,11 @@ export function planRow(rec, detail, now = Date.now()) {
   let sub;
   if (isProject) sub = detail && detail.failed ? `Couldn't load its rounds: ${detail.failed}` : projectLine(p, children, now);
   else sub = initiativeLine(rec, now);
+  // The list renderer displays sub, not the needs metadata. Put the approval's work there too.
+  if (isProject && projectNeedsOk(p) && need) sub = `${need} · ${sub}`;
   return {
     key: `plan:${rec.id}`, id: rec.id, type: isProject ? 'project' : 'initiative', main: verifiedDisplayName(rec.title, rec.id) || (isProject ? 'Project name unavailable' : 'Initiative name unavailable'), sub,
+    // warning-path: row
     end: need ? 'Open' : statusWord(rec.status), tone: need ? 'attn' : rec.status === 'halted' ? 'bad' : null,
     needs: need, status: rec.status, record: p, children, detailFailed: detail && detail.failed ? detail.failed : null, touched: touchedAt(p, children),
   };
@@ -373,7 +395,9 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     'Plans on this machine.',
   ].filter(Boolean).join(' ');
   const facts = [
+    // warning-path: inline
     { n: counts.needsYou, label: counts.needsYou === 1 ? 'needs you' : 'need you', tone: counts.needsYou ? 'attn' : null, href: '#/work/plans?s=needsYou' },
+    // warning-path: inline
     inTheWay.state === 'ok' ? { n: counts.stuck + counts.working, label: 'in the way', tone: counts.stuck ? 'bad' : null, href: '#/work/plans?s=in-the-way' }
       : inTheWay.state === 'off' ? { n: 'off', label: 'blocker tracking', tone: 'unknown', href: '#/work/plans?s=in-the-way' }
         : { n: 'Can’t tell', label: 'in the way', tone: 'unknown', href: '#/work/plans?s=in-the-way' },
@@ -381,6 +405,7 @@ export function buildPlansPage(res, now = Date.now(), opts = {}) {
     { n: counts.idle + counts.older, label: 'idle', href: '#/work/plans?s=idle' },
   ];
   return {
+    // warning-path: pageHead
     ok: true, headline, sub, tone: counts.needsYou ? 'attn' : counts.stuck ? 'bad' : 'ok', facts, counts, sections, chips, doneChips,
     inTheWay, runs: buildAutonomousRuns(r.floor, opts.topicNames || {}), notes, digestReasons, truncated,
   };

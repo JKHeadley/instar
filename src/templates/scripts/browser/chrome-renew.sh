@@ -4,7 +4,7 @@
 # chrome-js.sh and chrome-mainworld.sh renew it on every call already. macOS only.
 # Installed by instar into .instar/scripts/browser/ — overwritten on every update.
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s)" >&2
+  echo "ERR macos-only: the normal-Chrome method uses macOS Apple Events; it does not run on $(uname -s). On Linux use xdrive.sh in this same folder." >&2
   exit 2
 fi
 [ -z "$1" ] && { echo "usage: chrome-renew.sh <profile-id|/absolute/user-data-dir>" >&2; exit 64; }

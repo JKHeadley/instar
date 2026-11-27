@@ -91,6 +91,9 @@ export interface DesktopProbe {
    * and whether its screen tools are installed. `compositor: 'hyprland'` means
    * Hyprland is the desktop here, even if nobody has signed in to it yet. */
   linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
+  /** Windows only: `locked` is the companion's lock reading (Windows' session
+   * flag and the sign-in screen both say locked). A locked PC is not usable. */
+  windows?: { locked: boolean };
   /** macOS only, while the locked-screen feature is on. */
   lockInputs?: import('./DesktopLockState.js').DesktopLockInputs;
 }
@@ -153,6 +156,8 @@ export interface DesktopHost {
   /** Optional: running totals of capture time spent inside the host OS. */
   captureTiming?(): { count: number; totalMs: number; maxMs: number };
   captureH264?(forceKeyframe: boolean): Promise<import('./DesktopVideo.js').DesktopH264Frame | null>;
+  /** A host whose video can deliver more than 15 pictures a second asks to be polled this often (ms, 50-67). */
+  videoFrameIntervalMs?: number;
   cursor?(): Promise<{ x: number; y: number }>;
   /** A `refused` reply is not a failure: the helper did nothing and lives on. */
   input(action: DesktopInput): Promise<void | { refused: string }>;

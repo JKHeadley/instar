@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 import { applyTelegramFormatter } from '../TelegramAdapter.js';
 import type { FormatMode } from '../TelegramMarkdownFormatter.js';
 import type { BotParameters } from './types.js';
@@ -8,6 +9,8 @@ import type { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
 import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import { submitOriginToHolder } from './OriginForwardToHolder.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
+
+export { RELAY_PRE_PREPARE_REASONS, relayNothingPrepared } from './types.js';
 
 export async function relayOriginBot(input: {
   runtime: TelegramOriginRuntime; topicId: number; chatId: string; text: string; silent?: boolean;
@@ -57,7 +60,12 @@ export async function relayOriginBot(input: {
   input.onPrepared?.(operation);
   // One holder transport for the request-time relay and the §4.2 recovery
   // re-forward (OriginForwardToHolder.ts), so a refusal means one thing.
-  const submitted = await submitOriginToHolder({ operation, send: input.send, expectedOwner: cap.executionOwnerMachineId });
+  let submitted;
+  try { submitted = await submitOriginToHolder({ operation, send: input.send, expectedOwner: cap.executionOwnerMachineId }); }
+  catch (error) {
+    if (error instanceof QuietRecordedError) await service.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed', holdReason: 'quiet-notification-recorded', holdDetail: { quietId: error.receipt.quietId } });
+    throw error;
+  }
   if (!submitted.ok) {
     if (submitted.policyRefusal) throw new OriginSendPolicyRefusal(submitted.policyRefusal, operation.record.operationId);
     throw new TelegramOriginHoldError(submitted.reason, operation.record.operationId, submitted.outcome);

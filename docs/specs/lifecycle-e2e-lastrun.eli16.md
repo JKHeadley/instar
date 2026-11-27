@@ -1,0 +1,9 @@
+# ELI16: why one lifecycle test kept failing under load, and the fix
+
+The lifecycle end-to-end test walks a fake agent through its life: start a server, open two chat sessions, run a job by hand, let a job that runs every second fire on its own, and finally check that everything was saved to disk. The last check kept failing now and then. It said the hand-run job, "e2e-health", had never recorded a run time.
+
+The test's fake agent may only run three sessions at once. Before running the job by hand, the test still had the two chat sessions from the previous step, plus sessions started by the every-second job. It paused the scheduler and waited up to 5 seconds for those to finish on their own. On a busy machine the fake session's "I'm done" line is sometimes missed, so it counts as running for its 15-second startup grace. One of two things then happened. The 5-second wait gave up and the hand-run job never started; that is what GitHub's run showed. Or the wait passed, but the three seats were already taken. The hand-run job was then told "triggered" and quietly put back in line to wait for a seat. The test paused the scheduler again before the seat came, so the job never ran and never got a run time.
+
+The fix: instead of waiting and hoping, the test ends its own leftover sessions before running the job by hand. It then checks right away that the job really started. If this ever breaks again, the failure points at the step that broke, not at the save check at the end. Nothing in Instar itself changes. No time limit was raised, nothing is retried or skipped, and no check was weakened.
+
+Measured on the Studio with the fake sessions slowed down to copy a busy machine: the old test failed 2 of 2 times, the same way GitHub saw it. The fixed test passed 10 of 10 runs across slow, slow plus memory pressure, and normal conditions.

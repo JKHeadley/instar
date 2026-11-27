@@ -1,3 +1,6 @@
+import { isQuietReceipt } from '../../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/feedback-factory/triage/FeedbackTriageService.ts');
 /**
  * Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1: §1–§3, §5–§7).
  *
@@ -103,10 +106,11 @@ export interface FeedbackTriageServiceOptions {
   listMergedPrs: () => Promise<MergedPr[] | null>;
   /** Executor availability before an executor is attached (`not-built` when none is constructed). */
   executorStatus: () => { available: boolean; reason: string };
-  raiseAttention: (item: AttentionInput) => Promise<void>;
+  raiseAttention: (item: AttentionInput) => Promise<unknown>;
   reportDegradation: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
-  sendToTopic?: (topicId: number, text: string) => Promise<void>;
-  dashboardLink: () => string;
+  sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
+  /** The dashboard link for the operator, or null while it would not open on a phone yet (tunnel starting): the list waits. */
+  dashboardLink: () => string | null;
   maxWallClockMs?: number;
   clock?: () => number;
   /**
@@ -423,7 +427,7 @@ export class FeedbackTriageService {
           }
           if (selected.account.usedPercent >= this.tickQuotaCeiling) { out.reason = 'quota-margin-lost'; return; }
           primary = this.beginPrimaryCall(authority, epoch, selected.account, retriage ? 'retriage' : null);
-          if (!primary) { out.reason = this.opts.isCanonicalOwner() ? 'call-cap-reached' : 'owner-lost'; return; }
+          if (!primary) { out.reason = this.primaryRefusalReason(authority, epoch, retriage); return; }
           out.calls++;
         } else if (attempt === 1) {
           if (!this.reserveCall(authority, epoch, retriage ? 'retriage' : null)) break;
@@ -510,6 +514,15 @@ export class FeedbackTriageService {
         'An unreadable reading that persists usually means the usage source for that provider is broken, not that quota is spent.',
       category: 'monitoring', priority: 'NORMAL', sourceContext: 'feedback-triage:quota-paused',
     });
+  }
+
+  /** Names why a primary call was refused; only a counter actually at its limit is a cap. */
+  private primaryRefusalReason(authority: AuthorityRecord, epoch: number, retriage: boolean): string {
+    if (!this.opts.isCanonicalOwner() || this.opts.ownerEpoch() !== epoch) return 'owner-lost';
+    if (this.now() >= this.tickDeadline) return 'triage-time-exhausted-rest-due';
+    const capped = this.opts.drainStore.authorityCallsToday(authority, this.now()) >= this.opts.config().maxCallsPerDay ||
+      (retriage && this.opts.store.subcapUsed('retriage') >= RETRIAGE_SUBCAP);
+    return capped ? 'call-cap-reached' : 'authority-admission-refused';
   }
 
   private beginPrimaryCall(authority: AuthorityRecord, epoch: number, account: VerifiedTriageAccount,
@@ -1032,6 +1045,7 @@ export class FeedbackTriageService {
     // Each entry carries the id or meta key it stamps, so only what is actually shown is stamped.
     const entries: Array<{ line: string; itemId?: string; metaKey?: string }> = [];
     const link = this.opts.dashboardLink();
+    if (link === null) return null;
     const state = this.authorityState();
     if (state.state === 'awaiting-approval' || state.state === 'binding-stale' || state.state === 'paused') {
       const key = `action_list:authority:${state.state}:${state.generation ?? 0}`;
@@ -1072,25 +1086,33 @@ export class FeedbackTriageService {
   }
 
   /** Send the action list at most once a day, never in the quiet window; stamps notifiedAt only after delivery. */
-  async sendActionList(): Promise<{ sent: boolean; reason?: string; items?: number }> {
+  async sendActionList(): Promise<{ sent: boolean; recorded?: boolean; reason?: string; items?: number }> {
     if (!this.opts.isCanonicalOwner()) return { sent: false, reason: 'not-canonical-owner' };
     const cfg = this.opts.config();
     const nowDate = new Date(this.now());
     if (inQuietWindow(nowDate, cfg.timeZone)) return { sent: false, reason: 'quiet-window' };
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: cfg.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(nowDate);
-    if (this.opts.store.meta('action_list:last_day') === day) return { sent: false, reason: 'already-sent-today' };
+    if (this.opts.store.meta('action_list:last_day') === day || this.opts.store.meta('action_list:last_recorded_day') === day) return { sent: false, reason: 'already-sent-today' };
+    // A list whose links the operator's phone cannot open yet waits for the next tick (unstamped).
+    if (this.opts.dashboardLink() === null) return { sent: false, reason: 'public-link-pending' };
     const composed = this.composeActionList();
     if (!composed) return { sent: false, reason: 'nothing-new' };
     const epoch = this.opts.ownerEpoch();
+    let receipt: unknown;
     /* @self-action-controller: feedback-triage-action-list */
     if (cfg.actionTopicId !== undefined && this.opts.sendToTopic) {
-      await this.opts.sendToTopic(cfg.actionTopicId, composed.text);
+      receipt = await withNotificationEnvelope(stampNotification(), async () => (this.opts)!.sendToTopic!(cfg.actionTopicId!, composed.text));
     } else {
-      await this.opts.raiseAttention({
+      receipt = await this.opts.raiseAttention({
         id: `feedback-triage:action-list:${day}`, title: 'Feedback triage: things that need you',
         summary: composed.text.split('\n')[1]?.replace(/^• /, '').slice(0, 200) ?? 'Feedback triage action list',
         description: composed.text, category: 'feedback', priority: 'NORMAL', sourceContext: 'feedback-triage:action-list',
       });
+    }
+    if (isQuietReceipt(receipt) || !!receipt && typeof receipt === 'object' && 'hubHeld' in receipt && receipt.hubHeld === true) {
+      this.opts.store.fenced(epoch, () => this.opts.store.setMeta('action_list:last_recorded_day', day));
+      this.opts.audit.append('action-list-recorded', { items: composed.itemIds.length, extra: composed.metaKeys.length });
+      return { sent: false, recorded: true, reason: 'quiet-recorded', items: composed.itemIds.length + composed.metaKeys.length };
     }
     this.opts.store.markNotified(epoch, composed.itemIds);
     this.opts.store.fenced(epoch, () => {

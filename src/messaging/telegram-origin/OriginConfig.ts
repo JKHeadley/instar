@@ -70,6 +70,25 @@ export function originForwardToHolderEnabled(origin: unknown): boolean {
   return enabled ?? true;
 }
 
+/** native-conversation-base §3b — the outcome route's owner read. Read inline,
+ * never written: omitted means on. `false` only stops THIS machine asking (its
+ * answers fall to row 11, more cautious only). Invalid values read as the
+ * defaults rather than throwing, because the switch can only make answers more
+ * cautious and an unreadable one must not take the route down. */
+export interface OriginOwnerReadConfig { enabled: boolean; budgetMs: number; cacheEntries: number }
+export function originOwnerReadConfig(origin: unknown): OriginOwnerReadConfig {
+  const defaults: OriginOwnerReadConfig = { enabled: true, budgetMs: 2000, cacheEntries: 1024 };
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return defaults;
+  const read = (origin as { ownerRead?: unknown }).ownerRead;
+  if (!read || typeof read !== 'object' || Array.isArray(read)) return defaults;
+  const r = read as { enabled?: unknown; budgetMs?: unknown; cacheEntries?: unknown };
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : true,
+    budgetMs: Number.isSafeInteger(r.budgetMs) && Number(r.budgetMs) >= 100 && Number(r.budgetMs) <= 4000 ? Number(r.budgetMs) : defaults.budgetMs,
+    cacheEntries: Number.isSafeInteger(r.cacheEntries) && Number(r.cacheEntries) >= 0 && Number(r.cacheEntries) <= 100_000 ? Number(r.cacheEntries) : defaults.cacheEntries,
+  };
+}
+
 /** Add only missing presentation/notice defaults. Never changes an operator's false,
  * creates an audit-off switch, or activates a writer without enrollment.
  */

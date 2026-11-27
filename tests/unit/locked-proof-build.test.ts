@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PROVEN_MACOS_VERSIONS } from '../../src/core/DesktopProvenVersions.js';
 // @ts-expect-error — plain .mjs script helper, no type declarations
-import { PROOF_IN_PROGRESS, parseOsMajor, proofVersion, rewriteProvenTable, unprovenRows } from '../../scripts/lib/locked-proof-build.mjs';
+import { PROOF_IN_PROGRESS, parseOsMajor, proofVersion, rewriteHelperRoot, rewriteProvenTable, unprovenRows } from '../../scripts/lib/locked-proof-build.mjs';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const TABLE = path.join(ROOT, 'src/core/DesktopProvenVersions.ts');
@@ -27,6 +27,22 @@ describe('committed proven-versions table', () => {
 });
 
 describe('locked-proof test build helpers', () => {
+  it('moves the kept helper folder in the real retention source, and only that', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src/core/DesktopHelperRetention.ts'), 'utf8');
+    const moved = rewriteHelperRoot(source, 'desktop-helper-proof4');
+    expect(moved).toContain("path.join(os.homedir(), '.instar', 'desktop-helper-proof4')");
+    expect(moved).not.toContain("path.join(os.homedir(), '.instar', 'desktop-helper')");
+    expect(moved.length - source.length).toBe('-proof4'.length);
+  });
+
+  it('refuses a helper folder that could reach the locked store or leave ~/.instar', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'src/core/DesktopHelperRetention.ts'), 'utf8');
+    for (const bad of ['desktop-helper', 'desktop-helper/locked', '../desktop-helper-x', 'other', '']) {
+      expect(() => rewriteHelperRoot(source, bad)).toThrow(/desktop-helper-<name>/);
+    }
+    expect(() => rewriteHelperRoot('nothing here', 'desktop-helper-x')).toThrow(/exactly one/);
+  });
+
   it('versions the build as <release>-lockedproof.<n> and refuses anything else', () => {
     expect(proofVersion('1.3.1607', 2)).toBe('1.3.1607-lockedproof.2');
     expect(() => proofVersion('1.3.1607-lockedproof.1', 2)).toThrow(/plain release version/);

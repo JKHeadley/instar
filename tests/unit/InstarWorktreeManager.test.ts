@@ -47,6 +47,23 @@ describe('worktree capacity', () => {
     fs.mkdirSync(path.join(root, 'two'));
     expect(() => assertWorktreeCapacity(root, 2)).toThrow(/worktree-capacity: 2 directories/);
   });
+
+  it('keeps the bound on every directory and says plainly what is filling the folder', () => {
+    fs.mkdirSync(path.join(root, 'real-checkout'));
+    fs.writeFileSync(path.join(root, 'real-checkout', '.git'), 'gitdir: elsewhere');
+    for (const name of ['gate-train-1', 'gate-train-2', 'runner-frozen-a', '.verify']) fs.mkdirSync(path.join(root, name));
+    // Non-checkouts count: five directories refuse at a limit of five, not one.
+    expect(() => assertWorktreeCapacity(root, 6)).not.toThrow();
+    let message = '';
+    try { assertWorktreeCapacity(root, 5); } catch (err) { message = (err as Error).message; }
+    expect(message).toContain('worktree-capacity: 5 directories');
+    expect(message).toContain('(limit 5)');
+    expect(message).toContain('1 git checkouts and 4 other folders');
+    expect(message).toContain('gate-* 2');
+    expect(message).toContain('runner-* 1');
+    expect(message).toContain('.verify 1');
+    expect(message).toContain('counts toward the limit');
+  });
 });
 
 describe('worktree creation lock', () => {

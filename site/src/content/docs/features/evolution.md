@@ -81,6 +81,8 @@ Evolution work is a two-phase cycle: evaluate first (lightweight scoring), then 
 
 Commitment detection runs separately on a much shorter cadence — every 5 minutes via `commitment-detection` — so new commitments get captured in near-real-time as you chat with the agent. The overdue-check job above is the slower follow-up that escalates if a commitment goes too long without movement.
 
+The `promise-review` job reviews up to 30 due promises every six hours. It can keep a promise open, set its priority, or propose completion or archival with supporting evidence. The server's `/commitments/review/apply` route checks the evidence, priority age, and per-run and daily closure caps. The feature is gated by `commitments.promiseReview`, with closures in shadow mode until graduation; the job never messages the user or other agents. See [default jobs](/reference/default-jobs/) for its schedule.
+
 ## Post-Action Reflection
 
 A behavioral hook nudges the agent to pause after significant actions (commits, deploys) and consider what it learned. This feeds the learning registry and keeps evolution grounded in experience.

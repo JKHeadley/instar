@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "locked-proof-helper-dir",
+  "sessionId": "ba5833c2-2352-48f1-bbf2-d2026dee786c",
+  "timestamp": "2026-11-05T03:49:56.287Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-helper-dir.md",
+  "artifactSha256": "8b33e3da1475c3683c983ef322a9a90c06e61b340b8823a914a11d1cd694db92",
+  "coveredFiles": [
+    "docs/specs/desktop-locked-screen.md",
+    "scripts/build-locked-proof.mjs",
+    "scripts/lib/locked-proof-build.mjs",
+    "scripts/locked-proof/driver.mjs",
+    "tests/unit/locked-proof-build.test.ts",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/locked-proof-helper-dir.eli16.md",
+    "upgrades/next/locked-proof-helper-dir.md",
+    "upgrades/side-effects/locked-proof-helper-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/locked-proof-helper-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-helper-dir.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

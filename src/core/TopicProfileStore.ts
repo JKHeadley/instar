@@ -36,6 +36,7 @@
  *    atomically supersede the parked state in the same mutate.
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -119,7 +120,7 @@ export class FlushRefusedError extends Error {
 
 export class ProfileLockTimeoutError extends Error {
   constructor(topicKey: string) {
-    super(`could not acquire the profile lock for topic ${topicKey} — a respawn is in progress`);
+    super(`could not acquire the profile lock for ${topicRef(topicKey)} — a respawn is in progress`);
     this.name = 'ProfileLockTimeoutError';
   }
 }

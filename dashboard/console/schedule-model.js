@@ -14,6 +14,7 @@
 
 import { ago, failure } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export { failure, ago };
 
@@ -92,7 +93,7 @@ export function resultWord(r) { return RESULT_WORD[r] || (r ? String(r).replace(
 
 const SKIP_WORD = {
   disabled: 'switched off', paused: 'the scheduler was paused', quota: 'usage limit', 'memory-pressure': 'low memory', capacity: 'no free session slot',
-  claimed: 'another machine took it', 'machine-scope': 'not this machine', 'already-running': 'already running', 'role-guard': 'this machine was standby', 'throwaway-agent': 'test agent in a temporary folder', gate: 'nothing to do, by its pre-flight check',
+  claimed: 'another machine took it', 'machine-scope': 'not this machine', 'already-running': 'already running', 'role-guard': 'this machine was standby', 'throwaway-agent': 'test agent in a temporary folder', gate: 'nothing to do, by its pre-flight check', 'definition-changed': 'its settings changed while it was starting',
 };
 export function skipWords(reason) { return `skipped (${reason ? (SKIP_WORD[reason] || String(reason).replace(/[-_]/g, ' ')) : 'no reason recorded'})`; }
 
@@ -146,16 +147,20 @@ export function entryStatus(e, now = Date.now(), medians = {}) {
     const forS = Number.isFinite(since) ? Math.max(0, (now - since) / 1000) : null;
     const b = baselineFor(e.job, medians);
     if (forS !== null && b && forS > b.seconds * RUNNING_LONG_FACTOR) {
+      // warning-path: row
       return { kind: 'running-long', tone: 'attn', words: `running for ${spell(forS)}, usually ${spell(b.seconds)}`, runningFor: forS, usual: b, failures };
     }
+    // warning-path: row
     return { kind: 'running', tone: failures ? 'bad' : null, words: [forS !== null ? `running for ${spell(forS)}` : 'running', failWords].filter(Boolean).join(' · '), runningFor: forS, failures };
   }
   const next = Date.parse(s.nextScheduled);
   const late = e.local && Number.isFinite(next) && now - next > LATE_GRACE_MS;
   const lateWords = late ? `past its recorded next-run time by ${spell((now - next) / 1000)}, not running` : null;
+  // warning-path: row
   if (failures) return { kind: 'failing', tone: 'bad', words: [failWords, lateWords].filter(Boolean).join(' · '), failures, late };
   if (!e.local) return { kind: 'elsewhere', tone: null, words: machinesWords(e.job), failures };
   if (!Number.isFinite(next)) return { kind: 'next-unknown', tone: 'unknown', words: 'next run unknown', failures };
+  // warning-path: row
   if (late) return { kind: 'late', tone: 'attn', words: lateWords, byMs: now - next, failures, late: true };
   return { kind: 'ok', tone: null, words: next > now ? `next ${until(next, now)}` : 'due now', next, failures };
 }
@@ -267,7 +272,8 @@ export function buildSchedulePage(res, now = Date.now(), opts = {}) {
     const mine = (localJobs || []).map((j) => { const t = tags.get(j.slug); return { ...j, machineId: j.machineId || (t && t.machineId) || selfId || undefined, machineNickname: j.machineNickname || (t && t.machineNickname) || undefined }; });
     jobs = [...mine, ...pool.data.jobs.filter((j) => j && j.remote)];
     multi = (Number(p.peersQueried) || 0) > 0;
-    for (const f of (Array.isArray(p.failed) ? p.failed : [])) notes.push(`${verifiedDisplayName(names[f.machineId], f.machineId) || 'A machine'} did not answer; its jobs are not shown.`);
+    // How long it has been out of reach and whether anything is fixing it (CMT-1541).
+    for (const f of (Array.isArray(p.failed) ? p.failed : [])) notes.push(`${unreachableSentence(verifiedDisplayName(names[f.machineId], f.machineId) || null, poolMachine({ machines: opts.poolMachines || [] }, f.machineId), f, now)} Its jobs are not shown.`);
     if (p.stale) notes.push('Other machines’ jobs are from the last reading; the server is shedding load.');
   } else if (pool && !pool.ok) notes.push(`Couldn't read other machines’ jobs: ${pool.reason}. Showing this machine only.`);
   if (!localJobs && !jobs.length) return { ok: false, reason: schedulerAbsent ? 'The scheduler is not running on this machine.' : 'The job list answered without jobs.' };
@@ -315,8 +321,11 @@ export function buildSchedulePage(res, now = Date.now(), opts = {}) {
   const machineCount = new Set(rows.flatMap((x) => x.statuses.map((s) => s.entry.machineId || 'self'))).size;
   const sub = !rows.length ? 'Ask me in chat to do something on a schedule.' : multi ? `Jobs across ${machineCount} ${machineCount === 1 ? 'machine' : 'machines'}.` : 'Jobs on this machine.';
   const facts = [
+    // warning-path: inline
     { n: counts.late, label: 'late', tone: counts.late ? 'attn' : null, href: '#/work/schedule?s=needs' },
+    // warning-path: inline
     { n: counts.failing, label: 'failing', tone: counts.failing ? 'bad' : null, href: '#/work/schedule?s=needs' },
+    // warning-path: inline
     { n: counts.running, label: counts.runningLong ? `running, ${counts.runningLong} longer than usual` : 'running', tone: counts.runningLong ? 'attn' : null, href: counts.runningLong ? '#/work/schedule?s=needs' : '#/work/schedule?s=everything' },
     { n: counts.off, label: 'off', href: '#/work/schedule?s=everything' },
   ];

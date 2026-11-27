@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "security-ux-standard",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T02:06:29.691Z",
+  "artifactPath": "upgrades/side-effects/security-ux-standard.md",
+  "artifactSha256": "3e2cb719275d698ea9c892527b8db8695f5fc62d4fcde27164b0b53bc79473c0",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/security-ux-standard-interaction-family-2026-11-15.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/reports/security-ux-standard-interaction-review-2026-11-15.md",
+    "docs/specs/security-ux-standard.eli16.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/security-ux-standard.md",
+    "upgrades/side-effects/security-ux-standard.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "docs/specs/security-ux-standard.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/security-ux-standard.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

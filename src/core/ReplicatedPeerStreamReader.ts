@@ -118,6 +118,9 @@ function realFs(): JournalFs {
   };
 }
 
+/** A store whose streams are larger than this is re-read each time rather than held in memory. */
+const FOLD_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -137,6 +140,7 @@ export class ReplicatedPeerStreamReader {
   private readonly io: JournalFs;
   private readonly logger?: (msg: string) => void;
   private witnessIndexTrusted = false;
+  private readonly foldCache = new Map<string, { signature: string; fold: Map<string, Map<string, OriginRecord>> }>();
   private readonly witnessIndex = new Map<string, WitnessIndexEntry>();
   private loggedWitnessParityMismatch = false;
   private witnessGeneration = 0;
@@ -169,7 +173,15 @@ export class ReplicatedPeerStreamReader {
    */
   loadOriginRecords(store: string, recordKey: string): OriginRecord[] {
     const byOrigin = this.materialize(store).get(recordKey);
-    return byOrigin ? [...byOrigin.values()] : [];
+    // A copy: the fold is cached and shared, and callers are free to change what they get.
+    return byOrigin ? structuredClone([...byOrigin.values()]) : [];
+  }
+
+  /** Every record the store holds, keyed by recordKey, from one scan (per-key reads rescan the store). */
+  loadAllOriginRecords(store: string): Map<string, OriginRecord[]> {
+    const out = new Map<string, OriginRecord[]>();
+    for (const [recordKey, byOrigin] of this.materialize(store)) out.set(recordKey, structuredClone([...byOrigin.values()]));
+    return out;
   }
 
   /** Every recordKey the store currently holds across ALL origins (for readAll). */
@@ -381,8 +393,16 @@ export class ReplicatedPeerStreamReader {
       ...this.ownStreamFiles(this.selfMachineId, kind),
       ...this.peerStreamFiles(kind),
     ];
+    // Per-key callers ask once per record, so without this a list rescans the store N times.
+    const stamp = this.streamStamp(files);
+    const cached = this.foldCache.get(store);
+    if (stamp && cached?.signature === stamp.signature) return cached.fold;
+    this.foldCache.delete(store);
+    let readFailed = false;
     for (const file of files) {
       const entries = this.readKindEntries([file]);
+      // `readTailTolerant` answers a failed read with no entries; never remember that as the truth.
+      if (entries.length === 0) readFailed = true;
       for (const entry of entries) {
         if (entry.kind !== kind) continue;
         const data = entry.data;
@@ -405,7 +425,66 @@ export class ReplicatedPeerStreamReader {
         }
       }
     }
+    if (stamp && !readFailed && stamp.bytes <= FOLD_CACHE_MAX_BYTES) {
+      this.foldCache.set(store, { signature: stamp.signature, fold: out });
+    }
     return out;
+  }
+
+  /**
+   * True when every peer replica stream of the store reads in full: none unreadable, none past the read ceiling,
+   * no skipped line (conversation-groups-phone §3: "already a project?" must not come from a partial peer copy).
+   * Says nothing about replication lag: a record a peer has not sent yet is unknowable here.
+   */
+  peerStreamsReadComplete(store: string): boolean {
+    const reg = this.registry.getByStore(store);
+    if (!reg) return false;
+    const kind = reg.kind as JournalKind;
+    // Its own directory read: only "no peers directory" (ENOENT) means no peers; any other listing error is incomplete.
+    const listing = (): string | null => {
+      try { return (this.io.readdirSync(this.peersDir()) as string[]).slice().sort().join('|'); } catch (e) {
+        /* @silent-fallback-ok: answered as incomplete (refuses), except a missing directory = no peers */
+        return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? '' : null;
+      }
+    };
+    const before = listing();
+    if (before === null) return false;
+    for (const file of this.peerStreamFiles(kind)) {
+      let size = 0;
+      try { size = this.io.statSync(file).size; } catch { /* @silent-fallback-ok: answered as incomplete, which refuses */ return false; }
+      if (size === 0) continue;
+      const read = readTailTolerant(this.io, file, Number.MAX_SAFE_INTEGER, READ_BYTE_CEILING);
+      if (read.truncated || read.skippedCorrupt > 0 || read.entries.length === 0) return false;
+    }
+    // A replica file added or renamed while reading: list again and compare.
+    return listing() === before;
+  }
+
+  /**
+   * The same stamp the fold cache uses, for a caller that caches something derived from this store:
+   * it changes whenever any own or peer stream file of the store does. Null = unknown, do not cache.
+   */
+  foldSignature(store: string): string | null {
+    const reg = this.registry.getByStore(store);
+    if (!reg) return null;
+    const kind = reg.kind as JournalKind;
+    return this.streamStamp([...this.ownStreamFiles(this.selfMachineId, kind), ...this.peerStreamFiles(kind)])?.signature ?? null;
+  }
+
+  /** What changes when any stream file does: its path, size, mtime and inode. Null = unknown, do not cache. */
+  private streamStamp(files: string[]): { signature: string; bytes: number } | null {
+    let bytes = 0;
+    const parts: string[] = [];
+    try {
+      for (const file of [...files].sort()) {
+        const st = this.io.statSync(file);
+        bytes += st.size;
+        parts.push(`${file}:${st.size}:${st.mtimeMs}:${st.ino}`);
+      }
+    } catch { /* @silent-fallback-ok: a file that vanished mid-read just means this fold is not cached; the read itself still runs. */
+      return null;
+    }
+    return { signature: parts.join('|'), bytes };
   }
 
   /** Read + tolerant-parse every JournalEntry from the given stream files. */
