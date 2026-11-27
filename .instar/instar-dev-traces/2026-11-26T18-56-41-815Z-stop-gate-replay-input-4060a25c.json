@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "stop-gate-replay-input",
+  "sessionId": "d873b332-3497-4483-955b-1454667ca861",
+  "timestamp": "2026-11-26T18:56:41.815Z",
+  "artifactPath": "upgrades/side-effects/stop-gate-replay-input.md",
+  "artifactSha256": "5be27d44cbcc5b142e296d90c4a83fceafde0fed6eb6f8dc965ae94b74cc0798",
+  "coveredFiles": [
+    "docs/specs/stop-gate-replay-input.eli16.md",
+    "src/commands/server.ts",
+    "src/core/UnjustifiedStopGate.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/awareness/stop-check-replay-input.md",
+    "src/data/feature-ladders.json",
+    "tests/e2e/stop-gate-replay-input-lifecycle.test.ts",
+    "tests/integration/stop-gate-replay-input-provenance.test.ts",
+    "tests/unit/stop-gate-replay-input-capture.test.ts",
+    "upgrades/next/stop-gate-replay-input.md",
+    "upgrades/side-effects/stop-gate-replay-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dev-gated observability capture on the stop check's provenance row; prompt and verdict unchanged, fleet rows byte-identical; a revert or the switch fully undoes it. Mirrors approved CMT-1679.",
+  "eli16Path": "docs/specs/stop-gate-replay-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stop-gate-replay-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

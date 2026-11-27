@@ -109,3 +109,19 @@ Concur. The renamed file has the same content blob as the original (`66fb861e1a2
 - Two public site pages are registered as screens instead of excepted, because a person sees them: `site-agent-link-fallback` (`/a`, the permanent agent link fallback) and `site-link-computer-fallback` (`/link/computer`).
 
 Every new entry is `uncaptured` and tracked by the same commitment as the rest of the registry. On the M5, the registry validator returns no errors, every dashboard and pairing asset classifies as registered, and the only unregistered outside-root files are the nine with written exceptions.
+
+## Pre-queue review (rule 7) and fixes, 2026-11-27
+
+**Reviewer:** independent pre-queue reviewer, fresh Claude Opus 5.5 helper of the Design Standards session, not the author. Head 7810899156 against main d66e82bd5. Verdict: dissent on five items, all fixed in this change.
+
+1. Fixed: the inspector read both sides of every changed script file under the 2 MiB policy cap, so any change touching `src/server/routes.ts` (2.9 MB) or `src/commands/server.ts` (2.5 MB) came back unavailable (9 of 26 recent main commits). It now reads source text only for the paths the classifier actually reads (`pathsNeedingSourceText` in `surfaceClassifier.ts`, sharing the classifier's own rules), with a separate 8 MiB per-side cap for those reads. The 16 MiB aggregate cap is unchanged.
+2. Fixed: main added `dashboard/console/chat-outbox.js` and `dashboard/console/outbox-runner.js`, both imported by `console.js`. They join the shared files of every screen that includes `console.js`.
+3. Fixed: main is merged. Main's release emptied `upgrades/next/`, and git guessed a rename for this change's upgrade note, so the note is kept under `upgrades/next/`.
+4. Fixed: the machine-index row pattern in `standardParser.ts` was cubic on a long malformed row (2 s at 2,000 spaces, over 120 s at 10,000), and it runs synchronously, out of reach of the deadline. Rows are now matched once and trimmed afterwards. On the M5 the new parser gives byte-identical output to the old one on the standard at this head, on main and on PR 3956, plus an edge-case sample (one-sided ticks, tight cells, inner bars, no closing bar). A 20,000-space row parses in under a millisecond.
+5. Fixed: the PR description is rewritten with a UX Impact section and the current state.
+
+Also fixed from the non-blocking notes: `ls-tree` now runs with `--full-tree`, so running from a subdirectory no longer reports a false `policy-missing`.
+
+New tests: an integration case where a registered file and a dashboard file over 3 MiB are changed and the result is still structurally valid; an integration case where an unregistered 3 MiB source is read and flagged while one over 8 MiB is unavailable; a unit case for `pathsNeedingSourceText` that checks the classifier finds nothing unreadable with only those texts; parser cases for linear time and for the old row shapes.
+
+Still open, non-blocking, for later stages: tests for `read-deadline`, `MAX_DIFF`, the stderr cap, an invalid base registry and the CLI `invalid-policy` exit code; a `screen-deregistered` informational finding; coarse unavailable for a changed script symlink.
