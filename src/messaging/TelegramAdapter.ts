@@ -26,6 +26,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
 
 import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
+import { LogLineCounter } from './shared/LogLineCounter.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
 import { withOriginBotAuthoredText } from './telegram-origin/OriginBotEgress.js';
@@ -682,13 +683,8 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicToPurpose: Map<number, string> = new Map();
   private registryPath: string;
   private messageLogPath: string;
-  /** Lines in the message log as of `logLineCountBytes`, kept by counting only the bytes appended
-   *  since the last check, so the rotation check never rereads the whole log (2026-11-27 stall:
-   *  a 30 MB log paid a full read and split on every append). null = not counted yet. */
-  private logLineCount: number | null = null;
-  private logLineCountBytes = 0;
-  /** Inode at the last count: a log replaced by a new file of any size is counted again. */
-  private logLineCountIno: number | bigint | null = null;
+  /** Rotation check without rereading the log per append (LogLineCounter, 2026-11-27 stall). */
+  private logLineCounter!: LogLineCounter;
   /** Durable append-seam dedupe, seeded from the bounded JSONL on first use. */
   private loggedMessageKeys = new Set<string>();
   private messageLogDedupeSeeded = false;
@@ -1415,11 +1411,14 @@ export class TelegramAdapter implements MessagingAdapter {
    * cost of repeated history reads to O(limit) instead of a full synchronous
    * re-read of the (up to 75k-line) message log per call. Holds the most recent
    * TAIL_CACHE_LIMIT entries per topic, which covers every production caller
-   * (live-tail + handoff hash use 500, respawn history far less). Log rotation
+   * (window-lifecycle routes and notifier checks use 1,000, live-tail + handoff hash 500). Log rotation
    * is irrelevant to it — rotation only drops OLD lines, and the cache only
    * holds the newest.
    */
   private topicTailCache = new Map<number, LogEntry[]>();
+  /** Unregistered topics whose tail is still cached, oldest first; bounded by UNREGISTERED_TAIL_LIMIT. */
+  private unregisteredTails = new Set<number>();
+  private static readonly UNREGISTERED_TAIL_LIMIT = 64;
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
   /**
@@ -1431,7 +1430,9 @@ export class TelegramAdapter implements MessagingAdapter {
   /** Entries logged while the index was being built; applied over it when the build finishes. */
   private latestEntryPending: Map<number, LogEntry> | null = null;
   private latestEntryBuild: Promise<void> | null = null;
-  private static readonly TAIL_CACHE_LIMIT = 500;
+  // 1,000: the window-lifecycle routes and the AgentServer notifier checks ask for 1,000 entries; at
+  // 500 those requests bypassed the cache and read the whole log on every call (2026-11-27 stall).
+  private static readonly TAIL_CACHE_LIMIT = 1_000;
 
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
@@ -3540,6 +3541,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // ── Topic-Session Registry ─────────────────────────────────
 
   registerTopicSession(topicId: number, sessionName: string, topicName?: string): void {
+    this.unregisteredTails.delete(topicId);
     this.topicToSession.set(topicId, sessionName);
     this.sessionToTopic.set(sessionName, topicId);
     // A generated topic-N string is a lookup failure, never a topic title.
@@ -3560,13 +3562,23 @@ export class TelegramAdapter implements MessagingAdapter {
     const sessionName = this.topicToSession.get(topicId);
     this.topicToSession.delete(topicId);
     if (sessionName) this.sessionToTopic.delete(sessionName);
-    // Reclaim the topic's tail cache — a long-lived server churning through
-    // many topics must not retain ≤500 entries per topic-ever-seen forever
-    // (second-pass reviewer finding). A later read simply re-seeds via the
-    // lazy per-topic path. The version COUNTER is deliberately kept: it is
-    // ~8 bytes, and resetting it on a re-registered topic could collide with
-    // a LiveTailSource.lastSeenVersion snapshot and silently gate a real change.
-    this.topicTailCache.delete(topicId);
+    // Tail cache retention: the tails of the UNREGISTERED_TAIL_LIMIT (64) most recently
+    // unregistered topics are kept, so register/unregister churn on a topic does not force a fresh
+    // log scan each time (2026-11-27 stall review). Beyond that bound the oldest unregistered tail
+    // is reclaimed, so a long-lived server churning through many topics does not keep up to
+    // TAIL_CACHE_LIMIT entries for every topic it has ever seen; a later read re-seeds it via the
+    // lazy per-topic path. The version COUNTER is deliberately kept: it is ~8 bytes, and resetting it
+    // on a re-registered topic could collide with a LiveTailSource.lastSeenVersion snapshot and
+    // silently gate a real change.
+    if (this.topicTailCache.has(topicId)) {
+      this.unregisteredTails.delete(topicId);
+      this.unregisteredTails.add(topicId);
+      while (this.unregisteredTails.size > TelegramAdapter.UNREGISTERED_TAIL_LIMIT) {
+        const oldest = this.unregisteredTails.values().next().value as number;
+        this.unregisteredTails.delete(oldest);
+        if (!this.topicToSession.has(oldest)) this.topicTailCache.delete(oldest);
+      }
+    }
     this.saveRegistry();
   }
 
@@ -4959,7 +4971,7 @@ export class TelegramAdapter implements MessagingAdapter {
       this.topicTailCache.set(topicId, seeded);
       return this.authorshipJoin.join(seeded.slice(-limit));
     }
-    // Oversized request (no production caller) — direct scan, leave the cache's
+    // Oversized request (over 1,000; no production caller) — direct scan, leave the cache's
     // "most recent TAIL_CACHE_LIMIT entries" invariant untouched.
     return this.authorshipJoin.join(this.scanLogForTopic(topicId, limit));
   }
@@ -5184,24 +5196,61 @@ export class TelegramAdapter implements MessagingAdapter {
   private scanLogForTopic(topicId: number, limit: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
 
-    // Read the file to find matching entries.
-    // Log rotation caps at 75,000 lines, so this is bounded.
-    const content = fs.readFileSync(this.messageLogPath, 'utf-8');
-    const lines = content.split('\n').filter(Boolean);
-
-    // Scan from end to find matching entries (most recent first).
+    // Read backwards in 1 MB chunks and stop once `limit` entries are found
+    // (the getTopicHistoryBefore pattern). The previous whole-file
+    // readFileSync + split + parse of a log that can exceed 100 MB was the
+    // measured event-loop stall on an idle Laptop (2026-11-27, 1.3.2084:
+    // scanLogForTopic + readFileSync ~56% of self-time). The scan now stops as
+    // soon as it has `limit` entries. The tail-cache seed asks for
+    // TAIL_CACHE_LIMIT (1,000), so a quiet topic with fewer entries still reads
+    // and parses the whole log once per process, in 1 MB pieces, and is then
+    // served from the cache.
     // Lines written via the shared MessageLogger carry `channelId` instead of
     // `topicId` (same compat dance as MessageLogger.search) — accept both so the
     // scan (and the tail-cache seed built from it) sees every writer's entries.
     const matching: LogEntry[] = [];
-    for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
-      try {
-        const entry: LogEntry = JSON.parse(lines[i]);
-        const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
-        if (entryTopicId === topicId) {
-          matching.unshift(entry); // Maintain chronological order
+    const CHUNK = 1024 * 1024;
+    let fd: number;
+    try { fd = fs.openSync(this.messageLogPath, 'r'); } catch (err) {
+      // A log removed between the exists check and open reads as empty, as the existsSync guard
+      // does. Any other open failure (EMFILE, EACCES) throws, as the old readFileSync did, so the
+      // caller does not cache an empty history for a topic that has one.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []; // @silent-fallback-ok: a missing log is an empty history
+      throw err;
+    }
+    try {
+      let pos = fs.fstatSync(fd).size;
+      // The partial first line of each chunk is kept as bytes and joined to the
+      // previous chunk before decoding, so a character split across chunks survives.
+      let carry = Buffer.alloc(0);
+      while (pos > 0 && matching.length < limit) {
+        const size = Math.min(CHUNK, pos);
+        pos -= size;
+        const read = Buffer.alloc(size);
+        // A short read means the log shrank under us (another writer rotated or truncated it in
+        // place); stop with the entries already found rather than decode the missing bytes.
+        if (fs.readSync(fd, read, 0, size, pos) < size) break;
+        let buf = Buffer.concat([read, carry]);
+        if (pos > 0) {
+          const nl = buf.indexOf(0x0a);
+          if (nl < 0) { carry = buf; continue; }
+          carry = buf.subarray(0, nl);
+          buf = buf.subarray(nl + 1);
+        } else {
+          carry = Buffer.alloc(0);
         }
-      } catch { /* skip malformed */ }
+        const lines = buf.toString('utf-8').split('\n');
+        for (let i = lines.length - 1; i >= 0 && matching.length < limit; i--) {
+          if (!lines[i]) continue;
+          try {
+            const entry: LogEntry = JSON.parse(lines[i]);
+            const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+            if (entryTopicId === topicId) matching.unshift(entry); // Maintain chronological order
+          } catch { /* skip malformed */ }
+        }
+      }
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
     }
 
     return matching;
@@ -5368,21 +5417,10 @@ export class TelegramAdapter implements MessagingAdapter {
       // Only check rotation when file exceeds ~20MB
       if (stat.size < 20 * 1024 * 1024) return;
 
-      // Count lines without reading the whole log on every append: only the bytes added since the
-      // last count are read. A file smaller than at the last count was rotated or truncated
-      // elsewhere, so it is counted again from the start.
-      if (this.logLineCount === null || stat.size < this.logLineCountBytes || stat.ino !== this.logLineCountIno) {
-        this.logLineCount = 0;
-        this.logLineCountBytes = 0;
-        this.logLineCountIno = stat.ino;
-      }
-      if (stat.size > this.logLineCountBytes) {
-        this.logLineCount += this.countNewlines(this.logLineCountBytes, stat.size);
-        this.logLineCountBytes = stat.size;
-      }
-      // N newlines can mean N+1 lines (a final line without its newline), so read at N >= 100,000
-      // and let the full read below make the exact decision, as before.
-      if (this.logLineCount < 100_000) return;
+      // A newline count below the limit cannot hide more than 100,000 non-empty lines (N newlines
+      // are at most N + 1 lines), so only then is the whole log read and decides exactly, as before.
+      this.logLineCounter ??= new LogLineCounter(this.messageLogPath);
+      if (this.logLineCounter.newlines(stat) < 100_000) return;
 
       const raw = fs.readFileSync(this.messageLogPath);
       const content = raw.toString('utf-8');
@@ -5399,36 +5437,15 @@ export class TelegramAdapter implements MessagingAdapter {
         }
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
         const rotated = fs.statSync(this.messageLogPath);
-        this.logLineCount = kept.length;
-        this.logLineCountBytes = rotated.size;
-        this.logLineCountIno = rotated.ino;
+        this.logLineCounter.adopt(kept.length, rotated.size, rotated.ino);
       } else {
         // The newline count overstated non-empty lines (blank lines): adopt the exact count from
         // this read, so later appends again only count their own bytes.
-        this.logLineCount = lines.length;
-        this.logLineCountBytes = raw.length; // bytes on disk, not the decoded length (invalid UTF-8 decodes longer)
+        this.logLineCounter.adopt(lines.length, raw.length, stat.ino); // bytes on disk, not the decoded length
       }
     } catch {
       // @silent-fallback-ok — log rotation non-critical
-      this.logLineCount = null;
-    }
-  }
-
-  /** Newline bytes in the message log between two offsets, read in 1 MB chunks (no decode, no split). */
-  private countNewlines(from: number, to: number): number {
-    const CHUNK = 1024 * 1024;
-    const fd = fs.openSync(this.messageLogPath, 'r');
-    try {
-      const buf = Buffer.alloc(CHUNK);
-      let count = 0;
-      for (let pos = from; pos < to; pos += CHUNK) {
-        const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, to - pos), pos);
-        if (n <= 0) break;
-        for (let i = 0; i < n; i++) if (buf[i] === 0x0a) count++;
-      }
-      return count;
-    } finally {
-      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
+      this.logLineCounter?.reset();
     }
   }
 
