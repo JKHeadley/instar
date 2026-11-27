@@ -51,8 +51,14 @@ const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
 /** "A tree node under *Parent Name*" / "a tree node under **Parent Name**" */
 const PARENT_CLAIM_RE = /\ba tree node (?:under|beneath) \*{1,2}([^*]+?)\*{1,2}/gi;
-/** "Tree node beneath it: *Child Name*" — the parent's acknowledgement. */
-const CHILD_CLAIM_RE = /\btree nodes? (?:beneath|under) it:?\s*\*{1,2}([^*]+?)\*{1,2}/gi;
+/** "Tree node beneath it: *Child Name*" — the parent's acknowledgement. The plural form lists several
+ * children separated by ";", "," or "and" ("Tree nodes beneath it: *A*; *B*."); every listed name counts. */
+const CHILD_CLAIM_RE = /\btree nodes? (?:beneath|under) it:?\s*((?:\*{1,2}[^*]+?\*{1,2}(?:\s*[;,]\s*|\s+and\s+)?)+)/gi;
+const CHILD_NAME_RE = /\*{1,2}([^*]+?)\*{1,2}/g;
+/** Every child name a parent's text acknowledges, in order. */
+function acknowledgedChildren(parentText) {
+  return [...parentText.matchAll(CHILD_CLAIM_RE)].flatMap(([, list]) => [...list.matchAll(CHILD_NAME_RE)].map(([, name]) => name));
+}
 
 /**
  * THE MERGE SYNTAX (operator re-ruling of 4a, 2026-08-13) — a second way to declare parentage.
@@ -131,7 +137,7 @@ for (const a of articles) {
     continue;
   }
   const parentText = parent.body.join('\n');
-  const acknowledged = [...parentText.matchAll(CHILD_CLAIM_RE)].some(([, child]) => {
+  const acknowledged = acknowledgedChildren(parentText).some((child) => {
     const c = child.trim();
     return a.name === c || a.name.startsWith(`${c} —`) || a.name.startsWith(`${c}.`) || c.startsWith(a.name);
   });

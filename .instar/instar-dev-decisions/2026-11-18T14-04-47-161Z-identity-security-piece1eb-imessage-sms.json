@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-18T14:04:47.161Z",
+  "slug": "identity-security-piece1eb-imessage-sms",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 164,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/imessage-sms-unproven.md",
+      "src/messaging/imessage/IMessageAdapter.ts",
+      "src/messaging/imessage/NativeBackend.ts",
+      "src/messaging/imessage/smsProvenance.ts"
+    ],
+    "addedLines": 157,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the owner count answers inbound rows, raised once a day and refreshed at most every 10 minutes with one trailing refresh"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-11-16T08:57:52.000Z",
+  "slug": "dashboard-scoped-session-revocation",
+  "riskFloor": 2,
+  "decision": "implement",
+  "tier": 1,
+  "tierReasoning": "SHIP is Tier-1: dark (security.dashboardScopedToken.enabled default false), fully reversible (a revert returns the dark feature to its pre-fix state \u2014 the instar-dev 'does a revert fix it? yes->Tier 1' test), and a completeness bug-fix of the already-approved SEC-002b feature. Operator/CoS framing: SEC-044/045 are dark PRE-FLIP fixes gated by the live dashboard proof (the real approval checkpoint), not separately-approved features. Risk-floor is 2 (auth/new-route); declared below it deliberately, recorded for visibility. REVIEW was conducted at Tier-2 depth (7-round converge + codex, 2 HIGH caught) \u2014 rigor above the Tier-1 bar.",
+  "scope": {
+    "summary": "SEC-044 + SEC-045: complete the revocation side of the dark dashboard scoped-session token (dst_). SEC-044 wires revokeAll into PIN rotation. SEC-045 rebuilds DashboardSessionStore for strict refresh-token-rotation reuse detection, tombstone-on-every-live-removal (so revocation resolves via a consumed/expired/evicted token), a per-family cap that contains the offending family, a family-count bound, and public prune() run on a 60s timer; plus a step-up-gated POST /dashboard/session/revoke-all and an SSE per-delivery liveness re-check. All gated by security.dashboardScopedToken.enabled (default false) \u2014 byte-identical when off.",
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/DashboardSessionStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/data/awareness/dashboard-scoped-session-revocation.md"
+    ]
+  },
+  "evidence": {
+    "incident": "security-review job Pass 2 (2026-11-15 23:00 PST), SEC-044 (PIN rotation leaves dst_ sessions live; revokeAll had no caller) + SEC-045 (a consumed token cannot revoke its own family; reuse undetected) \u2014 code-confirmed by two model families.",
+    "spec": "docs/specs/dashboard-scoped-session-revocation.md (converged 7 rounds + codex gpt-6-astra r4-6; report docs/specs/reports/dashboard-scoped-session-revocation-convergence.md)",
+    "highFindingsClosed": [
+      "idempotency-window chain-shadowing (codex r4) -> strict reuse detection",
+      "prune-only-on-issue leaves streams open past deadline (codex r5) -> scheduled 60s prune + SSE per-delivery re-check"
+    ],
+    "focusedTests": "tests/unit/dashboard-session-store.test.ts (+8 new: strict reuse, consumed/expired/evicted-token revoke, per-family cap, family-count bound, scheduled prune, revokeAll clears tombstones) \u2014 20/20 pass; tests/integration/dashboard-scoped-session-revocation.test.ts (revoke-all dark-404 / step-up-gated / ends sessions; strict reuse; consumed-token logout); tests/e2e/dashboard-scoped-session-revocation-alive.test.ts (route mounted + dark-gated)",
+    "signalVsAuthority": "the FAMILY is the authority (resolved live-or-tombstone); a lone live token digest is a signal a refresh erases. Reuse-detection is a brittle deterministic guard driving an irreversible action within the signal-vs-authority exemption (false-pass catastrophic, false-block = re-PIN).",
+    "darkFlag": "security.dashboardScopedToken.enabled (default false)"
+  },
+  "belowFloor": true
+}

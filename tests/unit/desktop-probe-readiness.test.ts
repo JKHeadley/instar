@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { desktopProbeUnavailableReason } from '../../src/core/DesktopProbeReadiness.js';
+import { desktopProbeUnavailableReason, DESKTOP_PEER_REASON_MAX } from '../../src/core/DesktopProbeReadiness.js';
 
 describe('desktop probe explanation', () => {
   const permitted = { screenPermission: true, inputPermission: true, displayCount: 1 };
@@ -57,5 +57,39 @@ describe('desktop probe explanation', () => {
         keptMissing: 'Screen Recording and Accessibility' } });
     expect(reason).toContain('Privacy & Security → Screen Recording and Accessibility');
     expect(reason).toContain('/k/instar-desktop-host');
+  });
+
+  it('says a locked Windows PC is locked and what to do, never the Mac wording', () => {
+    const locked = desktopProbeUnavailableReason({ screenPermission: false, inputPermission: false,
+      displayCount: 0, sessionActive: false, windows: { locked: true } });
+    expect(locked).toContain('This Windows PC is locked');
+    expect(locked).toContain('sign in at the PC, then tap Retry');
+    expect(locked).not.toMatch(/Mac|System Settings/);
+    const secure = desktopProbeUnavailableReason({ screenPermission: false, inputPermission: false,
+      displayCount: 0, sessionActive: false, windows: { locked: false } });
+    expect(secure).toContain('cannot reach');
+    expect(secure).not.toMatch(/Mac|System Settings/);
+    expect(desktopProbeUnavailableReason({ screenPermission: true, inputPermission: true,
+      displayCount: 0, sessionActive: true, windows: { locked: false } })).toContain('No active display');
+  });
+
+  it('fits every reason within what a peer answer may carry, so none arrives cut mid-word', () => {
+    const base = { screenPermission: true, inputPermission: true, displayCount: 1, sessionActive: true };
+    const probes = [
+      { ...base, sessionActive: false, consoleSessionPresent: false },
+      { ...base, sessionActive: false, onConsole: false },
+      { ...base, sessionActive: false, loginDone: false },
+      { ...base, sessionActive: false, screenLocked: true, screenPermission: false, inputPermission: false },
+      { ...base, screenPermission: false, inputPermission: false, helperChange: { kind: 'source-changed' as const,
+        version: '1.3.1815', helperPath: '/Users/someone/Library/Application Support/Instar/desktop-helper/instar-desktop-host',
+        keptMissing: 'Screen Recording and Accessibility' } },
+      { ...base, sessionActive: false, windows: { locked: true } },
+      { ...base, sessionActive: false, windows: { locked: false } },
+    ];
+    for (const probe of probes) {
+      const reason = desktopProbeUnavailableReason(probe as Parameters<typeof desktopProbeUnavailableReason>[0]);
+      expect(reason.length, reason).toBeLessThanOrEqual(DESKTOP_PEER_REASON_MAX);
+      expect(Buffer.byteLength(JSON.stringify({ unavailableReason: reason }))).toBeLessThan(4_096 - 1_024);
+    }
   });
 });

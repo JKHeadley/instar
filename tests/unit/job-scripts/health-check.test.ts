@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { expectFixture, sharedContractCases, runScript, makeTmp, removeTmp } from './harness.js';
 
@@ -24,7 +25,7 @@ describe('health-check script', () => {
 
   it('disk 9% → disk-low 2 (recoverable)', async () => {
     const r = await expectFixture(SLUG, ok, 'JOB_RESULT ok observed 1 condition(s): disk-low', 0, undefined, disk(9));
-    expect(r.anomalies).toEqual(['JOB_ANOMALY disk-low 2 9.0% free on the agent volume']);
+    expect(r.anomalies).toEqual([`JOB_ANOMALY disk-low 2 9.0% free on ${os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim()}`]);
   });
 
   it('disk 10% exactly is not low', async () => {
@@ -33,7 +34,7 @@ describe('health-check script', () => {
 
   it('disk 4% → disk-critical 3 only', async () => {
     const r = await expectFixture(SLUG, ok, 'JOB_RESULT ok observed 1 condition(s): disk-critical', 0, undefined, disk(4));
-    expect(r.anomalies).toEqual(['JOB_ANOMALY disk-critical 3 4.0% free on the agent volume']);
+    expect(r.anomalies).toEqual([`JOB_ANOMALY disk-critical 3 4.0% free on ${os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim()}`]);
   });
 
   it('an invalid disk override fails', async () => {

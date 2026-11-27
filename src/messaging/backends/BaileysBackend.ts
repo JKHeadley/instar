@@ -17,6 +17,8 @@
  */
 
 import fs from 'node:fs';
+import { canTranscribe, cannotTranscribeReason, reportVoiceUnreadable, transcribeAudioFile, transcriptionFailureReason } from '../../core/VoiceTranscription.js';
+import { escapeTypedPathTags } from '../../core/inboundMedia.js';
 import path from 'node:path';
 import type { WhatsAppAdapter, BaileysConfig, ConnectionState, BackendCapabilities } from '../WhatsAppAdapter.js';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
@@ -175,6 +177,7 @@ export class BaileysBackend {
           this._pairingCodeRequested = false; // Reset for future reconnections
           const me = this.socket?.user;
           this.phoneNumber = me?.id?.split(':')[0] ?? null;
+          this.adapter.setOwnLid(me?.lid ?? null);
           this.adapter.setConnectionState('connected', this.phoneNumber ?? undefined);
 
           // Inject full backend capabilities (Phase 4)
@@ -418,82 +421,10 @@ export class BaileysBackend {
 
   // ── Audio Transcription ──────────────────────────────────
 
-  /**
-   * Resolve the voice transcription provider (Groq or OpenAI).
-   * Checks explicit voiceProvider config on WhatsAppAdapter, then auto-detects from env.
-   */
-  private resolveTranscriptionProvider(): { apiKey: string; baseUrl: string; model: string } | null {
-    const providers: Record<string, { envKey: string; baseUrl: string; model: string }> = {
-      groq: {
-        envKey: 'GROQ_API_KEY',
-        baseUrl: 'https://api.groq.com/openai/v1',
-        model: 'whisper-large-v3',
-      },
-      openai: {
-        envKey: 'OPENAI_API_KEY',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'whisper-1',
-      },
-    };
-
+  /** Transcription options: WhatsApp follows the Telegram-style `voiceProvider` setting, else auto (paid, then local). */
+  private transcriptionOptions(): { explicit?: string } {
     const explicit = this.adapter.getVoiceProvider?.()?.toLowerCase();
-    if (explicit && providers[explicit]) {
-      const p = providers[explicit];
-      const apiKey = process.env[p.envKey];
-      if (!apiKey) {
-        console.warn(`[baileys] ${p.envKey} not set — required for ${explicit} voice transcription`);
-        return null;
-      }
-      return { apiKey, baseUrl: p.baseUrl, model: p.model };
-    }
-
-    // Auto-detect: try Groq first (cheaper), then OpenAI
-    for (const [name, p] of Object.entries(providers)) {
-      const apiKey = process.env[p.envKey];
-      if (apiKey) {
-        console.log(`[baileys] Auto-detected voice transcription provider: ${name}`);
-        return { apiKey, baseUrl: p.baseUrl, model: p.model };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Transcribe an audio file using the configured provider.
-   */
-  private async transcribeAudio(filePath: string): Promise<string> {
-    const provider = this.resolveTranscriptionProvider();
-    if (!provider) {
-      throw new Error('No voice transcription provider configured. Set GROQ_API_KEY or OPENAI_API_KEY.');
-    }
-
-    const formData = new FormData();
-    const fileBuffer = fs.readFileSync(filePath);
-    const blob = new Blob([fileBuffer], { type: 'audio/ogg' });
-    formData.append('file', blob, path.basename(filePath));
-    formData.append('model', provider.model);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await fetch(`${provider.baseUrl}/audio/transcriptions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
-        body: formData,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Transcription API error (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json() as { text: string };
-      return data.text;
-    } finally {
-      clearTimeout(timer);
-    }
+    return explicit ? { explicit } : {};
   }
 
   /**
@@ -509,13 +440,13 @@ export class BaileysBackend {
     timestamp: number | undefined,
     participant: string | undefined,
   ): Promise<void> {
-    const provider = this.resolveTranscriptionProvider();
-    if (!provider) {
-      // No transcription provider — use placeholder
+    if (!canTranscribe(this.transcriptionOptions())) {
+      // Nothing can transcribe here — the placeholder says why, so the agent can offer to fix it.
+      reportVoiceUnreadable('whatsapp');
       this.handlers.onMessage(
         jid,
         msg.key.id ?? `${Date.now()}`,
-        '[Audio]',
+        `[Audio] (transcription unavailable: ${cannotTranscribeReason(this.transcriptionOptions())})`,
         senderName,
         typeof timestamp === 'number' ? timestamp : undefined,
         msg.key,
@@ -567,14 +498,14 @@ export class BaileysBackend {
 
     // Transcribe
     try {
-      const transcript = await this.transcribeAudio(filepath);
+      const transcript = await transcribeAudioFile(filepath, { ...this.transcriptionOptions(), channel: 'whatsapp', mediaType: 'audio/ogg', timeoutMs: 60_000, log: (note) => console.log(`[baileys] ${note}`) });
       const duration = audioMsg?.seconds ?? 0;
       console.log(`[baileys] Transcribed audio (${duration}s): "${transcript.slice(0, 80)}"`);
 
       this.handlers.onMessage(
         jid,
         msg.key.id ?? `${Date.now()}`,
-        `[voice] ${transcript}`,
+        `[voice] ${escapeTypedPathTags(transcript)}`,
         senderName,
         typeof timestamp === 'number' ? timestamp : undefined,
         msg.key,
@@ -583,8 +514,16 @@ export class BaileysBackend {
       );
     } catch (transcribeErr) {
       console.error(`[baileys] Transcription failed: ${transcribeErr}`);
-      // Rethrow so the caller's .catch() can emit [Audio] fallback
-      throw transcribeErr;
+      this.handlers.onMessage(
+        jid,
+        msg.key.id ?? `${Date.now()}`,
+        `[Audio] (transcription unavailable: ${escapeTypedPathTags(transcriptionFailureReason(transcribeErr))})`,
+        senderName,
+        typeof timestamp === 'number' ? timestamp : undefined,
+        msg.key,
+        participant,
+        undefined,
+      );
     } finally {
       // Clean up temp file
       try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/backends/BaileysBackend.ts:591' }); } catch { /* @silent-fallback-ok */ }

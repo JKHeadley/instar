@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-07T00:18:34.822Z",
+  "slug": "session-swap-any-conversation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 44,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/conversationPorts.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: spawn options only; no new trigger"
+  },
+  "verdict": "pass"
+}

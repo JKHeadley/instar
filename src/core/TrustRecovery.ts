@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { TrustLevel } from './ExternalOperationGate.js';
 import type { OperationMutability } from './ExternalOperationGate.js';
+import { proofCovers, proposalHashOf, raiseRefusal, TrustRaiseRefusedError, type OperatorProof } from './TrustRaiseGuard.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -149,9 +150,14 @@ export class TrustRecovery {
   /**
    * Accept a recovery suggestion — mark the incident as recovered.
    */
-  acceptRecovery(incidentId: string): IncidentRecord | null {
+  acceptRecovery(incidentId: string, proof?: OperatorProof | null): IncidentRecord | null {
     const incident = this.incidents.find(i => i.id === incidentId);
     if (!incident || incident.recovered) return null;
+    // Recovering after an incident is a raise (trust-journey decision 4): it needs the person's
+    // proof for this exact incident.
+    if (!proofCovers(proof, proposalHashOf({ kind: 'trust-recovery', incidentId }))) {
+      throw new TrustRaiseRefusedError(raiseRefusal([`recovering trust after incident ${incidentId}`]));
+    }
 
     incident.recovered = true;
     this.save();

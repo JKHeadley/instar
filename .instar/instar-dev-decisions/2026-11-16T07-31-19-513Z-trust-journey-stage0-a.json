@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-16T07:31:19.513Z",
+  "slug": "trust-journey-stage0-a",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 486,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AdaptiveTrust.ts",
+      "src/core/ApprovalLedger.ts",
+      "src/core/AutonomyProfileManager.ts",
+      "src/core/TrustElevationTracker.ts",
+      "src/core/TrustRaiseGuard.ts",
+      "src/core/TrustRecovery.ts",
+      "src/data/awareness/trust-raises-need-the-person.md",
+      "src/monitoring/guardManifest.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 453,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

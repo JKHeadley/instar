@@ -7,9 +7,8 @@
  * measure-only dev gate (queuePace.enabled) resolves off or the ledger is not built.
  */
 import { Router, type Request, type Response } from 'express';
-import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
-import { poolPeerFetch } from './poolPeerFetch.js';
+import { createPoolBuildLimiter, poolFanOut } from './poolFanOut.js';
 import type { RouteContext } from './routes.js';
 import { QUEUE_IDS, QUEUE_LABELS, QUEUE_PACE_SCHEMA, REPO_RE, type QueueId, type Verdict } from '../monitoring/QueuePace.js';
 import { isQueuePaceEnabled, type QueuePaceLedger, type QueuePaceQueueView } from '../monitoring/QueuePaceLedger.js';
@@ -81,7 +80,7 @@ export function createQueuePaceRoutes(ctx: PaceCtx, timings: { peerTimeoutMs?: n
   const PEER_TIMEOUT_MS = timings.peerTimeoutMs ?? 1_500;
   const FAN_OUT_DEADLINE_MS = timings.fanOutDeadlineMs ?? 3_000;
   const router = Router();
-  const poolBuilds: number[] = [];
+  const allowPoolBuild = createPoolBuildLimiter();
 
   router.get('/queue-pace', async (req: Request, res: Response) => {
     if (!isQueuePaceEnabled(ctx.config)) {
@@ -99,44 +98,29 @@ export function createQueuePaceRoutes(ctx: PaceCtx, timings: { peerTimeoutMs?: n
       return;
     }
     const now = Date.now();
-    while (poolBuilds.length && poolBuilds[0] <= now - 60_000) poolBuilds.shift();
-    if (poolBuilds.length >= 12) { res.status(429).json({ error: 'rate-limited' }); return; }
-    poolBuilds.push(now);
+    if (!allowPoolBuild(now)) { res.status(429).json({ error: 'rate-limited' }); return; }
 
     const queues: Array<QueuePaceQueueView & { machine: string }> = local.queues.map((q) => withMachine(q, self.machine));
     const sources: Array<{ machine: string; machineId: string; ok: boolean; reason?: string }> = [{ machine: self.machine, machineId: self.machineId, ok: true }];
     let reportsPerDay = local.context.feedbackReportsPerDay;
-    const peers = (ctx.resolvePeerUrls?.() ?? []).slice(0, 16);
-    const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
-    const started = Date.now();
-    for (let i = 0; i < peers.length; i += 4) {
-      await Promise.all(peers.slice(i, i + 4).map(async (p) => {
+    await poolFanOut(ctx, {
+      path: '/queue-pace?scope=local', peerTimeoutMs: PEER_TIMEOUT_MS, fanOutDeadlineMs: FAN_OUT_DEADLINE_MS, maxBytes: MAX_PEER_BYTES,
+      accept: (body, p) => {
+        if (body.schema !== QUEUE_PACE_SCHEMA || !Array.isArray(body.queues)) return 'invalid-body';
         const machine = nicknameOf(ctx, p.machineId);
-        const fail = (reason: string) => { sources.push({ machine, machineId: p.machineId, ok: false, reason }); };
-        if (Date.now() - started > FAN_OUT_DEADLINE_MS) return fail('deadline');
-        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) return fail('omitted-cap');
-        try {
-          const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, '/queue-pace?scope=local', {
-            headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
-          });
-          if (r.status === 503 || r.status === 404) return fail(r.status === 503 ? 'off' : 'unsupported');
-          if (!r.ok) return fail('http-error');
-          const text = await r.text();
-          if (Buffer.byteLength(text) > MAX_PEER_BYTES) return fail('too-large');
-          const body = JSON.parse(text) as Record<string, unknown>;
-          if (body.schema !== QUEUE_PACE_SCHEMA || !Array.isArray(body.queues)) return fail('invalid-body');
-          for (const raw of body.queues.slice(0, QUEUE_IDS.length)) {
-            const q = sanitizePeerQueue(raw, p.machineId);
-            if (q) queues.push(withMachine(q, machine));
-          }
-          const ctxBody = body.context as Record<string, unknown> | undefined;
-          if (reportsPerDay === null && typeof ctxBody?.feedbackReportsPerDay === 'number') reportsPerDay = num(ctxBody.feedbackReportsPerDay);
-          sources.push({ machine, machineId: p.machineId, ok: true });
-        } catch (err) { // @silent-fallback-ok — the failure is a visible sources[] row naming the machine
-          fail(err instanceof Error && err.name === 'TimeoutError' ? 'deadline' : 'unreachable');
+        for (const raw of body.queues.slice(0, QUEUE_IDS.length)) {
+          const q = sanitizePeerQueue(raw, p.machineId);
+          if (q) queues.push(withMachine(q, machine));
         }
-      }));
-    }
+        const ctxBody = body.context as Record<string, unknown> | undefined;
+        if (reportsPerDay === null && typeof ctxBody?.feedbackReportsPerDay === 'number') reportsPerDay = num(ctxBody.feedbackReportsPerDay);
+        return null;
+      },
+      onResult: (p, ok, reason) => {
+        const machine = nicknameOf(ctx, p.machineId);
+        sources.push(ok ? { machine, machineId: p.machineId, ok: true } : { machine, machineId: p.machineId, ok: false, reason });
+      },
+    });
     res.json({ schema: QUEUE_PACE_SCHEMA, scope: 'pool', ...self, generatedAt: now, queues, context: { feedbackReportsPerDay: reportsPerDay }, sources });
   });
 

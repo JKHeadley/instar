@@ -27,6 +27,7 @@
  * with a bug report back to Instar." — Justin, 2026-02-25
  */
 
+import { isStorageError, nameStorageError } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -202,6 +203,26 @@ interface OpenDegradation {
 export interface DegradationIssuePolicy {
   isIgnored(feature: string): boolean;
   hidesNow(feature: string): boolean;
+}
+
+/** SEC-125: longest feature pattern a caller may send to the mark-reported route. */
+export const FEATURE_PATTERN_MAX_CHARS = 128;
+
+/**
+ * SEC-125: compile a caller-supplied feature pattern only when it is in a safe
+ * subset that cannot backtrack badly: letters, digits, `_`, `-`, `.` (any one
+ * character), `\.` (a literal dot), the anchors `^` and `$`, and `|`
+ * alternation. No groups, classes, repeats or other escapes, so matching is
+ * linear in the feature name. Returns null (the caller answers 400) otherwise.
+ */
+export function compileFeaturePattern(source: unknown): RegExp | null {
+  if (typeof source !== 'string' || source.length === 0 || source.length > FEATURE_PATTERN_MAX_CHARS) return null;
+  if (!/^(?:[A-Za-z0-9_.\-^$|]|\\\.)+$/.test(source)) return null;
+  try {
+    return new RegExp(source);
+  } catch {
+    return null; // @silent-fallback-ok — an unparsable pattern is answered 400 by the caller
+  }
 }
 
 export class DegradationReporter {
@@ -515,6 +536,9 @@ export class DegradationReporter {
   report(event: Omit<DegradationEvent, 'timestamp' | 'reported' | 'alerted'>): void {
     // The person chose to stop tracking this: no record, no alert, no feedback, no remediation.
     if (this.isIgnored(event.feature)) { this.noteIgnored(event.feature); return; }
+    if (isStorageError(`${event.reason} ${event.primary} ${event.fallback} ${event.impact}`)) {
+      event = { ...event, reason: nameStorageError(event.reason, this.stateDir ?? undefined) };
+    }
     const full: DegradationEvent = {
       ...event,
       timestamp: new Date().toISOString(),
@@ -579,6 +603,12 @@ export class DegradationReporter {
    */
   reportStructured(event: NormalizedDegradationEvent): void {
     if (this.isIgnored(event.subsystem)) { this.noteIgnored(event.subsystem); return; }
+    if (isStorageError(`${event.errorCode} ${event.reason.full} ${event.reason.redacted}`)) {
+      event = { ...event, reason: {
+        full: nameStorageError(event.reason.full, this.stateDir ?? undefined),
+        redacted: nameStorageError(event.reason.redacted, this.stateDir ?? undefined),
+      } };
+    }
     const stamped: NormalizedDegradationEvent = {
       ...event,
       // Preserve caller-provided timestamp/monotonicTs if present; fill if not.

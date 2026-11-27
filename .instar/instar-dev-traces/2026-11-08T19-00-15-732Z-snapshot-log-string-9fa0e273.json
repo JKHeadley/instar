@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "snapshot-log-string",
+  "sessionId": "29ba1b62-0758-4cb3-8fd8-bec238937a16",
+  "timestamp": "2026-11-08T19:00:15.732Z",
+  "artifactPath": "upgrades/side-effects/snapshot-log-string.md",
+  "artifactSha256": "a6f792bd05baee90df8b7937c5269d78a03a14efb7b5754eeeff66014d0bb534",
+  "coveredFiles": [
+    "docs/specs/snapshot-log-string.eli16.md",
+    "src/server/telegramOriginRoutes.ts",
+    "tests/e2e/telegram-origin-webk-drift-reenroll.test.ts",
+    "tests/integration/telegram-origin-browser-drift.test.ts",
+    "upgrades/next/snapshot-log-string.md",
+    "upgrades/side-effects/snapshot-log-string.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One log line format and two test assertions; a revert fully undoes it",
+  "eli16Path": "docs/specs/snapshot-log-string.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/snapshot-log-string.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

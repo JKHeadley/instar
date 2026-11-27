@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "dashboard-conversations-approval-and-nav",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T04:49:19.481Z",
+  "artifactPath": "upgrades/side-effects/dashboard-conversations-approval-and-nav.md",
+  "artifactSha256": "bdfd5aff6c38b37d8ce4046b0b122115ff3dd50bb394f2fab0604d9e87f68b08",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "docs/eli16/dashboard-conversations-approval-and-nav.md",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/notification-selectivity.test.ts",
+    "upgrades/side-effects/dashboard-conversations-approval-and-nav.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix: label one owner-DM funnel as a reply (precedent in the same file) plus one probed nav entry; a revert fully undoes it, no state or config",
+  "eli16Path": "docs/eli16/dashboard-conversations-approval-and-nav.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-conversations-approval-and-nav.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

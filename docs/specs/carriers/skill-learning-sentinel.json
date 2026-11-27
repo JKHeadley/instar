@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-06T20:45:41.147523+00:00",
+  "slug": "skill-learning-sentinel",
+  "carriers": {
+    "CMT-042": {
+      "status": "delivered",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "After your approval of the plain-language page I mark the spec approved and start slice 0 (canonical backfill + telemetry hook repair)."
+    }
+  }
+}

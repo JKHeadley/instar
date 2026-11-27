@@ -103,6 +103,90 @@ describe('SessionWatchdog safe-wait pipeline', () => {
     expect(bare.evaluate).toHaveBeenCalledTimes(1);
   });
 
+  const incidentPush = [
+    { pid: 12, parentPid: 10, command: 'git push origin fix/capacity', elapsedMs: 758_000, cpuMs: 120 },
+    { pid: 13, parentPid: 12, command: '/opt/homebrew/opt/git/libexec/git-core/git remote-https origin https://github.com/JKHeadley/instar.git', elapsedMs: 757_000, cpuMs: 10 },
+    { pid: 14, parentPid: 13, command: '/opt/homebrew/opt/git/libexec/git-core/git-remote-https origin https://github.com/JKHeadley/instar.git', elapsedMs: 757_000, cpuMs: 20 },
+    { pid: 15, parentPid: 12, command: 'sh .husky/_/pre-push origin https://github.com/JKHeadley/instar.git', elapsedMs: 751_000, cpuMs: 3 },
+    { pid: 16, parentPid: 15, command: 'npm run test:smoke', elapsedMs: 747_000, cpuMs: 150 },
+    { pid: 17, parentPid: 16, command: 'node (vitest)', elapsedMs: 740_000, cpuMs: 130_000 },
+  ];
+
+  it('spares both HTTPS transport processes while their push is waiting on the pre-push test hook', async () => {
+    const { wd, evaluate, signal } = testRunnerWatchdog({ command: 'git push', elapsedMs: 758_000 });
+    fastProgress(wd);
+    let runnerCpu = incidentPush.at(-1)!.cpuMs;
+    (wd as any).getChildProcesses = vi.fn(async () => incidentPush.map(row =>
+      row.pid === 17 ? { ...row, cpuMs: runnerCpu } : row));
+    await (wd as any).checkSession('echo-test-runner');
+    await delay(5);
+    runnerCpu += 2000;
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(signal).not.toHaveBeenCalled();
+
+    // The push is still waiting on the transport, but the hook has now exited.
+    // A fresh scan must judge the push; protection cannot stick to its PID.
+    (wd as any).getChildProcesses = vi.fn(async () => incidentPush.slice(0, 3));
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(signal).toHaveBeenCalledWith(expect.objectContaining({ pid: 12 }), 'SIGINT');
+  });
+
+  it('judges a separate transport outside the push even when it names the same remote', async () => {
+    const { wd, signal } = testRunnerWatchdog({ command: 'git push', elapsedMs: 758_000 });
+    (wd as any).getChildProcesses = vi.fn(async () => [
+      ...incidentPush, { ...incidentPush[1], pid: 22, parentPid: 10 },
+    ]);
+    await (wd as any).checkSession('echo-test-runner');
+    expect(signal).toHaveBeenCalledTimes(1);
+    expect(signal).toHaveBeenCalledWith(expect.objectContaining({ pid: 22 }), 'SIGINT');
+  });
+
+  it('spares a push during a pre-push lint check that has no Vitest process', async () => {
+    const { wd, evaluate, signal } = testRunnerWatchdog({ command: 'git push', elapsedMs: 758_000 });
+    fastProgress(wd);
+    let lintCpu = 45_000;
+    (wd as any).getChildProcesses = vi.fn(async () => [
+      ...incidentPush.slice(0, 4),
+      { pid: 16, parentPid: 15, command: 'node scripts/run-lint-parallel.mjs', elapsedMs: 747_000, cpuMs: lintCpu },
+    ]);
+    await (wd as any).checkSession('echo-test-runner');
+    await delay(5);
+    lintCpu += 2000;
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(signal).not.toHaveBeenCalled();
+  });
+
+  it('returns the HTTPS transport to the judge when hook CPU stays flat after the first sample', async () => {
+    const { wd, evaluate, signal } = testRunnerWatchdog({ command: 'git push', elapsedMs: 758_000 });
+    fastProgress(wd);
+    (wd as any).getChildProcesses = vi.fn(async () => incidentPush);
+    await (wd as any).checkSession('echo-test-runner');
+    expect(signal).not.toHaveBeenCalled();
+    await delay(5);
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(signal).toHaveBeenCalledWith(expect.objectContaining({ pid: 13 }), 'SIGINT');
+  });
+
+  it('rechecks the transport before SIGINT when the pre-push hook starts during judgment', async () => {
+    const { wd, evaluate, signal } = testRunnerWatchdog({ command: 'git push', elapsedMs: 758_000 });
+    let rows = incidentPush.slice(0, 3);
+    (wd as any).getChildProcesses = vi.fn(async () => rows);
+    // A previous poll judged the push itself legitimate. Its children still receive independent checks.
+    (wd as any).temporaryExclusions.add(12);
+    evaluate.mockImplementationOnce(async () => {
+      rows = incidentPush;
+      return 'stuck';
+    });
+    await (wd as any).checkSession('echo-test-runner');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(signal).not.toHaveBeenCalled();
+    expect((wd as any).escalationState.has('echo-test-runner')).toBe(false);
+  });
+
   it('a protected test run does not hide an unrelated stuck command in the same session', async () => {
     const { wd, evaluate, signal } = testRunnerWatchdog({ command: 'npm test', elapsedMs: 190_000 });
     (wd as any).getChildProcesses = vi.fn(async () => [

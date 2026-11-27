@@ -8,6 +8,8 @@
  * (explicit https remote, --no-verify, hooks off, credential helper reset). The SafeGitExecutor
  * carve-out admits only the enumerated verbs, only inside `.worktrees/feedback-*-a<n>[-publish|-base]`.
  */
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -95,8 +97,8 @@ describe('SafeAttemptGit', () => {
     const ahead = rawGit(upstream.src, ['rev-parse', 'HEAD']).trim();
     // The fixture's origin is a local path, which the hardened config refuses (production origin is
     // https); let only the fetch through with the file transport allowed, argv otherwise unchanged.
-    const real = SafeGitExecutor.execSync.bind(SafeGitExecutor);
-    const spy = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation(((args: string[], opts: never) =>
+    const real = SafeGitExecutor.spawn.bind(SafeGitExecutor);
+    const spy = vi.spyOn(SafeGitExecutor, 'spawn').mockImplementation(((args: string[], opts: never) =>
       real(args.includes('fetch') ? args.map((a) => (a === 'protocol.file.allow=never' ? 'protocol.file.allow=always' : a)) : args, opts)) as never);
     const git = new SafeAttemptGit();
     const base = await git.fetchBase(src);
@@ -128,10 +130,15 @@ describe('SafeAttemptGit', () => {
     fs.appendFileSync(path.join(pub, '.git', 'config'), `[core]\n\thooksPath = ${altHooks}\n\tfsmonitor = ${path.join(root, 'fsmon.sh')}\n`);
     fs.writeFileSync(path.join(pub, 'src', 'a.ts'), 'export const a = 2;\n');
 
-    const real = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const real = SafeGitExecutor.spawn.bind(SafeGitExecutor);
     let pushArgs: readonly string[] | null = null;
-    vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation((args, opts) => {
-      if (args.includes('push')) { pushArgs = args; return ''; }
+    vi.spyOn(SafeGitExecutor, 'spawn').mockImplementation((args, opts) => {
+      if (args.includes('push')) {
+        pushArgs = args;
+        const child = new EventEmitter() as unknown as ChildProcess;
+        setImmediate(() => child.emit('close', 0, null));
+        return child;
+      }
       return real(args, opts);
     });
     const head = await git.commitAndPush(pub, { branch: 'feedback/item-a1', message: 'fix(feedback): x\n\nbody\n', remoteUrl: 'https://github.com/owner/repo.git',

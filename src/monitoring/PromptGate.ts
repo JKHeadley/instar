@@ -11,9 +11,17 @@
 
 import { EventEmitter } from 'node:events';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
-import { DP_PROMPT_INJECTION_DETECT } from '../data/provenanceCoverage.js';
+import { DP_TERMINAL_PROMPT_DETECT } from '../data/provenanceCoverage.js';
+import type { PromptDetectOutcomeObserver } from './PromptDetectOutcomeObserver.js';
 
-export const PROMPT_GATE_LLM_DETECT_PROMPT_ID = 'prompt-injection-detect-v1';
+/**
+ * Prompt identity of the terminal blocking-prompt detector. Was
+ * 'prompt-injection-detect-v1' before CMT-1677, which read like the security
+ * prompt-injection check; the prompt text itself is unchanged.
+ */
+export const PROMPT_GATE_LLM_DETECT_PROMPT_ID = 'terminal-prompt-detect-v1';
+/** The retired prompt id, kept so readers can repartition older rows. */
+export const PROMPT_GATE_LLM_DETECT_LEGACY_PROMPT_ID = 'prompt-injection-detect-v1';
 
 /** Identity-only envelope for the exact bounded terminal context shown to the detector. */
 export function buildPromptGateDecisionContext(input: {
@@ -32,6 +40,8 @@ export function buildPromptGateDecisionContext(input: {
 import { createHash, randomBytes } from 'node:crypto';
 import { trimTrailingBlankRows } from '../core/paneText.js';
 import { boundedTail } from '../core/boundedInput.js';
+import { classifyLlmError } from '../core/llmErrorClass.js';
+import { DegradationReporter } from './DegradationReporter.js';
 
 /**
  * Bound on the terminal tail handed to the blocking-prompt classifier.
@@ -86,6 +96,42 @@ export interface InputDetectorConfig {
   enabled: boolean;
   /** LLM provider for intelligent prompt detection (falls back to regex-only if not set) */
   intelligence?: import('../core/types.js').IntelligenceProvider;
+  /**
+   * Shared Jev-first gateway (jev-first-decision-path.md), SHADOW ONLY here:
+   * Jev is asked the frozen blocking-prompt question in parallel with the
+   * incumbent and the row is logged for later grading. The incumbent's
+   * response is always the one PromptGate acts on; a Jev error, timeout or
+   * any gateway failure cannot change what PromptGate does.
+   */
+  jevFirst?: import('../core/JevFirstDecision.js').JevFirstDecision;
+  getJevPoint?: () => import('../core/JevFirstDecision.js').JevPoint;
+  /** Frames the terminal tail as the Jev state (the replay's framing). */
+  jevState?: (terminalTail: string) => string;
+  /**
+   * Bounded pane-outcome observer (CMT-1677). Consulted ONLY while the Jev
+   * point is on (the intelligence.jevFirstPrompt dev gate), so with the gate
+   * off nothing is tracked and every row is byte-identical to before.
+   * Signal only: it never changes what PromptGate acts on.
+   */
+  outcomeObserver?: PromptDetectOutcomeObserver;
+}
+
+/** Content-free identity of the pane bottom (the last 5 meaningful lines). */
+export function paneBottomFingerprint(lines: string[]): string {
+  return createHash('sha256').update(lines.slice(-5).join('\n')).digest('hex');
+}
+
+/** True when the incumbent's raw response would make PromptGate act on a blocking prompt. */
+export function promptGateResponseIsBlocking(response: string): boolean {
+  const trimmed = response.trim();
+  if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) return false;
+  try {
+    const parsed = JSON.parse(trimmed.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')) as { type?: unknown };
+    return ['plan', 'permission', 'question', 'confirmation', 'selection'].includes(parsed?.type as string);
+  } catch {
+    // @silent-fallback-ok — a pure classifier, not a fallback: a response that is not JSON is not a blocking prompt, the same reading llmDetect gives it.
+    return false;
+  }
 }
 
 // ── ANSI Stripping ─────────────────────────────────────────────────
@@ -231,6 +277,7 @@ function detectExecutionApprovalSafeReject(lines: string[], fullWindow?: string[
   if (!rejectKey) return null;
 
   const commandMatch = haystack.match(/Allow execution of:\s*([\s\S]*?)(?:\n\s*[●○◉]?\s*1[.)]\s+Allow once|\n\s*1[.)]\s+Allow once|$)/i);
+  // bounded-input-reviewed: the reject is UNCONDITIONAL (safe-reject disposition); this text only reaches a log line and a degradation report.
   const rejectedCommand = (commandMatch?.[1] ?? '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -500,6 +547,9 @@ export class InputDetector extends EventEmitter {
     const allLines = trimTrailingBlankRows(stripped.split('\n'));
     const lines = allLines.slice(-this.config.detectionWindowLines);
     const tailText = lines.join('\n');
+    if (this.config.outcomeObserver) {
+      try { this.config.outcomeObserver.onPane(sessionName, paneBottomFingerprint(lines)); } catch { /* @silent-fallback-ok — observation only */ }
+    }
     const contentFingerprint = createHash('sha256').update(tailText).digest('hex');
     const previousContentFingerprint = this.lastContentFingerprint.get(sessionName);
     if (previousContentFingerprint && previousContentFingerprint !== contentFingerprint) {
@@ -605,6 +655,25 @@ export class InputDetector extends EventEmitter {
   private llmRelayTimestamps = new Map<string, number>();
   private static readonly LLM_RELAY_COOLDOWN_MS = 300_000; // 5 minutes
 
+  /**
+   * CMT-2289: per-session backoff after a FAILED detection call. Fleet reports
+   * showed PromptGate asking the same unchanged pane again on every tick while
+   * every call failed (only a clean NO_PROMPT was cached), so a broken provider
+   * produced hundreds of failures a day. After a failure the SAME pane
+   * fingerprint is not re-asked until the backoff expires (30 s, doubling to
+   * 5 min; at most 1 min for a rate limit, full capacity or a timeout). A changed pane, sent input, a success, or session cleanup clears
+   * it at once, and regex detection keeps running throughout.
+   */
+  private llmFailureBackoff = new Map<string, { fingerprint: string; until: number; failures: number }>();
+  static readonly LLM_FAILURE_BACKOFF_BASE_MS = 30_000;
+  static readonly LLM_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
+  /** Self-recovering failure classes back off at most this long. */
+  static readonly LLM_FAILURE_BACKOFF_TRANSIENT_MAX_MS = 60_000;
+  static readonly TRANSIENT_LLM_ERROR_CLASSES: ReadonlySet<string> = new Set(['rate-limit', 'capacity', 'timeout']);
+  /** One degradation report per error class per 30 minutes (the class, never the message). */
+  private llmFailureReportedAt = new Map<string, number>();
+  static readonly LLM_FAILURE_REPORT_INTERVAL_MS = 30 * 60_000;
+
   private async llmDetect(sessionName: string, lines: string[]): Promise<void> {
     const intelligence = this.config.intelligence;
     if (!intelligence) return;
@@ -646,6 +715,9 @@ export class InputDetector extends EventEmitter {
     const contextFingerprint = createHash('sha256').update(context).digest('hex');
     const cached = this.noPromptCache.get(sessionName);
     if (cached && cached.set.has(contextFingerprint)) return;
+    // CMT-2289: a recent failure on this exact pane — don't re-ask until it backs off.
+    const backoff = this.llmFailureBackoff.get(sessionName);
+    if (backoff && backoff.fingerprint === contextFingerprint && Date.now() < backoff.until) return;
 
     // Capture cache generation at call start. If onInputSent or cleanup runs
     // for this session before our verdict comes back, the generation will
@@ -690,20 +762,50 @@ If it IS a genuine blocking system prompt, respond with JSON (no markdown fences
 
 When in doubt, respond NO_PROMPT. False positives cause spam.`;
 
+    const incumbentStarted = Date.now();
+    // CMT-1677: while the Jev point is on, learn the router-minted correlation
+    // id of this exact call so the Jev row and the pane outcome join on it.
+    // Gate off → no callback is added and the call is byte-identical.
+    const linking = this.jevPointActive();
+    let producerCorrelationId: string | null = null;
+    const bottomFingerprint = linking && this.config.outcomeObserver ? paneBottomFingerprint(lines) : null;
+    // A synchronous throw must still reach the silent catch below, exactly as
+    // when this call sat inside it.
+    let incumbent: Promise<string>;
     try {
-      const response = await intelligence.evaluate(prompt, {
+      incumbent = Promise.resolve(intelligence.evaluate(prompt, {
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
         attribution: { component: 'PromptGate' }, // attribution for /metrics/features
         provenance: {
-          decisionPoint: DP_PROMPT_INJECTION_DETECT,
+          decisionPoint: DP_TERMINAL_PROMPT_DETECT,
           context: buildPromptGateDecisionContext({ promptText: prompt, terminalContext: context }),
           optionsPresented: ['no-prompt', 'plan', 'permission', 'question', 'confirmation', 'selection'],
           promptId: PROMPT_GATE_LLM_DETECT_PROMPT_ID,
+          ...(linking ? { onCorrelationId: (id: string) => { producerCorrelationId = id; } } : {}),
         },
-      });
+      }));
+    } catch (err) {
+      incumbent = Promise.reject(err);
+    }
+    if (linking) this.observeSnapshot(sessionName, () => producerCorrelationId, bottomFingerprint, incumbent, incumbentStarted);
+    this.shadowJev(context, incumbent, incumbentStarted,
+      linking ? () => ({ producerCorrelationId, sessionName }) : undefined);
 
+    // CMT-2289: only a failure of the LLM call itself backs off and is reported —
+    // never a throw from parsing or emitting below.
+    let response: string;
+    try {
+      response = await incumbent;
+    } catch (err) {
+      this.onLlmDetectFailure(sessionName, contextFingerprint, callGeneration, err);
+      return;
+    }
+    // A call that came back clears any failure backoff for this session.
+    this.llmFailureBackoff.delete(sessionName);
+
+    try {
       const trimmed = response.trim();
       if (trimmed === 'NO_PROMPT' || trimmed.startsWith('NO')) {
         // Cache only on the strict NO_PROMPT signal. The permissive
@@ -745,8 +847,140 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
         this.llmRelayTimestamps.set(sessionName, Date.now());
       }
     } catch {
-      // LLM call failed — silent fallback (regex-only detection continues)
+      // @silent-fallback-ok: a parse/emit failure after a successful call — regex-only detection continues (unchanged behaviour).
     }
+  }
+
+  private onLlmDetectFailure(sessionName: string, fingerprint: string, callGeneration: number, err: unknown): void {
+    try {
+      const now = Date.now();
+      const errorClass = classifyLlmError(err);
+      // Input was sent or the session was cleaned up while this call was in flight:
+      // the screen is stale, so don't back it off (mirrors the NO_PROMPT cache guard).
+      if ((this.cacheGeneration.get(sessionName) ?? 0) === callGeneration) {
+        const prev = this.llmFailureBackoff.get(sessionName);
+        const failures = prev && prev.fingerprint === fingerprint ? prev.failures + 1 : 1;
+        // A passing condition (rate limit, full capacity, a timeout) recovers on its own:
+        // cap its backoff short so a real prompt is re-checked soon after recovery.
+        const cap = InputDetector.TRANSIENT_LLM_ERROR_CLASSES.has(errorClass)
+          ? InputDetector.LLM_FAILURE_BACKOFF_TRANSIENT_MAX_MS
+          : InputDetector.LLM_FAILURE_BACKOFF_MAX_MS;
+        const delay = Math.min(InputDetector.LLM_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 10), cap);
+        this.llmFailureBackoff.set(sessionName, { fingerprint, until: now + delay, failures });
+      }
+      const last = this.llmFailureReportedAt.get(errorClass);
+      if (last === undefined || now - last >= InputDetector.LLM_FAILURE_REPORT_INTERVAL_MS) {
+        this.llmFailureReportedAt.set(errorClass, now);
+        DegradationReporter.getInstance().report({
+          feature: 'PromptGate.llmDetect',
+          primary: 'Detect blocking terminal prompts with an LLM check',
+          fallback: 'Pattern-based detection only; the same screen is re-checked after a backoff',
+          reason: `LLM prompt-detection call failed (class: ${errorClass})`,
+          impact: 'A blocking prompt that only the LLM check recognises may be relayed late',
+        });
+      }
+    } catch {
+      // @silent-fallback-ok: failure bookkeeping must never break the poll loop; regex detection continues.
+    }
+  }
+
+  /**
+   * Shadow-only Jev comparison. Runs beside the incumbent (no added latency),
+   * is never awaited by detection, and swallows every failure: the incumbent
+   * response above is what PromptGate acts on in every case.
+   */
+  private shadowJev(
+    context: string,
+    incumbent: Promise<string>,
+    startedAt: number,
+    link?: () => { producerCorrelationId: string | null; sessionName: string },
+  ): void {
+    try {
+      const { jevFirst, getJevPoint } = this.config;
+      if (!jevFirst || !getJevPoint) return;
+      const point = getJevPoint();
+      if (point.stage === 'off') return;
+      const state = this.config.jevState ? this.config.jevState(context) : context;
+      this.lastJevShadow = jevFirst.decide({
+        point: point.stage === 'live' ? { ...point, stage: 'shadow' } : point,
+        state,
+        ...(link ? { link } : {}),
+        fallback: () => incumbent.then((response) => ({
+          answer: promptGateResponseIsBlocking(response), model: 'fast', ms: Date.now() - startedAt,
+        })),
+      }).then(() => undefined, () => undefined);
+    } catch {
+      // @silent-fallback-ok — the Jev shadow is observation only; the incumbent decides.
+    }
+  }
+
+  /** Test seam: the latest shadow comparison (always resolves, never rejects). */
+  lastJevShadow: Promise<void> | null = null;
+
+  /** True when the Jev prompt-detect point is on (the intelligence.jevFirstPrompt gate). */
+  private jevPointActive(): boolean {
+    try {
+      const { jevFirst, getJevPoint } = this.config;
+      if (!jevFirst || !getJevPoint) return false;
+      return getJevPoint().stage !== 'off';
+    } catch {
+      // @silent-fallback-ok — an unreadable point means "off": nothing is linked or observed.
+      return false;
+    }
+  }
+
+  /**
+   * Start the bounded pane-outcome observation for this snapshot (CMT-1677).
+   * The router mints the correlation id synchronously at evaluate(); if a
+   * wrapper delayed it, tracking starts once the incumbent settles, still
+   * against the SNAPSHOT's bottom, so a change in between is not missed.
+   */
+  private observeSnapshot(
+    sessionName: string,
+    correlationId: () => string | null,
+    bottomFingerprint: string | null,
+    incumbent: Promise<string>,
+    startedAt: number,
+  ): void {
+    const observer = this.config.outcomeObserver;
+    if (!observer || !bottomFingerprint) return;
+    let tracked = false;
+    const tryTrack = (): string | null => {
+      const id = correlationId();
+      if (id && !tracked) {
+        tracked = true;
+        try { observer.track({ sessionName, correlationId: id, bottomFingerprint, startedAt }); } catch { /* @silent-fallback-ok — observation only */ }
+      }
+      return id;
+    };
+    tryTrack();
+    incumbent.then(
+      (response) => {
+        const id = tryTrack();
+        if (!id) return;
+        try { observer.setIncumbent(sessionName, id, promptGateResponseIsBlocking(response) ? 'blocking' : 'no-prompt'); } catch { /* @silent-fallback-ok */ }
+      },
+      () => {
+        // A failed call still settles: any held event is recorded, ungraded.
+        const id = tryTrack();
+        if (!id) return;
+        try { observer.setIncumbent(sessionName, id, 'unknown'); } catch { /* @silent-fallback-ok */ }
+      },
+    );
+  }
+
+  /**
+   * Any tmux write into the session (SessionManager's single write guard).
+   * Feeds ONLY the outcome observer; unlike onInputSent it leaves the
+   * detector's dedup and cooldown state alone.
+   */
+  noteSessionInput(sessionName: string): void {
+    try { this.config.outcomeObserver?.onInput(sessionName); } catch { /* @silent-fallback-ok — observation only */ }
+  }
+
+  /** Shutdown: close every open pane observation as observer-lost. */
+  disposeOutcomeObserver(): void {
+    try { this.config.outcomeObserver?.dispose(); } catch { /* @silent-fallback-ok — observation only */ }
   }
 
   /**
@@ -759,12 +993,14 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    * provided by stableCount + post-emission cooldown.
    */
   onInputSent(sessionName: string): void {
+    this.noteSessionInput(sessionName);
     this.emittedPrompts.delete(sessionName);
     this.stableCount.delete(sessionName);
     this.lastOutput.delete(sessionName);
     this.lastEmissionTime.delete(sessionName); // Clear cooldown so new prompts can fire
     this.llmRelayTimestamps.delete(sessionName); // Allow LLM to fire for follow-up prompts
     this.noPromptCache.delete(sessionName); // Cleared so post-input output gets re-classified
+    this.llmFailureBackoff.delete(sessionName); // New input → re-check at once (CMT-2289)
     // Bump generation so any mid-flight llmDetect drops its NO_PROMPT write.
     this.cacheGeneration.set(sessionName, (this.cacheGeneration.get(sessionName) ?? 0) + 1);
   }
@@ -797,6 +1033,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
    * Clean up stale state for a session that has ended.
    */
   cleanup(sessionName: string): void {
+    try { this.config.outcomeObserver?.onSessionEnded(sessionName); } catch { /* @silent-fallback-ok — observation only */ }
     this.lastOutput.delete(sessionName);
     this.lastContentFingerprint.delete(sessionName);
     this.stableCount.delete(sessionName);
@@ -806,6 +1043,7 @@ When in doubt, respond NO_PROMPT. False positives cause spam.`;
     this.llmRelayTimestamps.delete(sessionName);
     this.pendingLlmDetection.delete(sessionName);
     this.noPromptCache.delete(sessionName);
+    this.llmFailureBackoff.delete(sessionName);
     // Bump generation so any in-flight llmDetect for this session drops
     // its NO_PROMPT write. The generation entry itself is left in place —
     // it is tiny and a future llmDetect on the same session name (e.g. a

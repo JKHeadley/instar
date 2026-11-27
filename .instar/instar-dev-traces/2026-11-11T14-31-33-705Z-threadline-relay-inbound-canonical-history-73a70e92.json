@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "threadline-relay-inbound-canonical-history",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T14:31:33.705Z",
+  "artifactPath": "upgrades/side-effects/threadline-relay-inbound-canonical-history.md",
+  "artifactSha256": "00170c934983be299ad76224ce06b894fc5ef9ec8a4d57a1ead011dc6d2ba70e",
+  "coveredFiles": [
+    "docs/canonical-migration-contracts.json",
+    "docs/eli16/threadline-relay-inbound-canonical-history.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/MessageStore.ts",
+    "src/server/routes.ts",
+    "src/threadline/ThreadLog.ts",
+    "src/threadline/ThreadlineBootstrap.ts",
+    "src/threadline/ThreadlineReapRecovery.ts",
+    "src/threadline/ThreadlineReplyValidation.ts",
+    "src/threadline/client/ThreadlineClient.ts",
+    "src/threadline/createThreadMessageRecorder.ts",
+    "src/threadline/recordThreadMessage.ts",
+    "src/threadline/relayIngressHistory.ts",
+    "tests/e2e/threadline-reap-mid-processing.test.ts",
+    "tests/e2e/threadline/relay-ingress-canonical-history-alive.test.ts",
+    "tests/integration/threadline-reap-recovery-wiring.test.ts",
+    "tests/integration/threadline-relay-send-priority.test.ts",
+    "tests/integration/threadline/canonical-history-wiring.test.ts",
+    "tests/integration/threadline/relay-ingress-canonical-history.test.ts",
+    "tests/unit/recordThreadMessage.test.ts",
+    "tests/unit/threadline/ThreadlineReplyValidation.test.ts",
+    "tests/unit/threadline/ack-stage-wiring.test.ts",
+    "tests/unit/threadline/relayIngressHistory.test.ts",
+    "upgrades/next/threadline-relay-inbound-canonical-history.md",
+    "upgrades/side-effects/threadline-relay-inbound-canonical-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow existing canonical-history observer fix with internal body backing and existing close-only cleanup; no new admission/trust/routing authority, endpoint, configuration or data migration. Additional files are required build-time canonical contract revision4 and lockstep ROLE COMMENT acknowledgements; parent verified every TS correction line is only a marker. Full unit/HTTP and feature4E2E passed; official exact-head/base complete-suite merge gate remains pending and no merge/release is authorized until green.",
+  "eli16Path": "docs/eli16/threadline-relay-inbound-canonical-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-relay-inbound-canonical-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

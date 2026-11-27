@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "session-monitor-nonblocking-reads",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T11:59:27.505Z",
+  "artifactPath": "upgrades/side-effects/session-monitor-nonblocking-reads.md",
+  "artifactSha256": "7d388c554dfb4ae47aa9cfcfa97d6798877666077a060d6c3b2286da399ddcc4",
+  "coveredFiles": [
+    "docs/specs/session-monitor-nonblocking-reads.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/monitoring/SessionMonitor.ts",
+    "tests/unit/SessionMonitor-nonblocking.test.ts",
+    "tests/unit/session-manager-is-session-alive-async-tristate.test.ts",
+    "upgrades/next/session-monitor-nonblocking-reads.md",
+    "upgrades/side-effects/session-monitor-nonblocking-reads.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The monitor change is live only behind the existing dev-gated async hot path and a revert or that switch undoes it; no stored data or config changes. It touches session recovery inputs and two small defects in the shared async tmux path, so it had an independent second-pass review (three reads, concur) and states its behaviour changes in the side-effects review.",
+  "eli16Path": "docs/specs/session-monitor-nonblocking-reads.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-monitor-nonblocking-reads.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

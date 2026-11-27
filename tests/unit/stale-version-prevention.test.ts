@@ -57,6 +57,21 @@ describe('META: Stale version reporting prevention', () => {
     expect(serverSrc).toContain('ProcessIntegrity.initialize');
   });
 
+  it('server.ts initializes ProcessIntegrity BEFORE it starts the AutoUpdater', () => {
+    // AutoUpdater.start() drops a restart deferral this process already satisfies, and it
+    // can only tell from the version frozen at boot. Started first, that check is silently
+    // skipped and a server restarted by another path restarts a second time.
+    const serverSrc = fs.readFileSync(
+      path.join(SRC_DIR, 'commands/server.ts'),
+      'utf-8',
+    );
+    const initAt = serverSrc.indexOf('ProcessIntegrity.initialize(');
+    const startAt = serverSrc.indexOf('autoUpdater.start()');
+    expect(initAt).toBeGreaterThan(-1);
+    expect(startAt).toBeGreaterThan(-1);
+    expect(initAt).toBeLessThan(startAt);
+  });
+
   it('server.ts imports ProcessIntegrity', () => {
     const serverSrc = fs.readFileSync(
       path.join(SRC_DIR, 'commands/server.ts'),

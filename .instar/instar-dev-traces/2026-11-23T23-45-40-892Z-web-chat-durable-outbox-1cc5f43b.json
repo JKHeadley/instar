@@ -1,0 +1,83 @@
+{
+  "version": 3,
+  "slug": "web-chat-durable-outbox",
+  "sessionId": "34774801-3fac-4096-8fd3-e616896853c0",
+  "timestamp": "2026-11-23T23:45:40.892Z",
+  "artifactPath": "upgrades/side-effects/web-chat-durable-outbox.md",
+  "artifactSha256": "69d181b9f53f897deb5ee624c75325894ca9d2e23f515a1e1718b8898fd4303f",
+  "specPath": "docs/specs/web-chat-durable-outbox.md",
+  "coveredFiles": [
+    "dashboard/console/browser-device.js",
+    "dashboard/console/chat-outbox.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/net-state.js",
+    "dashboard/console/outbox-runner.js",
+    "dashboard/console/page-lifecycle.js",
+    "docs/specs/reports/web-chat-durable-outbox-convergence.md",
+    "docs/specs/reports/web-chat-durable-outbox-resolutions.md",
+    "docs/specs/web-chat-durable-outbox.eli16.md",
+    "docs/specs/web-chat-durable-outbox.md",
+    "src/config/ConfigDefaults.ts",
+    "src/core/MessageSentinel.ts",
+    "src/core/types.ts",
+    "src/data/awareness/web-chat-durable-outbox.md",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/dashboard-conversations-browser-alive.test.ts",
+    "tests/e2e/web-chat-durable-outbox-alive.test.ts",
+    "tests/integration/console-chat-outbox-browser.test.ts",
+    "tests/integration/mobile-media-to-platform.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/integration/mobile-native-media.test.ts",
+    "tests/integration/mobile-slack-from-app.test.ts",
+    "tests/unit/console-chat-outbox-crypto.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-device-state.test.ts",
+    "tests/unit/console-lifecycle.test.ts",
+    "tests/unit/console-net-state.test.ts",
+    "tests/unit/console-outbox-runner.test.ts",
+    "tests/unit/web-chat-outbox-server.test.ts",
+    "upgrades/next/web-chat-durable-outbox.md",
+    "upgrades/side-effects/web-chat-durable-outbox.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A substantial browser persistence and recovery feature under existing enrollment authorities; no constitution or protected owner policy changes. Approved converged spec, three test tiers, five independent caller reviews, actual Chrome and throwaway deployment evidence.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/web-chat-durable-outbox-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The browser-outbox-recovery model binds reconnect and retries to one durable original request and immutable step. Seven persisted attempts, finite file chunks and progress-keyed bounded status reads settle into a retained hold under persistent failure. Reload/reconnect cannot reset the episode. Human Resume preserves future cooldowns. Identical holds do not rebroadcast. The unchanged enforcing convergence ratchet passed896 cases."
+    }
+  }
+}

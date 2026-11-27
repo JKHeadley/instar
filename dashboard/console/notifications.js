@@ -1,5 +1,7 @@
 import { renderGlance } from '../glance.js';
 import { el, setKids, pageHead, section, note, askPin, operatorSession, arrivalScroll } from './ui.js';
+import { plainReferenceText } from './display-identity.js';
+import { topicNameMap } from './topic-names.js';
 
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { Authorization: `Bearer ${localStorage.getItem('instar_token') || ''}`,
@@ -28,8 +30,20 @@ export async function renderNotifications(main, ctx, view) {
   try {
     const query = new URLSearchParams({ scope: 'pool', unread: String(notificationView.unread) });
     if (notificationView.cursors) query.set('cursors', JSON.stringify(notificationView.cursors));
-    const [status, feed] = await Promise.all([request('/notifications/selectivity'), request('/notifications/quiet?' + query)]);
-    const refresh = () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+    const [status, feed, topics, pool] = await Promise.all([request('/notifications/selectivity?scope=pool'), request('/notifications/quiet?' + query),
+      // Names for the conversations and machines a notice mentions; a failed read only means the plain fallback words.
+      request('/telegram/topics?scope=pool').then((data) => ({ ok: true, data }), () => null),
+      request('/pool').then((data) => data, () => null)]);
+    const topicNames = topicNameMap(topics);
+    const machineNames = Object.fromEntries((Array.isArray(pool?.machines) ? pool.machines : [])
+      .filter((m) => m && typeof m.machineId === 'string' && typeof m.nickname === 'string').map((m) => [m.machineId, m.nickname]));
+    // A completed save belongs to this rendered view. Navigation or a newer filter
+    // detaches its root; the server write still completes, but must not replace that page.
+    const refresh = () => {
+      if (root.isConnected && root.parentNode === main) {
+        return renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+      }
+    };
     const filter = el('input', { type: 'checkbox', 'aria-label': 'Only unread notices' }); filter.checked = notificationView.unread;
     filter.addEventListener('change', () => renderNotifications(main, ctx, { unread: filter.checked, cursors: undefined }));
     root.append(el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, filter, 'Only unread notices'));
@@ -41,7 +55,8 @@ export async function renderNotifications(main, ctx, view) {
     for (const item of feed.items) {
       const row = el('article', { class: 'need-card' },
         el('strong', { text: status.categories.find(c => c.id === item.category)?.description || 'Automated notice' }),
-        el('p', { text: item.text }), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
+        // Names, not ids: conversation and machine ids read as their names (or plain words); the full text stays on hover.
+        el('p', { text: plainReferenceText(item.text, { topicNames, machineNames }), title: item.text }), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
       row.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Mark read', onclick: async () => {
         try { await request(`/notifications/quiet/${encodeURIComponent(item.id)}?machineId=${encodeURIComponent(item.machineId)}`, { method: 'PATCH', body: '{}' }); await refresh(); }
         catch (error) { feedback.textContent = error.message; }
@@ -57,11 +72,17 @@ export async function renderNotifications(main, ctx, view) {
       notices: () => arrivalScroll(notices, { key: `notifications-click:${++notificationClick}` }),
       preferences: () => arrivalScroll(preferences, { key: `notifications-click:${++notificationClick}` }),
     }));
-    for (const category of status.categories.filter(category => category.configurable !== false)) {
-      const input = el('input', { type: 'checkbox', 'aria-label': `Push ${category.description.toLowerCase()}`, style: 'width:22px;height:22px' });
-      input.checked = category.push;
+    const choices = [
+      ...status.categories.filter(category => category.configurable !== false).map(category => ({ label: category.description, push: category.push,
+        route: `/notifications/categories/${encodeURIComponent(category.id)}/push`, done: on => `Routine ${category.description.toLowerCase()} ${on ? 'will be pushed to you' : 'will stay in the feed'}.` })),
+      ...(status.jobs || []).filter(job => job.enabled !== false).map(job => ({ label: `Job: ${job.name}`, push: job.push,
+        route: `/notifications/jobs/${encodeURIComponent(job.slug)}/push`, done: on => `Reports from ${job.name} ${on ? 'will be pushed to you' : 'will stay in the feed'}.` })),
+    ];
+    for (const choice of choices) {
+      const input = el('input', { type: 'checkbox', 'aria-label': `Push ${choice.label.toLowerCase()}`, style: 'width:22px;height:22px' });
+      input.checked = choice.push;
       const row = el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, input,
-        el('span', { text: category.description }));
+        el('span', { text: choice.label }));
       input.addEventListener('change', async () => {
         const enabled = input.checked; input.disabled = true;
         try {
@@ -69,15 +90,16 @@ export async function renderNotifications(main, ctx, view) {
             const granted = await askPin({ title: 'Notification preferences', explain: 'Confirm which reports should reach you.', adapter: 'session' });
             if (!granted) { input.checked = !enabled; return; }
           }
-          await request(`/notifications/categories/${encodeURIComponent(category.id)}/push`, {
+          const result = await request(choice.route, {
             method: 'POST', body: JSON.stringify({ enabled, confirmedBy: 'dashboard-pin' }),
           });
-          feedback.textContent = `Routine ${category.description.toLowerCase()} ${enabled ? 'will be pushed to you' : 'will stay in the feed'}.`;
+          feedback.textContent = result?.message || choice.done(enabled);
         } catch (error) { input.checked = !enabled; feedback.textContent = error.message; }
         finally { input.disabled = false; }
       });
       preferences.append(row);
     }
+    if (status.jobsUnavailable?.length) preferences.append(note('Some machines did not answer. Their jobs are not listed until they return.'));
     root.append(note(status.enabled !== true ? 'Quiet by Default is awaiting its operator enable on this machine.' : status.dryRun ? 'Observation mode: reports are still delivered while the gate is measured.' : 'Quiet by Default is enforcing on this machine.'));
   } catch (error) { feedback.textContent = error.message; }
 }

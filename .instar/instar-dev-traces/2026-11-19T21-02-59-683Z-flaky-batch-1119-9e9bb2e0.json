@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "flaky-batch-1119",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T21:02:59.683Z",
+  "artifactPath": "upgrades/side-effects/flaky-batch-1119.md",
+  "artifactSha256": "dcf328ae478fc76be729436456406b48222398059674876b598682a48bd5f6f5",
+  "coveredFiles": [
+    "docs/specs/flaky-batch-1119.eli16.md",
+    "tests/e2e/session-management-e2e.test.ts",
+    "tests/integration/cartographer-eventloop-worker.test.ts",
+    "tests/unit/job-portable-bundle.test.ts",
+    "upgrades/next/flaky-batch-1119.md",
+    "upgrades/side-effects/flaky-batch-1119.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only repair of three load-sensitive test files; no runtime code changes and a revert fully undoes it.",
+  "eli16Path": "docs/specs/flaky-batch-1119.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/flaky-batch-1119.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

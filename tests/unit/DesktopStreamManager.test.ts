@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { DesktopStreamManager, type DesktopStreamSession } from '../../src/server/DesktopStreamManager.js';
+import { DesktopStreamManager, desktopFrameIntervalMs, type DesktopStreamSession } from '../../src/server/DesktopStreamManager.js';
 
 describe('DesktopStreamManager', () => {
   const servers: http.Server[] = [];
@@ -25,6 +25,55 @@ describe('DesktopStreamManager', () => {
     const ws = new WebSocket(`ws://127.0.0.1:${address.port}/desktop-stream`);
     return { ws, manager };
   }
+
+  it('keeps the 15-a-second pace unless a session asks for faster, bounded to 20 a second', () => {
+    expect(desktopFrameIntervalMs(undefined)).toBe(67);
+    expect(desktopFrameIntervalMs(Number.NaN)).toBe(67);
+    expect(desktopFrameIntervalMs(50)).toBe(50);
+    expect(desktopFrameIntervalMs(10)).toBe(50);
+    expect(desktopFrameIntervalMs(200)).toBe(67);
+  });
+
+  /** The pauses the stream schedules between picture requests (load-independent). */
+  async function pacingDelays(frameIntervalMs?: () => number | undefined): Promise<number[]> {
+    const delays: number[] = [];
+    const real = globalThis.setTimeout;
+    let lastPaceTimerAt = Date.now();
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (typeof ms === 'number' && ms >= 5 && ms <= 67) { delays.push(ms); lastPaceTimerAt = Date.now(); }
+      return real(fn, ms, ...rest);
+    }) as typeof setTimeout);
+    try {
+      const { ws, manager } = await connect(async () => ({
+        grantId: `pace-${Math.random()}`, assertActive: async () => {},
+        captureEncrypted: async () => Buffer.alloc(32, 1),
+        ...(frameIntervalMs ? { frameIntervalMs } : {}),
+        decryptCommand: data => JSON.parse(data.toString()), input: async () => {},
+        revoke: async () => {}, release: () => {},
+      }));
+      await once(ws, 'open');
+      await new Promise(resolve => real(resolve, 400));
+      ws.close();
+      // End this stream and wait until it has really stopped scheduling
+      // ticks before the next measurement, so its 67 ms timers cannot land in
+      // the next spy. A fixed pause was not enough: on loaded CI runners the
+      // socket's close arrived late and the old stream kept ticking.
+      manager.closeAll();
+      const drainCap = Date.now() + 5000;
+      do { await new Promise(resolve => real(resolve, 50)); }
+      while (Date.now() - lastPaceTimerAt < 250 && Date.now() < drainCap);
+    } finally { spy.mockRestore(); }
+    return delays;
+  }
+
+  it('asks a faster video session for pictures more often than the default', async () => {
+    const standard = await pacingDelays();
+    const faster = await pacingDelays(() => 50);
+    expect(standard.length).toBeGreaterThan(0);
+    expect(faster.length).toBeGreaterThan(0);
+    expect(Math.max(...standard)).toBeGreaterThan(50); // the default 67 ms pace
+    expect(Math.max(...faster)).toBeLessThanOrEqual(50); // never slower than asked
+  });
 
   it('refuses the upgrade when target admission fails', async () => {
     const { ws } = await connect(async () => { throw new Error('denied'); });

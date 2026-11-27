@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-surfaces",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T23:14:21.329Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-surfaces.md",
+  "artifactSha256": "5301d2fa456a4bf2c99ec81408c03289078d859e523fb859a0737715498485ee",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "tests/unit/chief-of-staff-loop-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only follow-up to PR 4: the PR 3 wiring assertion names the renewal hook's owner check, which PR 4 normalised (review finding #3); the assertion follows the code.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

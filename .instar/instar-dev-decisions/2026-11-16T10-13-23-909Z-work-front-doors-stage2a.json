@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-16T10:13:23.909Z",
+  "slug": "work-front-doors-stage2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 240,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/work-projects.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts",
+      "src/server/workProjectsRoutes.ts"
+    ],
+    "addedLines": 232,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

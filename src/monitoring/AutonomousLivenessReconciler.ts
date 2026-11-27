@@ -94,6 +94,13 @@ export interface AutonomousLivenessReconcilerDeps {
   idleTopicSnapshot?: () => Map<number, string>;
   /** Is the resume queue globally paused (e.g. emergency stop)? */
   queuePaused: () => boolean;
+  /**
+   * Chief of Staff (docs/specs/chief-of-staff-topic.md §2.4 / §4) — OPTIONAL. The reason the
+   * reconciler must stand down for this topic (an open CoS action intent, or a CoS-started
+   * run whose operator check-in lease has expired), or null. Absent ⇒ today's behaviour. A
+   * throwing dep resolves to the SAFE side (stand down).
+   */
+  cosStandDown?: (topicId: number) => string | null;
   /** Is this topic already queued / in-flight in the resume queue? (criterion 7, queue arm) */
   topicInResumeQueue: (topicId: number) => boolean;
   /**
@@ -442,6 +449,17 @@ export class AutonomousLivenessReconciler {
         this.setCondition(topicId, 'healthy', now);
         this.clearPressureBlock(topicId);
         continue;
+      }
+      // Criterion 7a (Chief of Staff): an open CoS intent owns the slot, or the run is
+      // CoS-started and the operator lease is expired — stand down, never respawn.
+      if (this.deps.cosStandDown) {
+        let cosReason: string | null = 'cos-dep-threw';
+        try { cosReason = this.deps.cosStandDown(topicId); } catch { /* @silent-fallback-ok: a throwing Chief of Staff dep makes the reconciler STAND DOWN (safe side) */ cosReason = 'cos-dep-threw'; }
+        if (cosReason) {
+          this.setCondition(topicId, 'blocked-queue-owns', now);
+          this.observed.delete(topicId);
+          continue;
+        }
       }
       // Criterion 7: not already being (re)spawned by anyone (queue arm + in-flight arm).
       if (this.safeBool(() => this.deps.topicInResumeQueue(topicId), true)) {

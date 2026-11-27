@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-suite-fixes",
+  "sessionId": "6466c968-c8dd-422e-b66b-c1bd9bce71ae",
+  "timestamp": "2026-11-11T01:45:26.373Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-suite-fixes.md",
+  "artifactSha256": "e2868817e1a6d7d608842e190d022e8be7207906f1663deb8180859ac1d98d08",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/core/devGatedFeatures.ts",
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/unified-usage-ledger-suite-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Merge-conflict resolution keeping both registry entries for the Tier-2 usage ledger",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

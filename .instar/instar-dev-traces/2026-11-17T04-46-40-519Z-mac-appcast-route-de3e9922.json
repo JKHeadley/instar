@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mac-appcast-route",
+  "sessionId": "6ed50166-99e0-4a79-95fd-e3009d13ed91",
+  "timestamp": "2026-11-17T04:46:40.519Z",
+  "artifactPath": "upgrades/side-effects/mac-appcast-route.md",
+  "artifactSha256": "0162475f7fb29783839d71387b39d525b88bbec333d632c56bad0a4fd683bf6f",
+  "coveredFiles": [
+    "docs/specs/mac-appcast-route.eli16.md",
+    "site/src/pages/mac/appcast.xml.ts",
+    "tests/unit/site-mac-appcast.test.ts",
+    "upgrades/next/mac-appcast-route.md",
+    "upgrades/side-effects/mac-appcast-route.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One inert site redirect + its test; no runtime agent surface; revert fully undoes it",
+  "eli16Path": "docs/specs/mac-appcast-route.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-appcast-route.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

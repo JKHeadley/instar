@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "eli16-gate-live-pr-body",
+  "sessionId": "ea568657-d38e-4b86-a5a6-e805e3ce439f",
+  "timestamp": "2026-11-11T09:14:28.004Z",
+  "artifactPath": "upgrades/side-effects/eli16-gate-live-pr-body.md",
+  "artifactSha256": "a47eb815bc8d3411aff53d5a8442c154ef336f05f41c7c77cf09d9fb5475b6b7",
+  "coveredFiles": [
+    ".github/workflows/eli16-pr-gate.yml",
+    "docs/specs/eli16-gate-live-pr-body.eli16.md",
+    "scripts/eli16-pr-description-check.mjs",
+    "tests/unit/eli16-pr-description-check.test.ts",
+    "upgrades/next/eli16-gate-live-pr-body.md",
+    "upgrades/side-effects/eli16-gate-live-pr-body.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow CI-check input fix; a revert fully undoes it; no runtime src",
+  "eli16Path": "docs/specs/eli16-gate-live-pr-body.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/eli16-gate-live-pr-body.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

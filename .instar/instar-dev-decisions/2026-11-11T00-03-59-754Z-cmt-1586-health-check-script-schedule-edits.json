@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-11T00:03:59.754Z",
+  "slug": "cmt-1586-health-check-script-schedule-edits",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 83,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/InstallBuiltinJobs.ts",
+      "src/scheduler/JobCostAuditReadiness.ts",
+      "src/scheduler/buildPerSlugManifest.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 80,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new or changed self-triggered controller: an existing cron job (health-check) runs its script instead of spawning a session on development agents, which reduces spawns; the schedule change only preserves an operator-chosen cron in a manifest"
+  },
+  "verdict": "blocked"
+}

@@ -152,6 +152,25 @@ describe('applyOutcome — failure ladder', () => {
     for (let i = 0; i < 3; i++) ep = applyOutcome(ep, 'error:x', i * 10, cfg).ep;
     expect(ep.state).toBe('gave-up');
   });
+  it('a main-red refusal waits and retries without using up the PR\'s attempts', () => {
+    let ep = ep0;
+    for (let i = 0; i < 10; i++) {
+      const r = applyOutcome(ep, 'refused:main-red', i * 5000, cfg);
+      expect(r.feedsBreaker).toBe(false);
+      expect(r.terminal).toBe(false);
+      ep = r.ep;
+    }
+    expect(ep.attempts).toBe(0);
+    expect(ep.state).toBe('active');
+    expect(ep.lastOutcome).toBe('refused:main-red');
+    expect(ep.nextEligibleAt).toBe(45_000 + 1000);
+  });
+  it('a real refusal after main-red spells still counts', () => {
+    const afterRed = applyOutcome(ep0, 'refused:main-red', 0, cfg).ep;
+    const r = applyOutcome(afterRed, 'refused:verify-failed', 2000, cfg);
+    expect(r.ep.attempts).toBe(1);
+    expect(r.feedsBreaker).toBe(true);
+  });
 });
 
 describe('applyOutcome — armed branch (mergerunner-auto-arm-handoff)', () => {

@@ -33,7 +33,7 @@ const USERS = [
   { id: 'justin', name: 'Justin', channels: [], permissions: ['user'], telegramUserId: 555 },
 ];
 
-function setup(opts: { dir?: string; consoleTicket?: { enabled?: boolean }; failAudit?: boolean } = {}) {
+function setup(opts: { dir?: string; consoleTicket?: { enabled?: boolean }; failAudit?: boolean; issueScopedToken?: () => { token: string; expiresAt: string; familyExpiresAt: string } | null } = {}) {
   const dir = opts.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'mct-int-'));
   if (!opts.dir) dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify(USERS));
@@ -55,7 +55,7 @@ function setup(opts: { dir?: string; consoleTicket?: { enabled?: boolean }; fail
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   mountPublicMobilePairingRoutes(app, pairing);
-  mountConsoleTicketRedeemRoute(app, pairing, () => config.authToken);
+  mountConsoleTicketRedeemRoute(app, pairing, () => config.authToken, opts.issueScopedToken);
   app.use(authMiddleware(() => config.authToken, 'echo', undefined, deviceAuthenticator(pairing)));
   app.get('/sessions', (_req, res) => { res.json({ sessions: [] }); });
   app.use(createMobilePairingRouter(pairing, deps));
@@ -136,6 +136,25 @@ describe('console ticket routes', () => {
     expect(log).toContain('"event":"redeemed"');
     expect(log).not.toContain(m.body.ticket);
     expect(log).not.toContain('tok-1');
+  });
+
+  it('SEC-046: when the scoped-session feature is on, the redeem hands back a dst_ token, not the master', async () => {
+    let issued = 0;
+    const e = setup({ consoleTicket: { enabled: true }, issueScopedToken: () => {
+      issued++;
+      return { token: 'dst_fake-scoped-token', expiresAt: '2030-01-01T00:00:00.000Z', familyExpiresAt: '2030-01-08T00:00:00.000Z' };
+    } });
+    const p = phone(e);
+    await enroll(e, p);
+    const m = await mint(e, p);
+    expect(m.status).toBe(200);
+    const r = await redeem(e, m.body.ticket);
+    expect(r.status).toBe(200);
+    expect(r.body.token).toBe('dst_fake-scoped-token'); // the scoped token, NOT the master 'tok-1'
+    expect(r.body.token).not.toBe('tok-1');
+    expect(r.body.sessionExpiresAt).toBe('2030-01-01T00:00:00.000Z');
+    expect(r.body.sessionFamilyExpiresAt).toBe('2030-01-08T00:00:00.000Z');
+    expect(issued).toBe(1); // minted exactly once, on the successful redeem
   });
 
   it('refuses a mint without a presence key, with a bad presence signature, or a replayed mint request', async () => {
@@ -225,8 +244,12 @@ describe('console ticket routes', () => {
     const m = await mint(e, p);
     (e.config.mobilePairing as Record<string, unknown>).consoleTicket = { enabled: false };
     expect((await signed(e, p, '/mobile/console-ticket/challenge')).status).toBe(503);
-    expect((await enroll(e, p)).status).toBe(503);
     expect((await redeem(e, m.body.ticket)).status).toBe(503);
+    // Enrolment also serves Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.4
+    // step 6): it stays open while that switch is on, and closes only when both are off.
+    expect((await enroll(e, p)).status).not.toBe(503);
+    (e.config.mobilePairing as Record<string, unknown>).ownerPresence = { enabled: false };
+    expect((await enroll(e, p)).status).toBe(503);
   });
 
   it('only POST on the exact redeem path skips the bearer gate', async () => {

@@ -218,3 +218,14 @@ Because materializing a whole store can be heavy, `StoreSnapshotEngine` runs the
 ## Account Follow-Me across machines
 
 A subscription account you logged into one machine becomes usable on the others the ToS-safe way: each machine re-mints its own login (you approve once), and no login token is copied. The security primitives — `AccountCredentialShare`, `CrossMachineMandate`, `PairingEpochManager`, `AccountFollowMeGrants`, and the credential-free `SubscriptionAccountMetaReplicatedStore` metadata kind — are detailed on the [Account Follow-Me](/features/account-follow-me/) page. The detection layer (`AccountFollowMeOrchestrator`, `AccountFollowMeDetector`, `AccountFollowMeService`, `AccountFollowMeEmailGate`) notices a machine with no usable account and surfaces a one-tap consent — it never self-enrolls. All dark behind `multiMachine.accountFollowMe`.
+
+### Read markers follow the person, not the machine
+
+What each person has read in each conversation (the app's unread counts, see
+[Unread Messages in the App](/features/unread-messages/)) is a replicated store:
+`ConversationReadMarkerStore` (`src/core/ConversationReadMarkers.ts`) emits every local advance as a
+`conversation-read-marker` record and lands peers' records with a forward-only merge,
+`wireReadMarkerStore` (`src/core/ConversationReadMarkersWiring.ts`) puts it on the replication path
+at boot, and `ConversationUnreadService` catches a machine up from any reachable peer through
+`GET /mobile/conversations/read-markers` when the journal window has moved on. Every machine holds
+the whole merged state, so any one reachable peer is enough and nothing strands on a topic transfer.

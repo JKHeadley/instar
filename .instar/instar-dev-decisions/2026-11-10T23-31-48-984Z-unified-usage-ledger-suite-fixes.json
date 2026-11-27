@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-10T23:31:48.984Z",
+  "slug": "unified-usage-ledger-suite-fixes",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

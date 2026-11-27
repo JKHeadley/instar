@@ -115,19 +115,22 @@ export function ensureDashboardPin(
 /**
  * Store a newly minted PIN where this agent keeps its secrets: in the
  * encrypted vault (config gets the `{secret:true}` reference) when the agent
- * has one, else in config.json as before. A vault write that fails falls back
- * to config.json, so the PIN is never lost. Returns where it went.
+ * has one, else in config.json as before. setConfig must be the durable PIN
+ * writer (LiveConfig.set), which reserves a new generation before vault mutation.
+ * A vault write/flush failure falls back through that same config authority.
  */
 export function persistDashboardPin(
   stateDir: string,
   pin: string,
   setConfig: (value: unknown) => void,
-  openStore: () => Pick<SecretStore, 'set'> = () => new SecretStore({ stateDir }),
+  openStore: () => Pick<SecretStore, 'set'|'syncDurably'> = () => new SecretStore({ stateDir }),
 ): 'vault' | 'config' {
   if (fs.existsSync(path.join(stateDir, 'secrets', 'config.secrets.enc'))) {
+    // Refuse before touching the vault if its new revocation generation cannot
+    // be durably reserved. Identical placeholders still require a new UUID.
+    setConfig({ secret: true });
     try {
-      openStore().set(DASHBOARD_PIN_VAULT_KEY, pin);
-      setConfig({ secret: true });
+      const store=openStore();store.set(DASHBOARD_PIN_VAULT_KEY, pin);store.syncDurably();
       return 'vault';
     } catch (err) {
       // @silent-fallback-ok — the PIN still has to exist; config.json is where it lived before vaults

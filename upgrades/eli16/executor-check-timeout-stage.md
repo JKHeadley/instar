@@ -1,0 +1,5 @@
+# Knowing which check ran out of time
+
+A feedback worker's proposed fix goes through four checks before it can be published: the new test against the old code, the same test against the fixed code, the lint rules, and the existing tests related to the changed files. Each check has a time limit. When one ran out of time, the only thing recorded was "command wall clock", and the folders holding that check's work are deleted along with the attempt. Eight attempts ended this way in three days, and nobody can tell from the records which of the four checks was slow, so there was nothing precise to fix.
+
+This change adds one piece of information to the failure record: which check it was, plus the end of what that check printed. Nothing else changes. The attempt still fails the same way with the same reason, the limits stay as they were, and every safety check still runs. Output goes through the same secret scrubbing and size limit that other check failures already use. There is no decision for anyone to make, and undoing it is a plain revert with no data to repair.

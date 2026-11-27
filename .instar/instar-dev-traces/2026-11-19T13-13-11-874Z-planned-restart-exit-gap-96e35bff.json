@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "planned-restart-exit-gap",
+  "sessionId": "dfb1efdb-0155-401a-ad85-cb9b36e9b815",
+  "timestamp": "2026-11-19T13:13:11.874Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-exit-gap.md",
+  "artifactSha256": "197b84d59855acc2a9ef3254404ea40734d58d6be2501ab00c18e9177388100f",
+  "coveredFiles": [
+    "docs/specs/planned-restart-exit-gap.eli16.md",
+    "src/core/PlannedRestartVerifyGuard.ts",
+    "src/core/restartRequestAttribution.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/operatorQueue.ts",
+    "tests/e2e/planned-restart-local-verify-lifecycle.test.ts",
+    "tests/integration/planned-restart-local-verify.test.ts",
+    "tests/unit/ForegroundRestartWatcher.test.ts",
+    "tests/unit/boot-readiness.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/operatorHoldService.test.ts",
+    "tests/unit/localVerify/operatorQueue.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/planned-restart-verify-guard.test.ts",
+    "upgrades/next/planned-restart-exit-gap.md",
+    "upgrades/side-effects/planned-restart-exit-gap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow bug fix with a measured cause (a planned restart taken in the moment between a verify's child exiting and its result being recorded) plus log rows; a revert fully undoes it; independent second pass concurred, and a second independent reviewer concurred on the merge with main",
+  "eli16Path": "docs/specs/planned-restart-exit-gap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/planned-restart-exit-gap.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

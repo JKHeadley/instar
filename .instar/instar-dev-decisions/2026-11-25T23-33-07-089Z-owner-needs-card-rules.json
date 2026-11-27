@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-25T23:33:07.089Z",
+  "slug": "owner-needs-card-rules",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 158,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/server/ownerNeedsCredentialConsent.ts",
+      "src/server/ownerNeedsSources.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 152,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

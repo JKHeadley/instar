@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type {
   IMessageStore,
   MessageEnvelope,
@@ -30,6 +31,8 @@ import type {
 } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { isSafeFileId, MAX_FILE_ID_BYTES } from '../core/safeFileId.js';
 
 const DIRS = ['store', 'index', 'dead-letter', 'pending', 'threads', 'threads/archive', 'drop', 'outbound'];
 
@@ -49,6 +52,7 @@ export class MessageStore implements IMessageStore {
 
   async save(envelope: MessageEnvelope): Promise<void> {
     const filePath = this.messageFilePath(envelope.message.id);
+    if (!filePath) throw new Error('unsafe message id: refusing to store a message whose id is not a plain file name');
 
     // Deduplication — if the message already exists, skip
     if (fs.existsSync(filePath)) {
@@ -66,17 +70,109 @@ export class MessageStore implements IMessageStore {
 
   async get(messageId: string): Promise<MessageEnvelope | null> {
     const filePath = this.messageFilePath(messageId);
+    if (!filePath) return null;
     try {
       const data = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(data) as MessageEnvelope;
     } catch {
+      // A canonical-history body record (ThreadLog `textRef: {kind:'store'}`) lives
+      // in `bodies/`, outside the delivery store; resolve it on the same read path so
+      // existing consumers (ThreadlineReapRecovery) can follow the reference.
+      return MessageStore.isThreadBodyStoreId(messageId) ? this.getThreadBodySync(messageId) : null;
+    }
+  }
+
+  // ── Canonical-history body backing (ThreadLog large-body textRef) ───────────
+  //
+  // Over-cap Threadline bodies are referenced from the canonical per-thread log by
+  // a store id. These records are written to `bodies/`, NOT `store/`, so they never
+  // enter the delivery indexes, the retry scan, or inbox/outbox queries: they are
+  // history text backing, not a delivery claim. Synchronous because the recorder
+  // funnel returns synchronously (off the send critical path). Plain appendFile /
+  // rename semantics — no fsync, so no crash/power-loss durability is claimed.
+
+  /**
+   * Store ids are recorder-minted `tlbody-<sha256(threadId)>-<namespaced body
+   * digest>` (both full 64-hex) — never a raw wire value. The first part names
+   * the thread's body partition `bodies/<sha256(threadId)>/`, so close-only
+   * retention removes exactly one thread's bodies without scanning or indexing.
+   */
+  static isThreadBodyStoreId(id: string): boolean {
+    return /^tlbody-[0-9a-f]{64}-[0-9a-f]{64}$/.test(id);
+  }
+
+  /** The per-thread body partition key: full SHA-256 of the thread id. */
+  static threadBodyPartition(threadId: string): string {
+    return createHash('sha256').update(threadId).digest('hex');
+  }
+
+  private threadBodyPath(storeId: string): string {
+    return path.join(this.basePath, 'bodies', storeId.slice(7, 71), `${storeId}.json`);
+  }
+
+  /**
+   * Persist one body record under `bodies/<thread partition>/{storeId}.json`.
+   * Idempotent: an existing record is kept (the id is content-namespaced, so an
+   * existing file holds the same content). Throws on an invalid id, an id whose
+   * partition does not match the envelope's thread, or a write failure.
+   */
+  saveThreadBodySync(storeId: string, envelope: MessageEnvelope): void {
+    if (!MessageStore.isThreadBodyStoreId(storeId)) throw new Error(`invalid thread body store id: ${storeId}`);
+    const threadId = envelope.message.threadId;
+    if (typeof threadId !== 'string' || storeId.slice(7, 71) !== MessageStore.threadBodyPartition(threadId)) {
+      throw new Error(`thread body store id ${storeId} does not belong to the envelope's thread`);
+    }
+    const filePath = this.threadBodyPath(storeId);
+    if (fs.existsSync(filePath)) return;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(envelope));
+    fs.renameSync(tmpPath, filePath);
+  }
+
+  /**
+   * Read one body record, or null when absent/corrupt/invalid id. An absent
+   * record (ENOENT) returns null quietly, including after close-only retention
+   * removes the partition. This cannot distinguish retention from deletion.
+   * Any other failure (corrupt JSON,
+   * unreadable file) means referenced history text is lost: it is reported
+   * through DegradationReporter before returning null.
+   */
+  getThreadBodySync(storeId: string): MessageEnvelope | null {
+    if (!MessageStore.isThreadBodyStoreId(storeId)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(this.threadBodyPath(storeId), 'utf-8')) as MessageEnvelope;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+      DegradationReporter.getInstance().report({
+        feature: 'MessageStore.threadBody',
+        primary: 'Resolve an over-cap Threadline body from its canonical-history body record',
+        fallback: 'Treat the body as unresolvable (history read shows no body; reap recovery cannot replay it)',
+        // JSON parse errors can quote private body text. Report fixed categories
+        // only; neither exception messages nor their stringification are safe.
+        reason: `body record ${storeId} unreadable: ${err instanceof SyntaxError ? 'invalid JSON' : 'read failed'}`,
+        impact: 'Canonical thread history is missing the text of one over-cap message',
+      });
       return null;
     }
   }
 
+  /**
+   * Close-only retention: remove ONE thread's body partition (every body record
+   * the recorder wrote for that thread, including one whose log append later
+   * failed). Touches exactly `bodies/<sha256(threadId)>/` via SafeFsExecutor —
+   * never another thread, never the delivery store. Driven only by the
+   * ConversationStore terminal-close seam; cold archive/LRU never calls it.
+   */
+  deleteThreadBodiesSync(threadId: string): void {
+    const dir = path.join(this.basePath, 'bodies', MessageStore.threadBodyPartition(threadId));
+    if (!fs.existsSync(dir)) return;
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'MessageStore.deleteThreadBodiesSync' });
+  }
+
   async updateDelivery(messageId: string, delivery: DeliveryState): Promise<void> {
     const filePath = this.messageFilePath(messageId);
-    if (!fs.existsSync(filePath)) {
+    if (!filePath || !fs.existsSync(filePath)) {
       throw new Error(`Message not found: ${messageId}`);
     }
 
@@ -110,7 +206,7 @@ export class MessageStore implements IMessageStore {
       const chunk = messageIds.slice(i, i + chunkSize);
       for (const id of chunk) {
         const filePath = this.messageFilePath(id);
-        if (!fs.existsSync(filePath)) continue;
+        if (!filePath || !fs.existsSync(filePath)) continue;
 
         let envelope: MessageEnvelope;
         try {
@@ -154,7 +250,7 @@ export class MessageStore implements IMessageStore {
    */
   async updateEnvelope(envelope: MessageEnvelope): Promise<void> {
     const filePath = this.messageFilePath(envelope.message.id);
-    if (!fs.existsSync(filePath)) {
+    if (!filePath || !fs.existsSync(filePath)) {
       throw new Error(`Message not found: ${envelope.message.id}`);
     }
 
@@ -225,7 +321,7 @@ export class MessageStore implements IMessageStore {
 
   async deadLetter(messageId: string, reason: string): Promise<void> {
     const srcPath = this.messageFilePath(messageId);
-    if (!fs.existsSync(srcPath)) {
+    if (!srcPath || !fs.existsSync(srcPath)) {
       return;
     }
 
@@ -291,25 +387,57 @@ export class MessageStore implements IMessageStore {
   }
 
   async exists(messageId: string): Promise<boolean> {
-    return fs.existsSync(this.messageFilePath(messageId));
+    const filePath = this.messageFilePath(messageId);
+    return filePath !== null && fs.existsSync(filePath);
+  }
+
+  /** messages-reach-renamed-sessions §D.2: a message id that already reached dead-letter. */
+  async isDeadLettered(messageId: string): Promise<boolean> {
+    if (!isSafeFileId(messageId)) return false; // SEC-127: ids are only ever plain file names
+    return fs.existsSync(path.join(this.basePath, 'dead-letter', `${messageId}.json`));
+  }
+
+  /**
+   * messages-reach-renamed-sessions §D.2: store a relayed envelope only if no record of
+   * its id exists. One step both claims the id and writes the whole record (temp file,
+   * then `link()`, which fails if the path exists), so two copies arriving at once can't
+   * both proceed and a crash never leaves a claimed-but-empty record. True = stored.
+   */
+  async saveIfAbsent(envelope: MessageEnvelope): Promise<boolean> {
+    const filePath = this.messageFilePath(envelope.message.id);
+    if (!filePath) throw new Error('unsafe message id: refusing to store a message whose id is not a plain file name');
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.claim`;
+    fs.writeFileSync(tmpPath, JSON.stringify(envelope, null, 2));
+    try {
+      fs.linkSync(tmpPath, filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw err;
+    } finally {
+      SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/MessageStore.ts:saveIfAbsent' });
+    }
+    this.appendToIndex(envelope);
+    return true;
   }
 
   // ── Thread Management ──────────────────────────────────────────
 
   async saveThread(thread: MessageThread): Promise<void> {
-    const filePath = path.join(this.basePath, 'threads', `${thread.id}.json`);
+    const filePath = this.threadFilePath(thread.id, false);
+    if (!filePath) throw new Error('unsafe thread id: refusing to store a thread whose id is not a plain file name');
     const tmpPath = `${filePath}.tmp.${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(thread, null, 2));
     fs.renameSync(tmpPath, filePath);
   }
 
   async getThread(threadId: string): Promise<MessageThread | null> {
-    const filePath = path.join(this.basePath, 'threads', `${threadId}.json`);
+    const filePath = this.threadFilePath(threadId, false);
+    const archivePath = this.threadFilePath(threadId, true);
+    if (!filePath || !archivePath) return null;
     try {
       const data = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(data) as MessageThread;
     } catch { // @silent-fallback-ok — thread file not found, check archive
-      const archivePath = path.join(this.basePath, 'threads', 'archive', `${threadId}.json`);
       try {
         const data = fs.readFileSync(archivePath, 'utf-8');
         return JSON.parse(data) as MessageThread;
@@ -344,10 +472,10 @@ export class MessageStore implements IMessageStore {
   }
 
   async archiveThread(threadId: string): Promise<void> {
-    const srcPath = path.join(this.basePath, 'threads', `${threadId}.json`);
-    if (!fs.existsSync(srcPath)) return;
+    const srcPath = this.threadFilePath(threadId, false);
+    const destPath = this.threadFilePath(threadId, true);
+    if (!srcPath || !destPath || !fs.existsSync(srcPath)) return;
 
-    const destPath = path.join(this.basePath, 'threads', 'archive', `${threadId}.json`);
     fs.renameSync(srcPath, destPath);
   }
 
@@ -429,8 +557,20 @@ export class MessageStore implements IMessageStore {
 
   // ── Private Helpers ──────────────────────────────────────────────
 
-  private messageFilePath(messageId: string): string {
+  /** SEC-127: see src/core/safeFileId.ts. */
+  static readonly MAX_FILE_ID_BYTES = MAX_FILE_ID_BYTES;
+  static isSafeFileId(id: unknown): id is string { return isSafeFileId(id); }
+
+  private messageFilePath(messageId: string): string | null {
+    if (!MessageStore.isSafeFileId(messageId)) return null;
     return path.join(this.basePath, 'store', `${messageId}.json`);
+  }
+
+  private threadFilePath(threadId: string, archived: boolean): string | null {
+    if (!MessageStore.isSafeFileId(threadId)) return null;
+    return archived
+      ? path.join(this.basePath, 'threads', 'archive', `${threadId}.json`)
+      : path.join(this.basePath, 'threads', `${threadId}.json`);
   }
 
   private async getThreadStats(): Promise<{ active: number; resolved: number; stale: number }> {

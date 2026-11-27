@@ -15,7 +15,8 @@
  */
 
 import { execFile } from 'node:child_process';
-import { classifyClaudeAuthFailure } from './claudeChildAuth.js';
+import { classifyClaudeAuthFailure, isUsageLimitOutput } from './claudeChildAuth.js';
+import type { UsageProbeResult } from './UsageLimitWatch.js';
 import type { ClaudeKeyProbeResult } from './ClaudeKeyHealth.js';
 import { resolveCliFlag } from './models.js';
 import { wrapIntelligenceWithSpawnCap } from './SpawnCapIntelligenceProvider.js';
@@ -57,6 +58,37 @@ export function buildClaudeKeyProbe(deps: { claudePath: () => string | null; bas
     });
     try { await capped?.evaluate('claude-key-probe'); }
     catch { return 'inconclusive'; } // @silent-fallback-ok: a cap shed concludes nothing, by design
+    return result;
+  };
+}
+
+function runUsageProbe(claudePath: string, key: string | undefined, baseUrl: string | undefined): Promise<UsageProbeResult> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (key) { env.CLAUDE_CODE_OAUTH_TOKEN = key; delete env.ANTHROPIC_API_KEY; }
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_SESSION_ID;
+  if (baseUrl) env.ANTHROPIC_BASE_URL = baseUrl;
+  const args = ['-p', 'Reply with OK.', '--model', resolveCliFlag('fast'), '--max-turns', '1', '--tools', '', '--output-format', 'json', '--setting-sources', 'user'];
+  return new Promise((resolve) => {
+    const child = execFile(claudePath, args, { timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024, env }, (error, stdout) => {
+      if (isUsageLimitOutput(stdout)) { resolve('limited'); return; }
+      resolve(interpretProbe(Boolean(error), stdout) === 'ok' ? 'ok' : 'other');
+    });
+    child.stdin?.end();
+  });
+}
+
+/** One real call on the login in use (the configured key, else the default login), for UsageLimitWatch. */
+export function buildUsageProbe(deps: { claudePath: () => string | null; key: () => string | undefined; baseUrl: () => string | undefined }): () => Promise<UsageProbeResult> {
+  return async () => {
+    const claudePath = deps.claudePath();
+    if (!claudePath) return 'other';
+    let result: UsageProbeResult = 'other';
+    const capped = wrapIntelligenceWithSpawnCap({
+      evaluate: async () => { result = await runUsageProbe(claudePath, deps.key(), deps.baseUrl()); return result; },
+    });
+    try { await capped?.evaluate('claude-usage-probe'); }
+    catch { return 'other'; } // @silent-fallback-ok: a cap shed concludes nothing, by design
     return result;
   };
 }

@@ -1,3 +1,4 @@
+import { ACCOUNT_ACTION_SAFETY_HEADING } from '../../src/data/accountActionSafety.js';
 /**
  * Normal-Chrome browser — Agent Awareness + Migration Parity
  * (specs docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md).
@@ -33,7 +34,7 @@ import {
 } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { BROWSER_SCRIPT_NAMES } from '../../src/commands/init.js';
-import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SHARED_RULES, NORMAL_CHROME_BROWSER_WINDOWS_SECTION } from '../../src/data/builtinSkillContent.js';
+import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SHARED_RULES, NORMAL_CHROME_BROWSER_WINDOWS_SECTION, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW, NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE } from '../../src/data/builtinSkillContent.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
@@ -41,7 +42,7 @@ const HEADING = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING;
 const HEADING_V1 = NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1;
 const V1_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v1.md');
 
-function call(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateScripts' | 'migrateNormalChromeBrowserSkill' | 'migrateFrameworkShadowCapabilities'): MigrationResult {
+function call(m: PostUpdateMigrator, method: 'migrateClaudeMd' | 'migrateScripts' | 'migrateNormalChromeBrowserSkill' | 'migrateNormalChromeWindowsBlankPageNote' | 'migrateAccountActionSafetySkill' | 'migrateFrameworkShadowCapabilities'): MigrationResult {
   const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
   (m as unknown as Record<string, (r: MigrationResult) => void>)[method](result);
   return result;
@@ -64,7 +65,7 @@ describe('NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION', () => {
     expect(text).not.toContain('secret-drop-retrieve.mjs'); // the Secret Drop rewrite sniffs that string
     expect(text).toContain('never take focus or send input while the operator is using the machine');
     expect(text).not.toContain('macOS only');
-    expect(text.length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // a pointer-sized card, not the skill
+    expect(text.slice(0, text.indexOf(ACCOUNT_ACTION_SAFETY_HEADING)).length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // browser card stays compact; account safety is a separate section
   });
 
   it('generateClaudeMd carries the section verbatim and not the v1 heading (Agent Awareness)', () => {
@@ -283,6 +284,74 @@ describe('PostUpdateMigrator — normal-Chrome browser', () => {
       expect(fs.readFileSync(skillPath(), 'utf-8')).toBe('---\nname: something-else\n---\nmine');
       SafeFsExecutor.safeRmSync(skillPath(), { force: true, operation: 'tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts' });
       expect(call(m, 'migrateNormalChromeBrowserSkill')).toEqual({ upgraded: [], skipped: [], errors: [] });
+    });
+  });
+
+  describe('migrateNormalChromeWindowsBlankPageNote (spec normal-chrome-windows-occlusion)', () => {
+    const NOTE_LABEL = 'skills/normal-chrome-browser/SKILL.md (Windows blank-page note: ERR page-not-rendering and the occlusion fix)';
+    /** The real shipped text from just before this change (origin/main at v1.3.1930), byte for byte. */
+    const V3_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v3.md');
+    const previous = () => fs.readFileSync(V3_FIXTURE, 'utf-8');
+
+    it('the fixture is the previous shipped text: no note, no row, no flag sentence', () => {
+      expect(createHash('sha256').update(previous()).digest('hex')).toBe('0eba71ec8c2eca715f5bcb3140743b75df8e1411f3ad2b6be4fdc6e0c86da457');
+      expect(previous()).not.toContain('page-not-rendering');
+      expect(previous()).not.toContain('CalculateNativeWinOcclusion');
+      expect(previous()).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
+    });
+
+    it('an untouched previous copy ends byte-identical to a fresh install (LF and CRLF), once', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), previous());
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      fs.writeFileSync(skillPath(), previous().replace(/\n/g, '\r\n'));
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT.replace(/\n/g, '\r\n'));
+    });
+
+    it('an edited copy gets all three edits in place and keeps its own text', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), previous() + '\n## My notes\n\nkeep me\n');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(after).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT + '\n## My notes\n\nkeep me\n');
+      expect(after.indexOf(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBeLessThan(after.indexOf(NORMAL_CHROME_BROWSER_SKILL_MARKER));
+      expect(count(after, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)).toBe(1);
+      expect(count(after, NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE)).toBe(1);
+    });
+
+    it('appends the note when an edited copy no longer has the Linux heading, and skips edits whose anchors are gone', () => {
+      const edited = previous().replace(NORMAL_CHROME_BROWSER_SKILL_MARKER, '### My Linux notes').replace(NORMAL_CHROME_BROWSER_LAUNCH_ROW_ANCHOR, '| My own launch text.');
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), edited);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([NOTE_LABEL]);
+      const after = fs.readFileSync(skillPath(), 'utf-8');
+      expect(count(after, NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW)).toBe(1);
+      expect(after).not.toContain(NORMAL_CHROME_BROWSER_LAUNCH_ROW_FLAG_SENTENCE);
+      expect(after.replace(NORMAL_CHROME_BROWSER_PAGE_NOT_RENDERING_ROW + '\n', '').startsWith(edited.trimEnd())).toBe(true);
+      expect(after.trimEnd().endsWith(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE.trimEnd())).toBe(true);
+    });
+
+    it('is a no-op on the current shipped text, and leaves other or missing files alone', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote')).toEqual({ upgraded: [], skipped: [], errors: [] });
+      fs.writeFileSync(skillPath(), '---\nname: something-else\n---\nmine');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      expect(fs.readFileSync(skillPath(), 'utf-8')).toBe('---\nname: something-else\n---\nmine');
+      SafeFsExecutor.safeRmSync(skillPath(), { force: true, operation: 'tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts' });
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote')).toEqual({ upgraded: [], skipped: [], errors: [] });
+    });
+
+    it('in the real order, a first-shipped copy is replaced whole and does not get the note twice', () => {
+      fs.mkdirSync(path.dirname(skillPath()), { recursive: true });
+      fs.writeFileSync(skillPath(), fs.readFileSync(V1_FIXTURE, 'utf-8'));
+      call(m, 'migrateNormalChromeBrowserSkill');
+      call(m, 'migrateAccountActionSafetySkill');
+      expect(call(m, 'migrateNormalChromeWindowsBlankPageNote').upgraded).toEqual([]);
+      expect(count(fs.readFileSync(skillPath(), 'utf-8'), NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBe(1);
     });
   });
 

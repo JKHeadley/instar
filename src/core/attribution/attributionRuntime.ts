@@ -29,6 +29,7 @@ import { AttributionLedger, type AttributionSurface, type LedgerRow } from './At
 import { AttributionService, type CheckContext, type CheckResult, type ClaimFinding } from './AttributionService.js';
 import { isInScope, listScopeFiles, realpathLoose, withoutManagedRegion, type ScopeOptions } from './attributionScope.js';
 import { ChannelReaders } from './channelReaders.js';
+import type { SourceChannel } from './marker.js';
 import { findLocal, findSources, type FindCandidate, type FindOptions, type FindResult } from './findSources.js';
 import { AttributionIdentity } from './identity.js';
 import { parseMarkers, quoteIsInRecord, type SourceRef } from './marker.js';
@@ -415,6 +416,11 @@ export class AttributionRuntime {
   // ── Send gate signal ───────────────────────────────────────────────
 
   /** Exact facts for each marker in a message. Over the 6s sub-budget it reads `unmeasured`. */
+  /** A non-Telegram conversation's last turns, for B23's recap test. Telegram uses topic memory. */
+  recentConversation(channel: SourceChannel, conversation: string): Array<{ role: 'user' | 'agent'; text: string }> {
+    return this.readers.recentConversation(channel, conversation);
+  }
+
   async sourcesSignal(text: string, conversationContext: boolean): Promise<AttributionSourcesSignal> {
     const { markers, malformed } = parseMarkers(text);
     const unmeasured: AttributionSourcesSignal = {

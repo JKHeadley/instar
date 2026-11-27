@@ -94,7 +94,7 @@ describe('Slack session continuity (anti-amnesia)', () => {
       // The recovery path resolves the routing key into the raw API channel
       // (`slackApiChannel`) before fetching history — for a channel session this
       // equals the old slackChId; for a thread session it strips the thread_ts.
-      expect(serverSource).toContain('getChannelMessagesWithFallback(slackApiChannel, 30)');
+      expect(serverSource).toContain('getConversationMessagesWithFallback(slackChId, 30)');
     });
   });
 

@@ -17,7 +17,7 @@ type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[]
 const realPlatform = process.platform;
 let dir: string;
 
-beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlg-mig-')); });
+beforeEach(() => { dir = fs.mkdtempSync('/tmp/tlg-mig-'); });
 afterEach(() => {
   Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
   vi.restoreAllMocks();

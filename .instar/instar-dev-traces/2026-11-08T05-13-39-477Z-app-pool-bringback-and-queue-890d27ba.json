@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "app-pool-bringback-and-queue",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T05:13:39.477Z",
+  "artifactPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "artifactSha256": "60c9d91c2206b47e3f71b757060d532c7edca8123b3633a5f183bfc6568db970",
+  "coveredFiles": [
+    "src/core/appConversationMove.ts",
+    "tests/unit/app-pool-bringback-queue.test.ts",
+    "upgrades/side-effects/app-pool-bringback-and-queue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review finding on the Tier 1 fix: an owner with no direct evidence yet reads unknown, so a just-restarted holder never offers to take over a healthy conversation",
+  "eli16Path": "docs/specs/app-pool-bringback-and-queue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

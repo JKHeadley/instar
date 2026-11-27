@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-12T03:41:10.641Z",
+  "slug": "conversation-graph-suggestions",
+  "carriers": {
+    "CMT-1650": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Move conversation-graph-suggestions state (rejected/accepted/accepting) onto a replicated store so a rejection on one machine is honored on every machine (spec docs/specs/conversation-graph-suggestions.md section 5)"
+    },
+    "CMT-1651": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Add the suggestion routes to the device-signed mobile allowlist and an app Review suggestions screen (spec docs/specs/conversation-graph-suggestions.md section 6)"
+    }
+  }
+}

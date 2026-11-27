@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "local-verify-aged-waiter-overflow",
+  "sessionId": "ebdbfe65-1086-482b-ad3c-1ba250c8348e",
+  "timestamp": "2026-11-13T17:21:46.825Z",
+  "artifactPath": "upgrades/side-effects/local-verify-aged-waiter-overflow.md",
+  "artifactSha256": "f467275e3e1d05eae48e4d869d0cc3f3e8570e3ab1a97fb937e44b521001c653",
+  "coveredFiles": [
+    "docs/specs/local-verify-aged-waiter-overflow.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-aged-waiter-overflow.md",
+    "upgrades/side-effects/local-verify-aged-waiter-overflow.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fairness fix to Local Verify queue admission inside the existing overflow bound; no state format change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/local-verify-aged-waiter-overflow.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-aged-waiter-overflow.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

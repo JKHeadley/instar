@@ -46,7 +46,7 @@ describe('claimLeaseForSelf — force-wakeup claims a real signed higher-epoch l
     const selfId = mgr.loadIdentity().machineId;
     const signingKeyPem = fs.readFileSync(path.join(stateDir, 'machine', 'signing-key.pem'), 'utf-8');
 
-    await claimLeaseForSelf(mgr, selfId, signingKeyPem, { stateDir, projectDir: home /* no .git → push skipped */ });
+    await claimLeaseForSelf(mgr, selfId, signingKeyPem, { stateDir, projectDir: home /* no .git: the claim stays local */ });
 
     const reg = mgr.loadRegistry();
     // Lease authority now names THIS machine at epoch 6 (5 + 1).

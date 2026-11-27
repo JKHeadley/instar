@@ -108,6 +108,7 @@ describe('secret-externalization survivability migration', () => {
     const current = [
       '#!/bin/bash',
       '# imessage-reply.sh — current version',
+      '# imessage-reply-feature: tone-reaction',
       'AUTH_TOKEN="${INSTAR_AUTH_TOKEN:-}"',
       'if [ -z "$AUTH_TOKEN" ] && [ -f ".instar/config.json" ]; then',
       '  AUTH_TOKEN=$(python3 -c "import json; v=json.load(open(\'.instar/config.json\')).get(\'authToken\',\'\'); print(v if isinstance(v, str) else \'\')" 2>/dev/null)',

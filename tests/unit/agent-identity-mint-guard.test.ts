@@ -156,6 +156,7 @@ const CENSUS = {
     'threadline/mcp-stdio-entry.ts',
     'threadline/relay/A2ABridge.ts', // an unrelated rate-limiter map helper named getOrCreate
     'threadline/client/JoinedMeshDetector.ts', // doc comment only
+    'core/firstPairAgentIdentity.ts', // the inviter's first-pair mint — through the guarded primitive (fb-1e30d109-e50)
   ],
 } as const;
 

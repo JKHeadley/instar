@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "updater-drop-satisfied-restart-deferral",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T19:30:17.224Z",
+  "artifactPath": "upgrades/side-effects/updater-drop-satisfied-restart-deferral.md",
+  "artifactSha256": "9f23e559d2b03c2fcf9bab429bf21d4946f4ee007618eb2ffba9bc9451a307bc",
+  "coveredFiles": [
+    "docs/specs/updater-drop-satisfied-restart-deferral.eli16.md",
+    "src/core/AutoUpdater.ts",
+    "tests/unit/AutoUpdater-restart-holds.test.ts",
+    "tests/unit/stale-version-prevention.test.ts",
+    "upgrades/next/updater-drop-satisfied-restart-deferral.md",
+    "upgrades/side-effects/updater-drop-satisfied-restart-deferral.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes a redundant restart under a deterministic fail-closed check; no new action, no state format change; revert restores previous behaviour",
+  "eli16Path": "docs/specs/updater-drop-satisfied-restart-deferral.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/updater-drop-satisfied-restart-deferral.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

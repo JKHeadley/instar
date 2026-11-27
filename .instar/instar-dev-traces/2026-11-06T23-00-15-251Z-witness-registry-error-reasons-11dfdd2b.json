@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "witness-registry-error-reasons",
+  "sessionId": "7b0f4685-1dc7-4b03-8c59-be9296f4c21d",
+  "timestamp": "2026-11-06T23:00:15.251Z",
+  "artifactPath": "upgrades/side-effects/witness-registry-error-reasons.md",
+  "artifactSha256": "881c1b60c707af73b7d104c0d3b8f4a2453779d1ac9a8f59072a40f5ef473313",
+  "coveredFiles": [
+    "docs/specs/witness-registry-error-reasons.eli16.md",
+    "packages/witness/README.md",
+    "packages/witness/src/cli.ts",
+    "packages/witness/src/registry.ts",
+    "packages/witness/test/registry.test.mjs",
+    "upgrades/next/witness-registry-error-reasons.md",
+    "upgrades/side-effects/witness-registry-error-reasons.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Message-only change to a standalone CLI's error text; exit codes unchanged; a revert fully undoes it.",
+  "eli16Path": "docs/specs/witness-registry-error-reasons.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/witness-registry-error-reasons.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

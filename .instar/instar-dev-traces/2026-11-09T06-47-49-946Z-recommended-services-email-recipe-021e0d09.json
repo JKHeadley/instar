@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "recommended-services-email-recipe",
+  "sessionId": "02ef810d-d0ca-4bfa-8d70-6e04c097223d",
+  "timestamp": "2026-11-09T06:47:49.946Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-email-recipe.md",
+  "artifactSha256": "541b63635245d75a8bfac280a7d19445943862267ed83c1c79ab9efbd4a30270",
+  "specPath": "docs/specs/backup-email-sending.md",
+  "coveredFiles": [
+    "dashboard-pair/service-yes.js",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/recommended/recipes.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/middleware.ts",
+    "tests/e2e/email-sending-lifecycle.test.ts",
+    "tests/unit/capabilities-discoverability.test.ts",
+    "tests/unit/email-recipe.test.ts",
+    "upgrades/side-effects/recommended-services-email-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fixes found by the email recipe's live proof plus suite ratchet registrations, same feature.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "email-fallback-retry is registered in SELF_ACTION_CONTROLLERS driving the real fallbackRetryDelayMs: backoff 1,2,4,8,15 then 15 minutes, timer stops 24h after the row first fell back (a relay give-up never resets the clock, the hourly sweep never resumes it), so a permanently refused row settles at 100 attempts; relay copies capped at 3 per row inside those attempts; the paced checkpoint stops after ten passes over its keys."
+    }
+  }
+}

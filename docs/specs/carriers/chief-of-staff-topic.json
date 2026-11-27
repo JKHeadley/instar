@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-09T20:35:20.847Z",
+  "slug": "chief-of-staff-topic",
+  "carriers": {
+    "CMT-1415": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Build per-key compaction for the chief-of-staff-record journal kind (rewrite current tree/binding + newest lifecycle + the 7-day intent/check-event window) before the live file passes 4 MB. Deferred in docs/specs/chief-of-staff-topic.md §1.2 on 2026-11-09; tracked here so the deferral cannot rot."
+    }
+  }
+}

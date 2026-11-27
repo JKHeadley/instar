@@ -79,7 +79,14 @@ describe('Telegram browser route under Web K drift', () => {
       failedBuilds: ['unrecognized:new-build'], failures: 2, attentionPending: false })]);
     // Repeated requests during the 15-minute floor neither start a browser nor raise a second item.
     expect((await h.send()).status).toBe(409);
-    expect((await h.snapshot()).status).toBe(409);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const held = await h.snapshot();
+      expect(held.status).toBe(409);
+      // The cause is logged server-side by class and message, never returned to the caller.
+      expect(held.body).toEqual({ error: 'telegram-browser-snapshot-unavailable' });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[telegram-origin\] browser snapshot unavailable: profile=operator class=\w+ message=\S/));
+    } finally { warn.mockRestore(); }
     expect(h.factory).toHaveBeenCalledTimes(2);
     expect(h.attention).toHaveBeenCalledOnce();
   });

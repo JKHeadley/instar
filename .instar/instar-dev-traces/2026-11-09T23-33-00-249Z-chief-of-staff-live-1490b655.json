@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-live",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T23:33:00.249Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-live.md",
+  "artifactSha256": "8cd1cb644c6ed6039840aae1ecc84e38e966d2c7a6284d67428085ed82397701",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/chief-of-staff.md",
+    "site/src/content/docs/architecture/under-the-hood.md",
+    "src/core/ChiefOfStaffActionProtocol.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "src/core/ChiefOfStaffTriage.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/chief-of-staff-app-surface.test.ts",
+    "tests/unit/ChiefOfStaffActionProtocol.test.ts",
+    "tests/unit/ChiefOfStaffLoop.test.ts",
+    "tests/unit/chief-of-staff-triage.test.ts",
+    "upgrades/next/chief-of-staff-live.md",
+    "upgrades/side-effects/chief-of-staff-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Settlement authority after a lease failover, a verified close path, an owner-device route and a PIN-gated route rendering initiative data; driven by the converged + approved Tier-2 spec; second-pass review done with its must-fix fixed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

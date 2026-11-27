@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-15T18:37:37.264Z",
+  "slug": "cb-framework-constants-1115",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/framework-name-ratchet-baseline.json",
+      "src/commands/postDriveTranscriptAudit.ts",
+      "src/core/frameworkFacts.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

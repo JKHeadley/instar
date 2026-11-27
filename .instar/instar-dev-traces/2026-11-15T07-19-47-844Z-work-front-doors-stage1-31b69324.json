@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "work-front-doors-stage1",
+  "sessionId": "7c0d93f5-bdee-47d9-bb98-63f50287b5a1",
+  "timestamp": "2026-11-15T07:19:47.844Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage1.md",
+  "artifactSha256": "d36b7161b8e6580d73a2968e0997dea54d08ca104c2a71b3d9fc0614f1dddd55",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/server/needsRoutes.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/unit/needs-read.test.ts",
+    "upgrades/side-effects/work-front-doors-stage1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up fix inside the same Tier 2 change (needs read off-vs-starting).",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

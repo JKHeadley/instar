@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "sec175-codex-tool-free-profile",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T07:36:48.031Z",
+  "artifactPath": "upgrades/side-effects/sec175-codex-tool-free-profile.md",
+  "artifactSha256": "d379f1b32814d70cdba12dc33f5b98f2356b4c732ca5b4e4391f8b608aabb18e",
+  "coveredFiles": [
+    "docs/specs/sec175-codex-tool-free-profile.eli16.md",
+    "src/core/CodexCliIntelligenceProvider.ts",
+    "src/core/codexToolFreeProfile.ts",
+    "tests/unit/sec175-codex-tool-free-profile.test.ts",
+    "upgrades/next/sec175-codex-tool-free-profile.md",
+    "upgrades/side-effects/sec175-codex-tool-free-profile.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-175: Codex calls holding outside text get an explicit tool-free profile that also turns off web search; one new module, a one-line wiring change; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec175-codex-tool-free-profile.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec175-codex-tool-free-profile.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

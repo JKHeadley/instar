@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "accounts-pool-repair-state",
+  "sessionId": "45eb9c4f-00b4-414c-953b-762bf5ce967d",
+  "timestamp": "2026-11-15T22:11:36.142Z",
+  "artifactPath": "upgrades/side-effects/accounts-pool-repair-state.md",
+  "artifactSha256": "edcb121943a746cee8c8d70dad3c462e0fdbbd73495836f9819788436eedae04",
+  "coveredFiles": [
+    "src/server/mobileCapacityRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only change to the phone accounts summary; a revert fully undoes it; no state, config, auth or migration",
+  "eli16Path": "docs/specs/accounts-pool-repair-state.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-pool-repair-state.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

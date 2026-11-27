@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-08T09:09:57.134Z",
+  "slug": "internal-codex-account-room",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 198,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/intelligenceProviderFactory.ts",
+      "src/core/internalCodexAccount.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 182,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

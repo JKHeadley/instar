@@ -51,8 +51,13 @@ export async function showStatus(options: StatusOptions): Promise<void> {
       const resp = await fetch(`http://localhost:${config.port}/health`, {
         signal: AbortSignal.timeout(3000),
       });
-      const health = await resp.json() as { uptimeHuman?: string };
-      console.log(`    Uptime: ${health.uptimeHuman}`);
+      const health = await resp.json() as { uptimeHuman?: string; bootReadiness?: { state?: string; retryAfterSeconds?: number; phase?: string | null } };
+      if (health.bootReadiness?.state === 'starting') {
+        // Listen early: the boot beacon answers while the server is still booting.
+        console.log(`    ${pc.yellow('Starting')} (last step done: ${health.bootReadiness.phase ?? 'none yet'}; try again in about ${health.bootReadiness.retryAfterSeconds ?? 10} s)`);
+      } else {
+        console.log(`    Uptime: ${health.uptimeHuman}`);
+      }
     } catch {
       console.log(`    ${pc.yellow('Could not reach health endpoint')}`);
     }

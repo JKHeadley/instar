@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "origin-guard-prefix",
+  "sessionId": "ba0380e2-968f-459f-b409-62e887342449",
+  "timestamp": "2026-11-08T23:59:43.363Z",
+  "artifactPath": "upgrades/side-effects/origin-guard-prefix.md",
+  "artifactSha256": "a7d2730cbab32ae5a8a3d29ba998e1641553b4cea4bdda0940f898cb31a8437d",
+  "coveredFiles": [
+    "docs/specs/origin-guard-prefix.eli16.md",
+    "src/messaging/telegram-origin/OriginToolGuard.ts",
+    "tests/unit/telegram-origin/tool-guard.test.ts",
+    "upgrades/next/origin-guard-prefix.md",
+    "upgrades/side-effects/origin-guard-prefix.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows one substring match in the origin tool guard to a whole-path match; refusals of the managed profile itself are kept and tested; a revert fully undoes it",
+  "eli16Path": "docs/specs/origin-guard-prefix.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-guard-prefix.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

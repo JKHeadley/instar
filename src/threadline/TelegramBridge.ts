@@ -62,7 +62,7 @@ export interface TelegramSink {
   sendToTopic(
     topicId: number,
     text: string,
-    options?: { silent?: boolean; skipStallClear?: boolean },
+    options?: { silent?: boolean; skipStallClear?: boolean; rowOrigin?: 'relay' | 'a2a' },
   ): Promise<{ ok: boolean; messageId?: number; reason?: string } | unknown>;
 }
 
@@ -304,7 +304,12 @@ export class TelegramBridge {
     try {
       if (!this.ownsMirrorVoice()) return;
       await withThreadlineForwardedAuthor(this.originService, direction, topicId, body,
-        () => withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, { silent: true, skipStallClear: true })));
+        () => withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId, body, {
+          silent: true, skipStallClear: true,
+          // context-budget §8: the mirrored row is another agent's (inbound, via the relay)
+          // or this agent's A2A traffic (outbound) — labelled, never operator authority.
+          rowOrigin: direction === 'inbound' ? 'relay' : 'a2a',
+        })));
       if (!this.ownsMirrorVoice()) return;
       const binding = this.bindings.get(threadId);
       if (binding) {

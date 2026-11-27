@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-live",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T23:45:21.712Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-live.md",
+  "artifactSha256": "244158a44dbcc864090da53692ad09a2f49a22af418ceefc52e6debf4eb0903b",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/chief-of-staff.md",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/server/routes.ts",
+    "tests/integration/chief-of-staff-check-in.test.ts",
+    "tests/unit/ChiefOfStaffLoop.test.ts",
+    "upgrades/next/chief-of-staff-live.md",
+    "upgrades/side-effects/chief-of-staff-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "PIN-gated owner routes that write a confirmed binding + tree link and carry Unpark/Confirm-done to the loop; spec §1.3 owner-tap rule; covered by the PR 5a side-effects artifact addendum.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

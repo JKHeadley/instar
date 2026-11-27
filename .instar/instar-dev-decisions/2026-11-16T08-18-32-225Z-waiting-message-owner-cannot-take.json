@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-16T08:18:32.225Z",
+  "slug": "waiting-message-owner-cannot-take",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 138,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionOwnershipRegistry.ts",
+      "src/core/SessionRouter.ts",
+      "src/monitoring/neverSilent/ConversationSilenceJudge.ts",
+      "src/monitoring/neverSilent/NeverSilentPolicy.ts",
+      "src/monitoring/neverSilent/NeverSilentStore.ts",
+      "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+      "src/monitoring/neverSilent/neverSilentWiring.ts"
+    ],
+    "addedLines": 132,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

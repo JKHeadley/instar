@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "observability-evidence-duty",
+  "sessionId": "08782edb-b611-42d1-9419-01c7f6e44c82",
+  "timestamp": "2026-11-10T02:06:31.991Z",
+  "artifactPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "artifactSha256": "26733b10adeee5ab09b8f93fa71a99ede3a99b31c01c62e3665a3980e3e57203",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/constitution-alignment-map.md",
+    "docs/standards-registry-area-audits.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only constitution sharpening already reviewed and operator-approved; this commit records the final-head second pass.",
+  "eli16Path": "docs/specs/observability-evidence-duty.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

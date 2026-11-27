@@ -38,6 +38,7 @@ export function rowKey(channel: SourceChannel, row: Record<string, unknown>): st
 }
 
 const CACHE_LIMIT = 2_000;
+const RECENT_TAIL_BYTES = 256 * 1024;
 
 export class ChannelReaders {
   private readonly inFlight = new Map<string, Promise<LocalLookup>>();
@@ -72,6 +73,47 @@ export class ChannelReaders {
     const topicId = typeof row.topicId === 'number' ? row.topicId : null;
     const [joined] = this.authorshipJoin.join([{ messageId: row.messageId, topicId, text: row.text, fromUser: row.fromUser === true, timestamp: row.timestamp }]);
     return joined.authorship;
+  }
+
+  /**
+   * The last turns of one conversation, oldest first, for the send gate's recap test. Telegram has
+   * topic memory; every other channel reads its own log here. Reads only the tail of the file.
+   */
+  recentConversation(channel: SourceChannel, conversation: string, limit = 10): Array<{ role: 'user' | 'agent'; text: string }> {
+    if (channel === 'app') {
+      const store = this.deps.appStore?.();
+      if (!store) return [];
+      return store.browseMessages(conversation, null, limit).messages
+        .filter((message) => typeof message.text === 'string' && message.text)
+        .map((message) => ({ role: message.role === 'agent' ? 'agent' as const : 'user' as const, text: message.text }));
+    }
+    const log = LOG_FILES[channel];
+    const file = channelLogPath(this.deps.stateDir, channel);
+    if (!log || !file) return [];
+    let tail = '';
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(file, 'r');
+      const size = fs.fstatSync(fd).size;
+      const length = Math.min(size, RECENT_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      tail = buffer.toString('utf8');
+    } catch {
+      return []; // @silent-fallback-ok — no log means no recent conversation, and B23's crediting test stays unmeasured.
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+    const turns: Array<{ role: 'user' | 'agent'; text: string }> = [];
+    for (const line of tail.split('\n')) {
+      try {
+        const row = JSON.parse(line) as Record<string, unknown>;
+        if (String(row[log.conversationField]) === conversation && typeof row.text === 'string' && row.text) {
+          turns.push({ role: row.fromUser === true ? 'user' : 'agent', text: row.text });
+        }
+      } catch { /* @silent-fallback-ok — the first line of a tail is usually cut, and a bad row is skipped. */ }
+    }
+    return turns.slice(-limit);
   }
 
   /** One pass over a channel's log for many wanted keys (`conversation/message`). */

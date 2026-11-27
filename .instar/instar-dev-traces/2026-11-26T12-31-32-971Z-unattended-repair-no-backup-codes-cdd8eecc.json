@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "unattended-repair-no-backup-codes",
+  "sessionId": "d7f96c30-4845-47ec-b4de-501dc0c26e94",
+  "timestamp": "2026-11-26T12:31:32.971Z",
+  "artifactPath": "upgrades/side-effects/unattended-repair-no-backup-codes.md",
+  "artifactSha256": "e0530ee96308a493d9b3cac1215f157a6afcbd98ae3688e97caa3676e5dbfad8",
+  "specPath": "docs/specs/one-tap-unattended-repair.md",
+  "coveredFiles": [
+    "docs/specs/one-tap-unattended-repair.eli16.md",
+    "docs/specs/one-tap-unattended-repair.md",
+    "src/core/AnthropicReloginBrowserDriver.ts",
+    "src/core/SubscriptionReloginRuntime.ts",
+    "tests/integration/subscription-relogin-runtime.test.ts",
+    "tests/unit/anthropic-relogin-browser-driver.test.ts",
+    "upgrades/next/unattended-repair-no-backup-codes.md",
+    "upgrades/side-effects/unattended-repair-no-backup-codes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This change restricts credential use in automatic repair across installed machines.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "org-policy-standard-form",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T16:17:08.748Z",
+  "artifactPath": "upgrades/side-effects/org-policy-standard-form.md",
+  "artifactSha256": "ba8e709906aeb7be4fedddf4e46645c2cc4eb5566fee9a558849e0904032e0dc",
+  "coveredFiles": [
+    "site/src/pages/join.astro",
+    "src/core/OrgPack.ts",
+    "src/core/OrgPackStore.ts",
+    "src/core/OrgPolicyGrammar.ts",
+    "src/data/awareness/org-pack.md",
+    "src/server/orgPackRoutes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/org-policy-standard-form.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-policy-standard-form.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -24,6 +24,8 @@ import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/c
 import { createInvite, inviteMessage, findInviteToken } from '../../src/threadline/PairingInvite.js';
 import { TopicOperatorStore } from '../../src/users/TopicOperatorStore.js';
 import { NO_OWNER_REFUSAL, NOT_OWNER_REFUSAL, resolveApprovalOwner } from '../../src/threadline/PairingInviteTelegram.js';
+import { readForwardRefused } from '../../src/lifeline/TelegramLifeline.js';
+import type { AddressInfo } from 'node:net';
 
 const AUTH_TOKEN = 'test-auth-token-invite-telegram';
 const SERVER_VERSION = '1.3.500';
@@ -40,12 +42,25 @@ interface Effects {
   flow: string[];
 }
 
-interface Boot { owner?: number | undefined; operators?: TopicOperatorStore | null; polling?: boolean; pollingHandler?: { h: null | { onForwardedInvite(m: unknown): Promise<void>; onCallback(c: unknown): Promise<boolean> } } }
+interface Boot {
+  tunnelUrl?: string;
+  owner?: number | undefined; operators?: TopicOperatorStore | null; polling?: boolean;
+  pollingHandler?: { h: null | { onForwardedInvite(m: unknown): Promise<void | { refused: boolean }>; onCallback(c: unknown): Promise<boolean> } };
+  /** The engine rejects the invite (expired, already used, malformed): `{ ok: false }`. */
+  receiveFails?: boolean;
+  /** Telegram refuses every send (the reply itself fails). */
+  sendThrows?: boolean;
+  /** No pairing engine on this agent (pairing by invite off): routes builds no handler. */
+  noPairing?: boolean;
+}
 
 function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknown>, b: Boot = {}): RouteContext {
   const owner = 'owner' in b ? b.owner : OWNER;
   const flow = {
-    receiveInvite: async () => { fx.flow.push('receive'); return { ok: true, iid: IID, claimedAgent: 'Scout', claimedOwner: 'Justin', checkCode: 'K7Q2' }; },
+    receiveInvite: async () => {
+      fx.flow.push('receive');
+      return b.receiveFails ? { ok: false, reason: 'this invite has expired' } : { ok: true, iid: IID, claimedAgent: 'Scout', claimedOwner: 'Justin', checkCode: 'K7Q2' };
+    },
     approveAccept: (iid: string) => { fx.flow.push(`approve:${iid}`); return { ok: true }; },
     declineAccept: (iid: string) => { fx.flow.push(`decline:${iid}`); return { ok: true }; },
     approveFinish: (iid: string) => { fx.flow.push(`finish:${iid}`); return { ok: true }; },
@@ -66,8 +81,8 @@ function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknow
       dispatchAgentMessageHook: async () => false,
       isAuthorizedSender: () => true,
       handleForwardedCallback: async (q: { data: string }) => { fx.adapterCallbacks.push(q.data); },
-      sendToTopic: async (topicId: number, text: string) => { fx.sent.push({ topicId, text }); return {}; },
-      sendPairingPrompt: async (topicId: number, text: string, buttons: Array<{ text: string; data: string }>) => { fx.sent.push({ topicId, text, buttons }); return 1; },
+      sendToTopic: async (topicId: number, text: string) => { if (b.sendThrows) throw new Error(`telegram down ${text}`); fx.sent.push({ topicId, text }); return {}; },
+      sendPairingPrompt: async (topicId: number, text: string, buttons: Array<{ text: string; data: string }>) => { if (b.sendThrows) throw new Error(`telegram down ${text}`); fx.sent.push({ topicId, text, buttons }); return 1; },
       answerCallback: async (_id: unknown, text: string) => { fx.answers.push(text); },
       getOwnerUserId: () => owner,
       getChatId: () => '-100',
@@ -77,12 +92,13 @@ function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknow
         hasPairingHandler: () => b.pollingHandler!.h !== null,
       } : {}),
     } as never,
-    pairingInvites: { flow, handshake: flow, store: {} as never, events: new EventEmitter() } as never,
+    pairingInvites: b.noPairing ? null : { flow, handshake: flow, store: {} as never, events: new EventEmitter() } as never,
     topicOperatorStore: b.operators ?? null,
     relationships: null, feedback: null, dispatches: null, updateChecker: null, autoUpdater: null,
     autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: null,
     evolution: null, watchdog: null, triageNurse: null, topicMemory: null, discoveryEvaluator: null,
     startTime: new Date(),
+    ...(b.tunnelUrl ? { tunnel: { url: b.tunnelUrl } } : {}),
   } as never;
 }
 
@@ -233,6 +249,22 @@ describe('invite pairing — Telegram routes', () => {
       expect(fx.sent.at(-1)?.text).toContain(NO_OWNER_REFUSAL);
     });
 
+    it('no owner set (Cora, Nov 11): the refusal carries a direct link to the paste box on the agent\'s real address', async () => {
+      const app = boot(dev, { owner: undefined, operators: operators(), tunnelUrl: 'https://cora.example.dev' });
+      await forward(app, INVITE, { secret: secret(), from: OP });
+      expect(fx.flow).toEqual([]);
+      const text = fx.sent.at(-1)!.text;
+      expect(text).toContain(NO_OWNER_REFUSAL);
+      expect(text).toContain('Paste the invite on the dashboard with your PIN: https://cora.example.dev/dashboard/console/#/people/agents?connect=paste');
+      expect(text).not.toContain('tlinv1:');
+    });
+
+    it('no tunnel at all: the local link, and the message says it opens only on the agent\'s computer', async () => {
+      const app = boot(dev, { owner: undefined, operators: operators() });
+      await forward(app, INVITE, { secret: secret(), from: OP });
+      expect(fx.sent.at(-1)!.text).toContain('opens only on the computer it runs on: http://localhost:');
+    });
+
     it('no binding at all → the "no owner set" refusal, not "Only the agent\'s owner"', async () => {
       const app = boot(dev, { owner: undefined, operators: operators() });
       await forward(app, INVITE, { secret: secret(), from: OP });
@@ -346,6 +378,102 @@ describe('invite pairing — Telegram routes', () => {
       const app = boot({}, { polling: true });
       await forward(app, INVITE, { secret: secret() });
       expect(fx.sent.at(-1)?.text).toMatch(/because this agent reads Telegram directly, not through its listener \(Instar [^)]+\)/);
+    });
+  });
+
+  // fb-9566b1d3-f4d (topic 9210): a turned-away invite was followed by the lifeline's "✓ Delivered".
+  // Over REAL HTTP (a listening server, a real fetch Response) the route's body is read by the
+  // lifeline's own decoder, readForwardRefused, which gates every "✓ Delivered".
+  describe('receipt: the lifeline reads the refusal from the real HTTP response', () => {
+    const dev = { developmentAgent: true };
+    const TOKEN_BODY = findInviteToken(INVITE)!.slice('tlinv1:'.length);
+
+    async function forwardOverHttp(extra: Record<string, unknown>, b: Boot, from: number = OWNER) {
+      const app = boot(extra, b);
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((r) => server.once('listening', () => r()));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${port}/internal/telegram-forward`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}`, [LIFELINE_SECRET_HEADER]: secret() },
+          body: JSON.stringify({ topicId: 4242, text: `Fwd: ${INVITE}`, fromUserId: from, fromFirstName: 'Op', messageId: 1, lifelineVersion: SERVER_VERSION }),
+        });
+        const raw = await response.clone().text();
+        const refused = await readForwardRefused(response);
+        return { status: response.status, ok: response.ok, raw, refused };
+      } finally {
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    }
+
+    /** Consumed: HTTP 200 (the lifeline never queues or replays it), and the secret went nowhere. */
+    function expectConsumed(r: { status: number; ok: boolean; raw: string }) {
+      expect(r.status).toBe(200);
+      expect(r.ok).toBe(true);
+      expect(JSON.parse(r.raw)).toMatchObject({ ok: true, pairingInvite: true });
+      expect(r.raw).not.toContain(TOKEN_BODY);
+      expect(fx.topicMessages).toEqual([]);
+      expect(fx.inboundLogged).toBe(0);
+      expect(JSON.stringify(fx.sent)).not.toContain(TOKEN_BODY);
+    }
+
+    it('the approver forwards a valid invite → Approve/Decline, NOT refused (the lifeline may acknowledge it)', async () => {
+      const r = await forwardOverHttp(dev, {});
+      expectConsumed(r);
+      expect(r.refused).toBe(false);
+      expect(JSON.parse(r.raw).refused).toBeUndefined();
+      expect(fx.sent.at(-1)?.buttons?.map((x) => x.text)).toEqual(['Approve', 'Decline']);
+    });
+
+    it('nobody can be named as the approver → the role line, and refused (no "✓ Delivered")', async () => {
+      const r = await forwardOverHttp(dev, { owner: undefined, operators: new TopicOperatorStore(path.join(stateDir, 'state')) });
+      expectConsumed(r);
+      expect(r.refused).toBe(true);
+      expect(fx.flow).toEqual([]);
+      const text = fx.sent.at(-1)?.text ?? '';
+      expect(text).toContain(NO_OWNER_REFUSAL);
+      expect(text).toMatch(/approve new connections for me/);
+      expect(text).not.toMatch(/its owner|Justin/); // never the inviting agent's claimed owner
+      expect(text).not.toContain(String(OWNER));
+    });
+
+    it('someone other than the approver forwards it → refused, and the claimed owner is not mentioned', async () => {
+      const r = await forwardOverHttp(dev, {}, 123);
+      expectConsumed(r);
+      expect(r.refused).toBe(true);
+      const text = fx.sent.at(-1)?.text ?? '';
+      expect(text).toContain(NOT_OWNER_REFUSAL);
+      expect(text).not.toMatch(/Justin/);
+      expect(text).not.toContain(String(OWNER));
+    });
+
+    it('an invite the engine cannot use → refused (the reason is posted, no buttons)', async () => {
+      const r = await forwardOverHttp(dev, { receiveFails: true });
+      expectConsumed(r);
+      expect(r.refused).toBe(true);
+      expect(fx.flow).toEqual(['receive']);
+      expect(fx.sent.at(-1)?.text).toContain("can't use that pairing invite");
+      expect(fx.sent.at(-1)?.buttons).toBeUndefined();
+    });
+
+    it('pairing by invite is off on this agent (no handler) → still consumed, refused', async () => {
+      const r = await forwardOverHttp(dev, { noPairing: true });
+      expectConsumed(r);
+      expect(r.refused).toBe(true);
+      expect(fx.sent.at(-1)?.text).toMatch(/pairing by invite is not turned on/);
+    });
+
+    it('the handler fails (Telegram refuses the prompt) → still consumed, refused, and no error text in the response', async () => {
+      const r = await forwardOverHttp(dev, { sendThrows: true });
+      expectConsumed(r);
+      expect(r.refused).toBe(true);
+      expect(r.raw).not.toMatch(/telegram down|Error/);
+      expect(fx.sent).toEqual([]);
+      // Partial effect, by design: the engine already took the invite before the prompt failed, so
+      // its pending accept stays until expiry. `refused` here only withholds the "✓ Delivered"; it is
+      // not a denial and nothing is rolled back or re-sent.
+      expect(fx.flow).toEqual(['receive']);
     });
   });
 });

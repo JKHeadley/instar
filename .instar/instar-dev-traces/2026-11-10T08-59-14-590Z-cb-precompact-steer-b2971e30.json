@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "cb-precompact-steer",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T08:59:14.590Z",
+  "artifactPath": "upgrades/side-effects/cb-precompact-steer.md",
+  "artifactSha256": "c7b4a0da4189735bd1aff51895814b26a79b7ebaab802de5994ecc4cf2f0d5b5",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/keepInstructions.ts",
+    "upgrades/side-effects/cb-precompact-steer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only @silent-fallback-ok marker on the approved slice-5 writer's typed-failure catch; no behaviour change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

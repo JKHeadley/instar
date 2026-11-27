@@ -71,6 +71,19 @@ describe('desktopSetupStep', () => {
     expect(ids(unknown)).toEqual(['check']);
   });
 
+  it('tells a locked Windows PC plainly that Remote Desktop cannot unlock it yet', () => {
+    const pc: DesktopSetupStatus = { reachable: true, platform: 'linux', wsl: true, configured: true,
+      configuredAtBoot: true, frontMachineId: FRONT, targetConstructed: true, status: 'not-ready',
+      sessionActive: false, displayCount: 0, screenPermission: false, inputPermission: false, screenLocked: true };
+    const step = desktopSetupStep(pc, { ...ctx, label: 'Mama PC' });
+    expect(step.state).toBe('locked');
+    expect(step.title).toBe('Unlock Mama PC');
+    expect(step.detail).toContain('cannot unlock Windows yet, so sign in at the PC');
+    expect(step.detail).not.toContain('Pop-ups');
+    // Without the lock reading it stays the older, unsure wording.
+    expect(desktopSetupStep({ ...pc, screenLocked: undefined }, { ...ctx, label: 'Mama PC' }).state).toBe('session-unknown');
+  });
+
   it('offers no pop-up on a Mac that does not say whether it is locked', () => {
     const step = desktopSetupStep({ ...unlocked, screenPermission: false, screenLocked: undefined }, ctx);
     expect(step.state).toBe('session-unknown');

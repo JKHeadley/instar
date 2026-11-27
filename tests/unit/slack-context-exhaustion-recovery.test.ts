@@ -52,12 +52,14 @@ describe('Slack context exhaustion recovery wiring', () => {
 
   it('respawnSessionFresh writes recovery context file for Slack', () => {
     // Must create a recovery context file so the new session has thread history
-    expect(block).toContain('recovery-');
-    expect(block).toContain('instar-slack');
+    expect(block).toContain('slack-recovery-');
+    // SEC-138: saved in the agent's own owner-only inbound folder.
+    expect(block).toContain('writePrivateInboundFile(_projectDir');
+    expect(block).not.toContain('/tmp/instar-slack');
   });
 
   it('respawnSessionFresh includes thread history in Slack recovery', () => {
-    expect(block).toContain('getChannelMessages');
+    expect(block).toContain('getConversationMessagesWithFallback');
   });
 
   it('respawnSessionFresh includes Slack relay instructions in recovery', () => {

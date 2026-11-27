@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "lv-red-main-fast-recovery",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-15T04:11:31.952Z",
+  "artifactPath": "upgrades/side-effects/lv-red-main-fast-recovery.md",
+  "artifactSha256": "9b41c502a3b93b346561812dfcc0e517755ee129fa0c1a73a2f521f15844bf89",
+  "coveredFiles": [
+    "docs/specs/lv-red-main-fast-recovery.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/mainHealth.ts",
+    "src/localVerify/mainRedHold.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/mainRedHold.test.ts",
+    "tests/unit/localVerify/mainRedHoldService.test.ts",
+    "upgrades/next/lv-red-main-fast-recovery.md",
+    "upgrades/side-effects/lv-red-main-fast-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two narrow changes inside existing pure decision functions of the test line (timing of the main verify while main is unhealthy; one more input to the existing main-red hold). No config, state or merge-authority change; a revert fully undoes it. Independent second pass: three reads, ending in concur.",
+  "eli16Path": "docs/specs/lv-red-main-fast-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-red-main-fast-recovery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

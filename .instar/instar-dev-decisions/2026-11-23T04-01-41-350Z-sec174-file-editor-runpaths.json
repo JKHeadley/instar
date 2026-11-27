@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-23T04:01:41.350Z",
+  "slug": "sec174-file-editor-runpaths",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/fileRoutes.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  },
+  "verdict": "pass"
+}

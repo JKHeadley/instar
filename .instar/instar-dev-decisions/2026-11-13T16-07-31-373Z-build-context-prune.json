@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-13T16:07:31.373Z",
+  "slug": "build-context-prune",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionBuildContextStore.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

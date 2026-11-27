@@ -106,8 +106,10 @@ describe('MultiMachineCoordinator — active lease-pull split-brain surface', ()
     // Fire one jittered pull tick (base 1000ms, ±20% → ≤1200ms).
     await vi.advanceTimersByTimeAsync(1_300);
 
-    // currentHolder is still A (tie-break), but the pull surfaced the contention.
-    expect(lc.currentHolder()).toBe('A');
+    // This machine's id sorts after B, so it lost the tie-break and relinquished. It names the
+    // winner rather than its own dead copy, and the pull surfaced the contention.
+    expect(lc.holdsLease()).toBe(false);
+    expect(lc.currentHolder()).toBe('B');
     expect(coord.getSyncStatus().splitBrainState).toBe('contested');
 
     coord.stop();

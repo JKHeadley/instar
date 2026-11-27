@@ -203,6 +203,29 @@ except Exception:
     sys.exit(0)
 " <<< "$WORKING_MEM" 2>/dev/null
 
+# INSTAR DOCUMENTS (instar-document-viewer §3.7): this conversation's documents, once at start.
+# A session token (mps_) gets its own conversation's list; a 503 (switched off) prints nothing.
+DOCS_CONFIG_FILE="$INSTAR_DIR/config.json"
+if [ -n "$INSTAR_AGENT_HOME" ] && [ -f "$INSTAR_AGENT_HOME/.instar/config.json" ]; then DOCS_CONFIG_FILE="$INSTAR_AGENT_HOME/.instar/config.json"; fi
+DOCS_PORT=$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$DOCS_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+DOCS_TOKEN="${INSTAR_AUTH_TOKEN:-}"
+if [ -n "$DOCS_PORT" ] && [ -n "$DOCS_TOKEN" ]; then
+  DOCS_QUERY=""
+  if [ -n "$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_QUERY="?conversation=telegram:${INSTAR_TELEGRAM_TOPIC}"; fi
+  DOCS_CTX=$(curl -s --max-time 3 -H "Authorization: Bearer ${DOCS_TOKEN}" -H "X-Instar-AgentId: ${INSTAR_AGENT_ID:-}" "http://localhost:${DOCS_PORT}/docs/session-context${DOCS_QUERY}" 2>/dev/null)
+  DOCS_TEXT=$(printf '%s' "$DOCS_CTX" | python3 -c "import sys,json
+try:
+    print((json.load(sys.stdin).get('text') or '').strip())
+except Exception:
+    pass" 2>/dev/null)
+  if [ -n "$DOCS_TEXT" ]; then
+    echo ""
+    echo "--- DOCUMENTS ---"
+    echo "$DOCS_TEXT"
+    echo "--- END DOCUMENTS ---"
+  fi
+fi
+
 # Active commitments injection (PROMISE-BEACON-SPEC Round 3 #7).
 # Surfaces beacon-watched pending commitments so the agent can self-regulate
 # pacing across compaction. Capped server-side at 20 entries.

@@ -18,6 +18,7 @@
  * restores the previous plain-output invocation byte-for-byte.
  */
 
+import { codexToolFreeArgs } from './codexToolFreeProfile.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +29,7 @@ import {
   resolveCliModelFlag,
 } from '../providers/adapters/openai-codex/models.js';
 import { classifyCodexErrorMessage } from '../providers/adapters/openai-codex/observability/eventNormalizer.js';
+import { codexModelForCliAsync } from './codexCapabilities.js';
 import { KNOWN_CODEX_MODEL_IDS } from './ModelTierEscalation.js';
 import {
   buildCodexChildEnv,
@@ -433,7 +435,8 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     return [
       // A read-only sandbox can still read local files, so a call carrying outside text
       // asks for no tools at all (docs/specs/ecosystem-idea-pipeline.md §1).
-      ...(noLocalTools ? ['--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '-c', 'mcp_servers={}'] : []),
+      // The tool-free profile also turns off web search, which Codex leaves on by default (SEC-175).
+      ...(noLocalTools ? codexToolFreeArgs() : []),
       '--model',
       model,
       '--sandbox',
@@ -463,7 +466,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
   }
 
   async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
-    const model = resolveCliModelFlag(options?.model);
+    // Older-CLI safety: a CLI known to be below 0.166.0 runs the previous
+    // GPT-6 id instead of a GPT-6.2 one. An unreadable version keeps the
+    // requested id (the retirement self-heal below still catches a refusal),
+    // and a strict pin is never swapped: its caller checks the exact id.
+    const requestedModel = resolveCliModelFlag(options?.model);
+    const model = options?.strictModelPin
+      ? requestedModel
+      : await codexModelForCliAsync(requestedModel, this.codexPath, 'keep');
     // Observable Intelligence: surface the resolved provider/model up front so
     // the metrics funnel attributes the call to codex on every path (including
     // failures and the plain mode, which surfaces no token usage).
@@ -570,13 +580,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
    * Flipping the kill-switch therefore re-opens this pre-existing
    * prompt-disclosure channel in addition to going token-blind.
    */
-  private evaluatePlain(
+  private async evaluatePlain(
     prompt: string,
     options: IntelligenceOptions | undefined,
     model: string,
     account: CodexCallAccount | null,
   ): Promise<string> {
     const scratchDir = resolveIntelligenceScratchDir();
+    if (options?.signal?.aborted || (options?.launchGuard && !(await options.launchGuard()))) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
 
     return new Promise((resolve, reject) => {
       const args = [
@@ -606,7 +617,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           : { subscriptionOnly: options?.requiredRoute !== undefined },
       );
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) {
         reject(new Error('CodexCliIntelligenceProvider: launch guard refused'));
         return;
       }
@@ -710,7 +721,9 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '-',
       ];
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
+      const launchAllowed = !options?.launchGuard || await options.launchGuard();
+      if (options?.signal?.aborted || !launchAllowed) {
         throw new Error('CodexCliIntelligenceProvider: launch guard refused');
       }
       const result = await spawnCodexExecJson(this.codexPath, args, {
@@ -794,6 +807,17 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
               cachedTokens: usage.cachedTokens,
+              // Unified usage ledger (Slice 2): Codex input_tokens includes cached input.
+              detail: {
+                sessionId: acc.threadId,
+                input: Math.max(0, usage.inputTokens - (usage.cachedTokens ?? 0)),
+                cacheRead: usage.cachedTokens ?? null,
+                cacheWrite: null,
+                output: usage.outputTokens,
+                reasoning: null,
+                reportedUsd: null,
+                reportedBasis: null,
+              },
             });
           } catch {
             /* @silent-fallback-ok: onUsage is pure observability */

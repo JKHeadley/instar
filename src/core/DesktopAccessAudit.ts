@@ -45,6 +45,33 @@ export class DesktopAccessAudit {
     fs.appendFileSync(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
   }
 
+  /**
+   * True when a desktop session started on this agent within `windowMs`. Reads
+   * only the dated files that can hold such an entry; an unreadable file counts
+   * as no evidence. Used to decide whether a desktop problem is worth the
+   * operator's attention at all.
+   */
+  hasStartWithin(windowMs: number, now: number = Date.now()): boolean {
+    const since = now - windowMs;
+    const sinceDay = new Date(since).toISOString().slice(0, 10);
+    let names: string[];
+    try { names = fs.readdirSync(this.dir); } catch { return false; } // @silent-fallback-ok — no log dir means no recorded use.
+    for (const name of names) {
+      const date = /^desktop-access-(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name)?.[1];
+      if (!date || date < sinceDay) continue;
+      let text: string;
+      try { text = fs.readFileSync(path.join(this.dir, name), 'utf8'); } catch { continue; } // @silent-fallback-ok — an unreadable day is no evidence of use.
+      for (const line of text.split('\n')) {
+        if (!line.includes('"start"')) continue;
+        try {
+          const entry = JSON.parse(line) as { kind?: string; at?: string };
+          if (entry.kind === 'start' && entry.at && Date.parse(entry.at) >= since) return true;
+        } catch { /* @silent-fallback-ok — a torn line is skipped */ }
+      }
+    }
+    return false;
+  }
+
   private prune(): void {
     const cutoff = Date.now() - 30 * 24 * 60 * 60_000;
     for (const name of fs.readdirSync(this.dir)) {

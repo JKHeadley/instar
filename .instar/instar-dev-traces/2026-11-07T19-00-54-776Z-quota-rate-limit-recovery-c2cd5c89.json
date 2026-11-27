@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "quota-rate-limit-recovery",
+  "sessionId": "3e66606d-0420-4e39-a4dd-6347a2d46fda",
+  "timestamp": "2026-11-07T19:00:54.776Z",
+  "artifactPath": "upgrades/side-effects/quota-rate-limit-recovery.md",
+  "artifactSha256": "2a74bd98c50f374811e40e51b743aa74df0ccb34e5f03cedde49e634a54ed5f2",
+  "coveredFiles": [
+    "src/core/QuotaPoller.ts",
+    "tests/unit/quota-poller.test.ts",
+    "upgrades/next/quota-rate-limit-recovery.md",
+    "upgrades/quota-rate-limit-recovery.eli16.md",
+    "upgrades/side-effects/quota-rate-limit-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow, reversible quota-status recovery; a revert restores the previous hold and no durable state migration is needed.",
+  "eli16Path": "upgrades/quota-rate-limit-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-rate-limit-recovery.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

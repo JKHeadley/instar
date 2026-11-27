@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-10T19:47:13.405Z",
+  "slug": "signin-finishes-after-code",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 10,
+  "loc": 593,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CredentialSwapExecutor.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/FollowMeCompletionWatcher.ts",
+      "src/core/OAuthRefresher.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/QuotaPoller.ts",
+      "src/monitoring/CredentialProvider.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 487,
+    "deletedLines": 106
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

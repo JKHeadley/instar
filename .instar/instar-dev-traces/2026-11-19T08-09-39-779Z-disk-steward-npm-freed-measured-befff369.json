@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "disk-steward-npm-freed-measured",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T08:09:39.779Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-npm-freed-measured.md",
+  "artifactSha256": "4552a59b7308baa6576874082d8ac78d5141c8d4e4cffeeb138e24e668103f03",
+  "coveredFiles": [
+    "src/monitoring/diskSteward/pruneCategories.ts",
+    "tests/unit/diskSteward-pruneCategories.test.ts",
+    "upgrades/next/disk-steward-npm-freed-measured.md",
+    "upgrades/side-effects/disk-steward-npm-freed-measured.eli16.md",
+    "upgrades/side-effects/disk-steward-npm-freed-measured.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "reporting fix: measured bytesFreed after npm cache clean; no new deletes, gates or authority; revert restores old numbers",
+  "eli16Path": "upgrades/side-effects/disk-steward-npm-freed-measured.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-npm-freed-measured.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

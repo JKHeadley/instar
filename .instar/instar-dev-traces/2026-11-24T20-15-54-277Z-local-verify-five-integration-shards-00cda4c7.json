@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-verify-five-integration-shards",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-24T20:15:54.277Z",
+  "artifactPath": "upgrades/side-effects/local-verify-five-integration-shards.md",
+  "artifactSha256": "38f239a6e57f6b21287df7c5013051e8d5a0985cb7742944be86e9f1d5757c69",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T20-14-58-156Z-permanent-agent-links.json",
+    "docs/specs/local-verify-five-integration-shards.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "upgrades/next/local-verify-five-integration-shards.md",
+    "upgrades/side-effects/local-verify-five-integration-shards.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The extra process is opt-in and reversible. The migration changes explanatory guide text only.",
+  "eli16Path": "docs/specs/local-verify-five-integration-shards.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-five-integration-shards.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-06T23:27:48.122Z",
+  "slug": "studio-boot-holds",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 155,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ProjectMapper.ts",
+      "src/core/UpdateChecker.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/serviceSeams.ts"
+    ],
+    "addedLines": 119,
+    "deletedLines": 36
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot per update attempt: two xattr passes, each time-limited, with no retry or loop. The update itself is unchanged."
+  },
+  "verdict": "pass"
+}

@@ -71,6 +71,7 @@ interface Harness {
   deps: TopicProfileOrchestratorDeps;
   orch: TopicProfileOrchestrator;
   store: TopicProfileStore;
+  pendingStoreOperations: Set<Promise<unknown>>;
   cfg: OrchestratorConfig;
   tmpDir: string;
   disclosures: Array<{ topic: string; text: string; auditSeq: number }>;
@@ -122,6 +123,20 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
   const store = new TopicProfileStore({
     stateFilePath: path.join(tmpDir, 'topic-profiles.json'),
   });
+
+  const pendingStoreOperations = new Set<Promise<unknown>>();
+  const withTopicLock = store.withTopicLock.bind(store);
+  store.withTopicLock = function <T>(
+    topicKey: number | string,
+    fn: () => Promise<T> | T,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const operation = withTopicLock(topicKey, fn, timeoutMs);
+    pendingStoreOperations.add(operation);
+    const settled = () => pendingStoreOperations.delete(operation);
+    void operation.then(settled, settled);
+    return operation;
+  };
 
   const cfg: OrchestratorConfig = {
     enabled: true,
@@ -252,6 +267,7 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
     deps,
     orch,
     store,
+    pendingStoreOperations,
     cfg,
     tmpDir,
     disclosures,
@@ -282,10 +298,17 @@ function liveSession(h: Harness, key = '7', name = 'sess-7'): void {
 
 const OP = { updatedBy: 'telegram:111', origin: 'conversational' as const };
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   for (const h of harnesses.splice(0)) {
     h.orch.dispose();
+    // Breaker updates can outlive the assertion that observes their in-memory state.
+    // Let their durable writes and follow-up operations finish before deleting the fixture.
+    while (h.pendingStoreOperations.size > 0) {
+      await Promise.allSettled(h.pendingStoreOperations);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      h.orch.dispose();
+    }
     SafeFsExecutor.safeRmSync(h.tmpDir, {
       recursive: true,
       force: true,
@@ -633,6 +656,9 @@ describe('kill-path precision', () => {
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false);
     expect(h.orch.claudeResumeWriteGate(7).reason).toBe('mid-framework-switch');
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(false);
+    // session-swap-any-conversation §3.1: the engine-aware gate the Slack writers use.
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build')).toEqual({ allowed: false, reason: 'mid-framework-switch' });
     // Successful spawn clears suppression; gates then follow the resolved framework.
     h.spawnImpl.fn = null;
     h.orch.recordSpawnSuccess('7', {
@@ -643,6 +669,9 @@ describe('kill-path precision', () => {
     });
     expect(h.orch.suppressionActive('7')).toBe(false);
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'codex-cli').allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build').allowed).toBe(true);
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false); // framework mismatch
   });
 

@@ -290,13 +290,14 @@ describe('pull', () => {
     link(b, [a], { sent, load: () => 'saturated' });
     await b.rep.tick();
     expect(sent.filter((c) => c.op === 'slice')).toHaveLength(0);
-    b.rep.want(sha(urgent));
-    await tickUntil(b, () => !!b.media.locateBlob(sha(urgent)), clock, 5);
+    // wait for the on-demand copy itself: want() starts an asynchronous tick,
+    // so five short polling ticks can all return while that tick is in flight.
+    expect(await b.rep.awaitBlob(sha(urgent), 10_000)).toBe(true);
     expect(b.media.locateBlob(sha(urgent))).not.toBeNull();
     expect(sent.filter((c) => c.op === 'slice' && c.sha256 === sha(big))).toHaveLength(0);
     clock.t += LOAD_PAUSE_MAX_MS;
     sent.length = 0;
-    await b.rep.tick();
+    await tickUntil(b, () => sent.some((c) => c.op === 'slice' && c.sha256 === sha(big)), clock, 200);
     expect(sent.filter((c) => c.op === 'slice' && c.sha256 === sha(big))).toHaveLength(1);
   });
 

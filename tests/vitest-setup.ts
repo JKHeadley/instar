@@ -1,9 +1,44 @@
 // Global vitest setup. Runs once before any test file loads.
 
+import { afterAll, afterEach } from 'vitest';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProcessDefault } from '../src/messaging/telegram-origin/OriginStageDeadlines.js';
+import { setMacDesktopHelperBudgetScale } from '../src/core/MacDesktopHelperBudget.js';
+
+// Telegram-origin recording budgets: lifted for every test file.
+//
+// TelegramOriginService gives each recording stage a sub-second budget (250 ms store, 500 ms
+// spool, ...). They are real waits on fsync-ing disk commits, and beside a full suite on a
+// saturated disk a healthy commit outlasts them: the send is held as a recording outage and
+// a test that never meant to test timing fails an unrelated change (29 times in nine files
+// across 17 PRs, 2026-11-07 to 11-13; then two more files the morning eleven were fixed one
+// by one). 46 test files open a real origin service, so the allowance is set here, once.
+//
+// The store's own per-request deadline (2 s in production) is lifted to 20 s below for the
+// same reason: it is the layer under the stage budgets, and a loaded worker outlasting it
+// failed three unrelated changes on 2026-11-13. A store opened with an explicit
+// requestTimeoutMs keeps it (the worker-recovery tests pin 200 to 2000 ms). A store in a child
+// process a test spawns keeps 2 s. A sink that REJECTS fails at once whatever the budget. A test that wants the
+// production budgets sets them explicitly or calls
+// setOriginStageDeadlineProcessDefaults(null) (see origin-stage-deadlines.test.ts).
+setOriginStageDeadlineProcessDefaults({ storeEvidenceMs: 20_000, spoolEvidenceMs: 20_000, peerEvidenceMs: 20_000, verifiedEvidenceMs: 20_000, admitMs: 20_000 });
+setOriginStoreRequestTimeoutProcessDefault(20_000);
+
+// macOS desktop helper waits: ten times longer for every test file.
+//
+// MacDesktopHost gives its native helper 2 s for an ordinary command (4 s for a frame, 3 s
+// for the indicator). The desktop unit tests stand a Node script in for that helper, and
+// beside a full suite a Node process can take longer than 2 s to start: the test fails with
+// mac-desktop-host-timeout on a change that never touched the desktop (two changes in the
+// merge line on 2026-11-18, on desktop-displays; MacDesktopHostIdentity and
+// MacDesktopHostCapture retried all week). A stand-in that answers is unaffected; one that
+// really hangs still fails, ten times later. A test that asserts a timeout itself sets the
+// scale back to 1 for its own run (see MacDesktopHostCapture.test.ts). The module imports
+// nothing, so loading it here caches no src/core dependency ahead of a test's vi.mock.
+setMacDesktopHelperBudgetScale(10);
 
 //
 // Strip git environment overrides inherited from the parent process FIRST.
@@ -71,6 +106,22 @@ for (const key of Object.keys(process.env)) {
     delete process.env[key];
   }
 }
+
+// Conversation graph verdict memo (docs/specs/graph-verify-verdict-memo.md §5): in tests every memo hit is
+// re-verified and stored rows' top-level values are frozen, so a missed invalidation or an in-place edit fails
+// loudly. Callers of certifiedUnion often degrade errors to held/partial, so a divergence is also counted on
+// globalThis and asserted zero after every test. Set after the strip loop above, which would delete it.
+process.env.INSTAR_GRAPH_VERDICT_MEMO_CHECK = '1';
+const assertNoGraphVerdictMemoDivergence = (where: string) => {
+  const divergences = Number((globalThis as Record<string, unknown>).__instarGraphVerdictMemoDivergences ?? 0);
+  if (divergences !== 0) {
+    (globalThis as Record<string, unknown>).__instarGraphVerdictMemoDivergences = 0;
+    throw new Error(`graph verdict memo diverged ${divergences} time(s) ${where} (a cached verify/persisted/descriptor result differed from a fresh one, or a memo-frozen row value reached a mutator)`);
+  }
+};
+afterEach(() => assertNoGraphVerdictMemoDivergence('in this test'));
+// Async graph work still running after the last test of a file is checked once more here.
+afterAll(() => assertNoGraphVerdictMemoDivergence('after the last test of this file'));
 
 // Bind every test's ephemeral server to loopback only.
 //

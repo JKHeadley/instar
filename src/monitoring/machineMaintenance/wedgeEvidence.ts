@@ -150,8 +150,9 @@ export function readF2(input: {
  * F1. `passedSinceBoot` is whether this same probe has passed since boot; until it
  * has, a failure is `ineligible` (a machine where the probe never works is not wedged).
  *
- * macOS: the probe is `open -g -j` of the shipped canary (exit 0 negative; a nonzero
- * exit such as -600, or a timeout, is the failure). A failure is also ineligible while
+ * macOS: the probe is `open -g -j` of the shipped canary. Exit 0 with the canary gone
+ * a moment later is negative; exit 0 with the canary left stopped, a nonzero exit such
+ * as -600, or a timeout, is the failure. A failure is also ineligible while
  * `lockState` is `locked` or `consoleSession` is false (the login window or another
  * person's session). An unread console session does not block: on a wedged machine
  * reads fail first. A pass always counts, locked or not: the path worked. The capture
@@ -164,8 +165,16 @@ export function readF1(input: {
   lockState?: string | null;
   /** macOS: this user owns the console. Null when unread. */
   consoleSession?: boolean | null;
+  /**
+   * macOS: canary processes still present a moment after the probe, read from the
+   * process table. `open` exits 0 once LaunchServices has spawned the canary even when
+   * the canary is left stopped and never runs (Mac Studio, 2026-11-16), so exit 0 alone
+   * is not a pass. Null: the table was unread. Absent: not checked by this caller.
+   */
+  canaryLeftover?: { stopped: number; alive: number } | null;
 }): { reading: FamilyReading; passed: boolean } {
-  const { platform, probe } = input;
+  const { platform } = input;
+  let probe = input.probe;
   const mac = platform === 'darwin';
   if (mac && !probe) {
     // No canary to run here (not built into this install, or a test that did not opt in).
@@ -174,11 +183,27 @@ export function readF1(input: {
   }
   if (platform === 'other' || !probe) return { reading: { result: 'unknown', reason: 'no-probe-on-platform' }, passed: false };
   const kind = mac ? 'canary' : 'probe';
+  let leftoverReason: string | null = null;
+  if (mac && probe.ok && input.canaryLeftover !== undefined) {
+    const left = input.canaryLeftover;
+    if (left === null) return { reading: { result: 'unknown', reason: 'canary-exit-unread', detail: { probeMs: probe.ms } }, passed: false };
+    if (left.stopped > 0) {
+      // Spawned and never resumed: the GUI launch path is wedged although `open` said 0.
+      leftoverReason = 'canary-left-stopped';
+      probe = { ...probe, ok: false, code: null };
+    } else if (left.alive > 0) {
+      return { reading: { result: 'unknown', reason: 'canary-still-running', detail: { probeMs: probe.ms, alive: left.alive } }, passed: false };
+    }
+  }
   if (probe.ok) return { reading: { result: 'negative', reason: `${kind}-passed`, detail: { probeMs: probe.ms } }, passed: true };
   if (probe.code === 'ENOENT') return { reading: { result: 'unknown', reason: `${kind}-missing` }, passed: false };
-  const reason = probe.timedOut ? `${kind}-timed-out` : `${kind}-failed`;
+  const reason = leftoverReason ?? (probe.timedOut ? `${kind}-timed-out` : `${kind}-failed`);
   const lsError = mac ? launchServicesError(probe.stderr) : null;
-  const detail = { probeMs: probe.ms, code: probe.code === null ? null : String(probe.code), ...(mac ? { launchServicesError: lsError } : {}) };
+  const detail = {
+    probeMs: probe.ms, code: probe.code === null ? null : String(probe.code),
+    ...(mac ? { launchServicesError: lsError } : {}),
+    ...(mac && input.canaryLeftover ? { canariesLeftStopped: input.canaryLeftover.stopped } : {}),
+  };
   if (mac && input.consoleSession === false) return { reading: { result: 'ineligible', reason: `${reason}-no-console-session`, detail }, passed: false };
   if (mac && input.lockState === 'locked') return { reading: { result: 'ineligible', reason: `${reason}-screen-locked`, detail }, passed: false };
   if (!input.passedSinceBoot) return { reading: { result: 'ineligible', reason: `${reason}-never-passed-this-boot`, detail: mac ? detail : { probeMs: probe.ms } }, passed: false };

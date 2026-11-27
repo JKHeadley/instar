@@ -1,19 +1,40 @@
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { QuietNotificationStore } from './QuietNotificationStore.js';
 import type { QuietNotificationSink } from './QuietNotificationStore.js';
-import { CONVERSATION_CATEGORIES, SIGNIFICANT_TABLE, isNotificationCategory, notificationCategories } from './notificationCategories.js';
+import { CONVERSATION_CATEGORIES, PROTECTED_DELIVERY_CATEGORIES, SIGNIFICANT_TABLE, isNotificationCategory, notificationCategories } from './notificationCategories.js';
 import type { NotificationCategoryId, SignificantClass } from './notificationCategories.js';
 
 export interface OutboundEnvelope {
   origin: 'verified-reply' | 'automated'; category: NotificationCategoryId;
-  sourceContext: string; inboundMirror?: true; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
+  sourceContext: string; verifiedJobSlug?: string; inboundMirror?: true; messageKind?: 'reply' | 'automated' | 'unknown'; contextTopicId?: number; localPermit?: string; inboundMessageId?: string; significantClass?: SignificantClass; relayedOrigin?: boolean; releaseAudiencePromoted?: boolean;
 }
 export interface SelectivityConfig {
-  enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>> };
+  enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>>; jobs?: Record<string, boolean>; jobTopics?: Record<string, number | null> };
   digest?: { enabled?: boolean; cadence?: 'daily' }; quietStore?: { retentionDays?: number; maxEntries?: number };
 }
+/**
+ * Categories that push by default (docs/specs/no-data-loss-on-machine-death.md §6.2, D13): a disk
+ * warning must reach a person, so it is exempt from quiet-by-default. An explicit owner choice to
+ * quiet it (`push.categories['disk-steward']: false`) still stands.
+ */
+export const DEFAULT_PUSH_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set<NotificationCategoryId>(['disk-steward']);
+
+/** Whether a category pushes under these settings: an explicit opt-in, or a default-push category the owner has not quieted. */
+export function categoryPushes(config: SelectivityConfig, category: NotificationCategoryId): boolean {
+  const explicit = config.push?.categories?.[category];
+  const legacy = config.legacy?.[category];
+  if (explicit === true || legacy === true) return true;
+  return DEFAULT_PUSH_CATEGORIES.has(category) && explicit !== false && legacy !== false;
+}
+
+/** The owner explicitly quieted a category that would otherwise push by default. */
+export function ownerQuietedCategory(config: SelectivityConfig, category: NotificationCategoryId): boolean {
+  return DEFAULT_PUSH_CATEGORIES.has(category) && (config.push?.categories?.[category] === false || config.legacy?.[category] === false);
+}
+
 export type NotificationDecision = { decision: 'deliver' | 'deliver-push' | 'record'; reason: string; category: NotificationCategoryId; dryRun: boolean; mapCold?: boolean };
 export type QuietReceipt = { messageId?: never; delivered: false; recorded: true; quietId: string; topicId?: number };
 export class QuietRecordedError extends Error {
@@ -21,6 +42,16 @@ export class QuietRecordedError extends Error {
 }
 export const notificationContext = new AsyncLocalStorage<OutboundEnvelope>();
 const replyCapabilities = new WeakSet<object>();
+/**
+ * The disk steward's floor notice (spec docs/specs/disk-steward.md §3.5): at the
+ * media disk floor the agent stops working, so it takes the significant path.
+ * Only src/monitoring/DiskStewardPoster.ts may mint it (enforced by the funnel
+ * lint). The source context names machine, episode and repeat stage, so
+ * machines never dedupe each other and each repeat is its own episode.
+ */
+export function diskFloorEnvelope(machineId: string, episodeStart: number, stage: number): OutboundEnvelope {
+  return { origin: 'automated', category: 'attention-item', significantClass: 'agent-cannot-operate', sourceContext: `disk-steward:${machineId}:${episodeStart}:${stage}` };
+}
 /** Only trusted route/wiring modules import this factory (enforced by the funnel lint). */
 export function verifiedReplyEnvelope(sourceContext: string): OutboundEnvelope {
   const envelope: OutboundEnvelope = { origin: 'verified-reply', category: 'command-response', sourceContext };
@@ -33,11 +64,25 @@ export function verifiedInboundMirrorEnvelope(sourceContext: string): OutboundEn
 export function isVerifiedReplyEnvelope(value: unknown): boolean {
   return typeof value === 'object' && value !== null && replyCapabilities.has(value);
 }
+const jobCapabilities = new WeakSet<object>();
+/** Names the job a notice came from. Only code holding server-side job truth mints this (enforced by the funnel lint). */
+export function verifiedJobEnvelope(slug: string, base?: OutboundEnvelope): OutboundEnvelope {
+  const envelope: OutboundEnvelope = { ...base, origin: 'automated', category: 'job-status', sourceContext: slug, verifiedJobSlug: slug };
+  jobCapabilities.add(envelope); return envelope;
+}
+export function isVerifiedJobEnvelope(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || !jobCapabilities.has(value)) return false;
+  const envelope = value as OutboundEnvelope;
+  return envelope.category === 'job-status' && !!envelope.verifiedJobSlug && envelope.sourceContext === envelope.verifiedJobSlug;
+}
 /** Structural policy only. Content judgments belong to the existing tone authority. */
 export class NotificationSelectivityGate {
   public pushDestination: ((category: NotificationCategoryId) => { chatId: string; topicId: number } | null) | null = null;
-  destination(envelope: OutboundEnvelope): { chatId: string; topicId: number } | null {
-    if (!this.isEnforcing() || isVerifiedReplyEnvelope(envelope) || CONVERSATION_CATEGORIES.has(envelope.category)) return null;
+  destination(envelope: OutboundEnvelope, addressedTopicId?: number): { chatId: string; topicId: number } | null {
+    if (!this.isEnforcing() || isVerifiedReplyEnvelope(envelope) || PROTECTED_DELIVERY_CATEGORIES.has(envelope.category)) return null;
+    // An opted-in job stays only in the topic the operator chose it in, never wherever it addressed.
+    const config = this.config();
+    if (addressedTopicId !== undefined && this.jobOptedIn(envelope, config) && config.push?.jobTopics?.[envelope.verifiedJobSlug!] === addressedTopicId) return null;
     return this.pushDestination?.(envelope.category) ?? null;
   }
   public readPeers: ((topicId: number) => Promise<{ items: import('./QuietNotificationStore.js').QuietNotification[]; unavailable: string[] }>) | null = null;
@@ -102,8 +147,15 @@ export class NotificationSelectivityGate {
     });
   }
   isEnforcing(): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false; }
-  categoryPushEnabled(category: NotificationCategoryId): boolean { const config = this.config(); return this.isEnforcing() && (config.push?.categories?.[category] === true || config.legacy?.[category] === true); }
-  holdsCategory(category: NotificationCategoryId): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false && config.push?.categories?.[category] !== true && config.legacy?.[category] !== true; }
+  categoryPushEnabled(category: NotificationCategoryId): boolean { const config = this.config(); return this.isEnforcing() && categoryPushes(config, category); }
+  /** The owner explicitly quieted a default-push category (the disk post then says so, §6.2). */
+  ownerQuieted(category: NotificationCategoryId): boolean { return ownerQuietedCategory(this.config(), category); }
+  holdsCategory(category: NotificationCategoryId): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false && !categoryPushes(config, category); }
+  jobPush(): Record<string, boolean> { return this.config().push?.jobs ?? {}; }
+  /** Text and priority play no part: only a verified identity and the operator's own choice. */
+  private jobOptedIn(envelope: OutboundEnvelope | undefined, config: SelectivityConfig): boolean {
+    return isVerifiedJobEnvelope(envelope) && pushedJobs(config).includes(envelope!.verifiedJobSlug!);
+  }
   observeInbound(topicId: number, id: string | number, operator = false, observedAt = this.now()): void {
     const rows = this.inbound.get(topicId) ?? [];
     const clean = rows.filter(row => row.at > this.now() - 7 * 86400000 && row.id !== String(id));
@@ -117,6 +169,19 @@ export class NotificationSelectivityGate {
     return this.inbound.get(topicId)?.some(row => row.id === id && row.operator && this.now() - row.at <= 900000) === true;
   }
   latestInbound(topicId: number): string | undefined { return this.inbound.get(topicId)?.at(-1)?.id; }
+  /**
+   * The topic's latest message from the operator within `withinMs`, or null (pairing outcome
+   * notice §3.4: the request a pairing link answers).
+   */
+  recentOperatorInbound(topicId: number, withinMs: number): string | null {
+    const rows = this.inbound.get(topicId) ?? [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = rows[i]!;
+      if (this.now() - row.at > withinMs) return null;
+      if (row.operator) return row.id;
+    }
+    return null;
+  }
   private budget(key: string, max: number): boolean {
     let state = this.budgets.get(key);
     if (!state || this.now() - state.since >= 600000) { state = { count: 0, since: this.now(), summary: false }; this.budgets.set(key, state); }
@@ -134,7 +199,32 @@ export class NotificationSelectivityGate {
       return result('deliver', 'verified-reply');
     }
     if (envelope?.origin === 'verified-reply') this.metrics.eatenReplyCounterfactual++;
+    // Pairing outcome (mobile-pairing-outcome-notice §3.4): the route sets this category only for the
+    // in-process pairing-outcome producer, whose anchor (the operator's own message in this topic)
+    // was verified at mint. The in-memory inbound rows are not re-checked: they do not survive a
+    // restart and keep only 20 per topic, so a re-check would quiet legitimate late outcomes.
+    if (category === 'pairing-outcome') {
+      return envelope?.inboundMessageId ? result('deliver', 'requested-follow-up') : result('record', 'unanchored-follow-up');
+    }
+    // Owner decision (cos-owner-decision-delivery): an offer or armed exact-change confirmation
+    // needs a human answer, not a quiet report. Only trusted in-process sends stamp this category
+    // (sendOfferList or the profile-confirmation producer); request metadata cannot mint it.
+    // A per-topic budget keeps a looping sender from flooding the owner.
+    if (category === 'owner-decision') {
+      return this.budget(`owner-decision:${topicId}`, 10) ? result('deliver', 'owner-decision') : result('record', 'owner-decision-budget');
+    }
+    // Promise notice (overdue-promise-follow-through §3.5): a check-in or late line about a promise the
+    // agent made in this topic. Stamped only by the reminder reconciler's send in routes.ts (a named
+    // producer); the reconciler already caps it per topic and per hour, and this budget is the backstop.
+    if (category === 'promise-notice') {
+      return this.budget(`promise-notice:${topicId}`, 6) ? result('deliver', 'promise-notice') : result('record', 'promise-notice-budget');
+    }
     if (CONVERSATION_CATEGORIES.has(category)) {
+      // Never-Silent Conversation: the notice that a person's message went unanswered is the ONE
+      // outcome besides a reply (spec §2). It is produced only by the internal never-silent
+      // producer (category comes from categoryForProducer, never from request metadata) and always
+      // names the waiting inbound message, so it is never held as quiet — however long the wait.
+      if (category === 'never-silent-notice' && envelope?.inboundMessageId) return result('deliver', 'never-silent-floor');
       const rows = this.inbound.get(topicId);
       const match = envelope?.inboundMessageId && rows?.find(row => row.id === envelope.inboundMessageId && (category === 'presence-standby' || this.now() - row.at <= 900000));
       const token = `${topicId}:${envelope?.inboundMessageId}:${category}`;
@@ -149,7 +239,9 @@ export class NotificationSelectivityGate {
     }
     const significant = envelope?.significantClass && SIGNIFICANT_TABLE[category]?.includes(envelope.significantClass);
     const promotedUpdate = category === 'update-announcement' && envelope?.releaseAudiencePromoted === true && settings.push?.categories?.[category] !== false;
-    if (!significant && !promotedUpdate && settings.push?.categories?.[category] !== true && settings.legacy?.[category] !== true) return result('record', 'quiet-default');
+    const categoryPush = categoryPushes(settings, category);
+    const jobOptIn = !categoryPush && this.jobOptedIn(envelope, settings);
+    if (!significant && !promotedUpdate && !categoryPush && !jobOptIn) return result('record', 'quiet-default');
     if (significant) {
       const key = `${category}:${envelope!.significantClass}:${envelope!.sourceContext.slice(0, 160)}`;
       for (const [k, at] of this.episodes) if (this.now() - at >= 21600000) this.episodes.delete(k);
@@ -161,7 +253,7 @@ export class NotificationSelectivityGate {
       if (!this.budget(category, 3)) return result('record', 'push-budget');
       if (!this.budget('*', 10)) return result('record', 'global-budget');
     }
-    return result('deliver-push', significant ? 'significant-class' : promotedUpdate ? 'release-audience-promotion' : 'category-opt-in');
+    return result('deliver-push', significant ? 'significant-class' : promotedUpdate ? 'release-audience-promotion' : jobOptIn ? 'job-opt-in' : 'category-opt-in');
   }
   private flushEvidence(cleanShutdown: boolean): Promise<void> {
     const snapshot = { ...this.evidence, cleanShutdown, checkpointAt: new Date(this.now()).toISOString() };
@@ -174,12 +266,16 @@ export class NotificationSelectivityGate {
     return this.evidenceWrites;
   }
   async tickDigest(): Promise<void> {
-    if (this.digestBusy || this.config().digest?.enabled !== true || !this.onSummary) return;
+    if (this.digestBusy || !this.onSummary) return;
+    const digestOn = this.config().digest?.enabled === true;
     this.digestBusy = true;
     try {
       await this.digestReady; await this.store.ready;
       if (this.now() - this.digestLast < 86400000) return;
       const counts = this.store.summarySince(Math.max(this.digestLast, this.now() - 86400000));
+      // The daily summary also runs, digest off or not, on any day a disk post was held quiet
+      // (no-data-loss-on-machine-death.md §6.2): a quiet disk warning must still reach a person once a day.
+      if (!digestOn && !(counts['disk-steward'] > 0)) return;
       this.digestLast = this.now();
       const file = path.join(this.root, 'state', 'notification-digest.json');
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -187,9 +283,10 @@ export class NotificationSelectivityGate {
       await fs.promises.rename(file + '.next', file);
       const total = Object.values(counts).reduce((sum, value) => sum + value, 0); if (!total) return;
       const lines = notificationCategories.filter(([id]) => counts[id]).map(([id, name]) => `${counts[id]} ${name.toLowerCase()}`);
-      const inventory = notificationCategories.filter(([id]) => this.config().push?.categories?.[id] === true).map(([, name]) => name.toLowerCase());
+      const inventory = notificationCategories.filter(([id]) => categoryPushes(this.config(), id)).map(([, name]) => name.toLowerCase());
+      const jobs = pushedJobs(this.config());
       const permit = `${this.machineId}:digest:${this.now()}`; this.permits.set(permit, this.now() + 60000);
-      await this.onSummary(`${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}. ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
+      await this.onSummary(`${digestOn ? '' : 'A disk space notice was held quiet today, so here is the daily summary even though it is switched off. '}${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}.${jobs.length ? ` Pushed jobs: ${jobs.join(', ')}.` : ''} ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
         origin: 'automated', category: 'selectivity-digest', sourceContext: 'selectivity-digest', localPermit: permit,
       });
     } catch (error) { console.warn('[selectivity] digest unavailable; next attempt is the next daily cadence:', error); }
@@ -206,7 +303,7 @@ export class NotificationSelectivityGate {
       const summary = this.summaries.get(key); this.summaries.delete(key);
       if (!summary || !this.onSummary) return;
       const current = this.config();
-      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) : current.push?.categories?.[summary.category] !== true && current.legacy?.[summary.category] !== true))) return;
+      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) && !pushedJobs(current).length : !categoryPushes(current, summary.category) && !(summary.category === 'job-status' && pushedJobs(current).length)))) return;
       for (const [id, until] of this.permits) if (until < this.now()) this.permits.delete(id);
       const permit = `${this.machineId}:${this.now()}:${Math.random()}`;
       this.permits.set(permit, this.now() + 60000);
@@ -294,7 +391,7 @@ export class NotificationSelectivityGate {
           const persistent = this.failureEpisodes.length === 3;
           const failurePermit = `${this.machineId}:failure:${this.now()}:${Math.random()}`;
           this.permits.set(failurePermit, this.now() + 120000);
-          try { await this.onStoreFailure?.(`My notification records cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
+          try { await this.onStoreFailure?.(`My notification records on ${storageMachineName(this.root)} cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
             origin: 'automated', category: 'attention-item', sourceContext: 'selectivity-store-failure', significantClass: 'data-loss', localPermit: failurePermit,
           }); } catch (noticeError) { console.error('[selectivity] store-failure escalation unavailable:', noticeError); }
         }
@@ -311,7 +408,7 @@ export class NotificationSelectivityGate {
       preferences: this.preferences?.status(),
       soakEvidence: { ...this.evidence, healthy: this.evidenceHealthy, scope: 'this-machine', resetAfterUncleanShutdown: true, cleanDays: this.evidence.observingSince ? Math.max(0, (this.now() - Date.parse(this.evidence.observingSince)) / 86400000) : 0, operatorFlipRequired: true },
       counters: { ...this.metrics, ...this.store.counters() }, store: { ...this.store.health },
-      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !CONVERSATION_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
+      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !PROTECTED_DELIVERY_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: categoryPushes(this.config(), id) })) };
   }
   async bootContextPool(topicId: number): Promise<string> {
     await this.store.ready;
@@ -345,6 +442,11 @@ export class NotificationSelectivityGate {
   }
   close(): Promise<void> { return this.closePromise ??= this.closeOnce(); }
   private async closeOnce(): Promise<void> { clearInterval(this.evidenceTimer); await this.evidenceReady; await this.flushEvidence(true); clearInterval(this.digestTimer); for (const summary of this.summaries.values()) clearTimeout(summary.timer); await this.preferences?.close(); await this.store.close(); await this.ledgerWrites; }
+}
+
+/** Own keys holding exactly true: an inherited name or a truthy value is not a choice. */
+function pushedJobs(config: SelectivityConfig): string[] {
+  return Object.entries(config.push?.jobs ?? {}).filter(([, enabled]) => enabled === true).map(([slug]) => slug);
 }
 
 /** For contracts that require a real conversational anchor, a quiet record is not one. */

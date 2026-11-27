@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-ci-linux-portability",
+  "sessionId": "77361a7f-1dd0-4503-93aa-f0a5b76ae204",
+  "timestamp": "2026-11-10T21:25:07.175Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-ci-linux-portability.md",
+  "artifactSha256": "e69cadc6dc58436a5f5adbff8eab4d5b613d039aec77778fe78462886311a3f1",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "src/core/ConversationGraphReplication.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/graphWitnessServer.ts",
+    "upgrades/side-effects/conversation-graph-ci-linux-portability.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "tightens an existing held-file identity check to include the change time (Linux reuses inode numbers), adds two type annotations, and raises the CI integration job bound; no new authority",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

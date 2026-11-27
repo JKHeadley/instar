@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Restart admission now starts its confirmation deadline after verification holds. Known solo machines can use the ordinary restart path. Timed-out requests release the restart slot and leave newer requests intact. A measured boot allowance that exceeds the lease ceiling is visible in recovery evidence.
+
+## What to Tell Your User
+
+A verification run no longer uses up the restart’s time to get confirmation from another machine. When a restart times out, you can retry it without getting stuck behind the expired request.
+
+## Summary of New Capabilities
+
+The existing opt-in restart admission can distinguish lengthy verification holds, verified solo topology, retired requests, and an insufficient lease ceiling. Enablement requires compatible local restart writers and consumers.
+
+## Evidence
+
+The focused cases cover restart priority during publication, one shared timeout for two consumers, and a self-heal request replacing a retired one.

@@ -654,7 +654,9 @@ let VERSION;
   const npmVersion = npmPublishedVersion();
   const localVersion = readPkgVersion();
   console.log(`npm has:        ${npmVersion}\npackage.json:   ${localVersion}`);
-  VERSION = must('node', ['scripts/resolve-publish-version.mjs', localVersion, npmVersion], { capture: true }).stdout.trim();
+  // Count the remote's vX.Y.Z and published/vX.Y.Z tags as consumed: npm may
+  // still hide a staged publish (fb-354bb7b5-b5d).
+  VERSION = must('node', ['scripts/resolve-publish-version.mjs', localVersion, npmVersion, '--tags-from-remote', opts.remote], { capture: true }).stdout.trim();
   if (!SEMVER.test(VERSION)) fail(`resolve-publish-version printed ${JSON.stringify(VERSION)}, not X.Y.Z`);
   console.log(`resolved:       ${VERSION}`);
   VERSION_FOR_MSG = VERSION;
@@ -743,6 +745,18 @@ console.log('      attestation; everything else matches publish.yml.');
       publishUnknown = true;
       fail(`npm publish exited ${pub.status} and npm could not say whether instar@${VERSION} exists (check: npm view instar@${VERSION} version)`);
     }
+  }
+}
+
+// Mark the version consumed before the smoke wait, as publish.yml does, so a
+// run on any machine skips it while npm still holds it staged. Best-effort.
+// Created through the GitHub API, so no git hook runs between publish and smoke.
+// HEAD is <remote>/main (checked in preflight), so the commit exists there.
+{
+  const sha = must('git', ['rev-parse', 'HEAD'], { capture: true, quiet: true }).stdout.trim();
+  const mark = run('gh', ['api', '--silent', `repos/${SLUG}/git/refs`, '--raw-field', `ref=refs/tags/published/v${VERSION}`, '--raw-field', `sha=${sha}`], { capture: true, quiet: true });
+  if (mark.status !== 0) {
+    console.log(`WARNING: could not create published/v${VERSION} (${String(mark.stderr || '').trim().slice(0, 200)}); a concurrent publisher may reuse it while npm keeps it staged`);
   }
 }
 

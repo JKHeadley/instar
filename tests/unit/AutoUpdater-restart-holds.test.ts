@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { AutoUpdater } from '../../src/core/AutoUpdater.js';
 import { UpdateGate, type RestartHold } from '../../src/core/UpdateGate.js';
+import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
 import type { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -37,6 +38,7 @@ describe('AutoUpdater restart holds', () => {
     log = vi.spyOn(console, 'log');
   });
   afterEach(() => {
+    ProcessIntegrity.reset();
     vi.useRealTimers();
     vi.restoreAllMocks();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/AutoUpdater-restart-holds.test.ts' });
@@ -309,6 +311,68 @@ describe('AutoUpdater restart holds', () => {
     await vi.advanceTimersByTimeAsync(5 * 60_000 + 3_000);
     expect(fs.existsSync(restartFile())).toBe(true);
     u.stop();
+  });
+
+  describe('a deferral the running process already satisfies (2026-11-13: one update, two restarts)', () => {
+    const saveDeferral = (targetVersion: string) => fs.writeFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), JSON.stringify({
+      lastAppliedVersion: targetVersion,
+      restartDeferral: {
+        active: true, targetVersion, firstDeferredAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+        reason: 'held for in-flight work', currentBlockers: ['local-verify:pr-7'],
+        nextRetryAt: new Date(Date.now() - 1_000).toISOString(), updatedAt: new Date().toISOString(),
+      },
+    }));
+    const durable = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'auto-updater.json'), 'utf8')).restartDeferral;
+
+    it('is dropped at start when this process already runs the target version: no second restart, and the durable record is cleared', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.9', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toBeNull();
+      expect(durable()).toBeNull();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(fs.existsSync(restartFile())).toBe(false);
+      expect(log.mock.calls.flat().join('\n')).toContain('Restart deferral for v0.9.9 dropped: this process already runs v0.9.9');
+      u.stop();
+    });
+
+    it('is dropped when the process runs a NEWER version than the target', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.10', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toBeNull();
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(fs.existsSync(restartFile())).toBe(false);
+      u.stop();
+    });
+
+    it('is kept, and still restarts, when the process runs an OLDER version than the target', async () => {
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('0.9.8', null);
+      const u = updater(() => []);
+      u.start();
+      expect(u.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(fs.existsSync(restartFile())).toBe(true);
+      u.stop();
+    });
+
+    it('is kept when nothing recorded the version this process booted with, or a version does not parse', async () => {
+      saveDeferral('0.9.9');
+      const noRecord = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }]);
+      noRecord.start();
+      expect(noRecord.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      noRecord.stop();
+
+      saveDeferral('0.9.9');
+      ProcessIntegrity.initialize('unknown', null);
+      const unparsable = updater(() => [{ name: 'local-verify:pr-7', until: Date.now() + 60 * 60_000, reason: 'verify running' }]);
+      unparsable.start();
+      expect(unparsable.getStatus().restartDeferral).toMatchObject({ active: true, targetVersion: '0.9.9' });
+      unparsable.stop();
+    });
   });
 });
 

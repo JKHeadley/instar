@@ -119,6 +119,22 @@ export interface Conversation {
    */
   agentIdentity?: string;
 
+  // ── Memory privacy: who this thread is with (memory-privacy-agent-places §2) ──
+  /**
+   * The authenticated fingerprint of the peer this thread is with. Written only
+   * from an authenticated sender (or a fingerprint/nickname-addressed send), and
+   * write-once: `applyEntryToConversation` never overwrites it.
+   */
+  peerFingerprint?: string;
+  /** When `peerFingerprint` was claimed. History before this is never loaded into a place. */
+  ownerClaimedAt?: string;
+  /** `audienceKey()` of the session that wrote this thread's transcript. A resume needs an exact match. */
+  audienceKey?: string;
+  /** The owner was adopted from a record from before this version: the thread id only. */
+  ownerAdopted?: boolean;
+  /** This version created the thread with no owner (addressed by a name): never adopted. */
+  ownerless?: boolean;
+
   // ── Bookkeeping ──
   pinned: boolean;
   messageCount: number;

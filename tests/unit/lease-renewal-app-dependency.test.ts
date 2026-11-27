@@ -60,8 +60,8 @@ describe('leaseRenewalDependencies', () => {
 });
 
 describe('app-conversations lease renewal dependency', () => {
-  it('REPRODUCTION: without any dependency, a non-development agent loses its lease between heartbeat ticks', async () => {
-    const h = await fixture({ enroll: false });
+  it('REPRODUCTION: on a shared store without any dependency, a non-development agent loses its lease between heartbeat ticks', async () => {
+    const h = await fixture({ enroll: false, sharedStore: true });
     const held = await h.sample(240);
     expect(held.filter((x) => !x).length).toBeGreaterThan(0);
     expect(h.lc.currentEpoch()).toBeGreaterThan(1); // re-acquired, epoch climbed

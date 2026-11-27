@@ -10,8 +10,9 @@
  * what I'm going to see and read and approve.")
  *
  * Pure check — `checkPrDescriptionEli16({ body, title, authorType })` — plus a
- * CLI wrapper that reads PR_BODY / PR_TITLE / PR_AUTHOR_TYPE from env (set by the
- * workflow) and exits 0 when an ELI16 overview is present (or the PR is exempt),
+ * CLI wrapper that judges the LIVE PR (re-read from the GitHub API via PR_NUMBER +
+ * GITHUB_TOKEN; falls back to PR_BODY / PR_TITLE / PR_AUTHOR_TYPE from the event
+ * payload only when that read fails — see resolvePrFields) and exits 0 when an ELI16 overview is present (or the PR is exempt),
  * 1 with actionable guidance when it is missing.
  */
 
@@ -45,15 +46,67 @@ export function checkPrDescriptionEli16(pr) {
   return { ok: true };
 }
 
+/**
+ * Resolve the PR fields to judge. The event payload is FROZEN at the moment the
+ * run was triggered, so a re-run of an old run would re-judge an old body and
+ * could produce a stale red after the description was fixed (PR #2059, LRN-035).
+ * We therefore re-read the LIVE PR from the GitHub API and only fall back to the
+ * payload values when that read is impossible or fails.
+ *
+ * @param {{ env?: Record<string, string|undefined>, fetchImpl?: typeof fetch }} [opts]
+ * @returns {Promise<{ pr: { body: string|null, title: string|null, authorType: string|null }, source: 'api'|'payload', fallbackReason?: string }>}
+ */
+export async function resolvePrFields(opts = {}) {
+  const env = opts.env ?? process.env;
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const payload = {
+    body: env.PR_BODY ?? null,
+    title: env.PR_TITLE ?? null,
+    authorType: env.PR_AUTHOR_TYPE ?? null,
+  };
+  const repo = env.GITHUB_REPOSITORY;
+  const number = env.PR_NUMBER;
+  const token = env.GITHUB_TOKEN;
+  // Only inside a GitHub Actions run: a local caller (e.g. `instar dev:preflight
+  // --body <file>`) must judge the body it passed, even if its shell happens to
+  // carry PR_NUMBER / GITHUB_REPOSITORY / GITHUB_TOKEN.
+  if (env.GITHUB_ACTIONS !== 'true') {
+    return { pr: payload, source: 'payload', fallbackReason: 'not-in-github-actions' };
+  }
+  if (!repo || !number || !/^\d+$/.test(String(number)) || typeof fetchImpl !== 'function') {
+    return { pr: payload, source: 'payload', fallbackReason: 'missing-repo-number-or-fetch' };
+  }
+  const apiBase = (env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, '');
+  try {
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'instar-eli16-pr-gate' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetchImpl(`${apiBase}/repos/${repo}/pulls/${number}`, { headers });
+    if (!res || !res.ok) {
+      return { pr: payload, source: 'payload', fallbackReason: `http-${res?.status ?? 'none'}` };
+    }
+    const live = await res.json();
+    if (!live || typeof live !== 'object' || typeof live.title !== 'string') {
+      return { pr: payload, source: 'payload', fallbackReason: 'unexpected-response' };
+    }
+    return {
+      pr: { body: live.body ?? '', title: live.title, authorType: live.user?.type ?? null },
+      source: 'api',
+    };
+  } catch (err) {
+    return { pr: payload, source: 'payload', fallbackReason: `fetch-error: ${err?.message ?? err}` };
+  }
+}
+
 // ── CLI (used by .github/workflows/eli16-pr-gate.yml) ─────────────────
 const invokedDirectly =
   process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (invokedDirectly) {
-  const res = checkPrDescriptionEli16({
-    body: process.env.PR_BODY,
-    title: process.env.PR_TITLE,
-    authorType: process.env.PR_AUTHOR_TYPE,
-  });
+  const resolved = await resolvePrFields();
+  console.log(
+    `ELI16 gate: source=${resolved.source}` +
+      (resolved.fallbackReason ? ` (live PR read unavailable: ${resolved.fallbackReason}; judging the event payload)` : ''),
+  );
+  const res = checkPrDescriptionEli16(resolved.pr);
   if (res.ok) {
     console.log(
       res.exempt

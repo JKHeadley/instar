@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-19T18:51:31.831Z",
+  "slug": "body-budget-cut-at-limit",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/bodyBudget.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -24,6 +24,44 @@ describe('IMessageAdapter', () => {
     project.cleanup();
   });
 
+  describe('chat.db hardlink source under the test runner', () => {
+    // Studio, 2026-11-20: tests built adapters with no dbPath, so the adapter
+    // hard-linked the REAL ~/Library/Messages/chat.db. macOS parked that link()
+    // in the kernel waiting for a Full Disk Access approval nobody answered;
+    // the vitest worker froze and every verify run died at its 40-min deadline.
+    it('defaults to a never-created directory inside stateDir, not the real ~/Library/Messages', () => {
+      expect(process.env.VITEST).toBeTruthy();
+      const dir = IMessageAdapter.defaultMessagesDir(project.stateDir);
+      expect(dir.startsWith(project.stateDir)).toBe(true);
+      expect(dir).not.toContain(path.join('Library', 'Messages'));
+      expect(fs.existsSync(dir)).toBe(false);
+    });
+
+    it('an adapter built without dbPath never links from the real Messages directory', () => {
+      const linkDir = path.join(project.stateDir, 'imessage');
+      new IMessageAdapter({ authorizedSenders: [] }, project.stateDir);
+      const linked = fs.existsSync(linkDir) ? fs.readdirSync(linkDir) : [];
+      expect(linked.filter((n) => n.startsWith('chat.db'))).toEqual([]);
+    });
+
+    it('still links from an explicit Messages directory (production path, driven by a fake)', () => {
+      const fakeMessages = path.join(project.stateDir, 'fake-messages');
+      fs.mkdirSync(fakeMessages, { recursive: true });
+      fs.writeFileSync(path.join(fakeMessages, 'chat.db'), 'not-a-real-db');
+      fs.writeFileSync(path.join(fakeMessages, 'chat.db-wal'), '');
+      const result = IMessageAdapter.ensureChatDbHardlink(project.stateDir, fakeMessages);
+      expect(result).toBe(path.join(project.stateDir, 'imessage', 'chat.db'));
+      expect(fs.statSync(result).ino).toBe(fs.statSync(path.join(fakeMessages, 'chat.db')).ino);
+      expect(fs.existsSync(path.join(project.stateDir, 'imessage', 'chat.db-wal'))).toBe(true);
+      expect(fs.existsSync(path.join(project.stateDir, 'imessage', 'chat.db-shm'))).toBe(false);
+    });
+
+    it('falls back to the source path when the Messages directory has no chat.db', () => {
+      const empty = path.join(project.stateDir, 'no-messages-here');
+      expect(IMessageAdapter.ensureChatDbHardlink(project.stateDir, empty)).toBe(path.join(empty, 'chat.db'));
+    });
+  });
+
   describe('constructor', () => {
     it('requires authorizedContacts array', () => {
       expect(() => new IMessageAdapter({} as Record<string, unknown>, project.stateDir))
@@ -191,6 +229,7 @@ describe('IMessageAdapter', () => {
         text: 'unauthorized message',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
 
       expect(messages).toHaveLength(0);
@@ -212,6 +251,7 @@ describe('IMessageAdapter', () => {
         text: 'Hello Roland',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
 
       expect(messages).toHaveLength(1);
@@ -256,6 +296,7 @@ describe('IMessageAdapter', () => {
         text: 'duplicate test',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage',
       };
 
       await (adapter as any)._handleIncomingMessage(msg);
@@ -282,6 +323,7 @@ describe('IMessageAdapter', () => {
         text: 'crash test',
         timestamp: Date.now() / 1000,
         isFromMe: false,
+        service: 'iMessage', // real chat.db rows always carry their service (identity-security-piece1eb)
       });
     });
   });

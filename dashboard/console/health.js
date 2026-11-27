@@ -3,7 +3,7 @@
 // internal ones stay folded. Every value goes through textContent. The quick actions and the Hidden list
 // (docs/specs/health-quick-actions.md) sit under each problem and at the foot of the page.
 
-import { buildHealthPage, askHref, timesWord, issueChoices, SNOOZE_CHOICES, choiceFailure, hiddenRowWords, hiddenAskHref } from './health-model.js';
+import { buildHealthPage, machineWords, askHref, timesWord, issueChoices, SNOOZE_CHOICES, choiceFailure, hiddenRowWords, hiddenAskHref } from './health-model.js';
 import { el, setKids, pageHead, note, cantTell, firstPaint, markNeed, arrivalScroll, sheet, closeSheet } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
@@ -61,6 +61,7 @@ function issueCard(issue, open, ctx, refresh) {
   const times = timesWord(issue.count);
   return el('details', { class: 'card', 'data-focus-key': `h:${issue.id}`, open: open || null },
     el('summary', { class: 'row-title', text: issue.title }),
+    machineWords(issue) ? el('p', { class: 'mc-evidence', text: machineWords(issue) }) : null,
     issue.returnNote ? el('p', { class: 'card-note', text: issue.returnNote }) : null,
     el('p', { text: issue.detail }),
     issue.evidence ? el('p', { class: 'mc-evidence', text: `In my own words: ${issue.evidence}` }) : null,

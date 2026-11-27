@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-04T23:25:55.648Z",
+  "slug": "false-stopped-session-self-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 121,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/monitoring/SessionMonitor.ts",
+      "src/monitoring/StallTriageNurse.ts",
+      "src/monitoring/SystemReviewer.ts",
+      "src/monitoring/TriageOrchestrator.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 69
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2601,
+      2672
+    ],
+    "notes": "Prior fixes covered only individual senders and did not preserve the channel registration across resume fallback. Indra logs show a live fallback under a different name while both watchers followed the dead registered name."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/SessionMonitor.test.ts",
+      "howCaught": "A fresh restart is bounded to one attempt per user message within the process; failed recovery sends one persisted failure notice, and the regression test proves the second death does not restart again."
+    }
+  },
+  "verdict": "pass"
+}

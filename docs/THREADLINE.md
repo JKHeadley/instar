@@ -154,11 +154,16 @@ Threadline is fully implemented in Instar with 12 modules and 455 tests:
 
 ### HTTP Endpoints
 
+The direct peer routes below (handshake, receive, backfill, blobs) are **closed by default** and answer 404; agents talk over the relay. An owner opens them with `threadline.directPeerProtocol.enabled: true` (docs/specs/threadline-http-peer-trust.md).
+
 ```
 GET  /threadline/health              — Agent info, capabilities, version
 POST /threadline/handshake/hello     — Initiate trust handshake (unauthenticated)
 POST /threadline/handshake/confirm   — Complete trust handshake (unauthenticated)
-POST /threadline/messages/receive    — Accept inbound message (authenticated)
+POST /threadline/messages/receive    — Accept inbound message (authenticated; the sender's key must hold a trust
+                                       level that allows it, else 403 TL_SENDER_NOT_TRUSTED — see
+                                       docs/specs/threadline-http-peer-trust.md)
+DELETE /threadline/pairings/:agent   — Owner: forget a direct pairing so the name can pair again (bearer)
 GET  /threadline/messages/thread/:id — Thread history (authenticated, paginated)
 GET  /threadline/blobs/:id           — Fetch blob content (authenticated)
 ```

@@ -22,7 +22,7 @@ describe('deliver handler wiring in server.ts', () => {
     expect(block).toContain('!!telegram');
   });
   it('those are still the silent returns in onAccepted, so the two cannot drift apart unseen', () => {
-    const accepted = server.slice(server.indexOf('onAccepted: (cmd) => {'));
+    const accepted = server.slice(server.indexOf('onAccepted: (cmd, sender, originalEnvelope) => {'));
     expect(accepted).toContain("if (_sessionPoolStage() === 'dark') return;");
     expect(accepted).toContain('if (!_slackInboundDispatch) return;');
     expect(accepted).toContain('if (!telegram) return;');

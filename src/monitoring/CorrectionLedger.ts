@@ -3,8 +3,8 @@
  *
  * The conversational twin of FailureLedger. Where that ledger stores dev-process
  * failures, this stores the LESSON distilled from a moment the user had to
- * correct the agent — privacy-safe: ONLY the post-scrubbed `learning` +
- * `scrubbed_summary` + metadata ever land here. Raw conversation never persists.
+ * correct the agent. Ordinary corrections retain scrubbed learnings and metadata;
+ * failure callouts additionally retain bounded, scrubbed forensic evidence.
  *
  * Mirrors FailureLedger's discipline (spec §3.4):
  *  - dedupe-upsert keyed on `kind:normalizedLearningHash` so a recurring lesson
@@ -29,6 +29,9 @@
  * gate keys on (spec §3.5). llm_confidence is LLM-set + advisory only.
  */
 import Database from 'better-sqlite3';
+import type { FailureReplicationEmitter, FailureReplicaReader, FailureReplica } from '../core/FailureCalloutReplicatedStore.js';
+import { newFailureCase, advanceFailureCase, archiveFailureEpisode, type CorrectionSeverity, type FailureCase, type FailureEpisode } from './FailureCallout.js';
+import { initFailureInvestigationAdmission, readFailureInvestigationAdmission, claimFailureInvestigationAdmission, resumeFailureInvestigationAdmission, failureInvestigationAdmissionSummary, FAILURE_INVESTIGATION_MAX_ATTEMPTS, type FailureInvestigationAdmission, type FailureInvestigationClaim } from './FailureInvestigationAdmission.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import crypto from 'node:crypto';
@@ -50,6 +53,9 @@ export type CorrectionStatus =
   | 'reopened';    // a routed cluster member recurred; re-watching (bounded by maxReopens)
 
 export interface CorrectionRecord {
+  investigationAdmission?: FailureInvestigationAdmission;
+  severity?: CorrectionSeverity;
+  failureCase?: FailureCase;
   id: string;
   dedupeKey: string;
   kind: CorrectionKind;
@@ -80,8 +86,12 @@ export interface CorrectionRecord {
   version: number;
 }
 
-/** The shape served over HTTP — `learning` stripped, only scrubbed_summary + metadata. */
+/** HTTP shape: internal learning/session stripped; forensic context is detail-only. */
 export interface CorrectionRecordApiView {
+  investigationAdmission?: FailureInvestigationAdmission;
+  failureState?: FailureCase['state'];
+  severity?: CorrectionSeverity;
+  failureCase?: FailureCase;
   id: string;
   dedupeKey: string;
   kind: CorrectionKind;
@@ -103,6 +113,8 @@ export interface CorrectionRecordApiView {
 }
 
 export interface RecordCorrectionInput {
+  severity?: CorrectionSeverity;
+  failureContext?: unknown;
   kind: CorrectionKind;
   learning: string;
   scrubbedSummary: string;
@@ -115,11 +127,22 @@ export interface RecordCorrectionInput {
 
 export interface ListCorrectionFilter {
   kind?: CorrectionKind;
+  severity?: CorrectionSeverity;
+  unresolvedFailures?: boolean;
+  /** Admission-eligible failures only; applied before limit to avoid starvation. */
+  investigableFailures?: boolean;
   status?: CorrectionStatus;
   sinceMs?: number;
   /** Upper-bound (exclusive): detected_at < beforeMs (keyset pagination). */
   beforeMs?: number;
   limit?: number;
+}
+
+/** Immutable full chronology; FailureCase.history is only a bounded display. */
+export interface FailureEpisodeArchiveEntry {
+  version: number;
+  archivedAt: string;
+  episode: FailureEpisode;
 }
 
 export type CorrectionUpdateResult =
@@ -207,12 +230,33 @@ const SCHEMA = [
      machine_id TEXT PRIMARY KEY,
      next_seq   INTEGER NOT NULL DEFAULT 1
    )`,
+  `CREATE TABLE IF NOT EXISTS correction_failure_episodes (
+     correction_id TEXT NOT NULL,
+     version INTEGER NOT NULL,
+     archived_at TEXT NOT NULL,
+     episode_json TEXT NOT NULL,
+     PRIMARY KEY (correction_id, version)
+   )`,
 ];
 
 // ── CorrectionLedger ──────────────────────────────────────────────────
 
 export class CorrectionLedger {
   private db: BetterSqliteDatabase;
+  private failureReplication: FailureReplicationEmitter | null = null;
+  private failureReplicas: FailureReplicaReader | null = null;
+  setFailureReplicationEmitter(emitter: FailureReplicationEmitter | null): void { this.failureReplication = emitter; }
+  setFailureReplicaReader(reader: FailureReplicaReader | null): void { this.failureReplicas = reader; }
+  replicatedFailures(): FailureReplica[] { return this.failureReplicas?.all() ?? []; }
+  replicatedFailureEpisodes(id: string, machineId: string) { return this.failureReplicas?.episodes(id, machineId) ?? []; }
+  /** For the existing writer-agnostic reconciler: no limit/starvation and no replica re-emission. */
+  ownFailureSnapshots(): CorrectionRecord[] {
+    return (this.db.prepare('SELECT * FROM correction_records WHERE failure_case_json IS NOT NULL').all() as Record<string, unknown>[]).map(row => this.rowToRecord(row));
+  }
+  private emitFailure(record: CorrectionRecord | null): void {
+    if (!record?.failureCase) return;
+    try { this.failureReplication?.emitPut(record); } catch (error) { this.onError('failure-replication', error); }
+  }
   private readonly machineId: string;
   private readonly onError: (where: string, err: unknown) => void;
   private readonly maxOccurrencesPerKey: number;
@@ -256,6 +300,10 @@ export class CorrectionLedger {
     if (!recordColumns.some((column) => column.name === 'route_cluster_id')) {
       this.db.exec(`ALTER TABLE correction_records ADD COLUMN route_cluster_id TEXT`);
     }
+    if (!recordColumns.some(column => column.name === 'failure_case_json')) {
+      this.db.exec(`ALTER TABLE correction_records ADD COLUMN failure_case_json TEXT`);
+    }
+    initFailureInvestigationAdmission(this.db);
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_corr_dedupe_session
          ON correction_occurrences(dedupe_key, session_id)`,
@@ -408,12 +456,100 @@ export class CorrectionLedger {
         return row.id;
       });
 
-      const id = txn();
-      return this.get(id);
+      // Include context and lifecycle in the same transaction as the occurrence.
+      const recordTxn = this.db.transaction(() => {
+        const id = txn();
+        const existing = this.get(id)!;
+        if (input.severity === 'failure-callout' || existing.failureCase) {
+          const failure = existing.failureCase ?? newFailureCase(input.failureContext);
+          if (existing.occurrenceCount > 1) {
+            failure.history = archiveFailureEpisode(failure);
+            failure.state = 'reopened';
+            delete failure.verification;
+            if (input.failureContext) failure.context = newFailureCase(input.failureContext).context;
+          }
+          failure.updatedAt = now;
+          this.db.prepare('UPDATE correction_records SET failure_case_json=? WHERE id=?').run(JSON.stringify(failure), id);
+          this.appendFailureEpisode(id, existing.version, failure);
+        }
+        return id;
+      });
+      const saved = this.get(recordTxn());
+      this.emitFailure(saved);
+      return saved;
     } catch (err) {
       this.onError('record', err);
       return null;
     }
+  }
+
+  updateFailureCase(id: string, input: unknown, ifMatch: number): CorrectionUpdateResult {
+    const current = this.get(id);
+    if (!current) return { ok: false, conflict: false, reason: 'not-found' };
+    if (current.version !== ifMatch) return { ok: false, conflict: true, current };
+    const failure = advanceFailureCase(current.failureCase ?? newFailureCase({}), input);
+    const saved = this.db.transaction((): CorrectionUpdateResult => {
+      const result = this.db.prepare(`UPDATE correction_records SET failure_case_json=?, updated_at=?, version=version+1 WHERE id=? AND version=?`)
+        .run(JSON.stringify(failure), failure.updatedAt, id, ifMatch);
+      if (!result.changes) return { ok: false, conflict: true, current: this.get(id) ?? undefined };
+      this.appendFailureEpisode(id, ifMatch + 1, failure);
+      return { ok: true, record: this.get(id)! };
+    })();
+    if (saved.ok) this.emitFailure(saved.record);
+    return saved;
+  }
+
+  getFailureInvestigationAdmission(id: string): FailureInvestigationAdmission | undefined {
+    return readFailureInvestigationAdmission(this.db, id);
+  }
+
+  /** Check a pending launch receipt without exposing or rotating its token. */
+  validateFailureInvestigationClaim(id: string, token: unknown): boolean {
+    if (typeof token !== 'string' || !token || token.length > 128) return false;
+    return !!this.db.prepare(`SELECT 1 FROM correction_failure_investigation_admission admission
+      JOIN correction_records record ON record.id=admission.correction_id AND record.occurrence_count=admission.occurrence_count
+      WHERE record.id=? AND admission.claim_token=? AND record.failure_case_json IS NOT NULL
+      AND json_extract(record.failure_case_json, '$.state')!='verified'`).get(id, token);
+  }
+
+  claimFailureInvestigation(id: string, now = Date.now()): FailureInvestigationClaim {
+    const result = this.db.transaction(() => {
+      const claimed = claimFailureInvestigationAdmission(this.db, id, now);
+      if (claimed.admitted) {
+        const record = this.get(id)!;
+        this.appendFailureEpisode(id, record.version, record.failureCase!);
+      }
+      return claimed;
+    })();
+    if (result.admitted) this.emitFailure(this.get(id));
+    return result;
+  }
+
+  resumeFailureInvestigation(id: string, evidenceRef: string): FailureInvestigationAdmission {
+    const resumed = this.db.transaction(() => {
+      const admission = resumeFailureInvestigationAdmission(this.db, id, evidenceRef);
+      const record = this.get(id)!;
+      this.appendFailureEpisode(id, record.version, record.failureCase!);
+      return admission;
+    })();
+    this.emitFailure(this.get(id));
+    return resumed;
+  }
+
+  private appendFailureEpisode(id: string, version: number, failure: FailureCase): void {
+    const { history: _displayOnly, ...episode } = failure;
+    void _displayOnly;
+    this.db.prepare(`INSERT OR IGNORE INTO correction_failure_episodes (correction_id, version, archived_at, episode_json) VALUES (?, ?, ?, ?)`)
+      .run(id, version, failure.updatedAt, JSON.stringify(episode));
+  }
+
+  /** Latest first, exclusive version cursor. Earlier evidence is never pruned. */
+  listFailureEpisodes(id: string, beforeVersion?: number, limit = 100): FailureEpisodeArchiveEntry[] {
+    const boundedLimit = Number.isSafeInteger(limit) ? Math.max(1, Math.min(limit, 1000)) : 100;
+    const rows = this.db.prepare(`SELECT version, archived_at, episode_json FROM correction_failure_episodes
+      WHERE correction_id = ?${beforeVersion === undefined ? '' : ' AND version < ?'} ORDER BY version DESC LIMIT ?`)
+      .all(...(beforeVersion === undefined ? [id, boundedLimit] : [id, beforeVersion, boundedLimit])) as Array<{ version: number; archived_at: string; episode_json: string }>;
+    return rows.map(row => ({ version: row.version, archivedAt: row.archived_at, episode: JSON.parse(row.episode_json) as FailureEpisode }));
   }
 
   get(id: string): CorrectionRecord | null {
@@ -430,6 +566,16 @@ export class CorrectionLedger {
     const where: string[] = [];
     const params: Record<string, unknown> = {};
     if (filter.kind) { where.push('kind = @kind'); params.kind = filter.kind; }
+    if (filter.severity) where.push(filter.severity === 'failure-callout' ? 'failure_case_json IS NOT NULL' : 'failure_case_json IS NULL');
+    if (filter.unresolvedFailures) where.push("failure_case_json IS NOT NULL AND json_extract(failure_case_json, '$.state') != 'verified'");
+    if (filter.investigableFailures) {
+      where.push("failure_case_json IS NOT NULL AND json_extract(failure_case_json, '$.state') != 'verified'");
+      where.push(`NOT EXISTS (SELECT 1 FROM correction_failure_investigation_admission admission
+        WHERE admission.correction_id=correction_records.id AND admission.occurrence_count=correction_records.occurrence_count
+        AND (admission.attempts>=@maxInvestigationAttempts OR admission.next_attempt_at>@admissionNow))`);
+      params.admissionNow = Date.now();
+      params.maxInvestigationAttempts = FAILURE_INVESTIGATION_MAX_ATTEMPTS;
+    }
     if (filter.status) { where.push('status = @status'); params.status = filter.status; }
     if (filter.sinceMs) { where.push('detected_at >= @since'); params.since = new Date(filter.sinceMs).toISOString(); }
     if (filter.beforeMs) { where.push('detected_at < @before'); params.before = new Date(filter.beforeMs).toISOString(); }
@@ -437,7 +583,7 @@ export class CorrectionLedger {
     const sql =
       `SELECT * FROM correction_records` +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-      ` ORDER BY detected_at DESC LIMIT ${limit}`;
+      ` ORDER BY ${filter.unresolvedFailures || filter.investigableFailures ? 'updated_at ASC' : 'detected_at DESC'} LIMIT ${limit}`;
     return (this.db.prepare(sql).all(params) as Record<string, unknown>[]).map((r) => this.rowToRecord(r));
   }
 
@@ -610,7 +756,7 @@ export class CorrectionLedger {
   }
 
   /** Strip `learning` (raw distilled text) — the ONLY shape allowed over HTTP (spec §3.4). */
-  static toApiView(record: CorrectionRecord): CorrectionRecordApiView {
+  static toApiView(record: CorrectionRecord, includeFailureContext = true): CorrectionRecordApiView {
     const {
       learning: _internalLearning,
       sessionId: _internalSession,
@@ -618,6 +764,12 @@ export class CorrectionLedger {
       ...rest
     } = record;
     void _internalLearning; void _internalSession; void _internalRouteCluster;
+    if (!includeFailureContext) {
+      const { failureCase, investigationAdmission, ...summary } = rest;
+      const admission = failureInvestigationAdmissionSummary(investigationAdmission);
+      return { ...summary, ...(failureCase ? { failureState: failureCase.state } : {}),
+        ...(admission ? { investigationAdmission: admission } : {}) };
+    }
     return { ...rest };
   }
 
@@ -627,6 +779,9 @@ export class CorrectionLedger {
 
   private rowToRecord(r: Record<string, unknown>): CorrectionRecord {
     return {
+      ...(r.failure_case_json ? { investigationAdmission: this.getFailureInvestigationAdmission(r.id as string) } : {}),
+      severity: r.failure_case_json ? 'failure-callout' : 'correction',
+      ...(r.failure_case_json ? { failureCase: JSON.parse(String(r.failure_case_json)) as FailureCase } : {}),
       id: r.id as string,
       dedupeKey: r.dedupe_key as string,
       kind: r.kind as CorrectionKind,

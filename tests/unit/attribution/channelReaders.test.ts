@@ -98,4 +98,43 @@ describe('ChannelReaders', () => {
     expect(readers.localVerdictOnPeerRow(ref('telegram', '102965', '123160'), { ...telegramRow, timestamp: '2026-07-30T00:00:00.000Z' })).toBe('unclassifiable');
     expect(readers.localVerdictOnPeerRow(ref('slack', 'C', '1'), telegramRow)).toBeUndefined();
   });
+
+  describe('recentConversation', () => {
+    const slack = (channelId: string, text: string, fromUser: boolean, messageId: string) => ({ channelId, text, fromUser, messageId });
+
+    it('returns one conversation, oldest first, as user and agent turns', () => {
+      write('slack-messages.jsonl', [slack('C1', 'please do it', true, '1'), slack('C2', 'elsewhere', true, '2'), slack('C1', 'done', false, '3')]);
+      expect(new ChannelReaders({ stateDir: dir }).recentConversation('slack', 'C1')).toEqual([{ role: 'user', text: 'please do it' }, { role: 'agent', text: 'done' }]);
+    });
+
+    it('keeps only the newest turns and skips a bad line', () => {
+      const rows = Array.from({ length: 15 }, (_, i) => slack('C1', `turn ${i}`, true, String(i)));
+      write('slack-messages.jsonl', rows);
+      fs.appendFileSync(path.join(dir, 'slack-messages.jsonl'), 'not json\n');
+      const turns = new ChannelReaders({ stateDir: dir }).recentConversation('slack', 'C1', 3);
+      expect(turns.map((t) => t.text)).toEqual(['turn 12', 'turn 13', 'turn 14']);
+    });
+
+    it('reads only the tail of a large log', () => {
+      write('slack-messages.jsonl', [slack('OLD', 'far back', true, '0')]);
+      fs.appendFileSync(path.join(dir, 'slack-messages.jsonl'), `${JSON.stringify(slack('C9', 'x'.repeat(300 * 1024), true, '1'))}\n`);
+      fs.appendFileSync(path.join(dir, 'slack-messages.jsonl'), `${JSON.stringify(slack('C1', 'latest', true, '2'))}\n`);
+      const readers = new ChannelReaders({ stateDir: dir });
+      expect(readers.recentConversation('slack', 'OLD')).toEqual([]);
+      expect(readers.recentConversation('slack', 'C1')).toEqual([{ role: 'user', text: 'latest' }]);
+    });
+
+    it('reads WhatsApp and iMessage logs, and answers empty with no log', () => {
+      write('whatsapp/messages.jsonl', [{ channelId: '1@s.whatsapp.net', text: 'hi', fromUser: true, messageId: 'a' }]);
+      const readers = new ChannelReaders({ stateDir: dir });
+      expect(readers.recentConversation('whatsapp', '1@s.whatsapp.net')).toHaveLength(1);
+      expect(readers.recentConversation('imessage', 'x')).toEqual([]);
+    });
+
+    it('reads app turns through the store, an operator as the user', () => {
+      const browseMessages = vi.fn(() => ({ messages: [{ role: 'operator', text: 'yes' }, { role: 'agent', text: 'on it' }, { role: 'operator', text: '' }], nextBefore: null }));
+      const readers = new ChannelReaders({ stateDir: dir, appStore: () => ({ browseMessages }) as never });
+      expect(readers.recentConversation('app', 'k1')).toEqual([{ role: 'user', text: 'yes' }, { role: 'agent', text: 'on it' }]);
+    });
+  });
 });

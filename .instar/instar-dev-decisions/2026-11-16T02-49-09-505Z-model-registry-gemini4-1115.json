@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-16T02:49:09.505Z",
+  "slug": "model-registry-gemini4-1115",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json"
+    ],
+    "addedLines": 16,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

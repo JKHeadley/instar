@@ -234,7 +234,10 @@ export class StrandedTopicSentinel extends EventEmitter {
     const nick = this.deps.nicknameOf?.(owner) ?? owner;
     const reasons = new Set<StrandReason>(topics.map((t) => t.reason));
     const reasonText = [...reasons].join(' / ');
-    const topicList = topics.map((t) => t.sessionKey).join(', ');
+    // app-conversations-in-the-pool §2.7: an app conversation says what it is and how to get it back.
+    const appCount = topics.filter((t) => t.sessionKey.startsWith('app:')).length;
+    const appLine = appCount > 0 ? ` ${appCount === 1 ? 'An app conversation is' : `${appCount} app conversations are`} among them: open it in the app and choose Bring it back here.` : '';
+    const topicList = topics.map((t) => (t.sessionKey.startsWith('app:') ? 'an app conversation' : t.sessionKey)).join(', ');
     const anyServable = topics.some((t) => t.servablePeerExists);
     const ageMs = Math.max(0, ...topics.map((t) => t.ownerBeatAgeMs ?? 0));
 
@@ -250,7 +253,7 @@ export class StrandedTopicSentinel extends EventEmitter {
       description:
         `Inbound for topic(s) ${topicList} is going to ${nick}, which can't serve them ` +
         `(${reasonText}); ${serveLine} ` +
-        `Based on ${nick}'s last full heartbeat ${Math.round(ageMs / 1000)}s ago.`,
+        `Based on ${nick}'s last full heartbeat ${Math.round(ageMs / 1000)}s ago.${appLine}`,
       category: 'agent-health',
       priority: 'NORMAL',
       sourceContext: `stranded-topic:${owner}`,

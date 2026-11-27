@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-07T21:16:41.606Z",
+  "slug": "agent-status-verdict",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/healthIssues.ts",
+      "src/server/mobileHealthRoutes.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no action is taken: computes a status label and its words"
+  },
+  "verdict": "pass"
+}

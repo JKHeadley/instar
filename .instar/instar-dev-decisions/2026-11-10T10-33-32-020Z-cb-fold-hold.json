@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-10T10:33:32.020Z",
+  "slug": "cb-fold-hold",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 372,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/foldLeaseFactory.ts",
+      "src/monitoring/FoldHoldStore.ts",
+      "src/monitoring/delivery-failure-sentinel/recovery-policy.ts",
+      "src/monitoring/foldCoordinatorBoot.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 369,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

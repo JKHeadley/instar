@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "trust-journey-amendments",
+  "sessionId": "b8862d7d-1d4f-4e1f-a007-8428e9c12040",
+  "timestamp": "2026-11-16T15:33:21.704Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-amendments.md",
+  "artifactSha256": "0020671bc08a756537857dbf30dea7275515f7bf2ed12993b73c22a80303687b",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/interaction-family-merge-2026-11-16.json",
+    "docs/audits/trust-journey-amendments-interaction-family-2026-11-15.json",
+    "docs/audits/trust-journey-amendments-substrate-family-2026-11-15.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/reports/interaction-family-merge-review-2026-11-16.md",
+    "docs/specs/reports/trust-journey-amendments-constitution-review-2026-11-15.md",
+    "docs/specs/trust-journey-amendments.eli16.md",
+    "docs/standards-placement-baseline.json",
+    "docs/standards-registry-area-audits.json",
+    "scripts/lint-registry-tree-parentage.mjs",
+    "tests/unit/lint-registry-tree-parentage-plural.test.ts",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/trust-journey-amendments.md",
+    "upgrades/side-effects/trust-journey-amendments.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Paperwork only on an already reviewed constitution change: one trace covering every file of the PR and a named reviewer line; no approved wording, lint or test changed in this commit.",
+  "eli16Path": "docs/specs/trust-journey-amendments.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-journey-amendments.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

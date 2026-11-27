@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T04:22:16.420Z",
+  "slug": "automerge-main-red-not-an-attempt",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/GreenPrAutoMerger.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

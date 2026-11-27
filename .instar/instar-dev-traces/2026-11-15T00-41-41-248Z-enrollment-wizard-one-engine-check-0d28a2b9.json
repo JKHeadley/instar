@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "enrollment-wizard-one-engine-check",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-15T00:41:41.248Z",
+  "artifactPath": "upgrades/side-effects/enrollment-wizard-one-engine-check.md",
+  "artifactSha256": "1a30ad80bfcccba969230fe19c86182816f081c86f99234272f153f277f5222d",
+  "coveredFiles": [
+    "docs/specs/enrollment-wizard-one-engine-check.eli16.md",
+    "src/core/EnrollmentWizard.ts",
+    "upgrades/next/enrollment-wizard-one-engine-check.md",
+    "upgrades/side-effects/enrollment-wizard-one-engine-check.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Behaviour-neutral two-line extraction that repairs a red main lint; a revert fully undoes it.",
+  "eli16Path": "docs/specs/enrollment-wizard-one-engine-check.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/enrollment-wizard-one-engine-check.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

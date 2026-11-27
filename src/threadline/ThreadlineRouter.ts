@@ -29,6 +29,8 @@ import type { RelayGroundingContext } from './RelayGroundingPreamble.js';
 import { WarmSessionPeerConflictError } from './WarmSessionPool.js';
 import type { WarmSessionPool } from './WarmSessionPool.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
+import { requiredAckInstructionForPlace } from './requiredAck.js';
+import { AGENT_SESSIONS_REFUSED_REASON, type PeerAdmission } from '../users/peerPlaceAdmission.js';
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -107,8 +109,65 @@ export interface RelayMessageContext {
    * text plus the server's handle, placed outside the untrusted framing. Absent ⇒
    * the prompt and the spawn request are unchanged, byte for byte.
    */
-  requiredAck?: { instruction: string; receipt: SpawnQueueReceipt };
+  requiredAck?: { instruction: string; receipt: SpawnQueueReceipt; ackRef?: string };
 }
+
+/**
+ * Memory privacy: what the router needs to run another agent's messages in a place
+ * of its own (docs/specs/memory-privacy-agent-places.md). Absent → today's behaviour.
+ */
+export interface PeerPlacePolicy {
+  /** Memory privacy on and more than one person can reach the agent. */
+  active(): boolean;
+  /** The live admission decision for a sender (§1). */
+  admit(fingerprint: string | null): PeerAdmission;
+  /** `memoryPrivacy.linkedPeerReplies`, read live. */
+  linkedPeerReplies(): 'deliver' | 'post-only';
+  /** The audience kind a topic gets now, computed from its place. */
+  topicAudienceKind(topicId: number): string;
+  /** The audience key of a live session by tmux name, or null when there is none. */
+  sessionAudienceKey(sessionName: string): string | null;
+  /**
+   * True when the thread already has stored messages other than the one being handled
+   * (entries expire, stored threads do not). The inbound message itself is stored before
+   * routing, so it is excluded.
+   */
+  hasStoredMessages(threadId: string, excludeMessageId?: string): Promise<boolean>;
+  /** The live place session for a fingerprint, if any. */
+  livePlaceSession(fingerprint: string): string | null;
+  /** Post a peer's reply to a topic as a message only, with no session input (§3). Best effort. */
+  postLinkedReplyToTopic(topicId: number, senderLabel: string, text: string): Promise<void>;
+  /** A message reached this peer's place: resets its idle clock (§4). */
+  delivered?(fingerprint: string): void;
+  /** End this peer's live place session, after a refusal (§1). */
+  endPlace?(fingerprint: string): void;
+}
+
+/** The audience key of another agent's place. */
+export function peerPlaceAudienceKey(placeKey: string): string {
+  return `place:${placeKey}`;
+}
+
+/** Prompt for a session in another agent's place: no MCP, so it replies with the script (§5). */
+export const THREAD_PLACE_SPAWN_PROMPT_TEMPLATE = `You are in a conversation with another agent, {remote_agent}. This conversation is a place of its own: you can see only what has been said here, and nothing from anyone's private memory.
+
+Thread: {thread_id}
+Subject: {subject}
+Messages in thread: {message_count}
+
+{history_section}
+
+The latest message from {remote_agent}:
+Message ID: {latest_message_id}
+Subject: {latest_subject}
+---
+{latest_body}
+---
+
+Respond to this message by running (the reply as one argument; no heredoc, the sandbox gives it no temp folder):
+.instar/scripts/threadline-reply.sh --thread {thread_id} "Your reply here"
+
+After replying, stay in this conversation and wait. When another message from {remote_agent} arrives, possibly on another thread, reply the same way with that thread's id. Do not exit or ask what to do next.`;
 
 /** Result of handling an inbound threaded message */
 export interface ThreadlineHandleResult {
@@ -195,8 +254,10 @@ export function withServerNotice(text: string, notice: string | null | undefined
  * a2a-required-acknowledgment D4: the watched message's instruction, OUTSIDE the
  * untrusted framing (before the grounding header). Fixed text plus a server handle.
  */
-function withRequiredAckInstruction(text: string, relayContext: RelayMessageContext | undefined): string {
-  const instruction = relayContext?.requiredAck?.instruction;
+function withRequiredAckInstruction(text: string, relayContext: RelayMessageContext | undefined, placed = false): string {
+  const ack = relayContext?.requiredAck;
+  // A session in another agent's place has no threadline_ack; its notice names the script.
+  const instruction = placed && ack?.ackRef ? requiredAckInstructionForPlace(ack.ackRef) : ack?.instruction;
   return instruction ? `${instruction}\n\n${text}` : text;
 }
 
@@ -400,6 +461,13 @@ export class ThreadlineRouter {
    * path. Wired via setter post-construction so existing callers don't break.
    */
   private topicLinkageHandler: import('./TopicLinkageHandler.js').TopicLinkageHandler | null = null;
+  /** Memory privacy: another agent's place (memory-privacy-agent-places). Null → today's behaviour. */
+  private peerPlace: PeerPlacePolicy | null = null;
+
+  /** Wire memory privacy's peer places. Unset leaves every path exactly as today. */
+  setPeerPlacePolicy(policy: PeerPlacePolicy | null): void {
+    this.peerPlace = policy;
+  }
   /** peer-conversation-homebase-topic §2.6: where this peer's user-meant messages go. Optional. */
   private peerUserTopic: ((q: { threadId: string; peers: string[] }) => { topicId: number | null; via: string }) | null = null;
 
@@ -643,6 +711,13 @@ export class ThreadlineRouter {
        */
       inboundSenderFingerprint?: string;
       /**
+       * Memory privacy (memory-privacy-agent-places §1): the sender's AUTHENTICATED
+       * fingerprint from the entry point (relay-authenticated `msg.from`, a verified
+       * local envelope, a verified direct request, or a flagged recovery row). Never
+       * derived from a name. Absent on a multi-person agent → refused.
+       */
+      memoryPeerFingerprint?: string;
+      /**
        * Inbound-id ledger §1: a fixed server notice ("resent copy — …") placed
        * OUTSIDE the untrusted-message framing of the prompt / injected text.
        * Only ever a server constant — never peer text.
@@ -712,6 +787,38 @@ export class ThreadlineRouter {
       }
     }
 
+    // Memory privacy (memory-privacy-agent-places §2): on a multi-person agent a thread
+    // belongs to one authenticated peer. A thread the sender does not own (someone
+    // else's, an unowned legacy one, or an expired one with stored messages) is never
+    // reused: the message moves to a fresh id before anything is loaded or delivered.
+    let placeFp: string | null = null;
+    if (this.peerPlace?.active()) {
+      placeFp = typeof opts?.memoryPeerFingerprint === 'string' && opts.memoryPeerFingerprint.trim()
+        ? opts.memoryPeerFingerprint.trim() : null;
+      if (!placeFp) {
+        return { handled: false, accepted: false, delivered: false, threadId: message.threadId, error: AGENT_SESSIONS_REFUSED_REASON };
+      }
+      // A sender that may not open a place writes nothing: it may only continue a thread it
+      // already owns (a reply to a conversation the owner started), read without a write.
+      if (this.peerPlace.admit(placeFp).kind !== 'place' && this.threadResumeMap.ownership(message.threadId).owner !== placeFp) {
+        const refused = this.peerPlace.admit(placeFp);
+        this.peerPlace.endPlace?.(placeFp);
+        return { handled: false, accepted: false, delivered: false, threadId: message.threadId, error: refused.kind === 'refused' ? refused.reason : AGENT_SESSIONS_REFUSED_REASON };
+      }
+      let owned = false;
+      for (let attempt = 0; attempt < 3 && !owned; attempt++) {
+        const stored = await this.peerPlace.hasStoredMessages(message.threadId, message.id);
+        const claim = this.threadResumeMap.claimOwner(message.threadId, placeFp, { hasStoredMessages: stored });
+        if (claim.owner === placeFp) { owned = true; break; }
+        const freshId = crypto.randomUUID();
+        console.warn(`[ThreadlineRouter] Memory privacy: thread ${message.threadId.slice(0, 8)} is not the sender's; moving the message to ${freshId.slice(0, 8)}`);
+        message.threadId = freshId;
+      }
+      if (!owned) {
+        return { handled: false, accepted: false, delivered: false, threadId: message.threadId, error: 'thread-ownership-unavailable' };
+      }
+    }
+
     const threadId = message.threadId;
     // Record affinity (no-op for non-verified trust kinds).
     this.recordAffinity(relayContext, threadId);
@@ -733,7 +840,8 @@ export class ThreadlineRouter {
     // So a topic-linked thread takes the guard only if it falls through to the
     // thread-worker path.
     const existingEntry = this.threadResumeMap.get(threadId);
-    const topicLinked = this.topicLinkageHandler !== null && existingEntry?.originTopicId !== undefined;
+    const linkageAllowed = this.linkedReplyAllowed(existingEntry, placeFp);
+    const topicLinked = this.topicLinkageHandler !== null && existingEntry?.originTopicId !== undefined && linkageAllowed;
     let guardHeld = false;
     const takeSpawnGuard = (): boolean => {
       if (this.pendingSpawns.has(threadId)) return false;
@@ -790,7 +898,18 @@ export class ThreadlineRouter {
       // classification, live-injection vs resume-pending, Telegram surface,
       // and commitment lifecycle. Returns 'no-linkage' when the thread has no
       // originTopicId (falls through to existing behavior).
-      if (this.topicLinkageHandler && existingEntry?.originTopicId !== undefined) {
+      // Memory privacy §3: a linked reply that may not reach the topic's session is posted
+      // to the topic as a message only, and the peer's place gets it below.
+      if (placeFp && existingEntry?.originTopicId !== undefined && !linkageAllowed && this.peerPlace) {
+        try {
+          await this.peerPlace.postLinkedReplyToTopic(existingEntry.originTopicId, relayContext?.senderName ?? message.from.agent, message.body);
+        } catch (err) {
+          console.warn(`[ThreadlineRouter] Linked reply post to topic ${existingEntry.originTopicId} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        // Not topic-linked here, so the spawn guard was taken at the top already.
+      }
+
+      if (topicLinked && this.topicLinkageHandler && existingEntry?.originTopicId !== undefined) {
         try {
           // Inbound-id ledger §1: a resent copy must stay labelled on the
           // topic path too — the notice goes in front of the body here because
@@ -872,6 +991,11 @@ export class ThreadlineRouter {
         if (!takeSpawnGuard()) return spawnInProgressRefusal();
       }
 
+      // Memory privacy: the peer's own place (memory-privacy-agent-places §3-§4).
+      if (placeFp && this.peerPlace) {
+        return await this.deliverToPeerPlace(threadId, placeFp, existingEntry, envelope, relayContext, notice, opts?.localTrustLevel);
+      }
+
       // PR-4: If we have a live-session delivery path AND the thread has a
       // resume entry pointing at a sessionName that is currently alive, try
       // to inject the message directly into the running session instead of
@@ -908,6 +1032,79 @@ export class ThreadlineRouter {
     } finally {
       if (guardHeld) this.pendingSpawns.delete(threadId);
     }
+  }
+
+  /**
+   * Whether a reply on a thread a topic session started may go into that session.
+   * Always true off a multi-person agent. On one, only under `deliver` and only into a
+   * topic whose audience is the owner's or the agent's own (memory-privacy-agent-places §3).
+   */
+  private linkedReplyAllowed(entry: ThreadResumeEntry | null | undefined, placeFp: string | null): boolean {
+    if (!placeFp || !this.peerPlace || entry?.originTopicId === undefined) return true;
+    // A thread adopted from before this version carries its id only, never a topic's reach.
+    if (entry.ownerAdopted) return false;
+    if (this.peerPlace.linkedPeerReplies() === 'post-only') return false;
+    const kind = this.peerPlace.topicAudienceKind(entry.originTopicId);
+    return kind === 'owner' || kind === 'system';
+  }
+
+  /**
+   * Deliver a message into the sender's own place: the live place session for this
+   * thread, else the peer's live place session (a second thread), else a resume whose
+   * transcript was written in this place, else a fresh spawn. Every step re-runs the
+   * admission decision with live trust and config (memory-privacy-agent-places §1).
+   */
+  private async deliverToPeerPlace(
+    threadId: string,
+    placeFp: string,
+    existingEntry: ThreadResumeEntry | null | undefined,
+    envelope: MessageEnvelope,
+    relayContext?: RelayMessageContext,
+    notice: string | null = null,
+    localTrustLevel?: AgentTrustLevel,
+  ): Promise<CompleteThreadlineHandleResult> {
+    const policy = this.peerPlace!;
+    const admission = policy.admit(placeFp);
+    if (admission.kind !== 'place') {
+      const reason = admission.kind === 'refused' ? admission.reason : AGENT_SESSIONS_REFUSED_REASON;
+      // A conversation does not survive a refusal past the peer's next message (§1).
+      policy.endPlace?.(placeFp);
+      return { handled: false, accepted: false, delivered: false, threadId, error: reason };
+    }
+    const place = { placeKey: admission.placeKey, fp: placeFp };
+    const audienceKey = peerPlaceAudienceKey(place.placeKey);
+
+    if (this.messageDelivery) {
+      // The thread's own session, only when it runs in this peer's place.
+      if (existingEntry?.sessionName && policy.sessionAudienceKey(existingEntry.sessionName) === audienceKey) {
+        const injected = await this.tryInjectIntoLiveSession(threadId, existingEntry, envelope, relayContext, notice, localTrustLevel, true);
+        if (injected) { policy.delivered?.(placeFp); return injected; }
+      }
+      // Another thread from the same peer: its live place session serves this one too.
+      const live = policy.livePlaceSession(placeFp);
+      if (live && policy.sessionAudienceKey(live) === audienceKey) {
+        const now = new Date().toISOString();
+        // Re-pointing a thread at another session: its transcript id goes unless it was written
+        // in this same place, so it can never be resumed into the place later.
+        if (existingEntry && existingEntry.audienceKey !== audienceKey) this.threadResumeMap.clearTranscript?.(threadId);
+        const entry: ThreadResumeEntry = existingEntry
+          ? { ...existingEntry, sessionName: live, ...(existingEntry.audienceKey === audienceKey ? {} : { uuid: '' }) }
+          : {
+            uuid: '', sessionName: live, createdAt: now, savedAt: now, lastAccessedAt: now,
+            remoteAgent: placeFp, subject: envelope.message.subject, state: 'active', pinned: false,
+            messageCount: 0, peerFingerprint: placeFp, audienceKey,
+          };
+        const injected = await this.tryInjectIntoLiveSession(threadId, entry, envelope, relayContext, notice, localTrustLevel, true);
+        if (injected) { policy.delivered?.(placeFp); return injected; }
+      }
+    }
+
+    // Resume only a transcript written in this same place; anything else starts fresh.
+    const result = existingEntry && existingEntry.audienceKey === audienceKey && existingEntry.uuid
+      ? await this.resumeThread(threadId, existingEntry, envelope, relayContext, notice, place)
+      : await this.spawnNewThread(threadId, envelope, relayContext, notice, place);
+    if (result.delivered) policy.delivered?.(placeFp);
+    return result;
   }
 
   /**
@@ -1007,6 +1204,7 @@ export class ThreadlineRouter {
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
     notice: string | null = null,
+    place: { placeKey: string; fp: string } | null = null,
   ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
@@ -1023,11 +1221,12 @@ export class ThreadlineRouter {
       threadId,
       entry.subject,
       entry.messageCount,
-      entry.remoteAgent,
+      place ? place.fp : entry.remoteAgent,
       '',
       relayContext,
-      undefined,
+      place ? THREAD_PLACE_SPAWN_PROMPT_TEMPLATE : undefined,
       notice,
+      place !== null,
     );
 
     // Spawn with resume UUID — `--resume entry.uuid` reloads the transcript.
@@ -1039,6 +1238,7 @@ export class ThreadlineRouter {
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
       resumeSessionId: entry.uuid,
+      ...(place ? { memoryPeer: place.fp, interactive: true } : {}),
       ...(relayContext?.requiredAck ? { receipt: relayContext.requiredAck.receipt } : {}),
     });
 
@@ -1071,6 +1271,7 @@ export class ThreadlineRouter {
       lastAccessedAt: new Date().toISOString(),
       messageCount: entry.messageCount + 1,
       sessionName: spawnResult.tmuxSession || entry.sessionName,
+      ...(place ? { audienceKey: peerPlaceAudienceKey(place.placeKey) } : {}),
     });
 
     return {
@@ -1091,14 +1292,20 @@ export class ThreadlineRouter {
     envelope: MessageEnvelope,
     relayContext?: RelayMessageContext,
     notice: string | null = null,
+    place: { placeKey: string; fp: string } | null = null,
   ): Promise<CompleteThreadlineHandleResult> {
     const { message } = envelope;
 
-    // Build history context (may be empty for brand new threads)
+    // Build history context (may be empty for brand new threads). In another agent's
+    // place, only messages stored after this thread was claimed for the sender load
+    // (memory-privacy-agent-places §2): earlier ones have no provenance.
     const maxHistory = relayContext
       ? RELAY_HISTORY_LIMITS[relayContext.trustLevel]
       : this.config.maxHistoryMessages;
-    const historyContext = await this.buildHistoryContext(threadId, maxHistory);
+    const ownership = place ? this.threadResumeMap.ownership(threadId) : null;
+    const historyContext = place && ownership?.owner !== place.fp
+      ? ''
+      : await this.buildHistoryContext(threadId, maxHistory, ownership?.claimedAt ?? undefined);
 
     // Build the spawn prompt (with grounding preamble if relay)
     const prompt = this.buildPrompt(
@@ -1106,11 +1313,12 @@ export class ThreadlineRouter {
       threadId,
       message.subject,
       1,
-      message.from.agent,
+      place ? place.fp : message.from.agent,
       historyContext,
       relayContext,
-      undefined,
+      place ? THREAD_PLACE_SPAWN_PROMPT_TEMPLATE : undefined,
       notice,
+      place !== null,
     );
 
     // Threadline A2A continuity: mint the conversation id up front and launch
@@ -1133,6 +1341,7 @@ export class ThreadlineRouter {
       priority: message.priority === 'critical' ? 'critical' : 'medium',
       pendingMessages: [message.id],
       sessionId: claudeUuid,
+      ...(place ? { memoryPeer: place.fp, interactive: true } : {}),
       ...(relayContext?.requiredAck ? { receipt: relayContext.requiredAck.receipt } : {}),
     });
 
@@ -1168,11 +1377,12 @@ export class ThreadlineRouter {
       createdAt: now,
       savedAt: now,
       lastAccessedAt: now,
-      remoteAgent: message.from.agent,
+      remoteAgent: place ? place.fp : message.from.agent,
       subject: message.subject,
       state: 'active',
       pinned: false,
       messageCount: 1,
+      ...(place ? { peerFingerprint: place.fp, audienceKey: peerPlaceAudienceKey(place.placeKey) } : {}),
     };
 
     this.threadResumeMap.save(threadId, newEntry);
@@ -1387,6 +1597,7 @@ export class ThreadlineRouter {
     relayContext?: RelayMessageContext,
     notice: string | null = null,
     localTrustLevel?: AgentTrustLevel,
+    placed = false,
   ): Promise<CompleteThreadlineHandleResult | null> {
     if (!this.messageDelivery) return null;
     if (!entry.sessionName) return null;
@@ -1399,7 +1610,7 @@ export class ThreadlineRouter {
       // land without the boundary. This also fixes the already-shipped slice-1
       // inject path, independent of warm sessions. We re-wrap by cloning the
       // envelope with a grounded body — deliverToSession formats envelope.message.body.
-      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext, notice, localTrustLevel);
+      const groundedEnvelope = this.wrapInjectEnvelopeWithGrounding(entry, envelope, relayContext, notice, localTrustLevel, placed ? threadId : null);
 
       const result = await this.messageDelivery.deliverToSession(entry.sessionName, groundedEnvelope);
       if (!result.success) {
@@ -1458,6 +1669,7 @@ export class ThreadlineRouter {
     relayContext?: RelayMessageContext,
     notice: string | null = null,
     localTrustLevel?: AgentTrustLevel,
+    placedThreadId: string | null = null,
   ): MessageEnvelope {
     const grounding = buildRelayGroundingPreamble({
       agentName: this.config.localAgent,
@@ -1469,7 +1681,11 @@ export class ThreadlineRouter {
       originFingerprint: relayContext?.originFingerprint,
       originName: relayContext?.originName,
     });
-    const groundedBody = withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}`, relayContext), notice);
+    // A session in another agent's place serves several threads, so it is told which one to answer.
+    const placeLine = placedThreadId
+      ? `\n\n[Reply on thread ${placedThreadId}: .instar/scripts/threadline-reply.sh --thread ${placedThreadId} "your reply"]`
+      : '';
+    const groundedBody = withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${envelope.message.body}\n\n${grounding.footer}${placeLine}`, relayContext, placedThreadId !== null), notice);
     return {
       ...envelope,
       message: {
@@ -1481,7 +1697,7 @@ export class ThreadlineRouter {
 
   // ── Private: Build thread history context ───────────────────
 
-  private async buildHistoryContext(threadId: string, maxMessages?: number): Promise<string> {
+  private async buildHistoryContext(threadId: string, maxMessages?: number, sinceIso?: string): Promise<string> {
     try {
       const limit = maxMessages ?? this.config.maxHistoryMessages;
       if (limit <= 0) return '';
@@ -1498,13 +1714,18 @@ export class ThreadlineRouter {
       // would fail the spawn outright on long threads ("command too long").
       // buildBoundedHistorySection walks newest-first and drops/truncates older
       // content to fit — see MAX_HISTORY_BYTES.
-      const recent = threadData.messages.slice(-limit).map((env) => ({
+      const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+      const eligible = Number.isFinite(sinceMs)
+        ? threadData.messages.filter((env) => Date.parse(env.message.createdAt) >= sinceMs)
+        : threadData.messages;
+      if (eligible.length === 0) return '';
+      const recent = eligible.slice(-limit).map((env) => ({
         agent: env.message.from.agent,
         createdAt: env.message.createdAt,
         body: env.message.body,
       }));
 
-      return buildBoundedHistorySection(recent, threadData.messages.length, {
+      return buildBoundedHistorySection(recent, eligible.length, {
         maxBytes: MAX_HISTORY_BYTES,
         perMessageBytes: MAX_HISTORY_MESSAGE_BYTES,
       });
@@ -1526,6 +1747,7 @@ export class ThreadlineRouter {
     relayContext?: RelayMessageContext,
     template: string = THREAD_SPAWN_PROMPT_TEMPLATE,
     notice: string | null = null,
+    placed = false,
   ): string {
     const historySection = historyContext
       ? `${historyContext}\n`
@@ -1545,7 +1767,8 @@ export class ThreadlineRouter {
       .replaceAll('{history_section}', historySection)
       .replaceAll('{latest_message_id}', latestMessage.id)
       .replaceAll('{latest_subject}', latestMessage.subject)
-      .replaceAll('{latest_body}', latestBody) + this.userTopicHint(threadId, remoteAgent, relayContext);
+      // A peer place never hears an operator topic's name (memory-privacy-agent-places §5).
+      .replaceAll('{latest_body}', latestBody) + (placed ? '' : this.userTopicHint(threadId, remoteAgent, relayContext));
 
     // If relay context is present, wrap with grounding preamble
     if (relayContext) {
@@ -1560,7 +1783,7 @@ export class ThreadlineRouter {
         originName: relayContext.originName,
       });
 
-      return withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`, relayContext), notice);
+      return withServerNotice(withRequiredAckInstruction(`${grounding.header}\n\n${basePrompt}\n\n${grounding.footer}`, relayContext, placed), notice);
     }
 
     return withServerNotice(basePrompt, notice);

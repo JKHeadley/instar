@@ -106,10 +106,11 @@ describe('Sealed-handoff R3 — at-rest invariant (no plaintext to disk / Telegr
   });
 
   it('the submitted secret value never reaches Telegram, the session, or disk', async () => {
-    // 1. Self-mint a request (keystone loopback route), bound to a Telegram topic.
-    const mint = await fetch(server.url + '/threadline/secrets/request', {
+    // 1. Mint a request as the agent's helper does (with the agent key, so it may be bound
+    //    to a Telegram topic and its receipt reaches the session).
+    const mint = await fetch(server.url + '/secrets/request', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVER_TOKEN}` },
       body: JSON.stringify({ label: 'Production API Key', topicId: TOPIC_ID }),
     });
     expect(mint.status).toBe(201);

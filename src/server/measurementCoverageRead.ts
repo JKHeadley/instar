@@ -143,6 +143,16 @@ function collectMeasurementInputs(ctx: MeasurementCoverageContext, now = Date.no
   return { members, sources, subjects, d7, evidenceAvailable, targetStates };
 }
 
+/** One census for a whole-board read: every retained measurement owner plus the
+ * inventory entries that name it, so a many-subject read does not re-walk the
+ * inventories once per subject. Same owners and precedence as readMeasurementOwner. */
+export function readMeasurementSubjects(ctx: MeasurementCoverageContext, now = Date.now()) {
+  const { members, sources, subjects } = collectMeasurementInputs(ctx, now);
+  const names = new Map<string, Array<{ kind: string; id: string; title: string }>>();
+  for (const m of members) for (const subject of m.subjects) names.set(subject, [...(names.get(subject) ?? []), { kind: m.kind, id: m.id, title: m.title }]);
+  return { sources, subjects, names };
+}
+
 /** Same independent census used by the scorer, no second target registry. */
 export function readMeasurementTargets(ctx:MeasurementCoverageContext,now=Date.now()):Map<string,MeasurementTargetState> {
   return collectMeasurementInputs(ctx,now).targetStates;

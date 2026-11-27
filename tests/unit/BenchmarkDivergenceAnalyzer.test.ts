@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import { BenchmarkDivergenceAnalyzer } from '../../src/monitoring/BenchmarkDivergenceAnalyzer.js';
+import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
 import { liveTemplateHash } from '../../src/data/benchmarkDivergenceRegistry.js';
 import { DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -531,5 +532,93 @@ describe('status surfaces (FD10)', () => {
     const summary = a.summary();
     expect(summary.byVerdict).toEqual({});
     expect(summary.missingModelShare).toBeNull();
+  });
+});
+
+describe('ladder evidence: one row per pass', () => {
+  let log: FeatureEvidenceLog;
+  const rows = () => fs.existsSync(log.filePath)
+    ? fs.readFileSync(log.filePath, 'utf-8').trim().split('\n').map((l) => JSON.parse(l))
+    : [];
+  beforeEach(() => {
+    log = new FeatureEvidenceLog({ projectDir: tmpDir, machine: 'm', instarVersion: '0' });
+    setFeatureEvidenceLog(log);
+  });
+  afterEach(() => setFeatureEvidenceLog(null));
+
+  it('a comparable pass writes one fired row naming the mirror, machines and models', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    seedDecisions('2026-07-05', 2, { model: '' });
+    await analyzer().analyze('manual');
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toMatchObject({
+      featureId: 'benchmarkDivergence',
+      kind: 'fired',
+      context: {
+        dryRun: false, mirrorStale: false, mirrorCapturedAt: '2026-07-08T00:00:00.000Z',
+        machinesReporting: 1, machinesKnown: 1, coverageComplete: true,
+        models: 'claude-opus-4-8', decidedTotal: 32, missingModelDecided: 2,
+      },
+    });
+  });
+
+  it('a stale mirror writes held, not fired, and says so', async () => {
+    writeMatchingMirror({ capturedAt: '2026-01-01T00:00:00.000Z' });
+    seedDecisions('2026-07-05', 30);
+    await analyzer().analyze('manual');
+    expect(rows().map((r) => r.kind)).toEqual(['held']);
+    expect(rows()[0].reason).toContain('mirror stale');
+    expect(rows()[0].reason).not.toContain('coverage');
+    expect(rows()[0].context.mirrorStale).toBe(true);
+  });
+
+  it('a missing mirror writes held', async () => {
+    seedDecisions('2026-07-05', 30);
+    await analyzer().analyze('manual');
+    expect(rows()[0]).toMatchObject({ kind: 'held', context: { mirrorPresent: false, mirrorStale: true } });
+  });
+
+  it('incomplete coverage writes held and names coverage, not the mirror', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    await analyzer({ peers: [{ machineId: 'm-peer', url: 'http://peer-a' }], fetchImpl: mockFetch({ 'peer-a': 'down' }) }).analyze('manual');
+    expect(rows().map((r) => r.kind)).toEqual(['held']);
+    expect(rows()[0].reason).toContain('coverage incomplete');
+    expect(rows()[0].reason).not.toContain('mirror');
+    expect(rows()[0].context).toMatchObject({ machinesReporting: 1, machinesKnown: 2, coverageComplete: false });
+  });
+
+  it('a dryRun pass writes its row in the shared log and marks it dryRun, with no detector writes', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    await analyzer({ cfg: config({ benchmarkDivergence: { dryRun: true } }) }).analyze('manual');
+    expect(rows()[0]).toMatchObject({ kind: 'fired', context: { dryRun: true } });
+    expect(ledger.listBenchmarkFindings()).toHaveLength(0);
+  });
+
+  it('a failed pass writes an error row and still fails', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    const original = ledger.upsertBenchmarkFinding.bind(ledger);
+    ledger.upsertBenchmarkFinding = (() => { throw new Error('disk gone'); }) as typeof original;
+    await expect(analyzer().analyze('manual')).rejects.toThrow('disk gone');
+    expect(rows().map((r) => r.kind)).toEqual(['error']);
+    expect(rows()[0].reason).toContain('disk gone');
+  });
+
+  it('a pass that loses the lease before writing records nothing', async () => {
+    writeMatchingMirror();
+    seedDecisions('2026-07-05', 30);
+    let calls = 0;
+    const r = await analyzer({ isHolder: () => ++calls === 1 }).analyze('manual');
+    expect(r).toMatchObject({ ran: false, reason: 'lease-lost' });
+    expect(rows()).toEqual([]);
+  });
+
+  it('a refused pass (not the holder) records nothing', async () => {
+    const r = await analyzer({ isHolder: () => false }).analyze('manual');
+    expect(r.ran).toBe(false);
+    expect(rows()).toEqual([]);
   });
 });

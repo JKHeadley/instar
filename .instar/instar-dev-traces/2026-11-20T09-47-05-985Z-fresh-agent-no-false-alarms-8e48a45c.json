@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "fresh-agent-no-false-alarms",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T09:47:05.985Z",
+  "artifactPath": "upgrades/side-effects/fresh-agent-no-false-alarms.md",
+  "artifactSha256": "057a0aa4ab64998f236b991c8f254fd55e79d4f566850ab616f14060a63d280f",
+  "coveredFiles": [
+    "docs/eli16/fresh-agent-no-false-alarms.eli16.md",
+    "src/commands/recoveryMainWiring.ts",
+    "src/commands/server.ts",
+    "src/server/routes.ts",
+    "tests/e2e/fresh-agent-dashboard-refresh-skip-lifecycle.test.ts",
+    "tests/integration/fresh-agent-health-no-false-alarms.test.ts",
+    "tests/unit/fresh-agent-false-alarms.test.ts",
+    "upgrades/next/fresh-agent-no-false-alarms.md",
+    "upgrades/side-effects/fresh-agent-no-false-alarms.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows two false-alarm signal producers (a degradation report and a route precondition); a revert fully undoes it, no state change.",
+  "eli16Path": "docs/eli16/fresh-agent-no-false-alarms.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fresh-agent-no-false-alarms.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

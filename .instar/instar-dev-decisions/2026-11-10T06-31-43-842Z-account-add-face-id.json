@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-10T06:31:43.842Z",
+  "slug": "account-add-face-id",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 296,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/newSubscriptionAccountId.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/middleware.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 254,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

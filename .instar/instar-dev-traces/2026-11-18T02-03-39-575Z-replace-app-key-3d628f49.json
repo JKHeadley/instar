@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "replace-app-key",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-18T02:03:39.575Z",
+  "artifactPath": "upgrades/side-effects/replace-app-key.md",
+  "artifactSha256": "808ef08aac27e58815c0baabda5133e4ce5987914833c9b7c35691265dcfcfd2",
+  "coveredFiles": [
+    "src/cli.ts",
+    "src/commands/install.ts",
+    "src/core/localOwnerTicket.ts",
+    "src/server/mobileLocalOwnerDevice.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/replace-app-key.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/replace-app-key.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "recovery path for a lost app key on the same Mac"
+  }
+}

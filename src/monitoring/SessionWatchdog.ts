@@ -24,6 +24,8 @@ import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   evaluateThrottleSettle,
   evaluateUsageWallSettle,
+  detectUsageWall,
+  paneShowsUsageWallBanner,
   RATE_LIMIT_SETTLED_CAPTURE_LINES,
   RATE_LIMIT_DEFAULT_SETTLE_MS,
   type ThrottleSettleState,
@@ -59,6 +61,16 @@ async function shellExecAsync(cmd: string, timeout = 5000): Promise<string> {
     return e && typeof e.stdout === 'string' ? e.stdout : '';
   }
 }
+/**
+ * Longest command the stuck-process judge is asked about. Derived: a chained
+ * shell line (`cd <worktree> && <env> <tool> <args>`) runs to a few hundred
+ * characters, and the output sample beside it is 1,500, so 2,000 keeps nearly
+ * every real command whole at a prompt cost the judge already carries. Longer
+ * (heredoc bodies, generated one-liners) skip the judge and fall back to the
+ * hard ceiling, because a cut command is not evidence enough to interrupt.
+ */
+export const WATCHDOG_JUDGE_COMMAND_MAX_CHARS = 2000;
+
 import type { SessionManager } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
@@ -390,6 +402,26 @@ export function classifyTestRunnerCommand(
   return null;
 }
 
+// Git starts its HTTPS helper before it invokes pre-push. The hook and helper
+// are siblings, so looking below the idle helper alone misses the active work.
+function isGitHttpsTransport(command: string): boolean {
+  return /^(?:\S*\/)?(?:git\s+remote-https|git-remote-https)(?:\s|$)/.test(command.trim());
+}
+
+function prePushHookForTransport(rows: readonly ChildProcessInfo[], transport: ChildProcessInfo): ChildProcessInfo | undefined {
+  if (!isGitHttpsTransport(transport.command)) return undefined;
+  let parent = rows.find(row => row.pid === transport.parentPid);
+  // Some Git installs dispatch the dashed executable through "git remote-https".
+  if (parent && isGitHttpsTransport(parent.command)) {
+    const pushPid = parent.parentPid;
+    parent = rows.find(row => row.pid === pushPid);
+  }
+  if (!parent || !/^(?:\S*\/)?git\s+(?:(?:-C|-c)\s+\S+\s+)*push(?:\s|$)/.test(parent.command.trim())) return undefined;
+  const pushPid = parent.pid;
+  return rows.find(row => row.parentPid === pushPid &&
+    /^(?:(?:\S*\/)?(?:sh|bash|dash|zsh)\s+(?:-[aefux]+\s+)?)?(?:\S*\/)?pre-push(?:\s|$)/.test(row.command.trim()));
+}
+
 /** Commands of every process below `rootPid` in an already-captured snapshot. */
 function descendantCommands(rows: readonly ChildProcessInfo[], rootPid: number): string[] {
   const below = new Set([rootPid]);
@@ -664,6 +696,13 @@ export class SessionWatchdog extends EventEmitter {
   /** Temporarily exempted commands (LLM confirmed as legitimate long-running) */
   private temporaryExclusions = new Set<number>(); // PIDs
   /**
+   * PIDs with no verdict (no judge, judge error, or a command too long to show
+   * the judge whole). Skipped by the stuck-child search until they pass the hard
+   * ceiling, so they neither earn a permanent exclusion nor hide a stuck sibling
+   * by being picked first on every poll. Cleared when the process exits.
+   */
+  private undecidedPids = new Set<number>();
+  /**
    * CPU-time samples for test-runner subtrees. Only consulted once a run is
    * past its wall-clock floor, so an ordinary suite never touches it.
    */
@@ -893,7 +932,9 @@ export class SessionWatchdog extends EventEmitter {
     // alone but NOT pruned, so its other children are still checked: a test run
     // cannot hide an unrelated stuck command, even under a shared parent.
     const protectedSubtrees = new Set<number>();
+    const pushWaits = this.activePushWaits(children);
     for (const c of children) {
+      if (pushWaits.has(c.pid)) continue;
       if (protectedSubtrees.has(c.parentPid)) { protectedSubtrees.add(c.pid); continue; }
       const infrastructure = classifyFrameworkInfrastructureProcess(c.command, framework);
       if (infrastructure.protected) {
@@ -923,6 +964,7 @@ export class SessionWatchdog extends EventEmitter {
       }
       if (this.isExcluded(c.command)) continue;
       if (this.temporaryExclusions.has(c.pid)) continue;
+      if (this.undecidedPids.has(c.pid) && !this.hardCeilingExceeded(c.elapsedMs)) continue;
       // Stdin consumers (tail, grep, sort...) get a much longer grace
       // period. They're typically part of a pipeline where the producer
       // is the real work, and the 3-minute default threshold is too
@@ -978,10 +1020,24 @@ export class SessionWatchdog extends EventEmitter {
         // immunity from one historical match if its evidence later changes.
         return;
       }
-      const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs, recentOutput);
-      if (!isStuck) {
-        // LLM says legitimate — temporarily exclude this PID from future checks
+      const judged = await this.judgeCommand(stuckChild.command, stuckChild.elapsedMs, recentOutput);
+      this.undecidedPids.delete(stuckChild.pid);
+      if (judged.verdict === 'legitimate') {
+        // The judge said legitimate — temporarily exclude this PID from future checks
         this.temporaryExclusions.add(stuckChild.pid);
+        return;
+      }
+      if (judged.verdict === 'undecided') {
+        // No verdict (no judge, judge error, or a command too long to show it
+        // whole), and the hard ceiling is not reached. Do NOT exclude the PID
+        // for good: defer it until the ceiling, so the ceiling can still recover
+        // a genuinely hung command. (A permanent exclusion here made the
+        // documented ceiling fallback unreachable.) Deferring rather than
+        // re-picking it every poll lets the search reach a stuck sibling.
+        // A stdin consumer is the exception: the guard below never acts on a
+        // ceiling-only verdict for one, so it is simply excluded.
+        if (this.isStdinConsumerCommand(stuckChild.command)) this.temporaryExclusions.add(stuckChild.pid);
+        else this.undecidedPids.add(stuckChild.pid);
         return;
       }
 
@@ -991,7 +1047,7 @@ export class SessionWatchdog extends EventEmitter {
       // escalate these with explicit LLM confirmation. Without an LLM, we
       // skip and log — a true orphaned consumer will be cleaned up when
       // its tmux session terminates.
-      if (this.isStdinConsumerCommand(stuckChild.command) && !this.intelligence) {
+      if (this.isStdinConsumerCommand(stuckChild.command) && judged.by === 'ceiling') {
         console.log(
           `[Watchdog] "${tmuxSession}": stdin-consumer ${stuckChild.command.slice(0, 60)} ` +
           `without LLM gate — refusing to escalate (fail-closed for pipeline safety)`,
@@ -999,6 +1055,8 @@ export class SessionWatchdog extends EventEmitter {
         this.temporaryExclusions.add(stuckChild.pid);
         return;
       }
+
+      if (await this.liveTransportWait(tmuxSession, stuckChild)) return;
 
       // Decided here, where the live descendant snapshot is still in hand: an
       // ancestor of a test runner (a shell wrapper, a `git push` running a
@@ -1042,6 +1100,9 @@ export class SessionWatchdog extends EventEmitter {
       if (!this.isProcessAlive(pid)) {
         this.temporaryExclusions.delete(pid);
       }
+    }
+    for (const pid of this.undecidedPids) {
+      if (!this.isProcessAlive(pid)) this.undecidedPids.delete(pid);
     }
 
     // Post-compaction idle detection — catch sessions that compacted and are
@@ -1127,16 +1188,36 @@ export class SessionWatchdog extends EventEmitter {
    * 'usage-wall'. Signal-only: the consumer (UsageWallRescue) decides whether
    * another account has room and moves the session; this method never acts.
    *
-   * Same settled-output discipline as the throttle: the banner must be the
-   * current pane state (only Claude Code chrome below it) AND the pane must be
-   * byte-identical across polls for the settle window.
+   * Same settled-output discipline as the throttle: the wall must be the
+   * session's current state AND the banner region must stay byte-identical
+   * across polls for the settle window (rows below the banner — ticking
+   * background-agent timers — are not part of that fingerprint).
+   *
+   * The wall is current when the pane alone shows it (banner followed only by
+   * chrome) OR when the exact session's own transcript ends on the provider's
+   * usage-wall error and the pane still shows the banner. The transcript is
+   * read only when the pane shows a banner the chrome check could not clear,
+   * so an ordinary poll costs nothing extra.
    */
   checkUsageWall(tmuxSession: string, output: string | null | undefined, now: number = Date.now()): void {
+    let transcriptConfirmed = false;
+    if (!detectUsageWall(output) && paneShowsUsageWallBanner(output)) {
+      const fromTranscript = (this.sessionManager as Partial<Pick<SessionManager, 'usageWallFromTranscript'>>).usageWallFromTranscript;
+      if (typeof fromTranscript === 'function') {
+        try {
+          transcriptConfirmed = Boolean(fromTranscript.call(this.sessionManager, tmuxSession));
+        } catch {
+          // @silent-fallback-ok — unreadable transcript is not evidence; the
+          // pane-only check above still decides.
+          transcriptConfirmed = false;
+        }
+      }
+    }
     const { decision, next } = evaluateUsageWallSettle(
       output,
       this.usageWallSettle.get(tmuxSession),
       now,
-      { settleMs: this.rateLimitSettleMs },
+      { settleMs: this.rateLimitSettleMs, transcriptConfirmed },
     );
     if (decision === 'no-throttle') {
       // A wall this session had settled on (it emitted) is now gone: say so,
@@ -1220,6 +1301,11 @@ export class SessionWatchdog extends EventEmitter {
     if (!this.isProcessAlive(state.stuckChildPid)) {
       console.log(`[Watchdog] "${tmuxSession}": stuck process ${state.stuckChildPid} died — recovered`);
       this.emit('recovery', tmuxSession, state.level);
+      this.escalationState.delete(tmuxSession);
+      return;
+    }
+
+    if (await this.liveTransportWait(tmuxSession, { pid: state.stuckChildPid, command: state.stuckCommand })) {
       this.escalationState.delete(tmuxSession);
       return;
     }
@@ -1350,12 +1436,45 @@ export class SessionWatchdog extends EventEmitter {
    * load Ctrl+C'd every command running past the 3-min threshold.)
    */
   private async isCommandStuck(command: string, elapsedMs: number, recentOutput = ''): Promise<boolean> {
-    if (!this.intelligence) return this.hardCeilingExceeded(elapsedMs); // No LLM → fail CLOSED (ceiling only)
+    return (await this.judgeCommand(command, elapsedMs, recentOutput)).verdict === 'stuck';
+  }
+
+  /**
+   * The stuck-command decision with its source. `undecided` means no verdict
+   * was reached (no judge, judge error, or a command too long to show whole)
+   * and the hard ceiling is not exceeded: the caller re-checks next poll rather
+   * than excluding the PID. `by: 'ceiling'` marks a "stuck" reached without the
+   * judge, which the stdin-consumer guard refuses to act on.
+   */
+  private async judgeCommand(
+    command: string,
+    elapsedMs: number,
+    recentOutput = '',
+  ): Promise<{ verdict: 'stuck' | 'legitimate' | 'undecided'; by: 'judge' | 'ceiling' }> {
+    const byCeiling = (): { verdict: 'stuck' | 'undecided'; by: 'ceiling' } =>
+      ({ verdict: this.hardCeilingExceeded(elapsedMs) ? 'stuck' : 'undecided', by: 'ceiling' });
+    if (!this.intelligence) return byCeiling(); // No LLM → fail CLOSED (ceiling only)
+    // REFUSE, don't disclose (Never Silently Cut the Data a Decision Depends On):
+    // a "stuck" verdict leads to Ctrl+C, and the part of a command that makes it
+    // legitimate is often at the END (`cd <long worktree path> && … && npm test`).
+    // The old 200-char head could show only the `cd`, which reads as a trivial
+    // command that should have finished. A judge that cannot see the whole
+    // command it would interrupt does not judge it: the same fail-closed path as
+    // an unavailable judge (deferred until the hard ceiling, then interrupted;
+    // never interrupted if the command is a stdin consumer).
+    if (command.length > WATCHDOG_JUDGE_COMMAND_MAX_CHARS) {
+      const out = byCeiling();
+      console.log(
+        `[Watchdog] command of ${command.length} chars exceeds the judge's ${WATCHDOG_JUDGE_COMMAND_MAX_CHARS}; ` +
+        `not judged (${out.verdict === 'stuck' ? 'past hard ceiling → escalate' : 'no interrupt, deferred until hard ceiling'})`,
+      );
+      return out;
+    }
 
     const elapsedMin = Math.round(elapsedMs / 60000);
     // Keep the output sample small — enough for context, not enough to blow the token budget.
     const outputSample = recentOutput ? recentOutput.slice(-1500) : '';
-    const commandSlice = command.slice(0, 200);
+    const commandSlice = command; // whole: longer commands were refused above
     const promptLines = [
       'You are evaluating whether a running process is stuck or legitimately long-running.',
       '',
@@ -1404,7 +1523,7 @@ export class SessionWatchdog extends EventEmitter {
           context: buildWatchdogStuckDecisionContext({
             promptText: prompt,
             commandSlice,
-            commandWasTruncated: command.length > commandSlice.length,
+            commandWasTruncated: false, // a command that would need cutting is never judged (see above)
             outputSample,
             elapsedMinutes: elapsedMin,
           }),
@@ -1416,21 +1535,21 @@ export class SessionWatchdog extends EventEmitter {
       if (answer === 'legitimate') {
         console.log(`[Watchdog] LLM says "${command.slice(0, 60)}" is legitimate — skipping escalation`);
         this.llmGateOverrides++;
-        return false;
+        return { verdict: 'legitimate', by: 'judge' };
       }
-      return true;
+      return { verdict: 'stuck', by: 'judge' };
     } catch (err) {
       // LLM judge errored (rate-limit / circuit-open / timeout — common under
       // load). A destructive Ctrl+C must NOT fail-open to a brittle default
       // (that interrupted legitimate builds/tests under load). Fail CLOSED: only
       // escalate once the deterministic hard ceiling is exceeded.
-      const stuck = this.hardCeilingExceeded(elapsedMs);
+      const out = byCeiling();
       console.warn(
         `[Watchdog] LLM command check failed; failing CLOSED ` +
-        `(${stuck ? 'past hard ceiling → escalate' : 'no interrupt'}):`,
+        `(${out.verdict === 'stuck' ? 'past hard ceiling → escalate' : 'no interrupt, deferred until hard ceiling'}):`,
         err,
       );
-      return stuck;
+      return out;
     }
   }
 
@@ -1536,6 +1655,39 @@ export class SessionWatchdog extends EventEmitter {
     candidate: ChildProcessInfo,
   ): TestRunnerProgress {
     return this.testRunnerProgress.observe(candidate.pid, subtreeCpuMs(children, candidate.pid));
+  }
+
+  private activePushWaits(rows: readonly ChildProcessInfo[]): Set<number> {
+    const waiting = new Set<number>();
+    const hookSubtrees = new Set<number>();
+    const samples = new Map<number, TestRunnerProgress>();
+    for (const row of rows) {
+      if (row.elapsedMs > MAX_TEST_RUNNER_ABSOLUTE_MS) continue;
+      const hook = prePushHookForTransport(rows, row);
+      if (!hook) continue;
+      const progress = samples.get(hook.pid) ?? this.observeTestRunnerProgress(rows, hook);
+      samples.set(hook.pid, progress);
+      if (progress !== 'baseline' && progress !== 'progressed') continue;
+      hookSubtrees.add(hook.pid);
+      waiting.add(row.pid);
+      waiting.add(row.parentPid);
+      waiting.add(hook.parentPid);
+    }
+    // Process snapshots are breadth-first. Protect only the hook's children,
+    // so another command under the same push is still evaluated independently.
+    for (const row of rows) {
+      if (hookSubtrees.has(row.parentPid)) hookSubtrees.add(row.pid);
+      if (hookSubtrees.has(row.pid)) waiting.add(row.pid);
+    }
+    return waiting;
+  }
+
+  private async liveTransportWait(session: string, target: Pick<ChildProcessInfo, 'pid' | 'command'>): Promise<boolean> {
+    const root = await this.getClaudePid(session);
+    if (!root) return false;
+    const rows = await this.getChildProcesses(root);
+    return rows.some(row => row.pid === target.pid && row.command === target.command)
+      && this.activePushWaits(rows).has(target.pid);
   }
 
   private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {

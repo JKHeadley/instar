@@ -42,7 +42,8 @@ function plist(workingDir: string): string {
 
 let tmp: string;
 beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlg-'));
+  // These cases exercise a fixed OS temp root, regardless of $TMPDIR.
+  tmp = fs.mkdtempSync('/tmp/tlg-');
 });
 afterEach(() => {
   SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/ThrowawayAgentGuard.test.ts' });

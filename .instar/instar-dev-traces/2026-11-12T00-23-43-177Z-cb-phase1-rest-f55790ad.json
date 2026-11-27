@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "cb-phase1-rest",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-12T00:23:43.177Z",
+  "artifactPath": "upgrades/side-effects/cb-phase1-rest.md",
+  "artifactSha256": "d89bcaabcbd4a74bde86facd545d16b5041d83bb5e6beb1b6bb8206ad6a682ca",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/cb-phase1-rest.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Local Verify round-1 fixes on the reviewed Phase 1 bundle: per-conversation Registry-First rows moved to their own on-demand section (core budget), two existing best-effort catches tagged, one error response routed through operatorError — see cb-phase1-rest.md items 5-7",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

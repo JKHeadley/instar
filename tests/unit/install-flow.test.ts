@@ -25,7 +25,7 @@ import {
 import { gitWorks, packageInstallCommand, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
-  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
+  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'account-choice', 'door-sign-in', 'agent-init',
   'start-server', 'install-autostart', 'owner-slot',
 ];
 
@@ -222,6 +222,9 @@ describe('install flow', () => {
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'] }))).toBe('claude-code');
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code', 'codex-cli'] }))).toBeUndefined();
     expect(impliedInstallDoor(context({ detectedDoors: [] }))).toBeUndefined();
+    // The person's pick (the Mac app's 'Which AI account do you have?') wins over what is found here.
+    expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'], chosenDoor: 'codex-cli' }))).toBe('codex-cli');
+    expect(impliedInstallDoor(context({ detectedDoors: ['claude-code'], runningInDoor: 'claude-code', chosenDoor: 'codex-cli' }))).toBe('codex-cli');
     expect(impliedInstallDoor(context({ detectedDoors: ['claude-code', 'codex-cli'], runningInDoor: 'codex-cli' }))).toBe('codex-cli');
   });
 
@@ -309,6 +312,9 @@ describe('answers file problems', () => {
   it('refuses an autostart that would be misread', () => {
     expect(answersFileProblem({ autostart: 'no' as unknown as boolean })).toContain('true or false');
     expect(answersFileProblem({ autostart: false, name: 'a' })).toBeNull();
+    expect(answersFileProblem({ door: 'chatgpt' })).toContain('door must be one of');
+    expect(answersFileProblem({ door: 'codex-cli' })).toBeNull();
+    expect(answersFileProblem({ door: 'constructor' })).toContain('door must be one of');
     expect(answersFileProblem({ name: 3 as unknown as string })).toContain('name');
   });
 });
@@ -369,10 +375,10 @@ describe('door sign-in step', () => {
     now: () => 0,
     ...overrides,
   } as InstallEnv);
-  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting']) => {
+  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting'], forApp = false) => {
     const progress = newInstallProgress('do-door-sign-in');
     if (awaiting) progress.awaiting = awaiting;
-    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code' }, progress);
+    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code', forApp }, progress);
   };
 
   it('never signs in over a login it can see or can\'t judge', async () => {
@@ -381,6 +387,17 @@ describe('door sign-in step', () => {
     expect(await run(stub({ proveSignedIn: async () => 'signed-in', startDetached }))).toEqual({ kind: 'done' });
     expect((await run(stub({ proveSignedIn: async () => 'unknown', startDetached }))).kind).toBe('done');
     expect(started).toEqual([]);
+  });
+
+  it('pauses app setup when the selected sign-in cannot be verified', async () => {
+    const startDetached = () => { throw new Error('an unknown sign-in must not be replaced'); };
+    const unknown = stub({ proveSignedIn: async () => 'unknown', startDetached });
+    const signedIn = stub({ proveSignedIn: async () => 'signed-in', startDetached });
+    expect(await run(unknown, undefined, true)).toMatchObject({ kind: 'failed', message: expect.stringContaining("Couldn't verify") });
+    const openLogin = { state: 'do-door-sign-in', instruction: '', loginPid: 111, loginStamp: 'stamp-a' };
+    expect(await run(unknown, openLogin, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
+    expect(await run(signedIn, undefined, true)).toEqual({ kind: 'done' });
+    expect(await run(stub({}), undefined, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
   });
 
   it('with no browser, sends the person to their terminal and starts nothing', async () => {
@@ -623,6 +640,37 @@ describe('auto-start handover and phone pairing', () => {
       expect(await buildInstallHandlers(env)['install-autostart']!(answers, newInstallProgress('do-autostart'))).toEqual({ kind: 'done' });
       expect(installs).toBe(1);
       expect(ran.map((a) => a.slice(1, 3).join(' '))).toEqual(['server stop']);
+    } finally { restore(); }
+  });
+
+  it('for the Mac app: leaves a 0600 ticket, says where the agent is, and keeps no secret in the ledger (mac-app-creates-agent §B)', async () => {
+    let minted = 0;
+    const { env, printed, restore } = setup({ interactive: false, mintPairingLink: async () => { minted++; return { ok: false, reason: 'off' }; } } as Partial<InstallEnv>);
+    try {
+      const progress = newInstallProgress('do-owner');
+      const r = await buildInstallHandlers(env)['owner-slot']!({ ...answers, forApp: true }, progress);
+      expect(r.kind).toBe('done');
+      const agentDir = path.join(process.env.HOME!, '.instar', 'agents', 'cirrus');
+      expect(progress.appEnroll).toEqual({ agentDir, port: 4040 });
+      const ticketFile = path.join(agentDir, '.instar', 'state', 'local-owner-ticket.json');
+      expect(fs.statSync(ticketFile).mode & 0o777).toBe(0o600);
+      const ticket = JSON.parse(fs.readFileSync(ticketFile, 'utf-8')).ticket as string;
+      const ledgerText = JSON.stringify(progress);
+      expect(ledgerText).not.toContain(ticket);
+      expect(ledgerText).not.toContain('tok');
+      expect(minted).toBe(0);
+      expect(printed.join('\n')).not.toMatch(/PIN/);
+    } finally { restore(); }
+  });
+
+  it('without forApp, a run with no terminal still waits for the person exactly as before', async () => {
+    const { env, restore } = setup({ interactive: false } as Partial<InstallEnv>);
+    try {
+      const progress = newInstallProgress('do-owner');
+      const r = await buildInstallHandlers(env)['owner-slot']!(answers, progress);
+      expect(r).toEqual({ kind: 'awaiting-person', instruction: 'Your dashboard is ready. To see how to open it, run instar install --resume in your own terminal.' });
+      expect(progress.appEnroll).toBeUndefined();
+      expect(fs.existsSync(path.join(process.env.HOME!, '.instar', 'agents', 'cirrus', '.instar', 'state', 'local-owner-ticket.json'))).toBe(false);
     } finally { restore(); }
   });
 

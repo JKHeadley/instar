@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-16T17:12:23.197Z",
+  "slug": "work-front-doors-stage2b-cards",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/conversationGraphRead.ts",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphReadSource.ts",
+      "src/server/ConversationGraphSurface.ts"
+    ],
+    "addedLines": 64,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

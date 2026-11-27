@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-12T06:00:09.746Z",
+  "slug": "ncb-3e-input-durability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 412,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/InputIdLedger.ts",
+      "src/server/PeerStreamProxy.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/dashboardInputAwareness.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 392,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

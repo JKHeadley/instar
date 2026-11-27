@@ -1,0 +1,59 @@
+{
+  "at": "2026-11-06T04:28:06.775Z",
+  "fixture": "telegram-group-handoff-2026-11-05",
+  "scope": "local real-model judgment replay; no message sent and no deployed enforcement claim",
+  "rows": [
+    {
+      "name": "original-handoff",
+      "shouldPass": false,
+      "verdict": {
+        "pass": false,
+        "rule": "CAPACITY_UNAVAILABLE",
+        "issue": "Outbound tone review unavailable — host spawn capacity saturated.",
+        "suggestion": "Held (fail-closed) under load; retry shortly.",
+        "latencyMs": 5005,
+        "capacityUnavailable": true
+      },
+      "matches": false
+    },
+    {
+      "name": "paraphrased-handoff",
+      "shouldPass": false,
+      "verdict": {
+        "pass": false,
+        "rule": "CAPACITY_UNAVAILABLE",
+        "issue": "Outbound tone review unavailable — host spawn capacity saturated.",
+        "suggestion": "Held (fail-closed) under load; retry shortly.",
+        "latencyMs": 5003,
+        "capacityUnavailable": true
+      },
+      "matches": false
+    },
+    {
+      "name": "agent-owned-blocker",
+      "shouldPass": true,
+      "verdict": {
+        "pass": false,
+        "rule": "CAPACITY_UNAVAILABLE",
+        "issue": "Outbound tone review unavailable — host spawn capacity saturated.",
+        "suggestion": "Held (fail-closed) under load; retry shortly.",
+        "latencyMs": 5002,
+        "capacityUnavailable": true
+      },
+      "matches": false
+    },
+    {
+      "name": "real-missing-approval",
+      "shouldPass": true,
+      "verdict": {
+        "pass": false,
+        "rule": "CAPACITY_UNAVAILABLE",
+        "issue": "Outbound tone review unavailable — host spawn capacity saturated.",
+        "suggestion": "Held (fail-closed) under load; retry shortly.",
+        "latencyMs": 5002,
+        "capacityUnavailable": true
+      },
+      "matches": false
+    }
+  ]
+}

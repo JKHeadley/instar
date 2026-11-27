@@ -288,6 +288,48 @@ describe('POST /maturation/moves floors', () => {
   });
 });
 
+describe('the ladder view offers only the move the floors accept', () => {
+  const noStart = { ...xEntry, flag: { path: 'monitoring.x', on: true }, rungs: { 'dev-agent-live': { ...devRung, advance: { kind: 'config', set: { 'monitoring.x.enabled': true } } }, fleet: fleetRung } };
+  const offConfig = { developmentAgent: true, monitoring: {} };
+
+  it('a dark feature with no start reads as a code move, and the floor refuses the same way', async () => {
+    const { svc, state } = make({ entries: [noStart], config: offConfig });
+    await svc.refresh();
+    const [view] = svc.features();
+    expect(view.state).toBe('not-started');
+    expect(view.move).toEqual({ kind: 'code' });
+    const r = svc.applyMove({ id: 'monitoring.x', target: 'dev-agent-live', reason: 'r', from: {}, opinions: [{}] });
+    expect(r).toMatchObject({ refused: 'not-a-config-move', detail: 'code' });
+    expect(state.writes).toEqual([]);
+  });
+
+  it('a dark feature with a start still offers that start as a config move', async () => {
+    const withStart = { ...noStart, start: { set: { 'monitoring.x.enabled': true, 'monitoring.x.dryRun': true } } };
+    const { svc } = make({ entries: [withStart], config: offConfig });
+    await svc.refresh();
+    expect(svc.features()[0].move).toMatchObject({ kind: 'config', set: withStart.start.set });
+  });
+
+  it('a feature past dark keeps its rung move', async () => {
+    const { svc } = make();
+    await svc.refresh();
+    expect(svc.features()[0].move).toMatchObject({ kind: 'config', set: { 'monitoring.x.dryRun': false } });
+  });
+
+  it('no shipped entry advertises a config move the floor would call not-a-config-move', async () => {
+    const shipped = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'src/data/feature-ladders.json'), 'utf-8')) as { entries: unknown[] };
+    const { svc } = make({ entries: shipped.entries, config: { developmentAgent: true } });
+    await svc.refresh();
+    const offered = svc.features().filter(f => f.state === 'not-started' && f.move?.kind === 'config');
+    const refused = offered.filter(f => {
+      const move = f.move as { from: Record<string, unknown> };
+      const r = svc.applyMove({ id: f.id, target: f.next as 'dev-agent-live', reason: 'r', from: move.from, opinions: [{}] });
+      return !r.ok && r.refused === 'not-a-config-move';
+    }).map(f => f.id);
+    expect(refused).toEqual([]);
+  });
+});
+
 describe('revert', () => {
   it('still works after a pass observed the rung change, and holds the feature', async () => {
     const { svc, state } = await readyService();

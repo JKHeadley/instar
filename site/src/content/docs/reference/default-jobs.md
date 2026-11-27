@@ -16,7 +16,7 @@ path until its script is enabled.
 | `health-check` | `*/5 * * * *` (every 5 min) | Haiku | Verify infrastructure health |
 | `commitment-detection` | `*/5 * * * *` (every 5 min) | Haiku | Detect new commitments in the recent conversation flow |
 | `commitment-checkin-reminder` | `*/5 * * * *` (every 5 min) | — (no LLM) | Post one reminder for each commitment whose check-in date has arrived. Ships disabled. |
-| `promise-review` | `23 */6 * * *` (every 6h) | Sonnet | The agent reviews its own open promises (commitments) so the user never has to. When enough are due it reads up to 30, checks the evidence, and decides one action each: keep, set a priority, mark done (with proof), or archive as superseded, duplicate or obsolete (with a reason). Decisions go through `POST /commitments/review/apply`, whose server-side floors refuse any closure without its evidence and cap closures per run and per day. Closures run in shadow (`closureDryRun`) until the feature graduates. Never messages anyone. Live on a development agent, dark on the fleet (`commitments.promiseReview`). Tier-1 supervised. Spec: `docs/specs/promise-review-and-priority.md` |
+| `promise-review` | `23 */6 * * *` (every 6h, at :23) | Sonnet | Review up to 30 due open promises; keep them, adjust priority, or propose evidence-backed completion/archive. Never sends messages. Gated by `commitments.promiseReview` (live on development agents, dark on the fleet); closures stay in shadow until graduation, and the server enforces evidence and per-run/day closure caps. |
 | `reflection-trigger` | `0 */4 * * *` (every 4h) | Opus | Reflect on recent work and surface insights |
 | `evolution-overdue-check` | `0 */4 * * *` (every 4h) | Haiku | Surface overdue commitments and stalled action items |
 | `evolution-proposal-evaluate` | `0 */6 * * *` (every 6h) | Sonnet | Evaluate evolution proposals against current goals |
@@ -35,6 +35,7 @@ path until its script is enabled.
 | `mentor-onboarding` | `*/15 * * * *` (every 15m) | Haiku | Framework-Onboarding Mentor heartbeat — a thin timer that pokes `POST /mentor/tick`; the in-process tick runs a leak-detector canary, a fail-closed budget gate, a safe-window check, a constrained Stage-A spawn, the leakage detector, Stage-B forensics, and ledger capture. Ships `enabled: false` and `mentor.mode: 'off'`; dormant until promoted off → dry-run → live |
 | `failure-analyzer` | `0 9 * * 3` (Wednesdays 9am) | Haiku | Failure-Learning Loop analyzer — weekly scan of the failure ledger for dev-process patterns. Surfaces support-and-diversity-thresholded insights, opens human-approved tracked improvements (never auto-implements), and runs the verify step on past fixes. Tier-1 supervised (wraps the deterministic `/failures/analyze` endpoint, validating each insight against its evidence). Ships `enabled: false`; turns on with `monitoring.failureLearning.enabled` |
 | `initiative-digest-review` | `0 11 * * 1,4` (Mon & Thu 11am) | Sonnet | The self-driving half of the InitiativeTracker — twice-weekly review of the initiative board. Surfaces initiatives that need a decision and, for ships-staged features in rollout (dry-run → live → default-on), gathers promotion evidence and posts an explicit, evidence-gated recommendation. Near-silent (posts only when a genuinely-new decision is waiting); operator-gated — it recommends, it never flips a config flag |
+| `work-board-graduation` | `20 9 * * *` (daily 9:20am) | Haiku | Writes the [Work Board](/architecture/work-board/) pilot's day-7 and day-14 measurement records. Its gate passes only when a record is due (twice in the pilot's life), so on every other day, and wherever the board is off, no session starts. The server measures from the card records and writes the record; the job fires `POST /work-board/graduation/pass` and reports which days were written. It never messages anyone and never judges the result. |
 | `review-canary-battery` | `15 6 * * *` (daily 6:15am) | Haiku | Daily adversarial canary battery for the [context-aware outbound review](/architecture/context-aware-outbound-review) soak — drives one `ReviewCanaryBattery` run via the Bearer-gated `POST /review/canary-battery/run` trigger (seed booby-trapped fixtures into reserved negative topic ids → replay baseline + with-context arms → reviewer-level assertions → cleanup), proving the "user asked for this" carve-out cannot launder a credential/PII paste past the opted-in reviewer. Every outcome — including refusals — writes a `batterySummary` row, so a silent skip is impossible. Tier-1 supervised. Ships `enabled: false`; the operator enables it only on the soaking dev agent for the §D9 soak window |
 | `bench-refresh` | `0 4 1 * *` (monthly, 1st 4am) | Haiku | [LLM routing benchmark](/features/llm-routing-bench) refresh — on the machine carrying the bench harness it reruns the benchmark + a parity-check and raises ONE operator-review diff when a routing default looks stale. Never auto-applies a routing change; no-ops on any machine without the harness. Tier-1 supervised. Ships `enabled: false`; enable only on a maintainer machine |
 | `doorway-scan` | `0 4 * * 1` (Mondays 4am) | Haiku | Doorway/Model Knowledge Registry live re-probe — a deterministic prober (`scripts/doorway-scan.mjs`) probes each doorway (which CLIs / free model-list APIs answer, and which top models each exposes), updates the per-machine live scan-state, diffs against the previous scan, and raises ONE jargon-safe operator diff with only the changes. Free probes by default (zero metered spend); never auto-edits the canonical registry. `perMachineIndependent` (each machine scans its own disk). Tier-1 supervised. Ships `enabled: false`; enable only on a maintainer machine |
@@ -45,6 +46,7 @@ path until its script is enabled.
 | `feedback-factory-action-list` | `0 8 * * *` (daily 8am) | Haiku | Once-a-day operator action list from feedback triage — calls `POST /feedback-factory/triage/action-list`, which sends only NEW items that need the operator (at most 10 plus a count line, each with a direct link). The server enforces the 23:00–07:30 quiet window and once-per-item delivery. See [feedback factory processing](/features/feedback-factory-processing/) |
 | `feedback-factory-execute` | `17,47 * * * *` (twice hourly) | Gated script | Reconciles feedback fix attempts through `POST /feedback-factory/execute/tick`. The current script rollout keeps its prior session path until this slug is enabled; server execution starts in development dry-run, and the fleet route remains dark. |
 | `script-job-supervisor` | `23 7 * * *` (daily) | Script + bounded AI review | Reviews script-job decisions and missing-machine signals once daily when the script rollout is active. It stays inactive on agents where the rollout is off. |
+| `gemini-payg-reconcile` | `0 9,15 2 * *` (2nd of the month, 9am and a 3pm re-read) | Sonnet | Monthly invoice-drift check for the [Gemini pay-per-use lane](/features/routing-spend-control-room/): reads LAST month's spend for the lane's dedicated Google project from the billing page (read-only, through the account lane's signed-in browser profile) and posts the figure to `POST /routing-spend/reconciliation` — `unmeasurable` when the page cannot be read, never a guess. Reporting only: a record never moves a cap or the gate. Quiet unless drift is over 10% and over $2. Runs only on the spending machine (the route refuses elsewhere). Ships `enabled: false` fleet-wide; the operator's go-live plan turns it on for that agent |
 
 All jobs ship inside `src/scaffold/templates/jobs/instar/` and are installed on `instar init` plus refreshed on every update via `PostUpdateMigrator`.
 
@@ -102,3 +104,22 @@ These older jobs still exist in some agent installations for backward compatibil
 | `dispatch-check` | AutoDispatcher (built-in server component — no session needed) |
 
 Both replacements are server-side components that don't spawn Claude sessions, saving quota.
+
+
+## Failure investigation and promise review
+
+The `failure-callout-investigator` job investigates serious agent failures using
+the correction ledger. It runs at minutes 11 and 41, reserves a bounded batch
+before starting a model session, and retains the reservation during capacity
+queuing. Three unchanged attempts exhaust the automatic budget; a timer cannot
+reset it. The agent must provide diagnosis, class repair and current verification
+before closure. New occurrences reopen the case. Read the
+[correction learning guide](/features/correction-preference-learning/) for evidence,
+origin ownership and opt-out behavior.
+
+The separate `promise-review` job reviews tracked commitments against their
+actual state and records progress or evidence through the commitment system.
+It is not a substitute for investigating the root cause of a failure and does
+not authorize closing a failure case without its replay and legitimate-behavior
+checks. Both jobs keep unfinished work visible without asking the user to manage
+a second task list.

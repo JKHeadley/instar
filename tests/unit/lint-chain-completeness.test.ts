@@ -31,6 +31,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  */
 const REQUIRED_LINTS = [
   'lint-notification-selectivity.mjs',
+  // gemini-payg-metered-lane §4.1: one named reader for pay-per-use keys.
+  'lint-metered-secret-readers.js',
   // Round-18: added in the same commit that put this lint in the chain, which
   // is what this ratchet exists to force. Worth noting WHY it fired: the lint
   // in question is itself a gate against deferrals losing their carrier — and
@@ -43,6 +45,7 @@ const REQUIRED_LINTS = [
   // the inverse check caught that I had not, which is the ratchet working on
   // the author who wrote the previous entry's note about exactly this.
   'lint-framework-list-completeness.mjs',
+  'lint-framework-name-ratchet.mjs',
   // 2026-09-21 (wedge-sentinel-undefined-tick): refuses `{ ...DEFAULTS, ...cfg }`
   // merges that let an undefined value erase a default — the mechanism behind
   // ContextWedgeSentinel's ~1ms scan loop. Registered in the same change.
@@ -90,6 +93,8 @@ const REQUIRED_LINTS = [
   'lint-migration-consumer-completeness.js',
   'lint-ecosystem-adoption.mjs',
   'lint-plain-user-notices.mjs',
+  // Advisory (always exits 0): names awareness text added the old way instead of as a file in src/data/awareness/.
+  'lint-awareness-entry-registry.mjs',
   'lint-model-registry-freshness.mjs',
   'lint-nature-chains.mjs',
   'lint-no-blocking-process-scans.js',

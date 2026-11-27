@@ -172,6 +172,19 @@ describe('Coordination Mandate routes (spec §4)', () => {
     expect((await bad({ expiresAt: '2000-01-01T00:00:00Z' })).status).toBe(400);
   });
 
+  it('refuses to mint the repair-setting configure permission or its operator-unlock author (only the Accounts page issues it)', async () => {
+    const bad = (body: object) => fetch(`${server.url}/mandate/issue`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...FIRST_MANDATE, pin: PIN, ...body }),
+    });
+    const configure = await bad({ authorities: [{ action: 'subscription-relogin-configure',
+      bounds: { targetMachineId: 'm_x', configDigest: `sha256:${'a'.repeat(64)}`, operatorUnlock: 'dashboard-pin-session' } }] });
+    expect(configure.status).toBe(400);
+    expect((await bad({ author: 'dashboard-pin-operator' })).status).toBe(400);
+    // An ordinary mandate still issues.
+    expect((await bad({})).status).toBeLessThan(300);
+  });
+
   it('all mandate routes 503 when the engine is unavailable', async () => {
     const s2 = await listen(buildApp(null));
     try {

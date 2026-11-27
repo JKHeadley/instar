@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "slug": "cb-recovery-fit",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T22:11:08.743Z",
+  "artifactPath": "upgrades/side-effects/cb-recovery-fit.md",
+  "artifactSha256": "019cb3e1856001fa5c5a56f7d7c4779bc06332672f59503112ec92131d1ad5eb",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/BackupManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/compactionCanary.ts",
+    "tests/e2e/context-budget-canary-alive.test.ts",
+    "tests/e2e/recovery-output-fit-lifecycle.test.ts",
+    "tests/integration/recovery-truncation-canary-route.test.ts",
+    "tests/unit/compaction-canary.test.ts",
+    "tests/unit/recovery-output-fit.test.ts",
+    "upgrades/next/cb-recovery-fit.md",
+    "upgrades/side-effects/cb-recovery-fit.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hook output and canary change on the compaction recovery path; Fable 5.2 concurred after fixes",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "src/monitoring/compactionCanary.ts#isTruncatedHookOutput",
+      "howCaught": "The canary now judges the DELIVERED content (Claude Code's <persisted-output> wrapper marks a truncated delivery) instead of the printed stdout; tests/unit/recovery-output-fit.test.ts and the integration route test fail if a truncated delivery is credited as a recovery"
+    },
+    "component": "CompactionCanary"
+  }
+}
