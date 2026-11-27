@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { arrivedOverLocalTls, isLoopbackPeer } from '../core/desktopTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
 import {
   BROWSER_NOTIFYING_STUCK_MS, isBrowserDevice, isStrictLowSDer, keyHashOf, parseDevicePublicKey,
@@ -21,10 +22,11 @@ import {
 } from '../core/MobileDeviceKeys.js';
 import { CHUNK_BYTES, MAX_ATTACHMENTS, MAX_FILE_BYTES, MAX_MESSAGE_BYTES } from '../core/appMediaTypes.js';
 import { cleanText } from '../core/MobilePairing.js';
+import { exactStopPhrases } from '../core/MessageSentinel.js';
 import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { isMobileNativeEnabled, isPairingApproveEnabled, principalOf } from './mobilePairingRoutes.js';
+import { isMobileNativeEnabled, isMobileChatEnabled, isMobileMediaEnabled, isPairingApproveEnabled, principalOf } from './mobilePairingRoutes.js';
 
 export const BROWSER_FEATURE = 'mobilePairing.browser';
 export const ENROLL_PROOF_VERSION = 'instar-browser-enroll-v1';
@@ -54,7 +56,7 @@ export const FORWARDING_HEADER_PREFIXES: ReadonlyArray<string> = [
   'x-forwarded-', 'forwarded', 'cf-', 'cdn-loop', 'tailscale-', 'x-real-ip', 'true-client-ip',
 ];
 
-interface BrowserConfig { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number }
+interface BrowserConfig { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number; outboxEnabled?: boolean; outboxRecoveryGeneration?: string }
 function browserConfig(config: InstarConfig): BrowserConfig | undefined {
   return (config.mobilePairing as { browser?: BrowserConfig } | undefined)?.browser;
 }
@@ -95,7 +97,7 @@ export function isLoopbackHost(host: string | undefined | null): boolean {
  */
 export function loopbackBindingOk(d: Pick<DeviceRecord, 'client' | 'host'>, req: Pick<Request, 'headers' | 'socket'>): boolean {
   if (!isBrowserDevice(d) || !isLoopbackHost(d.host)) return false;
-  return isLoopbackPeer(req.socket.remoteAddress)
+  return mayBeLocalArrival(req) && isLoopbackPeer(req.socket.remoteAddress)
     && rawHost(req.headers.host) === d.host
     && !hasForwardingHeaders(req.headers as Record<string, unknown>);
 }
@@ -108,7 +110,7 @@ export function loopbackBindingOk(d: Pick<DeviceRecord, 'client' | 'host'>, req:
 export function boundSetupHost(req: Pick<Request, 'headers' | 'socket' | 'secure'>, svc: MobilePairingService): string | null {
   const port = svc.deps.config.port;
   const raw = rawHost(req.headers.host);
-  if (raw && isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>)
+  if (raw && mayBeLocalArrival(req) && isLoopbackPeer(req.socket.remoteAddress) && !hasForwardingHeaders(req.headers as Record<string, unknown>)
     && (raw === `localhost:${port}` || raw === `127.0.0.1:${port}`)) return raw;
   const h = normalizeRequestHost(req.headers.host);
   if (!h) return null;
@@ -143,6 +145,7 @@ const APPROVED_HOW: Record<string, string> = {
   'owner-phone': 'with Face ID on your phone',
   'dashboard-pin': 'with the dashboard PIN',
   'person-phone': 'by its owner\'s own phone',
+  'team-invite': 'from your team invite, with the code on your phone',
 };
 
 /**
@@ -445,10 +448,37 @@ export function browserKeyState(svc: MobilePairingService, keyHash: string): Rec
   return { state: 'not-found' };
 }
 
+export interface BrowserOutboxSupport {
+  version: 1;
+  enabled: boolean;
+  recoveryGeneration: string | null;
+  text: boolean;
+  media: boolean;
+  stopPhrases: readonly string[];
+}
+
+/** Protocol support on this server, not a delivery verdict or browser storage test. */
+export function browserOutboxSupport(
+  svc: MobilePairingService, wired?: { text: boolean; media: boolean },
+): BrowserOutboxSupport {
+  const config = browserConfig(svc.deps.config);
+  const rawGeneration = config?.outboxRecoveryGeneration;
+  const recoveryGeneration = rawGeneration === undefined ? '1'
+    : typeof rawGeneration === 'string' && rawGeneration.trim().length > 0 ? rawGeneration : null;
+  const enabled = svc.browserOn() && svc.nativeOn && config?.outboxEnabled !== false
+    && recoveryGeneration !== null && wired?.text === true;
+  return {
+    version: 1, enabled, recoveryGeneration,
+    text: enabled && isMobileChatEnabled(svc.deps.config),
+    media: enabled && wired?.media === true && isMobileMediaEnabled(svc.deps.config),
+    stopPhrases: exactStopPhrases(),
+  };
+}
+
 /** Bearer routes for browser setup (§4.2) and status (§4.6). */
 export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
-  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null> },
+  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null>; outboxWiring?: () => { text: boolean; media: boolean } },
 ): void {
   router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -468,6 +498,7 @@ export function mountBrowserDeviceRoutes(
       // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
       telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
       limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
+      outbox: browserOutboxSupport(svc, opts.outboxWiring?.()),
       ...(kh ? { key: browserKeyState(svc, kh) } : {}),
     });
   });
@@ -546,7 +577,8 @@ export function mountBrowserDeviceRoutes(
           detail: 'A browser setup was declined in the last hour, so new browser setups are paused until then.' });
         return;
       }
-      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending')) {
+      // A member's computer waiting for the owner's code is not an owner browser setup (member-browser-any-computer §3.3).
+      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending' && !d.joinedVia)) {
         held(409, 'browser-setup-waiting', { detail: 'Another browser is already waiting for approval. Approve or decline it first.' });
         return;
       }

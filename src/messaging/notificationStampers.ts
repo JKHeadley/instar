@@ -40,13 +40,13 @@ export const EMITTER_CATEGORIES = {
 } as const satisfies Record<string, NotificationCategoryId>;
 
 /** A composite root names its producer explicitly instead of inheriting ambient authority. */
-type NamedProducer = 'spend-alert-dispatcher' | 'quota-notifier' | 'reap-notifier' | 'promise-notice';
+type NamedProducer = 'spend-alert-dispatcher' | 'quota-notifier' | 'reap-notifier' | 'promise-notice' | 'profile-confirmation';
 const NAMED_EMITTERS: Partial<Record<keyof typeof EMITTER_CATEGORIES, Partial<Record<NamedProducer, NotificationCategoryId>>>> = {
   'src/server/AgentServer.ts': { 'spend-alert-dispatcher': 'spend-alert' },
   'src/commands/server.ts': { 'reap-notifier': 'reap-notice' },
   // The commitment check-in / late-promise reminder: the agent's own promise to the person, in that
   // person's conversation (docs/specs/overdue-promise-follow-through.md §3.5).
-  'src/server/routes.ts': { 'promise-notice': 'promise-notice' },
+  'src/server/routes.ts': { 'promise-notice': 'promise-notice', 'profile-confirmation': 'owner-decision' },
   'src/messaging/telegramSendSideComposition.ts': { 'quota-notifier': 'spend-alert', 'reap-notifier': 'reap-notice' },
 };
 export function notificationStamper(moduleId: keyof typeof EMITTER_CATEGORIES, producerId?: NamedProducer): () => OutboundEnvelope {

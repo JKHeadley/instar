@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-18T02:48:28.018Z",
+  "slug": "native-lock-observation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 387,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/NATIVE-OBSERVATION.md",
+      "scripts/locked-proof/driver.mjs",
+      "scripts/locked-proof/lib.mjs",
+      "scripts/locked-proof/native-observation.mjs",
+      "src/core/DesktopGuardObservation.ts",
+      "src/core/DesktopLockedController.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 365,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The existing desktop-relock-guard-replacement model exercises decideGuardReplacement under sustained pressure and proves the durable maximum of three replacements settles the controller. This change adds passive bounded observation at the existing spawn funnel; it introduces no new trigger, retry, or producer and does not change that production brake."
+    }
+  },
+  "verdict": "blocked"
+}

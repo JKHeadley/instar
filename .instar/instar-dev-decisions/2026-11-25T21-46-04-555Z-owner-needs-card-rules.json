@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-25T21:46:04.555Z",
+  "slug": "owner-needs-card-rules",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 736,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/ChiefOfStaffWaitCards.ts",
+      "src/core/OwnerNeedsCardAdmission.ts",
+      "src/core/OwnerNeedsCompletionDisclosure.ts",
+      "src/core/OwnerNeedsWithdrawal.ts",
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/workBoardViews.ts",
+      "src/server/AgentServer.ts",
+      "src/server/needsRoutes.ts",
+      "src/server/ownerNeedsTrustApproval.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 704,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

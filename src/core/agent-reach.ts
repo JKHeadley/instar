@@ -28,6 +28,8 @@
  * quote one back. Everything is sanitized and clamped, with omitted counts shown.
  */
 
+import type { SiblingPoolAccount, SiblingSnapshot, SiblingMachineView } from './sibling-holdings.js';
+
 /** The minimal registry surface this module reads (keeps it unit-testable). */
 export interface AgentReachRegistry {
   listProfiles(): Array<{
@@ -75,6 +77,55 @@ export interface AgentReach {
   omittedVaultEntries?: number;
   /** True when the vault could not be read (the gate is told holdings are unknown). */
   vaultUnreadable?: boolean;
+  /**
+   * Subscription accounts in THIS machine's pool (sibling-machine-reach). Present
+   * only when other machines are rendered; `localPoolUnreadable` = UNKNOWN.
+   */
+  localPoolAccounts?: SiblingPoolAccount[];
+  omittedLocalPoolAccounts?: number;
+  localPoolUnreadable?: boolean;
+  /** What the agent's OTHER machines hold, from the background cache (never a send-time fetch). */
+  otherMachines?: SiblingMachineView[];
+  /** Other machines whose holdings are UNKNOWN right now (not read recently). */
+  unknownMachines?: SiblingSnapshot['unknown'];
+  /**
+   * Opaque per-reach references to each rendered sibling browser profile (S1, S2, …).
+   * The gate cites one as `siblingProfileRef`; the route validates it against THIS map.
+   */
+  siblingProfileRefs?: Record<string, SiblingProfileRef>;
+}
+
+/** What one opaque sibling-profile reference stands for (server-side only). */
+export interface SiblingProfileRef {
+  machineId: string;
+  machine: string;
+  service: string;
+  identity: string;
+  owner: 'agent' | 'operator';
+  lastVerifiedAt?: string;
+  verifiedAddress?: string;
+  browserReadMinutesAgo: number;
+  signedInSubscriptionAccounts: number;
+  browserProfiles: number;
+}
+
+/** Optional extra facts for the reach (sibling-machine-reach spec). */
+export interface AgentReachExtras {
+  /** This machine's pool accounts; null = the pool could not be read. */
+  localPool?: SiblingPoolAccount[] | null;
+  /** The background cache's snapshot of the other machines. */
+  siblings?: SiblingSnapshot | null;
+}
+
+/** True when the reach carries other-machine data (the OTHER MACHINES section renders). */
+export function reachHasSiblings(reach: AgentReach | undefined | null): boolean {
+  return !!reach && ((reach.otherMachines?.length ?? 0) > 0 || (reach.unknownMachines?.length ?? 0) > 0);
+}
+
+/** The same reach with every sibling-machine field removed (the exact pre-feature reach). */
+export function withoutSiblings(reach: AgentReach): AgentReach {
+  const { localPoolAccounts: _a, omittedLocalPoolAccounts: _b, localPoolUnreadable: _c, otherMachines: _d, unknownMachines: _e, siblingProfileRefs: _f, ...local } = reach;
+  return local;
 }
 
 /**
@@ -114,7 +165,7 @@ function clean(value: unknown, max = MAX_FIELD): string {
  * Build the reach record. Never throws: a broken or missing registry yields an
  * empty account list (the key reads are always true of an instar agent).
  */
-export function buildAgentReach(registry: AgentReachRegistry | null | undefined): AgentReach {
+export function buildAgentReach(registry: AgentReachRegistry | null | undefined, extras?: AgentReachExtras): AgentReach {
   const accounts: AgentReachAccount[] = [];
   const boundNames = new Set<string>();
   let total = 0;
@@ -166,7 +217,136 @@ export function buildAgentReach(registry: AgentReachRegistry | null | undefined)
       reach.omittedVaultEntries = Math.max(0, unbound.length - reach.vaultEntries.length);
     }
   }
+  const sib = extras?.siblings;
+  if (sib && (sib.machines.length > 0 || sib.unknown.length > 0)) {
+    reach.otherMachines = sib.machines;
+    reach.unknownMachines = sib.unknown;
+    const refs: Record<string, SiblingProfileRef> = {};
+    let n = 0;
+    for (const m of sib.machines) {
+      if (!m.browser) continue;
+      const signedIn = m.pool ? m.pool.accounts.filter((a) => a.login === 'signed-in').length : 0;
+      for (const b of m.browser.accounts) {
+        n++;
+        refs[`S${n}`] = {
+          machineId: m.machineId,
+          machine: m.nickname || m.machineId,
+          service: b.service,
+          identity: b.identity,
+          owner: b.owner,
+          ...(b.lastVerifiedAt ? { lastVerifiedAt: b.lastVerifiedAt } : {}),
+          ...(m.verifiedAddress ? { verifiedAddress: m.verifiedAddress } : {}),
+          browserReadMinutesAgo: m.browser.ageMinutes,
+          signedInSubscriptionAccounts: signedIn,
+          browserProfiles: m.browser.accounts.length,
+        };
+      }
+    }
+    reach.siblingProfileRefs = refs;
+    // This machine's pool is shown only beside the other machines (for the contrast).
+    if (extras && 'localPool' in extras) {
+      if (extras.localPool === null) {
+        reach.localPoolUnreadable = true;
+      } else if (Array.isArray(extras.localPool)) {
+        const rows = extras.localPool
+          .map((a) => ({ label: clean(a.label, 64), email: clean(a.email, 128), provider: clean(a.provider, 32), login: a.login }))
+          .filter((a) => a.label && a.provider)
+          .map((a) => ({ label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, login: a.login }));
+        reach.localPoolAccounts = rows.slice(0, MAX_ACCOUNTS);
+        reach.omittedLocalPoolAccounts = Math.max(0, rows.length - MAX_ACCOUNTS);
+      }
+    }
+  }
   return reach;
+}
+
+function poolAccountText(a: SiblingPoolAccount): string {
+  const who = a.email && a.email !== a.label ? `${a.label} (${a.email})` : a.label;
+  return `${a.provider} / ${who} (${a.login})`;
+}
+
+function ageText(iso: string | undefined, nowMs: number): string {
+  if (!iso) return 'never verified';
+  const mins = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 60_000));
+  if (mins < 120) return `last verified ${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `last verified ${hours} h ago`;
+  return `last verified ${Math.round(hours / 24)} days ago`;
+}
+
+/** Total line budget for the OTHER MACHINES data (spec Fixed limits). */
+export const OTHER_MACHINES_LINE_BUDGET = 160;
+
+/**
+ * Render the OTHER MACHINES data as plain lines, one account per line, each sibling
+ * browser profile tagged with its opaque reference. Empty when the reach carries no
+ * other-machine data. Rendered by the gate in its own section, apart from the AGENT
+ * REACH block that B17 reads.
+ */
+export function renderOtherMachinesLines(reach: AgentReach, nowMs: number = Date.now()): string[] {
+  if (!reachHasSiblings(reach)) return [];
+  const lines: string[] = [];
+  if (reach.localPoolUnreadable) {
+    lines.push('Subscription accounts on THIS machine: could not be read just now (UNKNOWN, not empty).');
+  } else if (reach.localPoolAccounts) {
+    if (reach.localPoolAccounts.length === 0) lines.push('Subscription accounts on THIS machine: none.');
+    else {
+      lines.push('Subscription accounts on THIS machine:');
+      for (const a of reach.localPoolAccounts) lines.push(`- ${poolAccountText(a)}`);
+      if ((reach.omittedLocalPoolAccounts ?? 0) > 0) lines.push(`- …and ${reach.omittedLocalPoolAccounts} more`);
+    }
+  }
+  const refByKey = new Map<string, string>();
+  for (const [ref, r] of Object.entries(reach.siblingProfileRefs ?? {})) refByKey.set(`${r.machineId}\u0000${r.service}\u0000${r.identity}`, ref);
+  const machines = reach.otherMachines ?? [];
+  if (machines.length > 0) {
+    lines.push("Your OTHER machines (the agent reaches them itself: a helper session there, or start a login on the machine missing the account and approve it in another machine's browser profile; last-asserted, not proven):");
+    let collapsed = 0;
+    for (const m of machines) {
+      const name = m.nickname || m.machineId;
+      const poolPart = m.pool ? `subscription accounts read ${m.pool.ageMinutes} min ago` : `subscription accounts: UNKNOWN (${m.poolUnknownReason ?? 'unknown'})`;
+      const browserPart = m.browser ? `browser profiles read ${m.browser.ageMinutes} min ago` : `browser profiles: UNKNOWN (${m.browserUnknownReason ?? 'unknown'})`;
+      const body: string[] = [];
+      if (m.pool) {
+        if (m.pool.accounts.length === 0) body.push('  - subscription accounts: none');
+        for (const a of m.pool.accounts) body.push(`  - subscription account: ${poolAccountText(a)}`);
+        if (m.pool.omitted > 0) body.push(`  - …and ${m.pool.omitted} more subscription accounts`);
+      }
+      if (m.browser) {
+        if (m.browser.accounts.length === 0) body.push('  - browser profiles: none signed in');
+        for (const b of m.browser.accounts) {
+          const ref = refByKey.get(`${m.machineId}\u0000${b.service}\u0000${b.identity}`) ?? '?';
+          const owner = b.owner === 'operator' ? "operator's account" : "agent's account";
+          body.push(`  - [${ref}] browser profile asserted signed in: ${b.service} / ${b.identity} (${owner}; ${ageText(b.lastVerifiedAt, nowMs)})`);
+        }
+        if (m.browser.omitted > 0) body.push(`  - …and ${m.browser.omitted} more browser profiles`);
+      }
+      if (lines.length + 1 + body.length > OTHER_MACHINES_LINE_BUDGET) {
+        collapsed++;
+        lines.push(`- ${name}: ${m.pool?.accounts.length ?? 0} subscription accounts, ${m.browser?.accounts.length ?? 0} browser profiles, not shown (prompt budget)`);
+        continue;
+      }
+      lines.push(`- ${name} (${poolPart}; ${browserPart}):`);
+      lines.push(...body);
+    }
+    void collapsed;
+  }
+  if (reach.unknownMachines && reach.unknownMachines.length > 0) {
+    const names = reach.unknownMachines.map((u) => `${u.nickname || u.machineId} (${u.reason})`).join(', ');
+    lines.push(`Other machines whose holdings are UNKNOWN right now (unknown, not empty): ${names}`.slice(0, 380));
+  }
+  return lines;
+}
+
+/** Every account identity rendered in the OTHER MACHINES data (for redaction of model text). */
+export function renderedSiblingIdentities(reach: AgentReach): string[] {
+  const out = new Set<string>();
+  for (const a of reach.localPoolAccounts ?? []) { out.add(a.label); if (a.email) out.add(a.email); }
+  for (const m of reach.otherMachines ?? []) {
+    for (const a of m.pool?.accounts ?? []) { out.add(a.label); if (a.email) out.add(a.email); }
+    for (const b of m.browser?.accounts ?? []) out.add(b.identity);
+  }
+  return [...out].filter((v) => v.length >= 3).sort((x, y) => y.length - x.length);
 }
 
 /** Render the reach as plain lines (no boundary; the caller wraps it). */

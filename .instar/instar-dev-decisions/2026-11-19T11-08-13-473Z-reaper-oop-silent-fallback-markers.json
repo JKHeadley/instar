@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T11:08:13.473Z",
+  "slug": "reaper-oop-silent-fallback-markers",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/agentWorktreeGit.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only change; adds no loop"
+  },
+  "verdict": "pass"
+}

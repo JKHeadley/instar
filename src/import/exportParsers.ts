@@ -39,39 +39,70 @@ export const REMOVED_MARKER = '[removed: looked like a secret]';
 
 /** The scrub, with the plain marker the person reads. Returns the text and how many spans were removed. */
 export function removeSecrets(text: string): { text: string; removed: number } {
-  // The scrub's timing is proven up to its default bound (1 MB). A longer text is scrubbed in windows
-  // cut at whitespace (a key or token has none), so no window exceeds the bound and no secret is split.
   if (text.length <= SCRUB_WINDOW) return scrubOne(text);
-  let removed = 0;
-  let out = '';
+  // The scrub's timing is proven up to its default bound (1 MB), so a longer text is scanned in windows.
+  // Windows OVERLAP by SCRUB_OVERLAP and every span is kept in whole-text coordinates, so a match that a
+  // window edge cuts in two is found whole by the next window. Cutting at whitespace instead is not
+  // enough: some secret shapes carry whitespace inside them (a `Bearer <token>` pair, a `password: value`
+  // pair, a private key block), and a long run with no whitespace near the edge forces a cut mid-token.
+  const spans: Array<[number, number]> = [];
   let pos = 0;
   while (pos < text.length) {
-    let end = Math.min(text.length, pos + SCRUB_WINDOW);
-    if (end < text.length) end = windowCut(text, pos, end);
-    const r = scrubOne(text.slice(pos, end));
-    out += r.text;
-    removed += r.removed;
-    pos = end;
+    const end = Math.min(text.length, pos + SCRUB_WINDOW);
+    const r = scrubForStore(text.slice(pos, end), { maxBytes: SCRUB_WINDOW });
+    let next = end - SCRUB_OVERLAP;
+    for (const s of r.redactions) {
+      let a = pos + s.offset;
+      let b = a + s.length;
+      if (b === end && end < text.length) {
+        // The match runs into the window edge, so it may continue past it. Its run is removed through to
+        // the next whitespace (fail toward removal: a labelled value re-read from its own start has lost
+        // its label and would not match again). The next window also starts at the match, so whatever
+        // follows the run is read with the match's context.
+        while (b < text.length && !/\s/.test(text[b]!)) b++;
+        next = a > pos ? Math.min(next, a) : Math.max(next, b);
+      }
+      spans.push([a, b]);
+    }
+    if (end >= text.length) break;
+    pos = Math.max(pos + 1, next);
   }
-  return { text: out, removed };
+  return applySpans(text, spans);
 }
 
 const SCRUB_WINDOW = 1_000_000;
-const CUT_LOOKBACK = 16_384;
-
 /**
- * Where to end a scrub window: never inside a PEM block (its pattern needs BEGIN and END together),
- * preferably at a line break (a `.env` line stays whole), otherwise at whitespace.
+ * Longer than every bounded secret shape that must be seen whole to match (a private key block is at most
+ * ~8.3 KB, a project key ~4.2 KB). A token run that reaches a window edge is caught by the edge rule
+ * above. Not covered: a JWT whose middle segment alone exceeds the overlap, and a label separated from its
+ * value by more than the overlap in whitespace.
  */
-function windowCut(text: string, pos: number, end: number): number {
-  const from = Math.max(pos + 1, end - CUT_LOOKBACK);
-  const tail = text.slice(from, end);
-  const begin = tail.lastIndexOf('-----BEGIN');
-  if (begin >= 0 && tail.indexOf('-----END', begin) < 0) return from + begin;
-  const nl = tail.lastIndexOf('\n');
-  if (nl >= 0) return from + nl + 1;
-  const ws = tail.search(/\s[^\s]*$/);
-  return ws >= 0 ? from + ws + 1 : end;
+const SCRUB_OVERLAP = 65_536;
+
+/** A removal longer than this says how much it removed, so a reader knows text is missing (an extended run, a scrub error). */
+const LONG_REMOVAL = 1_024;
+
+/** Replace the union of the spans with the marker; overlapping or duplicate spans count once. */
+function applySpans(text: string, spans: Array<[number, number]>): { text: string; removed: number } {
+  if (!spans.length) return { text, removed: 0 };
+  spans.sort((x, y) => (x[0] - y[0]) || (y[1] - x[1]));
+  let out = '';
+  let last = 0;
+  let removed = 0;
+  let cur: [number, number] | null = null;
+  const flush = (): void => {
+    if (!cur) return;
+    const len = cur[1] - cur[0];
+    out += text.slice(last, cur[0]) + (len > LONG_REMOVAL ? `${REMOVED_MARKER} (${len} characters)` : REMOVED_MARKER);
+    last = cur[1];
+    removed++;
+  };
+  for (const s of spans) {
+    if (cur && s[0] < cur[1]) cur[1] = Math.max(cur[1], s[1]);
+    else { flush(); cur = [s[0], s[1]]; }
+  }
+  flush();
+  return { text: out + text.slice(last), removed };
 }
 
 function scrubOne(text: string): { text: string; removed: number } {

@@ -12,7 +12,7 @@ import type { SubscriptionAccount, SubscriptionPool } from './SubscriptionPool.j
 import { isDeviceLimitBenched, isLocallyExecutable } from './SubscriptionPool.js';
 import type { SubscriptionLoginLedger } from './SubscriptionLoginLedger.js';
 import type { QuotaPoller } from './QuotaPoller.js';
-import { selectAccount } from './QuotaAwareScheduler.js';
+import { selectAccount, type SelectionOptions } from './QuotaAwareScheduler.js';
 import { CodexDeviceLimitJudge, appendDeviceLimitLog, type JevCodexDeviceLimitConfig } from './CodexDeviceLimitJudge.js';
 import { CodexDeviceLimitTripwire, type DeviceLimitNotice, type DeviceLimitJudgeLike } from './CodexDeviceLimitTripwire.js';
 import { DeviceLimitSessionMover, type DeviceLimitMoverSession } from './DeviceLimitSessionMover.js';
@@ -21,6 +21,8 @@ export const DEVICE_LIMIT_ATTENTION_CATEGORY = 'subscription-device-limit';
 export const deviceLimitConditionKey = (machineId: string): string => `codex-device-limit:${machineId}`;
 
 export interface CodexDeviceLimitWiringDeps {
+  /** quota-pacing step 2: window-aware selection options for the referee pick (absent/{} = today's rule). */
+  windowAwareSelection?: () => Partial<SelectionOptions>;
   pool: SubscriptionPool;
   ledger: SubscriptionLoginLedger | null;
   quotaPoller: QuotaPoller;
@@ -86,7 +88,7 @@ export function buildCodexDeviceLimitWiring(deps: CodexDeviceLimitWiringDeps): C
     // that is suspected or benched; with none, the referee is unavailable (never the default home).
     pickRefereeAccount: (judgedAccountId) => {
       const candidates = codexAccounts().filter((a) => !a.deviceLimitSuspectedAt && !isDeviceLimitBenched(a));
-      const pick = selectAccount(candidates, { framework: 'codex-cli', nowMs: now() }, judgedAccountId);
+      const pick = selectAccount(candidates, { framework: 'codex-cli', nowMs: now(), ...(deps.windowAwareSelection?.() ?? {}) }, judgedAccountId);
       return pick ? { accountId: pick.id, configHome: pick.configHome } : null;
     },
     codexAccountCount: () => codexAccounts().length,

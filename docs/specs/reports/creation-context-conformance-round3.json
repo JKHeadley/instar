@@ -1,0 +1,40 @@
+{
+  "report": {
+    "standardsChecked": 102,
+    "checkedAt": "2026-11-22T22:37:16.817Z",
+    "findings": [
+      {
+        "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "An older installed peer can retain the chat while losing its origin, yet the spec allows creation to succeed without requiring an all-member receipt or exposing the origin as Pending, so losing the creator can leave a surviving machine unable to recover the placement evidence."
+      },
+      {
+        "standard": "Cross-Store Coherence Is an Invariant",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The projection prefers indexed context and consults the companion only on absence, while boot reconciliation repairs missing companions, so neither path checks on a cadence that two present copies agree on the context itself."
+      },
+      {
+        "standard": "Judgment Within Floors",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "Even with the rich graph disabled and an empty Chief cache, a legitimate first list request after restart can trigger cycle analysis over every resolved record before pagination, so a finite inventory alone does not justify treating whole-inventory request-time work as safe under the host\u2019s resource floor."
+      },
+      {
+        "standard": "Attributed Statements Trace to Their Source",
+        "family": "Interaction",
+        "status": "possible-violation",
+        "reason": "The testing section calls queue routing the operator\u2019s explicit instruction but quotes a Chief of Staff handoff, leaving the attribution to the operator without a pointer to the operator\u2019s own logged words."
+      }
+    ],
+    "degraded": false
+  },
+  "registryCanary": {
+    "ok": true,
+    "articleCount": 102,
+    "failures": [],
+    "articleHeadings": 102,
+    "completenessAssessed": true
+  }
+}

@@ -165,6 +165,16 @@ export class DashboardSessionStore {
     return () => { set!.delete(listener); if (set!.size === 0) this.listeners.delete(e.familyId); };
   }
 
+  /**
+   * identity-security-piece1c: the family a live token belongs to, so the owner-PIN budget is keyed
+   * on the family (a refresh mints a new token in the same family and must not grant fresh guesses).
+   */
+  familyIdForToken(token: string | undefined): string | null {
+    if (!token) return null;
+    const e = this.tokens.get(this.digest(token));
+    return e ? e.familyId : null;
+  }
+
   /** True iff the token's FAMILY is still alive — resolved via the LIVE map OR a tombstone, so a stream
    *  whose token merely ROTATED (the old token is now consumed, but the family lives) is NOT closed.
    *  This is the per-delivery stream-liveness check: `verify()` (live-token-only) would over-close a

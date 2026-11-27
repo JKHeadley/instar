@@ -25,7 +25,7 @@ import {
 import { gitWorks, packageInstallCommand, INSTALLED_AGENT_MOBILE_PAIRING, pairingLinkOrigin, restrictToOwner, looksLikeClaudeToken, writeClaudeToken, answersFileProblem, buildInstallHandlers, sqliteInstallCommand, tailscaleOperatorCommand, ensureViewingPin, finishAgentConfig, INSTALL_EXIT_CODES, installInitOptions, reportedStatus, tmuxInstallCommand, type InstallEnv, MIN_FREE_BYTES, preflightRefusal, presetFromAnswers } from '../../src/commands/install.js';
 
 const ALL_ACTIONS: WizardActionKind[] = [
-  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'door-sign-in', 'agent-init',
+  'install-preflight', 'install-tools', 'install-tailscale-operator', 'door-install', 'account-choice', 'door-sign-in', 'agent-init',
   'start-server', 'install-autostart', 'owner-slot',
 ];
 
@@ -375,10 +375,10 @@ describe('door sign-in step', () => {
     now: () => 0,
     ...overrides,
   } as InstallEnv);
-  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting']) => {
+  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting'], forApp = false) => {
     const progress = newInstallProgress('do-door-sign-in');
     if (awaiting) progress.awaiting = awaiting;
-    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code' }, progress);
+    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code', forApp }, progress);
   };
 
   it('never signs in over a login it can see or can\'t judge', async () => {
@@ -387,6 +387,17 @@ describe('door sign-in step', () => {
     expect(await run(stub({ proveSignedIn: async () => 'signed-in', startDetached }))).toEqual({ kind: 'done' });
     expect((await run(stub({ proveSignedIn: async () => 'unknown', startDetached }))).kind).toBe('done');
     expect(started).toEqual([]);
+  });
+
+  it('pauses app setup when the selected sign-in cannot be verified', async () => {
+    const startDetached = () => { throw new Error('an unknown sign-in must not be replaced'); };
+    const unknown = stub({ proveSignedIn: async () => 'unknown', startDetached });
+    const signedIn = stub({ proveSignedIn: async () => 'signed-in', startDetached });
+    expect(await run(unknown, undefined, true)).toMatchObject({ kind: 'failed', message: expect.stringContaining("Couldn't verify") });
+    const openLogin = { state: 'do-door-sign-in', instruction: '', loginPid: 111, loginStamp: 'stamp-a' };
+    expect(await run(unknown, openLogin, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
+    expect(await run(signedIn, undefined, true)).toEqual({ kind: 'done' });
+    expect(await run(stub({}), undefined, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
   });
 
   it('with no browser, sends the person to their terminal and starts nothing', async () => {

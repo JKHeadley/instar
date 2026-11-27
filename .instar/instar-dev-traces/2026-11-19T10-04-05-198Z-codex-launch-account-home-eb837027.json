@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "codex-launch-account-home",
+  "sessionId": "67b86979-6270-4259-9115-b0a451a0856f",
+  "timestamp": "2026-11-19T10:04:05.198Z",
+  "artifactPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "artifactSha256": "28f4bc5c0100c3b6136ac00c9d2279527490d2353c3aea46b603fd7f02d96497",
+  "coveredFiles": [
+    "docs/specs/codex-launch-account-home.eli16.md",
+    "src/core/codexResumeRollout.ts",
+    "upgrades/side-effects/codex-launch-account-home.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only exemption marker on the one catch in codexResumeRollout.ts (a vanished file reads as not-found), so the silent-fallback ratchet stays at baseline on the merge with main. No behaviour change.",
+  "eli16Path": "docs/specs/codex-launch-account-home.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

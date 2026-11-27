@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { createLifecycle, splitHash } from '../../dashboard/console/page-lifecycle.js';
+import { AGENT_NOTE_REFRESH_MS } from '../../dashboard/console/agent-health-note.js';
 
 describe('page-lifecycle (pure)', () => {
   it('runs disposers once, in order, before the next visit', () => {
@@ -69,6 +70,38 @@ describe('page-lifecycle (pure)', () => {
     expect(lc.isSelfRefreshing()).toBe(true);
     lc.begin('q');
     expect(lc.isSelfRefreshing()).toBe(false);
+  });
+
+  it('awaits reconnect in place without disposing the composer visit', async () => {
+    const lc = createLifecycle();
+    const visit = lc.begin('work/chats');
+    const dispose = vi.fn(); visit.onDispose(dispose);
+    let finish!: () => void;
+    visit.onReconnect(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const work = lc.reconnectCurrent();
+    expect(visit.isCurrent()).toBe(true);
+    expect(dispose).not.toHaveBeenCalled();
+    finish(); expect(await work).toBe(true);
+    expect(visit.isCurrent()).toBe(true);
+  });
+
+  it('does not report success for a reconnect belonging to a disposed visit', async () => {
+    const lc = createLifecycle();
+    const visit = lc.begin('work/chats');
+    let finish!: () => void;
+    visit.onReconnect(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const work = lc.reconnectCurrent(); lc.begin('work'); finish();
+    expect(await work).toBe(false);
+    expect(await lc.reconnectCurrent()).toBeNull();
+  });
+
+  it('reports a failed reconnect without throwing or rebuilding', async () => {
+    const report = vi.fn(); const lc = createLifecycle({ report });
+    const visit = lc.begin('work/chats');
+    visit.onReconnect(async () => { throw new Error('history could not be read'); });
+    expect(await lc.reconnectCurrent()).toBe(false);
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(visit.isCurrent()).toBe(true);
   });
 
   it('splits the hash', () => {
@@ -157,6 +190,12 @@ describe('console routing lifecycle (jsdom)', () => {
     expect([...live.values()].filter((ms) => ms === 45_000).length).toBeLessThanOrEqual(1);
   });
 
+  it('the Agent door\'s status dot keeps one refresh timer of its own across many door changes', async () => {
+    await boot('#/work/chats');
+    for (let i = 0; i < 6; i++) { await go('#/work/board'); await go('#/agent'); await go('#/work/chats'); }
+    expect([...live.values()].filter((ms) => ms === AGENT_NOTE_REFRESH_MS).length).toBe(1);
+  });
+
   it('Home lands on the Conversations door on the web console', async () => {
     const doc = await boot('#/home');
     expect(doc.defaultView!.location.hash).toMatch(/^#\/work\/(chats|conversations)$/);
@@ -187,4 +226,48 @@ describe('console routing lifecycle (jsdom)', () => {
     expect(tile()).toBeTruthy();
     expect(tile()?.closest('[hidden]')).toBeFalsy();
   });
+  it('removes stale conversation content and local legacy copies on a sibling logout without adopting its new sign-in', async () => {
+    const doc = await boot('#/work/chats', { '/mobile/browser-devices/status': 503 });
+    const { UNFINISHED_KEY } = await import('../../dashboard/console/chats-model.js');
+    dom.window.sessionStorage.setItem(UNFINISHED_KEY, JSON.stringify([{ text: 'private pending text' }]));
+    const old = doc.createElement('p'); old.textContent = 'old conversation plaintext'; doc.body.append(old);
+    dom.window.localStorage.removeItem('instar_token');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'instar_token', oldValue: 't', newValue: null }));
+    expect(doc.body.textContent).not.toContain('old conversation plaintext');
+    expect(dom.window.sessionStorage.getItem(UNFINISHED_KEY)).toBeNull();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(doc.body.textContent).toContain('signed out in another tab');
+    dom.window.localStorage.setItem('instar_token', 'new-sibling-token');
+    dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: 'instar_token', oldValue: null, newValue: 'new-sibling-token' }));
+    await go('#/work');
+    expect(doc.body.textContent).toContain('signed out in another tab');
+    expect(doc.querySelector('main#main')).toBeNull();
+  });
+
+  it('a resumed tab checks the current stored sign-in before keeping its previous page', async () => {
+    const doc = await boot('#/work/chats', { '/mobile/browser-devices/status': 503 });
+    const old = doc.createElement('p'); old.textContent = 'resumed old conversation'; doc.body.append(old);
+    dom.window.localStorage.setItem('instar_token', 'different-sign-in');
+    dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pageshow'));
+    expect(doc.body.textContent).not.toContain('resumed old conversation');
+    for (let i = 0; i < 4; i++) await flush();
+    expect(doc.body.textContent).toContain('signed out in another tab');
+    expect(dom.window.localStorage.getItem('instar_token')).toBe('different-sign-in');
+  });
+
+  it('a paused sibling stays signed out even when another PIN unlock restores the same bearer', async () => {
+    const doc = await boot('#/work/chats', { '/mobile/browser-devices/status': 503 });
+    const { UNFINISHED_KEY } = await import('../../dashboard/console/chats-model.js');
+    dom.window.sessionStorage.setItem(UNFINISHED_KEY, JSON.stringify([{ text: 'old private copy' }]));
+    const old = doc.createElement('p'); old.textContent = 'paused plaintext'; doc.body.append(old);
+    // No storage events: simulate a suspended tab returning after logout AND a new sign-in.
+    dom.window.localStorage.setItem('instar_console_logout_fence', 'later-explicit-logout');
+    dom.window.localStorage.setItem('instar_token', 't');
+    dom.window.dispatchEvent(new dom.window.PageTransitionEvent('pageshow'));
+    expect(doc.body.textContent).not.toContain('paused plaintext');
+    expect(dom.window.sessionStorage.getItem(UNFINISHED_KEY)).toBeNull();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(doc.body.textContent).toContain('signed out in another tab');
+  });
+
 });

@@ -50,6 +50,12 @@ export interface ForegroundRestartWatcherConfig {
   exitOnRestart?: boolean;
   /** Process exit code. Default: 0. */
   exitCode?: number;
+  /**
+   * planned-restart-keeps-lead §1 step 3 — before this consumer acts on a request, give the lease
+   * holder one chance to persist a window renewal for it (null = nothing to wait for). Awaited once
+   * per request; the file and the ledger are re-read afterwards.
+   */
+  beforeConsume?: (request: RestartRequest) => Promise<unknown> | null;
 }
 
 export class ForegroundRestartWatcher extends EventEmitter {
@@ -58,6 +64,9 @@ export class ForegroundRestartWatcher extends EventEmitter {
   private flagPath: string;
   private isShuttingDown = false;
   private deferredRestartRequestedAt: string | null = null;
+  /** The request whose `beforeConsume` wait ran (or is running); the same request is not waited for twice. */
+  private continuityAwaitedFor: string | null = null;
+  private awaitingContinuity = false;
 
   constructor(config: ForegroundRestartWatcherConfig) {
     super();
@@ -86,13 +95,31 @@ export class ForegroundRestartWatcher extends EventEmitter {
    * Check for a restart-requested signal. If found and valid, trigger shutdown.
    */
   private async check(): Promise<void> {
-    if (this.isShuttingDown) return;
+    if (this.isShuttingDown || this.awaitingContinuity) return;
 
     try {
       if (!fs.existsSync(this.flagPath)) return;
 
       const raw = fs.readFileSync(this.flagPath, 'utf-8');
-      const data: RestartRequest = JSON.parse(raw);
+      let data: RestartRequest = JSON.parse(raw);
+
+      // planned-restart-keeps-lead §1 step 3 — one bounded wait per request for the holder's
+      // window renewal, with the guard held so a second tick cannot consume meanwhile. Afterwards
+      // the file is re-read: gone (withdrawn, or taken by the supervisor) means nothing to do here.
+      const key = `${data.requestedAt}|${data.requestedBy}`;
+      if (this.config.beforeConsume && this.continuityAwaitedFor !== key) {
+        this.continuityAwaitedFor = key;
+        const wait = this.config.beforeConsume(data);
+        if (wait) {
+          this.awaitingContinuity = true;
+          try { await wait; } catch { /* @silent-fallback-ok: the wait is a courtesy to the lease; the restart proceeds */ }
+          finally { this.awaitingContinuity = false; }
+          if (this.isShuttingDown) return;
+          if (!fs.existsSync(this.flagPath)) { this.continuityAwaitedFor = null; return; }
+          data = JSON.parse(fs.readFileSync(this.flagPath, 'utf-8')) as RestartRequest;
+          if (`${data.requestedAt}|${data.requestedBy}` !== key) { this.continuityAwaitedFor = null; return; } // a different request: judged on the next tick
+        }
+      }
 
       // The foreground consumer races the supervisor for the same flag. Both
       // must honor the active full-suite child before either consumes it.

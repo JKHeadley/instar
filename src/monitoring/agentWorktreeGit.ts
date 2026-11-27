@@ -17,6 +17,7 @@ import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import { classifyPorcelain } from '../core/worktreeDirtyCheck.js';
 import type { AgentWorktreeReaperDeps, WorktreeInfo } from './AgentWorktreeReaper.js';
 import { type WorktreeEnumeration, summarizeEnumerationError } from './worktreeEnumeration.js';
+import { GENERATED_STANDARDS_REGISTRY_OUTPUTS } from '../core/standardsRegistryPath.js';
 
 /**
  * Reaper-specific residue denylist (spec: worktree-reaper-untracked-blindspot).
@@ -27,6 +28,13 @@ import { type WorktreeEnumeration, summarizeEnumerationError } from './worktreeE
  * config list + other consumers); the reaper carries its own list.
  */
 export const REAPER_RESIDUE_DENYLIST: readonly string[] = [];
+
+/**
+ * The reaper's trash folder directly under `.worktrees/` (spec
+ * reaper-removal-out-of-process §2). Nothing in it is a live worktree; every walk
+ * and listing of `.worktrees/*` skips it.
+ */
+export const WORKTREE_TRASH_DIRNAME = '.trash';
 
 /** Read-only git executor signature (injected so this module is testable). */
 export type ReadGit = (args: string[], cwd: string) => string;
@@ -53,10 +61,49 @@ export function isGateRecordPath(relPath: string): boolean {
  *     checkouts may link into it.
  *   - root `dist/`: only when every file in it maps back to a source file
  *     the checkout's own tsconfig compiles into it (see distIsBuildOutput).
+ *   - the registry copy (`GENERATED_STANDARDS_REGISTRY_OUTPUTS[0]`): only when its git blob hash equals
+ *     `HEAD:docs/STANDARDS-REGISTRY.md`, so its exact bytes are in a commit
+ *     (spec reaper-generated-files-regenerable §1).
+ * `archived-residue` (spec reaper-generated-files-regenerable §2-3): the closed
+ * list of the repo's own generated files below, regular files only. Not proven,
+ * so their bytes are archived and verified before removal, like gate records.
  * Anything else ignored stays `work`, as before (a hand-made `notes/dist/`
  * or an `audit-data/` folder keeps the checkout).
  */
-export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'work';
+export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'archived-residue' | 'work';
+
+/**
+ * The repo's own generated files (spec docs/specs/reaper-generated-files-regenerable.md §2).
+ * A closed list: each entry names the step that writes it. These are NOT proven
+ * regenerable, so `preserveGateRecords` archives their bytes and verifies the
+ * copy before the checkout can be removed. A path is added here only with a
+ * named writer and a measurement, never by a judgment at deletion time.
+ */
+export const ARCHIVED_RESIDUE_FILES: Readonly<Record<string, string>> = {
+  [GENERATED_STANDARDS_REGISTRY_OUTPUTS[1]]: 'scripts/generate-standards-registry-asset.mjs',
+  'src/data/standards-guard-index.json': 'scripts/generate-standards-registry-asset.mjs',
+  'src/data/standards-guard-index.meta.json': 'scripts/generate-standards-registry-asset.mjs',
+  'src/data/builtin-manifest.json': 'scripts/generate-builtin-manifest.cjs',
+  '.instar/standards-coverage.json': 'scripts/standards-coverage.mjs',
+  '.instar/dup-build-cache.json': 'scripts/lib/duplicate-build-check.mjs',
+  '.instar/docs-coverage.json': 'scripts/docs-coverage.mjs',
+  '.instar/docs-coverage.md': 'scripts/docs-coverage.mjs',
+};
+
+/**
+ * Folders whose direct children are archived residue (one level only; a
+ * subfolder, a link or a name off the rule makes the whole folder `work`).
+ *   - `.husky/_/`: husky's install in `npm run prepare` (hook stubs, `h`, `husky.sh`, `.gitignore`).
+ *   - `.instar/audit/`: the per-checkout SafeGitExecutor / SafeFsExecutor audit trails.
+ */
+export const ARCHIVED_RESIDUE_DIRS: Readonly<Record<string, { writer: string; child: RegExp }>> = {
+  '.husky/_': { writer: 'husky install (npm run prepare)', child: /^[^/]+$/ },
+  '.instar/audit': { writer: 'SafeGitExecutor / SafeFsExecutor audit trail', child: /^[^/]+\.jsonl(?:\.1)?$/ },
+};
+
+/** The generator writes a verbatim byte copy of this tracked file (scripts/generate-standards-registry-asset.mjs). */
+export const REGISTRY_COPY_PATH: string = GENERATED_STANDARDS_REGISTRY_OUTPUTS[0];
+export const REGISTRY_SOURCE_PATH = 'docs/STANDARDS-REGISTRY.md';
 
 /** All compiler outputs of one build are written within this window. */
 export const DIST_BUILD_WINDOW_MS = 15 * 60_000;
@@ -124,14 +171,88 @@ function distIsBuildOutput(checkout: string): boolean {
   }
 }
 
-export function classifyIgnoredEntry(relPath: string, checkout: string): IgnoredEntryClass {
+export function classifyIgnoredEntry(relPath: string, checkout: string, readGit?: ReadGit): IgnoredEntryClass {
   if (isGateRecordPath(relPath)) return 'gate-record';
   const segments = relPath.replace(/\/+$/, '').split('/');
   if (segments.some((s) => s === '' || s === '..' || s === '.')) return 'work';
   const nm = segments.indexOf('node_modules');
   if (nm >= 0) return isSymlink(path.join(checkout, ...segments.slice(0, nm + 1))) ? 'regenerable' : 'work';
   if (segments[0] === 'dist' && distIsBuildOutput(checkout)) return 'regenerable';
+  const rel = segments.join('/');
+  if (rel === REGISTRY_COPY_PATH) return readGit && registryCopyIsCommitted(checkout, readGit) ? 'regenerable' : 'work';
+  if (Object.prototype.hasOwnProperty.call(ARCHIVED_RESIDUE_FILES, rel)) {
+    return isPlainFileInCheckout(checkout, segments) ? 'archived-residue' : 'work';
+  }
+  if (Object.prototype.hasOwnProperty.call(ARCHIVED_RESIDUE_DIRS, rel)) {
+    // A wholly ignored folder git reports as one entry: read exactly one level.
+    return expandResidueDir(checkout, rel) ? 'archived-residue' : 'work';
+  }
+  const parent = segments.slice(0, -1).join('/');
+  if (segments.length > 1 && Object.prototype.hasOwnProperty.call(ARCHIVED_RESIDUE_DIRS, parent)) {
+    // One child of a listed folder, reported by name.
+    return ARCHIVED_RESIDUE_DIRS[parent].child.test(segments[segments.length - 1]) && isPlainFileInCheckout(checkout, segments)
+      ? 'archived-residue' : 'work';
+  }
   return 'work';
+}
+
+/**
+ * The registry copy is provably in a commit only when its git blob hash equals
+ * the blob of its tracked source at HEAD. Any failure ⇒ not proven ⇒ work.
+ */
+function registryCopyIsCommitted(checkout: string, readGit: ReadGit): boolean {
+  const segments = REGISTRY_COPY_PATH.split('/');
+  if (!isPlainFileInCheckout(checkout, segments)) return false;
+  try {
+    const source = readGit(['-C', checkout, 'rev-parse', '--verify', '--quiet', `HEAD:${REGISTRY_SOURCE_PATH}`], checkout).trim();
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(source)) return false;
+    // The copy's git blob id, computed in-process (git's own formula: "blob <size>\0" + bytes,
+    // SHA-1 or SHA-256 by the repo's object format). `git hash-object` is refused by the
+    // source-tree guard inside every agent worktree, which made this proof fail for every
+    // checkout in production (the unit fixture was not a source-tree checkout).
+    const bytes = fs.readFileSync(path.join(checkout, ...segments));
+    const copy = crypto.createHash(source.length === 64 ? 'sha256' : 'sha1')
+      .update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
+    return copy === source;
+  } catch {
+    return false; // @silent-fallback-ok — no proof ⇒ work (KEEP)
+  }
+}
+
+/** A regular file (never a link) whose every folder on the way from the checkout is a real folder. */
+function isPlainFileInCheckout(checkout: string, segments: string[]): boolean {
+  try {
+    for (let i = 1; i < segments.length; i++) {
+      if (!fs.lstatSync(path.join(checkout, ...segments.slice(0, i))).isDirectory()) return false;
+    }
+    return fs.lstatSync(path.join(checkout, ...segments)).isFile();
+  } catch {
+    return false; // @silent-fallback-ok — unreadable ⇒ not proven a plain file ⇒ work (KEEP)
+  }
+}
+
+/**
+ * The children of a listed residue folder, as checkout-relative paths, or null
+ * when the folder (or any folder above it) is a link, or any child is not a
+ * regular file matching the folder's rule.
+ */
+function expandResidueDir(checkout: string, relDir: string): string[] | null {
+  const rule = ARCHIVED_RESIDUE_DIRS[relDir];
+  if (!rule) return null;
+  const segments = relDir.split('/');
+  try {
+    for (let i = 1; i <= segments.length; i++) {
+      if (!fs.lstatSync(path.join(checkout, ...segments.slice(0, i))).isDirectory()) return null;
+    }
+    const out: string[] = [];
+    for (const ent of fs.readdirSync(path.join(checkout, ...segments), { withFileTypes: true })) {
+      if (!ent.isFile() || !rule.child.test(ent.name)) return null;
+      out.push(`${relDir}/${ent.name}`);
+    }
+    return out;
+  } catch {
+    return null; // @silent-fallback-ok — unreadable ⇒ work (KEEP)
+  }
 }
 
 /** True only for a symbolic link (lstat; the link is never followed). */
@@ -165,7 +286,7 @@ export interface InboundLinkIndex {
  * owned by another account that this account cannot read is skipped and
  * listed: no process running as this account can traverse it to use its links.
  */
-async function walkLinks(root: string, maxDepth: number, pruneName: string | null, out: string[], skipped: string[], deadline: number): Promise<boolean> {
+async function walkLinks(root: string, maxDepth: number, pruneName: string | null, out: string[], skipped: string[], deadline: number, skipTopNames: ReadonlySet<string> = new Set()): Promise<boolean> {
   const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
   const stack: Array<[string, number]> = [[root, 0]];
   while (stack.length) {
@@ -188,6 +309,7 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
       return false;
     }
     for (const e of entries) {
+      if (depth === 0 && skipTopNames.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isSymbolicLink()) out.push(full);
       else if (e.isDirectory() && depth < maxDepth && e.name !== pruneName) stack.push([full, depth + 1]);
@@ -204,14 +326,16 @@ export async function buildInboundLinkIndex(agentHome: string, worktreesDir: str
   const realOf = (d: string): string => { try { return fs.realpathSync(d); } catch { return d; } }; // @silent-fallback-ok — unresolvable ⇒ compare the literal path
   const links: string[] = [];
   const skippedForeign: string[] = [];
-  const walks: Array<[string, number, string | null]> = [
-    ...checkoutDirs.map((d): [string, number, string | null] => [d, 3, 'node_modules']),
-    [agentHome, 0, null],
-    [path.join(agentHome, '.worktrees-deps'), Number.MAX_SAFE_INTEGER, null],
-    [path.join(agentHome, '.instar', 'lanes'), Number.MAX_SAFE_INTEGER, null],
+  // The trash holds only renamed-away checkouts (reaper-removal-out-of-process §2): never walked.
+  const noTrash = new Set([WORKTREE_TRASH_DIRNAME]);
+  const walks: Array<[string, number, string | null, ReadonlySet<string>]> = [
+    ...checkoutDirs.map((d): [string, number, string | null, ReadonlySet<string>] => [d, 3, 'node_modules', noTrash]),
+    [agentHome, 0, null, new Set()],
+    [path.join(agentHome, '.worktrees-deps'), Number.MAX_SAFE_INTEGER, null, new Set()],
+    [path.join(agentHome, '.instar', 'lanes'), Number.MAX_SAFE_INTEGER, null, new Set()],
   ];
-  for (const [root, depth, prune] of walks) {
-    if (!(await walkLinks(root, depth, prune, links, skippedForeign, deadline))) return null;
+  for (const [root, depth, prune, skipTop] of walks) {
+    if (!(await walkLinks(root, depth, prune, links, skippedForeign, deadline, skipTop))) return null;
   }
   const dirs = checkoutDirs.map((d) => ({ lit: d, real: realOf(d) }));
   const owner = (p: string): string | null => {
@@ -259,56 +383,318 @@ function statusLines(porcelain: string): string[] {
 const statusArgs = (p: string): string[] => ['-C', p, 'status', '--porcelain', '--untracked-files=all'];
 const ignoredArgs = (p: string): string[] => ['-C', p, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'];
 
+/** One file the archive step copies: its checkout-relative path, size and sha256. */
+export interface ResidueManifestEntry { relPath: string; size: number; sha256: string }
+
+/** What `preserveGateRecords` archived, for the final re-check before removal. */
+export interface ResidueManifest {
+  /** Files still in the checkout after the archive step (ignored gate records + archived residue), sorted. */
+  entries: ResidueManifestEntry[];
+  /** How many files were archived (gate records + residue). */
+  archived: number;
+  /** Untracked gate records the archive step deleted (their folders may now collapse into one ignored entry). */
+  removedUntracked: string[];
+}
+
+interface ArchivableListing {
+  /** Untracked gate records (deleted after archiving, so a non-forced remove succeeds). */
+  untracked: string[];
+  /** Ignored gate records. */
+  ignoredRecords: string[];
+  /** Archived residue files (folder entries expanded one level). */
+  residue: string[];
+}
+
 /**
- * Copy a checkout's gate records out to `<archiveRoot>/<worktree>/<relative path>`,
- * verify each copy byte for byte, then delete the untracked ones, which would
- * otherwise make a non-forced `git worktree remove` refuse. Throws (the reaper then keeps the checkout) on
- * anything that is not a plain gate record, BEFORE changing the checkout.
+ * Everything the checkout holds beyond its commits, sorted into what may be
+ * archived. Throws on anything that is work (tracked change, untracked non-record,
+ * ignored work), so the caller keeps the checkout BEFORE changing anything.
  */
-export function preserveGateRecords(p: string, archiveRoot: string, readGit: ReadGit): number {
+function listArchivable(p: string, readGit: ReadGit, expandable: ReadonlySet<string> = new Set()): ArchivableListing {
   const untracked: string[] = [];
   for (const line of statusLines(readGit(statusArgs(p), p))) {
     if (!isUntrackedGateRecord(line)) throw new Error(`not gate-records-only: ${line}`);
     untracked.push(line.slice(3));
   }
-  const ignored: string[] = [];
-  for (const relPath of readGit(ignoredArgs(p), p).split('\0').filter(Boolean)) {
-    const kind = classifyIgnoredEntry(relPath, p);
+  const ignoredRecords: string[] = [];
+  const residue: string[] = [];
+  const entries = readGit(ignoredArgs(p), p).split('\0').filter(Boolean);
+  // git can report a folder AND the files inside it; each path is classified once.
+  const seen = new Set<string>();
+  for (let i = 0; i < entries.length; i++) {
+    const relPath = entries[i];
+    if (seen.has(relPath)) continue;
+    seen.add(relPath);
+    const kind = classifyIgnoredEntry(relPath, p, readGit);
+    if (kind === 'work' && relPath.endsWith('/') && expandable.has(relPath.replace(/\/+$/, ''))) {
+      // A folder that only collapsed into one entry because the archive step
+      // deleted the untracked records beside its ignored files: list its files
+      // by name and classify each, exactly as before the deletion.
+      entries.push(...readGit(['-C', p, 'ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', relPath], p).split('\0').filter(Boolean));
+      continue;
+    }
     // Regenerable entries go with the checkout (git worktree remove deletes ignored
     // files); they are neither archived nor a reason to keep it.
     if (kind === 'regenerable') continue;
-    if (kind !== 'gate-record') throw new Error(`not gate-records-only: ${relPath}`);
-    ignored.push(relPath);
+    if (kind === 'gate-record') { ignoredRecords.push(relPath); continue; }
+    if (kind === 'archived-residue') {
+      const rel = relPath.replace(/\/+$/, '');
+      if (Object.prototype.hasOwnProperty.call(ARCHIVED_RESIDUE_DIRS, rel)) {
+        const children = expandResidueDir(p, rel);
+        if (!children) throw new Error(`not gate-records-only: ${relPath}`);
+        residue.push(...children);
+      } else {
+        residue.push(rel);
+      }
+      continue;
+    }
+    throw new Error(`not gate-records-only: ${relPath}`);
   }
-  const toCopy = [...untracked, ...ignored];
-  for (const relPath of toCopy) {
-    if (!fs.lstatSync(path.join(p, relPath)).isFile()) throw new Error(`not a regular file: ${relPath}`);
+  return { untracked, ignoredRecords: [...new Set(ignoredRecords)], residue: [...new Set(residue)] };
+}
+
+const COPY_CHUNK_BYTES = 1024 * 1024;
+
+/** sha256 + size of a file, read in bounded memory. */
+function hashFile(file: string): { size: number; sha256: string } {
+  const h = crypto.createHash('sha256');
+  const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+  const fd = fs.openSync(file, 'r');
+  let size = 0;
+  try {
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n === 0) break;
+      h.update(buf.subarray(0, n));
+      size += n;
+    }
+  } finally { fs.closeSync(fd); }
+  return { size, sha256: h.digest('hex') };
+}
+
+/**
+ * Copy one file into the archive in bounded memory: stream to a temporary name
+ * in the destination folder while hashing the bytes read, fsync, re-hash the
+ * copy, then rename into place. A failed or mismatched copy is unlinked, so no
+ * partial file is ever left looking archived. Identical bytes already archived
+ * are overwritten; different bytes get a hash suffix. Returns the source's hash
+ * and size (taken from the same read that wrote the copy).
+ */
+function archiveFile(src: string, dest: string): { size: number; sha256: string } {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+  const h = crypto.createHash('sha256');
+  const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+  let size = 0;
+  try {
+    const inFd = fs.openSync(src, 'r');
+    try {
+      const outFd = fs.openSync(tmp, 'wx');
+      try {
+        for (;;) {
+          const n = fs.readSync(inFd, buf, 0, buf.length, null);
+          if (n === 0) break;
+          h.update(buf.subarray(0, n));
+          let off = 0;
+          while (off < n) off += fs.writeSync(outFd, buf, off, n - off);
+          size += n;
+        }
+        fs.fsyncSync(outFd);
+      } finally { fs.closeSync(outFd); }
+    } finally { fs.closeSync(inFd); }
+    const sha256 = h.digest('hex');
+    const copy = hashFile(tmp);
+    if (copy.sha256 !== sha256 || copy.size !== size) throw new Error(`archive verification failed: ${src}`);
+    let target = dest;
+    if (fs.existsSync(target) && hashFile(target).sha256 !== sha256) target = `${dest}.${sha256.slice(0, 8)}`;
+    fs.renameSync(tmp, target);
+    return { size, sha256 };
+  } catch (err) {
+    try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'src/monitoring/agentWorktreeGit.ts:archiveFile' }); }
+    catch { /* @silent-fallback-ok — a stray temp name never reads as archived (it is dot-prefixed + .tmp); the throw below keeps the checkout */ }
+    throw err;
+  }
+}
+
+/** True when `child` is `parent` or inside it (both resolved through realpath where possible). */
+function isWithin(child: string, parent: string): boolean {
+  const real = (x: string) => { try { return fs.realpathSync(x); } catch { return path.resolve(x); } }; // @silent-fallback-ok — unresolvable ⇒ compare the resolved literal
+  const c = real(child);
+  const pr = real(parent);
+  return c === pr || c.startsWith(pr + path.sep);
+}
+
+/** Free bytes on the volume that holds `dir` (or its nearest existing parent); null when unreadable. */
+function freeBytesAt(dir: string): number | null {
+  let d = path.resolve(dir);
+  for (;;) {
+    try {
+      const st = fs.statfsSync(d);
+      return Number(st.bavail) * Number(st.bsize);
+    } catch {
+      const up = path.dirname(d);
+      if (up === d) return null; // @silent-fallback-ok — unknown free space ⇒ caller keeps the checkout
+      d = up;
+    }
+  }
+}
+
+/**
+ * Copy a checkout's gate records and archived residue out to
+ * `<archiveRoot>/<worktree>/<relative path>`, verify each copy, and delete the
+ * untracked gate records, which would otherwise make a non-forced
+ * `git worktree remove` refuse. Throws (the reaper then keeps the checkout) on
+ * anything that is work, BEFORE changing the checkout. Order (spec
+ * reaper-generated-files-regenerable §4): gate records are archived and the
+ * untracked ones unlinked BEFORE the residue is archived, so nothing this step
+ * does can land in residue after its copy. Returns the manifest the final
+ * re-check compares against.
+ */
+export function preserveGateRecords(p: string, archiveRoot: string, readGit: ReadGit): ResidueManifest {
+  const { untracked, ignoredRecords, residue } = listArchivable(p, readGit);
+  const records = [...untracked, ...ignoredRecords];
+  const all = [...records, ...residue];
+  let totalBytes = 0;
+  for (const relPath of all) {
+    const st = fs.lstatSync(path.join(p, relPath));
+    if (!st.isFile()) throw new Error(`not a regular file: ${relPath}`);
+    totalBytes += st.size;
   }
   // A locked checkout will refuse removal, so leave its records where they are.
   if (fs.existsSync(path.join(readGit(['-C', p, 'rev-parse', '--absolute-git-dir'], p).trim(), 'locked'))) {
     throw new Error('checkout is locked');
   }
+  // The executors' audit trail must not be written into the checkout being removed.
+  const auditDir = process.env.INSTAR_AUDIT_LOG_DIR;
+  if (process.env.INSTAR_AUDIT_LOG_DISABLED !== '1') {
+    if (auditDir && isWithin(auditDir, p)) throw new Error('INSTAR_AUDIT_LOG_DIR points inside the checkout');
+    if (!auditDir && isWithin(process.cwd(), p)) throw new Error('this process works inside the checkout (its audit trail would land there)');
+  }
+  // The copy must physically fit on the archive's volume.
+  if (all.length > 0) {
+    const free = freeBytesAt(archiveRoot);
+    if (free === null || free <= totalBytes) throw new Error(`archive volume has too little free space (${free ?? 'unknown'} <= ${totalBytes} bytes)`);
+  }
   const worktreeArchive = path.join(archiveRoot, path.basename(p));
-  for (const relPath of toCopy) {
-    const bytes = fs.readFileSync(path.join(p, relPath));
-    let dest = path.join(worktreeArchive, relPath);
-    if (fs.existsSync(dest) && !fs.readFileSync(dest).equals(bytes)) {
-      dest = `${dest}.${crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 8)}`;
-    }
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const ensureIgnoreFile = (): void => {
     // Machine-local, like the ignored traces it holds: state sync must not pick it up.
+    fs.mkdirSync(archiveRoot, { recursive: true });
     const ignoreFile = path.join(archiveRoot, '.gitignore');
     if (!fs.existsSync(ignoreFile)) fs.writeFileSync(ignoreFile, '*\n');
-    // On disk before the original can be deleted.
-    const fd = fs.openSync(dest, 'w');
-    try { fs.writeSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    if (!fs.readFileSync(dest).equals(bytes)) throw new Error(`archive verification failed: ${relPath}`);
-  }
+  };
+  if (all.length > 0) ensureIgnoreFile();
+  // 1) Gate records: archived (on disk, verified) before the untracked originals are deleted.
+  // Keep each record's hash from the same read that wrote its archive copy: a record
+  // rewritten after the copy must fail the final re-check (second-pass review, 2026-11-18).
+  const recordHashes = new Map<string, { size: number; sha256: string }>();
+  for (const relPath of records) recordHashes.set(relPath, archiveFile(path.join(p, relPath), path.join(worktreeArchive, relPath)));
   for (const relPath of untracked) {
     SafeFsExecutor.safeUnlinkSync(path.join(p, relPath), { operation: 'src/monitoring/agentWorktreeGit.ts:preserveGateRecords' });
   }
-  // Ignored records are archived above; `git worktree remove` takes them with the checkout.
-  return toCopy.length;
+  // 2) Residue: archived last; the final re-check compares against these hashes.
+  const entries: ResidueManifestEntry[] = [];
+  for (const relPath of ignoredRecords) entries.push({ relPath, ...(recordHashes.get(relPath) ?? hashFile(path.join(p, relPath))) });
+  for (const relPath of residue) entries.push({ relPath, ...archiveFile(path.join(p, relPath), path.join(worktreeArchive, relPath)) });
+  entries.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+  // Ignored records and residue are archived above; `git worktree remove` takes them with the checkout.
+  return { entries, archived: all.length, removedUntracked: untracked };
+}
+
+/**
+ * The final re-check's file half (spec §4): re-list the checkout's full residue
+ * with the same enumeration and classification, re-hash every file, and throw
+ * when anything differs from what was archived: a file added, removed, renamed,
+ * replaced or changed type, or any size or hash change. Untracked gate records
+ * were deleted by the archive step, so any untracked entry now is new.
+ */
+export function recheckResidueManifest(p: string, archived: ResidueManifest, readGit: ReadGit): void {
+  // Folders above the archived files may now be reported whole (see listArchivable).
+  const expandable = new Set<string>();
+  for (const rel of [...archived.entries.map((e) => e.relPath), ...archived.removedUntracked]) {
+    const segs = rel.split('/');
+    for (let i = 1; i < segs.length; i++) expandable.add(segs.slice(0, i).join('/'));
+  }
+  const now = listArchivable(p, readGit, expandable);
+  if (now.untracked.length > 0) throw new Error(`residue changed since archive: new untracked ${now.untracked[0]}`);
+  const rels = [...now.ignoredRecords, ...now.residue].sort();
+  const want = archived.entries.map((e) => e.relPath);
+  if (rels.length !== want.length || rels.some((r, i) => r !== want[i])) {
+    throw new Error('residue changed since archive: the file list differs');
+  }
+  for (const e of archived.entries) {
+    const file = path.join(p, e.relPath);
+    if (!fs.lstatSync(file).isFile()) throw new Error(`residue changed since archive: ${e.relPath} is no longer a regular file`);
+    const h = hashFile(file);
+    if (h.size !== e.size || h.sha256 !== e.sha256) throw new Error(`residue changed since archive: ${e.relPath}`);
+  }
+}
+
+/** Sum of apparent file sizes under `root`, never following links; null when unreadable or past `maxEntries`. */
+export function apparentBytes(root: string, maxEntries = 500_000): number | null {
+  let total = 0;
+  let seen = 0;
+  let top: fs.Stats;
+  try { top = fs.lstatSync(root); }
+  catch (err) { return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : null; } // @silent-fallback-ok — absent ⇒ 0 bytes; unreadable ⇒ unknown
+  if (!top.isDirectory()) return top.size;
+  const stack = [root];
+  try {
+    while (stack.length) {
+      const dir = stack.pop()!;
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (++seen > maxEntries) return null;
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) { stack.push(full); continue; }
+        total += fs.lstatSync(full).size;
+      }
+    }
+    return total;
+  } catch {
+    return null; // @silent-fallback-ok — an unmeasurable size reads as unknown, never zero
+  }
+}
+
+/**
+ * Dry-run projection for one eligible checkout (spec §5): the residue bytes the
+ * archive step would copy (gate records + archived residue) and the apparent
+ * bytes removal would reclaim. null when it cannot be measured.
+ */
+export function projectReclaim(p: string, readGit: ReadGit): { residueBytes: number; apparentBytes: number } | null {
+  try {
+    const { untracked, ignoredRecords, residue } = listArchivable(p, readGit);
+    let residueBytes = 0;
+    for (const rel of [...untracked, ...ignoredRecords, ...residue]) residueBytes += fs.lstatSync(path.join(p, rel)).size;
+    const apparent = apparentBytes(p);
+    return apparent === null ? null : { residueBytes, apparentBytes: apparent };
+  } catch {
+    return null; // @silent-fallback-ok — unknown projection, reported as null
+  }
+}
+
+/** What the checkout's root `node_modules` is, for the report's counts. */
+export function nodeModulesKind(p: string): 'real' | 'symlink' | 'none' | 'unknown' {
+  try {
+    const st = fs.lstatSync(path.join(p, 'node_modules'));
+    return st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'real' : 'unknown';
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'none' : 'unknown';
+  }
+}
+
+/**
+ * True when any command line names the checkout. The path counts when a
+ * delimiter precedes it: start, whitespace, a quote, `=`, `/` (file:// URLs) or
+ * `:` (PATH-style lists); also the `.worktrees/<slug>` token with any prefix
+ * (relative, `~`, another spelling of the home). More matches only keep more.
+ */
+function commandsName(commands: string[], p: string, real: string): boolean {
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const names = (x: string) => new RegExp(`(^|[\\s'"=/:])${esc(x)}(/|[\\s'":]|$)`);
+  const rel = new RegExp(`(^|[\\s'"=/:~.])\\.worktrees/${esc(path.basename(real))}(/|[\\s'":]|$)`);
+  // topic-worktree-reclaim B: also `.instar/worktrees/<slug>` (topic worktrees). More matches only keep more.
+  const relTopic = new RegExp(`(^|[\\s'"=/:~.])\\.instar/worktrees/${esc(path.basename(real))}(/|[\\s'":]|$)`);
+  const patterns = [names(real), names(p), rel, relTopic];
+  return commands.some((c) => patterns.some((re) => re.test(c)));
 }
 
 const defaultReadGit: ReadGit = (args, cwd) =>
@@ -427,6 +813,85 @@ export function fetchMergedPrHeadOids(repo: string, opts?: { runGh?: RunGh; limi
   return map;
 }
 
+/** A PR closed on GitHub: its number, head commit and merge time (null = closed without merge). */
+export interface ClosedPr { number: number; headRefOid: string; mergedAt: string | null }
+
+/**
+ * Closed PRs by head branch name (spec reaper-removal-out-of-process §5): one
+ * `gh pr list --state closed` call with `number`, `headRefOid` and `mergedAt`.
+ * Fail-safe to an empty map (no signal ⇒ unmerged ⇒ KEEP).
+ */
+export function fetchClosedPrHeads(repo: string, opts?: { runGh?: RunGh; limit?: number }): Map<string, ClosedPr[]> {
+  const runGh = opts?.runGh ?? defaultRunGh;
+  const limit = opts?.limit ?? 500;
+  const map = new Map<string, ClosedPr[]>();
+  const out = runGh(['pr', 'list', '--state', 'closed', '--json', 'number,headRefName,headRefOid,mergedAt', '--limit', String(limit)], repo);
+  if (!out) return map;
+  let arr: unknown;
+  try { arr = JSON.parse(out); } catch { return map; } // @silent-fallback-ok — unreadable ⇒ no signal ⇒ KEEP
+  if (!Array.isArray(arr)) return map;
+  for (const row of arr) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as { number?: unknown; headRefName?: unknown; headRefOid?: unknown; mergedAt?: unknown };
+    if (typeof r.number !== 'number' || !Number.isInteger(r.number) || r.number <= 0) continue;
+    if (typeof r.headRefName !== 'string' || !r.headRefName || typeof r.headRefOid !== 'string' || !r.headRefOid) continue;
+    const mergedAt = typeof r.mergedAt === 'string' && r.mergedAt ? r.mergedAt : null;
+    const list = map.get(r.headRefName) ?? [];
+    list.push({ number: r.number, headRefOid: r.headRefOid, mergedAt });
+    map.set(r.headRefName, list);
+  }
+  return map;
+}
+
+/** The SHA `refs/pull/<n>/head` has on the remote, or null when it cannot be read. */
+export type LsRemotePrHead = (prNumber: number) => string | null;
+
+export function lsRemotePrHead(readGit: ReadGit, repo: string, prNumber: number): string | null {
+  if (!Number.isInteger(prNumber) || prNumber <= 0) return null;
+  try {
+    const out = readGit(['-C', repo, 'ls-remote', 'origin', `refs/pull/${prNumber}/head`], repo);
+    const first = out.split('\n').map((l) => l.trim()).find(Boolean);
+    const sha = first?.split(/\s+/)[0] ?? '';
+    return /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+  } catch {
+    return null; // @silent-fallback-ok — no proof the commits survive ⇒ unmerged ⇒ KEEP
+  }
+}
+
+/**
+ * A closed-unmerged PR's branch counts as merged only when its `headRefOid`
+ * exactly equals the worktree's head AND `git ls-remote origin refs/pull/<n>/head`
+ * returns that same SHA: the commits then survive on GitHub's PR ref
+ * (spec reaper-removal-out-of-process §5). A head mismatch, a missing ref, or no
+ * PR ⇒ unmerged (KEEP).
+ */
+export function closedUnmergedPrPreserves(headSha: string, prs: readonly ClosedPr[] | undefined, lsRemote: LsRemotePrHead): boolean {
+  if (!headSha || !prs) return false;
+  for (const pr of prs) {
+    if (pr.mergedAt !== null) continue;
+    if (pr.headRefOid !== headSha) continue;
+    if (lsRemote(pr.number) === headSha) return true;
+  }
+  return false;
+}
+
+/**
+ * The extra operations the out-of-process reclaim child needs beyond the
+ * reaper's classifier deps (spec reaper-removal-out-of-process §1-2).
+ */
+export interface AgentWorktreeReclaimOps {
+  /** PR 3480's archive + final re-check (fresh process scans). Throws ⇒ keep. Returns the archived manifest's sha256. */
+  prepareRemoval: (path: string) => string;
+  /** The merged check with a fresh remote read, for the final re-check. */
+  isMergedFresh: (info: WorktreeInfo) => boolean;
+  /** True unless `git rev-parse --git-common-dir` resolves to `<projectDir>/.git`. Unknown ⇒ true (KEEP). */
+  isOtherRepo: (path: string) => boolean;
+  /** git's own lock for this worktree, from `git worktree list --porcelain`. */
+  worktreeLockState: (path: string) => 'locked' | 'unlocked' | 'unknown';
+  /** `git -C <projectDir> worktree prune` through SafeGitExecutor. */
+  pruneWorktrees: () => void;
+}
+
 /**
  * Build the production git/fs-backed deps for the AgentWorktreeReaper.
  * `worktreesDir` bounds which `git worktree list` entries are considered (the
@@ -461,19 +926,31 @@ export function makeAgentWorktreeReaperDeps(opts: {
   linkIndexTimeoutMs?: number;
   /** gh runner override (D passes one capped by its deadline). */
   runGh?: RunGh;
+  /** Override the closed-PR source (testing). Returns headRefName→closed PRs. */
+  closedPrMap?: () => Map<string, ClosedPr[]>;
+  /** Override the remote PR-ref read (testing). */
+  lsRemotePrHead?: LsRemotePrHead;
   /** Where gate records go before a checkout is removed. Default: `<agent home>/.instar/instar-dev-decisions-archive`. */
   gateRecordArchiveDir?: string;
   now?: () => number;
-}): AgentWorktreeReaperDeps {
+}): AgentWorktreeReaperDeps & AgentWorktreeReclaimOps {
   const readGit = opts.readGit ?? defaultReadGit;
   const gateRecordArchiveDir = opts.gateRecordArchiveDir
     ?? path.join(opts.agentHome ?? path.dirname(opts.worktreesDir), '.instar', 'instar-dev-decisions-archive');
   const repo = opts.instarRepo;
   const githubMergeCheck = opts.githubMergeCheck ?? true;
-  const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })();
+  const worktreesReal = (() => { try { return fs.realpathSync(opts.worktreesDir); } catch { return opts.worktreesDir; } })(); // @silent-fallback-ok — unresolvable folder ⇒ compare the literal path (stricter, never wider)
   const within = (p: string): boolean => {
-    const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })();
+    const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })(); // @silent-fallback-ok — unresolvable path ⇒ compare it literally; a missing folder is not inside the root
     return real === worktreesReal || real.startsWith(worktreesReal + path.sep);
+  };
+  // A registration whose folder sits in the trash is never a live worktree (§2).
+  const inTrash = (p: string): boolean => {
+    for (const base of [opts.worktreesDir, worktreesReal]) {
+      const t = path.join(base, WORKTREE_TRASH_DIRNAME);
+      if (p === t || p.startsWith(t + path.sep)) return true;
+    }
+    return false;
   };
 
   // Process-cwd scan, memoized for a short TTL so a single reap pass runs `lsof`
@@ -561,6 +1038,70 @@ export function makeAgentWorktreeReaperDeps(opts: {
     return prMapCache;
   };
 
+  // Closed-PR map (§5), same 60 s cache, consulted only when cherry and the
+  // merged-PR map both say unmerged. The remote PR-ref read is cached per PR for
+  // the evaluation, and read fresh by the final re-check.
+  const closedPrMapFn = opts.closedPrMap ?? (() => fetchClosedPrHeads(repo));
+  let closedCache: Map<string, ClosedPr[]> | null = null;
+  let closedCacheAt = 0;
+  const closedPrMapCached = (): Map<string, ClosedPr[]> => {
+    const t = Date.now();
+    if (!closedCache || t - closedCacheAt > 60_000) { closedCache = closedPrMapFn(); closedCacheAt = t; }
+    return closedCache;
+  };
+  const lsRemoteFn: LsRemotePrHead = opts.lsRemotePrHead ?? ((n) => lsRemotePrHead(readGit, repo, n));
+  const lsRemoteCache = new Map<number, { at: number; sha: string | null }>();
+  const lsRemoteCached: LsRemotePrHead = (n) => {
+    const t = Date.now();
+    const hit = lsRemoteCache.get(n);
+    if (hit && t - hit.at <= 60_000) return hit.sha;
+    const sha = lsRemoteFn(n);
+    lsRemoteCache.set(n, { at: t, sha });
+    return sha;
+  };
+
+  const isMergedWith = (info: WorktreeInfo, lsRemote: LsRemotePrHead): boolean => {
+    const base = resolveBaseRef(readGit, repo);
+    if (!base || !info.headSha) return false;
+    // 1) Patch-id equivalence (fast, offline): fast-forward / merge / rebase /
+    //    single-commit-squash. Never false-positives "merged".
+    if (isBranchMerged(readGit, repo, base, info.headSha)) return true;
+    // 2) Multi-commit squash-merge: `git cherry` cannot see it (SHAs differ).
+    //    Consult GitHub merged-PR state — but require an EXACT head-OID match so
+    //    a branch with commits ADDED AFTER the merge is still KEPT (those would
+    //    be unmerged work). Fail-safe: an empty/missing map ⇒ KEEP.
+    if (githubMergeCheck && info.branch) {
+      const oid = mergedPrMapCached().get(info.branch);
+      if (oid && oid === info.headSha) return true;
+      // 3) Closed without merge (§5): only when the closed PR's head is exactly
+      //    this checkout's head AND the remote PR ref still holds that SHA.
+      if (closedUnmergedPrPreserves(info.headSha, closedPrMapCached().get(info.branch), lsRemote)) return true;
+    }
+    return false;
+  };
+
+  const realOrSelf = (p: string): string => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }; // @silent-fallback-ok — unresolvable ⇒ compare the resolved literal
+
+  /** PR 3480's archive + final re-check, shared by removeWorktree and the reclaim child. */
+  const prepareRemoval = (p: string): string => {
+    // Gate records go to the archive first; if that fails this throws and the
+    // reaper keeps the checkout.
+    const manifest = preserveGateRecords(p, gateRecordArchiveDir, readGit);
+    // FINAL RE-CHECK (spec reaper-generated-files-regenerable §4), right before
+    // the irreversible step: the residue must be exactly what was archived, and
+    // no process may have started in the checkout. The process lists are read
+    // FRESH here (never the 10 s memo isInUse uses). A throw keeps the checkout.
+    recheckResidueManifest(p, manifest, readGit);
+    const real = (() => { try { return fs.realpathSync(p); } catch { return p; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
+    const cwds = cwdRootsFn();
+    if (cwds === null) throw new Error('final re-check: working-folder scan failed');
+    if (cwds.has(real) || cwds.has(p)) throw new Error('final re-check: a process now works inside the checkout');
+    const commands = commandLinesFn();
+    if (commands === null) throw new Error('final re-check: process list unreadable');
+    if (commandsName(commands, p, real)) throw new Error('final re-check: a running process names the checkout');
+    return crypto.createHash('sha256').update(JSON.stringify(manifest.entries)).digest('hex');
+  };
+
   return {
     preparePass: async (): Promise<void> => {
       // Last-started wins, never last-finished: an older walk that ends late
@@ -606,13 +1147,13 @@ export function makeAgentWorktreeReaperDeps(opts: {
         } else if (line.startsWith('detached')) {
           cur.branch = null;
         } else if (line.trim() === '') {
-          if (cur.path && within(cur.path)) {
+          if (cur.path && within(cur.path) && !inTrash(cur.path)) {
             out.push({ path: cur.path, branch: cur.branch ?? null, headSha: cur.headSha ?? '' });
           }
           cur = {};
         }
       }
-      if (cur.path && within(cur.path)) {
+      if (cur.path && within(cur.path) && !inTrash(cur.path)) {
         out.push({ path: cur.path, branch: cur.branch ?? null, headSha: cur.headSha ?? '' });
       }
       return { ok: true, worktrees: out };
@@ -629,27 +1170,13 @@ export function makeAgentWorktreeReaperDeps(opts: {
       try {
         const work = statusLines(readGit(statusArgs(p), p)).filter((line) => !isUntrackedGateRecord(line));
         if (classifyPorcelain(work.join('\n'), REAPER_RESIDUE_DENYLIST)) return false;
-        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every((rel) => classifyIgnoredEntry(rel, p) !== 'work');
+        // Archived residue is like a gate record: removeWorktree archives it first.
+        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every((rel) => classifyIgnoredEntry(rel, p, readGit) !== 'work');
       }
       catch { return false; }
     },
 
-    isMerged: (info: WorktreeInfo): boolean => {
-      const base = resolveBaseRef(readGit, repo);
-      if (!base || !info.headSha) return false;
-      // 1) Patch-id equivalence (fast, offline): fast-forward / merge / rebase /
-      //    single-commit-squash. Never false-positives "merged".
-      if (isBranchMerged(readGit, repo, base, info.headSha)) return true;
-      // 2) Multi-commit squash-merge: `git cherry` cannot see it (SHAs differ).
-      //    Consult GitHub merged-PR state — but require an EXACT head-OID match so
-      //    a branch with commits ADDED AFTER the merge is still KEPT (those would
-      //    be unmerged work). Fail-safe: an empty/missing map ⇒ KEEP.
-      if (githubMergeCheck && info.branch) {
-        const oid = mergedPrMapCached().get(info.branch);
-        if (oid && oid === info.headSha) return true;
-      }
-      return false;
-    },
+    isMerged: (info: WorktreeInfo): boolean => isMergedWith(info, lsRemoteCached),
 
     isInUse: (p: string): boolean => {
       // A live session lock or a git index lock means in-flight work — KEEP.
@@ -682,18 +1209,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
       // process list reads as in use (disk-steward §4).
       const commands = commandLinesCached();
       if (commands === null) return true;
-      // The path counts when a delimiter precedes it: start, whitespace, a quote,
-      // `=`, `/` (file:// URLs) or `:` (PATH-style lists). More delimiters only
-      // make the check more conservative.
-      const names = (x: string) => new RegExp(`(^|[\\s'"=/:])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
-      // Also the `.worktrees/<slug>` token with any prefix (relative, `~`, another
-      // spelling of the home), at boundaries: more matches only keep more.
-      const slug = path.basename(real);
-      const rel = new RegExp(`(^|[\\s'"=/:~.])\\.worktrees/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
-      // topic-worktree-reclaim B: also `.instar/worktrees/<slug>` (topic worktrees).
-      const relTopic = new RegExp(`(^|[\\s'"=/:~.])\\.instar/worktrees/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
-      const patterns = [names(real), names(p), rel, relTopic];
-      return commands.some((c) => patterns.some((re) => re.test(c)));
+      return commandsName(commands, p, real);
     },
 
     currentBranch: (p: string): string | null => {
@@ -709,6 +1225,16 @@ export function makeAgentWorktreeReaperDeps(opts: {
         // which can never equal a real info.branch, so the reclaim guard KEEPS (never
         // reaps on an uncertain branch). The delete-safe direction, not a swallowed bug.
         return null;
+      }
+    },
+
+    currentHead: (p: string): string | null => {
+      // FAIL-CLOSED: unreadable ⇒ null, which never equals a real head ⇒ the race guard keeps.
+      try {
+        const h = (readGit(['-C', p, 'rev-parse', '--verify', '--quiet', 'HEAD'], p) ?? '').trim();
+        return /^[0-9a-f]{40,64}$/.test(h) ? h : null;
+      } catch {
+        return null; // @silent-fallback-ok — fail-closed: an unreadable head keeps the checkout
       }
     },
 
@@ -729,15 +1255,61 @@ export function makeAgentWorktreeReaperDeps(opts: {
       // with uncommitted changes or a lock, so it can never destroy in-flight work.
       // The SourceTreeGuard mirrors this — it allows `worktree remove` against the
       // source tree only without --force (see isAllowedWorktreeManagerSubcommand).
-      // Gate records go to the archive first; if that fails this throws and the
-      // reaper keeps the checkout.
-      preserveGateRecords(p, gateRecordArchiveDir, readGit);
+      prepareRemoval(p);
       SafeGitExecutor.execSync(['-C', repo, 'worktree', 'remove', p], {
         timeout: 60_000,
         operation: 'src/monitoring/agentWorktreeGit.ts:removeWorktree',
         sourceTreeWorktreeManagerOk: true,
       });
     },
+
+    // Out-of-process reclaim (spec reaper-removal-out-of-process §1-2, §5).
+    prepareRemoval,
+    isMergedFresh: (info: WorktreeInfo): boolean => isMergedWith(info, lsRemoteFn),
+    isOtherRepo: (p: string): boolean => {
+      try {
+        const out = readGit(['-C', p, 'rev-parse', '--git-common-dir'], p).trim();
+        if (!out) return true;
+        return realOrSelf(path.resolve(p, out)) !== realOrSelf(path.join(repo, '.git'));
+      } catch {
+        return true; // @silent-fallback-ok — unknown repository ⇒ treated as another repo ⇒ KEEP
+      }
+    },
+    worktreeLockState: (p: string): 'locked' | 'unlocked' | 'unknown' => {
+      let porcelain: string;
+      try { porcelain = readGit(['-C', repo, 'worktree', 'list', '--porcelain'], repo); }
+      catch { return 'unknown'; } // @silent-fallback-ok — unknown lock ⇒ caller keeps
+      const want = realOrSelf(p);
+      let inBlock = false;
+      let found = false;
+      for (const line of porcelain.split('\n')) {
+        if (line.startsWith('worktree ')) {
+          const wp = line.slice('worktree '.length).trim();
+          inBlock = wp === p || realOrSelf(wp) === want;
+          if (inBlock) found = true;
+        } else if (line.trim() === '') {
+          inBlock = false;
+        } else if (inBlock && (line === 'locked' || line.startsWith('locked '))) {
+          return 'locked';
+        }
+      }
+      return found ? 'unlocked' : 'unknown';
+    },
+    pruneWorktrees: (): void => {
+      // Prune drops only admin entries whose folder is missing AND that are not
+      // locked (a sibling mid-`git worktree add` is locked "initializing"). It never
+      // deletes a working folder.
+      SafeGitExecutor.execSync(['-C', repo, 'worktree', 'prune'], {
+        timeout: 60_000,
+        operation: 'src/monitoring/agentWorktreeGit.ts:pruneWorktrees',
+        sourceTreeWorktreeManagerOk: true,
+      });
+    },
+
+    // Report-only measurements (spec reaper-generated-files-regenerable §5).
+    projectReclaim: (p: string) => projectReclaim(p, readGit),
+    nodeModulesKind: (p: string) => nodeModulesKind(p),
+    archiveBytes: () => apparentBytes(gateRecordArchiveDir),
 
     now: opts.now,
   };

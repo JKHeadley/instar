@@ -353,6 +353,7 @@ async function runAction(
     case 'install-preflight':
     case 'install-tools':
     case 'install-tailscale-operator':
+    case 'account-choice':
     case 'door-install':
     case 'door-sign-in':
     case 'agent-init':

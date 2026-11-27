@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   GH_ZERO_TIME, ghRowFromGraphqlPr, listOpenPrRowsPaged, OPEN_PR_LIST_LIMIT, OPEN_PR_LIST_MAX_PAGES, OPEN_PR_LIST_PAGE_SIZE,
-  OPEN_PR_LIST_QUERY, type GhExecResult, type GqlOpenPrListNode,
+  OPEN_PR_LIST_QUERY, HANDOFF_PR_QUERY, readHandoffPrRow, type GhExecResult, type GqlOpenPrListNode,
 } from '../../src/monitoring/greenPrOpenPrList.js';
 import { LIST_PR_JSON_FIELDS, mapPr } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { NO_CHECKS_ROLLUP } from '../../src/monitoring/greenPrLogic.js';
@@ -149,5 +149,32 @@ describe('ghRowFromGraphqlPr — same meaning to mapPr as the gh pr list row', (
     const row = ghRowFromGraphqlPr(node(1, 'me', { commits: { nodes: [] }, author: { __typename: 'Bot', login: 'dependabot' } }));
     expect(mapPr(row).statusRollup).toBe(NO_CHECKS_ROLLUP);
     expect(mapPr(row).authorLogin).toBe('app/dependabot');
+  });
+});
+
+
+describe('exact handoff target lookup', () => {
+  const response = (n: unknown, viewer: unknown = 'me') => ({ code: 0, stderr: '', stdout: JSON.stringify({ data: { viewer: { login: viewer }, repository: { pullRequest: n } } }) });
+  it('reads exactly one authenticated-author open main target without paging the discovery list', async () => {
+    const calls: string[][] = [];
+    const row = await readHandoffPrRow(async (args) => { calls.push(args); return response({ ...node(3714), state: 'OPEN' }); }, 'o/r', 3714);
+    expect(row?.number).toBe(3714); expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(expect.arrayContaining(['number=3714', `query=${HANDOFF_PR_QUERY}`]));
+    expect(HANDOFF_PR_QUERY).toContain('pullRequest(number: $number)');
+  });
+  it.each([
+    ['other author', { author: { login: 'other' } }], ['wrong number', { number: 3715 }],
+    ['closed', { state: 'CLOSED' }], ['merged', { state: 'MERGED' }], ['other base', { baseRefName: 'release' }],
+    ['fork', { isCrossRepository: true }], ['unknown repository', { isCrossRepository: null }],
+    ['unknown draft', { isDraft: null }], ['unknown title', { title: null }], ['unknown labels', { labels: null }],
+    ['unknown head', { headRefOid: null }],
+  ])('does not project %s as an eligible exact target', async (_name, over) => {
+    expect(await readHandoffPrRow(async () => response({ ...node(3714), state: 'OPEN', ...over }), 'o/r', 3714)).toBeNull();
+  });
+  it('returns absent and fails closed on unreadable API responses', async () => {
+    expect(await readHandoffPrRow(async () => response(null), 'o/r', 3714)).toBeNull();
+    await expect(readHandoffPrRow(async () => response(node(3714), null), 'o/r', 3714)).rejects.toThrow();
+    await expect(readHandoffPrRow(async () => ({ code: 1, stdout: '', stderr: 'error' }), 'o/r', 3714)).rejects.toThrow();
+    await expect(readHandoffPrRow(async () => ({ code: 0, stdout: '{}', stderr: '' }), 'o/r', 3714)).rejects.toThrow();
   });
 });

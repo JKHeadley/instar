@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece1eb-imessage-sms",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T14:04:22.493Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece1eb-imessage-sms.md",
+  "artifactSha256": "fe3ebc7126d6976b92c448980023b9761019692f8ff6ef4ab10225be4f9881eb",
+  "specPath": "docs/specs/identity-security-piece1eb-imessage-sms.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece1eb-imessage-sms.eli16.md",
+    "docs/specs/identity-security-piece1eb-imessage-sms.md",
+    "docs/specs/reports/identity-security-piece1eb-imessage-sms-convergence.md",
+    "src/commands/server.ts",
+    "src/data/awareness/imessage-sms-unproven.md",
+    "src/messaging/imessage/IMessageAdapter.ts",
+    "src/messaging/imessage/NativeBackend.ts",
+    "src/messaging/imessage/smsProvenance.ts",
+    "tests/e2e/imessage-adapter-e2e.test.ts",
+    "tests/unit/identity-piece1eb-imessage-sms.test.ts",
+    "tests/unit/imessage-adapter.test.ts",
+    "upgrades/next/identity-security-piece1eb-imessage-sms.md",
+    "upgrades/side-effects/identity-security-piece1eb-imessage-sms.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "iMessage: only a row whose service is iMessage proves its sender; SMS/RCS rows from contacts are set aside before any session, ack, log, reply window, attachment copy, context or history text, with a daily owner count.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the owner count answers inbound rows, raised once a day and refreshed at most every 10 minutes with one trailing refresh"
+  }
+}

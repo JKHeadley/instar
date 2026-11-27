@@ -349,9 +349,12 @@ export class ReachablePeople {
   }
 }
 
-function plainKey(key: string): string {
+/** How the owner recognises one of their own identities. A profile key is an internal id
+ *  (`user:telegram-7812716706`), so it reads as "your Instar profile", never the id (2026-11-20 dashboard audit). */
+export function plainKey(key: string): string {
   const [platform, ...rest] = key.split(':');
-  const label: Record<string, string> = { slack: 'Slack', telegram: 'Telegram', whatsapp: 'WhatsApp', imessage: 'iMessage', user: 'Profile' };
+  if (platform === 'user') return 'your Instar profile';
+  const label: Record<string, string> = { slack: 'Slack', telegram: 'Telegram', whatsapp: 'WhatsApp', imessage: 'iMessage' };
   return `${label[platform] ?? platform} ${rest.join(':')}`;
 }
 

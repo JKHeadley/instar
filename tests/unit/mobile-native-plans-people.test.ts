@@ -54,6 +54,7 @@ describe('plans', () => {
   it('needs-you words: an unacknowledged advance, a first launch, needsUser with and without a reason; a finished plan never needs you', () => {
     expect(needsWords({ kind: 'project', status: 'active', unacknowledgedAdvanceCount: 1, firstLaunchAckAt: 'x', rounds: [{ status: 'complete' }, { status: 'pending' }] })).toBe('Waiting for your OK on round 2');
     expect(needsWords({ kind: 'project', status: 'active', rounds: [{ status: 'pending' }] })).toBe('Waiting for your OK on round 1');
+    expect(needsWords({ kind: 'project', status: 'active', rounds: [{ status: 'pending', name: 'Tier 1 - stop silent loss of local fixes' }] })).toBe('Waiting for your OK on round 1: Tier 1 - stop silent loss of local fixes');
     expect(needsWords({ kind: 'project', status: 'active', firstLaunchAckAt: 'x', rounds: [{ status: 'pending' }] })).toBeNull();
     expect(needsWords({ status: 'active', needsUser: true, needsUserReason: 'pick one' })).toBe('Waiting on you: pick one');
     expect(needsWords({ status: 'active', needsUser: true })).toBe('Waiting on you');

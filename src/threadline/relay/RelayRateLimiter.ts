@@ -39,6 +39,9 @@ export class RelayRateLimiter {
   private readonly config: RelayRateLimitConfig;
   private readonly windows = new Map<string, SlidingWindow>();
   private readonly nowFn: () => number;
+  private lastSweepAt = 0;
+  /** SEC-139: hard ceiling on tracked keys; the least recently used are dropped beyond it, never `global:min`. */
+  static readonly MAX_KEYS = 100_000;
 
   constructor(config?: Partial<RelayRateLimitConfig>, nowFn?: () => number) {
     this.config = mergeDefaults(DEFAULTS, config);
@@ -119,10 +122,15 @@ export class RelayRateLimiter {
 
   private check(key: string, limit: number, windowMs: number): RateLimitCheckResult {
     const now = this.nowFn();
-    const window = this.getWindow(key);
+    this.sweepIdle(now);
+    // SEC-139: a check reads without creating a key, and an emptied window is deleted.
     const cutoff = now - windowMs;
-    const active = window.events.filter(t => t > cutoff);
-    window.events = active;
+    const existing = this.windows.get(key);
+    const active = existing ? existing.events.filter(t => t > cutoff) : [];
+    if (existing) {
+      if (active.length === 0) this.windows.delete(key);
+      else existing.events = active;
+    }
 
     const remaining = Math.max(0, limit - active.length);
     const resetInMs = active.length > 0 ? (active[0] + windowMs) - now : 0;
@@ -141,6 +149,34 @@ export class RelayRateLimiter {
     const cutoff = now - windowMs;
     window.events = window.events.filter(t => t > cutoff);
     window.events.push(now);
+    // Move the key to the end so the ceiling drops the least recently used keys first; the global
+    // window is never dropped.
+    this.windows.delete(key);
+    this.windows.set(key, window);
+    for (const k of this.windows.keys()) {
+      if (this.windows.size <= RelayRateLimiter.MAX_KEYS) break;
+      if (k === 'global:min') continue;
+      this.windows.delete(k);
+    }
+  }
+
+  /** Number of tracked keys (tests and diagnostics). */
+  get size(): number {
+    return this.windows.size;
+  }
+
+  /**
+   * SEC-139: drop keys whose newest event is older than the longest window (one hour), at most once a
+   * minute, so keys of callers that never return are released without a timer.
+   */
+  private sweepIdle(now: number): void {
+    if (now - this.lastSweepAt < 60_000) return;
+    this.lastSweepAt = now;
+    const cutoff = now - 3_600_000;
+    for (const [k, w] of this.windows) {
+      const last = w.events[w.events.length - 1];
+      if (last === undefined || last <= cutoff) this.windows.delete(k);
+    }
   }
 
   private getWindow(key: string): SlidingWindow {

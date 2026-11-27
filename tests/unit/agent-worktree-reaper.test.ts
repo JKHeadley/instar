@@ -510,7 +510,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
   });
 
   it('listWorktrees + isClean + isMerged all work against the source tree (no guard error)', () => {
-    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
     const enumeration = deps.listWorktrees();
     expect(enumeration.ok).toBe(true); // real git against a real repo ⇒ success state
     if (!enumeration.ok) throw new Error('enumeration failed: ' + enumeration.error);
@@ -527,7 +527,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
   });
 
   it('removeWorktree actually reclaims a merged+clean worktree through the guard', () => {
-    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
     const mergedPath = path.join(worktreesDir, 'merged');
     expect(fs.existsSync(mergedPath)).toBe(true);
     expect(() => deps.removeWorktree(mergedPath)).not.toThrow();
@@ -540,7 +540,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     fs.mkdirSync(path.join(mergedPath, 'audit-data'));
     fs.writeFileSync(path.join(mergedPath, 'audit-data', 'unique.txt'), 'preserve this');
 
-    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
     expect(deps.isClean(mergedPath)).toBe(false);
     expect(fs.readFileSync(path.join(mergedPath, 'audit-data', 'unique.txt'), 'utf8')).toBe('preserve this');
   });
@@ -550,7 +550,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\ndist/\n');
     fs.mkdirSync(path.join(mergedPath, 'dist'));
     fs.writeFileSync(path.join(mergedPath, 'dist', 'unique.txt'), 'preserve this too');
-    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
     expect(deps.isClean(mergedPath)).toBe(false);
   });
 
@@ -578,7 +578,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       fs.writeFileSync(path.join(shared, 'keep.txt'), 'shared install');
       ignore('node_modules');
       fs.symlinkSync(shared, path.join(mergedPath, 'node_modules'));
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
       expect(deps.isClean(mergedPath)).toBe(true);
       deps.removeWorktree(mergedPath);
       expect(fs.existsSync(mergedPath)).toBe(false);
@@ -593,7 +593,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       commitOnMerged(mergedPath, 'pkg/package.json', '{}');
       fs.mkdirSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep'), { recursive: true });
       fs.writeFileSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep', 'index.js'), 'maybe patched by hand');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
       expect(deps.isClean(mergedPath)).toBe(false);
       expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
       expect(fs.existsSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep', 'index.js'))).toBe(true);
@@ -606,7 +606,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       commitOnMerged(mergedPath, 'pkg/package.json', '{}');
       const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'awr-shared-nm2-'));
       fs.symlinkSync(shared, path.join(mergedPath, 'pkg', 'node_modules'));
-      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).isClean(mergedPath)).toBe(true);
+      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir }).isClean(mergedPath)).toBe(true);
       SafeFsExecutor.safeRmSync(shared, { recursive: true, force: true, operation: 'tests/unit/agent-worktree-reaper.test.ts:shared2' });
     });
 
@@ -616,7 +616,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       fs.mkdirSync(path.join(mergedPath, 'dist', 'data'), { recursive: true });
       for (const f of ['cli.js', 'cli.d.ts', 'cli.js.map', 'cli.d.ts.map']) fs.writeFileSync(path.join(mergedPath, 'dist', f), 'built');
       fs.writeFileSync(path.join(mergedPath, 'dist', 'data', 'manifest.json'), '{}'); // written by the build script
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
       expect(deps.isClean(mergedPath)).toBe(false); // no build config: not corroborated
       fs.mkdirSync(path.join(mergedPath, 'src'));
       commitOnMerged(mergedPath, 'src/cli.ts', 'export {}');
@@ -651,7 +651,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       ignore('dist/');
       fs.mkdirSync(path.join(mergedPath, 'notes', 'dist'), { recursive: true });
       fs.writeFileSync(path.join(mergedPath, 'notes', 'dist', 'mine.md'), 'hand written');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
       expect(deps.isClean(mergedPath)).toBe(false);
       expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
       expect(fs.readFileSync(path.join(mergedPath, 'notes', 'dist', 'mine.md'), 'utf8')).toBe('hand written');
@@ -663,7 +663,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       fs.mkdirSync(path.join(mergedPath, 'coverage'));
       fs.writeFileSync(path.join(mergedPath, 'coverage', 'lcov.info'), 'x');
       commitOnMerged(mergedPath, 'vitest.config.ts', 'export default {}');
-      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).isClean(mergedPath)).toBe(false);
+      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir }).isClean(mergedPath)).toBe(false);
     });
   });
 
@@ -679,7 +679,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const mergedPath = path.join(worktreesDir, 'merged');
       write(mergedPath, decision, '{"d":1}');
       const archive = path.join(repo, 'archive');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive });
       expect(deps.isClean(mergedPath)).toBe(true);
       deps.removeWorktree(mergedPath);
       expect(fs.existsSync(mergedPath)).toBe(false);
@@ -690,7 +690,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     it('defaults the archive to the agent home', () => {
       const mergedPath = path.join(worktreesDir, 'merged');
       write(mergedPath, decision, '{"d":2}');
-      makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).removeWorktree(mergedPath);
+      makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir }).removeWorktree(mergedPath);
       expect(fs.readFileSync(path.join(repo, '.instar', 'instar-dev-decisions-archive', 'merged', decision), 'utf8')).toBe('{"d":2}');
     });
 
@@ -702,7 +702,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const sibling = trace.replace('6648946c', 'bbbbbbbb');
       write(mergedPath, sibling, 'untracked');
       const archive = path.join(repo, 'archive');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive });
       expect(deps.isClean(mergedPath)).toBe(true);
       deps.removeWorktree(mergedPath);
       expect(fs.existsSync(mergedPath)).toBe(false);
@@ -714,7 +714,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const mergedPath = path.join(worktreesDir, 'merged');
       fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${trace}\n`);
       write(mergedPath, trace, 'ignored');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
       expect(deps.isClean(mergedPath)).toBe(false);
     });
 
@@ -723,7 +723,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       write(path.join(archive, 'merged'), decision, 'older');
       const mergedPath = path.join(worktreesDir, 'merged');
       write(mergedPath, decision, 'newer');
-      makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive }).removeWorktree(mergedPath);
+      makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive }).removeWorktree(mergedPath);
       const folder = path.dirname(path.join(archive, 'merged', decision));
       const contents = fs.readdirSync(folder).map((f) => fs.readFileSync(path.join(folder, f), 'utf8')).sort();
       expect(contents).toEqual(['newer', 'older']);
@@ -733,7 +733,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const dirtyPath = path.join(worktreesDir, 'dirty');
       write(dirtyPath, decision, '{"d":3}');
       const archive = path.join(repo, 'archive');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive });
       expect(deps.isClean(dirtyPath)).toBe(false);
       expect(() => deps.removeWorktree(dirtyPath)).toThrow(/not gate-records-only/);
       expect(fs.existsSync(path.join(dirtyPath, decision))).toBe(true);
@@ -745,7 +745,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       write(mergedPath, decision, '{"d":4}');
       fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\ndist/\n');
       write(mergedPath, 'dist/out.js', 'built');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
       expect(deps.isClean(mergedPath)).toBe(false);
       expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
       expect(fs.existsSync(mergedPath)).toBe(true);
@@ -755,7 +755,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const mergedPath = path.join(worktreesDir, 'merged');
       fs.mkdirSync(path.dirname(path.join(mergedPath, decision)), { recursive: true });
       fs.symlinkSync(path.join(repo, 'README.md'), path.join(mergedPath, decision));
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
       expect(() => deps.removeWorktree(mergedPath)).toThrow(/not a regular file/);
       expect(fs.lstatSync(path.join(mergedPath, decision)).isSymbolicLink()).toBe(true);
     });
@@ -765,7 +765,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       write(mergedPath, decision, '{"d":7}');
       fs.writeFileSync(path.join(repo, '.git', 'worktrees', 'merged', 'locked'), 'held');
       const archive = path.join(repo, 'archive');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive });
       expect(() => deps.removeWorktree(mergedPath)).toThrow(/locked/);
       expect(fs.existsSync(path.join(mergedPath, decision))).toBe(true);
       expect(fs.existsSync(archive)).toBe(false);
@@ -775,7 +775,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       const mergedPath = path.join(worktreesDir, 'merged');
       write(mergedPath, decision, '{"d":6}');
       const archive = path.join(repo, 'archive');
-      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive, cwdRoots: () => new Set() });
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir, gateRecordArchiveDir: archive, cwdRoots: () => new Set() });
       const result = await new AgentWorktreeReaper(deps, { enabled: true, dryRun: true }).reap();
       expect(result.reaped).toEqual([]);
       expect(fs.existsSync(path.join(mergedPath, decision))).toBe(true);
@@ -784,7 +784,7 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
   });
 
   it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', async () => {
-    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, cwdRoots: () => new Set<string>(), commandLines: () => [], worktreesDir });
     const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: true });
     await reaper.prepare(); // builds the real inbound-link index
     const enumeration = deps.listWorktrees();

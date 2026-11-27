@@ -177,6 +177,29 @@ describe('DirectDesktopAccess at the lock', () => {
     await expect(stream.assertActive()).rejects.toThrow('desktop grant unavailable');
   });
 
+  it('reports failed Enter persistence as a refusal, retains the duty, and never acknowledges submission', async () => {
+    const f = make();
+    const plain: Array<Record<string, unknown>> = [];
+    const original = DesktopAead.prototype.encryptControl;
+    vi.spyOn(DesktopAead.prototype, 'encryptControl').mockImplementation(function (this: DesktopAead, value: unknown) {
+      plain.push(value as Record<string, unknown>);
+      return original.call(this, value);
+    });
+    const { stream } = await f.open();
+    stream.attachControl!(() => {});
+    f.setSecretReply({ refused: 'state-unavailable' });
+    await stream.secret!({ ephemeral: 'e', iv: 'i', ct: 'c', seq: 1 });
+    expect(plain).toContainEqual({ type: 'secret-result', refused: 'state-unavailable' });
+    expect(plain).not.toContainEqual({ type: 'secret-result', sent: true });
+    expect(Object.values(f.markers)).toHaveLength(1);
+    expect(Object.values(f.markers)[0].state).toBe('owed');
+    expect(f.audits).toContainEqual(expect.objectContaining({ kind: 'secret-refused', reason: 'state-unavailable' }));
+    f.world.flag = false;
+    f.world.shield = false;
+    f.tickProbe();
+    await expect(stream.assertActive()).rejects.toThrow('desktop grant unavailable');
+  });
+
   it('refuses the browser while its box is off, before any marker exists', async () => {
     const f = make();
     const { stream } = await f.open('browser');

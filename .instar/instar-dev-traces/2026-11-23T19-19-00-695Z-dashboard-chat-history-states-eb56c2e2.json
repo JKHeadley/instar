@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "dashboard-chat-history-states",
+  "sessionId": "fbd2d863-65c0-467c-b7f0-b849917802c2",
+  "timestamp": "2026-11-23T19:19:00.695Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chat-history-states.md",
+  "artifactSha256": "cf694c13aa2f662214f6c9e3491c831835d50c13d12f3b7ca6cee387fe8077e6",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-chat-history-states.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/dashboard-chat-history-states.md",
+    "upgrades/side-effects/dashboard-chat-history-states.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible repair of existing dashboard loading empty and retry presentation; existing signed APIs and initial send recovery retained; no new messaging or approval authority.",
+  "eli16Path": "docs/specs/dashboard-chat-history-states.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chat-history-states.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

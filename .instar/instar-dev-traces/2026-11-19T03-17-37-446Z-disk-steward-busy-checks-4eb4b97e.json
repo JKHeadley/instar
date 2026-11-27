@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "disk-steward-busy-checks",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T03:17:37.446Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-busy-checks.md",
+  "artifactSha256": "f591e804c46a1b355190763a3257def3939a081c0c6eddb4171caa86d7825097",
+  "coveredFiles": [
+    "docs/specs/disk-steward-busy-checks.eli16.md",
+    "docs/specs/disk-steward.eli16.md",
+    "docs/specs/disk-steward.md",
+    "src/monitoring/diskSteward/pruneCategories.ts",
+    "tests/unit/diskSteward-pruneCategories.test.ts",
+    "upgrades/next/disk-steward-busy-checks.md",
+    "upgrades/side-effects/disk-steward-busy-checks.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Changes two cache-deletion guard predicates for regenerable caches; a revert fully undoes it",
+  "eli16Path": "docs/specs/disk-steward-busy-checks.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-busy-checks.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

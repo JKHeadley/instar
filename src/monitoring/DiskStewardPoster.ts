@@ -121,13 +121,20 @@ export interface PosterDeps {
   resolveTopicId: () => Promise<number | null>;
   sendToTopic: (topicId: number, text: string) => Promise<unknown>;
   log: (e: Record<string, unknown>) => void;
+  /** The owner explicitly quieted disk notices (no-data-loss-on-machine-death.md §6.2): the post says so. */
+  ownerQuieted?: () => boolean;
 }
+
+/** The line a disk post carries when the owner chose to keep disk notices quiet (§6.2: the choice stays, and the post shows it). */
+export const OWNER_QUIET_LINE = 'You chose to keep disk notices quiet, so this one waits in your Notifications feed instead of reaching you. Turn disk notices back on there to have them pushed.';
 
 export function makeDiskStewardSender(deps: PosterDeps): (post: DuePost) => Promise<SendOutcome> {
   return async (post) => {
     const topicId = await deps.resolveTopicId();
     if (topicId === null) { deps.log({ event: 'post-no-topic', postId: post.postId }); return 'failed'; }
-    const text = renderPost(post);
+    let quieted = false;
+    try { quieted = deps.ownerQuieted?.() === true; } catch { quieted = false; } // @silent-fallback-ok — unknown choice: the post goes out without the line
+    const text = quieted ? `${renderPost(post)}\n${OWNER_QUIET_LINE}` : renderPost(post);
     try {
       if (post.critical && post.kind !== 'recovery') {
         await withNotificationEnvelope(diskFloorEnvelope(post.machineId, post.episodeStart, post.stage), async () => deps.sendToTopic(topicId, text));
@@ -135,11 +142,13 @@ export function makeDiskStewardSender(deps: PosterDeps): (post: DuePost) => Prom
         await withNotificationEnvelope(stampNotification(), async () => deps.sendToTopic(topicId, text));
       }
     } catch (e) {
-      // The gate decided to record it quietly (the operator's push choice): that
-      // counts as posted; resending would not change the decision (§3.5).
+      // The gate recorded it quietly: no person saw it, so it is NOT delivered
+      // (no-data-loss-on-machine-death.md §6.2). It must not reset the repeat clock or
+      // advance the backoff; the steward retries on its send backoff, and the daily
+      // summary of quiet notices runs on any day a disk post was quiet.
       if (e instanceof QuietRecordedError) {
         deps.log({ event: 'recorded-quiet', postId: post.postId, machineId: post.machineId, quietId: e.receipt.quietId });
-        return 'posted';
+        return 'not-delivered';
       }
       throw e;
     }

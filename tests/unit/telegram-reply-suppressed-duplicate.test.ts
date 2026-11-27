@@ -175,3 +175,23 @@ describe('telegram-reply.sh — suppressed-duplicate honesty', () => {
     expect(`${res.stdout}${res.stderr}`).toContain('AMBIGUOUS');
   });
 });
+
+describe('telegram-reply.sh — the sent line carries the message id and its link (waiting-on-you-links)', () => {
+  it('prints the id and the link the server returned, after the unchanged "Sent N chars to topic T" prefix', async () => {
+    const res = await runWithReplyBody('{"ok":true,"topicId":458,"messageId":145001,"messageLink":"https://t.me/c/1234567890/458/145001"}');
+    expect(res.status).toBe(0);
+    expect(res.stdout).toMatch(/^Sent \d+ chars to topic 458 \(message 145001\) link: https:\/\/t\.me\/c\/1234567890\/458\/145001\n?$/);
+  });
+
+  it('prints only the id when the chat has no message links', async () => {
+    const res = await runWithReplyBody('{"ok":true,"topicId":458,"messageId":7}');
+    expect(res.status).toBe(0);
+    expect(res.stdout).toMatch(/^Sent \d+ chars to topic 458 \(message 7\)\n?$/);
+  });
+
+  it('never prints a link that is not a plain https address', async () => {
+    const res = await runWithReplyBody('{"ok":true,"topicId":458,"messageId":7,"messageLink":"javascript:alert(1)"}');
+    expect(res.status).toBe(0);
+    expect(res.stdout).not.toContain('link:');
+  });
+});

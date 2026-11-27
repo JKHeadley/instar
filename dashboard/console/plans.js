@@ -5,7 +5,7 @@
 // this round, confirms in a sheet that says what really happens.
 
 import {
-  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES,
+  buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES, planApprovalWords,
 } from './plans-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -192,9 +192,9 @@ function openProject(r, { post, topicHref, refresh }) {
   const body = [summary];
   if (acts.ack !== null) {
     body.push(el('div', { class: 'need-card' },
-      el('span', { class: 'need-title', text: `Waiting for your OK on round ${acts.ack + 1}` }),
-      el('span', { class: 'need-sub', text: 'Your OK records permission for this round. It does not start work by itself.' }),
-      actionBox({ label: `OK, continue round ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
+      el('span', { class: 'need-title', text: planApprovalWords(p, acts.ack) }),
+      el('span', { class: 'need-sub', text: 'Approving gives permission for this step. It does not start work by itself.' }),
+      actionBox({ label: `Approve step ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
   }
   body.push(block('Rounds', track.length ? rounds : el('p', { class: 'card-line', text: 'No rounds on this plan yet.' })));
   body.push(el('p', { class: 'drift', 'data-tone': drift.tone }, document.createTextNode(drift.text), drift.tone === 'attn' || drift.tone === 'bad' ? askLink(drift.text) : null));

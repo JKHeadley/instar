@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T06:57:12.420Z",
+  "slug": "work-card-closeout",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 192,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardService.ts",
+      "src/core/WorkCardStore.ts",
+      "src/core/workBoardViews.ts",
+      "src/data/awareness/work-card-closeout.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 170,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

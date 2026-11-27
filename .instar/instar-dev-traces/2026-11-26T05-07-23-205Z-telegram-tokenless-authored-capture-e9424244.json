@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "telegram-tokenless-authored-capture",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T05:07:23.205Z",
+  "artifactPath": "upgrades/side-effects/telegram-tokenless-authored-capture.md",
+  "artifactSha256": "058d2010d61b5ddf59b2aa34619a2f07b4aad0e065fed523ec24c1a0c83a776f",
+  "coveredFiles": [
+    "docs/specs/telegram-recovery-history-markdown.eli16.md",
+    "src/messaging/telegram-origin/OriginBotEgress.ts",
+    "tests/e2e/telegram-dashboard-edit-rejection.test.ts",
+    "upgrades/side-effects/telegram-tokenless-authored-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Restore the existing tokenless egress behavior after authored capture",
+  "eli16Path": "docs/specs/telegram-recovery-history-markdown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-tokenless-authored-capture.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
