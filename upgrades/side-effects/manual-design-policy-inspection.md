@@ -125,3 +125,12 @@ Also fixed from the non-blocking notes: `ls-tree` now runs with `--full-tree`, s
 New tests: an integration case where a registered file and a dashboard file over 3 MiB are changed and the result is still structurally valid; an integration case where an unregistered 3 MiB source is read and flagged while one over 8 MiB is unavailable; a unit case for `pathsNeedingSourceText` that checks the classifier finds nothing unreadable with only those texts; parser cases for linear time and for the old row shapes.
 
 Still open, non-blocking, for later stages: tests for `read-deadline`, `MAX_DIFF`, the stderr cap, an invalid base registry and the CLI `invalid-policy` exit code; a `screen-deregistered` informational finding; coarse unavailable for a changed script symlink.
+
+## Landing catch-up on the Mac Mini (2026-11-27)
+
+Landed by Echo on the Mac Mini for the Design Standards session (the M5 could not run commit hooks). Three edits beyond the supplied patch, needed for the merged tree to pass:
+
+- Main's merge added three rules to the standard: DS-LAYOUT-12, DS-LAYOUT-13 and DS-ACTION-8. They are issued in `docs/design/rule-ids.lock.json` (65 to 68 entries, nothing removed), and the parser test counts move to 68 rules and 28 machine-checkable (DS-LAYOUT-13 is the only new machine rule).
+- The supplied patch put its two new parser tests and its new classifier test inside the body of the last existing top-level test, which vitest rejects. They are now separate top-level tests; the existing tests' assertions are unchanged.
+
+**Reviewer:** independent reviewer, a fresh Claude Opus 5.5 general-purpose helper started by Echo on the Mac Mini on 2026-11-27, not the author. It was given the three edits and the claims to check, not a conclusion. Concur: the lock and the standard both hold the same 68 IDs with no duplicates; the standard has 28 machine-index rows and 28 rules marked machine; the nesting fix only adds closing lines after the existing tests. The three test files passed 41 of 41.
