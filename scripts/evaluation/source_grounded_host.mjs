@@ -10,7 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { evaluateJudgeFlow } from './source_grounded_judge_flow.mjs';
 import { strictParse, validateCapture } from './source_grounded_validate.mjs';
@@ -85,6 +85,7 @@ export const CONTEXT_ARM_NAME = /^[a-z][a-z0-9]{0,23}$/;
 // can also measure how much the builder of the text varies. Record ids are
 // neutral, so a judge never sees an arm name.
 export function contextRecordsFor(contexts, repeats, seed) {
+  need(Number.isSafeInteger(repeats) && repeats >= 2 && repeats <= 10, 'repeats-must-be-2-to-10');
   need(contexts && typeof contexts === 'object' && !Array.isArray(contexts), 'contexts-must-be-an-object');
   const names = Object.keys(contexts);
   need(names.length >= 1 && names.length <= 4, 'contexts-must-name-1-to-4-arms');
@@ -97,7 +98,7 @@ export function contextRecordsFor(contexts, repeats, seed) {
       const text = typeof c === 'string' ? c : c?.text;
       need(typeof text === 'string' && text.trim().length > 0, 'context-text-required');
       const builtBy = typeof c === 'string' ? null : (c.builtBy ?? null);
-      need(builtBy === null || /^[A-Za-z0-9._:@ -]{1,80}$/.test(builtBy), 'bad-context-built-by');
+      need(builtBy === null || (typeof builtBy === 'string' && /^[A-Za-z0-9._:@ -]{1,80}$/.test(builtBy)), 'bad-context-built-by');
       const repeat = texts.length === 1 ? null : i + 1;
       records.push({ id: 'context-' + sha(seed + '\u0000context\u0000' + arm + '\u0000' + (repeat ?? 'all')).slice(0, 10),
         arm, repeat, text, builtBy });
@@ -592,15 +593,27 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
 const plainCode = v => (typeof v === 'string' && /^[a-z0-9-]{1,80}$/.test(v) ? v : (v == null ? 'none' : 'other'));
 // Where a rejected answer or grading breaks the frozen schema: Ajv's rule and
 // the location in the schema's own terms, array positions as N. A property
-// name the model chose is kept only when it is a plain code.
+// name is kept only when the frozen schema itself defines it; any other name
+// the model invented is reported as "other", so no model wording leaks.
 let shapeCheckers = null;
+let schemaNames = null;
+function collectNames(node, into) {
+  if (Array.isArray(node)) { for (const n of node) collectNames(n, into); return into; }
+  if (node && typeof node === 'object') {
+    if (node.properties && typeof node.properties === 'object') for (const k of Object.keys(node.properties)) into.add(k);
+    for (const v of Object.values(node)) collectNames(v, into);
+  }
+  return into;
+}
 function shapeChecker(kind) {
   if (!shapeCheckers) {
     const ajv = new Ajv2020({ allErrors: true, strict: true });
-    shapeCheckers = {};
+    shapeCheckers = {}; schemaNames = {};
     for (const k of ['answer', 'judge']) {
       const bytes = readFileSync(new URL(`../../docs/evaluation/context-budget/source-grounded-answer/${k}.schema.json`, import.meta.url));
-      shapeCheckers[k] = ajv.compile(JSON.parse(bytes.toString('utf8')));
+      const schema = JSON.parse(bytes.toString('utf8'));
+      shapeCheckers[k] = ajv.compile(schema);
+      schemaNames[k] = collectNames(schema, new Set());
     }
   }
   return shapeCheckers[kind];
@@ -613,7 +626,7 @@ export function shapeCodes(kind, raw) {
   return [...new Set((check.errors ?? []).map(e => {
     const where = String(e.instancePath || '/').replace(/\/[0-9]+/g, '/N');
     const extra = e.params?.additionalProperty ?? e.params?.missingProperty;
-    const name = extra === undefined ? '' : ` ${/^[A-Za-z0-9_-]{1,40}$/.test(String(extra)) ? extra : 'other'}`;
+    const name = extra === undefined ? '' : ` ${schemaNames[kind].has(String(extra)) ? extra : 'other'}`;
     return `${e.keyword} ${/^[A-Za-z0-9_/N-]{1,120}$/.test(where) ? where : 'other'}${name}`;
   }))];
 }
@@ -779,6 +792,9 @@ export function totalRun(run, pack) {
       // An invalid or missing answer fails every criterion it cannot show.
       s.criteria.fail += ctx.trial.criteria.length;
       scored = true; // a real answer that could not be graded is a real result
+      // ...and a finished one: it scores zero in the complete-only comparison
+      // too. Only a judging gap is left out of that comparison, not a broken answer.
+      complete = true;
     }
     if (passed) s.allCriteriaPass += 1;
     // Critical failures come only from judge findings; an ungradeable answer is
@@ -809,8 +825,9 @@ export function totalRun(run, pack) {
     const diffs = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).scored && by[y].get(k).scored).map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
     paired[`${x}-minus-${y}`] = { pairs: diffs.length, mean: diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : null,
       better: diffs.filter(d => d > 0).length, worse: diffs.filter(d => d < 0).length, same: diffs.filter(d => d === 0).length };
-    // The same comparison over pairs where both judges finished every criterion,
-    // so a judging gap is not read as a worse answer.
+    // The same comparison over pairs with a finished result on both sides: both
+    // judges finished every criterion, or the answer could not be graded at all
+    // (a real zero). So a judging gap is not read as a worse answer.
     const done = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).complete && by[y].get(k).complete)
       .map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
     paired[`${x}-minus-${y}`].completeOnly = { pairs: done.length, mean: done.length ? done.reduce((a, b) => a + b, 0) / done.length : null,
@@ -862,14 +879,18 @@ export function main(argv) {
   if (command === 'plan') {
     const judges = [route(opts['judge-a'], opts), route(opts['judge-b'], opts)];
     const repeats = Number(opts.repeats ?? 3);
+    need(!(opts.contexts && opts.reduced), 'reduced-and-contexts-are-exclusive');
     if (opts.contexts) {
       // { "<arm>": ["file", ...] or [{ "file": "...", "builtBy": "..." }, ...] }
+      // File paths are relative to the spec file.
+      const specDir = dirname(resolve(opts.contexts));
+      const at = f => resolve(specDir, f);
       const spec = JSON.parse(readFileSync(opts.contexts, 'utf8'));
       need(spec && typeof spec === 'object' && !Array.isArray(spec), 'contexts-must-be-an-object');
       const contexts = Object.fromEntries(Object.entries(spec).map(([arm, list]) => {
         need(Array.isArray(list), 'context-texts-must-be-1-or-one-per-repeat');
-        return [arm, list.map(e => typeof e === 'string' ? readFileSync(e, 'utf8')
-          : { text: readFileSync(e?.file ?? fail('context-file-required'), 'utf8'), builtBy: e.builtBy ?? null })];
+        return [arm, list.map(e => typeof e === 'string' ? readFileSync(at(e), 'utf8')
+          : { text: readFileSync(at(e?.file ?? fail('context-file-required')), 'utf8'), builtBy: e.builtBy ?? null })];
       }));
       writePlan(run, buildPlan(pack, { contexts, repeats, judges }), pack, null);
       return { state: 'planned', trials: run.read('index.json').order.length, arms: run.read('index.json').arms };

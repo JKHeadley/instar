@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
   checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, recordIdPattern, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
-  totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt, contextRecordsFor,
+  totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt, contextRecordsFor, main,
 } from './source_grounded_host.mjs';
 
 const sha = v => createHash('sha256').update(v).digest('hex');
@@ -434,6 +434,15 @@ test('totals for a context-arm run compare every pair of arms and list the conte
         observations: [{ trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, attemptId: attempt.attemptId, family: slot.family, raw }] });
     });
   }
+  // A broken answer is a real zero, so it stays in the complete-only comparison.
+  const broken = plan.trials.filter(t => t.arm === 'summary' && t.repeat === 2);
+  const kept = new Map(broken.map(t => [t.trialId, readFileSync(join(runDir, `answers/${t.trialId}.json`), 'utf8')]));
+  for (const t of broken) run.write(`answers/${t.trialId}.json`, { trialId: t.trialId, state: 'ok', usage: { output_tokens: 1 }, answerRaw: '{', parseOutcome: { status: 'schema-invalid' } });
+  const withBroken = totalRun(run, pack);
+  assert.equal(withBroken.paired['summary-minus-full'].completeOnly.pairs, 4);
+  assert.equal(withBroken.paired['summary-minus-full'].completeOnly.worse, 2);
+  assert.equal(withBroken.trials.find(x => x.trialId === broken[0].trialId).complete, true);
+  for (const t of broken) writeFileSync(join(runDir, `answers/${t.trialId}.json`), kept.get(t.trialId));
   const totals = totalRun(run, pack);
   assert.deepEqual(Object.keys(totals.arms), ['none', 'summary', 'packet', 'full']);
   assert.deepEqual(Object.keys(totals.paired), ['summary-minus-packet', 'summary-minus-full', 'summary-minus-none', 'packet-minus-full', 'packet-minus-none', 'full-minus-none']);
@@ -447,4 +456,27 @@ test('totals for a context-arm run compare every pair of arms and list the conte
   for (const secret of ['Summary-text', 'Packet-text', 'café']) assert.ok(!text.includes(secret));
   const d = diagnoseRun(run, pack);
   assert.ok(Object.keys(d.answers).some(k => k.startsWith('packet ')) && Object.keys(d.answers).some(k => k.startsWith('summary ')));
+});
+
+test('shape codes report only schema property names; an invented key becomes "other"', () => {
+  const codes = shapeCodes('judge', JSON.stringify({ version: 1, submissionId: 's', criteria: [], unlistedMaterialClaims: [], limitations: [], migrateToPostgres: true }));
+  assert.ok(codes.some(c => c.endsWith(' other')), codes.join('; '));
+  assert.ok(!codes.join(' ').includes('migrateToPostgres'));
+  const missing = shapeCodes('judge', JSON.stringify({ version: 1 }));
+  assert.ok(missing.some(c => c.endsWith(' criteria')), missing.join('; '));
+  assert.throws(() => contextRecordsFor({ summary: [{ text: 'x', builtBy: 42 }] }, 2, 's'), /bad-context-built-by/);
+  assert.throws(() => contextRecordsFor({ summary: ['x'] }, 1, 's'), /repeats/);
+});
+
+test('plan --contexts reads files relative to the spec and refuses --reduced with it', () => {
+  const packDir = syntheticPack();
+  const specDir = mkdtempSync(join(tmpdir(), 'sg-spec-'));
+  writeFileSync(join(specDir, 'p.txt'), 'PACKET');
+  writeFileSync(join(specDir, 'spec.json'), JSON.stringify({ packet: [{ file: 'p.txt', builtBy: 'cb' }] }));
+  const args = ['--pack', packDir, '--judge-a', 'anthropic:a', '--judge-b', 'openai:b', '--claude', '/bin/true', '--config-home', specDir, '--repeats', '2'];
+  const runDir = join(mkdtempSync(join(tmpdir(), 'sg-cli-')), 'run');
+  const out = main(['plan', '--run', runDir, '--contexts', join(specDir, 'spec.json'), ...args]);
+  assert.deepEqual(out.arms, ['none', 'packet', 'full']);
+  assert.equal(JSON.parse(readFileSync(join(runDir, 'contexts.json'), 'utf8')).contexts[0].builtBy, 'cb');
+  assert.throws(() => main(['plan', '--run', join(runDir, 'x'), '--contexts', join(specDir, 'spec.json'), '--reduced', join(specDir, 'p.txt'), ...args]), /exclusive/);
 });
