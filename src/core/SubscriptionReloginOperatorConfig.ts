@@ -148,6 +148,30 @@ export function subscriptionReloginConfigureDigest(config: SubscriptionReloginOp
   return sha256(canonicalJson({ config, expectedRevision }));
 }
 
+/** Build the exact pool target values shared by dashboard and native approvals. */
+export function subscriptionReloginPoolTargetConfig(
+  target: Readonly<Record<string, unknown>>,
+  mode: SubscriptionReloginOperatorInput['mode'] | undefined,
+) {
+  return {
+    enabled: true, mode, dryRun: false,
+    unattendedPolicy: {
+      identities: Array.isArray(target.identities) ? target.identities : [],
+      minimumSuccessfulRepairs: target.minimumSuccessfulRepairs,
+      minimumEvidenceDays: target.minimumEvidenceDays,
+    },
+  };
+}
+
+export function prepareSubscriptionReloginPoolTarget(
+  target: Readonly<Record<string, unknown>>,
+  mode: SubscriptionReloginOperatorInput['mode'] | undefined,
+  expectedRevision: string,
+): { config: SubscriptionReloginOperatorInput; configDigest: string } | null {
+  const parsed = validateSubscriptionReloginOperatorInput(subscriptionReloginPoolTargetConfig(target, mode));
+  return parsed.ok ? { config: parsed.value, configDigest: subscriptionReloginConfigureDigest(parsed.value, expectedRevision) } : null;
+}
+
 // ── Apply ───────────────────────────────────────────────────────────────────────────────────
 
 export interface SubscriptionReloginConfigProvenance {

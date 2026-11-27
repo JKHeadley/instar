@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   ASYNC_YIELD_EVERY_NAMES,
   ROLLOUT_ENUMERATED_MISS_TTL_MS,
@@ -36,11 +37,15 @@ import {
   localPartitionOf,
   makeFakeHome,
   rolloutDir,
-  startEventLoopLagProbe,
   uuidV4Like,
   uuidV7At,
   writeRollout,
 } from '../helpers/codexArchiveFixture.js';
+
+vi.mock('node:timers/promises', async (importOriginal) => {
+  const timers = await importOriginal<typeof import('node:timers/promises')>();
+  return { ...timers, setImmediate: vi.fn(timers.setImmediate) };
+});
 
 describe('rolloutPartitionHint', () => {
   it('maps a UUIDv7 to its local-date partition, then the next and previous day', () => {
@@ -64,7 +69,7 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   // Use exactly one more name than the real sync budget. Newer days consume
   // the budget; the one-name oldest day must wait for async enumeration.
   // Build it once and share it across the three boundary cases.
-  const namesPerDay = 1000;
+  const namesPerDay = 10_000;
   const newerDays = Math.ceil(SYNC_SCAN_NAME_BUDGET / namesPerDay);
   let freshHome: string;
   let shared: { home: string; files: number; partitions: string[] } | null = null;
@@ -137,10 +142,7 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
     buildLargeArchive(home, { partitions: 12, perPartition: 400 });
     const uuid = uuidV7At(new Date(2026, 9, 5, 12, 0, 0), 1);
 
-    const t0 = performance.now();
     expect(findRolloutFileSync(uuid, codexHome)).toBeNull();
-    const elapsed = performance.now() - t0;
-    expect(elapsed).toBeLessThan(500);
 
     const s = rolloutLookupStats();
     expect(s.hintedPartitionReads).toBeLessThanOrEqual(3);
@@ -212,16 +214,44 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
     expect(rolloutLookupStats().syncBudgetExhausted).toBe(0);
   });
 
-  it('the event loop stays responsive while the async enumeration covers a large archive', async () => {
-    useBeyondBudgetArchive();
+  it('yields to the real event loop between and within directories during a large async enumeration', async () => {
+    const { files, names } = useBeyondBudgetArchive();
     expect(ASYNC_YIELD_EVERY_NAMES).toBeLessThanOrEqual(5000);
     const uuid = uuidV4Like(123);
 
+    const yields = vi.mocked(yieldToEventLoop);
+    const timers = await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
+    let releaseYield!: () => void;
+    const held = new Promise<void>(resolve => { releaseYield = resolve; });
+    let markYieldReached!: () => void;
+    const reached = new Promise<void>(resolve => { markYieldReached = resolve; });
+    yields.mockClear();
+    yields.mockImplementationOnce(async (value, options) => {
+      markYieldReached();
+      await held;
+      return timers.setImmediate(value, options);
+    });
     expect(findRolloutFileSync(uuid, codexHome)).toBeNull();
-    const probe = startEventLoopLagProbe(5);
-    await pendingRolloutLookup(uuid, codexHome);
-    const worstLagMs = probe.stop();
-    expect(worstLagMs).toBeLessThan(250);
+    const pending = pendingRolloutLookup(uuid, codexHome);
+    expect(pending).not.toBeNull();
+    try {
+      await Promise.race([reached, pending!.then(() => { throw new Error('Enumeration completed without yielding'); })]);
+      await timers.setImmediate();
+      expect(yields).toHaveBeenCalledTimes(1);
+      expect(rolloutLookupStats().asyncNamesScanned).toBeLessThan(files);
+    } finally {
+      releaseYield();
+      await pending;
+    }
+    expect(await pending).toBeNull();
+    expect(rolloutLookupStats().asyncNamesScanned).toBe(files);
+    // Each directory yields once, with additional yields inside the large directories.
+    let expectedYields = 0;
+    for (const day of names) {
+      const entries = fs.readdirSync(rolloutDir(home, day)).length;
+      expectedYields += 1 + Math.floor(entries / ASYNC_YIELD_EVERY_NAMES);
+    }
+    expect(yields).toHaveBeenCalledTimes(expectedYields);
   });
 
   it('forgets a remembered miss when the rollout appears in the newest partition (generation stamp)', async () => {

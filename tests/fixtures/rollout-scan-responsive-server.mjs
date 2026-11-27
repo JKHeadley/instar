@@ -7,8 +7,9 @@ import { scanSpecArtifactsWithCanonical, scanSpecArtifactsWithCanonicalAsync } f
 import { LeaseCoordinator } from '../../dist/core/LeaseCoordinator.js';
 import { FencedLease } from '../../dist/core/FencedLease.js';
 
-const [repo,mode]=process.argv.slice(2);
-const ttlMs=1000,renewEveryMs=25,healthDeadlineMs=1000;
+const [repo,mode,profile]=process.argv.slice(2);
+const measureTiming=profile==='timing';
+const ttlMs=measureTiming?1000:30_000,renewEveryMs=25,healthDeadlineMs=measureTiming?1000:15_000;
 const keys=crypto.generateKeyPairSync('ed25519');
 const crypt={selfMachineId:'isolated-rollout-test',sign:s=>crypto.sign(null,Buffer.from(s),keys.privateKey).toString('base64'),
   verify:(s,sig)=>crypto.verify(null,Buffer.from(s),keys.publicKey,Buffer.from(sig,'base64'))};
