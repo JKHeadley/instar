@@ -191,7 +191,7 @@ export const OTHER_PEOPLES_WORDS = [
   '[/OTHER PEOPLE\'S WORDS]',
 ].join('\n');
 
-const TESTING_THROUGHPUT_SCRIPT_SLUG = 'testing-throughput-report-script';
+const SCRIPT_ONLY_REPORT_SLUGS = new Set(['testing-throughput-report-script', 'guardian-activity-report-script']);
 
 export class JobScheduler {
   private config: JobSchedulerConfig;
@@ -1032,12 +1032,12 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
-    if (job.origin === 'instar' && slug === TESTING_THROUGHPUT_SCRIPT_SLUG && !isScriptRunner) {
+    if (job.origin === 'instar' && SCRIPT_ONLY_REPORT_SLUGS.has(slug) && !isScriptRunner) {
       this.skipLedger.recordSkip(slug, 'disabled');
       return 'skipped';
     }
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
-      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+      if (SCRIPT_ONLY_REPORT_SLUGS.has(slug)) {
         this.skipLedger.recordSkip(slug, 'disabled');
         return 'skipped';
       }
@@ -1302,7 +1302,7 @@ export class JobScheduler {
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
     if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
-      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+      if (SCRIPT_ONLY_REPORT_SLUGS.has(slug)) {
         this.skipLedger.recordSkip(slug, 'disabled');
         return 'skipped';
       }
@@ -2925,7 +2925,7 @@ export class JobScheduler {
       trigger: string;
     },
   ): { sessionName: string } | { refused: string } {
-    if (job.origin === 'instar' && job.slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+    if (job.origin === 'instar' && SCRIPT_ONLY_REPORT_SLUGS.has(job.slug)) {
       return { refused: 'script-only-job' };
     }
     const projected = this.projectAsAgentmd(job);
