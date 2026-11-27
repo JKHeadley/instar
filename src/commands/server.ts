@@ -18982,7 +18982,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, resolveAuthenticatorOverPhone, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
           { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }, { createReloginLastResort, withLastResort },
           { createOneShotCompletion: createHeadlessOneShotCompletion }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
@@ -19143,6 +19143,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // `agent-session` (spec skill-driven-signin-repair) runs on macOS and, set explicitly, on
           // WSL; omitted ⇒ agent-session on a macOS development agent.
           navigation: reloginNavigation,
+          // Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt):
+          // omitted ⇒ shadow on a development agent, off on the fleet.
+          authenticatorOverPhone: resolveAuthenticatorOverPhone(reloginCfg.authenticatorOverPhone, config),
           // A Codex repair can only be proven by a LIVE app-server read (spec skill-driven-signin-repair).
           codexLiveReadAvailable: config.subscriptionPool?.codexLiveQuota !== false,
           helperSession: buildReloginHelperSessionPorts({ sessionManager, maxSessions: config.sessions.maxSessions,

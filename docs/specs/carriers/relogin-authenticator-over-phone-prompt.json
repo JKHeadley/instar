@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-11-26T23:59:00.000Z",
+  "slug": "relogin-authenticator-over-phone-prompt",
+  "carriers": {
+    "CMT-034": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Teach the fixed page-class sign-in driver (the fleet default) to answer Google's 2-Step Verification phone page with the saved authenticator code, under its own spec. Owner: Subscription Management (Mac M5 Pro)."
+    },
+    "CMT-035": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Weekly evidence review of the authenticator-over-phone step from 2026-12-03 on every machine with helper repairs; revert on transcript-confirmed misuse."
+    },
+    "CMT-036": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Graduate each driver family from shadow to on after 3 transcript-corroborated would-use records; supervise the first 3 on uses per machine; dated check 2026-12-10."
+    },
+    "CMT-038": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "shared test line",
+      "excerpt": "One fixture run per driver family: a helper in shadow must record shadow-would-stop on a 2-Step Verification page that also shows a CAPTCHA."
+    }
+  }
+}

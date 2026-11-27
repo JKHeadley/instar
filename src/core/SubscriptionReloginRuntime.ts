@@ -51,6 +51,11 @@ export interface SubscriptionReloginRuntimeDeps {
    */
   navigation?: 'closed' | 'agent' | 'agent-session';
   /**
+   * Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt), already
+   * resolved by `resolveAuthenticatorOverPhone`. Absent ⇒ off: the helper prompt is unchanged.
+   */
+  authenticatorOverPhone?: AuthenticatorOverPhoneMode;
+  /**
    * The agent-session helper's ports (spec skill-driven-signin-repair). Required when
    * `navigation` is `agent-session`; ignored otherwise.
    */
@@ -276,6 +281,10 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       store.enqueuePhoneTap(episodeId);
       void serviceRef?.flushNotifications();
     },
+    noteAuthenticator: (episodeId, label) => { store.recordAuthenticatorEvent(episodeId, label); },
+    authenticatorLatch: (driveId) => store.authenticatorSupervision(driveId).state,
+    noteAuthenticatorUse: (episodeId, driveId) => { store.recordAuthenticatorUse(episodeId, driveId); },
+    authenticatorCodesGranted: (episodeId) => store.authenticatorCodesGranted(episodeId),
     onDeviceLimitReported: (episodeId) => {
       const accountId = store.get(episodeId)?.accountId;
       if (accountId) deps.onDeviceLimitStopped?.(accountId);
@@ -374,6 +383,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
           provider: acct.provider, profileDir: (windowsHelper ? detail.windowsUserDataDir : undefined) ?? detail.userDataDir,
           vaultBindingNames: Object.values(secretRefs).filter((name): name is string => typeof name === 'string'),
+          authenticatorMode: helperAuthenticatorMode(deps.authenticatorOverPhone, browserAccount.loginMethod, secretRefs),
         }, signal);
         // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
         // helper with no seat; with the last resort available it falls through here too, instead
@@ -638,6 +648,7 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     retry: (episodeId: string) => runtime.service.retry(episodeId),
     ...(runtime.helper ? {
       helperSubmit: (episodeId: string, token: string, body: unknown) => runtime.helper!.submit(episodeId, token, body),
+      helperDriving: () => runtime.helper!.isAnyDriving(),
     } : {}),
     // Registry First: the last-resort model's live state (never the key), or available:false.
     lastResortStatus: (): ReloginLastResortStatus | { available: false } =>
@@ -682,6 +693,35 @@ function autonomousLoginMethod(account: PlaywrightAccount): 'session-cookie' | '
     || account.loginMethod === 'google-passkey')
     return account.loginMethod;
   throw new Error('login-method-not-autonomous');
+}
+
+/**
+ * Whether the sign-in helper may answer Google's 2-Step Verification phone prompt with the
+ * authenticator code (spec relogin-authenticator-over-phone-prompt): only for a password+totp
+ * account whose authenticator vault entry is bound. Exported for tests.
+ */
+export function helperHasAuthenticator(loginMethod: string | undefined, secretRefs: { totp?: unknown }): boolean {
+  return loginMethod === 'password+totp' && typeof secretRefs.totp === 'string' && secretRefs.totp.length > 0;
+}
+
+export type AuthenticatorOverPhoneMode = 'on' | 'shadow' | 'off';
+
+/**
+ * Resolve `assistedRelogin.authenticatorOverPhone`: an explicit value wins (`true` → on,
+ * `'shadow'` → shadow, `false` → off); omitted ⇒ shadow on a development agent, off on the fleet.
+ * Exported for tests.
+ */
+export function resolveAuthenticatorOverPhone(value: boolean | 'shadow' | undefined, config: { developmentAgent?: boolean } | undefined): AuthenticatorOverPhoneMode {
+  if (value === true) return 'on';
+  if (value === 'shadow') return 'shadow';
+  if (value === false) return 'off';
+  return resolveDevAgentGate(undefined, config) ? 'shadow' : 'off';
+}
+
+/** The resolved mode, applied only to an account that qualifies. Exported for tests. */
+export function helperAuthenticatorMode(mode: AuthenticatorOverPhoneMode | undefined, loginMethod: string | undefined, secretRefs: { totp?: unknown }): AuthenticatorOverPhoneMode {
+  if (!mode || mode === 'off' || !helperHasAuthenticator(loginMethod, secretRefs)) return 'off';
+  return mode;
 }
 
 /** Take the first 8-digit Google backup code out of a vault entry and write the rest back. Never logs a value. */

@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-27T00:05:13.088Z",
+  "slug": "relogin-authenticator-over-phone-prompt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 436,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginHelper.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/types.ts",
+      "src/data/awareness/relogin-authenticator-over-phone.md",
+      "src/data/builtinSkillContent.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 426,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds no new self-triggered action: it only adds stop conditions to the existing slow retry (rejected, refused, granted or no-option authenticator outcomes now count as challenges, so fewer retries run); the new review route and helper notices are request-driven, never self-triggered"
+  },
+  "verdict": "pass"
+}

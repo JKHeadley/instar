@@ -1494,6 +1494,8 @@ export interface RouteContext {
     retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
     /** The agent-session helper's code route (spec skill-driven-signin-repair). Absent ⇒ 503. */
     helperSubmit?: (episodeId: string, token: string, body: unknown) => { status: number; body: Record<string, unknown> };
+    /** True while any sign-in helper drive is in flight on this machine (spec relogin-authenticator-over-phone-prompt). */
+    helperDriving?: () => boolean;
     /** The last-resort model's live state (spec relogin-last-resort-model); never a key. */
     lastResortStatus?: () => import('../core/ReloginLastResortProvider.js').ReloginLastResortStatus | { available: false };
     /** Why each needs-sign-in account on this machine has no repair (read-only). */
@@ -42804,6 +42806,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ enabled: true, episodes: localEpisodes,
           ...(localBlockers ? { blockers: localBlockers } : {}),
           ...(ownConfig ? { config: ownConfig } : {}),
+          authenticatorSupervision: ctx.subscriptionRelogin!.store.authenticatorSupervision(),
           lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
@@ -43145,6 +43148,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: true, cancelled: episode.state === 'cancelled', episode });
     } catch (error) {
       const message = error instanceof Error ? error.message : 're-login cancellation failed';
+      res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
+    }
+  });
+
+  // Supervised first uses of the authenticator step (spec relogin-authenticator-over-phone-prompt):
+  // the reviewer records pass, inconclusive or fail for one use. Bearer auth; the store refuses a
+  // pass or inconclusive for an episode with no recorded use or a running repair, and a second review
+  // of the same use; a fail is accepted at any time.
+  router.post('/subscription-relogin/:episodeId/authenticator-review', (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    const result = req.body?.result;
+    if (result !== 'pass' && result !== 'fail' && result !== 'inconclusive') {
+      res.status(400).json({ error: 'result must be "pass", "fail" or "inconclusive"' });
+      return;
+    }
+    // A helper holds the agent's token: no pass or inconclusive is recorded while any helper drive is
+    // live here. A fail can only close the step, so it is always accepted (the live off switch).
+    if (result !== 'fail' && ctx.subscriptionRelogin.helperDriving?.()) {
+      res.status(409).json({ error: 'authenticator-review-helper-live' });
+      return;
+    }
+    try {
+      const episode = ctx.subscriptionRelogin.store.recordAuthenticatorReview(req.params.episodeId, result);
+      res.json({ enabled: true, recorded: result, episode, supervision: ctx.subscriptionRelogin.store.authenticatorSupervision() });
+    } catch (error) {
+      // @silent-fallback-ok — the route returns the typed conflict; it does not fall back.
+      const message = error instanceof Error ? error.message : 'authenticator review failed';
       res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
     }
   });

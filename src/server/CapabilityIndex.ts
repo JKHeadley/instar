@@ -198,6 +198,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-relogin/:episodeId/cancel',
         'POST /subscription-relogin/:episodeId/retry',
         'POST /subscription-relogin/:episodeId/code',
+        'POST /subscription-relogin/:episodeId/authenticator-review',
       ],
       navigation: ctx.config.subscriptionPool?.assistedRelogin?.navigation ?? 'default',
     }),
