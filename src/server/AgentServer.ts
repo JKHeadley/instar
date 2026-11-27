@@ -1,3 +1,4 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
@@ -119,6 +120,7 @@ import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainSer
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { deriveConsumerPromotionProposal, effectiveClaimsPerRun, promotionRecordMarker, type PromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
@@ -358,6 +360,8 @@ import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvi
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { buildReadinessAccountAdmission, resolveReadinessAccountConfig } from '../feedback-factory/drain/readinessAccountAdmission.js';
+import { FeedbackTriageAccountSelector } from '../feedback-factory/triage/FeedbackTriageAccountSelector.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -1146,6 +1150,8 @@ export class AgentServer {
     service: FeedbackDrainService;
     store: FeedbackDrainStore;
     promotion: FeedbackConsumerPromotionStore;
+    /** The current consumer-promotion proposal (state + hashed batch), derived fresh on every call. */
+    promotionProposal: () => PromotionProposal;
     tickProxy: FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -1396,6 +1402,7 @@ export class AgentServer {
   }
 
   constructor(options: {
+    plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
@@ -4901,6 +4908,16 @@ export class AgentServer {
         // Queue pace measures the feedback queues only on their configured operated host.
         if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        // Readiness reuses the triage account selector (same pool, same live quota reader), read
+        // live per call: a pin or triage.accountSelectionMode set later takes effect without a restart.
+        const readinessUsageReader = options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool);
+        const readinessAccount = buildReadinessAccountAdmission({
+          config: () => resolveReadinessAccountConfig(options.config.feedbackFactory),
+          selector: options.subscriptionPool && readinessUsageReader
+            ? new FeedbackTriageAccountSelector(options.subscriptionPool, (opts) => readinessUsageReader(opts))
+            : null,
+          pool: options.subscriptionPool ?? null,
+        });
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -4913,10 +4930,12 @@ export class AgentServer {
           isCanonicalOwner,
           isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          consumerApprovedWorkIds: () => promotion.approvedWorkIds(),
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          readinessAccount,
           raiseAttention: async (item) => {
             const enqueue = this.telegramAdapter?.createAttentionItem;
             if (!enqueue) throw new Error('durable attention enqueue unavailable');
@@ -4980,7 +4999,24 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+        // The exact batch the operator approves on consumer promotion (proposal-set bound):
+        // re-derived on every read and again immediately before the promote write.
+        const promotionProposal = (): PromotionProposal => {
+          const claimsPerRun = effectiveClaimsPerRun(options.config.feedbackFactory?.consumer?.maxClaimsPerTick);
+          const currentRecord = promotion.read();
+          return deriveConsumerPromotionProposal({
+            available: true,
+            restorePending,
+            isCanonicalOwner: holdsCanonicalLease(),
+            consumerEnabled,
+            configuredDryRun: options.config.feedbackFactory?.consumer?.dryRun,
+            promotionRecord: currentRecord ? { approvedBatchBound: currentRecord.approvedBatchBound, revokedAt: currentRecord.revokedAt, proposalBound: FeedbackConsumerPromotionStore.isProposalBound(currentRecord) } : null,
+            priorRecordMarker: promotionRecordMarker(currentRecord),
+            claimsPerRun,
+            claimable: store.claimableWork(claimsPerRun),
+          });
+        };
+        this.feedbackDrain = { service, store, promotion, promotionProposal, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner
@@ -6755,6 +6791,7 @@ export class AgentServer {
         { ...cadenceRaw, enabled: true },
       ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
+      plannedRestartLeaseAdmission: options.plannedRestartLeaseAdmission,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
@@ -10067,9 +10104,13 @@ export class AgentServer {
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
+      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
+        const previous = readRestartRequestFile(flagPath);
+        const update = pendingUpdateRestartTarget(flagPath, previous);
+        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
+        return update;
+      });
+      if (existingUpdate) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {

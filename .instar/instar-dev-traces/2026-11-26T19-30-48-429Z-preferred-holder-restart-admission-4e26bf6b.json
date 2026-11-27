@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "preferred-holder-restart-admission",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T19:30:48.429Z",
+  "artifactPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "artifactSha256": "b935fb01160aae7b0788cbf5b05a296897a926ca45b48f3ccdd54465b3209b70",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/types.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/integration/planned-restart-lease-admission.test.ts",
+    "tests/integration/server-restart-route.test.ts",
+    "upgrades/eli16/preferred-holder-restart-admission.md",
+    "upgrades/next/preferred-holder-restart-admission.md",
+    "upgrades/side-effects/preferred-holder-restart-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit opt-in authenticated evidence path, no production config or exclusive action change by default.",
+  "eli16Path": "upgrades/eli16/preferred-holder-restart-admission.md",
+  "sideEffectsPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Guard of an existing planned restart request, no additional self-triggered restart or renewal."
+  }
+}

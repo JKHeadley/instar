@@ -166,6 +166,26 @@ describe('SessionRouter.dispatch (§L4)', () => {
     expect(deps.raiseAttention).toHaveBeenCalled();
   });
 
+  it.each(['queued', 'already-queued', 'refused'] as const)(
+    'reports an offline active owner only with durable custody (%s)',
+    async custody => {
+      const reportOfflineOwnerHold = vi.fn();
+      const { router, deps } = makeRouter({
+        resolveOwnership: () => ({ owner: 'm_remote', epoch: 7, status: 'active' }),
+        isMachineAlive: machine => machine !== 'm_remote',
+        queueMessage: () => custody,
+        casClaimOwnership: () => ({ ok: false, epoch: 7 }),
+        reportOfflineOwnerHold,
+      });
+      expect(await router.route(msg({ enqueuedAt: '2026-11-26T04:42:34.000Z' }))).toMatchObject({
+        action: 'queued', detail: 'ownership-contention', acked: custody !== 'refused',
+      });
+      if (custody === 'refused') expect(reportOfflineOwnerHold).not.toHaveBeenCalled();
+      else expect(reportOfflineOwnerHold).toHaveBeenCalledWith('s1', 'm_remote', 7, '2026-11-26T04:42:34.000Z');
+      expect(deps.handleLocally).not.toHaveBeenCalled();
+    },
+  );
+
   it('unowned → CAS LOST → re-read → forward to the winning owner', async () => {
     let n = 0;
     const deliver = vi.fn(async () => ({ messageId: 'evt-1', accepted: 'queued' }) as DeliverAck);

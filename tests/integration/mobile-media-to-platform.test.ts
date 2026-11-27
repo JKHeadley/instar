@@ -45,7 +45,7 @@ const TOPIC = 42;
 const dirs: string[] = [];
 const cleanups: Array<() => void | Promise<void>> = [];
 beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 afterAll(async () => {
   ProcessIntegrity.reset();
   for (const c of cleanups) await c();
@@ -93,6 +93,7 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null; enfo
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger, dispatch: () => null,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
   });
   cleanups.push(() => svc.stop());
 
@@ -494,5 +495,31 @@ describe('media off', () => {
     const u = await signed(e, 'POST', '/mobile/media/uploads', { conversationRef: `telegram:${TOPIC}`, ...describeFile(png()), requestId: rid() });
     expect(u.status).toBe(503);
     expect(e.ingested).toHaveLength(0);
+  });
+});
+
+
+describe('durable browser outbox — retained platform results', () => {
+  it.each(['telegram', 'slack'] as const)('answers the accepted %s file result before expired upload preflight', async (platform) => {
+    const e = await setup();
+    stubBotApi();
+    const bytes = png();
+    const ref = platform === 'telegram' ? `telegram:${TOPIC}` : e.slackKeyOf(e.channelId);
+    const uploadId = await upload(e, ref, bytes);
+    const path = platform === 'telegram' ? `/mobile/chat/${TOPIC}` : `/mobile/chat/slack/${e.channelId}`;
+    const body = { text: 'retained accepted file', requestId: rid(), ...(platform === 'slack' ? { machine: 'm1' } : {}), attachments: [{ uploadId, ...describeFile(bytes) }] };
+    const accepted = await signed(e, 'POST', path, body);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.eventId).toBeTypeOf('string');
+    const getUpload = e.svc.media.getUpload.bind(e.svc.media);
+    vi.spyOn(e.svc.media, 'getUpload').mockImplementation((id) => {
+      const row = getUpload(id);
+      return row ? { ...row, state: 'expired' } : null;
+    });
+    const replay = await signed(e, 'POST', path, body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.eventId).toBe(accepted.body.eventId);
+    if (platform === 'telegram') expect(e.ingested).toHaveLength(1);
+    else expect(e.slackDispatched).toHaveLength(1);
   });
 });

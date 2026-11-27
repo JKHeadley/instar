@@ -435,13 +435,54 @@ export function authorityCard(kind, p) {
   };
 }
 
+function consumerPromotionState(proposal) {
+  // A follower can show the owner’s status, but the owner’s PIN may only be sent locally.
+  return proposal?.state === 'pending' && proposal.localAction === false ? 'non-owner' : proposal?.state;
+}
+
+/** The console only surfaces an actionable proposal from the serving drain. */
+function pendingConsumerPromotion(response) {
+  const proposal = sourceState(response) === 'ok' ? response.data : null;
+  if (proposal?.state !== 'pending' || proposal.localAction !== true) return null;
+  const { proposalSetHash, approvedBatchBound, items } = proposal;
+  if (typeof proposalSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(proposalSetHash) ||
+      !Number.isSafeInteger(approvedBatchBound) || approvedBatchBound < 1 || approvedBatchBound > 50 ||
+      !Array.isArray(items) || items.length !== approvedBatchBound) return null;
+  if (!items.every((item) => item && typeof item.workId === 'string' && item.workId.length > 0 &&
+    typeof item.title === 'string' && item.title.length > 0 &&
+    typeof item.priority === 'string' && item.priority.length > 0 &&
+    Number.isSafeInteger(item.reportCount) && item.reportCount > 0) ||
+    new Set(items.map((item) => item.workId)).size !== items.length) return null;
+  return { evidenceHash: proposalSetHash, approvedBatchBound, items };
+}
+
+export function consumerPromotionSummary(batch) {
+  return `Turn on feedback processing. It starts with this batch and can create up to ${plural(batch, 'work item')} per run.`;
+}
+
+const PROMOTION_NOTES = {
+  'configured-simulation': 'Feedback processing is set to practice mode. The agent needs to prepare it for promotion.',
+  'no-work': 'There are no approved feedback items ready for promotion yet.',
+  'non-owner': 'Feedback promotion is available from the machine that runs feedback processing.',
+  restore: 'Feedback promotion will be available once restoration is complete.',
+  unavailable: 'Feedback promotion is currently unavailable.',
+};
+
 /** Everything on this page that is the operator's to do, most important first. */
-export function operatorTodos({ readiness, triageProposal, execute, queue } = {}) {
+export function operatorTodos({ readiness, triageProposal, execute, queue, consumerPromotion } = {}) {
   const todos = [];
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
   if (pending(r)) todos.push({ kind: 'readiness-authority', action: r.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: `Approve which model sorts incoming reports.${r.status === 'proposal-only' ? ` It was paused: ${authorityPauseReason(r)}` : r.status === 'revoked' ? ' You turned it off earlier.' : ''}`, button: r.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: r });
   const t = sourceState(triageProposal) === 'ok' ? triageProposal.data : null;
   if (pending(t)) todos.push({ kind: 'triage-authority', action: t.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: 'Approve which model decides which reports get fixed.', button: t.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: t });
+  const promotion = pendingConsumerPromotion(consumerPromotion);
+  if (promotion) todos.push({
+    kind: 'consumer-promotion', sentence: 'Feedback needs your approval to create work items.',
+    detail: consumerPromotion.data.promotionRecord?.requiresReapproval === true
+      ? 'The previous approval needs to be renewed before feedback processing can create work items.'
+      : 'Feedback processing is currently in practice mode.',
+    proposal: promotion,
+  });
   const x = sourceState(execute) === 'ok' ? execute.data : null;
   if (x && x.reason === 'approver-not-independent') todos.push({ kind: 'plan', action: 'accept-approver-dependence', sentence: 'The fix worker needs your one-time OK to run.', detail: 'This agent could approve its own fixes on GitHub, so it waits for you. Every fix still needs your GitHub approval to merge.', button: 'Let it run anyway…' });
   const held = ((x && x.attempts) || []).filter((a) => a.state === 'held' && a.reason === 'needs-review-secret-shape');
@@ -490,6 +531,18 @@ export function buildFeedback(res = {}, now = Date.now()) {
   const todoFeeds = ['readiness', 'triageSummary', 'triageProposal', 'execute', 'queue'];
   const allOff = todoFeeds.every((k) => states[k] === 'off');
   const drainOff = states.drain === 'off' || (states.drain === 'ok' && res.drain.data && res.drain.data.posture && res.drain.data.posture.state === 'unavailable');
+  const promotionRead = res.consumerPromotion;
+  const promotionState = consumerPromotionState(promotionRead?.data);
+  const promotionBadRead = promotionRead && ![404, 503].includes(promotionRead.status) && (
+    !promotionRead.ok || (promotionState === 'pending' && !pendingConsumerPromotion(promotionRead)) ||
+    (promotionState !== 'pending' && promotionState !== 'already-live' && !Object.hasOwn(PROMOTION_NOTES, promotionState))
+  );
+  if (promotionBadRead) {
+    states.consumerPromotion = 'failed';
+    names.consumerPromotion = 'the feedback promotion proposal';
+    failed.push('consumerPromotion');
+    todoFeeds.push('consumerPromotion');
+  }
   const todos = operatorTodos(res);
   const progress = progressLine(res.drain, res.readiness, now);
   const summary = states.triageSummary === 'ok' ? (res.triageSummary.data || {}) : null;
@@ -528,6 +581,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
   }
 
   const notes = [];
+  if (promotionRead?.ok && Object.hasOwn(PROMOTION_NOTES, promotionState)) notes.push(PROMOTION_NOTES[promotionState]);
   if (summary && summary.quotaPause && summary.quotaPause.at) notes.push('Triage is paused for now: the account serving it is near its usage limit.');
   if (summary && summary.ignoreBrake && summary.ignoreBrake.engaged) notes.push('Ignores are braked: the ignore rate rose sharply, so new ignores are being held.');
   if (states.drain === 'ok' && res.drain.data && res.drain.data.restorePending) notes.push('A failover restore is pending; writes are refused until it is finalized.');

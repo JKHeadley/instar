@@ -564,6 +564,57 @@ describe('runVerify — errors', () => {
 });
 
 describe('runVerify — failures', () => {
+  it.each(['same inventory', 'failed again', 'different inventory'])('requires same-file recovery after a named retry: %s', async (confirmation) => {
+    const wholeFilePassed = confirmation === 'same inventory';
+    const file = 'tests/unit/a.test.ts';
+    const predecessor = { name: 'suite predecessor', status: 'passed' };
+    const affected = { name: 'suite failed [literal]', status: 'failed' };
+    const recovered = { ...affected, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [predecessor, affected] } }, rerunNamed: {
+      [file]: [[{ ...predecessor, status: 'skipped' }, recovered], [
+        confirmation === 'different inventory' ? { ...predecessor, name: 'replacement' } : predecessor,
+        confirmation === 'failed again' ? affected : recovered,
+      ]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: wholeFilePassed ? 'success' : 'failure' } });
+    const reruns = f.execCalls.filter((call) => call.args.some((arg) => arg.includes('/unit-rerun-')));
+    expect(reruns).toHaveLength(2);
+    expect(reruns[0].args).toContain('--testNamePattern=^(?:suite failed \\[literal\\])$');
+    expect(reruns[1].args.some((arg) => arg.startsWith('--testNamePattern'))).toBe(false);
+    if (wholeFilePassed) expect(result).toMatchObject({ record: { flakyRetried: [{ namedRetry: true, failedTests: [affected.name] }] } });
+    else expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it('rejects a whole-file proof that swaps which tests passed and skipped', async () => {
+    const file = 'tests/unit/a.test.ts';
+    const first = { name: 'first', status: 'passed' };
+    const second = { name: 'second', status: 'skipped' };
+    const failed = { name: 'target', status: 'failed' };
+    const recovered = { ...failed, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [first, second, failed] } }, rerunNamed: {
+      [file]: [[recovered], [{ ...first, status: 'skipped' }, { ...second, status: 'passed' }, recovered]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it.each([1, 4])('only re-runs a small named failure set that is not quarantined, failures=%s', async (count) => {
+    const file = 'tests/unit/a.test.ts';
+    const failures = Array.from({ length: count }, (_, i) => ({ name: `suite case ${i}`, status: 'failed' }));
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: failures } }, rerunNamed: {
+      [file]: [failures.map((test) => ({ ...test, status: 'passed' }))],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: count === 1 ? 'success' : 'failure' } });
+    expect(f.execCalls.filter((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toHaveLength(count === 1 ? 1 : 0);
+    const quarantined = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [failures[0]] } } });
+    expect(await runVerify(input({ namedFlakeRetry: { quarantined: [{ file, test: failures[0].name }] } }), quarantined.seams))
+      .toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(quarantined.execCalls.some((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toBe(false);
+  });
+
   it('a failed test that fails again on its isolation re-run is a failure and the worktree is kept', async () => {
     const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] }, rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } }).seams);
     expect(r.kind).toBe('record');
@@ -941,16 +992,27 @@ describe('runVerify — retention of failed worktrees', () => {
   it('retains unit process output when the report lists no failed tests', async () => {
     const f = fake();
     const exec = f.seams.exec;
+    const persist = vi.fn(async () => '/private/unit-transcript.json');
+    f.seams.keepUnitTranscripts = persist;
+    const transcript = { prefix: 'The first diagnostic', suffix: 'The final diagnostic', omittedBytes: 10 };
     f.seams.exec = async (command, args, options) => {
       const result = await exec(command, args, options);
       if (!command.endsWith('vitest') || !args.some(a => a.endsWith('/unit.json'))) return result;
       f.files.set(options.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
         v: 1, unhandledErrors: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)),
       }));
-      return { ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited' };
+      expect(options.captureUnitOutput).toBe(true);
+      return {
+        ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited',
+        unitOutput: { stdout: transcript, stderr: transcript },
+      };
     };
     const result = await runVerify(input(), f.seams);
     expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({
+      transcripts: [{ step: 'unit', status: 1, signal: null, stdout: transcript, stderr: transcript }],
+    }));
+    expect(f.logs).toContainEqual({ event: 'unit-transcript-kept', path: '/private/unit-transcript.json' });
     const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
     expect(JSON.parse(artifact!)).toMatchObject({
       failures: [],
@@ -984,6 +1046,110 @@ describe('runVerify — retention of failed worktrees', () => {
     expect(kept).not.toContain(verifyPaths(HOME, heads[0]).runDir);
     expect(f.gitCalls.some((c) => c.args.join(' ') === `worktree remove ${verifyPaths(HOME, heads[0]).runDir}`)).toBe(true);
   });
+});
+
+describe('runVerify — task-update RPC timeout in the complete unit lane', () => {
+  const timeout = '[vitest-worker]: Timeout calling "onTaskUpdate"';
+  const retryFile = 'unit-task-update-retry.json';
+  const artifact = path.join(P.runDir, '.local-verify-failures.json');
+
+  const completedReport = (file: string, statuses: string[]): string => {
+    const failed = statuses.filter(status => status === 'failed').length;
+    return JSON.stringify({
+      ...JSON.parse(vitestReport(file, statuses)),
+      success: failed === 0, numFailedTests: failed, numFailedTestSuites: failed ? 1 : 0, numPendingTestSuites: 0,
+      numPassedTests: statuses.filter(status => status === 'passed').length, numPendingTests: 0, numTodoTests: 0,
+      numTotalTests: statuses.length,
+    });
+  };
+
+  const scenario = (options: {
+    repeat?: boolean; initialMessages?: string[]; initialErrorCount?: number;
+    initialStatuses?: string[]; initialFile?: string; incompleteSummary?: boolean;
+    retryStatuses?: string[]; omitRetryErrors?: boolean;
+  } = {}) => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, env) => {
+      const result = await exec(command, args, env);
+      const reportPath = args.find(a => a.startsWith('--outputFile='))?.slice('--outputFile='.length);
+      if (!reportPath) return result;
+      const errorPath = env.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!;
+      if (reportPath.endsWith('/unit.json')) {
+        const messages = options.initialMessages ?? Array(5).fill(timeout);
+        const report = completedReport(options.initialFile ?? TEST_FILES[0], options.initialStatuses ?? ['passed']);
+        f.files.set(reportPath, options.incompleteSummary ? JSON.stringify({ ...JSON.parse(report), numTotalTests: 2 }) : report);
+        f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: options.initialErrorCount ?? messages.length, messages }));
+        return { ...result, status: 1 };
+      }
+      if (reportPath.endsWith('/' + retryFile)) {
+        f.files.set(reportPath, completedReport(TEST_FILES[0], options.retryStatuses ?? ['passed']));
+        if (options.omitRetryErrors) f.files.delete(errorPath);
+        if (options.repeat) {
+          f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: 1, messages: [timeout] }));
+          return { ...result, status: 1 };
+        }
+      }
+      return result;
+    };
+    return f;
+  };
+
+  it('retries once within the original unit deadline and records a clean comparable retry', async () => {
+    const f = scenario();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const init = f.execCalls.find(call => call.args.some(a => a.endsWith('/unit.json')))!;
+    const retries = f.execCalls.filter(call => call.args.some(a => a.endsWith('/' + retryFile)));
+    expect(retries).toHaveLength(1);
+    expect(retries[0].deadlineMs).toBeLessThan(init.deadlineMs);
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry', timeouts: 5 }));
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: true }));
+  });
+
+  it('keeps both process receipts when the retry has the same fault', async () => {
+    const f = scenario({ repeat: true });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(JSON.parse(f.files.get(artifact)!)).toMatchObject({
+      failures: [],
+      processFailures: [
+        { step: 'unit', unhandled: { count: 5, messages: Array(5).fill(timeout) } },
+        { step: 'unit-task-update-retry', unhandled: { count: 1, messages: [timeout] } },
+      ],
+    });
+  });
+
+  it('does not replace failed assertions from a full retry with an isolation pass', async () => {
+    const f = scenario({ retryStatuses: ['failed'] });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.record.lanes.find(lane => lane.name === 'unit')?.failed).toBe(1);
+    expect(f.logs.some(row => row.event === 'isolation-rerun' && row.lane === 'unit')).toBe(false);
+  });
+
+  it.each([
+    { initialMessages: [timeout, 'unexpected worker exit'] },
+    { initialMessages: Array(5).fill(timeout), initialErrorCount: 6 },
+    { initialStatuses: ['failed'] },
+    { initialStatuses: ['pending'] },
+    { incompleteSummary: true },
+    { initialFile: 'tests/unit/other.test.ts' },
+  ])('does not retry incomplete or mixed evidence (%j)', async options => {
+    const f = scenario(options);
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some(row => row.event === 'unit-task-update-retry')).toBe(false);
+  });
+
+  it.each([{ omitRetryErrors: true }, { retryStatuses: ['passed', 'passed'] }])(
+    'does not accept a retry with missing or changed evidence (%j)', async options => {
+      const f = scenario(options);
+      const r = await runVerify(input(), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+      expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: false }));
+    },
+  );
 });
 
 describe('runVerify — repository pinning and the init-skip check', () => {

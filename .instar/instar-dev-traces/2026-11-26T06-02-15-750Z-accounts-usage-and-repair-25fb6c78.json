@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "accounts-usage-and-repair",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T06:02:15.750Z",
+  "artifactPath": "upgrades/side-effects/accounts-usage-and-repair.md",
+  "artifactSha256": "77a5af0b4e9ce676799fe4967832ba26558e6fa6db47e83e3aa140a32a0c66ec",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-accounts.test.ts",
+    "upgrades/next/accounts-usage-and-repair.md",
+    "upgrades/side-effects/accounts-usage-and-repair.eli16.md",
+    "upgrades/side-effects/accounts-usage-and-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible disclosure layout over existing machine repair records. No authorization or persistence changes.",
+  "eli16Path": "upgrades/side-effects/accounts-usage-and-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-usage-and-repair.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

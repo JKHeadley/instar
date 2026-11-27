@@ -99,7 +99,7 @@ describe('Accounts page forecast wiring', () => {
     const calls: string[] = [];
     const table: Record<string, unknown> = {
       '/subscription-pool?scope=pool': { enabled: true, accounts: [], pool: { failed: [] } },
-      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] },
+      '/subscription-relogin?scope=pool&retryTimeout=1': { enabled: true, episodes: [] },
       '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
     };
     try {

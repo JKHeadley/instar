@@ -145,12 +145,12 @@ describe('DeliveryRetryManager.runRecoveryCycle / invokeFromRemediator (W-3)', (
   });
 
   it('runRecoveryCycle is idempotent against an in-flight tick (shared latch)', async () => {
-    // Drive the manager into a long cycle by stubbing the store's queryInbox
+    // Drive the manager into a long cycle by stubbing the store's queryRetryInbox
     // to never resolve until we let it.
     let releaseFirst: (() => void) | null = null;
-    const realQuery = store.queryInbox.bind(store);
+    const realQuery = store.queryRetryInbox.bind(store);
     let callCount = 0;
-    store.queryInbox = async (agentName: string) => {
+    store.queryRetryInbox = async (agentName: string) => {
       callCount++;
       if (callCount === 1) {
         await new Promise<void>((resolve) => {
@@ -184,9 +184,9 @@ describe('DeliveryRetryManager.runRecoveryCycle / invokeFromRemediator (W-3)', (
   it('tick is idempotent against an in-flight runRecoveryCycle (same latch)', async () => {
     // Symmetric test: runRecoveryCycle in-flight blocks tick.
     let releaseFirst: (() => void) | null = null;
-    const realQuery = store.queryInbox.bind(store);
+    const realQuery = store.queryRetryInbox.bind(store);
     let callCount = 0;
-    store.queryInbox = async (agentName: string) => {
+    store.queryRetryInbox = async (agentName: string) => {
       callCount++;
       if (callCount === 1) {
         await new Promise<void>((resolve) => {
@@ -234,8 +234,8 @@ describe('DeliveryRetryManager.runRecoveryCycle / invokeFromRemediator (W-3)', (
   });
 
   it('invokeFromRemediator returns failure when runRecoveryCycle throws', async () => {
-    // Force queryInbox to throw.
-    store.queryInbox = async () => {
+    // Force queryRetryInbox to throw.
+    store.queryRetryInbox = async () => {
       throw new Error('synthetic store failure');
     };
     const ctx = makeCtx();
@@ -247,8 +247,8 @@ describe('DeliveryRetryManager.runRecoveryCycle / invokeFromRemediator (W-3)', (
   it('invokeFromRemediator reports skipped:true when cycle is already in-flight', async () => {
     let releaseFirst: (() => void) | null = null;
     let callCount = 0;
-    const realQuery = store.queryInbox.bind(store);
-    store.queryInbox = async (agentName: string) => {
+    const realQuery = store.queryRetryInbox.bind(store);
+    store.queryRetryInbox = async (agentName: string) => {
       callCount++;
       if (callCount === 1) {
         await new Promise<void>((resolve) => {
