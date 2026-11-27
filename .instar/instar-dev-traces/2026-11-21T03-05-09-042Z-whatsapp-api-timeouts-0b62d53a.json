@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "whatsapp-api-timeouts",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T03:05:09.042Z",
+  "artifactPath": "upgrades/side-effects/whatsapp-api-timeouts.md",
+  "artifactSha256": "5e2e5ab5b093da47b4c36b06be995e7214abef4a5f9e30826aa663a488c1b371",
+  "coveredFiles": [
+    "docs/specs/whatsapp-api-timeouts.eli16.md",
+    "src/messaging/backends/BusinessApiBackend.ts",
+    "tests/unit/BusinessApiBackend.test.ts",
+    "upgrades/next/whatsapp-api-timeouts.md",
+    "upgrades/side-effects/whatsapp-api-timeouts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-132: a 15-second timeout on the six WhatsApp Business API calls; one file, one constant, no state change, reversible by revert; independent review concurred.",
+  "eli16Path": "docs/specs/whatsapp-api-timeouts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/whatsapp-api-timeouts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

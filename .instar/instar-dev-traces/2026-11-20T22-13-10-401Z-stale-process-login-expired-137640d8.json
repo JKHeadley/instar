@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "stale-process-login-expired",
+  "sessionId": "97ab092d-3809-42ab-a5c2-c09c9738a749",
+  "timestamp": "2026-11-20T22:13:10.401Z",
+  "artifactPath": "upgrades/side-effects/stale-process-login-expired.md",
+  "artifactSha256": "58a33bcf5dcd0d06c162bba595807d64beb77a43d979e8ca4d673ee22a3079f2",
+  "specPath": "docs/specs/stale-process-login-expired.md",
+  "coveredFiles": [
+    "docs/specs/stale-process-login-expired.md",
+    "tests/unit/claude-spawn-auth-class.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the converged Tier-2 change: ladder wording and the auth-helper exempt entry for the probe.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

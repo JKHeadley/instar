@@ -226,6 +226,25 @@ describe('ResumeValidator: LLM Coherence Gate', () => {
     expect(capturedPrompt).toContain('User:');
   });
 
+  it('marks a message cut to the per-message clamp, and leaves a short one untagged (bounded-input review)', async () => {
+    let capturedPrompt = '';
+    const mockTelegram = {
+      searchLog: () => [
+        { text: 'a'.repeat(200), fromUser: true },          // exactly at the clamp: not cut
+        { text: `${'b'.repeat(250)}TAIL`, fromUser: false }, // cut
+      ],
+      getTopicName: () => 'telegram-topic',
+    };
+    await llmValidateResumeCoherence(
+      INTERACTIVE_UUID, TOPIC_ID, 'test-topic', '/tmp/test-project', mockTelegram, null,
+      { readSessionJsonl: matchingSession, evaluateFn: async (prompt: string) => { capturedPrompt = prompt; return 'MATCH'; } },
+    );
+    expect(capturedPrompt).toContain('each shown up to its first 200 characters');
+    expect(capturedPrompt).toContain(`User: ${'a'.repeat(200)}\n`);
+    expect(capturedPrompt).toContain(`Agent: ${'b'.repeat(200)} …[cut]`);
+    expect(capturedPrompt).not.toContain('TAIL');
+  });
+
   it('handles topic history fetch failure gracefully', async () => {
     const result = await llmValidateResumeCoherence(
       INTERACTIVE_UUID, TOPIC_ID, 'test-topic', '/tmp/test-project', null, null,

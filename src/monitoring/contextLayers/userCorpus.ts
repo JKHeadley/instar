@@ -46,8 +46,8 @@ import { REFERENT_STUB_KINDS, type ReferentCandidate, type ReferentStubKind, typ
 import { isAgentSentinelLine, type NoStubReason } from '../../core/TopicIntentCapture.js';
 import { rowRefFor, type LayerStore, type StoredRecord } from './LayerStore.js';
 
-export type UserCorpusLabel = 'operator' | 'forwarded' | 'relay' | 'third-party';
-export const USER_CORPUS_LABELS: readonly UserCorpusLabel[] = ['operator', 'forwarded', 'relay', 'third-party'];
+export type UserCorpusLabel = 'operator' | 'forwarded' | 'relay' | 'recovered' | 'third-party';
+export const USER_CORPUS_LABELS: readonly UserCorpusLabel[] = ['operator', 'forwarded', 'relay', 'recovered', 'third-party'];
 
 /**
  * Over this many characters a row is a pasted artifact, kept whole until
@@ -95,6 +95,9 @@ export function senderKeyOf(m: Pick<TopicMessage, 'userId' | 'telegramUserId'>):
 /** Label a sender row. Precedence: another agent's origin, then forwarding, then the operator binding. */
 export function classifyRow(m: Pick<TopicMessage, 'fromUser' | 'forwarded' | 'origin' | 'userId' | 'telegramUserId'>, isOperator?: OperatorResolver): { label: UserCorpusLabel; authority: 'operator' | 'none' } {
   if (m.origin === 'relay' || m.origin === 'a2a') return { label: 'relay', authority: 'none' };
+  // Restored from a recovery file (topic-history-import spec): the person's real
+  // past words, kept and labelled, never a fresh operator instruction.
+  if (m.origin === 'imported') return m.fromUser === true ? { label: 'recovered', authority: 'none' } : { label: 'third-party', authority: 'none' };
   if (m.forwarded === true) return { label: 'forwarded', authority: 'none' };
   if (m.fromUser === true && isOperator) {
     let op = false;

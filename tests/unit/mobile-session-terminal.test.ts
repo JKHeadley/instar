@@ -49,7 +49,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID, and machine care)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
@@ -59,6 +59,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/conversation-graph/roots'],
       ['GET', '/mobile/conversation-graph/nodes/e30'],
       ['GET', '/mobile/conversation-graph/nodes/e30/destinations'],
+      ['GET', '/mobile/conversation-graph/tree'],
       ['GET', '/mobile/conversation-graph/pending'],
       ['GET', '/mobile/conversation-graph/changes/request-1234'],
       ['GET', '/mobile/conversation-graph/erasures/erasev1_12345678'],
@@ -95,6 +96,12 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/permissions/features'],
       ['POST', '/mobile/permissions/challenge'],
       ['POST', '/mobile/permissions/requests/authreq-1/approve'],
+      // Approving a trust raise from the app (app-trust-approval): the owner's devices only; a team phone
+      // never reaches these (they are not in TEAM_ROUTE_TIERS), so a raise is only ever the owner's yes.
+      ['GET', '/mobile/trust/requests'],
+      ['POST', '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
+      ['POST', '/mobile/trust/device-acceptance'],
+      ['POST', '/mobile/trust/device-acceptance/withdraw'],
       ['POST', '/mobile/permissions/features/git-backup'],
       ['POST', '/mobile/secrets/requests'],
       ['POST', '/mobile/secrets/requests/abcdef0123456789/cancel'],
@@ -108,6 +115,14 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/controls'],
       ['GET', '/mobile/sessions/new-options'],
       ['GET', '/mobile/sessions/history'],
+      // The owner's signed app device can preview and import personal history and confirm facts.
+      ['GET', '/mobile/imported-history/conversations'],
+      ['GET', '/mobile/imported-history/projects'],
+      ['GET', '/mobile/imported-history/conversations/imported:claude:chat-123'],
+      ['GET', '/mobile/imported-history/search'],
+      ['POST', '/mobile/imported-history/preview'],
+      ['POST', '/mobile/imported-history/apply'],
+      ['POST', '/mobile/imported-history/facts'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
       ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
@@ -119,6 +134,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Organization pack and join (org-pack-and-join): publish, join, leave and accept an update; read status.
       ['POST', '/mobile/org/publish'],
       ['GET', '/mobile/org/status'],
+      ['GET', '/mobile/org/pending-checks'],
+      ['POST', '/mobile/org/allow-once'],
       ['GET', '/mobile/org/current-bundle'],
       ['GET', '/mobile/org/members'],
       ['POST', '/mobile/org/members/remove'],
@@ -160,11 +177,37 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).
       ['POST', '/mobile/accounts/add'],
+      // Machine care from the owner's phone (machine-self-maintenance Part F, CMT-1203).
+      ['GET', '/mobile/machine-care'],
+      ['POST', '/mobile/machine-care/self/skip'],
       // Move a document to another conversation with Face ID (instar-document-viewer §4.2).
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary/challenge'],
       ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/primary'],
+      // Approve or decline a document with Face ID, and its delivered receipt (document-decisions §3.2).
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/challenge'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision'],
+      ['POST', '/mobile/docs/00000000-0000-4000-8000-000000000000/decision/delivered'],
       // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
       ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
+      // Conversation groups from the owner's phone: suggestions and group -> project (conversation-groups-phone).
+      // Historical creation placement preview is restricted to the active owner.
+      ['GET', '/mobile/conversations/parent-preview'],
+      ['GET', '/mobile/conversation-graph/suggestions'],
+      ['POST', '/mobile/conversation-graph/suggestions/refresh'],
+      ['POST', '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/accept'],
+      ['POST', '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/reject'],
+      ['POST', '/mobile/conversation-graph/nodes/abc123/project-draft'],
+      ['POST', '/mobile/work/projects/drafts/gpd-0123456789abcdef0123/confirm'],
+      // Read one work card, and make a card from a message with Face ID (phone-work-cards).
+      ['GET', '/mobile/work-board/cards/wc_0123456789abcdef'],
+      ['POST', '/mobile/work-board/cards'],
+      // The owner's project actions from the phone (work-door-project-rows §3.2–3.5): owner phones only.
+      ['POST', '/mobile/work/projects/check'],
+      ['POST', '/mobile/work/projects/pause'],
+      ['POST', '/mobile/work/projects/done-item'],
+      ['POST', '/mobile/work/projects/finish'],
+      // The owner removes a member's computer from People (member-browser-any-computer follow-up).
+      ['POST', '/mobile/team/people/u_0123/computers/d_0123/forget'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

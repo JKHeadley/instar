@@ -1054,6 +1054,19 @@ describe('SemanticMemory', () => {
       expect(results).toHaveLength(0);
     });
 
+    it('matches dotted names and hyphenated IDs as literal phrases', () => {
+      const id = setup.memory.remember({
+        type: 'fact', name: 'Permanent agent links', content: "The bot's work on instar.sh doesn't cover SEC-123.",
+        confidence: 0.8, lastVerified: new Date().toISOString(), source: 'test', tags: [],
+      });
+      expect(setup.memory.search('instar.sh').map((entity) => entity.id)).toContain(id);
+      expect(setup.memory.search('SEC-123').map((entity) => entity.id)).toContain(id);
+      expect(setup.memory.search('instarsh')).toHaveLength(0);
+      expect(setup.memory.search('SEC-124')).toHaveLength(0);
+      expect(setup.memory.search("bot's").map((entity) => entity.id)).toContain(id);
+      expect(setup.memory.search("doesn't").map((entity) => entity.id)).toContain(id);
+    });
+
     it('handles special characters in search', () => {
       setup.memory.remember({
         type: 'fact', name: 'Special chars', content: 'Testing with $pecial ch@racters & symbols',

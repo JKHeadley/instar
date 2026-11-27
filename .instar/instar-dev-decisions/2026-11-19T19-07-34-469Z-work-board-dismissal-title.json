@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-19T19:07:34.469Z",
+  "slug": "work-board-dismissal-title",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 46,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WorkBoardService.ts",
+      "src/core/WorkCardStore.ts",
+      "src/core/workBoardViews.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

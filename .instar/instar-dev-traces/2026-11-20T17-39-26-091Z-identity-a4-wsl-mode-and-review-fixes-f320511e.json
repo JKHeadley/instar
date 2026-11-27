@@ -1,0 +1,45 @@
+{
+  "version": 3,
+  "slug": "identity-a4-wsl-mode-and-review-fixes",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T17:39:26.091Z",
+  "artifactPath": "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md",
+  "artifactSha256": "ad384f083bbd0c658ee86df8abba92e19070f3795a2d7ceb84b5a3a5cdaf29a9",
+  "specPath": "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece3e-same-network-first-phone.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/phoneSetupRoutes.ts",
+    "src/server/sameNetworkListener.ts",
+    "tests/integration/same-network-review-3-lifecycle.test.ts",
+    "tests/unit/phone-setup-store.test.ts",
+    "tests/unit/same-network-review-3-lifecycle.test.ts",
+    "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive: the home listener's lifecycle, port move, signing window and first-phone admission count. Full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

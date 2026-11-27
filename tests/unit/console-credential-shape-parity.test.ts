@@ -33,6 +33,10 @@ const FIXTURES: Array<[string, string]> = [
   ['invisible separating', 'ENV' + ZWSP + 'ghp_' + 'A'.repeat(36)],
   ['bom inside aws', 'AKIA﻿ABCDEFGHIJKLMNOP'],
   ['variation selector', 'xoxb-12345️67890-abc'],
+  ['tag characters inside key', [...('ghp_' + 'A'.repeat(36))].join(String.fromCodePoint(0xe0020))],
+  ['two kinds, bot key first', '123456789:' + 'D'.repeat(35) + ' and ghp_' + 'A'.repeat(36)],
+  ['telegram address form', 'https://api.telegram.org/bot123456789:' + 'D'.repeat(35) + '/getMe'],
+  ['robot prefix not a key', 'robot123456789:' + 'D'.repeat(35)],
   ['oversize', 'a'.repeat(1_000_001)],
   ['at the size limit', 'a'.repeat(1_000_000)],
 ];
@@ -58,8 +62,8 @@ describe('browser credential-shape check matches detectOutboundCredential', () =
 
   it('flags the expected cases (the fixtures are not all trivially negative)', () => {
     const hits = FIXTURES.filter(([, t]) => detectCredentialShape(t).detected).map(([n]) => n);
-    expect(hits).toEqual(expect.arrayContaining(['anthropic', 'invisible inside key', 'invisible separating', 'bom inside aws', 'oversize', 'url credential']));
-    for (const n of ['jwt excluded', 'bearer excluded', 'labeled excluded', 'plain prose', 'kebab slug not a key', 'at the size limit']) expect(hits).not.toContain(n);
+    expect(hits).toEqual(expect.arrayContaining(['anthropic', 'tag characters inside key', 'telegram address form', 'invisible inside key', 'invisible separating', 'bom inside aws', 'oversize', 'url credential']));
+    for (const n of ['jwt excluded', 'bearer excluded', 'labeled excluded', 'plain prose', 'kebab slug not a key', 'robot prefix not a key', 'at the size limit']) expect(hits).not.toContain(n);
   });
 
   it('asks the phone\'s question word for word', () => {

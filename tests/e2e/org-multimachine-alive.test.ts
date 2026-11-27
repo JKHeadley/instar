@@ -45,6 +45,10 @@ describe('org multi-machine forwarding is alive', () => {
     setOrgForward(async () => ({ status: 200, body: { forwarded: true } }));
     expect((await request(app).get('/org/pack/current')).status).toBe(404);
     markPublishedElsewhere(stateDir, 'org_AAAAAAAAAAAAAAAAAAAA', 'peer');
+    const draft = await request(app).post('/org/draft').set('Authorization', 'Bearer e2e-token')
+      .send({ orgName: 'Office', policyMarkdown: '## Never\n- Share a donor list\n' });
+    expect(draft.status).toBe(409);
+    expect(draft.body).toMatchObject({ error: 'org-key-elsewhere', machineId: 'peer' });
     const fw = await request(app).get('/org/pack/current');
     expect(fw.status).toBe(200);
     expect(fw.body).toEqual({ forwarded: true });

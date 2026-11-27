@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "relay-wiring-generation-test",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-22T07:58:37.243Z",
+  "artifactPath": "upgrades/side-effects/relay-wiring-generation-test.md",
+  "artifactSha256": "ed55cd24744b8962f4677118d1ce5ac85489239a55a7067812872f812be88525",
+  "coveredFiles": [
+    "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+    "tests/e2e/messages-cross-machine-wiring.test.ts",
+    "upgrades/side-effects/relay-wiring-generation-test.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only correction of a reproduced stale source-shape assertion; no production, lifecycle, gate policy, configuration or rollout changes.",
+  "eli16Path": "docs/specs/relay-asof-holder-skew.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relay-wiring-generation-test.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/relay-asof-holder-skew-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

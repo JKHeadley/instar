@@ -156,7 +156,7 @@ describe('3. work page tiles', () => {
   });
   it('the efforts tile is not a second "Conversations"', () => {
     const src = readFileSync('dashboard/console/conversations.js', 'utf8');
-    expect(src).toContain("text: 'Efforts'");
+    expect(src).toContain("text: 'Groups'");
     expect(src).not.toMatch(/t-name', text: 'Conversations'/);
   });
 });
@@ -195,17 +195,23 @@ describe('5. the Accounts header agrees with the rows', () => {
   const acct = (id: string, over: Record<string, unknown> = {}) => ({ id, nickname: id, email: `${id}@x.io`, framework: 'claude-code', status: 'active', loginCheck: 'ok', machineId: 'm1', machineNickname: 'Mac Studio',
     lastQuota: { measuredAt: iso(-5), sevenDay: { utilizationPct: 20, resetsAt: iso(3000) } }, ...over });
 
-  it('three accounts signed out on one machine: "11 of 14 ready" and "3 need you to sign in"', () => {
+  it('keeps quota for all accounts when three need repair on one machine', () => {
     const rows: Record<string, unknown>[] = [];
     for (let i = 0; i < 14; i++) {
       rows.push(acct(`a${i}`));
-      rows.push(acct(`a${i}`, { machineId: 'm2', machineNickname: 'Mac Mini', ...(i < 3 ? { status: 'needs-reauth' } : {}) }));
+      rows.push(acct(`a${i}`, { machineId: 'm2', machineNickname: 'Mac Mini', ...(i < 3 ? { status: 'needs-reauth', lastQuota: null } : {}) }));
     }
     const page = buildAccountsPage(ok({ accounts: rows }), NOW);
-    expect(page.needs).toHaveLength(3);
-    expect(page.facts).toContainEqual({ n: '11 of 14', label: 'ready' });
-    expect(page.facts).toContainEqual({ n: 3, label: 'need you to sign in', tone: 'attn', href: '#/capacity/accounts?s=needs' });
-    expect(page.facts.some((f: { label: string }) => /usable/.test(f.label))).toBe(false);
+    expect(page.headline).toBe('Account usage');
+    expect(page.facts).toContainEqual({ n: '14', label: 'accounts with usage data' });
+    expect(page.usageAccounts).toHaveLength(14);
+    for (const account of page.usageAccounts) {
+      expect(account.windows).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'weekly', pct: 20 })]));
+    }
+    expect(page.needs).toEqual([]);
+    expect(page.repairs).toEqual([expect.objectContaining({ machine: 'Mac Mini', total: 14, signedIn: 11 })]);
+    expect(page.repairs[0].rows).toHaveLength(3);
+    expect(page.repairs[0].rows.every((row: { ownerAction: unknown }) => row.ownerAction === null)).toBe(true);
   });
 
   it('counts add up: ready + need a sign-in + not ready yet = all accounts', () => {
@@ -218,10 +224,11 @@ describe('5. the Accounts header agrees with the rows', () => {
     expect(accountCounts(accounts)).toEqual({ total: 4, ready: 1, needSignIn: 1, inProgress: 2 });
   });
 
-  it('everything signed in: all ready, no sign-in fact', () => {
+  it('shows usage and no repair rows when every account is signed in', () => {
     const page = buildAccountsPage(ok({ accounts: [acct('a'), acct('b')] }), NOW);
-    expect(page.facts).toContainEqual({ n: '2 of 2', label: 'ready' });
-    expect(page.facts.some((f: { label: string }) => /sign in/.test(f.label))).toBe(false);
+    expect(page.facts).toContainEqual({ n: '2', label: 'accounts with usage data' });
+    expect(page.repairs).toEqual([]);
+    expect(page.signedInMachines).toEqual(['Mac Studio']);
   });
 });
 
@@ -236,5 +243,23 @@ describe('1b. collapsing keeps the way to act', () => {
     expect(rows[0].action).toEqual({ kind: 'href', href: '#/work/plans' });
     expect(rows[0].tone).toBe('bad');
     expect(rows[0].keys).toEqual(['q', 's']);
+  });
+});
+
+describe('notices read with names, not ids (dashboard makeover, 2026-11-20 audit)', () => {
+  it('an unnamed topic with a short number never prints the number, and ordinary "topic 2" prose is left alone', () => {
+    expect(plainReferenceText('Reply to topic 0 (name unresolved) is held. My reply to topic 0 (name unresolved) could not be sent.'))
+      .toBe('Reply to a conversation is held. My reply to a conversation could not be sent.');
+    expect(plainReferenceText('See topic 2 of the guide')).toBe('See topic 2 of the guide');
+  });
+
+  it('a held-reply notice names the conversation and machine, and drops the doubled "name unresolved"', () => {
+    const text = 'Reply to topic 144319 (name unresolved) is held. My reply to topic 144319 (name unresolved) could not be forwarded to m_a804869356b259820b3236e7c5a2ae7d.';
+    const unnamed = plainReferenceText(text, {});
+    expect(unnamed).not.toMatch(/144319|m_a804|name unresolved/);
+    expect(unnamed).toContain('Reply to a conversation is held');
+    const named = plainReferenceText(text, { topicNames: { 144319: 'Apple app rebuild' }, machineNames: { m_a804869356b259820b3236e7c5a2ae7d: 'M5 Pro' } });
+    expect(named).toContain('the “Apple app rebuild” conversation');
+    expect(named).toContain('forwarded to M5 Pro');
   });
 });

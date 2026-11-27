@@ -58,10 +58,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Note: no CI gate inside this workflow. ci.yml (lint + unit [node 20+22] +
-  # build + integration + e2e) runs on the same main push and is enforced as a
-  # required status check on PRs via branch protection. Duplicating it here
-  # added ~10 min per publish with no additional safety.
+  # Note: no CI gate inside this workflow. Every pull request is tested in full by
+  # Local Verify (the agent's own test line, on Node 24) before it merges; that is
+  # the only required status check on main. ci.yml's heavy jobs (unit on Node 20
+  # and 22, integration, e2e, build) run on the same push to main as this
+  # workflow and do not gate it, so a failure that shows up only on Node 20 or 22
+  # is caught by that run after the publish has started, not before it.
+  # Duplicating the suite here added ~10 min per publish with no additional safety.
   publish:
     name: Bump & Publish
     runs-on: ubuntu-latest
@@ -86,7 +89,23 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
+      - name: Install release dependencies (up to three attempts)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            else
+              status=$?
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Release dependency installation failed after three attempts."
+              exit "$status"
+            fi
+            delay=$((attempt * 15))
+            echo "::warning::Release dependency installation failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
       - run: npm run build
       - uses: actions/download-artifact@v4
         with:

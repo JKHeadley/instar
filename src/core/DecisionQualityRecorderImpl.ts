@@ -407,6 +407,8 @@ export class DecisionQualityRecorderImpl implements DecisionQualityRecorder {
       const ts = a.ts ?? this.nowFn();
       // Evidence note: scrubbed + ≤500-clamped BEFORE storage (§5.2/§5.5);
       // never served by /decision-quality.
+      // bounded-input-reviewed: a STORED record clamped to its declared ≤500 budget (§5.2/§5.5) and never served
+      // to a model; the only template use is a byte count in a log line. Storage side, not judgment input.
       const evidenceNote =
         a.evidenceNote !== undefined ? scrubString(String(a.evidenceNote)).slice(0, EVIDENCE_NOTE_CLAMP) : undefined;
 

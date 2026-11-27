@@ -41,10 +41,12 @@ export function newDecisionRef(now = new Date(), rand = Math.random) {
 }
 
 /** The POST body for an approve (create/replace/restore) or revoke. */
-export function authorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function authorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    // The server refuses the approval if its proposal no longer names this model.
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     // An emptied field means "use the default", never 0.
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String(envelope[k] ?? '').trim();

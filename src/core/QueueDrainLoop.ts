@@ -36,6 +36,9 @@ import { sanitizeError } from './PendingInboundStore.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { InboundQueueConfig, HoldForStabilityConfig } from './inboundQueueConfig.js';
 
+/** The enqueue reason the Telegram cold-spawn path records when work admission refuses a session start. */
+export const WORK_ADMISSION_REFUSAL_REASON = 'work-admission-refusal';
+
 // ── Dispatch seam contract (§3.1/§3.4) ────────────────────────────────
 
 export interface DrainMessage {
@@ -45,6 +48,7 @@ export interface DrainMessage {
   senderEnvelope: SenderEnvelope | null;
   topicMetadata: unknown;
   enqueueSeq: number;
+  enqueuedAt?: string;
   /**
    * Files by attachment id (native-conversation-base §3c). Null for a row written before the column
    * existed, or by older code: its payload still carries the path-free sentence (or an old tag).
@@ -841,6 +845,40 @@ export class QueueDrainLoop {
       return;
     }
 
+    // Overload brake: a message saved because THIS machine's work admission refused
+    // its session start goes straight to a re-place on its first drain attempt, instead
+    // of retrying the refusing machine through every backoff step (~25 min at the
+    // defaults). forceReplace runs normal placement, which skips a machine that is
+    // refusing work; 'local' means placement chose this machine (it has recovered).
+    // When no machine can take it, the row is released with backoff exactly like an
+    // un-routable dispatch, so the maxAttempts escape and the TTL still bound it.
+    if (row.reason === WORK_ADMISSION_REFUSAL_REASON) {
+      const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
+      if (!claimed) return;
+      this.d.store.incrementCounter('admissionRefusalReplaced');
+      let res: boolean | 'rejected' | 'local' = false;
+      try {
+        res = await this.d.forceReplace(this.toMsg(row, senderEnvelope, topicMetadata));
+      } catch { res = false; }
+      const settleIso = new Date(this.d.now()).toISOString();
+      if (res === 'local') {
+        summary.dispatched += 1;
+        await this.dispatchClaimed(row, claimed, senderEnvelope, topicMetadata, summary, false);
+      } else if (res === true) {
+        this.d.store.transition(row.enqueue_seq, 'claimed', 'delivered', { nowIso: settleIso });
+        this.mirrorRemove(row.session_key);
+        summary.delivered += 1;
+      } else if (res === 'rejected') {
+        this.d.store.transition(row.enqueue_seq, 'claimed', 'expired', { nowIso: settleIso, terminalReason: 'sender-deauthorized' });
+        this.mirrorRemove(row.session_key);
+        this.d.reportLoss([this.lossItem(row, 'sender-deauthorized')], 'sender-deauthorized');
+      } else {
+        summary.unroutable += 1;
+        this.releaseWithBackoff(row, claimed.attempts + 1, 'admission-refused: no machine can take it yet', settleIso);
+      }
+      return;
+    }
+
     // Claim (atomic CAS).
     const claimed = this.d.store.claim(row.enqueue_seq, nowIso);
     if (!claimed) return;
@@ -944,6 +982,7 @@ export class QueueDrainLoop {
       senderEnvelope,
       topicMetadata,
       enqueueSeq: row.enqueue_seq,
+      enqueuedAt: row.enqueued_at,
       // An unreadable media cell never poisons the row: the payload carries the path-free sentence.
       media: ((): InboundMediaLocal[] | null => {
         if (!row.media) return null;
@@ -1145,7 +1184,7 @@ export class QueueDrainLoop {
       'holdsReleasedToFailover:budget-exhausted', 'holdsReleasedToFailover:flap-forced',
       'holdsReleasedToFailover:maxHeldTotal-refused', 'budgetOverrunHolds',
       'shadowCustodyVerified', 'shadowCustodyRefused', 'shadowCustodyError',
-      'shadowCustodyRecoveredAfterRestart',
+      'shadowCustodyRecoveredAfterRestart', 'admissionRefusalReplaced',
     ];
     const counters: Record<string, number> = {};
     for (const k of counterKeys) counters[k] = this.d.store.getCounter(k);

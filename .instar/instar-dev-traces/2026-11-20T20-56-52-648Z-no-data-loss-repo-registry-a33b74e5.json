@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "no-data-loss-repo-registry",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T20:56:52.648Z",
+  "artifactPath": "upgrades/side-effects/no-data-loss-repo-registry.md",
+  "artifactSha256": "8a1d21f75d2f8ae934f568a5ff8b91e1955164c1ded7d9c5590f0a75c741a604",
+  "specPath": "docs/specs/no-data-loss-on-machine-death.md",
+  "coveredFiles": [
+    "src/server/ownedRepoRoutes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the increment-1 commit: marks one intentional fallback (unreachable peer) for the no-silent-fallbacks ratchet.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Comment-only marker on an existing catch in the pool read; the self-triggered actions are unchanged from the increment-1 commit (disk-steward retry bound by its registered controller)."
+    }
+  }
+}

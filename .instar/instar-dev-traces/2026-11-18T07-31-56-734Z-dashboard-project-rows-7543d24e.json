@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-project-rows",
+  "sessionId": "7b04db19-7829-4fc9-8492-204d8ce4c5af",
+  "timestamp": "2026-11-18T07:31:56.734Z",
+  "artifactPath": "upgrades/side-effects/dashboard-project-rows.md",
+  "artifactSha256": "ca0944c4a043f37ef4ea01791fb4358a64b22e1517a4ff464d8bfac17a0b9dfd",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/projects-model.js",
+    "dashboard/console/projects.js",
+    "tests/unit/console-project-rows.test.ts",
+    "upgrades/eli16/dashboard-project-rows.md",
+    "upgrades/next/dashboard-project-rows.md",
+    "upgrades/side-effects/dashboard-project-rows.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Console client for work-door-project-rows §3.1-3.2 on existing reads and the bearer check request; no server or authority change.",
+  "eli16Path": "upgrades/eli16/dashboard-project-rows.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-project-rows.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

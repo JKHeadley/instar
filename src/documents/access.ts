@@ -8,7 +8,15 @@
  */
 import type { ConversationRef } from './rows.js';
 
-export type DocOp = 'read' | 'read-metadata' | 'comment' | 'reply' | 'send' | 'resolve-own' | 'resolve-any' | 'revise' | 'tombstone' | 'purge' | 'prune' | 'move' | 'link';
+export type DocOp = 'read' | 'read-metadata' | 'comment' | 'reply' | 'send' | 'resolve-own' | 'resolve-any' | 'revise' | 'tombstone' | 'purge' | 'prune' | 'move' | 'link' | 'decide';
+
+/**
+ * The device approvals a decision row may carry (docs/specs/document-decisions.md §3.2). Never
+ * `owner-agent` or `local-install` (material the agent itself holds). The accepting machine also
+ * follows `approvedBy` to the approval root and requires Telegram there (a PIN root only on an agent
+ * with no Telegram owner); peers cannot follow the chain, so they check this set.
+ */
+export const DECIDE_APPROVALS: ReadonlySet<string> = new Set(['telegram-dm', 'owner-phone', 'dashboard-pin']);
 
 export type Principal =
   /** The owner on their phone (device-signed), or a browser approved through the owner's channel. */
@@ -52,12 +60,15 @@ export type Decision = { ok: true } | { ok: false; reason: string };
 const yes: Decision = { ok: true };
 const no = (reason: string): Decision => ({ ok: false, reason });
 
-const WRITE_OPS: ReadonlySet<DocOp> = new Set(['comment', 'reply', 'send', 'resolve-own', 'resolve-any', 'revise', 'tombstone', 'purge', 'prune', 'move', 'link']);
+const WRITE_OPS: ReadonlySet<DocOp> = new Set(['comment', 'reply', 'send', 'resolve-own', 'resolve-any', 'revise', 'tombstone', 'purge', 'prune', 'move', 'link', 'decide']);
 
 export function mayDoDocument(p: Principal, doc: DocFacts, op: DocOp, team: TeamView): Decision {
   if (doc.purged) return op === 'read-metadata' && (p.kind === 'owner-device') ? yes : no('purged');
   if (doc.tombstoned && op !== 'read-metadata' && !(p.kind === 'owner-device')) return no('tombstoned');
   const ownerOnly = team.ownerOnly(doc.primary);
+  // A decision is the owner's alone, from a phone whose approval the agent could not have produced
+  // (the route also requires Face ID). Everyone else, every tier, the agent and the bearer: no.
+  if (op === 'decide') return p.kind === 'owner-device' && p.client === 'phone' && DECIDE_APPROVALS.has(p.approvedVia) ? yes : no('needs-owner-phone');
 
   switch (p.kind) {
     case 'owner-device': {

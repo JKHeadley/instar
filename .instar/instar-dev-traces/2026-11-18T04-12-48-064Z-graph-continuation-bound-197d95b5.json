@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "graph-continuation-bound",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T04:12:48.064Z",
+  "artifactPath": "upgrades/side-effects/graph-continuation-bound.md",
+  "artifactSha256": "4c48a5ec0de952295556d25ea100ffd11370632b281274dbe4764f79598d95a8",
+  "coveredFiles": [
+    "docs/specs/graph-continuation-bound.eli16.md",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/unit/conversation-graph-continuation-bound.test.ts",
+    "upgrades/next/graph-continuation-bound.md",
+    "upgrades/side-effects/graph-continuation-bound.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounds a background retry loop the same way an existing bound already does; nothing dropped; revert undoes it",
+  "eli16Path": "docs/specs/graph-continuation-bound.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-continuation-bound.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

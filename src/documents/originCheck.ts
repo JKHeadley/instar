@@ -16,7 +16,8 @@
  * phone, and that the disclosed history equals the row's own `docDeps`.
  *
  * Verdicts: `ok`; `denied` (refused, keeps its chain position); `pending` (the device key, its
- * binding, or a list blob is not here yet: the row is kept out of every read and re-checked).
+ * binding, or a list blob is not here yet: the row is kept out of every read and re-checked);
+ * `held` (a decision signed by the owner's phone, waiting for that phone's own machine).
  */
 import crypto from 'node:crypto';
 import { canonicalJson } from './chain.js';
@@ -24,15 +25,26 @@ import { docpageSignatureValid, type DocpageOp } from './docpageAuth.js';
 import { canonicalString, isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
 import type { DocRow, Vector } from './rows.js';
 import type { TeamAccessState } from '../core/TeamAccessLog.js';
+import { DECIDE_APPROVALS } from './access.js';
 
-export type OriginVerdict = 'ok' | 'denied' | 'pending';
+/**
+ * `held`: a decision whose device signature and contents this machine verified, waiting for the
+ * machine holding the phone's own enrollment to check its Face ID (SEC-088 interim). Read like
+ * `pending` (kept out of every read), except that it alone may show "answered on the phone".
+ */
+export type OriginVerdict = 'ok' | 'denied' | 'pending' | 'held';
 
 /**
  * The device behind a key hash. `role` comes only from records that say so (a replicated team
  * binding, or this machine's own device record); `unknown` while neither has arrived.
  */
 export type DeviceKeyLookup = (deviceId: string, keyHash: string, at?: { access: Vector; personKey: string | null }) =>
-  | { status: 'ok'; publicKey: string; role: 'owner' | 'person' | 'unknown'; personKey: string | null; client: 'phone' | 'browser'; mayWrite: boolean }
+  | { status: 'ok'; publicKey: string; role: 'owner' | 'person' | 'unknown'; personKey: string | null; client: 'phone' | 'browser'; mayWrite: boolean; approvedVia?: string | null;
+      /**
+       * Set only from THIS machine's own enrollment of the device (an active owner phone whose key
+       * matches, not revoked): its Face ID key. Never from replicated activation fields (SEC-088).
+       */
+      localPresenceKey?: string }
   | { status: 'unknown' }
   | { status: 'revoked' };
 
@@ -78,10 +90,20 @@ export function deviceStoodAt(
   at: TeamAccessState, now: TeamAccessState,
   d: { keyHash: string; deviceId: string; personKey: string; client: 'phone' | 'browser' },
   linkSigned: (link: NonNullable<ReturnType<TeamAccessState['browserLinks']['get']>>) => boolean,
+  /** member-browser-any-computer §3.5: has this joined computer ended now (its end passed, by the folded rows)? */
+  joinedEndedNow?: (keyHash: string) => boolean,
 ): boolean {
   if (!at.on || !at.people.has(d.personKey) || at.bindings.get(d.keyHash) !== d.personKey) return false;
   const removedSince = !now.people.has(d.personKey);
-  if (d.client === 'phone') return !at.browserLinks.has(d.keyHash) && removedSince;
+  if (d.client === 'phone') return !at.browserLinks.has(d.keyHash) && !at.computerLinks?.has(d.keyHash) && removedSince;
+  // A joined computer stood when its binding was in force under that prefix; it is witnessed gone by a
+  // removal, a Forget (unbind), or its end passing. Expiry writes no row, so the end is read from the
+  // folded rows rather than from an unbind (member-browser-any-computer §3.4, §3.5).
+  const joined = at.computerLinks?.get(d.keyHash);
+  if (joined) {
+    if (joined.unbound || joined.deviceId !== d.deviceId || joined.boundTo !== d.personKey) return false;
+    return removedSince || !!now.computerLinks?.get(d.keyHash)?.unbound || (joinedEndedNow?.(d.keyHash) ?? false);
+  }
   const link = at.browserLinks.get(d.keyHash);
   if (!link || link.unbound || link.deviceId !== d.deviceId || link.boundTo !== d.personKey) return false;
   if (at.bindings.get(link.linkedByKeyHash) !== d.personKey || !linkSigned(link)) return false;
@@ -113,7 +135,19 @@ export function checkRowOrigin(row: DocRow, devices: DeviceKeyLookup, usedReques
   if (a.type === 'owner-phone' && d.role !== 'owner') return 'denied';
   if (a.type === 'person' && (d.role !== 'person' || d.personKey !== a.personKey || d.client !== a.client)) return 'denied';
 
-  if (so.domain === 'instar-device-v1') return checkMove(row, so, d.publicKey, d.client);
+  if (so.domain === 'instar-device-v1') {
+    if (row.eventKind === 'decision') {
+      // Interim (SEC-088): a decision counts only on the machine holding the phone's own enrollment,
+      // which re-checks its Face ID signature too. Elsewhere it stays held ('held'): the page
+      // shows "waiting", Needs-you stays, and no session is told. Replicated activation fields
+      // (approvedVia, keys) never qualify as proof that an owner decided. The device signature and
+      // the row's contents are still checked here first, so a row with an invalid or altered device
+      // signature is refused. A machine that can write activation and binding rows can still produce
+      // a 'held' row (SEC-088), so 'held' is advisory only: it never hides the owner's buttons.
+      return checkDecision(row, so, d.publicKey, d.client, d.approvedVia ?? null, d.localPresenceKey ?? null);
+    }
+    return checkMove(row, so, d.publicKey, d.client);
+  }
   if (so.domain !== 'instar-docpage-v1') return 'denied';
   const op = OP_OF[row.eventKind];
   if (!op) return 'denied';
@@ -147,4 +181,66 @@ function checkMove(row: DocRow, so: { deviceId: string; host: string; timeMs: st
   if (!isStrictLowSDer(sig)) return 'denied';
   const message = canonicalString(so.deviceId, so.host, 'POST', `/mobile/docs/${row.docId}/primary`, so.timeMs, raw);
   try { return crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig) ? 'ok' : 'denied'; } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+}
+
+/** The path a decision's device-signed request is posted to (docs/specs/document-decisions.md §3.2). */
+export const decisionPath = (docId: string): string => `/mobile/docs/${docId}/decision`;
+/** The note hash meaning "no note" in a signed decision body. */
+export const NO_NOTE = '0'.repeat(64);
+
+/**
+ * A decision: the owner phone's device-signed `POST /mobile/docs/<id>/decision`, naming exactly this
+ * answer, its Face ID challenge and presence signature. The presence signature itself is checked by
+ * the machine that took the request (presence keys are not replicated, as for the move).
+ */
+function checkDecision(row: DocRow, so: { deviceId: string; host: string; timeMs: string; sig: string; payloadB64: string; requestId?: string }, publicKey: string, client: 'phone' | 'browser', approvedVia: string | null, presenceKey: string | null): OriginVerdict {
+  if (row.eventKind !== 'decision' || row.actor.type !== 'owner-phone' || client !== 'phone') return 'denied';
+  const raw = Buffer.from(so.payloadB64, 'base64url');
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { return 'denied'; } // @silent-fallback-ok — an unreadable body is unsigned
+  if (!body || typeof body !== 'object') return 'denied';
+  const noteOk = row.noteHash === undefined ? body.noteHash === NO_NOTE : body.noteHash === row.noteHash;
+  const supOk = row.supersedes === undefined ? body.supersedes === null || body.supersedes === undefined : body.supersedes === row.supersedes;
+  if (body.askId !== row.askId || body.onVersion !== row.onVersion || body.verdict !== row.verdict || body.questionHash !== row.questionHash || !noteOk || !supOk) return 'denied';
+  if (typeof body.presenceSig !== 'string' || typeof body.challenge !== 'string' || body.challenge !== so.requestId) return 'denied';
+  const key = parseDevicePublicKey(publicKey);
+  if (!key) return 'denied';
+  let sig: Buffer;
+  try { sig = Buffer.from(so.sig, 'base64url'); } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+  if (!isStrictLowSDer(sig)) return 'denied';
+  const message = canonicalString(so.deviceId, so.host, 'POST', decisionPath(row.docId), so.timeMs, raw);
+  try { if (!crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig)) return 'denied'; } catch { return 'denied'; } // @silent-fallback-ok — malformed is invalid
+  // Device-signed and matching: only the phone's own machine can check the Face ID signature.
+  // Replicated approval fields prove nothing here (SEC-088), so they are not read before this point.
+  if (!presenceKey) return 'held';
+  if (!approvedVia || !DECIDE_APPROVALS.has(approvedVia)) return 'denied';
+  // The row's proof label must match the device's own approval (a PIN device never reads as Telegram).
+  if (approvedVia === 'dashboard-pin' && row.proof !== 'pin') return 'denied';
+  if (approvedVia === 'telegram-dm' && row.proof !== 'telegram') return 'denied';
+  // The Face ID signature over exactly this answer, with this machine's own copy of the presence key.
+  const line = decisionLine(row.docId, { askId: row.askId, onVersion: row.onVersion, verdict: row.verdict, questionHash: row.questionHash, noteHash: row.noteHash ?? NO_NOTE, supersedes: row.supersedes ?? null });
+  return presenceValid(presenceKey, decisionPresenceMessage(so.deviceId, so.host, so.requestId ?? '', line), body.presenceSig) ? 'ok' : 'denied';
+}
+
+/** The line a decision's Face ID signs (docs/specs/document-decisions.md §3.2). */
+export function decisionLine(docId: string, b: { askId: string; onVersion: string; verdict: string; questionHash: string; noteHash: string; supersedes: string | null }): string {
+  return `docs-decision ${docId} ${b.askId} ${b.onVersion} ${b.verdict} ${b.questionHash} ${b.noteHash} ${b.supersedes ?? '-'}`;
+}
+
+/**
+ * The presence message, byte-for-byte `permissionPresenceMessage` (server/mobilePermissionsRoutes.ts,
+ * `instar-permission-action-v1`); kept here so this module stays free of server imports. A unit test
+ * pins the two together.
+ */
+export function decisionPresenceMessage(deviceId: string, host: string, challenge: string, line: string): string {
+  return `instar-permission-action-v1\n${deviceId}\n${host.toLowerCase()}\n${challenge}\n${line}`;
+}
+
+function presenceValid(presenceKeyB64: string, message: string, sigB64: unknown): boolean {
+  if (typeof sigB64 !== 'string' || sigB64.length > 128 || !/^[A-Za-z0-9_-]+$/.test(sigB64)) return false;
+  const key = parseDevicePublicKey(presenceKeyB64);
+  if (!key) return false;
+  const sig = Buffer.from(sigB64, 'base64url');
+  if (!isStrictLowSDer(sig)) return false;
+  try { return crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig); } catch { return false; } // @silent-fallback-ok — malformed is invalid
 }

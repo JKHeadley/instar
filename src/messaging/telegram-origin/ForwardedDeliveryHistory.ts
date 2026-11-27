@@ -9,6 +9,37 @@
 // dedupes rows by direction + Telegram message id, so recording the same
 // delivery on both machines shows it once.
 import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
+import { lateRecoveredReplyNotice } from './SessionDeliveryNotice.js';
+import { escapeOriginFooter } from './OriginPresentation.js';
+
+/** History consumes the retained authored representation, never Telegram's formatted
+ * wire body when the source exists. Already-sealed wire-only records retain their
+ * prior fallback; no heuristic HTML decoding can recover lost Markdown. */
+export function originMessageHistoryText(request: { policy?: { text?: unknown }; body?: unknown },
+  timing?: { firstPreparedAt: number; lateMarkedAt: number | null; footer?: string | null }): string | null {
+  if (typeof request.policy?.text === 'string') {
+    const late = timing?.lateMarkedAt != null
+      ? lateRecoveredReplyNotice(timing.firstPreparedAt, timing.lateMarkedAt) : null;
+    if (!late) return request.policy.text;
+    // Older late replacements may have retained the entire already-marked
+    // wire body as their policy. Compare exact sealed representations and the
+    // known footer, never strip authored prose because it resembles a notice.
+    if (typeof request.body === 'string') {
+      try {
+        const body = JSON.parse(request.body) as { text?: unknown; parse_mode?: unknown } | null;
+        const tail = timing?.footer ? `\n\n${escapeOriginFooter(timing.footer,
+          typeof body?.parse_mode === 'string' ? body.parse_mode : undefined)}` : '';
+        if (body?.text === request.policy.text || (tail && body?.text === `${request.policy.text}${tail}`)) return request.policy.text;
+      } catch { /* @silent-fallback-ok: retained authored text still receives its recorded late marker. */ }
+    }
+    return `${late}\n\n${request.policy.text}`;
+  }
+  if (typeof request.body !== 'string') return null;
+  try {
+    const body = JSON.parse(request.body) as { text?: unknown } | null;
+    return typeof body?.text === 'string' ? body.text : null;
+  } catch { return null; /* @silent-fallback-ok: an unreadable history source records no row, never a new send. */ }
+}
 
 export interface ForwardedDeliveryRow {
   chatId: string;
@@ -32,10 +63,7 @@ export function forwardedDeliveryRow(operation: OriginPreparedBotOperation, mess
   try { request = JSON.parse(operation.admission.children[0]?.materializations[0]?.requestJson ?? 'null') ?? {}; }
   catch { return null; }
   if (request.method !== 'sendMessage') return null;
-  let text: unknown = request.policy?.text;
-  if (typeof text !== 'string' && typeof request.body === 'string') {
-    try { text = (JSON.parse(request.body) as { text?: unknown }).text; } catch { text = undefined; }
-  }
+  const text = originMessageHistoryText(request);
   if (typeof text !== 'string' || !text) return null;
   return { chatId, threadId, text, messageId, producerKind };
 }

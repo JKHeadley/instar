@@ -18,6 +18,11 @@
  *   POST /mobile/sessions/default                   — set or clear the default door and model for new topics
  *   POST /mobile/accounts/sign-in/start             — start a fresh sign-in for one account on one machine (docs/specs/account-sign-in-face-id.md)
  *   POST /mobile/accounts/add                       — add a Claude or Codex account and start its sign-in here (docs/specs/account-add-face-id.md)
+ *   GET  /mobile/trust/requests                     — trust raises waiting for the person, and the last 7 days' results (docs/specs/app-trust-approval.md)
+ *   POST /mobile/trust/requests/:id/approve         — approve one trust raise with a presence signature (`approve-widening`)
+ *   POST /mobile/trust/device-acceptance            — a device records its own acceptance, or an accepted device approves a new one (`accept-device`)
+ *   POST /mobile/trust/device-acceptance/withdraw   — withdraw a device's acceptance (a narrowing)
+ *   POST /mobile/work-board/cards                   — make a card from a message (`work-card-create`, docs/specs/phone-work-cards.md)
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -26,8 +31,10 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
-import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS } from '../core/WorkCardStore.js';
+import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
+import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
+import { isValidConversationKey } from '../core/ChiefOfStaffStore.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isStorageFailure, storageErrorResponse } from '../core/storageMachineName.js';
@@ -49,6 +56,8 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
+import { keyHashOf, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
+import { arrivedLocallyUnforwarded, trustAnswerStatus, type MobileTrustPort } from './mobileTrustApproval.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
 export const PERMISSION_ACTION_VERSION = 'instar-permission-action-v1';
@@ -86,6 +95,16 @@ export function isPermissionActionsEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.permissionActions?.enabled, config);
 }
 
+/**
+ * `mobilePairing.trustApproval.enabled`: approving trust raises from a paired device (app-trust-approval).
+ * A separate switch from phone permission changes. A new agent gets it on at install (Justin, topic 143810,
+ * 2026-11-16 20:35 PST: "support Instar app only as the primary route"); an existing fleet agent keeps it
+ * dark until set, and a development agent has it live.
+ */
+export function isTrustApprovalEnabled(config: InstarConfig): boolean {
+  return resolveDevAgentGate(config.mobilePairing?.trustApproval?.enabled, config);
+}
+
 // ── the action line ───────────────────────────────────────────────────────────
 
 export type PermissionAction =
@@ -109,10 +128,35 @@ export type PermissionAction =
   /** Add a Claude or Codex account (account-add-face-id): the kind is the signed target. */
   | { kind: 'account-add'; target: NewAccountKind }
   /** A tap on a work card (work-board-asks §4): the signed line covers the action and everything it binds to. */
-  | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields };
+  | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields }
+  /** Make a card from a message (docs/specs/phone-work-cards.md): the client request id and the draft's hash. */
+  | { kind: 'work-card-create'; target: string; proposalHash: string }
+  /** Approve one trust raise (app-trust-approval §B): the request and its exact proposal hash. */
+  | { kind: 'approve-widening'; target: string; proposalHash: string }
+  /** Make a group a Chief of Staff project (conversation-groups-phone §3): the draft and its exact hash. */
+  | { kind: 'group-project-confirm'; target: string; proposalHash: string }
+  /**
+   * A device acceptance (app-trust-approval §A): the device it is for, that device's key fingerprint
+   * and the hash of the disclosure it shows. Signed by the device itself to record its own, or by an
+   * accepted device to approve a new one.
+   */
+  | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string }
+  /** Pause or resume a project from the owner's phone (docs/specs/work-door-project-rows.md §3.4); the note by its hash. */
+  | { kind: 'project-pause'; target: string; value: 'pause' | 'resume'; noteHash: string | null }
+  /** Check or uncheck one judged done item (work-door-project-rows §3.3): the item by its checkRef (goal, id, text). */
+  | { kind: 'project-item-check'; target: string; itemId: string; checkRef: string; value: 'checked' | 'unchecked' }
+  /** Finish a project (work-door-project-rows §3.5): the binding version the owner saw. */
+  | { kind: 'project-finish'; target: string; bindingRef: string };
+
+/** The three project actions (work-door-project-rows §3.3–3.5). */
+export type ProjectAction = Extract<PermissionAction, { kind: 'project-pause' | 'project-item-check' | 'project-finish' }>;
+/** A binding version as `hlcKey` writes one: `physical.logical.node`. */
+export const BINDING_REF_PATTERN = /^[0-9]{1,16}\.[0-9]{1,10}\.[A-Za-z0-9_-]{1,64}$/;
+/** The owner's typed pause note bound (the store's own quote bound, OWNER_PAUSE_QUOTE_MAX). */
+export const MAX_PROJECT_NOTE_CHARS = 4096;
 
 /** The fields one work-card tap binds to; the title enters the signature only through its hash. */
-export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }
+export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -160,6 +204,13 @@ export function actionLine(a: PermissionAction): string {
     case 'account-sign-in': return `account-sign-in ${a.target}`;
     case 'account-add': return `account-add ${a.target}`;
     case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
+    case 'work-card-create': return phoneCardCreateLine(a.target, a.proposalHash);
+    case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
+    case 'group-project-confirm': return `group-project-confirm ${a.target} ${a.proposalHash}`;
+    case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
+    case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
+    case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
+    case 'project-finish': return `project-finish ${a.target} ${a.bindingRef}`;
   }
 }
 
@@ -172,7 +223,12 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
-export function buildAction(kind: unknown, target: unknown, extra: { tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+/** A trust request id as AccountPathService mints one: `tr-<12 hex>-<code>`. */
+export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
+/** A device key fingerprint as `deviceFingerprint` writes one. */
+export const KEY_FINGERPRINT = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
+
+export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: unknown; itemId?: unknown; checkRef?: unknown; bindingRef?: unknown; noteHash?: unknown; keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
@@ -190,7 +246,55 @@ export function buildAction(kind: unknown, target: unknown, extra: { tapAction?:
       if (typeof extra.answer !== 'string' || extra.answer.length > 8000) return { ok: false, error: 'bad-answer' };
       tap.answer = extra.answer;
     }
+    // A Done / Not important close (work-front-doors §6): an archive with its note, both on the signed line.
+    // Refused here, before any challenge, so a missing note never costs a Face ID.
+    if (!absent(extra.closeAs) || !absent(extra.note)) {
+      if (tap.action !== 'archive' || typeof extra.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(extra.closeAs)) return { ok: false, error: 'bad-close' };
+      if (typeof extra.note !== 'string' || !extra.note.trim()) return { ok: false, error: extra.closeAs === 'done' ? 'note-required' : 'reason-required' };
+      if (extra.note.length > SCHEMA_MAX.closeNote) return { ok: false, error: 'bad-note' };
+      tap.closeAs = extra.closeAs; tap.note = extra.note;
+    }
     return { ok: true, action: { kind, target, tap } };
+  }
+  if (kind === 'work-card-create') {
+    if (typeof target !== 'string' || !PHONE_CARD_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'approve-widening') {
+    if (typeof target !== 'string' || !TRUST_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'group-project-confirm') {
+    if (typeof target !== 'string' || !/^gpd-[0-9a-f]{20}$/.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'accept-device') {
+    if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.keyFingerprint !== 'string' || !KEY_FINGERPRINT.test(extra.keyFingerprint)) return { ok: false, error: 'bad-key-fingerprint' };
+    if (typeof extra.disclosureHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.disclosureHash)) return { ok: false, error: 'bad-disclosure-hash' };
+    return { ok: true, action: { kind, target, keyFingerprint: extra.keyFingerprint, disclosureHash: extra.disclosureHash } };
+  }
+  // The project actions (work-door-project-rows §3.3–3.5) name the project by its conversation key, checked with the
+  // Chief of Staff store's own rule (it allows the upper case Slack ids TARGET_PATTERN refuses).
+  if (kind === 'project-pause' || kind === 'project-item-check' || kind === 'project-finish') {
+    if (!isValidConversationKey(target)) return { ok: false, error: 'bad-target' };
+    const hex = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+    if (kind === 'project-pause') {
+      if (extra.value !== 'pause' && extra.value !== 'resume') return { ok: false, error: 'bad-value' };
+      if (!absent(extra.noteHash) && !hex(extra.noteHash)) return { ok: false, error: 'bad-note-hash' };
+      return { ok: true, action: { kind, target, value: extra.value, noteHash: absent(extra.noteHash) ? null : extra.noteHash as string } };
+    }
+    if (kind === 'project-item-check') {
+      if (typeof extra.itemId !== 'string' || extra.itemId.length === 0 || extra.itemId.length > 64) return { ok: false, error: 'bad-item' };
+      if (!hex(extra.checkRef)) return { ok: false, error: 'bad-check-ref' };
+      if (extra.value !== 'checked' && extra.value !== 'unchecked') return { ok: false, error: 'bad-value' };
+      return { ok: true, action: { kind, target, itemId: extra.itemId, checkRef: extra.checkRef, value: extra.value } };
+    }
+    if (typeof extra.bindingRef !== 'string' || !BINDING_REF_PATTERN.test(extra.bindingRef)) return { ok: false, error: 'bad-binding-ref' };
+    return { ok: true, action: { kind, target, bindingRef: extra.bindingRef } };
   }
   // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
   if (kind === 'account-sign-in') {
@@ -303,7 +407,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { closeAs: b.closeAs, itemId: b.itemId, checkRef: b.checkRef, bindingRef: b.bindingRef, noteHash: b.noteHash, keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
@@ -341,12 +445,18 @@ export class ActionChallengeStore {
 
   /** Deletes the secret first; true only when it was live and bound to exactly this device, Host and line. */
   consume(secret: unknown, deviceId: string, host: string, line: string): boolean {
-    if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret)) return false;
+    return this.take(secret, deviceId, host, line) !== null;
+  }
+
+  /** `consume`, answering the challenge's own expiry and reference when it was good (null otherwise). */
+  take(secret: unknown, deviceId: string, host: string, line: string): { expiresAt: number; ref: string } | null {
+    if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret)) return null;
     const digest = sha256(secret);
     const e = this.entries.get(digest);
-    if (!e) return false;
+    if (!e) return null;
     this.entries.delete(digest);
-    return e.expiresAt > this.now() && e.deviceId === deviceId && e.host === host.toLowerCase() && e.line === line;
+    const ok = e.expiresAt > this.now() && e.deviceId === deviceId && e.host === host.toLowerCase() && e.line === line;
+    return ok ? { expiresAt: e.expiresAt, ref: digest.slice(0, 12) } : null;
   }
 
   size(): number { this.prune(); return this.entries.size; }
@@ -359,7 +469,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -673,7 +783,38 @@ export interface MobilePermissionsDeps {
   addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
   /** Apply the owner's tap to a work card (work-board-asks §4); absent ⇒ the work board is off here. */
   workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
+  /**
+   * Confirm a "make this group a project" draft (conversation-groups-phone §3): Face ID over the draft's exact
+   * hash stands in for the dashboard PIN on POST /chief-of-staff/projects. The body carries the self-certifying draft back
+   * (`draft`), re-verified against the signed hash. Absent ⇒ the Chief of Staff is off here.
+   */
+  confirmGroupProject?: (draftId: string, draftHash: string, deviceId: string, req: Request, carriedDraft: unknown) => ActionResult | Promise<ActionResult>;
+  /** A refusal that makes a group-project confirm impossible on this machine right now (not the lease holder, owner changes off), checked BEFORE a Face ID is spent; null when it may proceed. */
+  groupProjectRefusal?: () => ActionResult | null;
+  /**
+   * Make a card from a message (docs/specs/phone-work-cards.md); absent ⇒ the work board is off here.
+   * `precheck` runs before the proof (board on, an owner, the source conversation known here and readable,
+   * and the write's own checks as a dry run), so a known refusal never consumes the challenge; `create` runs after it.
+   */
+  workCardCreate?: {
+    precheck: (requestId: string, draft: PhoneCardDraft, req: Request) => ActionResult | null;
+    create: (requestId: string, draft: PhoneCardDraft, draftHash: string) => Promise<ActionResult>;
+  };
+  /** Approving trust raises from the app (docs/specs/app-trust-approval.md); absent ⇒ 503 here. */
+  trust?: () => MobileTrustPort | null;
   now?: () => number;
+  /**
+   * Pause / Resume, Mark checked and Finish on a project (docs/specs/work-door-project-rows.md §3.3–3.5); absent ⇒ the
+   * Chief of Staff is off here. `precheck` runs at the challenge (so a known refusal never reaches Face ID) and again
+   * before `apply`, which runs only after the proof.
+   */
+  projects?: ProjectTapPort;
+}
+
+/** The project actions' port (routes.ts wires it to the Chief of Staff loop). */
+export interface ProjectTapPort {
+  precheck: (action: ProjectAction) => ActionResult | null;
+  apply: (action: ProjectAction, tap: { deviceId: string; personId: string | null; note: string | null; tapId: string; req: Request }) => Promise<ActionResult>;
 }
 
 type Refusal = { status: number; error: string; detail?: string };
@@ -777,7 +918,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
   // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
   // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
-  const writeGate = (req: Request, res: Response, teamControl = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  const writeGate = (req: Request, res: Response, mode: boolean | 'trust' = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -787,7 +928,13 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     };
     const svc = deps.pairing();
     const config = deps.config();
-    if (!svc || !svc.enabled() || (!teamControl && !isPermissionActionsEnabled(config))) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    const teamControl = mode === true;
+    if (!svc || !svc.enabled()) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    if (mode === 'trust' ? !isTrustApprovalEnabled(config) : (!teamControl && !isPermissionActionsEnabled(config))) {
+      return mode === 'trust'
+        ? refuse({ status: 503, error: 'trust-approval-off', detail: 'Approving changes from this device is turned off on this agent. Ask your agent to turn it on (mobilePairing.trustApproval).' })
+        : refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    }
     const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
     if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return refuse({ status: 403, error: 'device-signature-required', detail: 'Only the owner\'s paired phone can do this here. Open the console to change this.' });
     const deviceId = p.deviceId;
@@ -804,33 +951,56 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
-    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
+    const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
+      : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    // A project action that cannot succeed gets no challenge, so no Face ID is spent on it (work-door-project-rows §3.3).
+    if (built.action.kind === 'project-pause' || built.action.kind === 'project-item-check' || built.action.kind === 'project-finish') {
+      const refusal = deps.projects ? deps.projects.precheck(built.action) : { status: 503, body: { error: 'chief-of-staff-off' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(refusal.body), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
+    }
+    // A trust approval is decided only by the serving-lease holder: elsewhere no challenge is issued (app-trust-approval §B).
+    if (built.action.kind === 'approve-widening' || built.action.kind === 'accept-device') {
+      const port = deps.trust?.() ?? null;
+      if (!port) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'trust-approvals-unavailable', status: 503 }); res.status(503).json({ error: 'trust-approvals-unavailable' }); return; }
+      if (!port.holdsLease()) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 }); res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' }); return; }
+    }
+    // A group-project confirm that this machine cannot decide gets no challenge, so no Face ID is spent on it.
+    if (built.action.kind === 'group-project-confirm') {
+      const refusal = deps.confirmGroupProject ? deps.groupProjectRefusal?.() ?? null : { status: 503, body: { error: 'chief-of-staff-off' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((refusal.body as { error?: unknown }).error ?? 'refused'), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
+    }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
     audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: built.action.kind, target: built.action.target, ...(built.action.kind === 'set-feature' ? { value: built.action.value } : {}) });
     res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString() });
   });
 
-  /** Steps 7–9: the action line from the route, the challenge, the signature. */
-  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction): boolean => {
+  /**
+   * Steps 7–9: the action line from the route, the challenge, the signature. Answers the consumed
+   * challenge's expiry and reference. `presenceKey` overrides the enrolled key only for the local
+   * override, which proves possession of the key it installs.
+   */
+  const provenDetail = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction, presenceKey: string = g.presenceKey): { expiresAt: number; ref: string } | null => {
     const b = rec(req.body);
     const line = actionLine(action);
     const base = { deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'set-feature' ? { value: action.value } : {}) };
-    if (!challenges.consume(b.challenge, g.deviceId, g.host, line)) {
+    const c = challenges.take(b.challenge, g.deviceId, g.host, line);
+    if (!c) {
       audit.record({ event: 'refused', ...base, reason: 'challenge-invalid', status: 401 });
       res.status(401).json({ error: 'challenge-invalid' });
-      return false;
+      return null;
     }
-    if (!verifyPresenceSignature(g.presenceKey, permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line), b.presenceSig)) {
+    if (!verifyPresenceSignature(presenceKey, permissionPresenceMessage(g.deviceId, g.host, b.challenge as string, line), b.presenceSig)) {
       audit.record({ event: 'refused', ...base, reason: 'presence-invalid', status: 401 });
       res.status(401).json({ error: 'presence-invalid' });
-      return false;
+      return null;
     }
-    return true;
+    return c;
   };
+  const proven = (req: Request, res: Response, g: { deviceId: string; personId: string | null; host: string; presenceKey: string }, action: PermissionAction): boolean => provenDetail(req, res, g, action) !== null;
 
   const finish = (res: Response, event: PermissionAuditEvent, action: PermissionAction, g: { deviceId: string; personId: string | null }, r: ActionResult): void => {
     const ok = r.status >= 200 && r.status < 300;
@@ -859,6 +1029,93 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     }
     finish(res, 'work-card-tap', a, g, r);
   });
+
+  // "Make this group a project" (conversation-groups-phone §3): the owner's phone, Face ID over the draft line.
+  router.post('/mobile/work/projects/drafts/:id/confirm', async (req: Request, res: Response) => {
+    if (!deps.confirmGroupProject) { res.status(503).json({ error: 'chief-of-staff-off', detail: 'Projects need the Chief of Staff, which is not on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const built = buildAction('group-project-confirm', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const early = deps.groupProjectRefusal?.() ?? null;
+    if (early) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((early.body as { error?: unknown }).error ?? 'refused'), status: early.status }); res.status(early.status).json(early.body); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'group-project-confirm' }>;
+    let r: ActionResult;
+    try { r = await deps.confirmGroupProject(a.target, a.proposalHash, g.deviceId, req, rec(req.body).draft); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told it did not happen
+      report('MobilePermissions.groupProject', 'the confirmed draft becomes a tracked project', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'project-not-created', detail: 'The project was not created. Try again in a moment.' } };
+    }
+    finish(res, 'group-project-confirmed', a, g, r);
+  });
+
+  // Make a card from a message (docs/specs/phone-work-cards.md): the owner's phone, Face ID over
+  // `work-card-create <requestId> <draftHash>`. `preflight: true` answers the checks and the line to sign, writing nothing.
+  router.post('/mobile/work-board/cards', async (req: Request, res: Response) => {
+    const create = deps.workCardCreate;
+    if (!create) { res.status(503).json({ error: 'work-board-disabled', message: 'The work board is not switched on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const refuseHere = (status: number, body: Rec): void => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String(body.error ?? 'refused'), status });
+      res.status(status).json(body);
+    };
+    const parsed = parsePhoneCardDraft(b);
+    if (!parsed.ok) { refuseHere(400, { error: parsed.error, message: PHONE_CARD_SHAPE_WORDS[parsed.error] ?? 'The card could not be read. Update the app and try again.' }); return; }
+    const draftHash = phoneCardDraftHash(parsed.draft);
+    const built = buildAction('work-card-create', parsed.requestId, { proposalHash: draftHash });
+    if (!built.ok) { refuseHere(400, { error: built.error }); return; }
+    let pre: ActionResult | null;
+    try { pre = create.precheck(parsed.requestId, parsed.draft, req); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told to try again
+      report('MobilePermissions.workCardCreate', 'the card is checked before Face ID', 'the phone is told to try again', err);
+      pre = { status: 503, body: { error: 'precheck-failed', message: 'This card could not be checked just now. Try again in a moment.' } };
+    }
+    if (pre) { refuseHere(pre.status, rec(pre.body)); return; }
+    const a = built.action as Extract<PermissionAction, { kind: 'work-card-create' }>;
+    if (b.preflight === true) {
+      // The draft as the server rebuilt it: the app compares it field by field with what it shows, then signs this hash.
+      res.json({ draft: parsed.draft, draftHash, confirm: { action: 'work-card-create', target: a.target, proposalHash: draftHash, actionLine: actionLine(a) } });
+      return;
+    }
+    if (!proven(req, res, g, a)) return;
+    let r: ActionResult;
+    try { r = await create.create(parsed.requestId, parsed.draft, draftHash); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told the create failed
+      report('MobilePermissions.workCardCreate', 'the card is written', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'create-failed', message: 'The card could not be made. Try again.' } };
+    }
+    finish(res, rec(r.body).replayed === true ? 'work-card-replayed' : 'work-card-created', a, g, r);
+  });
+
+  // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): Face ID over the exact project line.
+  const projectTap = async (req: Request, res: Response, kind: ProjectAction['kind']): Promise<void> => {
+    const port = deps.projects;
+    if (!port) { res.status(503).json({ error: 'chief-of-staff-off', detail: 'Projects need the Chief of Staff, which is not on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    // The pause note is signed by its hash: the exact UTF-8 bytes as sent, no trimming.
+    let note: string | null = null;
+    if (kind === 'project-pause' && !absent(b.note)) {
+      if (typeof b.note !== 'string' || b.note.length > MAX_PROJECT_NOTE_CHARS) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'bad-note', status: 400 }); res.status(400).json({ error: 'bad-note', detail: `A note is at most ${MAX_PROJECT_NOTE_CHARS} characters.` }); return; }
+      note = b.note;
+    }
+    const built = buildAction(kind, b.key, { ...actionExtras(b), noteHash: note === null ? undefined : sha256(note) });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const a = built.action as ProjectAction;
+    const early = port.precheck(a);
+    if (early) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(early.body), status: early.status }); res.status(early.status).json(early.body); return; }
+    if (!proven(req, res, g, a)) return;
+    let r: ActionResult;
+    try { r = await port.apply(a, { deviceId: g.deviceId, personId: g.personId, note, tapId: `app-${crypto.randomBytes(8).toString('hex')}`, req }); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told it did not happen
+      report('MobilePermissions.projectTap', 'the owner\'s project tap is recorded', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'not-recorded', detail: "That couldn't be saved. Try again in a minute." } };
+    }
+    finish(res, 'project-tap', a, g, r);
+  };
+  router.post('/mobile/work/projects/pause', (req: Request, res: Response) => { void projectTap(req, res, 'project-pause'); });
+  router.post('/mobile/work/projects/done-item', (req: Request, res: Response) => { void projectTap(req, res, 'project-item-check'); });
+  router.post('/mobile/work/projects/finish', (req: Request, res: Response) => { void projectTap(req, res, 'project-finish'); });
 
   router.post('/mobile/permissions/requests/:id/approve', (req: Request, res: Response) => {
     const g = writeGate(req, res);
@@ -1006,8 +1263,171 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     finish(res, 'account-add', a, g, r);
   });
 
+  // ── Approving a trust raise from the app (docs/specs/app-trust-approval.md) ──────────────
+  // The routes own the gate and the presence proof; AccountPathService owns every decision. The bearer
+  // token, the dashboard PIN and a request body can never approve, record an acceptance or make a proof.
+  const trustPort = (res: Response): MobileTrustPort | null => {
+    const port = deps.trust?.() ?? null;
+    if (!port) { res.set('Cache-Control', 'no-store'); res.status(503).json({ error: 'trust-approvals-unavailable', detail: 'Approving changes from the app is not available on this agent.' }); }
+    return port;
+  };
+  const notHolder = (res: Response, g: { deviceId: string; personId: string | null }, req: Request): void => {
+    audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 });
+    res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' });
+  };
+  /** A trust route whose store or registry write throws answers 500 (reported), never a hung request. */
+  const guarded = (what: string, h: (req: Request, res: Response) => Promise<void>) => async (req: Request, res: Response): Promise<void> => {
+    try { await h(req, res); } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the device is told it did not finish
+      report('MobilePermissions.trust', what, 'the device is told it did not finish', err);
+      if (!res.headersSent) res.status(500).json({ error: 'trust-action-failed', detail: 'That did not finish. Check again before retrying.' });
+    }
+  };
+  const refuse400 = (req: Request, res: Response, g: { deviceId: string; personId: string | null }, error: string, detail?: string): void => {
+    audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: error, status: 400 });
+    res.status(400).json({ error, ...(detail ? { detail } : {}) });
+  };
+
+  router.get('/mobile/trust/requests', guarded('GET /mobile/trust/requests lists trust requests', async (req: Request, res: Response) => {
+    if (!readGuard(req, res)) return;
+    const port = trustPort(res);
+    if (!port) return;
+    const self = principalDevice(req);
+    // A device whose key changed or that was removed loses its acceptance here, before anything is shown.
+    if (port.holdsLease()) {
+      try { await port.service.sweepDeviceAcceptances(); } catch (err) {
+        // @silent-fallback-ok — not silent: reported; the listing still answers, and every approval re-checks the device itself
+        report('MobilePermissions.trust', 'GET /mobile/trust/requests re-checks device acceptances', 'the listing answers without the re-check', err);
+      }
+    }
+    const store = port.service;
+    const mine = self ? (await store.currentDeviceAcceptance(self)) : null;
+    const nameOf = (id: string) => cleanText(port.devices.get(id)?.name ?? null, 60);
+    res.json({
+      ...head(),
+      actions: actionsState(req, deps),
+      holder: port.holdsLease(),
+      requests: store.deviceListing(),
+      approvalDelivery: await store.approvalDelivery(),
+      // The calling device's own key fingerprint, so the app signs exactly what the server will check.
+      thisDeviceKey: self ? (port.devices.get(self)?.keyFingerprint ?? null) : null,
+      approvals: {
+        thisDevice: mine ? { acceptanceId: mine.acceptanceId, via: mine.via, keyPolicy: mine.keyPolicy, acceptedAt: mine.acceptedAt } : null,
+        anyCurrent: port.holdsLease() ? (await store.sweepDeviceAcceptances()).length > 0 : null,
+        // Every acceptance and withdrawal, shown on every accepted device (app-trust-approval §C): the record of who can approve.
+        record: storeHistory(port).slice(0, 20).map((a) => ({
+          deviceId: a.deviceId, device: nameOf(a.deviceId), via: a.via, keyPolicy: a.keyPolicy, acceptedAt: a.acceptedAt, current: !a.withdrawn,
+          ...(a.via === 'local-override' ? { note: 'approval key replaced on this Mac' } : {}),
+        })),
+      },
+    });
+  }));
+
+  router.post('/mobile/trust/requests/:id/approve', async (req: Request, res: Response) => {
+    const port = trustPort(res);
+    if (!port) return;
+    const g = writeGate(req, res, 'trust');
+    if (!g) return;
+    if (!port.holdsLease()) { notHolder(res, g, req); return; }
+    const built = buildAction('approve-widening', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
+    if (!built.ok) { refuse400(req, res, g, built.error); return; }
+    const p = provenDetail(req, res, g, built.action);
+    if (!p) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'approve-widening' }>;
+    let r: ActionResult;
+    try {
+      const out = await port.service.onPresenceApproval({
+        deviceId: g.deviceId, keyFingerprint: port.devices.get(g.deviceId)?.keyFingerprint ?? '', host: g.host,
+        requestId: a.target, proposalHash: a.proposalHash, challengeId: p.ref,
+      });
+      r = { status: trustAnswerStatus(out), body: out.status === 'refused' || out.status === 'not-holder' || out.status === 'not-recorded' || out.status === 'already-approved' ? { error: out.reason, status: out.status, detail: out.message } : out };
+    } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told the approval did not finish
+      report('MobilePermissions.trust', 'a device approval of a trust raise runs the account path', 'the phone says it could not finish', err);
+      r = { status: 500, body: { error: 'trust-approval-failed', detail: 'That did not finish. Check the request again before retrying.' } };
+    }
+    finish(res, 'trust-approved', a, g, r);
+  });
+
+  router.post('/mobile/trust/device-acceptance', guarded('POST /mobile/trust/device-acceptance records an acceptance', async (req: Request, res: Response) => {
+    const port = trustPort(res);
+    if (!port) return;
+    const g = writeGate(req, res, 'trust');
+    if (!g) return;
+    if (!port.holdsLease()) { notHolder(res, g, req); return; }
+    const b = rec(req.body);
+    const target = absent(b.target) ? g.deviceId : b.target;
+    const built = buildAction('accept-device', target, { keyFingerprint: b.keyFingerprint, disclosureHash: b.disclosureHash });
+    if (!built.ok) { refuse400(req, res, g, built.error); return; }
+    const a = built.action as Extract<PermissionAction, { kind: 'accept-device' }>;
+    let r: ActionResult;
+    if (a.target !== g.deviceId) {
+      // An accepted device approves a new device: the approval lives as long as this challenge did.
+      if (b.override !== undefined || b.newPresenceKey !== undefined) { refuse400(req, res, g, 'bad-request', 'A key can only be replaced on the device itself.'); return; }
+      const p = provenDetail(req, res, g, a);
+      if (!p) return;
+      const out = await port.service.recordDeviceApproval({ approverDeviceId: g.deviceId, deviceId: a.target, keyFingerprint: a.keyFingerprint, disclosureHash: a.disclosureHash, expiresAt: new Date(p.expiresAt).toISOString() });
+      r = { status: trustAnswerStatus(out), body: out.status === 'recorded' ? out : { error: out.reason, status: out.status, detail: out.message } };
+      finish(res, 'trust-acceptance', a, g, r);
+      return;
+    }
+    // The device records its own acceptance: the disclosure it showed is sent, and its hash is the signed one.
+    if (typeof b.disclosure !== 'string' || b.disclosure.trim().length === 0 || b.disclosure.length > 8000) { refuse400(req, res, g, 'disclosure-required', 'Send the disclosure the app showed.'); return; }
+    if (sha256(b.disclosure) !== a.disclosureHash) { refuse400(req, res, g, 'disclosure-mismatch', 'The disclosure does not match its signed hash.'); return; }
+    if (typeof b.keyPolicy !== 'string') { refuse400(req, res, g, 'bad-key-policy'); return; }
+    const keyPolicy = b.keyPolicy;
+    if (b.override === true) {
+      // The local override (app-trust-approval §D): only the app on the agent's own computer, over
+      // loopback with no forwarding header, for the device the app paired here. The new key signs.
+      const newKey = b.newPresenceKey;
+      if (typeof newKey !== 'string' || newKey.length > 128 || !parseDevicePublicKey(newKey)) { refuse400(req, res, g, 'bad-public-key'); return; }
+      if (!arrivedLocallyUnforwarded(req) || !port.localBindingHere(g.deviceId)) {
+        audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'local-only', status: 403 });
+        res.status(403).json({ error: 'local-only', detail: 'Only the Instar app on the agent\'s own computer can replace its approval key.' });
+        return;
+      }
+      if (!provenDetail(req, res, g, a, newKey)) return;
+      const out = await port.service.recordDeviceAcceptance({
+        deviceId: g.deviceId, keyFingerprint: a.keyFingerprint, presenceKeyHash: keyHashOf(newKey), keyPolicy, disclosureHash: a.disclosureHash,
+        override: { replaceKey: () => {
+          const done = port.replacePresenceKey(g.deviceId, newKey);
+          return done === 'replaced' || done === 'same' ? { ok: true, presenceKeyHash: keyHashOf(newKey) } : { ok: false, reason: `key-${done}` };
+        } },
+      });
+      r = { status: trustAnswerStatus(out), body: out.status === 'recorded' || out.status === 'already-accepted' ? out : { error: out.reason, status: out.status, detail: out.message } };
+      finish(res, 'trust-acceptance', a, g, r);
+      return;
+    }
+    if (b.override !== undefined && b.override !== false) { refuse400(req, res, g, 'bad-override'); return; }
+    if (!provenDetail(req, res, g, a)) return;
+    const out = await port.service.recordDeviceAcceptance({
+      deviceId: g.deviceId, keyFingerprint: a.keyFingerprint, presenceKeyHash: keyHashOf(g.presenceKey), keyPolicy, disclosureHash: a.disclosureHash,
+    });
+    r = { status: trustAnswerStatus(out), body: out.status === 'recorded' || out.status === 'already-accepted' ? out : { error: out.reason, status: out.status, detail: out.message } };
+    finish(res, 'trust-acceptance', a, g, r);
+  }));
+
+  // Withdrawing is a narrowing: a device-signed request from an owner device over local TLS, no Face ID needed.
+  router.post('/mobile/trust/device-acceptance/withdraw', guarded('POST /mobile/trust/device-acceptance/withdraw withdraws an acceptance', async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const port = trustPort(res);
+    if (!port) return;
+    const deviceId = principalDevice(req);
+    const svc = deps.pairing();
+    if (!deviceId || !svc) { audit.record({ event: 'refused', deviceId: null, route: auditRoute(req), reason: 'device-signature-required', status: 403 }); res.status(403).json({ error: 'device-signature-required' }); return; }
+    if (!overLocalTls(req)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'secure-transport-required', status: 403 }); res.status(403).json({ error: 'secure-transport-required' }); return; }
+    if (!activeOwnerPhone(svc, deviceId)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'owner-phone-required', status: 403 }); res.status(403).json({ error: 'owner-phone-required' }); return; }
+    const b = rec(req.body);
+    const which = absent(b.deviceId) ? deviceId : b.deviceId;
+    if (typeof which !== 'string' || !TARGET_PATTERN.test(which)) { audit.record({ event: 'refused', deviceId, route: auditRoute(req), reason: 'bad-target', status: 400 }); res.status(400).json({ error: 'bad-target' }); return; }
+    const n = await port.service.withdrawDeviceAcceptance(which, which === deviceId ? 'withdrawn from this device' : 'withdrawn from another accepted device');
+    audit.record({ event: 'trust-withdrawn', deviceId, route: auditRoute(req), target: which, status: 200 });
+    res.json({ withdrawn: n });
+  }));
+
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
-    const g = writeGate(req, res);
+    // Withdrawing only narrows, so it works even with the switch off (like turning team access off).
+    const g = writeGate(req, res, true);
     if (!g) return;
     const built = buildAction('set-feature', String(req.params.id), { value: rec(req.body).to, disclosureHash: rec(req.body).disclosureHash });
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
@@ -1036,6 +1456,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     finish(res, 'feature-set', a, g, r);
   });
 }
+
+function storeHistory(port: MobileTrustPort) { return port.service.deviceAcceptanceHistory(); }
 
 function runAction(f: () => ActionResult): ActionResult {
   try { return f(); } catch (err) {

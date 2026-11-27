@@ -2,6 +2,8 @@
 // Pure: no DOM, no fetch, no timers. chats.js renders these; tests/unit/console-chats-model.test.ts
 // checks them.
 
+import { listModel, encodeNodeRef } from './conversations-model.js';
+
 // ── conversations and their address in the hash (#/work/chats?c=<kind>:<id>) ──
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -17,6 +19,13 @@ export function parseConversationRef(value) {
 export function refString(ref) { return ref ? `${ref.kind}:${ref.id}` : ''; }
 export function refFromQuery(query) {
   try { return parseConversationRef(new URLSearchParams(String(query || '').replace(/^\?/, '')).get('c')); } catch { return null; }
+}
+/** Opaque stored message/event identity, bounded by the card-source schema, never a URL. */
+export function messageTarget(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
+}
+export function messageFromQuery(query) {
+  return messageTarget(new URLSearchParams(String(query || '').replace(/^\?/, '')).get('m'));
 }
 export function hashFor(ref) { return ref ? `#/work/chats?c=${encodeURIComponent(refString(ref))}` : '#/work/chats'; }
 
@@ -237,6 +246,30 @@ export function bubbles(kind, rows, opts = {}) {
 export function sortBubbles(list) {
   return list.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')) || a.id.localeCompare(b.id));
 }
+/**
+ * Rebuild a full newest page from its server-issued row hashes and changed rows. The cache
+ * contains the actual rows represented by the hashes sent on THAT request. Never keep hashes
+ * alone: a new tab/leader must be able to receive the complete reconstructed page.
+ * Returns no data on an incomplete answer, so the next read can request a fresh full page.
+ */
+export function rebuildQuickPage(previous, data) {
+  if (!data || !Array.isArray(data.messages)) return { data: null, cache: null };
+  if (data.changeFeed === undefined) return { data, cache: null }; // older agents return a full page
+  const hashes = data.changeFeed && data.changeFeed.rowHashes;
+  if (!Array.isArray(hashes) || hashes.length > 100 || hashes.some((h) => typeof h !== 'string' || !/^[a-f0-9]{64}$/.test(h))) return { data: null, cache: null };
+  const rows = new Map();
+  const full = [];
+  let i = 0;
+  for (const h of hashes) {
+    const row = previous && previous.rows instanceof Map && previous.rows.has(h) ? previous.rows.get(h) : data.messages[i++];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return { data: null, cache: null };
+    rows.set(h, row);
+    full.push(row);
+  }
+  if (i !== data.messages.length) return { data: null, cache: null };
+  return { data: { ...data, messages: full }, cache: { hashes: [...hashes], rows } };
+}
+
 /** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
 export function mergeBubbles(prev, next) {
   const m = new Map(prev.map((b) => [b.id, b]));
@@ -616,4 +649,273 @@ export function pinOutcomeWords(r) {
     return d.detail || 'That did not work. Try again.';
   }
   return r.data && r.data.mirror === 'failed' && typeof r.data.mirrorDetail === 'string' ? r.data.mirrorDetail : '';
+}
+
+// ── the list grouped by the conversation hierarchy (docs/specs/console-chats-grouped.eli16.md) ──
+// The hierarchy is read from the same records the Conversations page reads (conversations-model.js
+// listModel); this module only joins it to the list rows. Placement is never guessed from a title.
+export const LIST_VIEW_KEY = 'instar_chats_list_view';
+/** The remembered list view: 'grouped' or 'all'; anything else (or nothing) → 'grouped'. */
+export function listViewFrom(stored) { return stored === 'all' ? 'all' : 'grouped'; }
+/** The most hierarchy pages one refresh reads (50 nodes each). */
+export const HIERARCHY_MAX_PAGES = 20;
+/**
+ * GET …/conversation-graph/roots?view=all pages → Map(list row key → { key, title } of the top-level
+ * effort holding that conversation), or null when any page is malformed (the list then stays flat).
+ * A conversation with no effort above it is absent from the map: it is "Not in a group yet" (owner-facing words say "group"; "project" only for a group linked to a tracked project; never "effort").
+ */
+export function hierarchyIndex(pages) {
+  if (!Array.isArray(pages) || !pages.length) return null;
+  const index = new Map();
+  for (const page of pages) {
+    const model = listModel(page, 'all');
+    if (!model.ok) return null;
+    for (const item of model.items) {
+      if (item.kind !== 'conversation' || !item.source) continue;
+      const ref = parseConversationRef(`${item.source.platform}:${item.source.conversationId}`);
+      const top = item.primaryPath[0];
+      if (!ref || !top || top.ref.kind !== 'effort') continue;
+      const key = encodeNodeRef(top.ref);
+      if (key) index.set(refString(ref), { key, title: top.title.trim() || 'Untitled group' });
+    }
+  }
+  return index;
+}
+/**
+ * The same pages → Map(top-level effort key → the list keys of every conversation under it, at any depth),
+ * the effort's own front door first, then the rest in the server's order. This covers conversations whose
+ * list rows are not loaded yet, so a group is recognised as a tracked project by any of its conversations.
+ * Null when any page is malformed.
+ */
+export function effortMembers(pages) {
+  if (!Array.isArray(pages) || !pages.length) return null;
+  const items = [];
+  for (const page of pages) {
+    const model = listModel(page, 'all');
+    if (!model.ok) return null;
+    items.push(...model.items);
+  }
+  const listKeyOf = new Map(); // node key → list key, for conversations the list can address
+  for (const item of items) {
+    if (item.kind !== 'conversation' || !item.source) continue;
+    const ref = parseConversationRef(`${item.source.platform}:${item.source.conversationId}`);
+    if (ref) listKeyOf.set(item.key, refString(ref));
+  }
+  const members = new Map();
+  const add = (effortKey, listKey, first = false) => {
+    if (!listKey) return;
+    let list = members.get(effortKey);
+    if (!list) { list = []; members.set(effortKey, list); }
+    const at = list.indexOf(listKey);
+    if (at >= 0) { if (!first) return; list.splice(at, 1); }
+    if (first) list.unshift(listKey); else list.push(listKey);
+  };
+  for (const item of items) {
+    if (item.kind === 'effort' && item.primaryPath.length === 0 && item.frontDoor) add(item.key, listKeyOf.get(encodeNodeRef(item.frontDoor)), true);
+    if (item.kind !== 'conversation') continue;
+    const top = item.primaryPath[0];
+    const topKey = top && top.ref.kind === 'effort' ? encodeNodeRef(top.ref) : null;
+    if (topKey) add(topKey, listKeyOf.get(item.key));
+  }
+  return members;
+}
+/**
+ * Project status words → the short chip and its tone, shared with the iPhone and Android apps so all three
+ * read the same. Both the projects route's `state` words and raw Chief of Staff verdicts are accepted.
+ * Anything else (claims-done, unknown, …) → no chip.
+ */
+// A project group's chip sits on its row, which opens to "Open project" (the project's Work row).
+// warning-path: #/work/board
+const MOVING = { label: 'Moving', tone: 'ok' }, STUCK = { label: 'Stuck', tone: 'bad' }, NEEDS = { label: 'Needs you', tone: 'attn' };
+const DONE = { label: 'Done', tone: 'quiet' }, PAUSED = { label: 'Paused', tone: 'quiet' };
+export const PROJECT_STATUS = {
+  moving: MOVING, 'moving-under-existing-owner': MOVING,
+  stalled: STUCK, 'stopped-retrying': STUCK, stuck: STUCK,
+  'waiting-on-you': NEEDS, 'waiting-on-user': NEEDS,
+  done: DONE, 'done-verified': DONE,
+  // warning-path: #/work/board
+  drifting: { label: 'Drifting', tone: 'attn' },
+  paused: PAUSED,
+};
+/** One project row → its chip, or null. A row the owner paused (`pausedBy`) is Paused whatever its state. */
+export function projectStatusOf(p) {
+  if (!p || typeof p !== 'object') return null;
+  if (p.pausedBy) return PAUSED;
+  const word = typeof p.state === 'string' ? p.state : typeof p.lastVerdict === 'string' ? p.lastVerdict : '';
+  return Object.hasOwn(PROJECT_STATUS, word) ? PROJECT_STATUS[word] : null;
+}
+/**
+ * GET /work/projects (or GET /chief-of-staff, same `projects` array) → Map(list key → { key, title, status|null }) of the projects the Chief of Staff
+ * tracks, by each project's conversation key (a bare app id is an app conversation). Null when unreadable.
+ */
+export function trackedProjects(data) {
+  if (!data || !Array.isArray(data.projects)) return null;
+  const out = new Map();
+  for (const p of data.projects) {
+    if (!p || typeof p !== 'object') continue;
+    const raw = typeof p.conversationKey === 'string' && p.conversationKey ? p.conversationKey : typeof p.key === 'string' ? p.key : '';
+    const ref = parseConversationRef(/^[a-z]+:/.test(raw) ? raw : `app:${raw}`);
+    if (!ref) continue;
+    out.set(refString(ref), { key: typeof p.key === 'string' && p.key ? p.key : raw, title: typeof p.title === 'string' ? p.title : '', status: projectStatusOf(p) });
+  }
+  return out;
+}
+/** Where "Open project" goes: the project's row on the Work page, opened. */
+export function projectHref(projectKey) { return `#/work/board?project=${encodeURIComponent(String(projectKey))}`; }
+/**
+ * Which groups are tracked projects: a group is one when any conversation under it (front door first)
+ * is a tracked project's conversation. Map(effort key → project). Either input missing → empty: plain groups.
+ */
+export function projectsForGroups(members, tracked) {
+  const out = new Map();
+  if (!members || !tracked) return out;
+  for (const [effortKey, keys] of members) {
+    for (const k of keys) { const p = tracked.get(k); if (p) { out.set(effortKey, { ...p, href: projectHref(p.key) }); break; } }
+  }
+  return out;
+}
+/**
+ * Splits the (unpinned) rows by the hierarchy: the Chief of Staff row leads on its own; each
+ * top-level effort becomes one group (in the order its newest conversation appears in the list);
+ * everything else is "Not in a group yet", kept in the list's own tree order. Pure.
+ */
+export function groupRows(rows, index, leadKey) {
+  const list = Array.isArray(rows) ? rows : [];
+  const lead = leadKey ? list.find((r) => r.key === leadKey) || null : null;
+  const groups = new Map();
+  const ungrouped = [];
+  for (const r of list) {
+    if (lead && r.key === lead.key) continue;
+    const effort = index && index.get(r.key);
+    if (!effort) { ungrouped.push(r); continue; }
+    let g = groups.get(effort.key);
+    if (!g) { g = { key: effort.key, title: effort.title, rows: [], unread: 0, lastActivity: r.lastActivity || null }; groups.set(effort.key, g); }
+    g.rows.push({ ...r, depth: 1 });
+    if (r.unread > 0) g.unread += r.unread;
+  }
+  return { lead: lead ? { ...lead, depth: 0 } : null, groups: [...groups.values()].map((g) => ({ ...g, count: g.rows.length })), ungrouped: orderWithTree(ungrouped, null) };
+}
+/**
+ * "Project: Instar topic management" → "Instar topic management" (also "Project – …", "Project - …", "project:").
+ * Only a "Project" followed by a separator is stripped, so "Projector setup" stays whole; a title that would
+ * be left empty stays as it was. Same rule as the iPhone app (EffortSummary.strippingProjectPrefix).
+ */
+export function stripProjectPrefix(title) {
+  const t = String(title == null ? '' : title).trim();
+  const m = /^project\s*[:\-\u2013\u2014]\s*/i.exec(t);
+  if (!m) return t;
+  const rest = t.slice(m[0].length).trim();
+  return rest || t;
+}
+/**
+ * The name a group row shows. A project group shows the tracked project's own title when it has one (and it is
+ * not just the project's key), else the group's own title; either way without a leading "Project:" (the
+ * Projects section and the project mark already say it). A plain group shows its title as it is.
+ */
+export function groupDisplayTitle(group, project) {
+  const own = group && typeof group.title === 'string' ? group.title : '';
+  if (!project) return own;
+  const t = typeof project.title === 'string' ? project.title.trim() : '';
+  if (t && t !== project.key) return stripProjectPrefix(t);
+  return stripProjectPrefix(own) || own;
+}
+/**
+ * groupRows' groups → the two sections the Grouped view shows: "Projects" (groups linked to a tracked project,
+ * each carrying its project and display title) and "Groups" (plain groups). A group with no conversations
+ * (counting its sub-groups) is never shown. Each section keeps the incoming order. Pure.
+ */
+export function groupSections(groups, projectsByGroup) {
+  const projects = [], plain = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g || !(g.count > 0)) continue;
+    const project = (projectsByGroup && projectsByGroup.get(g.key)) || null;
+    const shown = { ...g, project, displayTitle: groupDisplayTitle(g, project) };
+    (project ? projects : plain).push(shown);
+  }
+  return { projects, groups: plain };
+}
+/** "3 conversations" / "1 conversation". */
+export function groupCountWords(n) { return `${n} conversation${n === 1 ? '' : 's'}`; }
+// ── inline markdown in a message (docs/specs/console-chat-markdown.eli16.md) ──
+const MD_LINK = /\[([^\]\n]+)\]\((\S+?)\)/y;
+const isSpace = (ch) => ch != null && /\s/.test(ch);
+const isWordChar = (ch) => ch != null && /[\p{L}\p{N}]/u.test(ch);
+/** Only web links become links; javascript:, data: and the rest stay as the text that was typed. */
+export function safeMessageUrl(url) {
+  return /^https?:\/\/[^\s]+$/i.test(String(url || '')) ? url : null;
+}
+/** A marker opens emphasis only before a non-space, and an underscore only at a word start. */
+function mdOpens(text, at, marker) {
+  const next = text[at + marker.length];
+  if (next == null || isSpace(next)) return false;
+  if (marker[0] === '_' && isWordChar(text[at - 1])) return false;
+  return true;
+}
+function mdClosing(text, from, marker) {
+  let j = from;
+  for (;;) {
+    let k = text.indexOf(marker, j);
+    if (k < 0) return -1;
+    // In a run like "***", close on its last marker so "***both***" is bold and italic.
+    if (marker.length > 1) while (text[k + marker.length] === marker[0]) k++;
+    if (text.slice(from, k).includes('\n\n')) return -1;
+    const before = text[k - 1];
+    const after = text[k + marker.length];
+    const okBefore = k > from && before != null && !isSpace(before);
+    const okAfter = marker[0] !== '_' || after == null || !isWordChar(after);
+    // "*" must not close on the first star of a "**".
+    const single = marker.length === 1 && (after === marker[0] || before === marker[0]);
+    if (okBefore && okAfter && !single) return k;
+    j = k + 1;
+  }
+}
+/**
+ * A message's inline markdown split into styled pieces, so an agent's `**Build things.**` reads as bold
+ * instead of showing the asterisks: bold, italic, `code`, ~~strike~~ and [text](url). Line breaks, list
+ * dashes and anything unmatched stay exactly as typed; `my_file_name` is not italic. Same rules as the
+ * iPhone and Android apps (MessageMarkdown). Pure: the page builds text nodes from it, never HTML.
+ */
+export function messagePieces(text) {
+  const s = String(text ?? '');
+  const out = [];
+  let plain = '';
+  const flush = () => { if (plain) { out.push({ text: plain, bold: false, italic: false, code: false, strike: false, url: null }); plain = ''; } };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '`') {
+      const end = s.indexOf('`', i + 1);
+      if (end > i + 1 && !s.slice(i + 1, end).includes('\n')) {
+        flush(); out.push({ text: s.slice(i + 1, end), bold: false, italic: false, code: true, strike: false, url: null }); i = end + 1; continue;
+      }
+    }
+    if (c === '[') {
+      MD_LINK.lastIndex = i;
+      const m = MD_LINK.exec(s);
+      if (m) {
+        const url = safeMessageUrl(m[2]);
+        if (url) { flush(); out.push({ text: m[1], bold: false, italic: false, code: false, strike: false, url }); }
+        else plain += m[0];
+        i += m[0].length; continue;
+      }
+    }
+    const marker = s.startsWith('**', i) ? '**' : s.startsWith('__', i) ? '__' : s.startsWith('~~', i) ? '~~'
+      : (c === '*' || c === '_') ? c : null;
+    if (marker && mdOpens(s, i, marker)) {
+      const end = mdClosing(s, i + marker.length, marker);
+      if (end > 0) {
+        flush();
+        const bold = marker === '**' || marker === '__';
+        const italic = marker === '*' || marker === '_';
+        const strike = marker === '~~';
+        for (const p of messagePieces(s.slice(i + marker.length, end))) {
+          out.push({ ...p, bold: p.bold || bold, italic: p.italic || italic, strike: p.strike || strike });
+        }
+        i = end + marker.length; continue;
+      }
+    }
+    plain += c; i++;
+  }
+  flush();
+  return out;
 }

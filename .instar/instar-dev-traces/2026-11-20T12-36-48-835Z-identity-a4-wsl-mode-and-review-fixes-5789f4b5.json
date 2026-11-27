@@ -1,0 +1,66 @@
+{
+  "version": 3,
+  "slug": "identity-a4-wsl-mode-and-review-fixes",
+  "sessionId": "d8907514-907d-46eb-86da-bc6db2c9137d",
+  "timestamp": "2026-11-20T12:36:48.835Z",
+  "artifactPath": "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md",
+  "artifactSha256": "b0d0a9ed51e76c118d97f0198967ca14b3f400eb83f9acca007e0d3ec8eb7474",
+  "specPath": "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-piece3e-same-network-first-phone.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePush.ts",
+    "src/core/SameNetworkNetwork.ts",
+    "src/core/ceremonyCredential.ts",
+    "src/core/requestArrival.ts",
+    "src/data/awareness/same-network-first-phone.md",
+    "src/server/AgentServer.ts",
+    "src/server/documentPageRoutes.ts",
+    "src/server/middleware.ts",
+    "src/server/mobileConsoleTicket.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/phoneSetupRoutes.ts",
+    "src/server/sameNetworkListener.ts",
+    "tests/integration/phone-setup-ceremony-credential.test.ts",
+    "tests/unit/at-computer-invariant.test.ts",
+    "tests/unit/ceremony-credential.test.ts",
+    "tests/unit/same-network-review-2-fixes.test.ts",
+    "tests/unit/same-network-wsl-listener.test.ts",
+    "tests/unit/same-network-wsl-mode.test.ts",
+    "upgrades/next/identity-a4-same-network-first-phone.md",
+    "upgrades/side-effects/identity-a4-wsl-mode-and-review-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive: the home listener's WSL bind rule, its auth requirement, an identity credential file and approval power. Full chain.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-review",
+        "outcome": "fixed",
+        "verified": false,
+        "iterations": 1
+      },
+      {
+        "name": "cross-model-gpt",
+        "outcome": "fixed",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/identity-security-piece3e-same-network-first-phone-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

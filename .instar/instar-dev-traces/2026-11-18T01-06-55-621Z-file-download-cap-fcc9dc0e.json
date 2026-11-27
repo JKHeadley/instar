@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "file-download-cap",
+  "sessionId": "a2dd2db4-4310-4eef-80c8-cbed316000b3",
+  "timestamp": "2026-11-18T01:06:55.621Z",
+  "artifactPath": "upgrades/side-effects/file-download-cap.md",
+  "artifactSha256": "678a74af3a942137e04e9396841542dc372fba42348e80a5b8dbfa97771d6cc7",
+  "coveredFiles": [
+    "dashboard/console/files-model.js",
+    "dashboard/console/files.js",
+    "docs/specs/file-download-cap.eli16.md",
+    "src/core/types.ts",
+    "src/data/awareness/file-downloads-separate-cap.md",
+    "src/server/fileRoutes.ts",
+    "tests/e2e/file-viewer-e2e.test.ts",
+    "tests/unit/console-files.test.ts",
+    "tests/unit/fileRoutes-download-cap.test.ts",
+    "tests/unit/fileRoutes-link-allowed-paths.test.ts",
+    "tests/unit/fileRoutes-never-served.test.ts",
+    "upgrades/side-effects/file-download-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One numeric ceiling on the download route plus console button and link wording; a revert fully undoes it, no state or migration.",
+  "eli16Path": "docs/specs/file-download-cap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/file-download-cap.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

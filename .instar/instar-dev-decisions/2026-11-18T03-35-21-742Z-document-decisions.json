@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-18T03:35:21.742Z",
+  "slug": "document-decisions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/documents/originCheck.ts",
+      "src/documents/service.ts",
+      "src/documents/store.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/documentRoutes.ts"
+    ],
+    "addedLines": 72,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

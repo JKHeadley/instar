@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "topic-name-replication",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T14:38:35.223Z",
+  "artifactPath": "upgrades/side-effects/topic-name-replication.md",
+  "artifactSha256": "0c2c08a4d81584ba29c5e09ef93fceac76edb8e965db753b3030d2f644146ff7",
+  "specPath": "docs/specs/topic-name-replication.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/routing-spend-control-room.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "upgrades/side-effects/topic-name-replication.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-only follow-up on the converged Tier-2 topic-name-replication spec: documents the gemini-payg-reconcile default job so the docs-coverage job floor (85%) passes; no runtime surface.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
