@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T06:38:05.963Z",
+  "slug": "prepush-main-reference-alias",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/pre-push-gate.js"
+    ],
+    "addedLines": 36,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

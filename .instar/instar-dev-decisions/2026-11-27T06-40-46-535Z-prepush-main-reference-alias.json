@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-27T06:40:46.535Z",
+  "slug": "prepush-main-reference-alias",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/pre-push-gate.js"
+    ],
+    "addedLines": 36,
+    "deletedLines": 20
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      3735,
+      3969
+    ],
+    "notes": "The first resolving tracking alias took precedence even when the same remote's second alias included the merged main commits."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
