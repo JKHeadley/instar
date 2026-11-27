@@ -38957,6 +38957,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       if(conversationGraphDefault)await conversationGraphDefault.close();else await conversationGraphReplicationRuntime?.close();
       shutdownStep = 'http-server';
       await server.stop();
+      shutdownStep = 'account-choice-shadow';
+      await accountChoiceShadow?.stop();
       shutdownStep = 'sqlite';
       // Close EVERY registered SQLite handle LAST — after all writers (server,
       // scheduler, sentinels, telegram) have stopped — to prevent the

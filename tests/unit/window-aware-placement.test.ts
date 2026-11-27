@@ -3,7 +3,7 @@
  * decision both spawn resolvers share, the default spawn path (UsageWallRescue.spawnAccount),
  * swap-path validity and whole-pool blindness, and the shadow log.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -156,6 +156,45 @@ describe('AccountChoiceShadowLog', () => {
     log.record(input({ sessionName: 'new' }));
     await log.flush();
     expect((await readShadowRows(file)).rows.map((r) => r.sessionName)).toEqual(['new']);
+  });
+
+  it('persists a new placement after an empty same-day flush', async () => {
+    const file = tmpFile();
+    const log = new AccountChoiceShadowLog({ file, machineId: 'm1', now: () => NOW, flushMs: 0 });
+    await log.flush();
+    await log.flush();
+    log.record(input());
+    await log.flush();
+    expect((await readShadowRows(file)).rows.map((row) => row.sessionName)).toEqual(['echo-a']);
+  });
+
+  it('starts an append on placement and drains work that arrived during it at shutdown', async () => {
+    const file = tmpFile();
+    const log = new AccountChoiceShadowLog({ file, machineId: 'm1', now: () => NOW, flushMs: 0 });
+    let begin!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { begin = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const append = fs.promises.appendFile;
+    const mock = vi.spyOn(fs.promises, 'appendFile').mockImplementationOnce(async (...args) => {
+      begin();
+      await held;
+      return append(...args);
+    });
+    try {
+      log.record(input());
+      await started;
+      log.record(input({ sessionName: 'echo-b' }));
+      const stopped = log.stop();
+      expect(fs.existsSync(`${file}.clean`)).toBe(false);
+      release();
+      await stopped;
+      expect((await readShadowRows(file)).rows.map((row) => row.sessionName)).toEqual(['echo-a', 'echo-b']);
+      expect(fs.existsSync(`${file}.clean`)).toBe(true);
+    } finally {
+      release();
+      mock.mockRestore();
+    }
   });
 
   it('a log left by an unclean stop marks the next row lostOnRestart: unknown; a clean stop does not', async () => {

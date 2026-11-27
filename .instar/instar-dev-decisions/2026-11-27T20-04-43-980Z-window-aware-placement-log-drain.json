@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-27T20:04:43.980Z",
+  "slug": "window-aware-placement-log-drain",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/AccountChoiceShadowLog.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
