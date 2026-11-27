@@ -230,17 +230,25 @@ export class EvolutionArchive {
     return { entries, nextOffset: index < selected.length ? index : null, incarnation: doc.archiveId ?? createHash('sha256').update(stableJson(doc)).digest('hex'), offset, total: selected.length, ...(oversized.length ? { oversized } : {}) };
   }
 
-  /** Validate the complete page before changing any memory or advancing its peer cursor. */
-  importPage(page: EvolutionArchivePage): void {
+  /**
+   * Validate the complete page before changing any memory or advancing its peer cursor.
+   * Returns how many entries were new. A page that adds nothing writes nothing: its content is
+   * already durable here, so rewriting the whole archive would only churn the disk (2026-11-27:
+   * repeated peer rescans rewrote an 856 KiB archive about once a second on the M5).
+   */
+  importPage(page: EvolutionArchivePage): number {
     EvolutionArchive.validatePage(page);
     if (page.oversized?.length) throw new Error('peer archive contains oversized records; incomplete preservation');
     const doc = this.read(), known = this.envelopes(doc);
+    let added = 0;
     for (const entry of page.entries) {
       if (known.has(entry.digest)) continue;
       (doc.replicaEntries ??= []).push(entry);
       known.set(entry.digest, entry);
+      added++;
     }
-    this.write(doc);
+    if (added > 0) this.write(doc);
+    return added;
   }
 
   static validatePage(page: unknown): asserts page is EvolutionArchivePage {

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-27T16:11:01.654Z",
+  "slug": "evolution-archive-sync-write-churn",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/EvolutionArchive.ts",
+      "src/core/EvolutionArchiveSync.ts"
+    ],
+    "addedLines": 24,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
