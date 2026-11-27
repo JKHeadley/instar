@@ -61,6 +61,7 @@ export function removeActiveRestartRequestFile(flagPath: string, raw: string): b
       return true;
     });
   } catch (error) {
+    // @silent-fallback-ok: log the failure and leave the current request unclaimed.
     console.warn('[planned restart] Could not claim the current request:', error);
     return false;
   }
@@ -79,8 +80,15 @@ export async function withRestartRequestFileAsync<T>(flagPath: string, change: (
   }
 }
 
-export function publishRestartRequestFileAsync(flagPath: string, raw: string): Promise<void> {
-  return withRestartRequestFileAsync(flagPath, () => replaceRestartRequestFile(flagPath, raw, readRestartRequestFile(flagPath)));
+export async function publishRestartRequestFileAsync(flagPath: string, raw: string): Promise<void> {
+  try {
+    publishRestartRequestFile(flagPath, raw);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') throw error;
+    await withRestartRequestFileAsync(flagPath, () => {
+      replaceRestartRequestFile(flagPath, raw, readRestartRequestFile(flagPath));
+    });
+  }
 }
 
 export function pendingUpdateRestartTarget(flagPath: string, raw: string | null, now = Date.now()): string | null {
@@ -89,7 +97,9 @@ export function pendingUpdateRestartTarget(flagPath: string, raw: string | null,
     const row = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: unknown } | null;
     if (!row || typeof row.targetVersion !== 'string' || !row.targetVersion) return null;
     return typeof row.expiresAt !== 'string' || Date.parse(row.expiresAt) > now ? row.targetVersion : null;
-  } catch {
+  } catch (error) {
+    // @silent-fallback-ok: warn before declining to treat malformed bytes as a pending update.
+    console.warn('[planned restart] Could not parse the pending request:', error);
     return null;
   }
 }

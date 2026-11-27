@@ -33,6 +33,7 @@ export function markRestartAdmissionTimeout(flagPath: string, raw: string, now =
       return true;
     });
   } catch (error) {
+    // @silent-fallback-ok: log the error and leave the request in place for the next poll.
     console.warn('[planned restart] Could not record admission deferral:', error);
     return false;
   }

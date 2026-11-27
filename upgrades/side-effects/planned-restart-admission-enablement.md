@@ -18,3 +18,11 @@ Normal replacement, consumption and retirement remove their markers. A host cras
 **Reviewer:** Independent Codex reviewer restart_review
 
 Concur after re-review. Role publication rechecks whether a restart is still needed inside the lock and writes no stamp when the role has reverted. This completes the earlier review of priority, malformed requests, timeout retirement, and concurrent request replacement. The reviewer checked source and test coverage without running tests.
+
+## Publication timing correction
+
+The updater publishes the request under the same lock before yielding when the lock is free. A competing writer still triggers the existing bounded asynchronous retry. Other publication failures reach the updater's error handler. The request remains an atomic replacement and the correction adds no lease authority. Read and parse errors in pending-update inspection are logged, and the writer still checks the request under the lock. The silent-fallback limit is unchanged.
+
+This is a small, reversible correction to three source files. The five files implicated by the M5 run passed all 87 local tests. The existing focused checks passed 141 unit, 15 integration, and 16 lifecycle tests, and TypeScript passed.
+
+Independent Codex reviewer publication_review concurred. The reviewer confirmed both paths acquire the same lock before rereading and replacing the request, and contention alone takes the retry path. The reviewer checked source and test logs.

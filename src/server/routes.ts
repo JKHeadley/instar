@@ -7153,7 +7153,9 @@ export function createRoutes(ctx: RouteContext): Router {
       const flag = path.join(ctx.config.stateDir, 'state', 'restart-requested.json');
       try {
         return pendingUpdateRestartTarget(flag, readRestartRequestFile(flag));
-      } catch {
+      } catch (error) {
+        // @silent-fallback-ok: warn here; the writer rechecks the request under the lock.
+        console.warn('[planned restart] Could not read the pending update request:', error);
         return null;
       }
     };
