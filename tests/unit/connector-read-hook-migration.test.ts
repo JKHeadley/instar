@@ -18,8 +18,9 @@ const fresh = path.join(dir, 'fresh-hook.mjs');
 fs.writeFileSync(fresh, migrator.getHookContent('external-operation-gate'));
 afterAll(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/connector-read-hook-migration.test.ts' }));
 
-function runHook(hookPath: string, name: string, imported = true) {
+function runHook(hookPath: string, name: string, imported = true, offline = false) {
   const bootstrap = `globalThis.fetch = async (_url, options) => {
+    if (${offline}) throw new Error("fixture offline");
     const body = JSON.parse(options.body);
     process.stdout.write(JSON.stringify(body));
     return { json: async () => ({ action: body.mutability === 'read' ? 'proceed' : 'block', reason: 'fixture policy' }) };
@@ -38,6 +39,10 @@ const names = [
   'mcp__codex_apps__github__create_pull_request', 'mcp__codex_apps__github_push_files',
   'mcp__other_engine__github__comment_on_pr', 'mcp__other_engine__github_merge_pull_request',
   'mcp__bridge__github__update_file', 'mcp__bridge__github_delete_file',
+  'mcp__bridge__github__post_comment',
+  'mcp__foo__deleteRecord', 'mcp__foo__delete-record', 'mcp__foo__sendEmail',
+  'mcp__foo__postMessage', 'mcp__foo__purgeAll', 'mcp__foo__dropTable',
+  'mcp__codex_apps__github_create_issue', 'mcp__codex_apps__github_delete_file',
   'mcp__bridge__github_fetch_and_push', 'mcp__bridge__github_read_then_comment',
   'mcp__bridge__github_search_and_merge', 'mcp__bridge__execute_get_pr_info', 'mcp__bridge__opaque', 'mcp__bridge__github_inspect_read_only', 'mcp__bridge__github__inspect_read_only', 'mcp__bridge__github_mystery_get_pr',
 ];
@@ -48,12 +53,31 @@ describe('generated connector hook, executed with governed-service state', () =>
     expect(result.error).toBeUndefined();
     const effect = deriveEffect(name, {})!;
     expect(result.status, result.stderr).toBe(effect.operation === 'read' ? 0 : 2);
-    expect(JSON.parse(result.stdout)).toMatchObject({ service: effect.service, mutability: effect.operation, tool_name: name });
+    expect(JSON.parse(result.stdout)).toMatchObject({ service: effect.service, mutability: effect.operation, reversibility: effect.reversibility, tool_name: name });
   });
   it.each(['mcp__workflow__inspect_read', 'mcp__workflow__launch_get_status', 'mcp__workflow__unknown_get'])('%s is an unknown direct verb, not a connector namespace', (name) => {
     const result = runHook(fresh, name);
     expect(result.status, result.stderr).toBe(2);
     expect(JSON.parse(result.stdout).mutability).toBe('modify');
+  });
+  it('holds GitHub PR creation, update, and merge during outages even with legacy grants', () => {
+    const fallbackPath = path.join(stateDir, 'state', 'trust-legacy-kinds.json');
+    const original = fs.readFileSync(fallbackPath);
+    fs.writeFileSync(fallbackPath, JSON.stringify({ legacyKinds: ['codex_apps.write', 'codex_apps.modify', 'foo.modify'] }));
+    try {
+      for (const namespace of ['github_', 'github__']) {
+        for (const action of ['create', 'update', 'merge']) {
+          const result = runHook(fresh, `mcp__codex_apps__${namespace}${action}_pull_request`, true, true);
+          expect(result.status, result.stderr).toBe(2);
+          expect(result.stderr).toContain('the agent server could not be reached');
+        }
+      }
+      expect(runHook(fresh, 'mcp__codex_apps__github__create_issue', true, true).status).toBe(0);
+      expect(runHook(fresh, 'mcp__foo__deleteRecord', true, true).status).toBe(2);
+      expect(runHook(fresh, 'mcp__foo__send-email', true, true).status).toBe(2);
+    } finally {
+      fs.writeFileSync(fallbackPath, original);
+    }
   });
   it('fresh agents take the same read fast path and still govern mutations', () => {
     const read = runHook(fresh, 'mcp__any_engine__github_fetch_pr', false);

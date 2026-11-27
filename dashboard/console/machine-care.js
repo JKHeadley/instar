@@ -80,7 +80,7 @@ export async function renderMachineCare(main, ctx) {
 
   setKids(main,
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: 'A clean restart about once a week in the small hours keeps a machine healthy. Running work pauses first and picks up afterward.' }),
-    ...cards,
+    el('div', { class: 'detail-card-grid' }, cards),
     ...page.missing.map((m) => note(m)),
   );
 }

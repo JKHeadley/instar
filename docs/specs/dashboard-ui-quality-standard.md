@@ -27,6 +27,14 @@ browser" link over three lines. Each rule below closes one of those defects as a
 5. **No sideways scroll.** At 390px wide the page has no horizontal scroll, and long names wrap
    inside their column.
 6. **Both themes.** Colors come from the page's own tokens, so light and dark both work.
+7. **Use available detail-page width.** After navigation, meaningful computer or section
+   cards form as many readable columns as the content area supports, then collapse to one on narrow
+   screens or with larger text. A lone card fills its row. Keep paragraphs readable inside cards;
+   remove arbitrary page-width caps rather than stretching one long list row across a wide window.
+   Headings, filters and owner-action sections keep their reading order and their full-row position.
+   Card minimums and breakpoints belong to each platform; use available content width, not device
+   names or the total window width. Dedicated chats, files and terminal workspaces retain their own
+   layouts.
 
 ## Check before calling it done
 
