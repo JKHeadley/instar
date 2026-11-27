@@ -3878,6 +3878,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Enables the read-only project binding batch preview. Defaults off. */
+    bindingBatchPreview?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;
@@ -4316,7 +4318,13 @@ export interface InstarConfig {
      * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
      * (default 6) per machine.
      */
-    browser?: { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number };
+    browser?: {
+      enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number;
+      /** Disable new browser outbox network work while retaining logout/cleanup support. */
+      outboxEnabled?: boolean;
+      /** Advance before restoring after a historical downgrade; old entries require local review. */
+      outboxRecoveryGeneration?: string;
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
@@ -7957,6 +7965,16 @@ export interface MonitoringConfig {
    * fleet). Registered in DEV_GATED_FEATURES.
    */
   selfDeferralGuard?: {
+    enabled?: boolean;
+  };
+  /**
+   * CMT-2204: the UnjustifiedStopGate records the credential-scrubbed stop
+   * reason + recent turns it judged under its provenance row's machine-local
+   * `_contentFull`, plus a content-free prompt sha, so its decisions can be
+   * replayed. `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev, DARK on the fleet). Registered in DEV_GATED_FEATURES.
+   */
+  stopGateReplayInput?: {
     enabled?: boolean;
   };
   /**

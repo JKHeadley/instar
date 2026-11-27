@@ -48,11 +48,13 @@ export interface FileCounts {
    * discloses it. Never written outside the run child except as the bounded record fields.
    */
   failedTests?: FailedTest[];
-  /** Failed files only: sha256 of the file's full test names in report (definition) order. */
+  /** Failed or solo files: sha256 of the file's full test names in report (definition) order. */
   testSetHash?: string;
+  /** Expected full-file outcome after ordinary assertion failures become passes. */
+  recoveredOutcomeHash?: string;
   /** Failed files only: a failed test's full name occurs more than once in the file. */
   duplicateFailedName?: boolean;
-  /** Failed files only: an import/hook error or a file-level message, alone or beside named failures. */
+  /** Failed or solo files: an import/hook error or a file-level message, alone or beside named failures. */
   fileLevelFailure?: boolean;
   /** Solo-run reports only: the full names of the tests reported `passed`. */
   passedTests?: string[];
@@ -176,7 +178,7 @@ function relativize(name: string, rootDir: string): string {
  * `opts.outcomeDigest` adds each file's `outcomeDigest` (borrowed helpers). Without it the output
  * is exactly what it was before the option existed: no field is added, renamed or reordered.
  */
-export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean; outcomeDigest?: boolean } = {}): ParsedLaneReport {
+export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean; outcomeDigest?: boolean; namedRetry?: boolean } = {}): ParsedLaneReport {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -188,7 +190,7 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
   }
   const files = new Map<string, FileCounts>();
   /** Per path, only while parsing: the running name hash, how often each name occurs, the failed names, a file-level failure. */
-  const names = new Map<string, { hash: crypto.Hash; seen: Map<string, number>; failedNames: string[]; failed: FailedTest[]; fileLevel: boolean; passed: string[]; notPassed: Array<{ name: string; status: string }> }>();
+  const names = new Map<string, { hash: crypto.Hash; recoveredHash?: crypto.Hash; seen: Map<string, number>; failedNames: string[]; failed: FailedTest[]; fileLevel: boolean; passed: string[]; notPassed: Array<{ name: string; status: string }> }>();
   /** Per path, only with `opts.outcomeDigest`: every test's name and outcome class. */
   const outcomes = new Map<string, Array<{ name: string; outcome: TestOutcome }>>();
   for (const tr of (doc as { testResults: unknown[] }).testResults) {
@@ -200,12 +202,13 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
     const path = relativize(r.name, rootDir);
     const c: FileCounts = files.get(path) ?? { passed: 0, failed: 0, skipped: 0, todo: 0, message: '', assertionFailures: 0, nonAssertionFailure: false };
     let assertionFailures = 0;
-    const n = names.get(path) ?? { hash: crypto.createHash('sha256'), seen: new Map<string, number>(), failedNames: [], failed: [], fileLevel: false, passed: [], notPassed: [] };
+    const n = names.get(path) ?? { hash: crypto.createHash('sha256'), recoveredHash: opts.namedRetry ? crypto.createHash('sha256') : undefined, seen: new Map<string, number>(), failedNames: [], failed: [], fileLevel: false, passed: [], notPassed: [] };
     names.set(path, n);
     for (const a of r.assertionResults) {
       const s = a && typeof a === 'object' ? (a as { status?: unknown }).status : undefined;
       const name = fullTestName(a);
       n.hash.update(JSON.stringify(name) + '\n');
+      n.recoveredHash?.update(JSON.stringify([name, s === 'failed' ? 'passed' : s]) + '\n');
       n.seen.set(name, (n.seen.get(name) ?? 0) + 1);
       if (opts.outcomeDigest) {
         const list = outcomes.get(path) ?? [];
@@ -256,9 +259,12 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
     const n = names.get(path)!;
     if (c.failed > 0) {
       c.failedTests = n.failed;
-      c.testSetHash = n.hash.digest('hex');
       c.duplicateFailedName = n.failedNames.some((x) => (n.seen.get(x) ?? 0) > 1);
+    }
+    if (c.failed > 0 || opts.solo) {
+      c.testSetHash = n.hash.digest('hex');
       c.fileLevelFailure = n.fileLevel;
+      if (n.recoveredHash) c.recoveredOutcomeHash = n.recoveredHash.digest('hex');
     }
     if (opts.solo) {
       c.passedTests = n.passed;
@@ -271,7 +277,7 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
 
 /** The counts of a file without its test names (what may stay in a lane report after a re-run). */
 export function withoutNames(c: FileCounts): FileCounts {
-  const { failedTests: _f, testSetHash: _h, duplicateFailedName: _d, fileLevelFailure: _l, passedTests: _p, notPassedTests: _n, ...counts } = c;
+  const { failedTests: _f, testSetHash: _h, recoveredOutcomeHash: _r, duplicateFailedName: _d, fileLevelFailure: _l, passedTests: _p, notPassedTests: _n, ...counts } = c;
   void _f; void _h; void _d; void _l; void _p; void _n;
   return counts;
 }

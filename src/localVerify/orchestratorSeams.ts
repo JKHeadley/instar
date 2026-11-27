@@ -19,6 +19,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { BoundedUnitProcessOutput } from './unitProcessOutput.js';
 import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerStormCeilingError } from '../core/hostTestRunnerSemaphore.js';
@@ -147,7 +149,7 @@ const CLOSE_AFTER_EXIT_MS = 5_000;
 export function realExec(
   command: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean; captureUnitOutput?: boolean },
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     if (opts.signal?.aborted) { resolve({ status: null, signal: null, stdout: '', stderr: '', deadlineKilled: false, aborted: true, pid: null }); return; }
@@ -162,8 +164,10 @@ export function realExec(
     let settled = false;
     let exited = false;
     let quiescent = !opts.isolatedGroup;
-    child.stdout?.on('data', (d) => { stdout = tail(stdout + d.toString()); });
-    child.stderr?.on('data', (d) => { stderr = tail(stderr + d.toString()); });
+    const unitStdout = opts.captureUnitOutput ? new BoundedUnitProcessOutput() : null;
+    const unitStderr = opts.captureUnitOutput ? new BoundedUnitProcessOutput() : null;
+    child.stdout?.on('data', (d: Buffer) => { stdout = tail(stdout + d.toString()); unitStdout?.append(d); });
+    child.stderr?.on('data', (d: Buffer) => { stderr = tail(stderr + d.toString()); unitStderr?.append(d); });
     let hard: NodeJS.Timeout | undefined;
     let closeWait: NodeJS.Timeout | undefined;
     const signalTree = (pids: number[], sig: NodeJS.Signals) => {
@@ -245,7 +249,10 @@ export function realExec(
       clearTimeout(timer);
       if (closeWait) clearTimeout(closeWait);
       opts.signal?.removeEventListener('abort', onAbort);
-      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null, ...(opts.isolatedGroup ? { quiescent } : {}) });
+      const unitOutput = unitStdout && unitStderr && (status !== 0 || signal)
+        ? { stdout: unitStdout.snapshot(), stderr: unitStderr.snapshot() }
+        : undefined;
+      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(unitOutput ? { unitOutput } : {}), ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null, ...(opts.isolatedGroup ? { quiescent } : {}) });
     };
     child.on('close', (status, signal) => {
       if (!opts.isolatedGroup) { done(status ?? null, signal ?? null); return; }
@@ -279,6 +286,28 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
   return {
     git: (args, opts) => realGit(args, opts, verifyRoot),
     exec: realExec,
+    keepUnitTranscripts: async (input) => {
+      const directory = path.join(verifyRoot, 'unit-failure-diagnostics');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const state = fs.lstatSync(directory);
+      if (!state.isDirectory() || (process.platform !== 'win32' && (state.mode & 0o077) !== 0)) {
+        throw new Error('Unit diagnostic directory is not private');
+      }
+      const name = `${String(input.startedAtMs).padStart(13, '0')}-${randomUUID()}.json`;
+      const target = path.join(directory, name);
+      fs.writeFileSync(target, JSON.stringify({ version: 1, ...input }) + '\n', { mode: 0o600, flag: 'wx' });
+      try {
+        const prior = fs.readdirSync(directory, { withFileTypes: true })
+          .filter((entry) => entry.name !== name && entry.isFile() && /^\d{13}-[a-f0-9-]{36}\.json$/.test(entry.name))
+          .map((entry) => entry.name).sort();
+        for (const expired of prior.slice(0, -7)) {
+          await removeScopedTree(path.join(directory, expired), verifyRoot);
+        }
+      } catch {
+        log({ event: 'unit-transcript-retention-failed' });
+      }
+      return target;
+    },
     fs: {
       exists: (p) => fs.existsSync(p),
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },

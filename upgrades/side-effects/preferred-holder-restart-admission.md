@@ -25,3 +25,7 @@ The previous full review dissented because the foreground watcher could bypass t
 **Reviewer:** Independent Codex reviewer restart_review
 
 Concur with the corrected revision after re-review. The digest-keyed marker cannot overwrite another request's timeout status. The consumers and pending-status readers recognize terminal requests. The measured window and acknowledgement guards address the earlier findings. This was a read-only review. Local verification ran separately.
+
+## Write-domain declaration
+
+The local admission route now declares its read-only behavior for the write-domain conformance check. The declaration changes no runtime behavior or restart authority.
