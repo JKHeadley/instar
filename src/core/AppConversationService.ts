@@ -49,6 +49,11 @@ export function availableLine(filePath: string, caption: string): string {
   return `[file now available: ${filePath}]${caption ? ` (for the message "${caption}")` : ''}`;
 }
 
+interface AppBindingLeaseAuthority {
+  holdsLease: boolean;
+  heldElsewhere: boolean;
+}
+
 export interface AppConversationServiceDeps {
   /** SEC-164 §3.5: read live; when true a server transcript has its live keys masked before it is stored. */
   credentialScrubEnabled?: () => boolean;
@@ -60,6 +65,7 @@ export interface AppConversationServiceDeps {
   requests: MobileChatRequestStore;
   store?: AppConversationStore;
   holdsLease: () => boolean;
+  appBindingLeaseAuthority?: () => AppBindingLeaseAuthority;
   /** The session pool (app-conversations-in-the-pool). Absent, or `active()` false: the lease holder serves every conversation, as before. */
   pool?: () => AppPoolHandle | null;
   ownerName: () => string;
@@ -246,7 +252,8 @@ export class AppConversationService {
   /** Stop or pause reached this owner while a drain ran for the conversation (§2.4). The drain aborts. */
   private readonly emergencyMarks = new Set<string>();
   /** Closes in flight, so a slow close isn't started twice. */
-  private readonly closing = new Set<string>();
+  private closingBindings = false;
+  private closeGeneration = 0;
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
 
@@ -309,6 +316,7 @@ export class AppConversationService {
   }
 
   stop(): void {
+    this.closeGeneration++;
     if (this.timer) clearInterval(this.timer);
     if (this.mediaTimer) clearInterval(this.mediaTimer);
     this.timer = null;
@@ -813,14 +821,21 @@ export class AppConversationService {
 
   /** Each lease tick: the binding reconcile (§2.1), and aliases when the lease is gained. */
   leaseTick(): void {
-    const holds = this.deps.holdsLease();
-    const changed = holds !== this.lastLease;
-    this.lastLease = holds;
-    if (!holds) this.createdHere.clear();
     try {
-      if (changed && holds) this.reconcileAliases();
-      this.reconcileBindings();
+      const pool = this.activePool();
+      const lease = this.bindingLeaseAuthority(pool);
+      const changed = lease.holdsLease !== this.lastLease;
+      this.lastLease = lease.holdsLease;
+      if (!lease.holdsLease) this.createdHere.clear();
+      if (changed && lease.holdsLease) this.reconcileAliases();
+      this.applyBindingReconcile(pool, lease);
     } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next tick repeats it
+  }
+
+  private bindingLeaseAuthority(pool: AppPoolHandle | null): AppBindingLeaseAuthority {
+    if (this.deps.appBindingLeaseAuthority) return this.deps.appBindingLeaseAuthority();
+    const holdsLease = this.deps.holdsLease();
+    return { holdsLease, heldElsewhere: !holdsLease && (pool?.leaseHeldElsewhere() ?? false) };
   }
 
   /** The pool, when it is on. Null means the lease holder serves everything, as before this part. */
@@ -848,11 +863,23 @@ export class AppConversationService {
 
   /** May a reply land from here (§2.1): it serves, or it is the drain's last turn. The runner bounds that window. */
   mayReply(conversationKey: string): boolean {
-    if (this.serves(conversationKey)) return true;
-    const p = this.activePool();
-    if (!p) return false;
-    const r = this.recordOf(p, conversationKey);
-    return r?.status === 'transferring' && r.ownerMachineId === this.deps.machineId() && p.drainRunning(`app:${conversationKey}`);
+    const pool = this.activePool();
+    const record = pool ? this.recordOf(pool, conversationKey) : null;
+    return this.mayReplyForBinding(conversationKey, pool, record, this.deps.machineId(), () => this.deps.holdsLease());
+  }
+
+  private mayReplyForBinding(
+    key: string,
+    pool: AppPoolHandle | null,
+    record: ReturnType<AppConversationService['recordOf']>,
+    self: string,
+    holdsLease: () => boolean,
+  ): boolean {
+    if (pool && record) {
+      return record.ownerMachineId === self && (record.status === 'active' ||
+        (record.status === 'transferring' && pool.drainRunning(`app:${key}`)));
+    }
+    return holdsLease() && (!pool || this.createdHere.has(key) || pool.gateOpenFor(key));
   }
 
   /** Where a stop or pause goes (§2.4): the owner named by the record, draining or not; else whoever serves it. */
@@ -876,10 +903,28 @@ export class AppConversationService {
    * closes its copy, and a refused close is retried on the next reconcile.
    */
   reconcileBindings(): void {
-    const p = this.activePool();
+    const pool = this.activePool();
+    this.applyBindingReconcile(pool, this.bindingLeaseAuthority(pool));
+  }
+
+  private applyBindingReconcile(pool: AppPoolHandle | null, lease: AppBindingLeaseAuthority): void {
     const self = this.deps.machineId();
-    const live = this.store.liveConversationKeys().filter(isAppConversationKey);
-    const want = new Set(live.filter((k) => this.mayReply(k)));
+    const want = new Set<string>();
+    const candidates: Array<{ key: string; session: string }> = [];
+    const holdsLease = () => lease.holdsLease;
+    for (const key of this.store.liveConversationKeys()) {
+      if (!isAppConversationKey(key)) continue;
+      const record = pool ? this.recordOf(pool, key) : null;
+      if (this.mayReplyForBinding(key, pool, record, self, holdsLease)) {
+        want.add(key);
+        continue;
+      }
+      // An unknown or lapsed lease alone is never permission to close a session.
+      const lost = record ? record.ownerMachineId !== self : !lease.holdsLease && lease.heldElsewhere;
+      if (!pool || !lost || this.closingBindings) continue;
+      const session = this.sessionFor(key);
+      if (session) candidates.push({ key, session });
+    }
     for (const key of want) {
       const id = this.deps.registry.appAliasFor(key) ?? (() => { const m = this.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
       if (id !== null && !this.deps.registry.isAppBound(id)) this.deps.registry.bindApp(id);
@@ -888,20 +933,35 @@ export class AppConversationService {
       const key = this.deps.registry.appConversationFor(id);
       if (!key || !want.has(key)) this.deps.registry.unbindApp(id);
     }
-    if (!p) return;
-    for (const key of live) {
-      if (want.has(key) || this.closing.has(key)) continue;
-      const r = this.recordOf(p, key);
-      // With no record, only another machine being named holder is the lease moving: a suspended lease or a missed renewal closes nothing.
-      const lost = r ? r.ownerMachineId !== self : !this.deps.holdsLease() && p.leaseHeldElsewhere();
-      if (!lost) continue;
-      const session = this.sessionFor(key);
-      if (!session || !p.sessionRunning(session)) continue;
-      this.closing.add(key);
-      void p.closeLostSession(key, session)
-        .then((out) => { if (!out.closed) this.report('close after losing a conversation', new Error(`${key}: ${out.detail ?? 'refused'}; retried on the next reconcile`)); })
-        .catch((err: unknown) => this.report('close after losing a conversation', err))
-        .finally(() => this.closing.delete(key));
+    if (pool && candidates.length > 0) {
+      this.closingBindings = true;
+      void this.closeLostBindings(pool, candidates, this.closeGeneration)
+        .finally(() => { this.closingBindings = false; });
+    }
+  }
+
+  private async closeLostBindings(pool: AppPoolHandle, candidates: Array<{ key: string; session: string }>, generation: number): Promise<void> {
+    for (const { key, session } of candidates) {
+      try {
+        if (generation !== this.closeGeneration || this.activePool() !== pool) return;
+        const sessionIdentity = pool.sessionIdentity?.(session);
+        if (sessionIdentity === null || await pool.sessionRunning(session) !== true) continue;
+        if (generation !== this.closeGeneration || this.activePool() !== pool) return;
+        if (pool.sessionIdentity?.(session) !== sessionIdentity ||
+            !this.liveConversation(key) || this.sessionFor(key) !== session) continue;
+        const self = this.deps.machineId();
+        const current = this.recordOf(pool, key);
+        if (current) {
+          if (current.ownerMachineId === self) continue;
+        } else {
+          const lease = this.bindingLeaseAuthority(pool);
+          if (lease.holdsLease || !lease.heldElsewhere) continue;
+        }
+        const result = await pool.closeLostSession(key, session);
+        if (!result.closed) this.report('close after losing a conversation', new Error(`${key}: ${result.detail ?? 'refused'}; retried on the next reconcile`));
+      } catch (err) {
+        this.report('close after losing a conversation', err);
+      }
     }
   }
 

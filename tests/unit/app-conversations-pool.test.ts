@@ -7,7 +7,7 @@ import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AppConversationService, WAITING_OVERDUE_MS } from '../../src/core/AppConversationService.js';
+import { AppConversationService, WAITING_OVERDUE_MS, type AppConversationServiceDeps } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -41,7 +41,7 @@ function rec(over: Partial<SessionOwnershipRecord> = {}): SessionOwnershipRecord
   return { sessionKey: RK, ownerMachineId: PEER, ownershipEpoch: 5, status: 'active', nonce: 'n', timestamp: Date.now(), updatedAt: new Date().toISOString(), ...over };
 }
 
-function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | null; gate?: boolean; draining?: boolean; pool?: boolean; running?: string[]; close?: AppPoolHandle['closeLostSession']; clock?: () => number } = {}) {
+function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | null; gate?: boolean; draining?: boolean; pool?: boolean; running?: string[]; close?: AppPoolHandle['closeLostSession']; clock?: () => number; leaseAuthority?: AppConversationServiceDeps['appBindingLeaseAuthority'] } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'app-pool-'));
   dirs.push(dir);
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
@@ -62,7 +62,7 @@ function makeService(opts: { holds?: boolean; record?: SessionOwnershipRecord | 
   };
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => SELF, registry, requests: new MobileChatRequestStore(dir, opts.clock ?? Date.now),
-    holdsLease: () => v.holds, ownerName: () => 'J', dispatch: () => null, pool: () => handle,
+    holdsLease: () => v.holds, appBindingLeaseAuthority: opts.leaseAuthority, ownerName: () => 'J', dispatch: () => null, pool: () => handle,
   });
   svc.store.append({ eventId: 'cr-1', kind: 'created', conversationKey: KEY, title: 'T', at: new Date().toISOString(), machineId: SELF });
   registry.mintAppAlias(KEY);
@@ -112,6 +112,93 @@ describe('who serves, who replies, who is the current owner (§2.1)', () => {
 });
 
 describe('the binding reconcile and close-on-loss (§2.1)', () => {
+  it('uses one binding lease observation for a full 176-conversation pass', () => {
+    const leaseAuthority = vi.fn(() => ({ holdsLease: false, heldElsewhere: true }));
+    const { svc, handle } = makeService({ holds: false, leaseAuthority });
+    const keys = Array.from({ length: 176 }, (_, index) =>
+      `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`);
+    vi.spyOn(svc.store, 'liveConversationKeys').mockReturnValue(keys);
+    const read = vi.spyOn(handle, 'read');
+    const broadHealth = vi.spyOn(handle, 'leaseHeldElsewhere');
+    leaseAuthority.mockClear();
+
+    svc.leaseTick();
+
+    expect(leaseAuthority).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(keys.length);
+    expect(broadHealth).not.toHaveBeenCalled();
+  });
+
+  it('rechecks authority after non-blocking liveness before starting a close', async () => {
+    const { svc, v, registry, closed, handle } = makeService({ holds: false });
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    let resolveLiveness!: (alive: boolean) => void;
+    const liveness = new Promise<boolean>((resolve) => { resolveLiveness = resolve; });
+    const check = vi.spyOn(handle, 'sessionRunning').mockReturnValue(liveness);
+    svc.leaseTick();
+    svc.leaseTick();
+    expect(check).toHaveBeenCalledTimes(1);
+    v.holds = true;
+    v.leaseElsewhere = false;
+    resolveLiveness(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual([]);
+
+    v.holds = false;
+    v.leaseElsewhere = true;
+    svc.leaseTick();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual(['s1']);
+  });
+
+  it('does not close an indeterminate, replaced, or stopped session probe', async () => {
+    const { svc, registry, closed, handle } = makeService({ holds: false });
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    let incarnation = 'original';
+    handle.sessionIdentity = () => incarnation;
+    const liveness = vi.spyOn(handle, 'sessionRunning').mockResolvedValueOnce('indeterminate');
+    svc.leaseTick();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual([]);
+
+    let resolveLiveness!: (alive: boolean) => void;
+    const holdProbe = () => liveness.mockReturnValue(new Promise<boolean>((resolve) => { resolveLiveness = resolve; }));
+    holdProbe();
+    svc.leaseTick();
+    incarnation = 'replacement';
+    resolveLiveness(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual([]);
+
+    holdProbe();
+    svc.leaseTick();
+    svc.stop();
+    resolveLiveness(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual([]);
+  });
+
+  it('serializes liveness checks for multiple lost sessions', async () => {
+    const { svc, registry, closed, handle } = makeService({ holds: false });
+    const other = '0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e30';
+    svc.store.append({ eventId: 'cr-2', kind: 'created', conversationKey: other, title: 'Other', at: new Date().toISOString(), machineId: SELF });
+    registry.mintAppAlias(other);
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    svc.channels.register(String(registry.appAliasFor(other)), 's2', 'Other');
+    let resolveFirst!: (alive: boolean) => void;
+    const first = new Promise<boolean>((resolve) => { resolveFirst = resolve; });
+    const probe = vi.spyOn(handle, 'sessionRunning').mockResolvedValue(true).mockReturnValueOnce(first);
+
+    svc.leaseTick();
+    svc.leaseTick();
+    expect(probe).toHaveBeenCalledTimes(1);
+    resolveFirst(true);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(closed.sort()).toEqual(['s1', 's2']);
+  });
+
   it('binds what it may reply to and unbinds the rest, on every tick', () => {
     const { svc, v, registry } = makeService();
     const alias = registry.appAliasFor(KEY)!;
