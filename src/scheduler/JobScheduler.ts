@@ -1,3 +1,4 @@
+import { CLAUDE_CODE_FRAMEWORK } from '../core/frameworkFacts.js';
 import { SecurityReviewPreflight, securityPreflightFlags } from './SecurityReviewPreflight.js';
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -31,7 +32,7 @@ import path from 'node:path';
 import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
-import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
+import { jobMatchesCategory, formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
 import { readRecentPromotion, markPromotionSweepComplete } from '../core/roleFollowRestart.js';
 import { PromotionCatchUpStore } from './PromotionCatchUpStore.js';
 import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody, verifyScriptHash } from './AgentMdJobLoader.js';
@@ -142,6 +143,7 @@ const FAILURE_ALERT_REMINDER_CADENCE_MS = [
 
 /** The TokenLedger seam (job-cost-reduction §9) — optional method. */
 export interface JobSessionLedger {
+  bindJobSessionTranscript?(sessionId: string, transcriptId: string): boolean;
   recordJobSession?(
     sessionId: string,
     slug: string,
@@ -246,6 +248,13 @@ export class JobScheduler {
   private projectedSessionListeners: ProjectedSessionListener[] = [];
   /** Triage sessions: tmux name → their run row. */
   private projectedRuns: Map<string, { runId: string; slugTag: string; slug: string; trigger: string }> = new Map();
+  private developmentReviewRosterKnown = false;
+  private projectTrialStartupLedgerAvailable: () => boolean = () => false;
+
+  setProjectTrialStartupLedgerAvailability(available: () => boolean): void {
+    this.projectTrialStartupLedgerAvailable = available;
+  }
+
   private tokenLedger: JobSessionLedger | null = null;
   private configReader: (() => Record<string, unknown> | null) | null = null;
   private configCache: { mtimeMs: number; value: Record<string, unknown> } | null = null;
@@ -550,6 +559,7 @@ export class JobScheduler {
     const firstLoad = this.jobsSignature === '';
     const loaded = loadJobsDetailed(this.config.jobsFile, { quiet: !firstLoad });
     const nextJobs = loaded.jobs;
+    this.developmentReviewRosterKnown = loaded.rosterComplete;
 
     // Disk is the truth for the MANIFEST (existence, enabled, schedule, …);
     // the agentmd BODY is owned by refreshAgentMdBodyIfChanged() at the
@@ -2170,6 +2180,15 @@ export class JobScheduler {
     this.tokenLedger = ledger;
   }
 
+  /** Correlate the verified transcript even if its hook wins the spawn bookkeeping race. */
+  bindTokenLedgerJobSession(session: Session, transcriptId: string): void {
+    if (!session.jobSlug || !session.triggeredBy?.startsWith('scheduler:') || !this.tokenLedger) return;
+    const triage = session.jobSlug.startsWith('triage:');
+    const slug = triage ? session.jobSlug.slice('triage:'.length) : session.jobSlug;
+    this.recordLedgerSession(session.id, slug, session.startedAt, triage ? 'triage' : 'job');
+    this.tokenLedger.bindJobSessionTranscript?.(session.id, transcriptId);
+  }
+
   /** Test seam: disable the fixed per-slug 0–20 s start offset. */
   setScriptStartOffsetEnabled(enabled: boolean): void {
     this.scriptStartOffsetEnabled = enabled;
@@ -3143,6 +3162,30 @@ export class JobScheduler {
     // permit repeated model sessions against one reservation. Failed launches
     // restore this same batch; queuing never consumes it.
     if (gateReceipt && !gateReceipt.consumed) consumeJobGateReceipt(gateReceiptFile, gateReceipt.batchId);
+    // This is a signal only, taken from the same loaded roster used for admission.
+    // It never affects the launch decision, even when the roster is empty.
+    const observeDevelopmentReview = job.slug === 'overseer-development' && job.origin === 'instar'
+      && /^(?:queued:)*scheduled$/.test(reason)
+      && (this.readAgentConfig()?.jobs as { observeEmptyDevelopmentReview?: unknown } | undefined)?.observeEmptyDevelopmentReview === true;
+    const wouldSkipDevelopmentReview = observeDevelopmentReview
+      ? (this.developmentReviewRosterKnown
+        ? !this.jobs.some(candidate => jobMatchesCategory(candidate, 'development')) : null)
+      : undefined;
+    const trialJob = job.slug === 'memory-hygiene' || job.slug === 'session-continuity-check';
+    const trialConfig = trialJob && job.origin === undefined
+      && job.execute.type === 'skill' && job.execute.value === job.slug
+      && /^(?:queued:)*scheduled$/.test(reason)
+      ? this.readAgentConfig()?.jobs as {
+        memoryHygieneProjectIntegrationTrial?: unknown;
+        sessionContinuityProjectIntegrationTrial?: unknown;
+      } | undefined : undefined;
+    const trialMode = job.slug === 'memory-hygiene' ? trialConfig?.memoryHygieneProjectIntegrationTrial
+      : trialConfig?.sessionContinuityProjectIntegrationTrial;
+    const trialObserved = trialMode === 'baseline' || trialMode === 'without-project';
+    const trialEligible = trialObserved && this.projectTrialStartupLedgerAvailable()
+      && job.mcpAccess === undefined && !toolDecision.confinedTools
+      && fs.existsSync(path.join(path.dirname(this.stateDir), '.claude', 'skills', job.slug, 'SKILL.md'))
+      && (spawnAllowedTools === undefined || ['Bash', 'Skill'].every(tool => spawnAllowedTools.includes(tool)));
     let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
     const spawnPromise = toolDecision.refuse
@@ -3162,6 +3205,7 @@ export class JobScheduler {
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
+      ...(trialMode === 'without-project' && trialEligible ? { projectIntegrationTrial: true } : {}),
       ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
       ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
       // Per-job thinking mode (job-launch-intent-record §3): the launching builder translates
@@ -3187,6 +3231,9 @@ export class JobScheduler {
       }
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
+      const trialVariant = trialMode === 'baseline' && trialEligible && session?.framework === CLAUDE_CODE_FRAMEWORK
+        ? 'baseline' : session?.projectIntegrationTrialApplied === true && trialMode === 'without-project'
+          ? 'without-project' : 'fallback';
       // Record in run history with full Phase 1b observability payload
       const runId = this.runHistory.recordStart({
         slug: job.slug,
@@ -3211,6 +3258,13 @@ export class JobScheduler {
         toolEnforcement: toolOutcome.toolEnforcement,
         // job-launch-intent-record §3/§4: taken from the same returned session as framework/model.
         ...(session?.launch ? { launch: session.launch } : {}),
+        ...(trialObserved && session?.id ? {
+          [job.slug === 'memory-hygiene' ? 'memoryHygieneIntegrationTrial' : 'sessionContinuityIntegrationTrial']:
+            { variant: trialVariant, nativeSessionId: session.id },
+        } : {}),
+        ...(wouldSkipDevelopmentReview !== undefined && session?.id ? {
+          developmentReviewObservation: { wouldSkip: wouldSkipDevelopmentReview, nativeSessionId: session.id },
+        } : {}),
       });
       this.activeRunIds.set(sessionName, runId);
       this.recordLaunchIntentEvidence(job.slug, runId, session);

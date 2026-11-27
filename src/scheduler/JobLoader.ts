@@ -18,6 +18,11 @@ import { validJobDependencyPath } from '../core/JobDependency.js';
 import { THINKING_MODES } from '../core/topicProfileValidation.js';
 import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
+/** Match the category roster used by overseer jobs, including disabled members. */
+export function jobMatchesCategory(job: JobDefinition, category: string): boolean {
+  return job.tags?.includes(`cat:${category}`) === true || job.tags?.includes(category) === true;
+}
+
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
 const VALID_MODELS: ModelTier[] = ['opus', 'sonnet', 'haiku'];
 
@@ -127,6 +132,7 @@ export interface LoadJobsOptions {
 
 export interface LoadJobsResult {
   jobs: JobDefinition[];
+  rosterComplete: boolean;
   /** Per-entry agentmd load problems (structured; also in `diagnostics`). */
   problems: LoadProblem[];
   /** Enabled agentmd manifests that validated but whose body failed to load
@@ -146,6 +152,7 @@ export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): 
   const diagnostics: LoadDiagnostic[] = [];
   const emit = makeEmit(opts.quiet === true, diagnostics);
   let legacyJobs = loadLegacyJobsJson(jobsFile, emit);
+  let legacyJobsWithheld = false;
 
   // Phase 1a: also load per-slug manifests at .instar/jobs/schedule/.
   // The schedule directory lives next to jobs.json (typically .instar/);
@@ -165,6 +172,7 @@ export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): 
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       emit.warn('Portable import journal could not be verified; legacy jobs withheld');
       legacyJobs = [];
+      legacyJobsWithheld = true;
     }
   }
   const agentMdResult = loadAgentMdJobs(scheduleDir, jobsRootDir);
@@ -191,6 +199,8 @@ export function loadJobsDetailed(jobsFile: string, opts: LoadJobsOptions = {}): 
 
   return {
     jobs: merged,
+    rosterComplete: !legacyJobsWithheld && agentMdResult.problems.length === 0
+      && !diagnostics.some(diagnostic => diagnostic.level === 'error'),
     problems: agentMdResult.problems,
     bodyFailures: agentMdResult.bodyFailures,
     diagnostics,

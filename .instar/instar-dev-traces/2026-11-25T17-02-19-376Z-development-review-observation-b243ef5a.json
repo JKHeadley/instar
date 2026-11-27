@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "development-review-observation",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T17:02:19.376Z",
+  "artifactPath": "upgrades/side-effects/development-review-observation.md",
+  "artifactSha256": "461c68427ee8845c98eb1f5ec92bcd3c0060763cf4d65f250b623d1d489b03dc",
+  "coveredFiles": [
+    "docs/specs/development-review-observation.eli16.md",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/development-review-observation-alive.test.ts",
+    "upgrades/side-effects/development-review-observation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Attach existing observation-only token attribution at normal server construction",
+  "eli16Path": "docs/specs/development-review-observation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/development-review-observation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
