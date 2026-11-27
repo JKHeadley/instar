@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-27T14:53:10.263Z",
+  "slug": "blocker-handoff-delivery-receipt",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 70,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/BlockerLedger.ts"
+    ],
+    "addedLines": 69,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds a check inside an existing caller-driven settle call; it sends, retries or triggers nothing"
+  },
+  "verdict": "pass"
+}
