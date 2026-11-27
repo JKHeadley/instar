@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "maturation-board-empty-measure",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-27T21:55:35.048Z",
+  "artifactPath": "upgrades/side-effects/maturation-board-empty-measure.md",
+  "artifactSha256": "8e2d9aa8cde5b7ccd9d06aa4a994a9372bc28d2cf6ad392aa5d7836f0b407fa7",
+  "coveredFiles": [
+    "docs/specs/maturation-board-empty-measure.eli16.md",
+    "src/monitoring/MaturationBoard.ts",
+    "tests/unit/maturation-board.test.ts",
+    "upgrades/next/maturation-board-empty-measure.md",
+    "upgrades/side-effects/maturation-board-empty-measure.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only display parser; tightened after a rule 7 dissent so only a true placeholder reads as empty",
+  "eli16Path": "docs/specs/maturation-board-empty-measure.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-board-empty-measure.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
