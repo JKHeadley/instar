@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-27T19:52:10.439Z",
+  "slug": "autonomous-heartbeat-send-failures",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 254,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/AutonomousProgressHeartbeat.ts",
+      "src/monitoring/autonomousHeartbeatSendError.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 251,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "autonomous-heartbeat-send-retry drives the real sendRetryWaitMs under a refusal that never clears: tries never closer than the 5m floor and never more than elapsed/5m+1 (the old 1-minute retry breaks the floor); autonomous-heartbeat-gone-topic drives UNREACHABLE_REPROBE_MS: re-checks of a closed topic never closer than 60m; the run ending clears both."
+    },
+    "component": "AutonomousProgressHeartbeat"
+  },
+  "verdict": "pass"
+}

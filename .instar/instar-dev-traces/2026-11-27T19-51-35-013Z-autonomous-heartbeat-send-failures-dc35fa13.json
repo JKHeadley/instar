@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "autonomous-heartbeat-send-failures",
+  "sessionId": "46b0a5d5-bf21-4945-9695-d96696081968",
+  "timestamp": "2026-11-27T19:51:35.013Z",
+  "artifactPath": "upgrades/side-effects/autonomous-heartbeat-send-failures.md",
+  "artifactSha256": "d5008dad56f84c393b0edf555e4f55688c758449d654ec8b999c46cfd06abbd9",
+  "coveredFiles": [
+    "docs/specs/autonomous-heartbeat-send-failures.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/AutonomousProgressHeartbeat.ts",
+    "src/monitoring/autonomousHeartbeatSendError.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/AutonomousProgressHeartbeat.test.ts",
+    "tests/unit/autonomousHeartbeatSendError.test.ts",
+    "upgrades/next/autonomous-heartbeat-send-failures.md",
+    "upgrades/side-effects/autonomous-heartbeat-send-failures.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix inside one monitor's retry path plus richer evidence fields; in-memory state only, no config/format/route change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/autonomous-heartbeat-send-failures.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/autonomous-heartbeat-send-failures.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "autonomous-heartbeat-send-retry drives the real sendRetryWaitMs under a refusal that never clears: tries never closer than the 5m floor and never more than elapsed/5m+1 (the old 1-minute retry breaks the floor); autonomous-heartbeat-gone-topic drives UNREACHABLE_REPROBE_MS: re-checks of a closed topic never closer than 60m; the run ending clears both."
+    },
+    "component": "AutonomousProgressHeartbeat"
+  }
+}

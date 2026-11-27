@@ -526,3 +526,130 @@ describe('AutonomousProgressHeartbeat — disabled / re-entrancy', () => {
     h.hb.stop();
   });
 });
+
+describe('AutonomousProgressHeartbeat — failed sends are spaced, gone topics are dropped', () => {
+  const fleet = { guaranteedReporting: true, silenceThresholdMinutes: 30 };
+  const TOPICS = [147616, 130715, 144319];
+
+  function outageHarness(send: (topicId: number) => Promise<void>) {
+    const attempts = new Map<number, number>();
+    const events: Array<{ name: string; topicId: number }> = [];
+    const h = makeHarness(
+      { runs: TOPICS.map((topicId) => ({ topicId, sessionName: `s-${topicId}`, remainingSeconds: 36000 })) },
+      fleet,
+      {
+        getRunMarkers: (topicId) => ({ movedTo: null, moveSuspended: false, startedAtMs: 0, runId: `run-${topicId}` }),
+        sendMessage: async (topicId) => {
+          attempts.set(topicId, (attempts.get(topicId) ?? 0) + 1);
+          await send(topicId);
+        },
+      },
+    );
+    for (const name of ['send-error', 'topic-unreachable', 'emitted']) {
+      h.hb.on(name, (e: { topicId: number }) => events.push({ name, topicId: e.topicId }));
+    }
+    return { h, attempts, events };
+  }
+
+  it('a 43-minute local outage on three topics no longer fails every minute', async () => {
+    let down = true;
+    const { h, attempts, events } = outageHarness(async () => {
+      if (down) throw new TypeError('fetch failed');
+    });
+    const start = 100 * MIN;
+    for (let m = 0; m < 43; m++) {
+      h.setNow(start + m * MIN);
+      await h.hb.tick();
+    }
+    // Before: 43 attempts per topic (129 error rows). Now: t=0, 5, 15, 35 → 4 each.
+    for (const t of TOPICS) expect(attempts.get(t)).toBe(4);
+    expect(events.filter((e) => e.name === 'send-error')).toHaveLength(12);
+    expect(h.hb.status().sendRetryWaitingTopicIds.sort()).toEqual([...TOPICS].sort());
+
+    down = false;
+    h.setNow(start + 70 * MIN); // the 30m-capped wait after the 4th failure has passed
+    await h.hb.tick();
+    expect(events.filter((e) => e.name === 'emitted')).toHaveLength(3);
+    expect(h.hb.status().sendRetryWaitingTopicIds).toEqual([]);
+  });
+
+  it('a closed topic is tried once, recorded once, and the others keep reporting', async () => {
+    const { AutonomousHeartbeatSendError } = await import('../../src/monitoring/autonomousHeartbeatSendError.js');
+    const { h, attempts, events } = outageHarness(async (topicId) => {
+      if (topicId === 147616) throw new AutonomousHeartbeatSendError(500, 'Bad Request: message thread not found');
+    });
+    const start = 100 * MIN;
+    for (let m = 0; m < 240; m += 1) {
+      h.setNow(start + m * MIN);
+      await h.hb.tick();
+    }
+    // One try, then an hourly re-check (t=60, 120, 180) — never every minute.
+    expect(attempts.get(147616)).toBe(4);
+    expect(events.filter((e) => e.name === 'topic-unreachable')).toEqual([{ name: 'topic-unreachable', topicId: 147616 }]);
+    expect(events.filter((e) => e.name === 'send-error')).toHaveLength(1);
+    expect(attempts.get(130715)).toBeGreaterThan(1);
+    expect(h.hb.status().unreachableTopicIds).toEqual([147616]);
+  });
+
+  it('a new run in the same topic gets a fresh try, even back to back', async () => {
+    const { AutonomousHeartbeatSendError } = await import('../../src/monitoring/autonomousHeartbeatSendError.js');
+    let runId = 'run-a';
+    const attempts: number[] = [];
+    const h = makeHarness({}, fleet, {
+      getRunMarkers: () => ({ movedTo: null, moveSuspended: false, startedAtMs: 0, runId }),
+      sendMessage: async () => {
+        attempts.push(1);
+        throw new AutonomousHeartbeatSendError(400, 'Bad Request: TOPIC_CLOSED');
+      },
+    });
+    h.setNow(100 * MIN);
+    await h.hb.tick();
+    h.setNow(101 * MIN);
+    await h.hb.tick();
+    expect(attempts).toHaveLength(1);
+    runId = 'run-b'; // the topic never left the active set
+    h.setNow(102 * MIN);
+    await h.hb.tick();
+    expect(attempts).toHaveLength(2);
+  });
+
+  it('a reopened topic posts again at its hourly re-check and is no longer marked', async () => {
+    const { AutonomousHeartbeatSendError } = await import('../../src/monitoring/autonomousHeartbeatSendError.js');
+    let closed = true;
+    const h = makeHarness({}, fleet, {
+      sendMessage: async (topicId, text, metadata) => {
+        if (closed) throw new AutonomousHeartbeatSendError(500, 'Bad Request: message thread not found');
+        h.sent.push({ topicId, text, metadata });
+      },
+    });
+    h.setNow(100 * MIN);
+    await h.hb.tick();
+    expect(h.hb.status().unreachableTopicIds).toEqual([TOPIC]);
+    closed = false;
+    h.setNow(130 * MIN);
+    await h.hb.tick();
+    expect(h.sent).toHaveLength(0); // still waiting for the hourly re-check
+    h.setNow(160 * MIN);
+    await h.hb.tick();
+    expect(h.sent).toHaveLength(1);
+    expect(h.hb.status().unreachableTopicIds).toEqual([]);
+  });
+
+  it('a transient failure in one run does not delay a new run', async () => {
+    let runId = 'run-a';
+    let attempts = 0;
+    const h = makeHarness({}, fleet, {
+      getRunMarkers: () => ({ movedTo: null, moveSuspended: false, startedAtMs: 0, runId }),
+      sendMessage: async () => {
+        attempts += 1;
+        throw new TypeError('fetch failed');
+      },
+    });
+    h.setNow(100 * MIN);
+    await h.hb.tick();
+    runId = 'run-b';
+    h.setNow(101 * MIN);
+    await h.hb.tick();
+    expect(attempts).toBe(2);
+  });
+});
