@@ -129,8 +129,9 @@ describe('Secret Drop with browserHost', () => {
   it('SEC-156: the server types it with the stored host and the value on standard input, returns no value, and consumes on success', async () => {
     const { app, dropToken, called } = await submittedBrowserDrop(0);
     const r = await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: 'work-google' }).expect(200);
-    expect(r.body).toMatchObject({ typed: true, exitCode: 0, consumed: true, browserHost: 'accounts.example.com' });
-    expect(r.body.output).toContain('OK driver');
+    // The driver prints "OK driver"; none of its output is returned, only a fixed category.
+    expect(r.body).toEqual({ typed: true, exitCode: 0, consumed: true, browserHost: 'accounts.example.com', category: 'typed' });
+    expect(JSON.stringify(r.body)).not.toContain('OK driver');
     expect(JSON.stringify(r.body)).not.toContain('S3cret!');
     expect(fs.readFileSync(called, 'utf8')).toBe('args=typesecret accounts.example.com\nmarker=1\nprofile=work-google\nstdin=S3cret!\n');
     await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: 'work-google' }).expect(404);
@@ -149,7 +150,7 @@ describe('Secret Drop with browserHost', () => {
   it('SEC-156: a failed type keeps the drop for a retry; the route needs a real field and a valid profile', async () => {
     const { app, dropToken } = await submittedBrowserDrop(2);
     const r = await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: '#1', profile: 'work-google' }).expect(200);
-    expect(r.body).toMatchObject({ typed: false, exitCode: 2, consumed: false });
+    expect(r.body).toEqual({ typed: false, exitCode: 2, consumed: false, browserHost: 'accounts.example.com', category: 'driver-failed' });
     await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'nope', profile: 'p' }).expect(404);
     await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: '__proto__', profile: 'p' }).expect(404);
     await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'constructor', profile: 'p' }).expect(404);

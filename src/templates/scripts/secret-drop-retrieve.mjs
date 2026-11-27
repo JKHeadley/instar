@@ -170,7 +170,7 @@ if (res.status === 409) {
       process.exit(0);
     }
     const why = typed.category === 'timeout' ? 'the browser driver timed out' : 'the browser driver did not finish typing';
-    process.stderr.write(`browser: ${why} (exit ${typed.exitCode ?? 1}) — secret NOT consumed (read the page before retrying; the driver's details are in the agent server log).\n`);
+    process.stderr.write(`browser: ${why} (exit ${typed.exitCode ?? 1}) — secret NOT consumed (read the page before retrying; the driver's own messages are not kept, so run the driver yourself to see them).\n`);
     process.exit(typeof typed.exitCode === 'number' && typed.exitCode > 0 ? typed.exitCode : 1);
   }
   process.stderr.write(`HTTP 409: ${typeof info?.error === 'string' ? info.error : '(no error message)'}\n`);

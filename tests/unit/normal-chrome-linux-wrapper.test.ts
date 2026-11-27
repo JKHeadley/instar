@@ -90,7 +90,7 @@ describe('the Secret Drop helper', () => {
         req.on('end', () => {
           typeRequests.push({ token, body: JSON.parse(raw || '{}') });
           if (typeExit === 0) consumed.push(token);
-          res.end(JSON.stringify({ typed: typeExit === 0, exitCode: typeExit, consumed: typeExit === 0, browserHost: 'accounts.example.com', output: 'OK typed\n' }));
+          res.end(JSON.stringify({ typed: typeExit === 0, exitCode: typeExit, consumed: typeExit === 0, browserHost: 'accounts.example.com', category: typeExit === 0 ? 'typed' : 'driver-failed' }));
         });
         return;
       }

@@ -325,7 +325,8 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     const browserDir = path.join(tmpDir, '.instar', 'scripts', 'browser');
     fs.mkdirSync(browserDir, { recursive: true });
     fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), `#!/bin/bash\n${driverBody}\n`, { mode: 0o755 });
-    return request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
+    const r = await request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
+    return Object.assign(r, { app, dropToken: token });
   };
 
   it('the type response carries a fixed category and never the driver output, on success', async () => {
@@ -337,10 +338,13 @@ describe('Secret Drop — consume removes the stored copy first', () => {
   });
 
   it('the type response carries a fixed category and never the driver output, on failure (kept for retry)', async () => {
-    const r = await browserTypeWithDriver('v=$(cat); echo "failed with $v on SENSITIVE-PAGE-TEXT" >&2; exit 3');
+    const r = await browserTypeWithDriver('v=$(cat); echo "out $v on SENSITIVE-PAGE-TEXT"; echo "failed with $v on SENSITIVE-PAGE-TEXT" >&2; exit 3');
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ typed: false, exitCode: 3, consumed: false, browserHost: 'accounts.example.com', category: 'driver-failed' });
     expect(JSON.stringify(r.body)).not.toMatch(/SYNTHETIC-VALUE|SENSITIVE-PAGE-TEXT/);
+    // Kept for a retry: the drop still exists (the retrieve refuses it as browser-only, not 404).
+    const still = await request(r.app).post(`/secrets/retrieve/${r.dropToken}`).set('Authorization', `Bearer ${AUTH}`);
+    expect(still.status).toBe(409);
   });
 
   it('stored-copy branch (after a restart): a failed delete consumes nothing (503) and a retry succeeds', async () => {

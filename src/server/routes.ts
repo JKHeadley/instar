@@ -32370,7 +32370,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const consumed = typed;
         // Response boundary: the driver was just handed a secret, so none of its output is ever
         // returned (it could echo page text or the value itself). The caller gets a fixed result
-        // and a fixed category; the driver's own messages stay on this machine's log, truncated.
+        // and a fixed category. The driver's messages are discarded, not logged: only the host,
+        // category and exit code are logged on failure.
         const timedOut = !!err && ((err as { killed?: boolean }).killed === true || (err as { signal?: unknown }).signal != null);
         const category: 'typed' | 'timeout' | 'driver-failed' = typed ? 'typed' : timedOut ? 'timeout' : 'driver-failed';
         if (!typed) console.warn(`[secret-drop] browser type for ${host} ended as ${category} (exit ${exitCode}); driver output withheld from the response`);
