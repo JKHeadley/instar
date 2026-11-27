@@ -8,6 +8,9 @@
 ## Why
 A poll loop or Monitor watch script is a long-lived shell that runs a quick check, then `sleep N`, over and over, printing only on a change. The stuck candidate is the shell, never its short sleep, so the existing timed-sleep rule never saw it, and the probabilistic judge read a quiet, minutes-old loop as stuck. On 2026-11-27 it stopped four deliberate watches on the M5 (subscription-management, during a live sign-in) and four heavy-turn queue waits on the Studio. Each stop silently ended a watch the session relied on.
 
+## Selection, not an early return (second-pass review)
+The first version only protected the loop once it had been chosen as the stuck candidate, and a protected candidate ends that session's poll. An older sleeping loop, chosen first every poll, would then have hidden a younger, genuinely stuck command in the same session for up to the 2 h bound. Before this change, the judge's "legitimate" verdict excluded the loop and later polls moved on. The loop is now recognised in candidate selection and skipped, so the search continues to its siblings. Its own children are not shielded: a check hung inside the loop is a separate child past the threshold and is judged as before. Wiring tests cover a sleeping loop beside an unrelated stuck command, and a hung check inside a recently sleeping loop.
+
 ## What does not change (detection is not weakened)
 - The protection is bounded. The existing two-hour `MAX_PROTECTED_WAIT_MS` applies before this rule, as for every protected wait.
 - It needs live evidence. A loop that stops sleeping, for example one hung inside its check, loses protection once no sleep has been seen for 5 minutes, and the judge and the hard ceiling decide as before.

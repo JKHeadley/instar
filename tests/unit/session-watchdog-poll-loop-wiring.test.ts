@@ -62,6 +62,41 @@ describe('SessionWatchdog poll-loop wiring', () => {
     wd.stop?.();
   });
 
+  it('a protected loop does not hide an unrelated stuck command in the same session', async () => {
+    // Second-pass review of #4008: the loop must be skipped in selection, not end the poll.
+    const wd = new SessionWatchdog(config(), sessionManager(), {} as any) as any;
+    wd.getClaudePid = vi.fn().mockReturnValue(12345);
+    wd.isProcessAlive = vi.fn().mockReturnValue(true);
+    const judge = vi.fn().mockResolvedValue({ verdict: 'undecided', by: 'none' });
+    wd.judgeCommand = judge;
+    const STUCK = { pid: 6001, parentPid: 12345, command: 'node scripts/build-everything.mjs', elapsedMs: 300_000 };
+    wd.getChildProcesses = vi.fn().mockResolvedValue([
+      { ...SHELL, elapsedMs: 900_000 },                                  // older, listed first, sleeping
+      { pid: 5002, parentPid: 5001, command: 'sleep 15', elapsedMs: 3_000 },
+      STUCK,                                                            // younger, genuinely stuck
+    ]);
+    await wd.checkSession('echo-subscription-management');
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(judge.mock.calls[0][0]).toBe(STUCK.command);
+    wd.stop?.();
+  });
+
+  it('a check hung inside a sleeping loop is still judged on its own', async () => {
+    const wd = new SessionWatchdog(config(), sessionManager(), {} as any) as any;
+    wd.getClaudePid = vi.fn().mockReturnValue(12345);
+    wd.isProcessAlive = vi.fn().mockReturnValue(true);
+    const judge = vi.fn().mockResolvedValue({ verdict: 'undecided', by: 'none' });
+    wd.judgeCommand = judge;
+    const HUNG = { pid: 5009, parentPid: 5001, command: 'curl -s http://unreachable.example/x', elapsedMs: 400_000 };
+    // The loop saw a sleep a minute ago (recent evidence) and is now inside a hung check.
+    wd.timedSleepSeenAt.set(SHELL.pid, Date.now() - 60_000);
+    wd.getChildProcesses = vi.fn().mockResolvedValue([{ ...SHELL, elapsedMs: 900_000 }, HUNG]);
+    await wd.checkSession('s');
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(judge.mock.calls[0][0]).toBe(HUNG.command);
+    wd.stop?.();
+  });
+
   it('forgets a loop once its process exits', async () => {
     const wd = new SessionWatchdog(config(), sessionManager(), {} as any) as any;
     wd.getClaudePid = vi.fn().mockReturnValue(12345);

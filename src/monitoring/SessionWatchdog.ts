@@ -1011,6 +1011,17 @@ export class SessionWatchdog extends EventEmitter {
           if (testRun.reason === 'test-runner') protectedSubtrees.add(c.pid);
           continue;
         }
+        // A sleeping poll loop is skipped HERE, in selection, so the search goes on to its siblings:
+        // returning on it later would let an older protected loop hide a younger stuck command in the
+        // same session for up to the 2 h bound. Its own children are still checked (a check hung inside
+        // the loop is a separate, older-than-threshold child and is judged as before).
+        const seenAt = this.timedSleepSeenAt.get(c.pid);
+        const pollLoop = classifyProtectedWait(c.command, '', c.elapsedMs, descendantCommands(children, c.pid), 'unknown',
+          seenAt !== undefined ? observedAt - seenAt : undefined);
+        if (pollLoop.protected && pollLoop.reason === 'poll-loop-sleep') {
+          console.log(`[Watchdog] "${tmuxSession}": protected wait (poll-loop-sleep) — refusing to interrupt`);
+          continue;
+        }
         stuckChild = c; break;
       }
     }
