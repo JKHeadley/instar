@@ -351,6 +351,24 @@ describe('Conversations page', () => {
     expect(JSON.parse(sent!.body!).requestId).toMatch(/^\d{13}-/);
   });
 
+  it('shows an unnamed Telegram conversation without leaking its topic number in its title', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const { doc } = await boot(c => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [
+        { id: 134088, platform: 'telegram', title: 'Topic 134088' },
+        { id: 11, platform: 'telegram', title: 'Release planning' },
+      ] } };
+      return undefined;
+    }, '#/work/chats?c=telegram%3A134088', idb);
+    await vi.waitFor(() => expect(doc.querySelector('.chat-title')?.textContent).toBe('Unnamed conversation'));
+    expect([...doc.querySelectorAll('.chat-row-title')].map(row => row.textContent)).toContain('Release planning');
+    expect(doc.querySelector('.chat-row[href*="134088"]')?.querySelector('.chat-row-title')?.textContent).toBe('Unnamed conversation');
+  });
+
   it('pinned messages: the bar shows the newest pin with a count, a message menu pins (signed), and All pins lists them (conversation-pinned-messages)', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');

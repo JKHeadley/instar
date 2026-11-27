@@ -42,6 +42,20 @@ describe('the list', () => {
     expect(rows.map((r: { key: string }) => r.key)).toEqual([`app:${UUID}`, 'telegram:134088', 'slack:-5']);
     expect(rows.map((r: { kindLabel: string }) => r.kindLabel)).toEqual(['App', 'Telegram', 'Slack']);
   });
+  it('uses plain words for missing and synthetic Telegram titles while keeping address keys', () => {
+    const rows = m.listRows({ conversations: [
+      { id: 134088, platform: 'telegram' },
+      { id: 42, platform: 'telegram', title: 'Telegram topic #42' },
+      { id: 77, platform: 'telegram', title: '77' },
+      { id: 32, platform: 'telegram', title: '  Release planning  ' },
+      { id: UUID, platform: 'app', title: '123' },
+    ] });
+    expect(rows.map(row => [row.key, row.title])).toEqual([
+      ['telegram:134088', 'Unnamed conversation'], ['telegram:42', 'Unnamed conversation'],
+      ['telegram:77', 'Unnamed conversation'], ['telegram:32', 'Release planning'],
+      [`app:${UUID}`, '123'],
+    ]);
+  });
   it('the unread hook: a non-negative integer count, else null', () => {
     const rows = m.listRows(body);
     expect(rows.map((r: { unread: number | null }) => r.unread)).toEqual([null, 3, null]);
