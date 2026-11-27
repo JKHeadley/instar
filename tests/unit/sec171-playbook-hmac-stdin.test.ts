@@ -25,7 +25,7 @@ ph.subprocess.run = fake_run
 ${body}
 print(json.dumps(calls))
 `;
-  const r = spawnSync('python3', ['-I', '-c', harness], { encoding: 'utf8', timeout: 20_000 });
+  const r = spawnSync('python3', ['-I', '-B', '-c', harness], { encoding: 'utf8', timeout: 20_000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 

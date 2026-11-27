@@ -61,7 +61,7 @@ import { allocatePort, registerAgent, validateAgentName } from '../core/AgentReg
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
 import { OrgPolicyGateHooks } from '../core/OrgPolicyGateHooks.js';
-import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, COMPACT_SESSION_START_TIMEOUT_SECONDS, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
@@ -508,6 +508,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   // Install hooks
   installHooks(stateDir);
   console.log(`  ${pc.green('✓')} Created .instar/hooks/instar/ (behavioral guardrails)`);
+  installSelectedCodexHooks(projectDir, enabledFrameworks);
 
   // Initialize coherence infrastructure
   try {
@@ -909,6 +910,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   // Install hooks
   installHooks(stateDir);
   console.log(pc.green('  Created:') + ' .instar/hooks/instar/ (behavioral guardrails)');
+  installSelectedCodexHooks(projectDir, enabledFrameworks);
 
   // Ensure manifest signing key exists (additive — won't overwrite)
   const manifestIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));
@@ -3979,7 +3981,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
   // resolved URLs AND Claude-Code-only writes can be gated for codex-only
   // installs (portability audit PR 2 of 4).
   let serverPort: number | undefined;
-  let enabledFrameworks: ReadonlyArray<string> = ['claude-code'];
+  let enabledFrameworks: ReadonlyArray<IntelligenceFramework> = ['claude-code'];
   try {
     const configPath = path.join(stateDir, 'config.json');
     if (fs.existsSync(configPath)) {
@@ -4007,9 +4009,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
   // installClaudeSettings for the codex-cli framework. Writes the per-project
   // <projectDir>/.codex/hooks.json (NOT the global ~/.codex — that would leak
   // gates into the operator's personal Codex). Spec: docs/specs/codex-enforcement-hook-layer.md
-  const codexEnabled = enabledFrameworks.includes('codex-cli');
-  if (codexEnabled) {
-    installCodexHooks(projectDir);
+  if (installSelectedCodexHooks(projectDir, enabledFrameworks)) {
     // P0 (codex-full-parity): arm the hooks so Codex actually runs them on the first
     // session — registration alone leaves them untrusted/dark. Best-effort + fail-soft at
     // init: a brand-new agent may not be Codex-logged-in yet (auth lives in CODEX_HOME), in
@@ -4041,6 +4041,12 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     fs.mkdirSync(skillsDir, { recursive: true });
     installBuiltinSkills(skillsDir, serverPort ?? 4321);
   }
+}
+
+function installSelectedCodexHooks(projectDir: string, enabledFrameworks: readonly IntelligenceFramework[]): boolean {
+  if (!enabledFrameworks.includes('codex-cli')) return false;
+  installCodexHooks(projectDir);
+  return true;
 }
 
 /**
@@ -4468,6 +4474,7 @@ function installHooks(stateDir: string): void {
   const migrator = new PostUpdateMigrator(
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
+  fs.writeFileSync(path.join(hooksDir, 'telegram-topic-context.sh'), migrator.getHookContent('telegram-topic-context'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
   // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
   fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
@@ -5556,7 +5563,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     hooks.SessionStart = [
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
-      { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
@@ -5564,7 +5571,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     const sessionStart = hooks.SessionStart as Array<{ matcher?: string; hooks?: unknown[] }>;
     for (const matcher of ['startup', 'resume', 'compact']) {
       if (!sessionStart.some(e => e.matcher === matcher)) {
-        sessionStart.push({ matcher, hooks: [sessionStartHook] });
+        const hook = matcher === 'compact' ? { ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS } : sessionStartHook;
+        sessionStart.push({ matcher, hooks: [hook] });
       }
     }
     if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {

@@ -366,6 +366,13 @@ details.more[open] summary .chev { transform: rotate(90deg); }
 a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
+#sec-auto-repair .btn-primary:disabled {
+  opacity: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+  color: var(--text-muted);
+  filter: none;
+}
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
 
 .foot-note { margin-top: var(--s-10); text-align: center; font-size: 12.5px; color: var(--text-faint); }
@@ -1788,12 +1795,28 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
 
+/* Suggestions still under review do not bury the useful next step. */
+.ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
+.ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+
+
 /* A long approval inbox stays within the screen; all received actions remain reachable. */
 .needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }
 .needs-group-heading { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 650; color: var(--text-muted); }
 .needs-groups .needs-rows { border: 0; }
 .needs-group + .needs-group { border-top: 1px solid var(--hairline); }
 .needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Pending sends are the user's own local content, with ordinary phone-sized actions. */
+.chat-pending { margin: var(--s-3) 0; padding: var(--s-3); border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface); min-width: 0; }
+.chat-pending-entry { padding: var(--s-3) 0; border-top: 1px solid var(--hairline); min-width: 0; }
+.chat-pending-entry > .card-line:first-child { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10rem; overflow: auto; }
+.chat-pending-entry .chat-list-actions { margin-bottom: 0; }
+.chat-pending-entry .btn-quiet { min-height: 44px; white-space: normal; text-align: left; }
+
+.chat-file-recovery-sheet .sheet-close { min-width: 44px; min-height: 44px; }
+.chat-file-recovery-sheet .chat-list-actions { min-width: 0; max-width: 100%; }
+.chat-file-recovery-sheet a[download] { min-width: 0; max-width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 
 /* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
 .main.accounts-page { max-width: none; min-width: 0; }
@@ -1803,3 +1826,25 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
+.needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
+.accounts-page .acct-layout { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.accounts-page .acct-layout-field { display: flex; flex: 0 1 13rem; flex-direction: column; gap: 4px; min-width: min(100%, 10rem); }
+.accounts-page .acct-layout-field select { width: 100%; }
+.accounts-page .acct-groups { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Sign-in status is independent of account usage order and grouping. */
+.acct-repairs { display: grid; gap: var(--s-3); }
+.acct-repairs h2, .acct-repairs h3, .acct-repairs p { margin: 0; }
+.acct-repair-machine { min-width: 0; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); background: var(--surface-raised); }
+.acct-repair-summary { min-height: 44px; display: list-item; cursor: pointer; color: var(--text-muted); line-height: 1.5; padding-block: 10px; }
+.acct-repair-summary strong { color: var(--text-strong); margin-inline-end: var(--s-2); }
+.acct-repair-summary span { overflow-wrap: anywhere; }
+.acct-repair-rows { list-style: none; padding: 0; margin: var(--s-2) 0 0; }
+.acct-repair-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); padding-block: var(--s-2); }
+.acct-repair-row + .acct-repair-row { border-top: 1px solid var(--hairline); }
+.acct-repair-row .row-title, .acct-repair-row .row-sub { display: block; white-space: normal; overflow-wrap: anywhere; }
+.acct-repair-row .btn-quiet { min-height: 44px; }
+.acct-repair-row .row-title { font-weight: 600; }
+.acct-repair-row .row-sub { color: var(--text-muted); }
