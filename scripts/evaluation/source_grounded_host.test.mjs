@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, checkCodexStream, diagnoseRun, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -238,6 +238,17 @@ test('diagnose reports counts and plain codes only, never model text', () => {
   assert.deepEqual(d.judges, { 'none anthropic valid none': 1, 'none openai invalid other': 1, 'none openai timeout none': 1,
     'full anthropic skipped none': 1, 'full slot-1 not-judged none': 1 });
   assert.ok(!JSON.stringify(d).includes('café'));
+  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {});
+});
+
+test('shape codes name the schema rule and location, never the text', () => {
+  assert.deepEqual(shapeCodes('judge', 'not json'), ['not-json']);
+  const codes = shapeCodes('judge', JSON.stringify({ version: 1, submissionId: 's', criteria: [{ criterionId: 'decision', verdict: 'maybe', secretField: 'café' }] }));
+  assert.ok(codes.length > 0 && codes.every(c => /^[a-zA-Z]+ [A-Za-z0-9_/N-]+( [A-Za-z0-9_-]+)?$/.test(c)), codes.join('; '));
+  assert.ok(codes.some(c => c.startsWith('enum /criteria/N/verdict')), codes.join('; '));
+  assert.ok(!codes.join(' ').includes('café'));
+  const odd = shapeCodes('judge', JSON.stringify({ 'bad key with spaces': 1 }));
+  assert.ok(odd.some(c => c.endsWith(' other')), odd.join('; '));
 });
 
 test('the Codex judge uses the same tool-free profile as instar itself', () => {

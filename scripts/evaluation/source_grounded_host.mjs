@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { evaluateJudgeFlow } from './source_grounded_judge_flow.mjs';
 import { strictParse, validateCapture } from './source_grounded_validate.mjs';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 export const ARMS = Object.freeze(['none', 'reduced', 'full']);
 export const REDUCED_ID = 'reduced-context';
@@ -511,25 +512,67 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
 // Codes that are not plain dash codes are reported as "other", so no model
 // or private text can appear.
 const plainCode = v => (typeof v === 'string' && /^[a-z0-9-]{1,80}$/.test(v) ? v : (v == null ? 'none' : 'other'));
-export function diagnoseRun(run) {
+// Where a rejected answer or grading breaks the frozen schema: Ajv's rule and
+// the location in the schema's own terms, array positions as N. A property
+// name the model chose is kept only when it is a plain code.
+let shapeCheckers = null;
+function shapeChecker(kind) {
+  if (!shapeCheckers) {
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    shapeCheckers = {};
+    for (const k of ['answer', 'judge']) {
+      const bytes = readFileSync(new URL(`../../docs/evaluation/context-budget/source-grounded-answer/${k}.schema.json`, import.meta.url));
+      shapeCheckers[k] = ajv.compile(JSON.parse(bytes.toString('utf8')));
+    }
+  }
+  return shapeCheckers[kind];
+}
+export function shapeCodes(kind, raw) {
+  let value;
+  try { value = JSON.parse(raw); } catch { return ['not-json']; }
+  const check = shapeChecker(kind);
+  if (check(value)) return ['schema-ok'];
+  return [...new Set((check.errors ?? []).map(e => {
+    const where = String(e.instancePath || '/').replace(/\/[0-9]+/g, '/N');
+    const extra = e.params?.additionalProperty ?? e.params?.missingProperty;
+    const name = extra === undefined ? '' : ` ${/^[A-Za-z0-9_-]{1,40}$/.test(String(extra)) ? extra : 'other'}`;
+    return `${e.keyword} ${/^[A-Za-z0-9_/N-]{1,120}$/.test(where) ? where : 'other'}${name}`;
+  }))];
+}
+
+export function diagnoseRun(run, pack = null) {
   const index = run.read('index.json');
-  const judges = {}; const answers = {};
+  const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {};
   const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
   for (const trialId of index.order) {
     const arm = /-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown';
     if (run.has(`answers/${trialId}.json`)) {
       const a = run.read(`answers/${trialId}.json`);
       bump(answers, `${arm} ${plainCode(a.parseOutcome?.status)} ${plainCode(a.parseOutcome?.reason)}`);
+      if (a.parseOutcome?.status === 'schema-invalid' && typeof a.answerRaw === 'string') {
+        for (const c of shapeCodes('answer', a.answerRaw)) bump(answerShapes, `${arm} ${c}`);
+      }
     } else bump(answers, `${arm} not-run none`);
     for (const i of [0, 1]) {
       const f = `judges/${trialId}.slot-${i}.json`;
       if (!run.has(f)) { bump(judges, `${arm} slot-${i} not-judged none`); continue; }
       const l = run.read(f);
       if (l.attempts.length === 0) bump(judges, `${arm} ${plainCode(l.family)} skipped none`);
-      for (const at of l.attempts) bump(judges, `${arm} ${plainCode(at.family)} ${plainCode(at.state)} ${plainCode(at.error)}`);
+      for (const at of l.attempts) {
+        bump(judges, `${arm} ${plainCode(at.family)} ${plainCode(at.state)} ${plainCode(at.error)}`);
+        if (pack && at.state === 'invalid' && typeof at.modelText === 'string') {
+          let resolved = null;
+          try {
+            const ctx = trialContext(run, pack, trialId);
+            const answer = run.read(`answers/${trialId}.json`);
+            resolved = resolveJudge(stripFence(at.modelText), ctx.records, answer.answerRaw);
+          } catch (e) { bump(judgeShapes, `${arm} ${plainCode(at.family)} resolve ${plainCode(e?.message)}`); }
+          if (resolved !== null) for (const c of shapeCodes('judge', resolved)) bump(judgeShapes, `${arm} ${plainCode(at.family)} ${c}`);
+        }
+      }
     }
   }
-  return { version: 1, answers, judges };
+  return { version: 1, answers, judges, answerShapes, judgeShapes };
 }
 
 // ---------------------------------------------------------------- totals
@@ -687,7 +730,7 @@ export function main(argv) {
     }
     return { state: 'judged', counts };
   }
-  if (command === 'diagnose') return { state: 'diagnosed', ...diagnoseRun(run) };
+  if (command === 'diagnose') return { state: 'diagnosed', ...diagnoseRun(run, pack) };
   if (command === 'total') {
     const t = totalRun(run, pack);
     return { state: 'totalled', arms: Object.fromEntries(Object.entries(t.arms).map(([a, s]) => [a, { trials: s.trials, allCriteriaPass: s.allCriteriaPass, criticalFailureTrials: s.criticalFailureTrials }])) };
