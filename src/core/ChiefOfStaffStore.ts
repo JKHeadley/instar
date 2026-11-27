@@ -217,6 +217,15 @@ function validateLinked(v: unknown): { repos: string[]; branches: string[]; doma
   return { repos, branches, domains };
 }
 
+/** Validate the nested binding details used by a read-only batch draft. */
+export function validBindingDraftDetails(value: Record<string, unknown>): boolean {
+  const allowed = ['conversationKey', 'goal', 'doneDefinition', 'checkCadenceHours', 'linked', 'initiativeId'];
+  return Object.keys(value).every((key) => allowed.includes(key)) &&
+    (value.initiativeId === undefined || isShortText(value.initiativeId, 128)) &&
+    validateDoneDefinition(value.doneDefinition) !== null &&
+    !Array.isArray(value.linked) && validateLinked(value.linked) !== null;
+}
+
 export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
   knownFields: KNOWN_FIELDS as unknown as ReadonlyArray<string>,
   pathSensitiveFields: ['machine', 'by', 'writer', 'principal', 'role', 'renewedVia'],

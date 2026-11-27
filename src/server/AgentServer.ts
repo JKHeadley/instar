@@ -1,3 +1,4 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
@@ -1401,6 +1402,7 @@ export class AgentServer {
   }
 
   constructor(options: {
+    plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
@@ -6789,6 +6791,7 @@ export class AgentServer {
         { ...cadenceRaw, enabled: true },
       ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
+      plannedRestartLeaseAdmission: options.plannedRestartLeaseAdmission,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
@@ -10101,9 +10104,13 @@ export class AgentServer {
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
+      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
+        const previous = readRestartRequestFile(flagPath);
+        const update = pendingUpdateRestartTarget(flagPath, previous);
+        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
+        return update;
+      });
+      if (existingUpdate) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {

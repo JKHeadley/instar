@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "preferred-holder-restart-admission",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T19:11:48.430Z",
+  "artifactPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "artifactSha256": "521ebd8f41502785458e819d0245a70812ba9189893915c6c5508a6906d3d3ad",
+  "coveredFiles": [
+    "src/core/LeaseCoordinator.ts",
+    "tests/e2e/planned-restart-keeps-lead-boot-path.test.ts",
+    "upgrades/eli16/preferred-holder-restart-admission.md",
+    "upgrades/next/preferred-holder-restart-admission.md",
+    "upgrades/side-effects/preferred-holder-restart-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Unwired read-only evidence computation; no sensitive runtime enforcement.",
+  "eli16Path": "upgrades/eli16/preferred-holder-restart-admission.md",
+  "sideEffectsPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only evidence on request, with no self-triggered restart or renewal."
+  }
+}

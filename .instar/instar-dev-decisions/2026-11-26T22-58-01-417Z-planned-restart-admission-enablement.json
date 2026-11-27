@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-26T22:58:01.417Z",
+  "slug": "planned-restart-admission-enablement",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 359,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/core/plannedRestartAdmissionTimeout.ts",
+      "src/core/restartRequestFile.ts",
+      "src/core/roleFollowRestart.ts",
+      "src/core/sessionPoolPairActivation.ts",
+      "src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 267,
+    "deletedLines": 92
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -13,6 +13,20 @@ function keypair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', { publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
   return { pub: publicKey as string, priv: privateKey as string };
 }
+function fixtureKeypair(seedByte: number) {
+  // PKCS#8 Ed25519 private-key header followed by a fixed, test-only 32-byte seed.
+  const header = Buffer.from('302e020100300506032b657004220420', 'hex');
+  const privateKey = crypto.createPrivateKey({
+    key: Buffer.concat([header, Buffer.alloc(32, seedByte)]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  return {
+    pub: crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }) as string,
+    priv: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+  };
+}
+
 const signWith = (priv: string) => (text: string) => crypto.sign(null, Buffer.from(text), priv).toString('base64');
 function entry(kind: OwnerRecordKind, parents: string[], body: Record<string, unknown>, by: { type: SignerType; keyId: string; priv: string }, agentId = AGENT) {
   return signOwnerRecordEntry({ kind, agentId, parents, body, signer: { type: by.type, keyId: by.keyId } }, signWith(by.priv));
@@ -382,24 +396,24 @@ describe('regression: the code second pass', () => {
   });
 
   it('the stored copy keeps every exclusion: a revoked key cannot come back after storage', () => {
-    const { g, own } = enrolled();
-    const o2b = { ...keypair(), id: 'o_two3' };
-    const addK = entry('add-owner-key', [own.id], { keyId: o2b.id, publicKey: o2b.pub, label: 'k' }, O(o1));
+    const machine = { ...fixtureKeypair(1), id: 'm_A' };
+    const owner = { ...fixtureKeypair(2), id: 'o_phone' };
+    const o2b = { ...fixtureKeypair(3), id: 'o_two3' };
+    const g = genesisOf(machine);
+    const own = entry('add-owner-key', [g.id], { keyId: owner.id, publicKey: owner.pub, label: 'phone', proof: 'route-ok' }, O(owner));
+    const addK = entry('add-owner-key', [own.id], { keyId: o2b.id, publicKey: o2b.pub, label: 'k' }, O(owner));
     const kEntry = entry('policy', [addK.id], { path: 'byK', value: 1 }, O(o2b));
-    let tried = 0;
-    for (let i = 0; i < 200; i++) {
-      const brX = entry('policy', [addK.id], { path: 'x', value: i }, O(o1));
-      const rConc = entry('revoke-key', [brX.id], { keyId: o2b.id }, O(o1));
-      const rDesc = entry('revoke-key', [kEntry.id], { keyId: o2b.id }, O(o1));
-      if (!(rDesc.id < rConc.id)) continue;
-      const m = entry('merge', [brX.id, kEntry.id].sort(), {}, O(o1));
-      const all = [g, own, addK, kEntry, brX, rConc, rDesc, m];
-      const full = evaluateOwnerRecord(all.map((x) => x.entry), OPTS);
-      expect(full.policies.byK).toBeUndefined();
-      sameState(full, storedCopy(all, full));
-      tried++; break;
-    }
-    expect(tried).toBe(1);
+    const brX = entry('policy', [addK.id], { path: 'x', value: 2 }, O(owner));
+    const rConc = entry('revoke-key', [brX.id], { keyId: o2b.id }, O(owner));
+    const rDesc = entry('revoke-key', [kEntry.id], { keyId: o2b.id }, O(owner));
+
+    // Exercise the case where the descendant revocation sorts before the concurrent one.
+    expect(rDesc.id < rConc.id).toBe(true);
+    const m = entry('merge', [brX.id, kEntry.id], {}, O(owner));
+    const all = [g, own, addK, kEntry, brX, rConc, rDesc, m];
+    const full = evaluateOwnerRecord(all.map((x) => x.entry), OPTS);
+    expect(full.policies.byK).toBeUndefined();
+    sameState(full, storedCopy(all, full));
   });
 
   it('a contested record stays contested after storage (probe J)', () => {

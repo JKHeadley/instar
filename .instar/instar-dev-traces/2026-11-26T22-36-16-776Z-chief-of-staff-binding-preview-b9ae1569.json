@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-binding-preview",
+  "sessionId": "f1e1e1c2-bfc5-4e65-816a-68c17940e93b",
+  "timestamp": "2026-11-26T22:36:16.776Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-binding-preview.md",
+  "artifactSha256": "4577e06c3dac8892bb65399e3fd25adf01a7dc6e2a1260003e1c6290ac84ede0",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffBindingBatch.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/integration/chief-of-staff-check-in.test.ts",
+    "tests/unit/chief-of-staff-binding-batch.test.ts",
+    "upgrades/chief-of-staff-binding-preview.eli16.md",
+    "upgrades/next/chief-of-staff-binding-preview.md",
+    "upgrades/side-effects/chief-of-staff-binding-preview.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Draft-only publication of a small, default-off, owner-session-gated read-only preview. Reverting removes all effects because it writes no state and changes no approval route.",
+  "eli16Path": "upgrades/chief-of-staff-binding-preview.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chief-of-staff-binding-preview.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

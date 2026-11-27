@@ -99,6 +99,7 @@ export function whenWords(at, now) {
  */
 export function lineText(state, now) {
   if (!state || state.mode === 'fresh') return '';
+  if (state.mode === 'updating') return 'Updating…';
   const offline = state.mode === 'offline';
   if (state.shownAt) {
     return offline
@@ -147,16 +148,33 @@ export function createNetState({ fetchFn, storage, origin, now = () => Date.now(
   const offlineError = () => new TypeError('Offline: the device has no connection');
 
   let lastBack = -Infinity;
+  let recoveryGeneration = 0;
+  let catchingUp = null;
   const good = () => {
+    if (state.mode === 'updating' && catchingUp) return;
     const wasBad = state.mode !== 'fresh';
     if (retryTimer) { clearTimer(retryTimer); retryTimer = null; }
     retryStep = 0;
-    set({ mode: 'fresh', shownAt: null });
-    // Read the page again once the agent answers, at most every BACK_GAP_MS so a
-    // flickering connection cannot turn into a refresh every few seconds.
-    if (wasBad && now() - lastBack >= BACK_GAP_MS) { lastBack = now(); onBack(); }
+    if (!wasBad) return;
+    // A healthy probe starts recovery. Only the current page's actual reads complete it.
+    if (now() - lastBack < BACK_GAP_MS) { scheduleRetry(); return; }
+    lastBack = now();
+    const generation = ++recoveryGeneration;
+    set({ mode: 'updating', shownAt: state.shownAt });
+    catchingUp = Promise.resolve().then(() => onBack()).then((ok) => {
+      if (generation !== recoveryGeneration) return;
+      catchingUp = null;
+      if (ok === false) { bad(null); return; }
+      set({ mode: 'fresh', shownAt: null });
+    }, () => {
+      if (generation !== recoveryGeneration) return;
+      catchingUp = null;
+      bad(null);
+    });
   };
   const bad = (shownAt) => {
+    recoveryGeneration++;
+    catchingUp = null;
     const mode = isOnline() ? 'weak' : 'offline';
     // Keep the oldest copy on screen in the line: that is what the person is looking at.
     const at = shownAt && state.shownAt ? Math.min(shownAt, state.shownAt) : (shownAt || state.shownAt || null);
@@ -256,6 +274,10 @@ export function createNetState({ fetchFn, storage, origin, now = () => Date.now(
     probeNow: () => { if (retryTimer) { clearTimer(retryTimer); retryTimer = null; } return probe(); },
     wentOffline: () => bad(null),
     clear: () => {
+      recoveryGeneration++; catchingUp = null;
+      if (retryTimer) { clearTimer(retryTimer); retryTimer = null; }
+      retryStep = 0; lastBack = -Infinity;
+      set({ mode: 'fresh', shownAt: null });
       try {
         const keys = [];
         for (let i = 0; i < storage.length; i++) { const k = storage.key(i); if (k && k.startsWith(PREFIX)) keys.push(k); }
