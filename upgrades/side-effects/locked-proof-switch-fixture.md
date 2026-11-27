@@ -1,0 +1,46 @@
+# Side-Effects Review — locked-Mac proof: a second throwaway account for the user-switch case
+
+**Version / slug:** `locked-proof-switch-fixture`
+**Date:** `2026-11-27`
+**Author:** `echo`
+**Second-pass reviewer:** `pending (rule 7, before a queue place)`
+
+## Summary of the change
+
+Tier 1, 2 scripts and 1 test file. `scripts/locked-proof/create-proof-user.sh` and `remove-proof-user.sh` gain a closed `--fixture proof|switch` option. `proof`, the default, is today's `instarproof` with vault key `locked_proof_user_password`, unchanged. `switch` is `instarproofswitch` with `locked_proof_switch_user_password`, the second account that proof case 12.12 switches the console to and back from. No other value names an account, so neither script can be pointed at a real user such as the Mini's Demo account. Create now also refuses, before the password check, unless `dsmemberutil` answers exactly "user is not a member of the group" for admin. Remove refuses before stopping anything in four cases: the console owner cannot be read, the account is on the console, it is not confirmed outside admin, or its full name is not the one create set. Remove also gains the same stand-in hook as create (LOCKED_PROOF_FAKE_BIN), so it is now tested.
+
+## Decision-point inventory
+
+No runtime decision point. These are developer scripts run by hand on the proof Mac.
+
+## 1. Over-block
+
+Remove now also refuses an `instarproof` whose full name is not "Instar proof", or whose admin membership cannot be confirmed. The Mini's current instarproof was made by this script with that name. If it were ever renamed, removal stops with the reason and the account is deleted by hand.
+
+## 2. Under-block
+
+The refusals compare a full name and admin membership. They cannot prove that a same-named standard account with that full name is a throwaway. The closed fixture list is the main protection.
+
+## 3. Level-of-abstraction fit
+
+The account map lives in the two scripts that create and delete the account. The driver keeps `instarproof` as the proof user. The judge already counts any console owner other than instarproof, root or loginwindow as away (lib.mjs consoleRoundTrip), so it needs no change.
+
+## 4. Signal vs authority compliance
+
+Not applicable.
+
+## 5. Interactions
+
+Default behaviour and the vault key are unchanged, and so are the order store, create, clear policies and authenticate. One step is added: the admin check between clearing policies and authenticating.
+
+## 6. External surfaces
+
+One new vault and Bitwarden item, only when someone runs the switch fixture with --execute. Nothing runs at merge.
+
+## 7. Multi-machine posture
+
+Machine-local by design: one proof Mac, run by hand.
+
+## 8. Rollback cost
+
+A git revert. An instarproofswitch already created is removed with `remove-proof-user.sh --fixture switch --execute`. Its vault key is then deleted by the operator-side agent.
