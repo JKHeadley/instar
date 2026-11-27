@@ -36,6 +36,21 @@ The actual complete pre-push gate on 5e9cec15fda5981aacfc75bb54b1707004112906 re
 ## Rollback
 Revert the refill source and route changes normally; no data migration or external compensation is needed. The waiting-file format is unchanged. Existing entries remain readable and can be offered by their owner or watcher as before. The documentation-only release-note correction can be reverted independently, although restoring its internal-only marker alongside runtime changes would again fail normal pre-push validation. No test cap, safety hold or merge rule needs to be relaxed for rollback.
 
+## Second-pass review (amended change, head 5c62955)
+
+**Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
+
+Concur for head `5c62955083f25b1314b3de02632bd3be218f2355`. I read the full diff of the three files that flag this change as harness-changing (`src/localVerify/LocalVerifyService.ts`, `src/localVerify/localVerifyRoutes.ts`, `src/localVerify/serviceSeams.ts`), the admission path the automatic offer goes through, the waiting list, the watcher's own candidate filter, and the three changed test files. I did not rerun any tests; the full Local Verify run on this head is the test evidence. I checked that the published commit, leaving out its generated trace and decision record, is byte-identical to the staged change I reviewed before it was published.
+
+I dissented on the previous head (`64ad550c5`): the automatic offer skipped the filters the watcher applies before it offers a change, so a draft, a held, a conflicting or a retargeted change could be admitted, and an automatic refusal extended a waiter's life. I then dissented on the first correction because two higher-tier fixtures lacked the new fields and would have failed. Both are resolved here.
+
+- **An ineligible waiter is refused and left in place.** Before any queue or index change, an automatic offer now answers `waiting-ineligible` unless the view is not a draft, is mergeable, targets main and carries no hold title or label; the hold and base rules are the watcher's own functions. A missing or unknown answer refuses. The waiter keeps its timestamps and gets the two-minute backoff an unreadable change gets, so it does not block later waiters.
+- **An automatic refusal no longer keeps a waiter alive.** Both places that stamp a waiter as freshly offered are skipped for an automatic offer.
+- **Bounds hold.** One driver at a time, one pass per 30 seconds, five candidates per pass, only below the queue cap and never through the operator overflow. Operator holds, an unhealthy main, lease loss and a stop are rechecked after the GitHub reads. A closed change leaves the list; a moved head is admitted only at its current head; a queued or running change gets no second entry. No extra GitHub read was added: two fields joined the existing one.
+- **No test is weakened.** Tests are only added; the three fixture edits add the two new fields. Both sides are covered: admitted cases at all three tiers, six ineligible shapes, and a capacity race that leaves the waiter record unchanged.
+
+Non-blocking notes: the watcher's review precheck and its wait for a stable head are still not applied to automatic offers; GitHub often reports mergeability as unknown just after a push, which costs one two-minute backoff; a view with the two fields absent and the waiters-ahead refusal of an automatic offer have no dedicated case; five live waiters that keep answering without being admitted or removed can keep a sixth from being offered automatically until they go stale. The section below is an earlier reviewer's account of the change before the correction.
+
 ## Second-pass review
 **Reviewer:** /root/distributed_train.
 
