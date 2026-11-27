@@ -339,7 +339,7 @@ export function writeConnectRestartRequest(stateDir: string, now = Date.now(), p
       pid,
     };
     const flagPath = flagPathFor(stateDir);
-    publishRestartRequestFile(flagPath, JSON.stringify(body, null, 2));
+    if (!publishRestartRequestFile(flagPath, JSON.stringify(body, null, 2))) return true;
     // The restart is queued from here on, so report it as queued even if the cooldown
     // record cannot be written (the only cost is a missing cooldown, logged).
     try {

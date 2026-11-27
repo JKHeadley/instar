@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AutoUpdater } from '../../src/core/AutoUpdater.js';
+import { publishRestartRequestFile } from '../../src/core/restartRequestFile.js';
+import { onRestartRequested, type RestartAnnounceOutcome } from '../../src/core/restartRequestSignal.js';
 import { UpdateGate, type RestartHold } from '../../src/core/UpdateGate.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import type { UpdateChecker } from '../../src/core/UpdateChecker.js';
@@ -276,6 +278,45 @@ describe('AutoUpdater restart holds', () => {
     expect(fs.existsSync(restartFile())).toBe(true);
     expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8')).bypassHolds).toBe(true);
     expect(u.getStatus().restartDeferral).toBeNull();
+    u.stop();
+  });
+
+  it('keeps a forced breaking update ahead of a later restart published during its lease announcement', async () => {
+    const u = updater(() => []);
+    const internal = u as unknown as { requestRestart(version: string, bypassHolds: boolean): Promise<boolean> };
+    let confirm!: (outcome: RestartAnnounceOutcome) => void;
+    const announcement = new Promise<RestartAnnounceOutcome>((resolve) => { confirm = resolve; });
+    const detach = onRestartRequested(() => announcement);
+    try {
+      const pending = internal.requestRestart('1.0.0', true);
+      const ordinary = JSON.stringify({ requestedAt: new Date(Date.now() + 1).toISOString(), requestedBy: 'local-operator' });
+      expect(publishRestartRequestFile(restartFile(), ordinary)).toBe(true);
+      confirm('confirmed');
+      expect(await pending).toBe(true);
+      expect(JSON.parse(fs.readFileSync(restartFile(), 'utf8'))).toMatchObject({
+        requestedBy: 'auto-updater', targetVersion: '1.0.0', bypassHolds: true,
+      });
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'state', 'lifeline-restart-requested.json'), 'utf8')))
+        .toMatchObject({ targetVersion: '1.0.0', previousVersion: '0.9.8' });
+    } finally {
+      confirm('unconfirmed');
+      detach();
+      u.stop();
+    }
+  });
+
+  it('keeps activation pending when a forced restart to the same version is already queued', async () => {
+    const u = updater(() => []);
+    const existing = JSON.stringify({
+      requestedAt: new Date(Date.now() - 1).toISOString(), requestedBy: 'auto-updater', targetVersion: '0.9.9', bypassHolds: true,
+    });
+    publishRestartRequestFile(restartFile(), existing);
+
+    await gated(u, true);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(u.getStatus().updateActivationPendingSince).not.toBeNull();
+    expect(fs.readFileSync(restartFile(), 'utf8')).toBe(existing);
     u.stop();
   });
 

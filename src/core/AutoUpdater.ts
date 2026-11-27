@@ -1405,9 +1405,13 @@ export class AutoUpdater {
     try {
       const dir = path.dirname(flagPath);
       fs.mkdirSync(dir, { recursive: true });
-      await publishRestartRequestFileAsync(flagPath, JSON.stringify(data, null, 2));
+      const result = await publishRestartRequestFileAsync(flagPath, JSON.stringify(data, null, 2));
+      if (!result.published && result.targetVersion !== newVersion) {
+        console.log('[AutoUpdater] A different update restart is already pending.');
+        return result.targetVersion !== null;
+      }
       written = true;
-      console.log(`[AutoUpdater] Restart requested — supervisor or ForegroundRestartWatcher will handle (target: v${newVersion})`);
+      console.log(`[AutoUpdater] Restart queued — supervisor or ForegroundRestartWatcher will handle (target: v${newVersion})`);
     } catch (err) {
       console.error(`[AutoUpdater] Failed to write restart request: ${err}`);
       console.error('[AutoUpdater] Update was applied but a manual restart is needed.');

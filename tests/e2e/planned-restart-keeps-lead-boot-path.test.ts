@@ -288,7 +288,7 @@ describe('planned restart keeps the lead — production wiring', () => {
       ['src/core/roleFollowRestart.ts', 'export async function requestRoleRestart('],
       ['src/core/AutoUpdater.ts', 'private async requestRestart('],
       ['src/server/AgentServer.ts', 'private async requestSupervisedRestart('],
-      ['src/core/sessionPoolPairActivation.ts', 'export function requestPairActivationRestart('],
+      ['src/core/sessionPoolPairActivation.ts', 'export async function requestPairActivationRestart('],
       ['src/core/SubscriptionReloginOperatorConfig.ts', 'export function writeSubscriptionReloginRestartRequest('],
       ['src/threadline/connectEnable.ts', 'export function writeConnectRestartRequest('],
       ['src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.ts', 'export function requestSelfHealRestart('],
@@ -298,7 +298,8 @@ describe('planned restart keeps the lead — production wiring', () => {
       expect(at, file).toBeGreaterThan(-1);
       const body = src.slice(at, at + 2500);
       const announce = body.indexOf('announceRestartRequested(');
-      const publish = Math.min(...['renameSync', 'fs.linkSync', 'atomicWriteJsonSync'].map((w) => body.indexOf(w)).filter((i) => i > -1)); // the moment the file becomes visible
+      const publish = body.search(/(?:publishRestartRequestFile(?:Async)?|replaceRestartRequestFile|publishRestartRequestUnderLock)\(/);
+      expect(publish, `${file}: publish`).toBeGreaterThan(-1);
       expect(announce, `${file}: announce`).toBeGreaterThan(-1);
       expect(announce, `${file}: announce before publish`).toBeLessThan(publish);
     }

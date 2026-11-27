@@ -1,4 +1,4 @@
-import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
+import { publishRestartRequestUnderLock, readRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
@@ -10104,13 +10104,10 @@ export class AgentServer {
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
-        const previous = readRestartRequestFile(flagPath);
-        const update = pendingUpdateRestartTarget(flagPath, previous);
-        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
-        return update;
-      });
-      if (existingUpdate) return true;
+      const { published } = await withRestartRequestFileAsync(flagPath, () => (
+        publishRestartRequestUnderLock(flagPath, JSON.stringify(data, null, 2), readRestartRequestFile(flagPath))
+      ));
+      if (!published) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {

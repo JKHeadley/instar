@@ -17,6 +17,7 @@ it('retains a planned request until its exact current lease window is admitted',
   const flag = join(stateDir, 'state', 'restart-requested.json');
   const earlier = new Date(Date.now() - 1000).toISOString();
   const later = new Date().toISOString();
+  const latest = new Date(Date.parse(later) + 1).toISOString();
   let confirmed = '';
   const checkAdmission = vi.fn(({ requestedAt }) => requestedAt === confirmed ? 'ready' as const : 'wait' as const);
   const supervisor = new ServerSupervisor({
@@ -41,6 +42,21 @@ it('retains a planned request until its exact current lease window is admitted',
     expect(foregroundShutdown).not.toHaveBeenCalled();
     expect(existsSync(flag)).toBe(true);
     expect(restart).not.toHaveBeenCalled();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    checkAdmission.mockImplementation(() => { throw new Error('fixture admission failure'); });
+    try {
+      await check();
+      await check();
+      await checkWatcher();
+      await checkWatcher();
+      expect(warn.mock.calls.filter(([message]) => String(message).includes('Could not check planned restart admission'))).toHaveLength(2);
+      expect(existsSync(flag)).toBe(true);
+      expect(restart).not.toHaveBeenCalled();
+      expect(foregroundShutdown).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      checkAdmission.mockImplementation(({ requestedAt }) => requestedAt === confirmed ? 'ready' : 'wait');
+    }
     confirmed = earlier;
     write(later);
     await check();
@@ -50,12 +66,12 @@ it('retains a planned request until its exact current lease window is admitted',
     let settle!: (value: 'ready') => void;
     checkAdmission.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }) as never);
     const inFlight = check();
-    write(earlier);
+    expect(write(latest)).toBe(true);
     settle('ready');
     await inFlight;
     expect(restart).not.toHaveBeenCalled();
     expect(existsSync(flag)).toBe(true);
-    write(later);
+    confirmed = latest;
     await check();
     expect(restart).toHaveBeenCalledOnce();
     expect(existsSync(flag)).toBe(false);
@@ -87,6 +103,7 @@ it('retains a planned request until its exact current lease window is admitted',
     expect(existsSync(flag)).toBe(false);
     expect(readdirSync(join(stateDir, 'state')).some(name => name.startsWith('restart-requested.json.admission-'))).toBe(false);
     expect(foregroundShutdown).not.toHaveBeenCalled();
+    confirmed = later;
     write(later);
     await checkWatcher();
     expect(foregroundShutdown).toHaveBeenCalledOnce();

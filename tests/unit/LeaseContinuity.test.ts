@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FencedLease, type LeaseCrypto } from '../../src/core/FencedLease.js';
 import {
-  resolveWindowMs, resolveMarginMs, pendingCadenceMs, clampSampleMs, evaluateEpisodeEnd, bootDurationMs, silenceIsEvidence,
+  admissionWithoutLeaseCoordinator, resolveWindowMs, resolveMarginMs, pendingCadenceMs, clampSampleMs, evaluateEpisodeEnd, bootDurationMs, silenceIsEvidence,
   consumedAliveBoundMs, canonicalContinuityMeta, LeaseContinuityStore, EPISODE_CAP_MS, EPISODE_ABSENCE_MS,
   type ContinuityMeta,
 } from '../../src/core/LeaseContinuity.js';
@@ -30,6 +30,20 @@ function crypt(self: string): LeaseCrypto {
     verify: (c, sig, holder) => { const pub = KEYS[holder]?.publicKey; if (!pub) return false; try { return crypto.verify(null, Buffer.from(c), pub, Buffer.from(sig, 'base64')); } catch { return false; } },
   };
 }
+describe('planned restart admission without a lease coordinator', () => {
+  it('leaves ordinary single-machine startup outside lease admission', () => {
+    expect(admissionWithoutLeaseCoordinator(undefined, undefined, false, () => false)).toBe('not-applicable');
+  });
+
+  it('requires positive solo evidence for the configured preferred holder', () => {
+    expect(admissionWithoutLeaseCoordinator('studio', 'studio', true, () => true)).toBe('not-applicable');
+    expect(admissionWithoutLeaseCoordinator('studio', 'studio', true, () => false)).toBe('wait');
+    expect(admissionWithoutLeaseCoordinator('studio', undefined, true, () => true)).toBe('wait');
+    expect(admissionWithoutLeaseCoordinator('studio', 'mini', true, () => true)).toBe('wait');
+    expect(admissionWithoutLeaseCoordinator(undefined, 'studio', true, () => true)).toBe('wait');
+  });
+});
+
 const TTL = 60_000;
 const fl = (id: string) => new FencedLease(crypt(id), { leaseTtlMs: TTL, failoverThresholdMs: 15 * 60_000 });
 const dirs: string[] = [];

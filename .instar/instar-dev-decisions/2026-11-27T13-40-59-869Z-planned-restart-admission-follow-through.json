@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-27T13:40:59.869Z",
+  "slug": "planned-restart-admission-follow-through",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 363,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/commands/server.ts",
+      "src/core/AutoUpdater.ts",
+      "src/core/ForegroundRestartWatcher.ts",
+      "src/core/LeaseContinuity.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/PlannedRestartVerifyGuard.ts",
+      "src/core/plannedRestartDelivery.ts",
+      "src/core/restartRequestFile.ts",
+      "src/core/roleFollowRestart.ts",
+      "src/core/sessionPoolPairActivation.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts",
+      "src/threadline/connectEnable.ts"
+    ],
+    "addedLines": 258,
+    "deletedLines": 105
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
