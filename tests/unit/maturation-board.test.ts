@@ -91,6 +91,15 @@ describe('review JSON contract (§2)', () => {
     expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { what: 'x', now: '1', trend: 'sideways' } })]), NOW).ok && true).toBe(true);
   });
 
+  it('reads an all-empty measure as no measure, so one unmeasured feature cannot reject the review', () => {
+    const empty = { what: null, now: null, target: null, before: null, trend: 'unknown' };
+    const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'blind', { measure: empty }), row('b', 'live', { measure: { what: '', now: '  ' } })]), NOW);
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.review.rows.map((x) => x.measure)).toEqual([null, null]);
+    // A partial measure is still invalid: some field is set, but what or now is missing.
+    expect(parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live', { measure: { what: null, now: null, target: 'under 5%' } })]), NOW).ok).toBe(false);
+  });
+
   it('drops a duplicate id and counts it', () => {
     const r = parseReviewJson('2026-10-30.json', reviewDoc('2026-10-30', [row('a', 'live'), row('a', 'stalled')]), NOW);
     expect(r.ok && r.review.rows.length).toBe(1);

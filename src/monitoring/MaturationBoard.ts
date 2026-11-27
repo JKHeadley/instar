@@ -85,6 +85,12 @@ function parseMeasure(v: unknown): PlainMeasure | null | 'invalid' {
   if (v === undefined || v === null) return null;
   if (typeof v !== 'object' || Array.isArray(v)) return 'invalid';
   const m = v as Record<string, unknown>;
+  // A measure whose every field is empty says "no measure", the same as null. A review writes
+  // this for a feature it could not measure; rejecting it dropped the whole review file from the
+  // board (2026-11-27: 29 such rows hid the day's 260-feature review). A partial measure, with
+  // some fields set but no what or no now, is still invalid.
+  const empty = (x: unknown) => x === undefined || x === null || (typeof x === 'string' && x.trim() === '');
+  if (['what', 'now', 'target', 'before'].every((k) => empty(m[k]))) return null;
   const what = clip(m.what, 60);
   const now = clip(m.now, 40);
   if (!what || !now) return 'invalid';
