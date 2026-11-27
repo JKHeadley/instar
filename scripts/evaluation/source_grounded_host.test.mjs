@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -238,7 +238,19 @@ test('diagnose reports counts and plain codes only, never model text', () => {
   assert.deepEqual(d.judges, { 'none anthropic valid none': 1, 'none openai invalid other': 1, 'none openai timeout none': 1,
     'full anthropic skipped none': 1, 'full slot-1 not-judged none': 1 });
   assert.ok(!JSON.stringify(d).includes('café'));
-  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {});
+  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {}); assert.deepEqual(d.quoteMisses, {});
+});
+
+test('a missed quote is classified for diagnosis only', () => {
+  const text = 'He said \u201cship it\u201d \u2014 on   Friday.\nThen we rotate keys.';
+  assert.equal(classifyQuote(undefined, 'x'), 'unknown-record');
+  assert.equal(classifyQuote(text, ''), 'empty-quote');
+  assert.equal(classifyQuote(text, 'rotate keys'), 'exact');
+  assert.equal(classifyQuote(text, 'said "ship it" - on Friday.'), 'typography-only');
+  assert.equal(classifyQuote(text, 'THEN WE ROTATE'), 'case-only');
+  assert.equal(classifyQuote(text, 'ship it ... rotate keys'), 'elision');
+  assert.equal(classifyQuote(text, 'ship on Monday'), 'not-found');
+  assert.equal(spanOf(text, 'said "ship it"'), null); // resolution itself stays exact
 });
 
 test('shape codes name the schema rule and location, never the text', () => {

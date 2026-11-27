@@ -540,9 +540,27 @@ export function shapeCodes(kind, raw) {
   }))];
 }
 
+// Why a quote failed to resolve, as one code: the record id is unknown, the
+// quote is empty, it matches once typography is normalised (Unicode form,
+// curly quotes, dashes, spacing), it matches ignoring case, it is an elision
+// whose pieces all match, or it is not in the record at all. Diagnosis only:
+// resolution itself stays exact.
+const typo = v => v.normalize('NFKC').replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'").replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+  .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\u2026/g, '...').replace(/\s+/g, ' ').trim();
+export function classifyQuote(text, quote) {
+  if (typeof text !== 'string') return 'unknown-record';
+  if (typeof quote !== 'string' || quote.length === 0) return 'empty-quote';
+  if (text.includes(quote)) return 'exact';
+  if (typo(text).includes(typo(quote))) return 'typography-only';
+  if (typo(text).toLowerCase().includes(typo(quote).toLowerCase())) return 'case-only';
+  const pieces = typo(quote).split(/\s*(?:\.\.\.|\[\.\.\.\])\s*/).filter(Boolean);
+  if (pieces.length > 1 && pieces.every(x => typo(text).includes(x))) return 'elision';
+  return 'not-found';
+}
+
 export function diagnoseRun(run, pack = null) {
   const index = run.read('index.json');
-  const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {};
+  const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {}; const quoteMisses = {};
   const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
   for (const trialId of index.order) {
     const arm = /-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown';
@@ -551,6 +569,16 @@ export function diagnoseRun(run, pack = null) {
       bump(answers, `${arm} ${plainCode(a.parseOutcome?.status)} ${plainCode(a.parseOutcome?.reason)}`);
       if (a.parseOutcome?.status === 'schema-invalid' && typeof a.answerRaw === 'string') {
         for (const c of shapeCodes('answer', a.answerRaw)) bump(answerShapes, `${arm} ${c}`);
+        if (pack && typeof a.modelText === 'string') {
+          try {
+            const ctx = trialContext(run, pack, trialId);
+            const text = new Map(ctx.records.map(r => [r.id, r.text]));
+            const v = JSON.parse(stripFence(a.modelText));
+            for (const claim of Array.isArray(v?.claims) ? v.claims : []) for (const q of Array.isArray(claim?.quotes) ? claim.quotes : []) {
+              const k = classifyQuote(text.get(q?.sourceId), q?.quote); if (k !== 'exact') bump(quoteMisses, `${arm} answer ${k}`);
+            }
+          } catch { bump(quoteMisses, `${arm} answer unreadable`); }
+        }
       }
     } else bump(answers, `${arm} not-run none`);
     for (const i of [0, 1]) {
@@ -568,11 +596,24 @@ export function diagnoseRun(run, pack = null) {
             resolved = resolveJudge(stripFence(at.modelText), ctx.records, answer.answerRaw);
           } catch (e) { bump(judgeShapes, `${arm} ${plainCode(at.family)} resolve ${plainCode(e?.message)}`); }
           if (resolved !== null) for (const c of shapeCodes('judge', resolved)) bump(judgeShapes, `${arm} ${plainCode(at.family)} ${c}`);
+          try {
+            const ctx = trialContext(run, pack, trialId);
+            const answer = JSON.parse(run.read(`answers/${trialId}.json`).answerRaw);
+            const text = new Map(ctx.records.map(r => [r.id, r.text]));
+            const look = (col, id) => (col === 'source' ? text.get(id) : answerRecordText(answer, id));
+            const v = JSON.parse(stripFence(at.modelText));
+            for (const f of Array.isArray(v?.criteria) ? v.criteria : []) for (const e of Array.isArray(f?.evidence) ? f.evidence : []) {
+              const k = classifyQuote(look(e?.collection, e?.recordId), e?.quote); if (k !== 'exact') bump(quoteMisses, `${arm} ${plainCode(at.family)} evidence ${k}`);
+            }
+            for (const u of Array.isArray(v?.unlistedMaterialClaims) ? v.unlistedMaterialClaims : []) {
+              const k = classifyQuote(answerRecordText(answer, u?.recordId), u?.quote); if (k !== 'exact') bump(quoteMisses, `${arm} ${plainCode(at.family)} unlisted ${k}`);
+            }
+          } catch { bump(quoteMisses, `${arm} ${plainCode(at.family)} unreadable`); }
         }
       }
     }
   }
-  return { version: 1, answers, judges, answerShapes, judgeShapes };
+  return { version: 1, answers, judges, answerShapes, judgeShapes, quoteMisses };
 }
 
 // ---------------------------------------------------------------- totals
