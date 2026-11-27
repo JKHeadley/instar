@@ -14382,12 +14382,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the spawn path and the compaction-resume path. Off (or no store) ⇒ any
       // packet a previous run staged is removed, so recovery is exactly today's.
       {
-        const { clearStagedStandingPackets } = await import('../monitoring/contextLayers/standingPacket.js');
+        const { clearStagedStandingPackets, retireLegacyFullPackets } = await import('../monitoring/contextLayers/standingPacket.js');
         if (_contextLayers && topicMemory) {
           try {
             const { wireStandingPacket } = await import('../monitoring/contextLayers/standingPacketBoot.js');
             wireStandingPacket({
               layers: _contextLayers, stateDir: config.stateDir, topicMemory,
+              isOperator: ({ senderKey, userId, directTelegram }) => _memoryPrivacyWired.isCorpusOperator(senderKey, userId, directTelegram),
+              operatorBindingFingerprint: () => _memoryPrivacyWired.corpusOperatorBindingFingerprint(),
               intent: (t) => topicIntentStore.read(t),
               sessions: () => sessionManager.listRunningSessions(),
             });
@@ -14401,7 +14403,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             });
           }
         } else {
-          try { clearStagedStandingPackets(config.stateDir); } catch { /* @silent-fallback-ok — a leftover pointer is still bounded by the hook's 7-day age and hash checks */ }
+          try { retireLegacyFullPackets(config.stateDir); clearStagedStandingPackets(config.stateDir); } catch { /* @silent-fallback-ok — a leftover pointer is still bounded by the hook's 7-day age and hash checks */ }
         }
       }
       // ── ContextBudgetSentinel (§7.8; Phase 0 core): quarantine reconciliation,
@@ -20142,8 +20144,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
                   // §6 row U, §8: the protected user corpus from TopicMemory sender rows, bound to the operator through memory privacy.
                   topicMemory: topicMemory ?? null,
-                  isOperator: ({ senderKey, userId }) => _memoryPrivacyWired.isOperator(senderKey) || _memoryPrivacyWired.isOwnerSender(senderKey, userId),
-                  bindingFingerprint: () => _memoryPrivacyWired.operatorBindingFingerprint(),
+                  isOperator: ({ senderKey, userId, directTelegram }) => _memoryPrivacyWired.isCorpusOperator(senderKey, userId, directTelegram),
+                  bindingFingerprint: () => _memoryPrivacyWired.corpusOperatorBindingFingerprint(),
                   // §6.1 S7: the Anchor/ledger backfill (history entries backfilled-unconfirmed, one
                   // confirmation folded into a reply). Its own switch, default off, read live.
                   backfillEnabled: () => liveConfig.get<boolean>('contextBudget.backfill.enabled', false) === true,

@@ -56,7 +56,7 @@ import path from 'node:path';
 import type { TopicIntentFile } from '../../core/TopicIntent.js';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { contextLayersRoot } from '../clearSeedPointer.js';
-import { keepInstructionsDir, readKeepInstructionsPointer, removeKeepInstructions, writeKeepInstructions, KEEP_INSTRUCTIONS_MAX_CHARS } from '../keepInstructions.js';
+import { keepInstructionsDir, readKeepInstructionsPointer, removeKeepInstructions, writeKeepInstructions, KEEP_INSTRUCTIONS_MAX_CHARS, type OwnerQuoteRef } from '../keepInstructions.js';
 import { rowRefMatches, type LayerStore, type RowRef, type StoredRecord } from './LayerStore.js';
 import { ANCHOR_KEY, RECENT_OPERATOR_TURNS, anchorLedgerView, entryView } from './anchorLedger.js';
 import { stubFor } from './userCorpus.js';
@@ -119,6 +119,8 @@ export type ReadProjectAnchor = (conversationKey: string) => ProjectAnchorLookup
 /** The authoritative context inputs the packet reads. */
 export interface PacketRowSource {
   readProjectAnchor?: ReadProjectAnchor;
+  operatorBindingFingerprint?(): string;
+  isCurrentOperator?(topicId: number, messageId: number): boolean;
   getRow(topicId: number, messageId: number): { text: string; timestamp: string | null } | null;
   countMessagesAfter?(topicId: number, messageId: number): { total: number; fromUser: number } | null;
   topicName?(topicId: number): string | null;
@@ -164,6 +166,7 @@ export interface StandingPacket {
   missingRows: number[];
   protectedRows: number;
   fullPacketPath: string;
+  ownerBinding?: string;
   projectAnchorHash?: string;
   projectAnchorProposed?: true;
 }
@@ -257,6 +260,15 @@ function boundedProjectAnchorText(lines: string[]): string | null {
 
 /** Build the packet's parts from the layers. Reads only; never throws on a missing layer (it is disclosed). */
 export type BuiltParts = { parts: Part[]; notes: Record<SectionKey, string[]>; missingRows: number[]; protectedPriority: string[] };
+function hasCurrentAuthority(rows: PacketRowSource, topicId: number, messageId: number): boolean {
+  try {
+    return rows.isCurrentOperator?.(topicId, messageId) ?? true;
+  } catch {
+    // An unreadable configured authority source cannot validate the quote.
+    return false;
+  }
+}
+
 export function buildParts(store: LayerStore, rows: PacketRowSource, topicKey: string, o: AssembleOptions, includeProjectAnchor = false): BuiltParts {
   const topicId = Number(topicKey);
   const parts: Part[] = [];
@@ -276,6 +288,7 @@ export function buildParts(store: LayerStore, rows: PacketRowSource, topicKey: s
   }
   if (anchor?.status === 'anchored' && anchor.rows?.length) {
     for (const ref of anchor.rows) {
+      if (!hasCurrentAuthority(rows, topicId, ref.messageId)) continue;
       const row = getRow(ref.messageId);
       if (!row) { missingRows.push(ref.messageId); notes.anchor.push(`missing: framing message #${ref.messageId} is not in TopicMemory.`); continue; }
       const id = `anchor-${ref.messageId}`;
@@ -305,7 +318,7 @@ export function buildParts(store: LayerStore, rows: PacketRowSource, topicKey: s
       const rec = recs.get(e.key);
       const ref = rec?.rows?.[0];
       const label = `[G ${e.type} ${e.key} · ${e.status}${e.cause ? ` · ${e.cause}` : ''}${e.supersedes ? ` · supersedes ${e.supersedes}` : ''}`;
-      if (ref) {
+      if (ref && hasCurrentAuthority(rows, topicId, ref.messageId)) {
         if (quoted.has(ref.messageId)) {
           parts.push({ id: `ledger-${e.key}`, section: 'ledger', kind: 'derived', text: `${label} · bound to #${ref.messageId}, quoted above]`, spans: [], omitLabel: `ledger entry ${e.key}` });
           ledgerIds.push(`ledger-${e.key}`);
@@ -327,7 +340,8 @@ export function buildParts(store: LayerStore, rows: PacketRowSource, topicKey: s
   const ops = store.list(topicKey, 'u')
     .filter((u) => u.data.label === 'operator' && u.data.authority === 'operator' && u.rows?.[0])
     .sort((a, b) => (Number(a.data.rowId) || 0) - (Number(b.data.rowId) || 0))
-    .slice(-RECENT_OPERATOR_TURNS);
+    .slice(-RECENT_OPERATOR_TURNS)
+    .filter((u) => hasCurrentAuthority(rows, topicId, u.rows![0].messageId));
   const recentIds: string[] = [];
   if (ops.length === 0) notes.recent.push('absent: no operator message has been listed for this topic yet.');
   else {
@@ -411,7 +425,8 @@ export function buildParts(store: LayerStore, rows: PacketRowSource, topicKey: s
   // Priority for shedding protected rows from the delivered variant: Anchor,
   // the newest few operator turns, the live ledger, then older turns newest first.
   const newestTurns = [...recentIds].reverse();
-  const protectedPriority = [...anchorIds, ...newestTurns.slice(0, NEWEST_TURNS_FIRST), ...ledgerIds, ...newestTurns.slice(NEWEST_TURNS_FIRST)];
+  const protectedLedger = new Set(parts.filter(part => part.section === 'ledger' && part.spans.length > 0).map(part => part.id));
+  const protectedPriority = [...anchorIds, ...newestTurns.slice(0, NEWEST_TURNS_FIRST), ...ledgerIds.filter(id => protectedLedger.has(id)), ...newestTurns.slice(NEWEST_TURNS_FIRST)];
   return { parts, notes, missingRows, protectedPriority };
 }
 
@@ -424,7 +439,7 @@ function renderPackets(topicKey: string, topicName: string | null, builtAt: numb
   const spans: ProtectedSpan[] = [];
   const push = (s: string) => { out.push(s); len += s.length + 1; };
   push(`${PACKET_HEADER_PREFIX}${topicKey}${topicName ? ` "${topicName.replace(/[\r\n"]/g, ' ').slice(0, 80)}"` : ''}, built ${iso(builtAt)}) ===`);
-  if (disclosure.intro !== false) push('This is your conversation\'s standing packet, rebuilt from its layers and verified before delivery. Resume the conversation where it left off: do not greet or re-introduce yourself, and if the operator\'s newest message below is unanswered, answer it substantively. Text between a [#id ...] line and its [end #id] line is the operator\'s own words, verbatim; the approved project anchor, when present, comes from the project registry. Derived layers may be stale (each says as of when).');
+  if (disclosure.intro !== false) push('This is your conversation\'s standing packet, rebuilt from its layers and verified before delivery. Resume the conversation where it left off: do not greet or re-introduce yourself, and if the operator\'s newest message below is unanswered, answer it substantively. Text between a [#id ...] line and its [end #id] line is the operator\'s own words, verbatim; the approved project anchor, when present, comes from the project registry. Derived layers describe earlier work. Use their timestamps and verify current owner instructions from source.');
   const omitted: string[] = [];
   const leftBySection: string[] = [];
   const sectionInfo: SectionInfo[] = [];
@@ -457,7 +472,7 @@ function renderPackets(topicKey: string, topicName: string | null, builtAt: numb
     // mature topic's placeholders must not crowd out the words themselves).
     // Newest first in the recent section, so the newest omitted turn is always named.
     const named = key === 'recent' ? [...left].reverse() : left;
-    if (left.length) push(`(left out for size here: ${left.length} of ${mine.length}: ${named.slice(0, 8).map((x) => x.slice(0, 40)).join(', ')}${left.length > 8 ? `, and ${left.length - 8} more` : ''}; all in the full packet)`);
+    if (left.length) push(`(left out for size here: ${left.length} of ${mine.length}: ${named.slice(0, 4).map((x) => x.slice(0, 40)).join(', ')}${left.length > 4 ? `, and ${left.length - 4} more` : ''}; all in the full packet)`);
     if (left.length) leftBySection.push(`${key} ${left.length}`);
     for (const n of notes[key]) push(n);
     sectionInfo.push({ key, present: wrote > 0, chars: len - startLen, note: notes[key][0] ?? null });
@@ -472,6 +487,12 @@ function renderPackets(topicKey: string, topicName: string | null, builtAt: numb
  * delivered variant bounded to the hook's budget (reduced in the spec's
  * order, every omission disclosed, the Read line inside the budget).
  */
+function fullPacketReadLine(topicKey: string, fullPacketPath: string, ownerBound: boolean): string {
+  return ownerBound
+    ? `Read the current full packet through GET /topic/${topicKey}/standing-packet/full using this session's conversation bind token.`
+    : `READ THE FULL PACKET NOW with the Read tool before continuing: ${fullPacketPath}`;
+}
+
 export function assembleStandingPacket(store: LayerStore, rows: PacketRowSource, topicKey: string, o: AssembleOptions): StandingPacket {
   const builtAt = o.now ?? Date.now();
   const budget = o.deliveredMaxChars ?? STANDING_PACKET_DELIVERED_MAX_CHARS;
@@ -481,19 +502,19 @@ export function assembleStandingPacket(store: LayerStore, rows: PacketRowSource,
   try { topicName = rows.topicName && /^\d+$/.test(topicKey) ? rows.topicName(Number(topicKey)) : null; } catch { topicName = null; /* @silent-fallback-ok — the header omits the name */ }
   const all = new Set(parts.map((p) => p.id));
   const full = renderPackets(topicKey, topicName, builtAt, parts, notes, all, SECTION_ORDER, { readLine: null, extra: [] });
-  const readLine = `READ THE FULL PACKET NOW with the Read tool before continuing: ${o.fullPacketPath}`;
+  const readLine = fullPacketReadLine(topicKey, o.fullPacketPath, !!rows.operatorBindingFingerprint);
   const render = (inc: Set<string>) => renderPackets(topicKey, topicName, builtAt, parts, notes, inc, SECTION_ORDER, { readLine, extra: [] });
   let delivered = full;
   let inc = all;
   if (full.text.length > budget) {
-    // §9.5/§12: the protected class is reduced LAST. Fill the budget with the
-    // protected rows first (whole rows only, in priority order: the Anchor, the
-    // newest turns, the live ledger, older turns), then the derived layers in
-    // the reverse of the spec's shedding order — H1, H2, the chunk list, H3 —
-    // so H3 is the first thing left out, then the chunk list, then H2 and H1,
-    // and an operator row only when even the derived layers are gone.
+    // Keep framing, current work, and the operator's recent words ahead of
+    // unbound ledger references. All quotes still fit whole or stay out.
+    const anchors = parts.filter(part => part.section === 'anchor').map(part => part.id);
+    const anchorSet = new Set(anchors);
+    const protectedIds = new Set(protectedPriority);
+    const remaining = parts.filter(part => !protectedIds.has(part.id) && part.section === 'ledger').map(part => part.id);
     const base = new Set<string>();
-    for (const id of [...protectedPriority, 'h1', 'h2', 'chunks', 'h3']) {
+    for (const id of [...anchors, 'h1', ...protectedPriority.filter(id => !anchorSet.has(id)), 'h2', 'chunks', 'h3', ...remaining]) {
       if (!all.has(id)) continue;
       const trial = new Set(base); trial.add(id);
       if (render(trial).text.length <= budget) base.add(id);
@@ -503,6 +524,7 @@ export function assembleStandingPacket(store: LayerStore, rows: PacketRowSource,
   }
   return {
     topicKey, builtAt,
+    ...(rows.operatorBindingFingerprint ? { ownerBinding: rows.operatorBindingFingerprint() } : {}),
     ...(approvedAnchor ? {
       projectAnchorHash: anchorDigest(approvedAnchor.text),
       ...(approvedAnchor.text.startsWith(PROPOSED_PROJECT_ANCHOR_HEADING) ? { projectAnchorProposed: true as const } : {}),
@@ -530,7 +552,7 @@ export function renderKeepInstructions(store: LayerStore, rows: PacketRowSource,
   // PreCompact reads its file without consulting the registry. Keep the live
   // project purpose in the verified recovery packet instead.
   const keepParts = parts.filter((part) => part.id !== PROJECT_ANCHOR_ID);
-  const pre = 'When you write this compaction summary, carry the following forward. The quoted operator words (between a [#id ...] line and its [end #id] line) are the topic\'s framing and decisions: keep them verbatim and whole, never paraphrased. Keep the in-flight work (H1) and any unanswered operator message.';
+  const pre = 'When you write this compaction summary, carry the following forward. The quoted operator words (between a [#id ...] line and its [end #id] line) are the topic\'s framing and decisions: keep them verbatim and whole, never paraphrased. Keep the in-flight work (H1) as historical context and preserve any unanswered operator message.';
   const builtAt = o.now ?? Date.now();
   const render = (inc: Set<string>) => {
     const r = renderPackets(topicKey, null, builtAt, keepParts, notes, inc, keepSections, { readLine: 'The standing packet re-seeds the full set after the compaction.', extra: [], intro: false });
@@ -541,8 +563,9 @@ export function renderKeepInstructions(store: LayerStore, rows: PacketRowSource,
   let inc = new Set(ids);
   let r = render(inc);
   if (r.text.length > max) {
-    const base = new Set(ids.filter((id) => !protectedPriority.includes(id)));
-    for (const id of protectedPriority.filter((x) => ids.includes(x))) { const t = new Set(base); t.add(id); if (render(t).text.length <= max) base.add(id); }
+    const base = new Set<string>();
+    const wanted = [...protectedPriority.filter(id => id.startsWith('anchor-')), 'h1', ...protectedPriority, ...ids];
+    for (const id of [...new Set(wanted)].filter((x) => ids.includes(x))) { const t = new Set(base); t.add(id); if (render(t).text.length <= max) base.add(id); }
     inc = base;
     r = render(inc);
   }
@@ -554,7 +577,7 @@ export function renderKeepInstructions(store: LayerStore, rows: PacketRowSource,
 export type VerifyProblem =
   | 'delivered-oversize' | 'full-oversize' | 'protected-row-missing' | 'protected-hash-mismatch'
   | 'protected-row-changed' | 'section-missing' | 'freshness-stamp-missing' | 'read-line-missing' | 'bad-topic'
-  | 'forged-quote-frame' | 'unsafe-character' | 'project-anchor-mismatch';
+  | 'forged-quote-frame' | 'unsafe-character' | 'project-anchor-mismatch' | 'protected-authority-changed';
 
 export interface VerifyResult { ok: boolean; problems: Array<{ problem: VerifyProblem; detail: string }> }
 
@@ -578,6 +601,10 @@ function headerAt(text: string, header: string, spans: readonly TextSpan[]): num
 function checkVariant(name: 'delivered' | 'full', text: string, spans: readonly ProtectedSpan[], projectAnchorSpan: TextSpan | null, required: readonly SectionKey[], rows: PacketRowSource, topicId: number, problems: VerifyResult['problems']): void {
   const verifiedSpans = projectAnchorSpan ? [...spans, projectAnchorSpan] : spans;
   for (const s of spans) {
+    if (!hasCurrentAuthority(rows, topicId, s.messageId)) {
+      problems.push({ problem: 'protected-authority-changed', detail: `${name}: #${s.messageId} no longer has operator authority` });
+      continue;
+    }
     const slice = text.slice(s.start, s.start + s.length);
     if (!rowRefMatches(s.ref, slice)) { problems.push({ problem: 'protected-hash-mismatch', detail: `${name}: #${s.messageId} (${s.kind}) does not match its stored reference` }); continue; }
     let row: { text: string } | null = null;
@@ -673,14 +700,14 @@ export function verifyStandingPacket(p: StandingPacket, rows: PacketRowSource, o
     }
     checkVariant(variant, text, spans, projectAnchorSpan, variant === 'delivered' ? REQUIRED_SECTIONS : REQUIRED_FULL_SECTIONS, rows, topicId, problems);
   }
-  if (p.reduced && !p.delivered.includes(`READ THE FULL PACKET NOW with the Read tool before continuing: ${p.fullPacketPath}`)) problems.push({ problem: 'read-line-missing', detail: 'reduced packet without its Read line' });
+  if (p.reduced && !p.delivered.includes(fullPacketReadLine(p.topicKey, p.fullPacketPath, !!p.ownerBinding))) problems.push({ problem: 'read-line-missing', detail: 'reduced packet without its Read line' });
   return { ok: problems.length === 0, problems };
 }
 
 // ── Staging ─────────────────────────────────────────────────────────────────
 
 export interface StandingPacketPointer {
-  schema: 'standing-packet/1';
+  schema: 'standing-packet/1' | 'standing-packet/2';
   topicKey: string;
   /** sha256 of the staged (delivered) text, hex. */
   sha256: string;
@@ -693,6 +720,8 @@ export interface StandingPacketPointer {
   fullPath: string | null;
   protectedRows: number;
   omitted: number;
+  ownerBinding?: string;
+  ownerQuotes?: OwnerQuoteRef[];
   projectAnchorHash?: string;
 }
 
@@ -719,6 +748,20 @@ function pruneRecovery(dir: string, now: number): void {
   for (const f of names) {
     const p = path.join(dir, f);
     try { if (now - fs.statSync(p).mtimeMs > STANDING_PACKET_MAX_AGE_MS) SafeFsExecutor.safeRmSync(p, { force: true, operation: 'src/monitoring/contextLayers/standingPacket.ts:pruneRecovery' }); } catch { /* @silent-fallback-ok — best-effort pruning, as RF's */ }
+  }
+}
+
+/** Retire raw continuation files when production moves to conversation-bound reads. */
+export function retireLegacyFullPackets(stateDir: string): void {
+  const dir = recoveryDir(stateDir);
+  if (!fs.existsSync(dir)) return;
+  if (fs.lstatSync(dir).isSymbolicLink() || fs.lstatSync(contextLayersRoot(stateDir)).isSymbolicLink()) {
+    throw new Error('standing packet continuation directory is a symlink');
+  }
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if ((entry.isFile() || entry.isSymbolicLink()) && /^packet-\d{1,15}\.txt$/.test(entry.name)) {
+      SafeFsExecutor.safeRmSync(path.join(dir, entry.name), { force: true, operation: 'standing-packet:retire-legacy-full-path' });
+    }
   }
 }
 
@@ -757,7 +800,7 @@ export function readStandingPacketPointer(stateDir: string, topicKey: string): S
   if (!SAFE_TOPIC.test(topicKey)) return null;
   try {
     const v = JSON.parse(fs.readFileSync(path.join(standingPacketDir(stateDir), `${topicKey}.json`), 'utf-8')) as StandingPacketPointer;
-    return v.schema === 'standing-packet/1' && v.topicKey === topicKey ? v : null;
+    return (v.schema === 'standing-packet/1' || v.schema === 'standing-packet/2') && v.topicKey === topicKey ? v : null;
   } catch {
     return null; // @silent-fallback-ok — absent or torn reads as not staged (the hook treats it the same way)
   }
@@ -768,19 +811,23 @@ export function stageStandingPacket(stateDir: string, p: StandingPacket, now: nu
   if (!SAFE_TOPIC.test(p.topicKey)) throw new Error('unsafe topic key');
   for (const d of [contextLayersRoot(stateDir), standingPacketDir(stateDir), recoveryDir(stateDir)]) ensureDir(d);
   const fullPath = fullPacketPathFor(stateDir, p.topicKey);
-  // Always written (never removed on restage): a session told to Read it must
-  // never find it gone because a later packet happened to fit. The 7-day prune removes it.
-  writeAtomic(fullPath, p.full);
+  if (p.ownerBinding) {
+    // A historical disk path must not preserve protected attribution after a new rebuild.
+    if (fs.existsSync(fullPath)) SafeFsExecutor.safeRmSync(fullPath, { force: true, operation: 'standing-packet:retire-legacy-full-path' });
+  } else {
+    writeAtomic(fullPath, p.full);
+  }
   pruneRecovery(recoveryDir(stateDir), now);
   const body = Buffer.from(p.delivered, 'utf-8');
   const dir = standingPacketDir(stateDir);
   writeAtomic(path.join(dir, `${p.topicKey}.md`), body);
   const pointer: StandingPacketPointer = {
-    schema: 'standing-packet/1', topicKey: p.topicKey,
+    schema: p.ownerBinding ? 'standing-packet/2' : 'standing-packet/1', topicKey: p.topicKey,
+    ...(p.ownerBinding ? { ownerBinding: p.ownerBinding, ownerQuotes: p.fullSpans.map(span => span.ref) } : {}),
     ...(p.projectAnchorHash ? { projectAnchorHash: p.projectAnchorHash } : {}),
     sha256: crypto.createHash('sha256').update(body).digest('hex'),
     chars: p.delivered.length, builtAt: p.builtAt, verified: true, reduced: p.reduced,
-    fullPath: p.reduced ? fullPath : null, protectedRows: p.protectedRows, omitted: p.omitted.length,
+    fullPath: p.reduced && !p.ownerBinding ? fullPath : null, protectedRows: p.protectedRows, omitted: p.omitted.length,
   };
   writeAtomic(path.join(dir, `${p.topicKey}.json`), JSON.stringify(pointer));
   return pointer;
@@ -934,14 +981,14 @@ export class StandingPacketStager {
       const slice = keep.text.slice(s.start, s.start + s.length);
       let row: { text: string } | null = null;
       try { row = this.d.rows.getRow(topicId, s.messageId); } catch { row = null; }
-      return !rowRefMatches(s.ref, slice) || !row || row.text !== slice;
+      return !hasCurrentAuthority(this.d.rows, topicId, s.messageId) || !rowRefMatches(s.ref, slice) || !row || row.text !== slice;
     });
     for (const sid of sessions) {
       // A fold's own keep-instructions (source fold:…) are never overwritten.
       const prev = readKeepInstructionsPointer(this.d.stateDir, sid);
       if (prev && prev.source.startsWith('fold:')) { this.st.keepSkippedFold++; continue; }
       if (bad) { if (prev?.source === STANDING_PACKET_SOURCE) removeKeepInstructions(this.d.stateDir, sid); this.st.keepFailed++; continue; }
-      const w = writeKeepInstructions(this.d.stateDir, { instarSessionId: sid, text: keep.text, source: STANDING_PACKET_SOURCE }, this.now());
+      const w = writeKeepInstructions(this.d.stateDir, { instarSessionId: sid, text: keep.text, source: STANDING_PACKET_SOURCE, ownerBinding: this.d.rows.operatorBindingFingerprint?.(), ownerTopic: topicId, ownerQuotes: keep.spans.map(span => span.ref) }, this.now());
       if (w.written) this.st.keepWritten++; else this.st.keepFailed++;
     }
   }
@@ -974,10 +1021,45 @@ export class StandingPacketStager {
     return r.packet.full.length <= SPAWN_PACKET_MAX_CHARS ? r.packet.full : r.packet.delivered;
   }
 
+  private ownerBindingCurrent(binding: string | undefined): boolean {
+    try {
+      return this.d.rows.operatorBindingFingerprint ? !!binding && binding === this.d.rows.operatorBindingFingerprint() : binding === undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  private stagedOwnerQuotesCurrent(topicId: number, refs: OwnerQuoteRef[] | undefined): boolean {
+    if (!Number.isSafeInteger(topicId) || !Array.isArray(refs) || refs.length > 550) return false;
+    try {
+      return refs.every(ref => {
+        if (!ref || !Number.isSafeInteger(ref.messageId) || !hasCurrentAuthority(this.d.rows, topicId, ref.messageId)) return false;
+        const row = this.d.rows.getRow(topicId, ref.messageId);
+        return !!row && rowRefMatches(ref, row.text);
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  stagedRecoveryCurrent(topicKey: string, packetHash: string): boolean {
+    const staged = readStandingPacketPointer(this.d.stateDir, topicKey);
+    if (!staged?.verified || staged.sha256 !== packetHash || !this.ownerBindingCurrent(staged.ownerBinding)) return false;
+    if (staged.schema === 'standing-packet/2' && !this.stagedOwnerQuotesCurrent(Number(topicKey), staged.ownerQuotes)) return false;
+    return !staged.projectAnchorHash || this.stagedProjectAnchorCurrent(topicKey, packetHash);
+  }
+
+  stagedKeepCurrent(sessionId: string, packetHash: string): boolean {
+    const staged = readKeepInstructionsPointer(this.d.stateDir, sessionId);
+    if (staged?.source !== STANDING_PACKET_SOURCE || staged.sha256 !== packetHash || !this.ownerBindingCurrent(staged.ownerBinding)) return false;
+    return staged.schema === 'keep-instructions/1' || this.stagedOwnerQuotesCurrent(staged.ownerTopic ?? NaN, staged.ownerQuotes);
+  }
+
   stagedProjectAnchorCurrent(topicKey: string, packetHash: string): boolean {
     if (!/^\d{1,15}$/.test(topicKey)) return false;
     const staged = readStandingPacketPointer(this.d.stateDir, topicKey);
-    if (!staged?.projectAnchorHash || staged.sha256 !== packetHash || !staged.verified) return false;
+    if (!staged?.projectAnchorHash || staged.sha256 !== packetHash || !staged.verified || !this.ownerBindingCurrent(staged.ownerBinding)) return false;
+    if (staged.schema === 'standing-packet/2' && !this.stagedOwnerQuotesCurrent(Number(topicKey), staged.ownerQuotes)) return false;
     const approvedAnchor = projectAnchorText(this.d.rows, Number(topicKey));
     return approvedAnchor !== null && anchorDigest(approvedAnchor) === staged.projectAnchorHash;
   }

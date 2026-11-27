@@ -191,6 +191,102 @@ describe('assembleStandingPacket', () => {
 });
 
 describe('a mature topic still stages (one placeholder per section, never per row)', () => {
+  it('rejects old staged recovery and keep hashes as soon as the owner binding changes', () => {
+    const t = topic();
+    opRow(t, 1, 'Owner framing for the work.');
+    anchor(t, [1]);
+    layers(t);
+    let binding = 'first-owner';
+    t.src.operatorBindingFingerprint = () => binding;
+    let currentAuthority = true;
+    t.src.isCurrentOperator = () => currentAuthority;
+    const stager = new StandingPacketStager({ stateDir: t.stateDir, store: t.store, rows: t.src, sessionsForTopic: () => ['sess-live'] });
+    const staged = stager.stageNow(T);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const keep = readKeepInstructionsPointer(t.stateDir, 'sess-live');
+    expect(keep?.schema).toBe('keep-instructions/2');
+    expect(staged.pointer.schema).toBe('standing-packet/2');
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(true);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(true);
+
+    currentAuthority = false;
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+    currentAuthority = true;
+    const original = t.rows.get(1)!;
+    t.rows.set(1, { ...original, text: 'Corrected original words.' });
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+    t.rows.set(1, original);
+    binding = 'second-owner';
+    expect(stager.stagedRecoveryCurrent(T, staged.pointer.sha256)).toBe(false);
+    expect(stager.stagedKeepCurrent('sess-live', keep!.sha256)).toBe(false);
+  });
+
+  it('drops anchor, recent and decision quotes when their live owner authority is gone', () => {
+    const t = topic();
+    opRow(t, 1, 'Previous owner framing.');
+    opRow(t, 2, 'Previous owner decision.');
+    opRow(t, 3, 'Current owner follow-up.');
+    anchor(t, [1]);
+    decision(t, 'dc-r1', 2);
+    layers(t);
+    const original = build(t);
+
+    t.src.isCurrentOperator = (_topicId, messageId) => messageId === 3;
+    expect(verifyStandingPacket(original, t.src).problems.some(problem =>
+      problem.problem === 'protected-authority-changed')).toBe(true);
+    const rebuilt = build(t);
+    expect(rebuilt.deliveredSpans.map(span => span.messageId)).toEqual([3]);
+    expect(rebuilt.delivered).not.toContain('Previous owner');
+    expect(verifyStandingPacket(rebuilt, t.src).ok).toBe(true);
+  });
+
+  it('delivers whole framing and discloses H1 when both cannot fit', () => {
+    const t = topic();
+    const framing = 'Frame 🎯: ' + 'owner wording. '.repeat(150);
+    opRow(t, 1, framing);
+    anchor(t, [1]);
+    const packetBudget = build(t).full.length + 300;
+    const keepBudget = renderKeepInstructions(t.store, t.src, T).text.length + 120;
+    t.store.writeDerived(T, 'h1', 'current', {
+      goal: 'Long goal. '.repeat(72),
+      trend: 'Long trend. '.repeat(56),
+      themes: ['Long theme. '.repeat(32)],
+    }, { ...meta(), status: 'live' });
+
+    const packet = build(t, packetBudget);
+    expect(packet.delivered).toContain(framing);
+    expect(packet.omitted).toContain('H1');
+    expect(packet.delivered).toContain('READ THE FULL PACKET NOW');
+    expect(packet.delivered.length).toBeLessThanOrEqual(packetBudget);
+
+    const keep = renderKeepInstructions(t.store, t.src, T, { maxChars: keepBudget });
+    expect(keep.text).toContain(framing);
+    expect(keep.omitted).toContain('H1');
+    expect(keep.text.length).toBeLessThanOrEqual(keepBudget);
+  });
+
+  it('keeps current work and verbatim operator messages ahead of unbound ledger references', () => {
+    const t = topic();
+    opRow(t, 1, 'Frame: improve the testing pipeline.');
+    opRow(t, 2, 'Recent: report the current queue bottleneck.');
+    anchor(t, [1]);
+    layers(t);
+    for (let i = 0; i < 75; i++) {
+      const refId = `pending-reference-${i}`;
+      expect(t.store.writeProtected(T, 'ledger-entry', `dc-${refId}`, [], { ...meta(), status: 'pending' }, { type: 'decision', refId, at: Date.parse(ts(2)) }).written).toBe(true);
+    }
+    const packet = build(t);
+    expect(packet.reduced).toBe(true);
+    expect(packet.delivered).toContain('Frame: improve the testing pipeline.');
+    expect(packet.delivered).toContain('Recent: report the current queue bottleneck.');
+    expect(packet.delivered).toContain('Goal: Ship the standing packet (S10).');
+    expect(packet.omitted.some(label => label.startsWith('ledger entry'))).toBe(true);
+    expect(verifyStandingPacket(packet, t.src).ok).toBe(true);
+  });
+
   it('20 recent turns of ~400 characters and 20 live ledger entries: verified, under budget, Anchor and newest turn delivered', () => {
     const t = topic();
     for (let id = 1; id <= 40; id++) opRow(t, id, `M${id}: ${'operator words here; '.repeat(19)}`.slice(0, 400));

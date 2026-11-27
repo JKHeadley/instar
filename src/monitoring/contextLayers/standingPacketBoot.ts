@@ -23,22 +23,30 @@ import { StandingPacketStager, type PacketRowSource, type ReadProjectAnchor } fr
 import { topicRef } from '../../messaging/shared/topicRef.js';
 import { CLAUDE_CODE_FRAMEWORK } from '../../core/frameworkFacts.js';
 
+import { retireLegacyFullPackets } from './standingPacket.js';
+import { classifyRow, type OperatorResolver } from './userCorpus.js';
+import type { TopicMessage } from '../../memory/TopicMemory.js';
+
 /** The TopicMemory surface the packet reads. */
 export interface PacketTopicMemory {
-  getUserCorpusRows(topicId: number, opts?: { messageId?: number; limit?: number }): { rows: Array<{ rowId: number; message: { text: string; timestamp: string } }> };
+  getUserCorpusRows(topicId: number, opts?: { messageId?: number; limit?: number }): { rows: Array<{ rowId: number; message: Pick<TopicMessage, 'text' | 'timestamp'> & Partial<Pick<TopicMessage, 'fromUser' | 'forwarded' | 'origin' | 'userId' | 'telegramUserId'>> }> };
+  getUserCorpusMessage?(topicId: number, messageId: number): TopicMessage | null;
   countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null;
   getTopicMeta?(topicId: number): { topicName: string | null } | null;
   getRecentMessages?(topicId: number, limit?: number): Array<{ messageId: number; fromUser: boolean; timestamp: string; text?: string | null }>;
 }
 
 /** One row's exact text by message id (the newest row carrying that id, as TopicMemory's own readers resolve it). */
-export function packetRowSource(tm: PacketTopicMemory): PacketRowSource {
+export function packetRowSource(tm: PacketTopicMemory, isOperator?: OperatorResolver): PacketRowSource {
+  const getRow = (topicId: number, messageId: number) => tm.getUserCorpusMessage
+    ? tm.getUserCorpusMessage(topicId, messageId)
+    : tm.getUserCorpusRows(topicId, { messageId, limit: 10 }).rows.at(-1)?.message ?? null;
   return {
-    getRow(topicId, messageId) {
-      const r = tm.getUserCorpusRows(topicId, { messageId, limit: 10 }).rows;
-      const last = r[r.length - 1];
-      return last ? { text: last.message.text, timestamp: last.message.timestamp ?? null } : null;
-    },
+    getRow,
+    ...(isOperator ? { isCurrentOperator: (topicId: number, messageId: number) => {
+      const row = getRow(topicId, messageId);
+      return !!row && classifyRow({ ...row, fromUser: row.fromUser === true }, isOperator).authority === 'operator';
+    } } : {}),
     countMessagesAfter: (t, m) => tm.countMessagesAfter(t, m),
     topicName: (t) => tm.getTopicMeta?.(t)?.topicName ?? null,
     lastAgentMessage: (t) => {
@@ -63,15 +71,18 @@ export function wireStandingPacket(o: {
   topicMemory: PacketTopicMemory;
   intent?: (topicId: number) => TopicIntentFile | null;
   readProjectAnchor?: ReadProjectAnchor;
+  isOperator?: OperatorResolver;
+  operatorBindingFingerprint?: () => string;
   /** Running sessions on this machine (SessionManager.listRunningSessions). */
   sessions: () => Array<{ id: string; telegramTopicId?: number | null; framework?: string }>;
   debounceMs?: number;
 }): StandingPacketStager {
+  if (o.operatorBindingFingerprint) retireLegacyFullPackets(o.stateDir);
   const lastReported = new Map<string, number>();
   const stager = new StandingPacketStager({
     stateDir: o.stateDir,
     store: o.layers.store,
-    rows: { ...packetRowSource(o.topicMemory), readProjectAnchor: o.readProjectAnchor },
+    rows: { ...packetRowSource(o.topicMemory, o.isOperator), readProjectAnchor: o.readProjectAnchor, operatorBindingFingerprint: o.operatorBindingFingerprint },
     intent: o.intent,
     debounceMs: o.debounceMs,
     sessionsForTopic: (topicId) => o.sessions()

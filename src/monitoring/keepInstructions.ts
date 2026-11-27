@@ -38,8 +38,10 @@ export const KEEP_INSTRUCTIONS_MAX_CHARS = 9000;
 /** The hook reads at most this many bytes of the text file. */
 export const KEEP_INSTRUCTIONS_MAX_BYTES = 4 * KEEP_INSTRUCTIONS_MAX_CHARS;
 
+export interface OwnerQuoteRef { messageId: number; sha256: string; length: number }
+
 export interface KeepInstructionsPointer {
-  schema: 'keep-instructions/1';
+  schema: 'keep-instructions/1' | 'keep-instructions/2';
   instarSessionId: string;
   /** Text path relative to the context-layers root. */
   textPath: string;
@@ -48,6 +50,9 @@ export interface KeepInstructionsPointer {
   /** What rendered it (e.g. `standing-packet`, `fold:<topicKey>:<foldId>` (foldKeepSource in foldCarriers.ts — the form the fold boot sweep matches)), for the audit trail. */
   source: string;
   writtenAt: number;
+  ownerBinding?: string;
+  ownerTopic?: number;
+  ownerQuotes?: OwnerQuoteRef[];
 }
 
 export type WriteKeepResult =
@@ -72,7 +77,7 @@ function paths(stateDir: string, instarSessionId: string): { text: string; point
  */
 export function writeKeepInstructions(
   stateDir: string,
-  input: { instarSessionId: string; text: string; source: string },
+  input: { instarSessionId: string; text: string; source: string; ownerBinding?: string; ownerTopic?: number; ownerQuotes?: OwnerQuoteRef[] },
   now: number = Date.now(),
 ): WriteKeepResult {
   const p = paths(stateDir, input.instarSessionId);
@@ -84,7 +89,8 @@ export function writeKeepInstructions(
   const body = Buffer.from(text, 'utf-8');
   if (body.length > KEEP_INSTRUCTIONS_MAX_BYTES) return { written: false, reason: 'too-long' };
   const pointer: KeepInstructionsPointer = {
-    schema: 'keep-instructions/1',
+    ...(input.ownerBinding ? { ownerBinding: input.ownerBinding, ownerTopic: input.ownerTopic, ownerQuotes: input.ownerQuotes } : {}),
+    schema: input.ownerBinding ? 'keep-instructions/2' : 'keep-instructions/1',
     instarSessionId: input.instarSessionId,
     textPath: path.relative(contextLayersRoot(stateDir), p.text),
     sha256: crypto.createHash('sha256').update(body).digest('hex'),
@@ -125,7 +131,7 @@ export function readKeepInstructionsPointer(stateDir: string, instarSessionId: s
   if (!p || !fs.existsSync(p.pointer)) return null;
   try {
     const v = JSON.parse(fs.readFileSync(p.pointer, 'utf-8')) as KeepInstructionsPointer;
-    return v.instarSessionId === instarSessionId ? v : null;
+    return (v.schema === 'keep-instructions/1' || v.schema === 'keep-instructions/2') && v.instarSessionId === instarSessionId ? v : null;
   } catch {
     return null; // @silent-fallback-ok — a torn pointer reads as absent; the hook treats it the same way
   }

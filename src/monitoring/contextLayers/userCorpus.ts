@@ -83,7 +83,7 @@ export interface UserCorpusRowSource {
 }
 
 /** The operator binding (MemoryPrivacy): the row's sender key and its resolved profile id. */
-export type OperatorResolver = (sender: { senderKey: string | null; userId: string | null }) => boolean;
+export type OperatorResolver = (sender: { senderKey: string | null; userId: string | null; directTelegram: boolean }) => boolean;
 
 /** The sender key a row carries, in MemoryPrivacy's shape (`user:<id>`, else `telegram:<id>`). */
 export function senderKeyOf(m: Pick<TopicMessage, 'userId' | 'telegramUserId'>): string | null {
@@ -101,7 +101,7 @@ export function classifyRow(m: Pick<TopicMessage, 'fromUser' | 'forwarded' | 'or
   if (m.forwarded === true) return { label: 'forwarded', authority: 'none' };
   if (m.fromUser === true && isOperator) {
     let op = false;
-    try { op = isOperator({ senderKey: senderKeyOf(m), userId: m.userId ?? null }); } catch { op = false; /* @silent-fallback-ok — an unresolvable sender is never the operator; it is labelled third-party and carries no authority */ }
+    try { op = isOperator({ senderKey: senderKeyOf(m), userId: m.userId ?? null, directTelegram: m.forwarded === false && m.origin == null }); } catch { op = false; /* @silent-fallback-ok — an unresolvable sender is never the operator; it is labelled third-party and carries no authority */ }
     if (op) return { label: 'operator', authority: 'operator' };
   }
   return { label: 'third-party', authority: 'none' };

@@ -10179,6 +10179,42 @@ export function createRoutes(ctx: RouteContext): Router {
     const stager = ctx.contextLayers?.standingPacket();
     res.json({ current: stager?.stagedProjectAnchorCurrent(topicKey, packetHash) ?? false });
   });
+  router.get('/topic/:id/standing-packet/recovery-current', (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^\d{1,15}$/.test(topicKey) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    res.json({ current: ctx.contextLayers?.standingPacket()?.stagedRecoveryCurrent(topicKey, packetHash) ?? false });
+  });
+  router.get('/topic/:id/standing-packet/full', async (req, res) => {
+    const topicKey = String(req.params.id ?? '');
+    if (!/^\d{1,15}$/.test(topicKey)) { res.status(400).json({ error: 'invalid-topic' }); return; }
+    const topicId = Number(topicKey);
+    const rawToken = req.get('X-Instar-Bind-Token');
+    const bind = rawToken ? ctx.conversationBindAuth?.verify(rawToken) : null;
+    const destination = bind?.bootstrapConversationIds.includes(topicId)
+      ? ctx.sessionManager?.listRunningSessions?.().find(s => s.tmuxSession === bind.sessionName && s.telegramTopicId === topicId)
+      : undefined;
+    if (!rawToken || !destination ||
+        !await ctx.sessionManager?.matchesCurrentConversationBindToken?.(destination.tmuxSession, destination.id, rawToken)) {
+      res.status(403).json({ error: 'conversation-bind-refused' });
+      return;
+    }
+    const staged = ctx.contextLayers?.standingPacket()?.stageNow(topicKey);
+    if (!staged?.ok || !staged.packet.ownerBinding) { res.status(503).json({ error: 'standing-packet-unavailable' }); return; }
+    res.set('Cache-Control', 'no-store').type('text/plain').send(staged.packet.full);
+  });
+  router.get('/standing-packet/keep-current/:sessionId', (req, res) => {
+    const sessionId = String(req.params.sessionId ?? '');
+    const packetHash = String(req.query.packetHash ?? '');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) || !/^[a-f0-9]{64}$/.test(packetHash)) {
+      res.status(400).json({ current: false });
+      return;
+    }
+    res.json({ current: ctx.contextLayers?.standingPacket()?.stagedKeepCurrent(sessionId, packetHash) ?? false });
+  });
   // context-budget-layered-summaries §9.6 Codex column (Phase 1 S17): the Codex
   // next-prompt seed. The per-prompt hook asks, on a Codex prompt naming a topic,
   // whether this is the first prompt after a compaction (the rollout's newest
