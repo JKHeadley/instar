@@ -3188,6 +3188,12 @@ export class AgentServer {
       this.tokenLedger = null;
     }
 
+    options.scheduler?.setTokenLedger?.(this.tokenLedger);
+    const bindJobTranscript = (session: import('../core/types.js').Session, nativeId: string) =>
+      options.scheduler?.bindTokenLedgerJobSession?.(session, nativeId);
+    if (this.tokenLedger && options.scheduler) options.sessionManager.setClaudeSessionBoundSink?.(bindJobTranscript);
+    options.scheduler?.setProjectTrialStartupLedgerAvailability?.(() => this.tokenLedger !== null);
+
     // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
     // Dev-gated (live on a development agent, dark on the fleet). Read-only against
     // source transcripts; writes only server-data/usage-ledger.db (git-sync excluded).
@@ -3236,6 +3242,7 @@ export class AgentServer {
         ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
         const sm = options.sessionManager as SessionManager;
         sm.setClaudeSessionBoundSink?.((session, claudeSessionId) => {
+          bindJobTranscript(session, claudeSessionId);
           const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession) : null;
           if (configHome) ledger.addClaudeRoot(configHome, 'session');
           ledger.recordBinding({

@@ -2146,16 +2146,41 @@ export class TokenLedger {
     }
   }
 
+  /** First observed Claude usage event of one known transcript. */
+  jobStartupUsage(transcriptSessionId: string): {
+    tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number;
+  } | null {
+    if (this.closed || !transcriptSessionId) return null;
+    try {
+      return this.db.prepare(`
+        SELECT te.input_tokens AS tokensIn, te.output_tokens AS tokensOut,
+          te.cache_read_tokens AS cacheRead, te.cache_creation_tokens AS cacheWrite
+        FROM token_events te WHERE te.session_id = ?
+        ORDER BY te.ts, te.request_id LIMIT 1
+      `).get(transcriptSessionId) as
+        { tokensIn: number; tokensOut: number; cacheRead: number; cacheWrite: number } | undefined ?? null;
+    } catch {
+      // @silent-fallback-ok — the history response reports unknown startup usage.
+      return null;
+    }
+  }
+
   /**
    * Per-job token totals in [sinceMs, untilMs): job_sessions joined to token_events
    * (Claude, per request) and to codex_token_sessions (Codex, cumulative per session,
    * attributed by its last_ts). Rows with `machineId` given keep only that machine's
    * job sessions (and rows recorded without a machine). Degrades to [] on failure.
    */
-  jobTokenTotals(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): JobTokenTotalsRow[] {
+  jobTokenTotals(opts: { sinceMs: number; untilMs?: number; machineId?: string | null; nativeSessionId?: string }): JobTokenTotalsRow[] {
     if (this.closed) return [];
     const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
     const machine = opts.machineId ?? null;
+    const exactSession = opts.nativeSessionId;
+    const sessionFilter = exactSession === undefined ? '' : `AND js.session_id IN (
+      SELECT session_id FROM job_sessions WHERE session_id = ?
+      UNION ALL SELECT session_id FROM job_sessions WHERE alias_of = ?
+    )`;
+    const bindings = exactSession === undefined ? [] : [exactSession, exactSession];
     try {
       const claude = this.db
         .prepare(
@@ -2169,9 +2194,10 @@ export class TokenLedger {
            FROM token_events te JOIN job_sessions js ON js.session_id = te.session_id
            WHERE te.ts >= ? AND te.ts < ?
              AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+             ${sessionFilter}
            GROUP BY js.job_slug, js.origin, COALESCE(te.model, 'unknown')`,
         )
-        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+        .all(opts.sinceMs, until, machine, machine, ...bindings) as Array<Record<string, number | string>>;
       const codex = this.db
         .prepare(
           `SELECT js.job_slug AS jobSlug, js.origin AS origin, COALESCE(cs.model, 'unknown') AS model,
@@ -2183,9 +2209,10 @@ export class TokenLedger {
            FROM codex_token_sessions cs JOIN job_sessions js ON js.session_id = cs.session_id
            WHERE cs.last_ts >= ? AND cs.last_ts < ?
              AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+             ${sessionFilter}
            GROUP BY js.job_slug, js.origin, COALESCE(cs.model, 'unknown')`,
         )
-        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+        .all(opts.sinceMs, until, machine, machine, ...bindings) as Array<Record<string, number | string>>;
       const toRow = (r: Record<string, number | string>, framework: JobTokenTotalsRow['framework']): JobTokenTotalsRow => ({
         jobSlug: String(r.jobSlug),
         origin: String(r.origin),
