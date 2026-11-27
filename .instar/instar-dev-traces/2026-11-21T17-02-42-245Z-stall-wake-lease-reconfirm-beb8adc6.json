@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "stall-wake-lease-reconfirm",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T17:02:42.245Z",
+  "artifactPath": "upgrades/side-effects/stall-wake-lease-reconfirm.md",
+  "artifactSha256": "260986053bb4879e6cfe12b00543c7713eef25df3f7ff1ef77247204d63267c0",
+  "specPath": "docs/specs/stall-wake-lease-reconfirm.md",
+  "coveredFiles": [
+    "docs/specs/reports/stall-wake-lease-reconfirm-convergence.md",
+    "docs/specs/stall-wake-lease-reconfirm.eli16.md",
+    "docs/specs/stall-wake-lease-reconfirm.md",
+    "src/commands/server.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/StallReconfirm.ts",
+    "src/core/types.ts",
+    "src/data/awareness/stall-wake-lease-reconfirm.md",
+    "tests/e2e/stall-wake-lease-reconfirm-boot-path.test.ts",
+    "tests/integration/stall-wake-lease-reconfirm.test.ts",
+    "tests/unit/LeaseCoordinator-stallReconfirm.test.ts",
+    "tests/unit/StallReconfirm.test.ts",
+    "upgrades/next/stall-wake-lease-reconfirm.md",
+    "upgrades/side-effects/stall-wake-lease-reconfirm.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes a lease safety decision (who may claim the multi-machine lead); dark switch, but it gates a lead change, so the full converged-spec chain applies.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

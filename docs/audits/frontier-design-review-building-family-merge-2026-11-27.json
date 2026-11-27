@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-27T13:40:00.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-opus-5.5-fresh"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/frontier-design-review-building-family-merge-2026-11-27.md",
+  "convergenceSha256": "c5c1b1b69549c8e4060938c9c0c016ce86f47fefe10344368ed4f418e8014a1f",
+  "areas": {
+    "Building": {
+      "areaSha256": "ca0144d18dc2aaaec125304ec3df179df37ac10895e98f4f014ad2c6d3e0d628",
+      "verdict": "accepted"
+    }
+  }
+}

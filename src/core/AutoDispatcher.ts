@@ -25,9 +25,11 @@ import { sendUnknownProducerTelegramNotice } from '../messaging/telegram-origin/
  *   6. Agent is fully updated — code AND behavior
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DispatchManager, Dispatch } from './DispatchManager.js';
+import { cleanTitle } from './DispatchManager.js';
 import type { DispatchExecutor, ExecutionResult } from './DispatchExecutor.js';
 import type { DispatchScopeEnforcer } from './DispatchScopeEnforcer.js';
 import type { AutonomyProfileManager } from './AutonomyProfileManager.js';
@@ -87,7 +89,14 @@ export function formatApprovalNotification(dispatches: Dispatch[]): string {
 
   const describe = (d: Dispatch): string => {
     const label = TYPE_LABEL[d.type] || d.type;
+    // SEC-153: this notice lands in a conversation a session reads, so an unsigned dispatch is named
+    // only by type, a cleaned title and its id. Its text is never quoted here.
+    if (d.signatureVerified !== true) {
+      return `• "${cleanTitle(d.title)}" — ${label}, not signed by a trusted key, so I will not act on it\n  ID: ${d.dispatchId}`;
+    }
     const raw = (d.content || '').trim().replace(/\s+/g, ' ');
+    // bounded-input-reviewed: the reader is the operator in a Telegram approval message, not a model.
+    // The trailing "…" tells a human the preview is cut, and the footer offers the full text of any one before they approve.
     const preview = raw.length > PREVIEW_LIMIT
       ? `${raw.slice(0, PREVIEW_LIMIT).trimEnd()}…`
       : raw;
@@ -101,7 +110,9 @@ export function formatApprovalNotification(dispatches: Dispatch[]): string {
 
   const items = dispatches.map(describe).join('\n\n');
 
-  const footer = `Just tell me which ones to approve or reject and I'll handle it.`;
+  const footer = dispatches.every((d) => d.signatureVerified !== true)
+    ? `These came through the update channel without a trusted signature. I am keeping them, and I will not act on them. Nothing is needed from you.`
+    : `Just tell me which ones to approve or reject and I'll handle it. If a preview is cut short, ask me to show that one in full first.`;
 
   return `${header}\n\n${items}\n\n${footer}`;
 }
@@ -129,6 +140,13 @@ export class AutoDispatcher {
   private dispatchVerifier: DispatchVerifier | null = null;
   private deferredTracker: DeferredDispatchTracker | null = null;
   private adaptationValidator: AdaptationValidator | null = null;
+
+  // SEC-153: the origin check every auto-applied or executed dispatch must pass (pinned keys, required).
+  private signatureGate: DispatchVerifier | null = null;
+  /** Verdicts by dispatch id + content hash, so a replay-checking verifier is asked once per text. */
+  private signatureVerdicts = new Map<string, boolean>();
+  /** Dispatches already parked for review in this process, so one is announced once. */
+  private parked = new Set<string>();
 
   // Persisted state
   private lastPoll: string | null = null;
@@ -252,6 +270,44 @@ export class AutoDispatcher {
   }
 
   /**
+   * SEC-153: wire the origin check. Must be a verifier built with pinned keys and `required: true`.
+   * Without it, no dispatch is auto-applied or executed: each waits for review.
+   */
+  setSignatureGate(verifier: DispatchVerifier): void {
+    this.signatureGate = verifier;
+    this.signatureVerdicts.clear();
+  }
+
+  /** SEC-153: did this exact dispatch text verify under a pinned key? */
+  private signatureTrusted(dispatch: Dispatch): boolean {
+    if (!this.signatureGate) return false;
+    // Keyed on everything the signature covers, plus the signature itself.
+    const signedFields = JSON.stringify([dispatch.dispatchId, dispatch.type, dispatch.title, dispatch.priority, dispatch.content, dispatch.signature ?? null, dispatch.signedAt ?? null, dispatch.expiresAt ?? null, dispatch.keyId ?? null]);
+    const key = crypto.createHash('sha256').update(signedFields).digest('hex');
+    const seen = this.signatureVerdicts.get(key);
+    if (seen !== undefined) return seen;
+    let ok = false;
+    try { ok = this.signatureGate.verify(dispatch).verified === true; } catch { ok = false; } // @silent-fallback-ok — a verifier error is an untrusted dispatch, parked for review below
+    this.signatureVerdicts.set(key, ok);
+    if (this.signatureVerdicts.size > 2000) this.signatureVerdicts.delete(this.signatureVerdicts.keys().next().value as string);
+    if (ok && dispatch.signatureVerified !== true) this.dispatches.markSignatureVerified(dispatch.dispatchId);
+    return ok;
+  }
+
+  /**
+   * SEC-153: hold a dispatch for review instead of acting on it. Loss-free: the record stays, marked
+   * pending approval, and the owner is told once. Its text is never sent to a session from here.
+   */
+  private async park(dispatch: Dispatch, reason: string, tag: string): Promise<void> {
+    this.dispatches.markPendingApproval(dispatch.dispatchId);
+    this.logDispatchDecision(dispatch, 'defer', { reasoning: reason, tags: [tag, 'needs-approval'] });
+    console.log(`[AutoDispatcher] Dispatch held for review (${tag}): ${dispatch.dispatchId}`);
+    if (this.parked.has(dispatch.dispatchId)) return;
+    this.parked.add(dispatch.dispatchId);
+    await this.notify(formatApprovalNotification([dispatch]));
+  }
+
+  /**
    * One tick of the dispatch loop.
    */
   private async tick(): Promise<void> {
@@ -266,7 +322,7 @@ export class AutoDispatcher {
       // When discernment layer is active, never auto-apply — evaluate first
       const useDiscernment = this.contextualEvaluator && this.snapshotBuilder;
       const result = (this.config.autoApplyPassive && !useDiscernment)
-        ? await this.dispatches.checkAndAutoApply()
+        ? await this.dispatches.checkAndAutoApply((d) => this.signatureTrusted(d))
         : await this.dispatches.check();
 
       this.lastPoll = new Date().toISOString();
@@ -347,6 +403,11 @@ export class AutoDispatcher {
     const toEvaluate: Dispatch[] = [];
 
     for (const dispatch of dispatches) {
+      // SEC-153: nothing unsigned reaches evaluation, application or execution.
+      if (!this.signatureTrusted(dispatch)) {
+        await this.park(dispatch, 'Dispatch is not signed by a pinned key (SEC-153)', 'unsigned');
+        continue;
+      }
       // Step 1: Verify origin (if verifier is configured)
       if (this.dispatchVerifier) {
         const verification = this.dispatchVerifier.verify(dispatch);
@@ -381,6 +442,11 @@ export class AutoDispatcher {
     if (this.deferredTracker) {
       const dueForReeval = this.deferredTracker.getDueForReEvaluation();
       for (const deferred of dueForReeval) {
+        // SEC-153: a deferred dispatch passes the same origin check as a new one.
+        if (!this.signatureTrusted(deferred.dispatch)) {
+          await this.park(deferred.dispatch, 'Dispatch is not signed by a pinned key (SEC-153)', 'unsigned');
+          continue;
+        }
         // Don't double-add if already in the new batch
         if (!toEvaluate.some(d => d.dispatchId === deferred.dispatchId)) {
           toEvaluate.push(deferred.dispatch);
@@ -629,7 +695,12 @@ export class AutoDispatcher {
    * Execute a single action/configuration dispatch.
    */
   private async executeDispatch(dispatch: Dispatch): Promise<void> {
-    console.log(`[AutoDispatcher] Executing dispatch: ${dispatch.title} (${dispatch.type})`);
+    // SEC-153: only a dispatch signed by a pinned key is executed. Anything else waits for review.
+    if (!this.signatureTrusted(dispatch)) {
+      await this.park(dispatch, 'Dispatch is not signed by a pinned key (SEC-153)', 'unsigned');
+      return;
+    }
+    console.log(`[AutoDispatcher] Executing dispatch: ${dispatch.dispatchId} (${dispatch.type})`);
 
     // Check scope enforcement before executing
     if (this.scopeEnforcer && this.autonomyManager) {
@@ -657,14 +728,15 @@ export class AutoDispatcher {
     const action = this.executor.parseAction(dispatch.content);
 
     if (!action) {
-      // Not structured JSON — treat as agentic prompt
-      console.log(`[AutoDispatcher] Dispatch is not structured — spawning agentic session`);
-      const agenticAction = {
-        description: dispatch.title,
-        steps: [{ type: 'agentic' as const, prompt: dispatch.content }],
-      };
-      const result = await this.executor.execute(agenticAction);
-      await this.recordResult(dispatch, result);
+      // SEC-153: remote prose is never handed to a session as its prompt, signed or not. It waits for
+      // review, where a person reads it as data.
+      await this.park(dispatch, 'Dispatch is prose, not a structured action; remote text never becomes a session prompt (SEC-153)', 'prose-held');
+      return;
+    }
+
+    // SEC-153: a structured action's 'agentic' step carries remote text as a session prompt: held too.
+    if (action.steps.some((st) => st.type === 'agentic')) {
+      await this.park(dispatch, 'Dispatch asks for an agentic step; remote text never becomes a session prompt (SEC-153)', 'prose-held');
       return;
     }
 

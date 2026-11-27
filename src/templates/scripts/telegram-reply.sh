@@ -549,7 +549,18 @@ if [ "$HTTP_CODE" = "200" ]; then
     echo "NOT SENT — suppressed duplicate for topic $TOPIC_ID${DELIVERY_ID_DETAIL}; an identical message was already delivered to that topic recently"
     exit 1
   fi
-  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
+  # The message id and its link (when this chat has message links), so a later reminder can
+  # link this message. The line still starts "Sent N chars to topic T" for existing parsers.
+  SENT_DETAIL=$(printf '%s' "$BODY" | python3 -c 'import sys,json,re
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    d={}
+mid=d.get("messageId"); link=d.get("messageLink"); out=""
+if isinstance(mid,(int,str)) and str(mid).isdigit(): out+=" (message %s)" % mid
+if isinstance(link,str) and re.match(r"^https://[!-~]+$", link): out+=" link: "+link
+print(out)' 2>/dev/null || echo "")
+  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID${SENT_DETAIL}"
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Telegram API)
   # exceeded the route's budget. The actual send may have completed anyway, because
@@ -566,6 +577,14 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — hold pending authoritative receipt/outbox resolution"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
+  # Organization policy refusal (org-never-actions §C): the rule, who to ask, and the allow-once id.
+  if echo "$BODY" | grep -q '"error"[[:space:]]*:[[:space:]]*"org-policy"'; then
+    ORG_REASON=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null || echo "")
+    ORG_CHECK=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("checkId") or "")' 2>/dev/null || echo "")
+    echo "BLOCKED by your organization's policy (not sent): ${ORG_REASON}" >&2
+    if [ -n "$ORG_CHECK" ]; then echo "If your person allows it once in the Instar app (check ${ORG_CHECK}), send the same message again." >&2; fi
+    exit 1
+  fi
   # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
   # a nudge and the unoverridable wall reads as a wall — before the advisory
   # migration this branch printed "BLOCKED" for every 422, which would have made

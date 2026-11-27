@@ -7,7 +7,7 @@ const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'
 
 describe('role restart wiring in server.ts', () => {
   const start = server.indexOf('const reconcileRole = (): void => {');
-  const block = server.slice(start, start + 1900);
+  const block = server.slice(start, start + 3200);
   it('subscribes to the role change', () => expect(start).toBeGreaterThan(-1));
   it('reads the role this process booted with, before the scheduler is built', () => {
     expect(start).toBeLessThan(server.indexOf('scheduler = new JobScheduler('));
@@ -23,6 +23,10 @@ describe('role restart wiring in server.ts', () => {
     expect(block).toContain('applies: config.scheduler.enabled');
     expect(block).not.toContain('soloCaptainHold?.enabled');
     expect(block).not.toContain('preferredAwakeMachineId');
+  });
+  it('a waiting role restart is withdrawn when the role is back to its boot value', () => {
+    expect(block).toMatch(/nowAwake === bootAwake\) \{[\s\S]*withdrawRoleRestart\(\{ stateDir: config\.stateDir \}\)[\s\S]*return;/);
+    expect(block.indexOf('withdrawRoleRestart(')).toBeLessThan(block.indexOf('decideRoleRestart('));
   });
   it('asks for the restart only on the decision', () => expect(block).toMatch(/decision === 'restart'[\s\S]*requestRoleRestart/));
 });

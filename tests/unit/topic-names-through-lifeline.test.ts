@@ -28,6 +28,27 @@ describe('TelegramAdapter.captureTopicName', () => {
     expect(adapter.getTopicName(135187)).toBe('Claude credits');
     expect(renamed).toHaveBeenCalledWith(135187, 'Claude credits');
   });
+  it('learns an unknown name from a message it sent into the topic (rebuilt machine, 2026-11-20)', () => {
+    const learn = (r: unknown) => (adapter as unknown as { learnTopicNameFromSent(r: unknown): void }).learnTopicNameFromSent(r);
+    const sent = (thread: number, name: unknown, extra: Record<string, unknown> = {}) => ({ message_id: 1, chat: { id: -100123 }, message_thread_id: thread, is_topic_message: true,
+      reply_to_message: { message_id: thread, forum_topic_created: { name } }, ...extra });
+    learn(sent(127504, 'Instar dashboard makeover'));
+    expect(adapter.getTopicName(127504)).toBe('Instar dashboard makeover');
+    // A known name (perhaps renamed since creation) is never replaced by the creation name.
+    adapter.captureTopicName(128732, 'Feature maturation', true);
+    learn(sent(128732, 'Old creation name'));
+    expect(adapter.getTopicName(128732)).toBe('Feature maturation');
+    // Not a topic message, no name, or no answer: nothing is learned and nothing throws.
+    learn(sent(9210, 'x', { is_topic_message: false }));
+    learn(sent(9211, 42));
+    learn(null); learn('nope');
+    expect(adapter.getTopicName(9210)).toBeNull();
+    expect(adapter.getTopicName(9211)).toBeNull();
+  });
+  it('every successful sendMessage answer is read for the name (wiring)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../src/messaging/TelegramAdapter.ts'), 'utf8');
+    expect(src).toMatch(/if \(method === 'sendMessage'\) this\.learnTopicNameFromSent\(data\.result\);\s*return data\.result;/);
+  });
   it('ignores an empty name and clamps a long one', () => {
     adapter.captureTopicName(5, '   ', false);
     expect(adapter.getTopicName(5)).toBeNull();

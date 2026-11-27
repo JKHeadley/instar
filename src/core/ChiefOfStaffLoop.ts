@@ -1,3 +1,4 @@
+import { CreationPlacementSnapshot, type CreationPlacementView } from './CreationPlacementSnapshot.js';
 /**
  * ChiefOfStaffLoop — the check-in loop of docs/specs/chief-of-staff-topic.md (§2.1–§2.9, §3, §4).
  *
@@ -16,10 +17,12 @@
  * invariants hold the authority. The judge can never start a run or close a project on its own.
  */
 
+import { ownerNeedsAskKey, type OwnerNeedsAskIdentity, type OwnerNeedsWithdrawal } from './OwnerNeedsWithdrawal.js';
+import { resolveOwnerNeedsWaitIdentity } from './ChiefOfStaffWaitCards.js';
 import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
-  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
+  buildOwnerNeedsCompletion, buildOwnerNeedsWithdrawal, findOwnerNeedsCompletion, findOwnerNeedsWithdrawal, ownerNeedsCompletionRecordKey, type OwnerNeedsCompletionReceipt, type CheckEventInput, buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
   type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
@@ -206,7 +209,7 @@ export function boundProjects(union: UnionEntry[]): BoundProject[] {
 }
 
 /** §2.1: which projects are due this tick (cadence elapsed, or dirty and past the gap). */
-export function planDue(projects: BoundProject[], states: Map<string, ProjectCheckState>, dirty: Set<string>, now: number, gapMinutes: number): BoundProject[] {
+export function planDue(projects: BoundProject[], states: Map<string, ProjectCheckState>, dirty: Set<string>, now: number, gapMinutes: number, tickMinutes?: number): BoundProject[] {
   const due: BoundProject[] = [];
   for (const p of projects) {
     // The owner paused it (spec cos-owner-pause-record §3.3): no check, no judge spend, no restart, no redirect.
@@ -216,7 +219,12 @@ export function planDue(projects: BoundProject[], states: Map<string, ProjectChe
     const nextAt = st?.nextCheckAt ? Date.parse(st.nextCheckAt) : null;
     const cadenceDue = last === null || (nextAt !== null && now >= nextAt);
     const dirtyDue = dirty.has(p.conversationKey) && (last === null || now - last >= gapMinutes * 60_000);
-    if (cadenceDue || dirtyDue) due.push(p);
+    // "Ask for an update" that was queued (work-door-project-rows §3.2): a request newer than the last check is due
+    // once that check is at least one tick old — the same eligibility as the run-now path, never sooner.
+    const reqHlc = p.binding?.lastCheckRequestHlc ?? null;
+    const newer = reqHlc !== null && (!st?.lastCheckHlc || compareHlc(reqHlc, st.lastCheckHlc) > 0);
+    const requestDue = tickMinutes !== undefined && newer && (last === null || now - last >= tickMinutes * 60_000);
+    if (cadenceDue || dirtyDue || requestDue) due.push(p);
   }
   return due;
 }
@@ -313,6 +321,12 @@ export function composeNote(items: NoteItem[], cap: number, statusUrl: string | 
 
 // ── deps ─────────────────────────────────────────────────────────────────────
 
+type OwnerNeedsDecisionWrite =
+  | { kind: 'withdrawal'; record: OwnerNeedsWithdrawal }
+  | { kind: 'completion'; bindingHlc: HlcTimestamp; check: Pick<CheckEventInput, 'evidenceHash' | 'evidenceIds' | 'netDiffHighWater' | 'machine' | 'at' | 'doneItems'> };
+
+type OwnerNeedsRecordBuilder = Parameters<ChiefOfStaffLoopDeps['journal']['emit']>[1];
+
 export interface ChiefOfStaffLoopDeps {
   now: () => number;
   machineId: string;
@@ -322,6 +336,17 @@ export interface ChiefOfStaffLoopDeps {
   journal: {
     emit(recordKey: string, build: (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp) => Record<string, unknown> | null): { outcome: string; seq?: number };
     loadUnion(): UnionEntry[];
+    /**
+     * The union from a COMPLETE read of this machine's journal (every archive and the current file, in full, plus
+     * peer streams); null when it could not be read completely. loadUnion() reads only the newest tail, so a
+     * decision that "nothing is there" must come from this read instead.
+     */
+    loadUnionComplete?(): UnionEntry[] | null;
+    /** Non-flushing creation projection read and strict current source signature. */
+    loadUnionCompleteReadOnly?(): UnionEntry[] | null;
+    /** Hold the coordinator writer fence through the durable append. Invoke prepare inside that fence. */
+    appendOwnerNeedsDecision?(leaseEpoch: number, prepare: () => { key: string; build: OwnerNeedsRecordBuilder } | null): Promise<boolean>;
+    creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
   };
@@ -356,6 +381,8 @@ export interface ChiefOfStaffLoopDeps {
    *  Telegram button presses; absent elsewhere, so an ask can never be sent from a machine its tap cannot reach. */
   pauseAsk?: PauseAskDeps;
   log?: (line: string) => void;
+  /** The Chief of Staff's own Work Board cards (docs/specs/work-board-cards-appear.md §1), synced at the end of each tick. */
+  waitCards?: Pick<import('./ChiefOfStaffWaitCards.js').ChiefOfStaffWaitCards, 'sync'>;
 }
 
 /** One open ask, machine-local (it lives where the owner's callback for that exact message arrives). */
@@ -377,6 +404,73 @@ export interface PauseAskDeps {
   asksEnabled: () => boolean;
   /** Whether THIS machine receives the owner's button presses (it polls Telegram, or its lifeline does and forwards). */
   receivesCallbacks: () => boolean;
+}
+
+/** One project row's Chief of Staff facts (Work door read; work-door-project-rows §3.1). */
+export interface ProjectOverviewRow {
+  conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean;
+  doneDefinition: Array<{ id: string; text: string; kind: 'deterministic' | 'judgment'; certify?: 'owner-confirms' | 'agent-may-certify' }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
+  pausedBy: { who: string; at: string; quote: string; messageRef: string } | null; lastNote: string | null;
+  nextCheckAt: string | null; breakerTripped: boolean; restartsWithoutProgress: number;
+  /** The owner's checks on judged items, on the current binding only. */
+  ownerChecks: Record<string, { at: string; who: string }>;
+  /** The binding version the row shows (hlcKey of the winning binding), signed by a phone item tap. */
+  bindingRef: string | null;
+  /** The newest check note that says something, with its check's time and recorded verdict. */
+  lastReport: { at: string; note: string; verdict: string } | null;
+  /** A queued "Ask for an update" not yet answered by a check. */
+  checkRequested: boolean;
+  // ── project-state-quiet-stalled: what lets the Work door name a project the judge could not call (all display-only) ──
+  /** The newest check that saw progress (a done item flipped, a merged PR, the diff grew), or null. */
+  lastProgressAt: string | null;
+  /** The newest check whose read evidence differed from the check before it (the first readable check counts), or null. */
+  lastEvidenceChangeAt: string | null;
+  /** True when the newest check could not read the project's evidence at all (a failed gather). */
+  lastCheckUnreadable: boolean;
+  /** The project's check cadence in hours (the binding's, else the default, floored at the minimum). */
+  cadenceHours: number;
+}
+
+/** The hash a failed gather records (its evidence was never read). */
+const UNREAD_EVIDENCE_HASH = 'x'.repeat(64);
+
+/**
+ * When a project's read evidence last changed (pure): walk its checks oldest first, skip the ones that could not
+ * read anything, and keep the time of each check whose evidence hash differs from the previous readable one (the
+ * first readable check counts: tracking began then). `newestUnreadable` is whether the newest check read nothing.
+ */
+export function evidenceChange(checks: Array<{ at: string; hash: string; note: string }>): { lastChangeAt: string | null; newestUnreadable: boolean } {
+  const sorted = [...checks].sort((a, b) => a.at.localeCompare(b.at));
+  const unread = (c: { hash: string; note: string }) => c.note === 'gather-failed' || c.hash === UNREAD_EVIDENCE_HASH || !c.hash;
+  let prev: string | null = null; let lastChangeAt: string | null = null;
+  for (const c of sorted) {
+    if (unread(c)) continue;
+    if (prev === null || c.hash !== prev) lastChangeAt = c.at;
+    prev = c.hash;
+  }
+  const newest = sorted.length ? sorted[sorted.length - 1]! : null;
+  return { lastChangeAt, newestUnreadable: newest !== null && unread(newest) };
+}
+
+/** Why "Ask for an update" did not run (work-door-project-rows §3.2). */
+export type CheckNowResult =
+  | { ok: true; queued: false; checkedAt: string }
+  | { ok: true; queued: true; eligibleAt: string }
+  | { ok: false; reason: 'chief-of-staff-off' | 'union-unreadable' | 'no-project' | 'paused' | 'done' | 'not-recorded' };
+
+export type AppTapRefusal = 'union-unreadable' | 'no-project' | 'project-changed' | 'done' | 'not-paused' | 'no-item' | 'not-owner-judged' | 'item-changed' | 'duplicate-item-id' | 'not-all-checked' | 'write-failed';
+export type AppTapResult = { ok: true; bs: BindingState } | { ok: false; reason: AppTapRefusal };
+
+/** A phone tap's message reference: the owner device that signed it (work-door-project-rows §3.4). */
+export const APP_MESSAGE_REF_PREFIX = 'instar-app:';
+export const APP_PAUSE_QUOTE = 'Paused in the Instar app.';
+export const APP_RESUME_QUOTE = 'Resumed in the Instar app.';
+
+/** The binding's done item, by id. */
+function itemOf(bs: BindingState, itemId: string): { id: string; kind: string; text: string } | null {
+  const list = Array.isArray(bs.binding?.doneDefinition) ? bs.binding!.doneDefinition as Array<Record<string, unknown>> : [];
+  const it = list.find((d) => d && d.id === itemId);
+  return it ? { id: String(it.id), kind: String(it.kind ?? ''), text: String(it.text ?? '') } : null;
 }
 
 export type PauseAskResult =
@@ -431,10 +525,16 @@ export class ChiefOfStaffLoop {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
-  constructor(private readonly d: ChiefOfStaffLoopDeps) {}
+  private readonly creationPlacement: CreationPlacementSnapshot;
+  constructor(private readonly d: ChiefOfStaffLoopDeps) {
+    this.creationPlacement = new CreationPlacementSnapshot({ enabled: d.enabled, version: () => d.journal.creationSourceVersion?.() ?? null, load: () => d.journal.loadUnionCompleteReadOnly?.() ?? null });
+  }
+
+  creationPlacementSnapshot(): CreationPlacementView { return this.creationPlacement.get(); }
 
   start(): void {
     if (this.timer) return;
+    this.creationPlacement.refresh();
     const ms = Math.max(5, this.d.config().tickMinutes) * 60_000;
     this.timer = setInterval(() => { void this.tick(); }, ms);
     (this.timer as unknown as { unref?: () => void }).unref?.();
@@ -490,6 +590,87 @@ export class ChiefOfStaffLoop {
     try { return foldTreeState(this.unionMemo()); } catch { /* @silent-fallback-ok: an unreadable union draws no tree; the loop health shows lastError on its next tick */ return new Map(); }
   }
 
+  /**
+   * Bound project goals by conversation key, or null when the journal could not be read. A read that fails
+   * CLOSED: "no projects" must never be inferred from an unreadable journal (conversation-groups-phone §3,
+   * whose confirm would otherwise overwrite an existing binding).
+   */
+  boundProjectContents(): Map<string, { goal: string; doneDefinition: Array<{ id: string; kind: string; text: string; certify?: string }>; repos: string[] }> | null {
+    // Only a complete read may say "not bound" (the tail read loadUnion() makes drops older bindings). No complete
+    // reader wired, unreadable, or incomplete: null, and the caller refuses (fail closed).
+    let union: UnionEntry[] | null;
+    try { union = this.d.journal.loadUnionComplete?.() ?? null; } catch { /* @silent-fallback-ok: null IS the reported answer; the caller refuses with could-not-check */ return null; }
+    if (!union) return null;
+    return new Map(boundProjects(union).map((p) => [p.conversationKey, { goal: p.goal, doneDefinition: p.doneDefinition, repos: p.linked?.repos ?? [] }]));
+  }
+
+  ownerNeedsWithdrawal(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsWithdrawal>(union => findOwnerNeedsWithdrawal(union, ask));
+  }
+
+  ownerNeedsCompletion(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsCompletionReceipt>(union => findOwnerNeedsCompletion(union, ask));
+  }
+
+  /** Read the exact request and its outcome from one complete coordinator snapshot. */
+  ownerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, disclosure: Parameters<typeof resolveOwnerNeedsWaitIdentity>[2],
+  ) {
+    return this.readOwnerNeedsRecord(union => {
+      const withdrawal = findOwnerNeedsWithdrawal(union, ask);
+      const completion = findOwnerNeedsCompletion(union, ask);
+      if (withdrawal && completion) throw new Error('conflicting owner request decisions');
+      if (withdrawal) return { status: 'withdrawn', withdrawal } as const;
+      if (completion) return { status: 'completed', completion } as const;
+      const current = resolveOwnerNeedsWaitIdentity(union, ask.project, disclosure);
+      return current && ownerNeedsAskKey(current) === ownerNeedsAskKey(ask)
+        ? { status: 'pending', ask: current } as const
+        : { status: 'stale' } as const;
+    });
+  }
+
+  /** Called by an authenticated decision transaction after evidence collection. */
+  appendOwnerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, leaseEpoch: number,
+    disclosure: () => Parameters<typeof resolveOwnerNeedsWaitIdentity>[2] | null,
+    decision: OwnerNeedsDecisionWrite,
+  ): Promise<boolean> {
+    const journal = this.d.journal;
+    if (!journal.appendOwnerNeedsDecision || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) return Promise.resolve(false);
+    return journal.appendOwnerNeedsDecision(leaseEpoch, () => {
+      if (!this.checksHere()) return null;
+      const currentDisclosure = disclosure();
+      if (!currentDisclosure) return null;
+      const current = this.ownerNeedsDecision(ask, currentDisclosure);
+      if (!current.available || current.record?.status !== 'pending') return null;
+      if (decision.kind === 'completion') {
+        if (hlcKey(decision.bindingHlc) !== ask.bindingVersion) return null;
+        return { key: ownerNeedsCompletionRecordKey(ask), build: buildOwnerNeedsCompletion(ask, decision.bindingHlc, leaseEpoch, decision.check) };
+      }
+      const { record } = decision;
+      if (record.leaseEpoch !== leaseEpoch || record.key !== ownerNeedsAskKey(ask) || ownerNeedsAskKey(record.ask) !== record.key) return null;
+      return { key: 'owner-ask-withdrawal:' + record.key, build: buildOwnerNeedsWithdrawal(record) };
+    });
+  }
+
+  /** Absence is meaningful only after reading the complete authenticated journal. */
+  private readOwnerNeedsRecord<T>(lookup: (union: UnionEntry[]) => T | null):
+    { available: true; record: T | null } | { available: false } {
+    try {
+      const union = this.d.journal.loadUnionCompleteReadOnly?.();
+      return union ? { available: true, record: lookup(union) } : { available: false };
+    } catch {
+      // @silent-fallback-ok: the consumer receives explicit unavailability.
+      return { available: false };
+    }
+  }
+
+  /** A binding's absence is meaningful only in a complete, non-flushing union. */
+  bindingPreviewKeys(): ReadonlySet<string> | null {
+    const snapshot = this.readOwnerNeedsRecord((union) => new Set(boundProjects(union).map((project) => project.conversationKey)));
+    return snapshot.available ? snapshot.record : null;
+  }
+
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
   projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null }> {
     let union: UnionEntry[] = [];
@@ -506,24 +687,42 @@ export class ChiefOfStaffLoop {
    * union read (projectDetail reads the union per project). Null when the union is unreadable, so a caller
    * can say "could not check" instead of showing no projects.
    */
-  projectsOverview(): Array<{ conversationKey: string; title: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; parked: boolean; doneDefinition: Array<{ id: string; text: string }>; doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null; pausedBy: { who: string; at: string; quote: string; messageRef: string } | null; lastNote: string | null }> | null {
+  projectsOverview(): ProjectOverviewRow[] | null {
     let union: UnionEntry[] = [];
     try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: null tells the caller the projects could not be read; the loop health shows lastError */ return null; }
     const cfg = this.d.config(); const now = new Date(this.d.now());
     // The newest check note per project (one pass), so a project with no verdict can say why.
-    const notes = new Map<string, { at: string; note: string }>();
+    const notes = new Map<string, { at: string; note: string; verdict: string }>();
+    // Every check per project (the same pass), for when its evidence last changed and whether the newest one could read it.
+    const checksBy = new Map<string, Array<{ at: string; hash: string; note: string }>>();
     for (const e of union) {
       const d = e.data as { recordType?: unknown; conversationKey?: unknown; at?: unknown; note?: unknown };
+      if (d.recordType === 'check-event' && typeof d.conversationKey === 'string' && typeof d.at === 'string') {
+        const list = checksBy.get(d.conversationKey) ?? checksBy.set(d.conversationKey, []).get(d.conversationKey)!;
+        list.push({ at: d.at, hash: String((e.data as { evidenceHash?: unknown }).evidenceHash ?? ''), note: typeof d.note === 'string' ? d.note : '' });
+      }
       if (d.recordType !== 'check-event' || typeof d.conversationKey !== 'string' || typeof d.note !== 'string' || !d.note) continue;
       // A carried-forward check says only "no new evidence"; the newest note that says something explains more.
       if (/^\s*no new evidence\s*$/i.test(d.note)) continue;
       const at = String(d.at ?? ''); const prev = notes.get(d.conversationKey);
-      if (!prev || at > prev.at) notes.set(d.conversationKey, { at, note: d.note });
+      if (!prev || at > prev.at) notes.set(d.conversationKey, { at, note: d.note, verdict: String((d as { verdict?: unknown }).verdict ?? '') });
     }
     return boundProjects(union).map((p) => {
-      const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
-      const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? '') })).filter((d) => d.id && d.text);
-      return { conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems, pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding), lastNote: notes.get(p.conversationKey)?.note ?? null };
+      const cadenceHours = Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours);
+      const ev = evidenceChange(checksBy.get(p.conversationKey) ?? []);
+      // The same per-project jitter tick() uses, so the shown next check is the real one (work-door-project-rows §3.1.4).
+      const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: cadenceHours, maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, now, p.binding);
+      const done = (Array.isArray(p.doneDefinition) ? p.doneDefinition : []).map((d: { id?: unknown; text?: unknown; kind?: unknown; certify?: unknown }) => ({ id: String(d.id ?? ''), text: String(d.text ?? ''), kind: d.kind === 'judgment' ? 'judgment' as const : 'deterministic' as const, ...(d.kind === 'judgment' ? { certify: d.certify === 'agent-may-certify' ? 'agent-may-certify' as const : 'owner-confirms' as const } : {}) })).filter((d) => d.id && d.text);
+      return {
+        conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, parked: st.parked, doneDefinition: done, doneItems: st.lastDoneItems,
+        pausedBy: ownerPause(p.binding as unknown as Record<string, unknown>) ?? ownerPause(p.binding.binding), lastNote: notes.get(p.conversationKey)?.note ?? null,
+        nextCheckAt: st.nextCheckAt, breakerTripped: st.breakerTripped, restartsWithoutProgress: st.restartsWithoutProgress,
+        ownerChecks: { ...(p.binding.ownerChecks ?? {}) }, bindingRef: p.binding.bindingHlc ? hlcKey(p.binding.bindingHlc) : null,
+        // A queued "Ask for an update" newer (by HLC) than the last check (work-door-project-rows §3.1.4).
+        checkRequested: p.binding.lastCheckRequestHlc !== null && (!st.lastCheckHlc || compareHlc(p.binding.lastCheckRequestHlc, st.lastCheckHlc) > 0),
+        lastReport: notes.get(p.conversationKey) ?? null,
+        lastProgressAt: st.lastProgressAt, lastEvidenceChangeAt: ev.lastChangeAt, lastCheckUnreadable: ev.newestUnreadable, cadenceHours,
+      };
     });
   }
 
@@ -585,7 +784,9 @@ export class ChiefOfStaffLoop {
   }
 
   async tick(): Promise<void> {
-    if (this.ticking) return;
+    this.creationPlacement.refresh();
+    // A tick that fires while "Ask for an update" runs is not dropped: it runs as soon as that check ends.
+    if (this.ticking) { if (this.checkNowRunning) this.tickWaiting = true; return; }
     this.ticking = true;
     const now = this.d.now();
     try {
@@ -609,13 +810,15 @@ export class ChiefOfStaffLoop {
       for (const p of projects) states.set(p.conversationKey, foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, new Date(now), p.binding));
       // Settle open intents first (step 4) — a stuck intent blocks everything for its conversation.
       await this.settleOpen(union);
-      const due = planDue(projects, states, this.dirty, now, cfg.dirtyGapMinutes);
-      let restartsThisTick = 0;
+      // One tick less a minute: a tick that fires a little early still honours a request queued one tick ago.
+      const due = planDue(projects, states, this.dirty, now, cfg.dirtyGapMinutes, this.requestGapMs() / 60_000);
+      // One restart budget per tick interval, shared with "Ask for an update" (work-door-project-rows §3.2).
+      let restartsThisTick = this.recentRestarts(now);
       for (const p of due) {
         this.dirty.delete(p.conversationKey);
         const prev = states.get(p.conversationKey) ?? null;
         const r = await this.checkProject(p, prev, lease.live && !graceTick, cfg, restartsThisTick, now);
-        if (r.restarted) restartsThisTick++;
+        if (r.restarted) { restartsThisTick++; this.restartTimes.push(now); }
       }
       // Note on cadence — the Needs-you items are DERIVED from the folds (a restart cannot drop them), the
       // cadence from `note` records; only transient Results / Can't-see lines live in memory until the note.
@@ -625,6 +828,12 @@ export class ChiefOfStaffLoop {
       const noteStates = new Map<string, ProjectCheckState>();
       for (const p of projects) noteStates.set(p.conversationKey, foldProjectCheckState(noteUnion, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, new Date(now), p.binding));
       await this.maybeSendNote(now, cfg, lease, noteUnion, projects, noteStates);
+      // Wait cards (work-board-cards-appear §1): mirror this tick's recorded waits onto the board. Not on the grace
+      // tick after a holder change, so the previous holder's card records have a tick to arrive. Never fails the tick.
+      if (this.d.waitCards && !graceTick) {
+        try { this.d.waitCards.sync({ union: noteUnion, projects: projects.map((p) => ({ conversationKey: p.conversationKey, title: this.label(p), goal: p.goal, doneDefinition: p.doneDefinition })), states: noteStates }); }
+        catch (e) { /* @silent-fallback-ok: logged; the cards are re-synced next tick */ this.d.log?.(`[chief-of-staff] wait cards failed: ${(e as Error)?.message}`); }
+      }
       this.d.journal.emit(`last-tick:${this.d.machineId}`, buildLastTick(this.d.machineId, new Date(now).toISOString()));
       this.health.lastTickAt = new Date(now).toISOString(); this.health.lastTickMachine = this.d.machineId; this.health.ticks++; this.health.lastError = null;
     } catch (e) { /* @silent-fallback-ok: the failure is recorded in loop health + log and the project is re-checked next tick */
@@ -666,9 +875,13 @@ export class ChiefOfStaffLoop {
     let verdict = floored.verdict;
     let restarted = false;
     // The verdict the check-event records is final BEFORE any action: the done-candidate adjustments are pure.
-    const doneCandidate = verdict === 'done-verified' || (verdict === 'claims-done' && allDeterministicPass);
+    // A project with only judgment items that the judge reads as claiming done goes to the owner's Confirm-done too
+    // (work-door-project-rows §3.5: the conversational equivalent of the phone's Finish for such projects).
+    const judgmentOnlyClaim = verdict === 'claims-done' && deterministic.length === 0 && judgmentItems.length > 0;
+    const doneCandidate = verdict === 'done-verified' || (verdict === 'claims-done' && allDeterministicPass) || judgmentOnlyClaim;
     // Every judgment item pends on the owner until a delegated judge exists (spec: declare-done defaults to NOT done);
-    // `certify: agent-may-certify` is accepted by the schema but is not yet honoured here.
+    // `certify: agent-may-certify` is accepted by the schema but is not yet honoured here. The owner's per-item checks
+    // (work-door-project-rows §3.3) never close a project by themselves: only the owner's Finish / Confirm-done does.
     const pendingJudgment = doneCandidate ? judgmentItems : [];
     if (doneCandidate) { if (pendingJudgment.length === 0) { if (leaseLive) verdict = 'done-verified'; } else verdict = 'waiting-on-user'; }
     if (verdict === 'unknown') this.bumpUnknown(p, cfg, floored.reason); else this.unknownStreak.set(p.conversationKey, 0);
@@ -724,7 +937,7 @@ export class ChiefOfStaffLoop {
   }
 
   private recordCheck(p: BoundProject, verdict: CosVerdict, note: string, hash: string, ids: string[], progress: boolean, highWater: number, now: number, doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>): number | undefined {
-    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: note.slice(0, 500), ...(doneItems ? { doneItems } : {}) })).seq;
+    return this.d.journal.emit(`check:${p.conversationKey}:${now}`, buildCheckEvent({ conversationKey: p.conversationKey, verdict, evidenceHash: hash, evidenceIds: ids, progressSeen: progress, netDiffHighWater: highWater, machine: this.d.machineId, at: new Date(now).toISOString(), note: cutAtWord(note, 500), ...(doneItems ? { doneItems } : {}) })).seq;
   }
 
   private bumpUnknown(p: BoundProject, cfg: ChiefOfStaffLoopConfig, why: string): void {
@@ -907,6 +1120,9 @@ export class ChiefOfStaffLoop {
     }
     const bs = foldBindingState(union).get(ask.key);
     if (!bs?.bindingHlc || !bs.confirmed || (event === 'owner-pause' && bs.closed)) return 'ignored';
+    // An owner decision newer than this ask (e.g. a Pause or Resume from the owner's phone, work-door-project-rows
+    // §3.4) outlives it: the old button no longer applies.
+    if (bs.lastOwnerDecisionAt && bs.lastOwnerDecisionAt > ask.sentAt) { this.clearAsksFor(ask.key); return 'ignored'; }
     const rec: OwnerPauseRecord = { who: this.safe(() => pa.ownerName(), null) || 'owner', at: new Date(this.d.now()).toISOString(), quote: ask.ownerText, messageRef: ask.marker };
     const r = this.d.journal.emit(`lifecycle:${ask.key}:${this.d.now()}`, buildOwnerPauseEvent(ask.key, event, bs.bindingHlc, rec, askId));
     if (r.outcome !== 'emitted' && r.outcome !== 'accepted') return 'write-failed';
@@ -942,22 +1158,226 @@ export class ChiefOfStaffLoop {
     // confirm-done (§1.3/§6): the owner confirms the JUDGMENT items; the deterministic items are re-checked
     // at tap time and must all pass, the lease must be live, and the verified close is recorded as a
     // `done-verified` check-event (owner-confirmed) before the lifecycle close — never a close on a stale checklist.
-    if (!this.lease(this.d.now(), union).live) return 'ignored';
+    const r = await this.confirmDoneCore(conversationKey, union, bs, at, null);
+    if (typeof r === 'object') { this.pendingNote.push({ kind: 'result', text: `${r.title}: not closed — these checks still fail: ${r.failing.join('; ')}.` }); return 'ignored'; }
+    return r === 'ok' ? 'ok' : 'ignored';
+  }
+
+  /**
+   * The shared Confirm-done steps (the note's button, the console PIN tap, and the phone's Finish). `recheck` runs on
+   * a FRESH union after the gather (the only wait) and before anything is written; a refusal there writes nothing.
+   */
+  private async confirmDoneCore(conversationKey: string, union: UnionEntry[], bs: BindingState, at: string, recheck: ((fresh: UnionEntry[]) => AppTapRefusal | null) | null): Promise<'ok' | 'not-live' | 'no-project' | 'gather-failed' | 'not-recorded' | AppTapRefusal | { title: string; failing: string[] }> {
+    if (!this.lease(this.d.now(), union).live) return 'not-live';
     const project = boundProjects(union).find((x) => x.conversationKey === conversationKey);
-    if (!project) return 'ignored';
+    if (!project || !bs.bindingHlc) return 'no-project';
     const cfg = this.d.config();
     const prev = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, project.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), project.binding);
     let bundle: EvidenceBundle;
-    try { bundle = await this.d.gather(project, prev); } catch { /* @silent-fallback-ok: an unreadable checklist cannot certify a close (P20); the tap is ignored and the note keeps the Confirm-done item */ return 'ignored'; }
+    try { bundle = await this.d.gather(project, prev); } catch { /* @silent-fallback-ok: an unreadable checklist cannot certify a close (P20); the tap is ignored and the note keeps the Confirm-done item */ return 'gather-failed'; }
     const deterministic = project.doneDefinition.filter((i) => i.kind === 'deterministic');
     const failing = deterministic.filter((i) => bundle.doneItems[i.id] !== 'pass');
-    if (failing.length) { this.pendingNote.push({ kind: 'result', text: `${this.label(project)}: not closed — these checks still fail: ${failing.map((i) => i.text).join('; ')}.` }); return 'ignored'; }
+    if (failing.length) return { title: this.label(project), failing: failing.map((i) => i.text) };
     const verified = this.recordCheck(project, 'done-verified', 'owner-confirmed', evidenceHash(bundle), bundle.items.filter((i) => !i.unknown).map((i) => i.id).slice(0, 64), false, prev.netDiffHighWater, this.d.now(), bundle.doneItems);
-    if (verified === undefined) return 'ignored'; // the verified close must be on record BEFORE the project closes
-    this.d.journal.emit(`lifecycle:${conversationKey}:${this.d.now()}`, buildLifecycleEvent(conversationKey, 'closed', bs.bindingHlc, 'owner-tap', at));
+    if (verified === undefined) return 'not-recorded'; // the verified close must be on record BEFORE the project closes
+    if (this.d.journal.awaitDurable) { try { await this.d.journal.awaitDurable(verified); } catch { /* @silent-fallback-ok: the verified check is not durable ⇒ nothing closes; the caller is told */ return 'not-recorded'; } }
+    // The re-check runs AFTER the last wait and immediately before the close is written (no await between them), so
+    // an Uncheck, a Reopen or a binding edit that landed during the gather or the durability wait refuses the close.
+    if (recheck) {
+      this.memo = null;
+      let fresh: UnionEntry[];
+      try { fresh = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: nothing closes without re-reading the state; the caller is told */ return 'union-unreadable'; }
+      const refusal = recheck(fresh);
+      if (refusal) return refusal;
+    }
+    // The close itself is checked and made durable (work-door-project-rows §3.5): a refused close never answers "ok".
+    const closed = this.d.journal.emit(`lifecycle:${conversationKey}:${this.d.now()}`, buildLifecycleEvent(conversationKey, 'closed', bs.bindingHlc, 'owner-tap', at));
+    if (!(await this.durable(closed))) return 'not-recorded';
+    this.memo = null;
     const initiativeId = bs.binding && typeof bs.binding.initiativeId === 'string' ? bs.binding.initiativeId : null;
     if (initiativeId) this.safe(() => { this.d.mirrorInitiativeStatus(initiativeId, 'completed'); return true; }, false);
     return 'ok';
+  }
+
+  /** Whether this machine runs the Chief of Staff's checks right now (holds the serving lease). */
+  checksHere(): boolean { return this.safe(() => this.d.enabled(), false) && this.safe(() => this.d.holdsLease(), false); }
+
+  /** The loop's tick interval in ms: the fastest rate it checks any project. */
+  tickMs(): number { return Math.max(5, this.d.config().tickMinutes) * 60_000; }
+  /** "Ask for an update" eligibility: one tick less a minute after the last check, the SAME rule for the run-now
+   *  path and a queued request's tick (a tick that fires a little early still honours a request one tick old). */
+  requestGapMs(): number { return this.tickMs() - 60_000; }
+
+  /** Restarts started in the last tick interval, by ticks and by "Ask for an update" alike (one shared budget). */
+  private restartTimes: number[] = [];
+  private checkNowRunning = false;
+  private tickWaiting = false;
+  private recentRestarts(now: number): number {
+    this.restartTimes = this.restartTimes.filter((t) => now - t < this.requestGapMs());
+    return this.restartTimes.length;
+  }
+
+  /**
+   * "Ask for an update" (work-door-project-rows §3.2). On the serving-lease holder, idle, with the last check at
+   * least one tick old: one check of this project now — settleOpen, then exactly checkProject() under the tick's
+   * lease and grace-tick rules. Otherwise a replicated `check-requested` record the holder's next eligible tick
+   * honours. Never refused for timing; it approves nothing.
+   */
+  async checkNow(conversationKey: string, by: 'owner-tap' | 'chief-of-staff'): Promise<CheckNowResult> {
+    if (!this.safe(() => this.d.enabled(), false)) return { ok: false, reason: 'chief-of-staff-off' };
+    this.memo = null;
+    let union: UnionEntry[];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: nothing is checked without reading the state; the caller gets a named 503 */ return { ok: false, reason: 'union-unreadable' }; }
+    // Done is the close record, not a verdict (a done-verified check under a lapsed check-in lease is still open).
+    const bs = foldBindingState(union).get(conversationKey);
+    if (!bs?.bindingHlc || !bs.confirmed || !bs.binding) return { ok: false, reason: 'no-project' };
+    if (bs.closed) return { ok: false, reason: 'done' };
+    const p = boundProjects(union).find((x) => x.conversationKey === conversationKey);
+    if (!p || !p.binding.bindingHlc) return { ok: false, reason: 'no-project' };
+    if (p.binding.pausedBy) return { ok: false, reason: 'paused' };
+    const cfg = this.d.config();
+    const now = this.d.now();
+    const prev = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(conversationKey) }, new Date(now), p.binding);
+    const eligibleAt = prev.lastCheckAt ? Date.parse(prev.lastCheckAt) + this.requestGapMs() : now;
+    const runHere = !this.ticking && this.safe(() => this.d.holdsLease(), false) && now >= eligibleAt;
+    if (!runHere) {
+      // A request already waiting (newer than the last check) is enough: one check answers every request older than it.
+      const waiting = p.binding.lastCheckRequestHlc !== null && (!prev.lastCheckHlc || compareHlc(p.binding.lastCheckRequestHlc, prev.lastCheckHlc) > 0);
+      if (!waiting) {
+        const r = this.d.journal.emit(`lifecycle:${conversationKey}:${now}`, buildCheckRequestedEvent(conversationKey, p.binding.bindingHlc, by, new Date(now).toISOString()));
+        if (!(await this.durable(r))) return { ok: false, reason: 'not-recorded' };
+        this.memo = null;
+      }
+      return { ok: true, queued: true, eligibleAt: new Date(Math.max(now, eligibleAt)).toISOString() };
+    }
+    this.ticking = true; this.checkNowRunning = true;
+    try {
+      await this.settleOpen(union);
+      const lease = this.lease(now, union);
+      const graceTick = newestTickMachine(union) !== null && newestTickMachine(union) !== this.d.machineId;
+      this.dirty.delete(conversationKey);
+      const r = await this.checkProject(p, prev, lease.live && !graceTick, cfg, this.recentRestarts(now), now);
+      if (r.restarted) this.restartTimes.push(now);
+      this.memo = null;
+      let after: UnionEntry[];
+      try { after = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable re-read reports the check as not recorded */ return { ok: false, reason: 'not-recorded' }; }
+      const st = foldProjectCheckState(after, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(now), p.binding);
+      if (!st.lastCheckAt || st.lastCheckAt === prev.lastCheckAt) return { ok: false, reason: 'not-recorded' };
+      return { ok: true, queued: false, checkedAt: st.lastCheckAt };
+    } catch (e) { /* @silent-fallback-ok: a throwing check is logged and reported as not recorded; the next tick retries */
+      this.d.log?.(`[chief-of-staff] check-now failed for ${conversationKey}: ${(e as Error)?.message}`);
+      return { ok: false, reason: 'not-recorded' };
+    } finally {
+      this.ticking = false; this.checkNowRunning = false;
+      if (this.tickWaiting) { this.tickWaiting = false; void this.tick(); }
+    }
+  }
+
+  /**
+   * The owner's phone pauses or resumes a project (work-door-project-rows §3.4). The CALLER has proven the owner's
+   * own presence-signed tap over the exact line; this writes the same owner-pause / owner-resume event a Telegram
+   * tap writes. Every proven tap is recorded, even when the local fold already agrees (a decision made before
+   * replication arrives is never lost); `tapId` is the tap's own nonce, so one tap decides once.
+   */
+  async appPause(input: { conversationKey: string; action: 'pause' | 'resume'; who: string; note: string | null; deviceId: string; tapId: string }): Promise<AppTapResult> {
+    const v = this.appTapPrecheck({ conversationKey: input.conversationKey, kind: input.action });
+    if (!v.ok) return v;
+    const bs = v.bs;
+    const at = new Date(this.d.now()).toISOString();
+    const quote = input.note && input.note.length > 0 ? input.note : (input.action === 'pause' ? APP_PAUSE_QUOTE : APP_RESUME_QUOTE);
+    const rec: OwnerPauseRecord = { who: input.who || 'owner', at, quote, messageRef: `${APP_MESSAGE_REF_PREFIX}${input.deviceId}` };
+    const r = this.d.journal.emit(`lifecycle:${input.conversationKey}:${this.d.now()}`, buildOwnerPauseEvent(input.conversationKey, input.action === 'pause' ? 'owner-pause' : 'owner-resume', bs.bindingHlc!, rec, input.tapId));
+    if (!(await this.durable(r))) return { ok: false, reason: 'write-failed' };
+    this.memo = null;
+    this.clearAsksFor(input.conversationKey);
+    return { ok: true, bs };
+  }
+
+  /**
+   * The owner's phone checks or unchecks one judged done item (work-door-project-rows §3.3). The CALLER has proven
+   * the owner's presence-signed tap over a line naming the project, the item, its checkRef and the value. Recorded
+   * every time (never dropped because the local fold agrees). It never closes the project: Finish does.
+   */
+  async appItemCheck(input: { conversationKey: string; itemId: string; checkRef: string; checked: boolean; who: string; deviceId: string; tapId: string }): Promise<AppTapResult> {
+    const v = this.appTapPrecheck({ conversationKey: input.conversationKey, kind: 'item', itemId: input.itemId, checkRef: input.checkRef });
+    if (!v.ok) return v;
+    const at = new Date(this.d.now()).toISOString();
+    const r = this.d.journal.emit(`lifecycle:${input.conversationKey}:${this.d.now()}`, buildOwnerItemCheckEvent(input.conversationKey, v.bs.bindingHlc!, { who: input.who || 'owner', at, messageRef: `${APP_MESSAGE_REF_PREFIX}${input.deviceId}`, itemId: input.itemId, checked: input.checked, checkRef: input.checkRef }, input.tapId));
+    if (!(await this.durable(r))) return { ok: false, reason: 'write-failed' };
+    this.memo = null;
+    return { ok: true, bs: v.bs };
+  }
+
+  /**
+   * Finish from the owner's phone (work-door-project-rows §3.5): the shared Confirm-done steps, refused unless the
+   * binding is the one the owner saw and every owner-judged item carries the owner's check — re-verified on a fresh
+   * read after the evidence gather, before anything is written.
+   */
+  async appFinish(input: { conversationKey: string; bindingRef: string }): Promise<AppTapResult | { ok: false; reason: 'checks-fail'; failing: string[] } | { ok: false; reason: 'chief-of-staff-paused' | 'gather-failed' | 'not-recorded' }> {
+    const v = this.appTapPrecheck({ conversationKey: input.conversationKey, kind: 'finish', bindingRef: input.bindingRef });
+    if (!v.ok) return v;
+    let union: UnionEntry[];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: nothing closes without reading the state */ return { ok: false, reason: 'union-unreadable' }; }
+    const r = await this.confirmDoneCore(input.conversationKey, union, v.bs, new Date(this.d.now()).toISOString(), (fresh) => {
+      const again = this.finishTarget(fresh, input.conversationKey, input.bindingRef);
+      return again.ok ? null : again.reason;
+    });
+    this.memo = null;
+    if (r === 'ok') return { ok: true, bs: v.bs };
+    if (typeof r === 'object') return { ok: false, reason: 'checks-fail', failing: r.failing };
+    if (r === 'not-live') return { ok: false, reason: 'chief-of-staff-paused' };
+    if (r === 'no-project') return { ok: false, reason: 'no-project' };
+    if (r === 'gather-failed' || r === 'not-recorded') return { ok: false, reason: r };
+    return { ok: false, reason: r };
+  }
+
+  /**
+   * What a phone tap may act on, checked BEFORE the owner's Face ID is spent (the challenge route) and again before
+   * writing. Pure reads; writes nothing.
+   */
+  appTapPrecheck(input: { conversationKey: string; kind: 'pause' | 'resume' | 'item' | 'finish'; itemId?: string; checkRef?: string; bindingRef?: string }): AppTapResult {
+    this.memo = null;
+    let union: UnionEntry[];
+    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: nothing is written without reading the current state; the caller gets a named 503 */ return { ok: false, reason: 'union-unreadable' }; }
+    if (input.kind === 'finish') return this.finishTarget(union, input.conversationKey, input.bindingRef ?? '');
+    const bs = foldBindingState(union).get(input.conversationKey);
+    if (!bs?.bindingHlc || !bs.confirmed || !bs.binding) return { ok: false, reason: 'no-project' };
+    if (input.kind === 'pause' && bs.closed) return { ok: false, reason: 'done' };
+    if (input.kind === 'resume' && !bs.pausedBy) return { ok: false, reason: 'not-paused' };
+    if (input.kind === 'item') {
+      if (bs.closed) return { ok: false, reason: 'done' };
+      const item = itemOf(bs, input.itemId ?? '');
+      if (!item) return { ok: false, reason: 'no-item' };
+      if (item.kind !== 'judgment') return { ok: false, reason: 'not-owner-judged' };
+      const list = Array.isArray(bs.binding.doneDefinition) ? bs.binding.doneDefinition as Array<Record<string, unknown>> : [];
+      if (list.filter((d) => d && d.id === item.id).length > 1) return { ok: false, reason: 'duplicate-item-id' };
+      if (doneItemCheckRef(String(bs.binding.goal ?? ''), item.id, item.text) !== input.checkRef) return { ok: false, reason: 'item-changed' };
+    }
+    return { ok: true, bs };
+  }
+
+  /** Finish's target: open, the binding the owner saw, every owner-judged item checked by the owner. */
+  private finishTarget(union: UnionEntry[], conversationKey: string, bindingRef: string): AppTapResult {
+    const bs = foldBindingState(union).get(conversationKey);
+    if (!bs?.bindingHlc || !bs.confirmed || !bs.binding) return { ok: false, reason: 'no-project' };
+    if (bs.closed) return { ok: false, reason: 'done' };
+    if (hlcKey(bs.bindingHlc) !== bindingRef) return { ok: false, reason: 'project-changed' };
+    const list = Array.isArray(bs.binding.doneDefinition) ? bs.binding.doneDefinition as Array<Record<string, unknown>> : [];
+    // An item whose id is shared cannot be checked on its own; the binding-scoped Finish confirms it, as Confirm-done does.
+    const ids = new Map<string, number>();
+    for (const d of list) if (d) ids.set(String(d.id), (ids.get(String(d.id)) ?? 0) + 1);
+    const missing = list.filter((d) => d && d.kind === 'judgment' && (d.certify ?? 'owner-confirms') === 'owner-confirms' && ids.get(String(d.id)) === 1 && !bs.ownerChecks[String(d.id)]);
+    if (missing.length) return { ok: false, reason: 'not-all-checked' };
+    return { ok: true, bs };
+  }
+
+  /** Accepted AND durable, or false (the caller tells the owner it did not happen). */
+  private async durable(r: { outcome: string; seq?: number }): Promise<boolean> {
+    if (r.outcome !== 'emitted' && r.outcome !== 'accepted') return false;
+    if (r.seq !== undefined && this.d.journal.awaitDurable) {
+      try { await this.d.journal.awaitDurable(r.seq); } catch { /* @silent-fallback-ok: not durable ⇒ the owner is told to tap again; a second tap is a new decision, recorded once */ return false; }
+    }
+    return true;
   }
 
   /** The project's short name: its real title when one exists, else the goal's lead cut at a word boundary. */
@@ -975,9 +1395,10 @@ export class ChiefOfStaffLoop {
   /** One "looks finished, needs your OK" item: the project's name, what passed, the judgment item(s) quoted, its link, and a button that names it. */
   private confirmItem(p: BoundProject, checksPassed: number): NoteItem {
     const title = this.label(p);
-    const judgment = p.doneDefinition.filter((i) => i.kind === 'judgment').map((i) => String(i.text ?? '').trim()).filter(Boolean);
+    const checked = p.binding?.ownerChecks ?? {};
+    const judgment = p.doneDefinition.filter((i) => i.kind === 'judgment' && !checked[i.id]).map((i) => String(i.text ?? '').trim()).filter(Boolean);
     return {
-      kind: 'needs-you', text: `${title}: every automatic check passes; needs your OK.`,
+      kind: 'needs-you', text: checksPassed > 0 ? `${title}: every automatic check passes; needs your OK.` : `${title}: says it is done; it has no automatic checks, so it needs your OK.`,
       action: { label: confirmButtonLabel(title), id: `cos:confirm-done:${p.conversationKey}` },
       confirm: { title, checksPassed, judgment, url: this.projectUrl(p.conversationKey) },
     };

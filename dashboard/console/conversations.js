@@ -9,6 +9,8 @@ import { erasureControls } from './conversation-erasure.js';
 import { machineControls } from './conversation-machines.js';
 import { renderSuggestions } from './conversation-suggestions.js';
 import { openMakeCard, sourceKeyFor, messageIdFor } from './make-card.js';
+import { mountSourceCards } from './conversation-source-cards.js';
+import { conversationSession } from './conversation-session.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -79,7 +81,7 @@ function unlock(main, retry) {
   setKids(main, el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
     el('div', { class: 'need-card' },
-      el('p', { class: 'need-sub', text: 'Unlock to see your efforts and conversation history.' }),
+      el('p', { class: 'need-sub', text: 'Unlock to see your groups and conversation history.' }),
       el('button', { type: 'button', class: 'btn-primary btn-inline', text: 'Unlock', onclick: async () => {
         const result = await askPin({ title: 'Your conversations', explain: 'Unlock your private conversations.', adapter: 'session' });
         if (result) retry();
@@ -91,9 +93,13 @@ function failure(main, result, retry) {
   const text = result.status === 503 ? 'Conversations is not switched on here yet.'
     : result.status === 404 ? 'This conversation is unavailable.'
       : 'Conversations could not be loaded. Try again.';
+  // Switched off here (never released on this agent): the working Chats page is offered, not a dead end.
+  const off = result.status === 503 && result.data?.code === 'conversation-graph-off';
   setKids(main, el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
-    note(text), el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
+    note(off ? 'This view of your conversations is not switched on here yet. Chats shows the same conversations, and you can read and reply there.' : text),
+    off ? el('a', { class: 'btn-primary btn-inline', href: '#/work/chats', text: 'Open Chats' })
+      : el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
 }
 
 function itemRow(item, state) {
@@ -193,8 +199,8 @@ export async function renderConversations(main, ctx) {
     ctx?.selfRefreshing?.();
     await renderSuggestions({ main, send: (path, body) => read(path, controller.signal, body), current,
       unlock: () => unlock(main, retry),
-      header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested efforts' }),
-      back: nav('Back to your efforts', href()),
+      header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested groups' }),
+      back: nav('Back to your groups', href()),
       openEffort: (effort) => href({ ref: encodeNodeRef(effort) }) });
     return;
   }
@@ -211,12 +217,30 @@ export async function renderConversations(main, ctx) {
       nav(state.q && !origin.includes('node=') ? 'Back to results' : 'Back', origin),
       pageHead({ eyebrow: 'Conversations', headline: node.title }),
       syncLine);
+    // "Watch the session": the session answering this conversation, like the app's Open session.
+    const liveKey = node.kind === 'conversation' ? sourceKeyFor(node.ref) : null;
+    if (liveKey) {
+      const live = el('p', { class: 'need-sub conversation-live-session', role: 'status', text: 'Checking for a running session…' });
+      body.append(live);
+      void read('/sessions?scope=pool', controller.signal).then((res) => {
+        if (!current()) return;
+        const m = conversationSession(res, liveKey);
+        setKids(live, m.href ? el('a', { class: 'btn-quiet btn-inline', href: m.href, text: m.label }) : null, el('span', { text: m.href ? ` ${m.words}` : m.words }));
+      }).catch(() => {});
+    }
     // Original history leads. No generated digest substitutes for the source.
     if (node.kind === 'conversation' && node.source) {
       setKids(main, body);
       const history = await transcript(node, controller, current, main, retry);
       if (!current() || !history) return;
       body.append(history);
+      const sourceKey = sourceKeyFor(node.ref);
+      if (sourceKey) {
+        const sourceCards = el('section', { class: 'list-section conversation-source-cards' });
+        body.append(sourceCards);
+        void mountSourceCards({ host: sourceCards, key: sourceKey,
+          read: path => read(path, controller.signal), current, unlock: () => unlock(main, retry) });
+      }
     }
     if (node.kind === 'conversation' && !node.openUrl && !node.source) body.append(note('The original conversation is not available here yet.'));
     if (model.children.length || model.nextCursor) {
@@ -277,7 +301,7 @@ export async function renderConversations(main, ctx) {
         }))));
     }
     const details = el('details', { class: 'conversation-details' }, el('summary', { text: 'More' }));
-    const role = new Map([['effort', 'Effort'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
+    const role = new Map([['effort', 'Group'], ['front-door', 'Front door'], ['worker', 'Worker conversation'], ['unassigned', 'Unassigned conversation']]).get(node.role);
     if (role) details.append(el('p', { class: 'need-sub', text: role }));
     if (node.openUrl) {
       const label = node.platform === 'telegram' ? 'Open in Telegram' : node.platform === 'slack' ? 'Open in Slack' : 'Open conversation';
@@ -337,7 +361,7 @@ export async function renderConversations(main, ctx) {
   if(localOnlyEnvelope(result)){
     const localWords=localOnlyWords(result),syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:localWords});
     const body=el('div',{class:'conversations-page'},pageHead({eyebrow:'Conversations',headline:'Your conversations'}),syncLine,
-      note('Create an effort here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
+      note('Create a group here while shared conversations are unavailable. These changes stay separate from the agreed view.'));
     const controls=effortActionControls({canCorrect:true,send:(path,payload)=>read(path,controller.signal,payload),current,unlock:()=>unlock(main,retry),refresh:retry});if(controls)body.append(controls);
     setKids(main,body);
     // A stopped removal is the very thing that takes the agreed view away, so its way to finish has to stay on this page.
@@ -378,7 +402,7 @@ export async function renderConversations(main, ctx) {
   const status = el('p', { class: 'need-sub', role: 'status' });
   const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:model.sync});
   const body = el('div', { class: 'conversations-page' },
-    pageHead({ eyebrow: 'Conversations', headline: state.view === 'overview' ? 'Your efforts' : 'All conversations' }),
+    pageHead({ eyebrow: 'Conversations', headline: state.view === 'overview' ? 'Your groups' : 'All conversations' }),
     tabs, form, syncLine, ...(rootRow ? [el('div', { class: 'rows conversation-rows' }, rootRow)] : []), rows, status);
   if (state.view === 'overview' && model.canCorrect) body.insertBefore(nav('Review suggestions', href({ view: 'suggestions' }), 'btn-quiet btn-inline'), status);
   const effortActions = effortActionControls({ canCorrect: model.canCorrect,
@@ -389,7 +413,7 @@ export async function renderConversations(main, ctx) {
   if (state.view === 'overview') void machineControls({ send: (path, sent) => read(path, controller.signal, sent), current,
     unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } }).then(controls => { if (controls && current()) body.append(controls); }).catch(() => {});
   if (!model.items.length) rows.append(el('p', { class: 'empty-line', text: state.q ? 'No conversations match this search.'
-    : state.view === 'overview' ? 'No efforts are organized yet. Your conversations are in All.' : 'No conversations are available.' }));
+    : state.view === 'overview' ? 'No groups yet. Your conversations are in All.' : 'No conversations are available.' }));
   if (state.view === 'overview' && (!model.items.length || model.hasMore)) body.append(nav('All conversations', href({ view: 'all' })));
   if (state.view === 'all' && cursor) {
     const cursors = new Set();
@@ -427,6 +451,6 @@ export function conversationsTile() {
   return el('div', { class: 'tiles' }, el('a', { class: 'tile', href: PAGE },
     el('span', { class: 't-icon', icon: 'chat' }),
     // Named for what it holds, so it is not a second "Conversations" next to the chats tile.
-    el('span', {}, el('span', { class: 't-name', text: 'Efforts' }),
+    el('span', {}, el('span', { class: 't-name', text: 'Groups' }),
       el('span', { class: 't-desc', text: 'Each piece of work you started, and the conversations behind it.' }))));
 }

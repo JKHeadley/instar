@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-19T02:21:42.822Z",
+  "slug": "graph-history-check-off-lane",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/ConversationGraphDefault.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -114,7 +114,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh\"",
-            "timeout": 5
+            "timeout": 45
           }
         ]
       },

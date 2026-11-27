@@ -4,4 +4,4 @@
 
 ## Evidence
 - Independent reads (codex-cli, gpt-6.2-sol) of both books, the approved text and the source messages: YES after two rounds of fixes; Building and Root family reads YES; report `docs/specs/reports/frontier-design-review-family-review-2026-11-17.md`.
-- Registry lints clean (tree parentage, insertion placement, back-references, single governing obligation, duplicates); standards ratchet 101 articles, family audits current.
+- Registry lints clean (tree parentage, insertion placement, back-references, single governing obligation, duplicates); standards ratchet 103 articles after merging main, family audits current (Building re-audited 2026-11-27 for the combined family).

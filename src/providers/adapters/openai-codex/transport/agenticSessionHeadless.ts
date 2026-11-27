@@ -56,6 +56,7 @@ import { UnexpectedError } from '../../../errors.js';
 import { redactSpawnError } from '../../../../core/redactSpawnError.js';
 import { OPENAI_CODEX_ID } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
+import { codexModelForCliAsync } from '../../../../core/codexCapabilities.js';
 import { normalizeCodexJsonlEvent } from '../observability/eventNormalizer.js';
 import { buildCodexChildEnv, buildCodexTmuxSessionEnv } from './codexSpawn.js';
 import type { OpenAiCodexConfig } from '../config.js';
@@ -69,7 +70,7 @@ class OpenAiCodexAgenticSession implements AgenticSessionHeadless {
     const sessionId = `ocs-${randomBytes(8).toString('hex')}`;
     const tmuxName = `instar-${sessionId}`;
     const cwd = options.workingDirectory ?? this.config.defaultWorkingDirectory ?? process.cwd();
-    const model = resolveCliModelFlag(options.model ?? this.config.defaultModel);
+    const model = await codexModelForCliAsync(resolveCliModelFlag(options.model ?? this.config.defaultModel), this.config.codexPath, 'keep');
     const sandbox = this.config.defaultSandboxMode ?? 'workspace-write';
 
     const codexArgs = [

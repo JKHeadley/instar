@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "stop-gate-marker-own-dir",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T01:55:45.872Z",
+  "artifactPath": "upgrades/side-effects/stop-gate-marker-own-dir.md",
+  "artifactSha256": "683b101302fbda2cf85910e7f4be1f9b9a6a9086f99df36225d3fe7eb8082f9c",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T01-55-37-026Z-stop-gate-marker-own-dir.json",
+    ".instar/instar-dev-traces/2026-11-21T01-54-46-498Z-stop-gate-marker-own-dir-7b3ff63a.json",
+    "docs/specs/stop-gate-marker-own-dir.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/stop-gate-greenpr-marker.test.ts",
+    "upgrades/next/stop-gate-marker-own-dir.md",
+    "upgrades/side-effects/stop-gate-marker-own-dir.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-131 stop-gate marker hardening; whole-PR trace.",
+  "eli16Path": "docs/specs/stop-gate-marker-own-dir.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stop-gate-marker-own-dir.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

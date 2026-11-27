@@ -342,7 +342,9 @@ describe('TRUSTED_REVIEWER_FRAMEWORKS (no spec egress to untrusted endpoints)', 
     // grok-build is first-party OAuth (subscription device-auth, no custom
     // endpoint), so it joins the allowlist — see the pi-cli exclusion below for
     // the line this list actually draws.
-    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli', 'claude-code', 'grok-build']);
+    // gemini-api (gemini-payg-metered-lane §2) is the metered DOOR, trusted because its
+    // host is a code constant and reviews travel only through the local server route.
+    expect(TRUSTED_REVIEWER_FRAMEWORKS).toEqual(['codex-cli', 'gemini-cli', 'claude-code', 'grok-build', 'gemini-api']);
     expect(isTrustedReviewerFramework('codex-cli')).toBe(true);
     expect(isTrustedReviewerFramework('gemini-cli')).toBe(true);
     expect(isTrustedReviewerFramework('claude-code')).toBe(true);
@@ -367,7 +369,9 @@ describe('geminiReviewer registry entry', () => {
   it('is the second registry entry (codex stays the preference leader)', () => {
     // claude-code is the third entry (REVIEWER-DOOR-REWIRING §1), config-gated
     // out of the ACTIVE set on the fleet.
-    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build', 'claude-code']);
+    // gemini-api (gemini-payg §2) is last and active only where the agent's door is
+    // configured, so the fleet's active set is unchanged.
+    expect(SUPPORTED_REVIEWER_FRAMEWORKS.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build', 'claude-code', 'gemini-api']);
   });
 
   it('ok: stub provider returns a structured review → status ok, gemini flag', async () => {
@@ -465,9 +469,27 @@ describe('geminiReviewer registry entry', () => {
         return 'Verdict: CLEAN';
       } },
     });
-    expect(invokedModel).toBe('balanced');
+    expect(invokedModel).toBe('gpt-6.2-sol');
     expect(strictPin).toBe(true);
-    expect(r.model).toBe('gpt-6-sol');
+    expect(r.model).toBe('gpt-6.2-sol');
     expect(r.status).toBe('ok');
+  });
+
+  it.each([['sol', 'gpt-6-sol'], ['astra', 'gpt-6-astra']] as const)(
+    'on a Codex CLI below 0.166.0 the %s feedback read runs and is recorded on %s', async (override, older) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'old-codex-review-'));
+    const bin = path.join(dir, 'codex');
+    fs.writeFileSync(bin, '#!/bin/sh\necho "codex-cli 0.165.0"\n', { mode: 0o755 });
+    const codexEntry = SUPPORTED_REVIEWER_FRAMEWORKS.find((f) => f.id === 'codex-cli')!;
+    let invokedModel: unknown;
+    const r = await codexEntry.review({
+      promptText: 'PROMPT', timeoutMs: 1000,
+      detectionOverride: { available: true, framework: 'codex-cli', model: 'gpt-6-astra', binaryPath: bin },
+      codexModelOverride: override,
+      providerOverride: { evaluate: async (_prompt, options) => { invokedModel = options?.model; return 'Verdict: CLEAN'; } },
+    });
+    expect(invokedModel).toBe(older);
+    expect(r).toMatchObject({ status: 'ok', model: older });
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/crossModelReviewer-piece3.test.ts:old-cli-cleanup' });
   });
 });

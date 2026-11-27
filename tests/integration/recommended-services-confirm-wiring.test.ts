@@ -85,7 +85,7 @@ describe('recommended services confirm wiring', () => {
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ type: 'one-time-action', userRequest: expect.stringContaining('Jev') }));
   });
 
-  it('the confirm route holds the unlock limits: insecure connection and the global cap', async () => {
+  it('the confirm route: refused on an insecure connection; limited per live token, never by the strangers\' cap (identity-security-piece1c)', async () => {
     const f = fixture(777);
     const { body: page } = await request(f.app).get(PATH);
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => true;
@@ -94,12 +94,15 @@ describe('recommended services confirm wiring', () => {
     expect(insecure.body.error).toBe('insecure-connection');
     (f.ctx as { pinEntryRefusedHere?: () => boolean }).pinEntryRefusedHere = () => false;
     const failures: string[] = [];
-    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: (key: string) => key === GLOBAL_PIN_KEY, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
+    // its own per-token count full → 429
+    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: (key: string) => key.startsWith('req:'), recordFailure: (k: string) => { failures.push(k); return 0; }, recordSuccess: () => undefined };
     const capped = await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '654321', answer: 'yes' });
     expect(capped.status).toBe(429);
-    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => failures.push(k), recordSuccess: () => undefined };
+    // a wrong PIN is charged to this token's own count, never the strangers' cap
+    (f.ctx as { pinAttemptStore?: unknown }).pinAttemptStore = { blocked: () => false, recordFailure: (k: string) => { failures.push(k); return 4; }, recordSuccess: () => undefined };
     await request(f.app).post(PATH).set('X-Instar-Request', '1').send({ token: page.token, pin: '000000', answer: 'yes' });
-    expect(failures).toContain(GLOBAL_PIN_KEY);
+    expect(failures.some((k) => k.startsWith('req:'))).toBe(true);
+    expect(failures).not.toContain(GLOBAL_PIN_KEY);
   });
 
   it('an empty PIN never charges the cap every address shares', async () => {

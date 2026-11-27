@@ -79,7 +79,7 @@ export interface TrustAccountPathRuntime {
   bindDevices(devices: DeviceDirectory | null): void;
   propose(change: TrustChange): Promise<ProposeResult>;
   /** A receipt from an adapter's own inbound path on this machine. */
-  ingest(r: Receipt): Promise<ReceiptOutcome | 'recorded-for-holder'>;
+  ingest(r: Receipt): Promise<ReceiptOutcome>;
   /** Peer-committed records (the holder consumes receipts written elsewhere). */
   onPeerRecords(records: Array<{ recordKey: string; data: Record<string, unknown> }>): Promise<void>;
   checkAtLoad(): Promise<Narrowed[]>;
@@ -301,9 +301,11 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
     async ingest(r) {
       if (!service.claims(r)) return 'not-for-us';
       if (d.holdsLease()) return service.onReceipt(r);
-      // Not the holder: write the receipt; the holder consumes it from the replicated stream.
-      const w = await store.write('receipt', { ...r }, `tj:receipt:${r.uniqueKey}`);
-      return w.ok ? 'recorded-for-holder' : 'not-recorded';
+      // SEC-088: not the holder. A receipt this machine wrote would reach the holder as a record whose
+      // every field is this machine's word, and a compromised paired machine could write the owner's
+      // "approve" that way. So nothing is handed over: the owner is told to send the reply again,
+      // and the holder (which polls the chat itself) sees it first-hand.
+      return service.onReceiptAwayFromHolder(r);
     },
     async onPeerRecords(records) {
       store.applyCommitted(records);
@@ -312,8 +314,10 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         if (data.recordType !== 'receipt') continue;
         const r = data as unknown as Receipt;
         if (store.receiptConsumed(r.uniqueKey)) continue;
-        // The receipt is already in the store (folded above); process it as the holder.
-        await service.onReceiptFromStore(r);
+        // SEC-088: a receipt replicated from a peer is that peer's claim, never the owner's reply.
+        // It approves nothing and accepts nothing; only a receipt this machine's own adapter
+        // received (ingest above, as the holder) does.
+        d.log?.('trust-peer-receipt-ignored', { uniqueKey: r.uniqueKey, adapter: r.adapter, receivedBy: (data as { receivedBy?: unknown }).receivedBy ?? null });
       }
     },
     async admit(toolName, toolInput) {

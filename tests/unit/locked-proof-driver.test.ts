@@ -51,12 +51,12 @@ class FakeTarget {
     if (action === 'grant-other-agent') return { opened: false, refused: 'relock-pending' };
     // Any disruption: the guard does its duty (unless this fake is broken).
     const end = this.c.markerEnd?.[0] ?? 'relocked';
-    this.markers.k = { ...this.markers.k, state: end, guardReplacements: 1, producerGone: true };
+    this.markers.k = { ...this.markers.k, state: end, watchStart: this.t, guardReplacements: 1, producerGone: true };
     this.typist = false; this.guard = null;
     this.lockState = this.broken ? 'unlocked' : (this.c.final === 'unlocked-accepted-risk' ? 'unlocked' : 'locked-in-session');
     return { done: true };
   }
-  async askPerson(text: string) { this.asked.push(text); }
+  async askPerson(text: string) { this.asked.push(text); return { channel: 'console', outcome: 'console-only', sent: false }; }
   async recover() { this.recovered++; return []; }
   settled(snap: { markers: Record<string, Marker> }) { return Object.values(snap.markers).every(m => TERMINAL.includes(m.state)) && !this.typist; }
   async extraEvidence() { return { submissions: 0, submissionsAfterClose: 0, guardReplaced: true, producerGone: true, oldGuardGone: true, typistGone: true, grantAlive: true, securityItemMs: 2_000, securityItemRaised: true }; }
@@ -151,6 +151,14 @@ describe('locked-proof safety helpers', () => {
     expect(text).not.toMatch(/echo[^\n]*\$PIN(?![_A-Za-z])/);
   });
 
+  it('stage-proof-agents re-stages over existing agents: init runs only for an agent with no config', () => {
+    const text = fs.readFileSync(path.join(DIR, 'stage-proof-agents.sh'), 'utf8');
+    const inits = text.split('\n').filter(l => l.includes('init --standalone'));
+    expect(inits).toHaveLength(2);
+    expect(inits[0]).toContain('as_user test -f "$A/.instar/config.json" ||');
+    expect(inits[1]).toContain('as_user test -f "$B/.instar/config.json" ||');
+  });
+
   it('configure-proof-agent refuses any directory outside the proof home, and needs --execute', () => {
     expect(isInsideProofHome('/Users/instarproof/.instar/agents/locked-proof')).toBe(true);
     expect(isInsideProofHome('/Users/instarproofX/a')).toBe(false);
@@ -210,6 +218,50 @@ describe('locked-proof viewer driving', () => {
   });
 });
 
+describe('locked-proof next grant evidence', () => {
+  const c = CASES.find((x: { id: string }) => x.id === '12.10');
+  const target = (visible: boolean, waitFails = false) => Object.assign(Object.create(RealTarget.prototype), {
+    a: {}, events: new Set(),
+    main: { page: { click: async () => {} } },
+    viewer: async () => ({ page: {
+      waitForSelector: async () => { if (waitFails) throw new Error('grant timed out'); },
+      isVisible: async () => visible,
+    } }),
+    requestGrant: async () => {},
+  });
+
+  it('never announces a next grant after a timeout or hidden controls', async () => {
+    for (const t of [target(false, true), target(false)]) {
+      await expect(t.act('open-next-grant')).rejects.toThrow();
+      expect(t.events.has('next-grant-open')).toBe(false);
+    }
+  });
+
+  it('announces a next grant only after its controls are visible', async () => {
+    const t = target(true);
+    expect(await t.act('open-next-grant')).toEqual({ opened: true });
+    expect(t.events.has('next-grant-open')).toBe(true);
+  });
+
+  it('records the failed setup and recovers without attempting to resume the old guard', async () => {
+    const t = new FakeTarget(c);
+    t.failAt = 'open-next-grant';
+    const ev = await runCase(c, t);
+    expect(ev.verdict.pass).toBe(false);
+    expect(ev.error).toContain('open-next-grant');
+    expect(t.acts).not.toContain('cont-old-guard');
+    expect(t.recovered).toBe(1);
+  });
+
+  it('rejects missing or failed next-grant evidence even if the Mac ends locked', () => {
+    const ev = { samples: [], final: { lockState: 'locked', markers: { k: { state: 'relocked' } } }, extra: { oldGuardGone: true }, fired: [] };
+    for (const fired of [[], [{ action: 'open-next-grant', result: { opened: false } }], [{ action: 'open-next-grant', result: {} }]]) {
+      expect(judge(c, { ...ev, fired }).reasons).toContain('the next grant was not confirmed open');
+    }
+    expect(judge(c, { ...ev, fired: [{ action: 'open-next-grant', result: { opened: true } }] }).pass).toBe(true);
+  });
+});
+
 describe('locked-proof person steps', () => {
   const rows = (out: string) => fs.readFileSync(path.join(out, 'person-steps.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
 
@@ -223,7 +275,7 @@ describe('locked-proof person steps', () => {
 
   it('records a delivered send, and a run with no topic never calls the sender', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-person-'));
-    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0 })).sent).toBe(true);
+    expect(recordPersonStep({ out, notifyTopic: 138345 }, 'one', () => ({ status: 0, stdout: 'Sent 4 chars to topic 138345' })).sent).toBe(true);
     expect(recordPersonStep({ out }, 'two', () => { throw new Error('must not send'); }).sent).toBe(false);
     expect(rows(out).map(row => row.topic)).toEqual([138345, null]);
     rm(out);
@@ -254,6 +306,7 @@ describe('locked-proof launchd kill', () => {
 
   const realTarget = (o: Record<string, unknown>) => Object.assign(Object.create(RealTarget.prototype), {
     a: { port: 4098, dir: '/d' }, uid: '502', launchdJob: { label: 'l', plist: 'p' },
+    guardAckCommand: () => ({ released: true, present: false }),
     now: () => Date.now(), sleep: async () => {}, signalJob: () => {}, wakeDisplay: () => '', ...o,
   });
   const guardRow = { pid: 7, command: 'instar-desktop-host relock-guard' };
@@ -475,7 +528,7 @@ describe('locked-proof launchd kill', () => {
     let clock = 0; const order: string[] = [];
     const page = { waitForSelector: async () => { order.push(`control@${clock}`); } };
     const opening = realTarget({ now: () => clock, sleep: async (ms: number) => { clock += ms; }, wakeDisplay: () => { order.push(`wake@${clock}`); return ''; },
-      viewer: async () => { order.push(`viewer@${clock}`); return { page }; }, requestGrant: async () => ({ clicked: false }) });
+      viewer: async () => { order.push(`viewer@${clock}`); return { page, requestId: '12345678-1234-1234-1234-123456789abc', expiresAt: 600_000 }; }, requestGrant: async () => ({ clicked: false }) });
     await opening.openGrant({});
     expect(order).toEqual(['viewer@0', 'control@0']);
   });
@@ -598,8 +651,24 @@ describe('locked-proof runner and verdict', () => {
   });
 
   it('cues the person, records the security item, and never puts the password in evidence', async () => {
-    const c = CASES.find((x: { id: string }) => x.id === '12.8');
+    const c = CASES.find((x: { id: string }) => x.id === '12.11');
     const target = new FakeTarget(c);
+    const act = target.act.bind(target);
+    target.act = async action => {
+      const result = await act(action);
+      if (action === 'kill-server') { target.markers.k.state = 'watching'; target.lockState = 'locked-in-session'; }
+      if (action === 'start-server') target.lockState = 'locked-in-session';
+      return result;
+    };
+    const snapshot = target.snapshot.bind(target);
+    let personReads = 0;
+    target.snapshot = async () => {
+      if (target.asked.length && !target.acts.includes('start-server')) {
+        target.lockState = 'unlocked';
+        if (++personReads > 1) target.markers.k.state = 'relock-failed';
+      }
+      return snapshot();
+    };
     const ev = await runCase(c, target, { pollMs: 50 });
     expect(target.asked).toHaveLength(1);
     expect(ev.verdict.pass).toBe(true);
@@ -620,7 +689,7 @@ describe('locked-proof runner and verdict', () => {
     const target = new FakeTarget(c);
     const realAsk = target.askPerson.bind(target);
     let reads = 0;
-    target.askPerson = async (text: string) => { await realAsk(text); reads = 1; target.lockState = 'unlocked'; };
+    target.askPerson = async (text: string) => { const result = await realAsk(text); reads = 1; target.lockState = 'unlocked'; return result; };
     const snapshot = target.snapshot.bind(target);
     target.snapshot = async () => {
       const snap = await snapshot();
@@ -718,15 +787,15 @@ describe('locked-proof runner and verdict', () => {
     expect(ev.verdict.reasons.join(' ')).not.toMatch(/after Enter/);
   });
 
-  it('a before-enter step that started after Enter fails the case, and the gap is recorded', () => {
+  it('a before-enter step that completed after Enter fails the case, and the gap is recorded', () => {
     const c = CASES.find((x: { id: string }) => x.id === '15.7');
-    const ev = { unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
-      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', enterPendingAt: 5_000 } } }],
-      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', enterPendingAt: 5_000 } }, processesGone: true } };
+    const ev = { grantRequestId: 'r1', grantOpenedAt: 4_000, unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
+      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } }, processesGone: true } };
     const extra = measured(ev);
-    expect(extra.injectMinusEnterMs).toBe(891);
-    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step landed 891 ms after Enter');
-    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830 }] };
+    expect(extra.injectMinusEnterMs).toBe(900);
+    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step completed 900 ms after Enter');
+    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830, t: 4_830 }] };
     expect(measured(before).injectMinusEnterMs).toBe(-170);
     expect(judge(c, { ...before, extra: measured(before) }).reasons.join(' ')).not.toMatch(/after Enter/);
     // The deadline case compares the grant's own limit with Enter.
@@ -765,15 +834,28 @@ describe('locked-proof runner and verdict', () => {
     const base = { unfired: [], fired: [], samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed' } } }], final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked' } }, processesGone: true } };
     const c155 = CASES.find((x: { id: string }) => x.id === '15.5');
     expect(judge(c155, { ...base, extra: {} }).reasons).toContain('not measured: relock time after the transport drop');
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } }).reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
-    expect(judge(c155, { ...base, extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500 } }).pass).toBe(true);
+    const early = judge(c155, { ...base, extra: { relockAfterDropMs: 2_000 } });
+    expect(early.reasons).toContain('not measured: actual transport expiry relative to Enter');
+    expect(early.reasons.join(' ')).toMatch(/inside the 30000 ms resume window/);
+    const timed = { ...base, grantRequestId: 'r1', grantOpenedAt: 4_000,
+      fired: [{ action: 'drop-transport', at: 'before-enter', startedAt: 4_830, t: 4_830 }],
+      samples: [{ dirty: true, markers: { k: { state: 'owed', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } }],
+      final: { ...base.final, markers: { k: { state: 'relocked', requestId: 'r1', createdAt: 4_100, enterPendingAt: 5_000 } } } };
+    for (const id of ['15.5', '15.6']) {
+      const row = CASES.find((x: { id: string }) => x.id === id);
+      const t = id === '15.5' ? 4_830 : 5_170;
+      const verdict = judge(row, { ...timed, fired: [{ ...row.inject[0], startedAt: t, t }],
+        extra: { relockAfterDropMs: RESUME_WINDOW_MS + 500, transportExpiredAt: t, submissionsAfterClose: 0 } });
+      expect(verdict.pass).toBe(false);
+      expect(verdict.reasons).toEqual(['not measured: actual transport expiry relative to Enter']);
+    }
     const c159 = CASES.find((x: { id: string }) => x.id === '15.9');
     expect(judge(c159, { ...base, extra: { typistGone: true } }).reasons).toContain('not measured: password field state at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: true } }).reasons).toContain('password field left dirty at the end');
     expect(judge(c159, { ...base, extra: { typistGone: true, fieldDirtyAtEnd: false } }).pass).toBe(true);
     const c1212 = CASES.find((x: { id: string }) => x.id === '12.12');
     const closed = { ...base, final: { ...base.final, markers: { k: { state: 'closed-not-applicable' } } } };
-    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (no observable source yet)');
+    expect(judge(c1212, { ...closed, extra: {} }).reasons).toContain('not measured: lock calls against another session (isolated A+B population not established)');
   });
 
   it('the runner measures the relock time after a transport drop from its own samples', async () => {

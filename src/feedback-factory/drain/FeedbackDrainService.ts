@@ -7,6 +7,21 @@ import { FEEDBACK_READINESS_MODEL_TIMEOUT_MS, ReadinessContractViolation, Readin
 import { scrubForStore } from '../../core/durableSecretScrub.js';
 import { StageBudgetExceeded, unitsThatFit, withStageBudget } from './stageBudget.js';
 import { brakePlainWords } from './readinessAuthorityProposal.js';
+import type { ReadinessAccountAdmission, ReadinessAdmission, ReadinessAccountMode } from './readinessAccountAdmission.js';
+import type { VerifiedTriageAccount } from '../triage/FeedbackTriageAccountSelector.js';
+
+/** Which account served (or was refused for) the latest readiness call. Account id only, never credentials. */
+export type ReadinessAccountServing =
+  | { state: 'served'; accountId: string; pinned: boolean; verified: boolean; usedPercent: number; at: number }
+  | { state: 'shared'; reason: string; observedAccountId: string | null; at: number }
+  | { state: 'refused'; reason: string; pinned: boolean; at: number };
+
+export interface ReadinessAccountStatus {
+  mode: ReadinessAccountMode;
+  pinnedAccountId: string | null;
+  /** Null until this process makes its first readiness call. */
+  last: ReadinessAccountServing | null;
+}
 
 export const FEEDBACK_DRAIN_SERVICE_STAGE = {
   canonicalPipelineId: 'feedback-factory',
@@ -49,10 +64,14 @@ export interface FeedbackDrainServiceOptions {
   isCanonicalOwner: () => boolean;
   isConsumerLive: () => boolean;
   consumerBatchBound?: () => number;
+  /** The exact work ids the operator approved and when; the live consumer claims these before any other work. */
+  consumerApprovedWorkIds?: () => { ids: string[]; attemptBaselines: Record<string, number>; nonce: string } | null;
   estimatedReadinessBatchUsd?: number;
   maxReadyScansPerTick?: number;
   maxClaimsPerTick?: number;
   stageBudgetMs?: number;
+  /** Explicit ceiling for clustering and its durable status writes. Defaults to the general stage budget. */
+  clusteringStageBudgetMs?: number;
   /** Budget for the model-backed readiness stage; defaults to the arbiter's model timeout plus margin. */
   readinessStageBudgetMs?: number;
   /** Candidates per readiness model call; a tick runs several calls up to the authority's maxBatch. */
@@ -66,6 +85,11 @@ export interface FeedbackDrainServiceOptions {
    * it. Signal only: it never restores, retries or changes the authority.
    */
   raiseAttention?: (item: ReadinessPauseAttention) => Promise<void>;
+  /**
+   * Chooses the subscription account each readiness call runs on (readinessAccountAdmission).
+   * Absent: every call uses the shared provider, as before.
+   */
+  readinessAccount?: ReadinessAccountAdmission | null;
   clock?: () => number;
 }
 
@@ -143,20 +167,23 @@ export class FeedbackDrainService {
   private readonly maxReadyScans: number;
   private readonly maxClaims: number;
   private readonly stageBudgetMs: number;
+  private readonly clusteringStageBudgetMs: number;
   private readonly readinessStageBudgetMs: number;
   private readonly readinessChunkSize: number;
   private readonly maxWallClockMs: number;
   private readonly sourceCompactionIntervalMs: number;
+  private lastReadinessAccount: ReadinessAccountServing | null = null;
 
   constructor(private readonly opts: FeedbackDrainServiceOptions) {
     this.now = opts.clock ?? Date.now;
     this.maxReadyScans = Math.min(250, Math.max(1, opts.maxReadyScansPerTick ?? 250));
     this.maxClaims = Math.min(50, Math.max(1, opts.maxClaimsPerTick ?? 10));
     this.stageBudgetMs = Math.max(1, Math.min(20_000, opts.stageBudgetMs ?? 20_000));
+    this.clusteringStageBudgetMs = Math.max(1, Math.min(60_000, opts.clusteringStageBudgetMs ?? this.stageBudgetMs));
     this.readinessStageBudgetMs = Math.max(1, Math.min(90_000, opts.readinessStageBudgetMs ?? FEEDBACK_READINESS_MODEL_TIMEOUT_MS + 5_000));
     const chunkSize = Number(opts.readinessChunkSize ?? READINESS_CHUNK_SIZE);
     this.readinessChunkSize = Number.isFinite(chunkSize) ? Math.min(50, Math.max(1, Math.trunc(chunkSize))) : READINESS_CHUNK_SIZE;
-    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
+    this.maxWallClockMs = Math.max(this.stageBudgetMs, this.clusteringStageBudgetMs, this.readinessStageBudgetMs, Math.min(115_000, Number.isFinite(opts.maxWallClockMs) ? opts.maxWallClockMs! : 115_000));
     this.sourceCompactionIntervalMs = Math.max(1, opts.sourceCompactionIntervalMs ?? 24 * 60 * 60 * 1000);
   }
 
@@ -164,7 +191,13 @@ export class FeedbackDrainService {
     const cursor = this.opts.store.sourceCursor();
     let generationLag = 0;
     try { generationLag = Math.max(0, this.opts.processing.sourceFeedbackGenerationPlan(cursor?.generationId).length - 1); } catch { generationLag = -1; }
-    return { processing: this.opts.processing.stats(), drain: { ...this.opts.store.metrics(), sourceGenerationLag: generationLag }, lastRun: this.opts.store.lastRun(), consumerLive: this.opts.isConsumerLive() };
+    return { processing: this.opts.processing.stats(), drain: { ...this.opts.store.metrics(), sourceGenerationLag: generationLag }, lastRun: this.opts.store.lastRun(), consumerLive: this.opts.isConsumerLive(), readinessAccount: this.readinessAccountStatus() };
+  }
+
+  /** The readiness serving account the operator checks before resuming readiness ticks. */
+  readinessAccountStatus(): ReadinessAccountStatus {
+    const config = this.opts.readinessAccount?.config() ?? { mode: 'off' as const, pinnedAccountId: null };
+    return { mode: config.mode, pinnedAccountId: config.pinnedAccountId, last: this.lastReadinessAccount };
   }
 
   sourceClusterPresent(clusterId: string): boolean { return this.opts.processing.hasActiveCluster(clusterId); }
@@ -298,7 +331,7 @@ export class FeedbackDrainService {
       const projectedFeedback = this.opts.store.pendingProjectedFeedback(500);
       const processed = this.opts.processing.processProjected(projectedFeedback.map((row) => row.record));
       if (projectedFeedback.length > 0) this.opts.store.acknowledgeProcessedProjection(projectedFeedback.at(-1)!.ingestSequence);
-      this.assertStageBudget(clusteringStartedAt, 'clustering');
+      this.assertStageBudget(clusteringStartedAt, 'clustering', this.clusteringStageBudgetMs);
       this.opts.store.markClusteringSucceeded(this.now());
       stopIfCancelled();
       out.processed = processed.result.results.length;
@@ -356,9 +389,23 @@ export class FeedbackDrainService {
         out.wouldCreate = this.opts.store.simulateClaims({ limit: this.maxClaims, ownerAuthorityEpoch: ownerEpoch, now });
       } else {
         const promotionBound = Math.min(50, Math.max(0, Math.trunc(this.opts.consumerBatchBound?.() ?? this.maxClaims)));
+        // Proposal-set bound: the batch the operator saw is claimed first, so no earlier
+        // or newly queued item takes its place in the first live run.
+        // Until every approved item has been attempted once, ONLY approved items are claimed
+        // (no fallback to unseen work in the same run); after that the promotion continues
+        // as the ongoing consumer at the approved per-run bound with no lasting priority.
+        const approved = this.opts.consumerApprovedWorkIds?.() ?? null;
+        const pendingApproval = approved ? this.opts.store.outstandingApprovedWork(approved.attemptBaselines, now) : { outstanding: [], claimable: [] };
         for (let i = 0; i < Math.min(this.maxClaims, promotionBound); i++) {
           stopIfCancelled();
-          const claim = this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
+          // A revoke, re-promotion or config change mid-run stops further claims at once.
+          if (!this.opts.isConsumerLive() || (this.opts.consumerApprovedWorkIds?.()?.nonce ?? null) !== (approved?.nonce ?? null)) break;
+          const claim = pendingApproval.outstanding.length > 0
+            // Approved batch outstanding: claim only from it, and nothing if none is claimable now.
+            ? (pendingApproval.claimable.length > 0
+              ? this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now, onlyWorkIds: pendingApproval.claimable })
+              : null)
+            : this.opts.store.claimNext({ consumerId: 'initiative-tracker', ownerAuthorityEpoch: ownerEpoch, leaseMs: 30_000, now });
           if (!claim) break;
           out.claimed++;
           try {
@@ -442,6 +489,7 @@ export class FeedbackDrainService {
     let reviewedCandidates = 0;
     let transientFailure = false;
     let contractViolation = false;
+    let served: VerifiedTriageAccount | null = null;
     while (pending.length > 0) {
       const remaining = deadline - this.now();
       // Before the first call a full chunk is assumed to fit its call budget; after it, the
@@ -455,6 +503,23 @@ export class FeedbackDrainService {
         else if (!transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
         break;
       }
+      // The serving account is decided before any spend is reserved: a refusal costs nothing,
+      // defers the rows, and counts as a failed tick (never a demotion).
+      const admission = await this.admitReadinessAccount(authority, served, deadline);
+      if (admission.kind === 'refused') {
+        for (const row of pending) if (this.opts.store.getReadiness(row.clusterId)?.state === 'collecting') {
+          this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-account-refused', nextReviewAt: now + 15 * 60 * 1000 });
+        }
+        this.opts.store.recordReadinessDiagnosis(out.runId, 'call-failed', {
+          check: 'readiness-account-refused', message: admission.reason,
+          candidateIds: pending.slice(0, 20).map((row) => row.clusterId.slice(0, 120)), candidateCount: pending.length,
+        });
+        this.lastReadinessAccount = { state: 'refused', reason: admission.reason, pinned: admission.pinned, at: this.now() };
+        out.reason = 'readiness-account-refused';
+        transientFailure = true;
+        break;
+      }
+      served = admission.kind === 'account' ? admission.account : null;
       if (!this.opts.store.reserveAuthoritySpend(authority, this.opts.estimatedReadinessBatchUsd ?? 0.01, chunk.length, now)) {
         for (const row of pending) this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-spend-brake', nextReviewAt: now + 24 * 60 * 60 * 1000 });
         this.opts.store.demoteAuthority(authority.authorityId, authority.generation, 'readiness-spend-brake');
@@ -490,9 +555,14 @@ export class FeedbackDrainService {
       let decisions: ReadinessDecision[];
       const callBudgetMs = Math.min(this.readinessStageBudgetMs, remaining);
       try {
-        decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, chunk.map((row) => candidate(byId.get(row.clusterId)!, now))),
+        const account = served;
+        const admitter = this.opts.readinessAccount;
+        decisions = await this.withStageBudget('readiness-authority', () => this.opts.arbiter!.decideBatch(authority, chunk.map((row) => candidate(byId.get(row.clusterId)!, now)),
+          account && admitter ? { accountOverride: { accountId: account.accountId, configHome: account.configHome }, launchGuard: () => admitter.revalidate(account) } : {}),
           callBudgetMs);
+        this.noteServedAccount(account);
       } catch (error) {
+        this.noteServedAccount(served);
         // Our own tick clock cut a later call short: out of time, not a provider failure. Its
         // rows stay due, untouched, for the next tick.
         if (error instanceof StageBudgetExceeded && succeededCalls > 0 && callBudgetMs < this.readinessStageBudgetMs) {
@@ -539,6 +609,31 @@ export class FeedbackDrainService {
       const streak = this.opts.store.recordAuthorityTransientFailure(authority.authorityId, authority.generation);
       if (streak >= READINESS_STALL_NOTICE_TICKS) await this.alarmIfStalled(authority, streak);
     }
+  }
+
+  /**
+   * Reuse the account chosen for the previous chunk while its quota read is under a minute old and
+   * its credential is unchanged; otherwise ask the admission again. Without an admission every call
+   * is shared, exactly as before.
+   */
+  private async admitReadinessAccount(authority: AuthorityRecord, previous: VerifiedTriageAccount | null, deadline: number): Promise<ReadinessAdmission> {
+    const admitter = this.opts.readinessAccount;
+    if (!admitter) return { kind: 'shared', reason: 'selection-off', observedAccountId: null };
+    if (previous && admitter.revalidate(previous)) return { kind: 'account', account: previous, pinned: admitter.config().pinnedAccountId === previous.accountId };
+    const admission = await admitter.admit(authority.provider, Math.min(deadline, this.now() + 30_000));
+    if (admission.kind === 'shared') {
+      this.lastReadinessAccount = { state: 'shared', reason: admission.reason, observedAccountId: admission.observedAccountId, at: this.now() };
+    }
+    return admission;
+  }
+
+  private noteServedAccount(account: VerifiedTriageAccount | null): void {
+    const admitter = this.opts.readinessAccount;
+    if (!account || !admitter) return;
+    this.lastReadinessAccount = {
+      state: 'served', accountId: account.accountId, pinned: admitter.config().pinnedAccountId === account.accountId,
+      verified: admitter.verifyExecutionIdentity(account), usedPercent: account.usedPercent, at: this.now(),
+    };
   }
 
   /**
@@ -609,8 +704,9 @@ export class FeedbackDrainService {
     }
   }
 
-  private assertStageBudget(startedAt: number, stage: string): void {
-    if (this.now() - startedAt > this.stageBudgetMs) throw new Error(`${stage} stage budget exceeded`);
+  private assertStageBudget(startedAt: number, stage: string, budgetMs = this.stageBudgetMs): void {
+    const elapsedMs = this.now() - startedAt;
+    if (elapsedMs > budgetMs) throw new Error(`${stage} stage budget exceeded (${elapsedMs}ms > ${budgetMs}ms)`);
   }
 
   private withStageBudget<T>(stage: string, operation: () => Promise<T>, budgetMs = this.stageBudgetMs): Promise<T> {

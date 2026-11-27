@@ -10,6 +10,7 @@
  *   RELAY_HOST        — Bind address (default: 0.0.0.0)
  *   RELAY_ADMIN_KEY   — Admin API bearer token (required for admin endpoints)
  *   RELAY_ADMIN_PORT  — Admin API port (default: 9091)
+ *   RELAY_CLIENT_IP_HEADER — Header the front proxy sets with the caller address (Fly: fly-client-ip); unset = socket address
  */
 
 import pc from 'picocolors';
@@ -62,6 +63,8 @@ export async function startRelay(opts: RelayStartOptions): Promise<void> {
     host,
     rateLimitConfig: { authAttemptsPerMinute: authRate },
     registryDataDir: dataDir,
+    // SEC-139: the header the front proxy sets with the caller address (Fly: fly-client-ip).
+    clientAddressHeader: process.env.RELAY_CLIENT_IP_HEADER ?? '',
   });
   const recoveryFile = process.env.RELAY_RECOVERY_AUTHORITY_FILE;
   if (recoveryFile) {

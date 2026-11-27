@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "import-history-device",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-18T03:35:13.884Z",
+  "artifactPath": "upgrades/side-effects/import-history-device.md",
+  "artifactSha256": "dc117739a64de4ae2934d7c015dcc7bcf443cca713c65f00d42d28a243790a6b",
+  "specPath": "docs/specs/import-from-claude-chatgpt.md",
+  "coveredFiles": [
+    "src/server/importedHistoryRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "new capability (app access to imported history)"
+  }
+}

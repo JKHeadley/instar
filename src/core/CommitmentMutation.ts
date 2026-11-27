@@ -147,6 +147,8 @@ export async function applyOwnerMutation(
         if (!Object.keys(patch).length) return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
       }
       if (!Object.keys(patch).length) return { verdict: 'idempotent-noop', status: existing.status };
+      // overdue-promise-follow-through §3.5: a promised time IS follow-through, so the opt-out goes.
+      if (typeof patch.softDeadlineAt === 'string' && patch.softDeadlineAt) patch.followThroughOptOutReason = undefined;
       const r = await tracker.mutate(payload.id, (c) => ({ ...c, ...patch } as Commitment));
       return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
     }

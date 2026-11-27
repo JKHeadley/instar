@@ -22,6 +22,7 @@
  *   POST /mobile/trust/requests/:id/approve         — approve one trust raise with a presence signature (`approve-widening`)
  *   POST /mobile/trust/device-acceptance            — a device records its own acceptance, or an accepted device approves a new one (`accept-device`)
  *   POST /mobile/trust/device-acceptance/withdraw   — withdraw a device's acceptance (a narrowing)
+ *   POST /mobile/work-board/cards                   — make a card from a message (`work-card-create`, docs/specs/phone-work-cards.md)
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -30,8 +31,10 @@
  * in for the dashboard PIN the console asks for, and the action itself runs the console's own code
  * (injected by routes.ts), so the phone can never do more than the PIN-confirmed console.
  */
-import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS } from '../core/WorkCardStore.js';
+import { tapActionLine, isCardId, isRecordId, TAP_ACTIONS, CLOSE_AS, SCHEMA_MAX } from '../core/WorkCardStore.js';
+import { parsePhoneCardDraft, phoneCardDraftHash, phoneCardCreateLine, PHONE_CARD_REQUEST_ID, PHONE_CARD_SHAPE_WORDS, type PhoneCardDraft } from './phoneWorkCards.js';
 import crypto from 'node:crypto';
+import { isValidConversationKey } from '../core/ChiefOfStaffStore.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isStorageFailure, storageErrorResponse } from '../core/storageMachineName.js';
@@ -126,17 +129,34 @@ export type PermissionAction =
   | { kind: 'account-add'; target: NewAccountKind }
   /** A tap on a work card (work-board-asks §4): the signed line covers the action and everything it binds to. */
   | { kind: 'work-card-tap'; target: string; tap: WorkCardTapFields }
+  /** Make a card from a message (docs/specs/phone-work-cards.md): the client request id and the draft's hash. */
+  | { kind: 'work-card-create'; target: string; proposalHash: string }
   /** Approve one trust raise (app-trust-approval §B): the request and its exact proposal hash. */
   | { kind: 'approve-widening'; target: string; proposalHash: string }
+  /** Make a group a Chief of Staff project (conversation-groups-phone §3): the draft and its exact hash. */
+  | { kind: 'group-project-confirm'; target: string; proposalHash: string }
   /**
    * A device acceptance (app-trust-approval §A): the device it is for, that device's key fingerprint
    * and the hash of the disclosure it shows. Signed by the device itself to record its own, or by an
    * accepted device to approve a new one.
    */
-  | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string };
+  | { kind: 'accept-device'; target: string; keyFingerprint: string; disclosureHash: string }
+  /** Pause or resume a project from the owner's phone (docs/specs/work-door-project-rows.md §3.4); the note by its hash. */
+  | { kind: 'project-pause'; target: string; value: 'pause' | 'resume'; noteHash: string | null }
+  /** Check or uncheck one judged done item (work-door-project-rows §3.3): the item by its checkRef (goal, id, text). */
+  | { kind: 'project-item-check'; target: string; itemId: string; checkRef: string; value: 'checked' | 'unchecked' }
+  /** Finish a project (work-door-project-rows §3.5): the binding version the owner saw. */
+  | { kind: 'project-finish'; target: string; bindingRef: string };
+
+/** The three project actions (work-door-project-rows §3.3–3.5). */
+export type ProjectAction = Extract<PermissionAction, { kind: 'project-pause' | 'project-item-check' | 'project-finish' }>;
+/** A binding version as `hlcKey` writes one: `physical.logical.node`. */
+export const BINDING_REF_PATTERN = /^[0-9]{1,16}\.[0-9]{1,10}\.[A-Za-z0-9_-]{1,64}$/;
+/** The owner's typed pause note bound (the store's own quote bound, OWNER_PAUSE_QUOTE_MAX). */
+export const MAX_PROJECT_NOTE_CHARS = 4096;
 
 /** The fields one work-card tap binds to; the title enters the signature only through its hash. */
-export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string }
+export interface WorkCardTapFields { action: string; materialHash?: string; questionId?: string; answer?: string; claimId?: string; retryOf?: string; names?: string; titleHash?: string; closeAs?: string; note?: string }
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -184,8 +204,13 @@ export function actionLine(a: PermissionAction): string {
     case 'account-sign-in': return `account-sign-in ${a.target}`;
     case 'account-add': return `account-add ${a.target}`;
     case 'work-card-tap': return tapActionLine({ cardId: a.target, ...a.tap });
+    case 'work-card-create': return phoneCardCreateLine(a.target, a.proposalHash);
     case 'approve-widening': return `approve-widening ${a.target} ${a.proposalHash}`;
+    case 'group-project-confirm': return `group-project-confirm ${a.target} ${a.proposalHash}`;
     case 'accept-device': return `accept-device ${a.target} ${a.keyFingerprint} ${a.disclosureHash}`;
+    case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
+    case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
+    case 'project-finish': return `project-finish ${a.target} ${a.bindingRef}`;
   }
 }
 
@@ -203,7 +228,7 @@ export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
 /** A device key fingerprint as `deviceFingerprint` writes one. */
 export const KEY_FINGERPRINT = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
 
-export function buildAction(kind: unknown, target: unknown, extra: { keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: unknown; itemId?: unknown; checkRef?: unknown; bindingRef?: unknown; noteHash?: unknown; keyFingerprint?: unknown; tapAction?: unknown; materialHash?: unknown; questionId?: unknown; answer?: unknown; claimId?: unknown; retryOf?: unknown; names?: unknown; titleHash?: unknown; value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
   // A work-card tap names the card; each binding is shape-checked here, and judged against the card by the store.
   if (kind === 'work-card-tap') {
     if (!isCardId(target)) return { ok: false, error: 'bad-target' };
@@ -221,10 +246,28 @@ export function buildAction(kind: unknown, target: unknown, extra: { keyFingerpr
       if (typeof extra.answer !== 'string' || extra.answer.length > 8000) return { ok: false, error: 'bad-answer' };
       tap.answer = extra.answer;
     }
+    // A Done / Not important close (work-front-doors §6): an archive with its note, both on the signed line.
+    // Refused here, before any challenge, so a missing note never costs a Face ID.
+    if (!absent(extra.closeAs) || !absent(extra.note)) {
+      if (tap.action !== 'archive' || typeof extra.closeAs !== 'string' || !(CLOSE_AS as ReadonlyArray<string>).includes(extra.closeAs)) return { ok: false, error: 'bad-close' };
+      if (typeof extra.note !== 'string' || !extra.note.trim()) return { ok: false, error: extra.closeAs === 'done' ? 'note-required' : 'reason-required' };
+      if (extra.note.length > SCHEMA_MAX.closeNote) return { ok: false, error: 'bad-note' };
+      tap.closeAs = extra.closeAs; tap.note = extra.note;
+    }
     return { ok: true, action: { kind, target, tap } };
+  }
+  if (kind === 'work-card-create') {
+    if (typeof target !== 'string' || !PHONE_CARD_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
   }
   if (kind === 'approve-widening') {
     if (typeof target !== 'string' || !TRUST_REQUEST_ID.test(target)) return { ok: false, error: 'bad-target' };
+    if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
+    return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
+  }
+  if (kind === 'group-project-confirm') {
+    if (typeof target !== 'string' || !/^gpd-[0-9a-f]{20}$/.test(target)) return { ok: false, error: 'bad-target' };
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
   }
@@ -233,6 +276,25 @@ export function buildAction(kind: unknown, target: unknown, extra: { keyFingerpr
     if (typeof extra.keyFingerprint !== 'string' || !KEY_FINGERPRINT.test(extra.keyFingerprint)) return { ok: false, error: 'bad-key-fingerprint' };
     if (typeof extra.disclosureHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.disclosureHash)) return { ok: false, error: 'bad-disclosure-hash' };
     return { ok: true, action: { kind, target, keyFingerprint: extra.keyFingerprint, disclosureHash: extra.disclosureHash } };
+  }
+  // The project actions (work-door-project-rows §3.3–3.5) name the project by its conversation key, checked with the
+  // Chief of Staff store's own rule (it allows the upper case Slack ids TARGET_PATTERN refuses).
+  if (kind === 'project-pause' || kind === 'project-item-check' || kind === 'project-finish') {
+    if (!isValidConversationKey(target)) return { ok: false, error: 'bad-target' };
+    const hex = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+    if (kind === 'project-pause') {
+      if (extra.value !== 'pause' && extra.value !== 'resume') return { ok: false, error: 'bad-value' };
+      if (!absent(extra.noteHash) && !hex(extra.noteHash)) return { ok: false, error: 'bad-note-hash' };
+      return { ok: true, action: { kind, target, value: extra.value, noteHash: absent(extra.noteHash) ? null : extra.noteHash as string } };
+    }
+    if (kind === 'project-item-check') {
+      if (typeof extra.itemId !== 'string' || extra.itemId.length === 0 || extra.itemId.length > 64) return { ok: false, error: 'bad-item' };
+      if (!hex(extra.checkRef)) return { ok: false, error: 'bad-check-ref' };
+      if (extra.value !== 'checked' && extra.value !== 'unchecked') return { ok: false, error: 'bad-value' };
+      return { ok: true, action: { kind, target, itemId: extra.itemId, checkRef: extra.checkRef, value: extra.value } };
+    }
+    if (typeof extra.bindingRef !== 'string' || !BINDING_REF_PATTERN.test(extra.bindingRef)) return { ok: false, error: 'bad-binding-ref' };
+    return { ok: true, action: { kind, target, bindingRef: extra.bindingRef } };
   }
   // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
   if (kind === 'account-sign-in') {
@@ -345,7 +407,7 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
 
 /** The fields one request can carry into `buildAction`. */
 function actionExtras(b: Rec): Parameters<typeof buildAction>[2] {
-  return { keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
+  return { closeAs: b.closeAs, itemId: b.itemId, checkRef: b.checkRef, bindingRef: b.bindingRef, noteHash: b.noteHash, keyFingerprint: b.keyFingerprint, tapAction: b.tapAction, materialHash: b.materialHash, questionId: b.questionId, answer: b.answer, claimId: b.claimId, retryOf: b.retryOf, names: b.names, titleHash: b.titleHash, value: b.value, reason: b.reason, proposalHash: b.proposalHash, disclosureHash: b.disclosureHash, label: b.label, note: b.note, topicId: b.topicId, framework: b.framework, model: b.model, machine: b.machine, to: b.to, confirmation: b.confirmation, tmux: b.tmux, name: b.name, platform: b.platform };
 }
 
 /** Text that holds a token, before or after cleaning: a name is not where a key goes. */
@@ -407,7 +469,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -721,9 +783,38 @@ export interface MobilePermissionsDeps {
   addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
   /** Apply the owner's tap to a work card (work-board-asks §4); absent ⇒ the work board is off here. */
   workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
+  /**
+   * Confirm a "make this group a project" draft (conversation-groups-phone §3): Face ID over the draft's exact
+   * hash stands in for the dashboard PIN on POST /chief-of-staff/projects. The body carries the self-certifying draft back
+   * (`draft`), re-verified against the signed hash. Absent ⇒ the Chief of Staff is off here.
+   */
+  confirmGroupProject?: (draftId: string, draftHash: string, deviceId: string, req: Request, carriedDraft: unknown) => ActionResult | Promise<ActionResult>;
+  /** A refusal that makes a group-project confirm impossible on this machine right now (not the lease holder, owner changes off), checked BEFORE a Face ID is spent; null when it may proceed. */
+  groupProjectRefusal?: () => ActionResult | null;
+  /**
+   * Make a card from a message (docs/specs/phone-work-cards.md); absent ⇒ the work board is off here.
+   * `precheck` runs before the proof (board on, an owner, the source conversation known here and readable,
+   * and the write's own checks as a dry run), so a known refusal never consumes the challenge; `create` runs after it.
+   */
+  workCardCreate?: {
+    precheck: (requestId: string, draft: PhoneCardDraft, req: Request) => ActionResult | null;
+    create: (requestId: string, draft: PhoneCardDraft, draftHash: string) => Promise<ActionResult>;
+  };
   /** Approving trust raises from the app (docs/specs/app-trust-approval.md); absent ⇒ 503 here. */
   trust?: () => MobileTrustPort | null;
   now?: () => number;
+  /**
+   * Pause / Resume, Mark checked and Finish on a project (docs/specs/work-door-project-rows.md §3.3–3.5); absent ⇒ the
+   * Chief of Staff is off here. `precheck` runs at the challenge (so a known refusal never reaches Face ID) and again
+   * before `apply`, which runs only after the proof.
+   */
+  projects?: ProjectTapPort;
+}
+
+/** The project actions' port (routes.ts wires it to the Chief of Staff loop). */
+export interface ProjectTapPort {
+  precheck: (action: ProjectAction) => ActionResult | null;
+  apply: (action: ProjectAction, tap: { deviceId: string; personId: string | null; note: string | null; tapId: string; req: Request }) => Promise<ActionResult>;
 }
 
 type Refusal = { status: number; error: string; detail?: string };
@@ -865,11 +956,21 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    // A project action that cannot succeed gets no challenge, so no Face ID is spent on it (work-door-project-rows §3.3).
+    if (built.action.kind === 'project-pause' || built.action.kind === 'project-item-check' || built.action.kind === 'project-finish') {
+      const refusal = deps.projects ? deps.projects.precheck(built.action) : { status: 503, body: { error: 'chief-of-staff-off' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(refusal.body), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
+    }
     // A trust approval is decided only by the serving-lease holder: elsewhere no challenge is issued (app-trust-approval §B).
     if (built.action.kind === 'approve-widening' || built.action.kind === 'accept-device') {
       const port = deps.trust?.() ?? null;
       if (!port) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'trust-approvals-unavailable', status: 503 }); res.status(503).json({ error: 'trust-approvals-unavailable' }); return; }
       if (!port.holdsLease()) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 }); res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' }); return; }
+    }
+    // A group-project confirm that this machine cannot decide gets no challenge, so no Face ID is spent on it.
+    if (built.action.kind === 'group-project-confirm') {
+      const refusal = deps.confirmGroupProject ? deps.groupProjectRefusal?.() ?? null : { status: 503, body: { error: 'chief-of-staff-off' } };
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((refusal.body as { error?: unknown }).error ?? 'refused'), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
     }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
@@ -928,6 +1029,93 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     }
     finish(res, 'work-card-tap', a, g, r);
   });
+
+  // "Make this group a project" (conversation-groups-phone §3): the owner's phone, Face ID over the draft line.
+  router.post('/mobile/work/projects/drafts/:id/confirm', async (req: Request, res: Response) => {
+    if (!deps.confirmGroupProject) { res.status(503).json({ error: 'chief-of-staff-off', detail: 'Projects need the Chief of Staff, which is not on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const built = buildAction('group-project-confirm', String(req.params.id), { proposalHash: rec(req.body).proposalHash });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const early = deps.groupProjectRefusal?.() ?? null;
+    if (early) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String((early.body as { error?: unknown }).error ?? 'refused'), status: early.status }); res.status(early.status).json(early.body); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'group-project-confirm' }>;
+    let r: ActionResult;
+    try { r = await deps.confirmGroupProject(a.target, a.proposalHash, g.deviceId, req, rec(req.body).draft); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told it did not happen
+      report('MobilePermissions.groupProject', 'the confirmed draft becomes a tracked project', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'project-not-created', detail: 'The project was not created. Try again in a moment.' } };
+    }
+    finish(res, 'group-project-confirmed', a, g, r);
+  });
+
+  // Make a card from a message (docs/specs/phone-work-cards.md): the owner's phone, Face ID over
+  // `work-card-create <requestId> <draftHash>`. `preflight: true` answers the checks and the line to sign, writing nothing.
+  router.post('/mobile/work-board/cards', async (req: Request, res: Response) => {
+    const create = deps.workCardCreate;
+    if (!create) { res.status(503).json({ error: 'work-board-disabled', message: 'The work board is not switched on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const refuseHere = (status: number, body: Rec): void => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: String(body.error ?? 'refused'), status });
+      res.status(status).json(body);
+    };
+    const parsed = parsePhoneCardDraft(b);
+    if (!parsed.ok) { refuseHere(400, { error: parsed.error, message: PHONE_CARD_SHAPE_WORDS[parsed.error] ?? 'The card could not be read. Update the app and try again.' }); return; }
+    const draftHash = phoneCardDraftHash(parsed.draft);
+    const built = buildAction('work-card-create', parsed.requestId, { proposalHash: draftHash });
+    if (!built.ok) { refuseHere(400, { error: built.error }); return; }
+    let pre: ActionResult | null;
+    try { pre = create.precheck(parsed.requestId, parsed.draft, req); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told to try again
+      report('MobilePermissions.workCardCreate', 'the card is checked before Face ID', 'the phone is told to try again', err);
+      pre = { status: 503, body: { error: 'precheck-failed', message: 'This card could not be checked just now. Try again in a moment.' } };
+    }
+    if (pre) { refuseHere(pre.status, rec(pre.body)); return; }
+    const a = built.action as Extract<PermissionAction, { kind: 'work-card-create' }>;
+    if (b.preflight === true) {
+      // The draft as the server rebuilt it: the app compares it field by field with what it shows, then signs this hash.
+      res.json({ draft: parsed.draft, draftHash, confirm: { action: 'work-card-create', target: a.target, proposalHash: draftHash, actionLine: actionLine(a) } });
+      return;
+    }
+    if (!proven(req, res, g, a)) return;
+    let r: ActionResult;
+    try { r = await create.create(parsed.requestId, parsed.draft, draftHash); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told the create failed
+      report('MobilePermissions.workCardCreate', 'the card is written', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'create-failed', message: 'The card could not be made. Try again.' } };
+    }
+    finish(res, rec(r.body).replayed === true ? 'work-card-replayed' : 'work-card-created', a, g, r);
+  });
+
+  // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): Face ID over the exact project line.
+  const projectTap = async (req: Request, res: Response, kind: ProjectAction['kind']): Promise<void> => {
+    const port = deps.projects;
+    if (!port) { res.status(503).json({ error: 'chief-of-staff-off', detail: 'Projects need the Chief of Staff, which is not on for this agent.' }); return; }
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    // The pause note is signed by its hash: the exact UTF-8 bytes as sent, no trimming.
+    let note: string | null = null;
+    if (kind === 'project-pause' && !absent(b.note)) {
+      if (typeof b.note !== 'string' || b.note.length > MAX_PROJECT_NOTE_CHARS) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'bad-note', status: 400 }); res.status(400).json({ error: 'bad-note', detail: `A note is at most ${MAX_PROJECT_NOTE_CHARS} characters.` }); return; }
+      note = b.note;
+    }
+    const built = buildAction(kind, b.key, { ...actionExtras(b), noteHash: note === null ? undefined : sha256(note) });
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    const a = built.action as ProjectAction;
+    const early = port.precheck(a);
+    if (early) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(early.body), status: early.status }); res.status(early.status).json(early.body); return; }
+    if (!proven(req, res, g, a)) return;
+    let r: ActionResult;
+    try { r = await port.apply(a, { deviceId: g.deviceId, personId: g.personId, note, tapId: `app-${crypto.randomBytes(8).toString('hex')}`, req }); } catch (err) { // @silent-fallback-ok: not silent — reported just below, and the phone is told it did not happen
+      report('MobilePermissions.projectTap', 'the owner\'s project tap is recorded', 'the phone is told to try again', err);
+      r = { status: 500, body: { error: 'not-recorded', detail: "That couldn't be saved. Try again in a minute." } };
+    }
+    finish(res, 'project-tap', a, g, r);
+  };
+  router.post('/mobile/work/projects/pause', (req: Request, res: Response) => { void projectTap(req, res, 'project-pause'); });
+  router.post('/mobile/work/projects/done-item', (req: Request, res: Response) => { void projectTap(req, res, 'project-item-check'); });
+  router.post('/mobile/work/projects/finish', (req: Request, res: Response) => { void projectTap(req, res, 'project-finish'); });
 
   router.post('/mobile/permissions/requests/:id/approve', (req: Request, res: Response) => {
     const g = writeGate(req, res);
@@ -1120,6 +1308,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       actions: actionsState(req, deps),
       holder: port.holdsLease(),
       requests: store.deviceListing(),
+      approvalDelivery: await store.approvalDelivery(),
       // The calling device's own key fingerprint, so the app signs exactly what the server will check.
       thisDeviceKey: self ? (port.devices.get(self)?.keyFingerprint ?? null) : null,
       approvals: {

@@ -795,6 +795,37 @@ describe('Shared-state v2 routes — v2Enabled=true', () => {
       }
     });
 
+    it('a long dispute reason is kept WHOLE in the summary, and one over the ledger limit is refused, not cut (bounded-input review)', async () => {
+      const { app: a2, cleanup } = makeAppWithResolution();
+      try {
+        const s1 = uuid();
+        const b1 = await request(a2).post('/shared-state/session-bind').set(AUTH).send({ sessionId: s1 });
+        const cid = await createCommitment(a2, s1, b1.body.token);
+        const s2 = uuid();
+        const b2 = await request(a2).post('/shared-state/session-bind').set(AUTH).send({ sessionId: s2 });
+        const hdr = { ...AUTH, 'X-Instar-Session-Id': s2, 'X-Instar-Session-Token': b2.body.token };
+
+        const tooLong = 'r'.repeat(600);
+        const refused = await request(a2).post(`/shared-state/resolve/${cid}`).set(hdr)
+          .send({ resolution: 'dispute', disputeReason: tooLong, dedupKey: 'bi-dispute-long' });
+        expect(refused.status).toBe(400);
+        expect(refused.headers['x-invalid-field']).toBe('disputeReason');
+
+        const reason = `${'the evidence cited does not exist; '.repeat(8)}KEY POINT AT THE END`;
+        expect(reason.length).toBeGreaterThan(200);
+        const ok = await request(a2).post(`/shared-state/resolve/${cid}`).set(hdr)
+          .send({ resolution: 'dispute', disputeReason: reason, dedupKey: 'bi-dispute-ok' });
+        expect(ok.status).toBe(200);
+        const recent = await request(a2).get('/shared-state/recent').set(AUTH);
+        const entry = (recent.body.entries as any[]).find((e) => e.id === ok.body.id);
+        expect(entry.summary).toBe(reason);
+        expect(entry.subject.length).toBeLessThanOrEqual(200);
+        expect(entry.subject.endsWith('…')).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
     it('dispute cap returns 429 after limit', async () => {
       const { app: a2, cleanup } = makeAppWithResolution();
       try {

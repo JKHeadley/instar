@@ -193,14 +193,16 @@ export class WebSocketManager {
           const machineRequest = request as IncomingMessage & { body: object; machineAuth?: MachineAuthContext; desktopRelayMachineId?: string };
           machineRequest.body = {};
           let accepted = false;
-          const refusal = { status: (_code: number) => refusal, json: (_body: unknown) => refusal };
+          // SEC-147: a signed binding-mismatch rejection rides the 403 as a header,
+          // which the ws client reads through 'unexpected-response'.
+          const refusal = upgradeRefusalCollector();
           machineAuthMiddleware(options.desktopPeerAuth)(
             machineRequest as unknown as ExpressRequest,
             refusal as unknown as ExpressResponse,
             () => { accepted = true; },
           );
           if (!accepted || !machineRequest.machineAuth) {
-            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
+            socket.write(refusal.forbiddenResponse()); socket.destroy(); return;
           }
           machineRequest.desktopRelayMachineId = machineRequest.machineAuth.machineId;
         }
@@ -932,4 +934,24 @@ export class WebSocketManager {
     this.clients.clear();
     this.wss.close();
   }
+}
+
+/**
+ * A stand-in response for running the machine-auth middleware on a raw upgrade
+ * request. It keeps any header the middleware sets (SEC-147: a signed
+ * binding-mismatch rejection) so the 403 written to the socket carries it, and
+ * drops a header whose name or value could split the response.
+ */
+export function upgradeRefusalCollector() {
+  const headers: string[] = [];
+  const refusal = {
+    status: (_code: number) => refusal,
+    json: (_body: unknown) => refusal,
+    setHeader: (name: string, value: string) => {
+      if (/^[A-Za-z0-9-]+$/.test(name) && !/[\r\n]/.test(String(value))) headers.push(`${name}: ${value}\r\n`);
+      return refusal;
+    },
+    forbiddenResponse: () => `HTTP/1.1 403 Forbidden\r\n${headers.join('')}Connection: close\r\n\r\n`,
+  };
+  return refusal;
 }

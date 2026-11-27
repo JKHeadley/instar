@@ -96,6 +96,15 @@ describe('actual graph source runtime + authenticated installed peer transport',
   registry.machines[peerId]=peerRow;managers[0].saveRegistry(registry);expect(runtime.isReady()).toBe(true);
   options[0].instanceLock.release();expect(runtime.isReady()).toBe(false);expect(()=>runtime.projection()).toThrow('not-ready');
  });
+ it('keeps owner private reads servable after the 60 s write-readiness proof ages out, and withdraws them with the runtime',async()=>{
+  // The owner's history reads gate on privateReadsServable, not isReady: the background pass re-earns isReady and zeroes
+  // it while it runs, which refused most history reads on a busy lease holder (Studio, 2026-11-17: 25 of 30 reads 503).
+  const {runtime,options}=await setup();expect(await runtime.refreshReadiness()).toBe(true);
+  expect(runtime.isReady()).toBe(true);expect(runtime.privateReadsServable()).toBe(true);
+  const realNow=Date.now(),clock=vi.spyOn(Date,'now').mockReturnValue(realNow+61_000);
+  try{expect(runtime.isReady()).toBe(false);expect(runtime.privateReadsServable()).toBe(true);}finally{clock.mockRestore();}
+  options[0].instanceLock.release();expect(runtime.privateReadsServable()).toBe(false);
+ });
  it('judges a reserved row by what Source holds now, not by the copy taken before the witness answered',async()=>{
   const {f,runtime,peer}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);await runtime.prepareNativeTailClosure();
   const record=f.record('reserved-older-lease'),input={coreType:'graph-event' as const,idempotencyKey:record.packet.idempotencyKey,requestHash:canonicalHash({core:record.core,source:'reserved'}),core:record.core,authorizationProof:record.authorizationProof,plaintextSource:Buffer.from('reserved source')};

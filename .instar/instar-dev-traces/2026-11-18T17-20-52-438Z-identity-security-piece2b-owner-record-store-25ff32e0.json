@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2b-owner-record-store",
+  "sessionId": "97324d66-1049-40ad-9159-00ef223733aa",
+  "timestamp": "2026-11-18T17:20:52.438Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2b-owner-record-store.md",
+  "artifactSha256": "4f86ef6e0d221f96611c05ffafdb1702ed691a7546b8002ed335107e31efb9b4",
+  "specPath": "docs/specs/identity-security-piece2b-owner-record-store.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/keyMaterialPaths.ts",
+    "src/core/ownerRecord.ts",
+    "src/core/ownerRecordStore.ts",
+    "src/core/ownerRecordSync.ts",
+    "src/core/ownerRecordWiring.ts",
+    "src/core/types.ts",
+    "src/data/awareness/owner-record.md",
+    "src/server/AgentServer.ts",
+    "src/server/ownerRecordRoutes.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "owner record storage + signed mesh sync + read route; ships on but grants nothing until piece 3 reads the gate",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "bounded",
+    "reason": "self-triggered actions are the 15-minute pull cycle (≤4 pages per peer, per-peer backoff to 6 h, a 24 h breaker), pushes after a local change (≤500 entries), and a once-only lease-holder bootstrap"
+  }
+}

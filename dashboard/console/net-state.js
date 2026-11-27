@@ -59,10 +59,12 @@ export function isStorable(path, init, input) {
   if (!path) return false;
   const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
   if (method !== 'GET') return false;
-  if (headerOf(init, 'X-Instar-Operator-Session', input)) return false;
+  if (headerOf(init, 'X-Instar-Operator-Session', input) || headerOf(init, 'X-Instar-Needs-Contract', input)) return false;
   // Saved copies belong to the sign-in that read them: no bearer, nothing saved.
   if (!bearerOf(init, input)) return false;
-  const bare = path.split('?')[0];
+  const [bare, query] = path.split('?');
+  // A continuation must check the viewer and the current list every time it opens.
+  if (bare === '/needs' && new URLSearchParams(query).has('cursor')) return false;
   return STORED.some((re) => re.test(bare));
 }
 
@@ -90,18 +92,23 @@ export function whenWords(at, now) {
   return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
-/** The top line, or '' when the connection is fine. */
+/**
+ * The top line, or '' when the connection is fine. The lead words are Telegram's, the same on every
+ * Instar app (Telegram parity W6): "Waiting for network…" with no connection, "Connecting…" while the
+ * agent does not answer.
+ */
 export function lineText(state, now) {
   if (!state || state.mode === 'fresh') return '';
+  if (state.mode === 'updating') return 'Updating…';
   const offline = state.mode === 'offline';
   if (state.shownAt) {
     return offline
-      ? `Offline. Showing what I had at ${whenWords(state.shownAt, now)}.`
-      : `Weak connection. Showing what I had at ${whenWords(state.shownAt, now)}. Trying again.`;
+      ? `Waiting for network… Showing what I had at ${whenWords(state.shownAt, now)}.`
+      : `Connecting… Showing what I had at ${whenWords(state.shownAt, now)}.`;
   }
   return offline
-    ? 'Offline. Nothing saved on this device yet. I’ll load it when the connection is back.'
-    : 'Weak connection. Still trying to reach the agent.';
+    ? 'Waiting for network… Nothing saved on this device yet. I’ll load it when the connection is back.'
+    : 'Connecting… Still trying to reach the agent.';
 }
 
 /**
@@ -141,16 +148,33 @@ export function createNetState({ fetchFn, storage, origin, now = () => Date.now(
   const offlineError = () => new TypeError('Offline: the device has no connection');
 
   let lastBack = -Infinity;
+  let recoveryGeneration = 0;
+  let catchingUp = null;
   const good = () => {
+    if (state.mode === 'updating' && catchingUp) return;
     const wasBad = state.mode !== 'fresh';
     if (retryTimer) { clearTimer(retryTimer); retryTimer = null; }
     retryStep = 0;
-    set({ mode: 'fresh', shownAt: null });
-    // Read the page again once the agent answers, at most every BACK_GAP_MS so a
-    // flickering connection cannot turn into a refresh every few seconds.
-    if (wasBad && now() - lastBack >= BACK_GAP_MS) { lastBack = now(); onBack(); }
+    if (!wasBad) return;
+    // A healthy probe starts recovery. Only the current page's actual reads complete it.
+    if (now() - lastBack < BACK_GAP_MS) { scheduleRetry(); return; }
+    lastBack = now();
+    const generation = ++recoveryGeneration;
+    set({ mode: 'updating', shownAt: state.shownAt });
+    catchingUp = Promise.resolve().then(() => onBack()).then((ok) => {
+      if (generation !== recoveryGeneration) return;
+      catchingUp = null;
+      if (ok === false) { bad(null); return; }
+      set({ mode: 'fresh', shownAt: null });
+    }, () => {
+      if (generation !== recoveryGeneration) return;
+      catchingUp = null;
+      bad(null);
+    });
   };
   const bad = (shownAt) => {
+    recoveryGeneration++;
+    catchingUp = null;
     const mode = isOnline() ? 'weak' : 'offline';
     // Keep the oldest copy on screen in the line: that is what the person is looking at.
     const at = shownAt && state.shownAt ? Math.min(shownAt, state.shownAt) : (shownAt || state.shownAt || null);
@@ -250,6 +274,10 @@ export function createNetState({ fetchFn, storage, origin, now = () => Date.now(
     probeNow: () => { if (retryTimer) { clearTimer(retryTimer); retryTimer = null; } return probe(); },
     wentOffline: () => bad(null),
     clear: () => {
+      recoveryGeneration++; catchingUp = null;
+      if (retryTimer) { clearTimer(retryTimer); retryTimer = null; }
+      retryStep = 0; lastBack = -Infinity;
+      set({ mode: 'fresh', shownAt: null });
       try {
         const keys = [];
         for (let i = 0; i < storage.length; i++) { const k = storage.key(i); if (k && k.startsWith(PREFIX)) keys.push(k); }

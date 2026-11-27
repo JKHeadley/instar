@@ -1,5 +1,5 @@
 {
-  "total": 1121,
+  "total": 1120,
   "perFile": {
     "src/cli.ts": 1,
     "src/commands/init.ts": 35,
@@ -51,7 +51,7 @@
     "src/core/TopicProfileOrchestrator.ts": 17,
     "src/core/TopicProfileResolver.ts": 4,
     "src/core/TopicResumeMap.ts": 11,
-    "src/core/UsageWallRescue.ts": 11,
+    "src/core/UsageWallRescue.ts": 10,
     "src/core/accountFollowMeCooperativeWipe.ts": 3,
     "src/core/classifyProfileChange.ts": 3,
     "src/core/claudeForbiddenGuard.ts": 1,

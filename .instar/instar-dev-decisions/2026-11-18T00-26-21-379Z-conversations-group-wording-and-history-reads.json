@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-18T00:26:21.379Z",
+  "slug": "conversations-group-wording-and-history-reads",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 42,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/shared/conversationGraphChat.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts",
+      "src/server/ConversationGraphSurface.ts",
+      "src/server/conversationGraphHistoryRoutes.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

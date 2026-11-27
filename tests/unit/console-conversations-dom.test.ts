@@ -42,6 +42,29 @@ async function boot(hash: string, handler: (url: string, options?: any) => { sta
 }
 
 describe('native console Conversations', () => {
+  it('a hierarchy switched off here offers Chats instead of a dead end', async () => {
+    const f = await boot('#/work/conversations', () => ({ status: 503, body: { code: 'conversation-graph-off' } }));
+    expect(f.main.textContent).toContain('This view of your conversations is not switched on here yet.');
+    const open = [...f.main.querySelectorAll('a')].find((a) => a.textContent === 'Open Chats') as HTMLAnchorElement;
+    expect(open.getAttribute('href')).toBe('#/work/chats');
+  });
+
+  // "Watch the session" (Justin, topic 140618, 2026-11-14): a conversation's page links to the session answering it.
+  it('a conversation page links to its running session, and says so plainly when none is running', async () => {
+    const node = { ref: { kind: 'conversation', platform: 'telegram', chatId: '-100123', topicId: 42 }, title: 'Worker', kind: 'conversation' };
+    const graph = (url: string) => url.endsWith('/pending') ? { body: { items: [] } } : { body: { partial: false, node, children: { items: [], nextCursor: null } } };
+    const running = { sessions: [{ tmuxSession: 'echo-topic-42', status: 'running', conversationRef: 'telegram:42', startedAt: new Date(Date.now() - 7_200_000).toISOString() }], pool: { selfMachineNickname: 'Mac Studio' } };
+    const f = await boot('#/work/conversations?node=opaque-node', (url) => url.startsWith('/sessions?scope=pool') ? { body: running } : graph(url));
+    const link = f.main.querySelector('.conversation-live-session a') as HTMLAnchorElement;
+    expect(link?.textContent).toBe('Watch the session');
+    expect(link.getAttribute('href')).toBe('#/work/sessions?s=echo-topic-42');
+    expect(f.main.querySelector('.conversation-live-session')!.textContent).toContain('Running on Mac Studio, started 2 h ago.');
+    dom.window.close();
+    const g = await boot('#/work/conversations?node=opaque-node', (url) => url.startsWith('/sessions?scope=pool') ? { body: { sessions: [], pool: {} } } : graph(url));
+    expect(g.main.querySelector('.conversation-live-session a')).toBeNull();
+    expect(g.main.querySelector('.conversation-live-session')!.textContent).toBe('No session is running for this conversation right now. The next message in it starts one.');
+  });
+
   it('Review suggestions refreshes itself: the 30 s page re-run never reloads it or cancels an Accept', async () => {
     const calls: string[] = [];
     const ctx = { selfRefreshing: vi.fn() };
@@ -50,7 +73,7 @@ describe('native console Conversations', () => {
     const f = await boot('#/work/conversations?view=suggestions', async (url) => {
       calls.push(url);
       if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: [{ id: 'sg-0123456789abcdef0123', title: 'Project one', reason: '', frontDoor: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, members: [{ ref: { kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId: 5 }, title: 'Five' }] }] } };
-      if (url.endsWith('/start')) { await startGate; return { status: 404, body: {} }; }
+      if (url.endsWith('/accept')) { await startGate; return { status: 404, body: {} }; }
       return { status: 404, body: {} };
     }, ctx);
     expect(ctx.selfRefreshing).toHaveBeenCalled();
@@ -70,31 +93,15 @@ describe('native console Conversations', () => {
   const tgRef = (topicId: number) => ({ kind: 'conversation', platform: 'telegram', chatId: '-1001', topicId });
   const project = (n: number) => ({ id: `sg-0123456789abcdef012${n}`, title: `Project ${n}`, reason: '', frontDoor: tgRef(n), members: [{ ref: tgRef(n), title: `Conversation ${n}` }] });
   const effortFor = (n: number) => ({ kind: 'effort', id: `effort-000${n}` });
-  /** A server where every owner change commits at once, except what `override` answers itself. */
+  /** A server whose one-call Accept groups each project at once, except what `override` answers itself. */
   function acceptServer(projects: number[], override: (url: string, body: any) => any = () => null) {
-    const placed = new Set<number>(); const frontDoors = new Set<number>(); const accepted: number[] = [];
+    const accepted: number[] = [];
     const handler = async (url: string, options: any = {}) => {
       const body = options.body ? JSON.parse(options.body) : undefined;
       const special = await override(url, body); if (special) return special;
       if (url.endsWith('/conversation-graph/suggestions')) return { body: { state: 'ready', items: projects.map(project) } };
       const n = Number(url.match(/sg-0123456789abcdef012(\d)/)?.[1]);
-      if (url.endsWith('/start')) return { body: { createRequestId: `suggestion-create-000${n}` } };
-      if (url.endsWith('/accepted')) { accepted.push(n); return { body: { ok: true } }; }
-      if (url.endsWith('/conversation-graph/preview')) return { body: { eligible: true } };
-      if (url.endsWith('/conversation-graph/changes')) {
-        const c = body.change;
-        if (c.kind === 'create-effort') return { body: { state: 'committed', effort: effortFor(Number(body.requestId.at(-1))) } };
-        if (c.kind === 'set-primary-placement') placed.add(c.subject.topicId);
-        if (c.kind === 'set-front-door') frontDoors.add(c.conversation.topicId);
-        return { body: { state: 'committed' } };
-      }
-      if (url.includes('/conversation-graph/nodes/')) {
-        const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-        const n2 = ref.kind === 'effort' ? Number(ref.id.at(-1)) : ref.topicId;
-        return { body: { partial: false, node: { ref, title: 'x', ...(ref.kind === 'effort' && frontDoors.has(n2) ? { frontDoor: tgRef(n2) } : {}) },
-          path: ref.kind === 'conversation' && placed.has(n2) ? [{ ref: effortFor(n2), title: 'x' }] : [], children: { items: [], nextCursor: null },
-          correction: { moveEligible: true, replacesPlacementEventIds: [], ...(ref.kind === 'effort' ? { headerVersion: 0, headerForgotten: false, replacesFrontDoorEventIds: [] } : {}) } } };
-      }
+      if (url.endsWith('/accept')) { accepted.push(n); return { body: { id: project(n).id, state: 'accepted', group: effortFor(n), moved: 1, skipped: 0, placedElsewhere: false } }; }
       return { status: 404, body: {} };
     };
     return { handler, accepted };
@@ -106,7 +113,7 @@ describe('native console Conversations', () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const server = acceptServer([1, 2, 3], async (url) => {
-      if (url.endsWith('sg-0123456789abcdef0122/start')) { await gate; return { status: 404, body: {} }; }
+      if (url.endsWith('sg-0123456789abcdef0122/accept')) { await gate; return { status: 404, body: {} }; }
       return null;
     });
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
@@ -118,7 +125,7 @@ describe('native console Conversations', () => {
     // Held on project 2: the button is disabled, and the line beside it says what is running.
     expect(all.disabled).toBe(true);
     expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
-    expect(progressLine(f.main)).toContain('Creating the effort');
+    expect(progressLine(f.main)).toContain('Starting…');
     release();
     for (let i = 0; i < 40; i++) await flush();
     expect(server.accepted).toEqual([1, 3]); // project 3 was not held up by project 2
@@ -129,9 +136,8 @@ describe('native console Conversations', () => {
   });
 
   it('Accept all shows what a slow change is waiting for, and stops with words when changes are not being confirmed', async () => {
-    const pending = { status: 202, body: { state: 'saved-pending', waitingMachines: [{ name: 'Laptop' }] } };
-    const server = acceptServer([1, 2, 3], (url, body) => (url.endsWith('/conversation-graph/changes') && body.change.kind === 'create-effort')
-      || /\/conversation-graph\/changes\/suggestion-create/.test(url) ? pending : null);
+    const pending = { status: 202, body: { state: 'working', step: 'creating', text: 'Creating the group… Saved here. Waiting for Laptop to confirm.', waitingMachines: [{ machineId: 'm_laptop', name: 'Laptop' }], agentNotAnswering: false, retryAfterMs: 2500 } };
+    const server = acceptServer([1, 2, 3], (url) => url.endsWith('/accept') ? pending : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     const all = allButton(f.main);
     vi.useFakeTimers();
@@ -139,9 +145,15 @@ describe('native console Conversations', () => {
       all.click();
       await vi.advanceTimersByTimeAsync(11000);
       expect(all.disabled).toBe(true);
-      expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the effort… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      expect(progressLine(f.main)).toMatch(/^Accepting 1 of 3: Project 1\. Creating the group… Saved here\. Waiting for Laptop to confirm\. \(\d+ s\)$/);
+      // Each change waits 150 s for the other machines (ACCEPT_CHANGE_CONFIRM_WAIT_MS), so at 151 s the first
+      // project counts as still waiting and the second is running; Accept all has not stopped.
       await vi.advanceTimersByTimeAsync(140000);
-      expect(progressLine(f.main)).toBe('Stopped at 2 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
+      expect(all.disabled).toBe(true);
+      expect(progressLine(f.main)).toContain('Accepting 2 of 3: Project 2.');
+      // It stops only after three projects in a row are still waiting (ACCEPT_ALL_STOP_AFTER_WAITING).
+      await vi.advanceTimersByTimeAsync(320000);
+      expect(progressLine(f.main)).toBe('Stopped at 3 of 3: changes are not being confirmed right now. 0 of 3 accepted. Tap Continue to try again; nothing is lost.');
       expect(all.disabled).toBe(false);
       expect(all.textContent).toBe('Continue accepting projects');
       expect(server.accepted).toEqual([]);
@@ -297,23 +309,47 @@ describe('native console Conversations', () => {
     expect(suggestionsUnavailable({ status: 500, data: {} }, 0)).toEqual({ text: 'Suggestions could not be loaded. Nothing is lost. Tap Try again.', retryInMs: 0 });
   });
 
+  it('when the server hands the decision back, the card offers Accept again AND Reject; a closed one leaves the card', async () => {
+    const server = acceptServer([1, 2], (url) => {
+      if (/sg-0123456789abcdef0121\/accept$/.test(url)) return { status: 409, body: { id: 'x', state: 'refused', step: 'naming', code: 'group-not-found', text: 'The group cannot be found on this machine right now. Tap Accept again later, or Reject to drop this suggestion.' } };
+      if (/sg-0123456789abcdef0122\/accept$/.test(url)) return { status: 409, body: { id: 'y', state: 'refused', step: 'moving', code: 'group-gone', text: 'The group for this suggestion was removed, so this suggestion is closed. Nothing else was changed.' } };
+      return null;
+    });
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    for (let i = 0; i < 10; i++) await flush();
+    const cardButtons = (label: RegExp) => [...f.main.querySelectorAll('button')].filter((b) => label.test(b.textContent || '')) as HTMLButtonElement[];
+    for (const b of cardButtons(/^Accept$/)) b.click();
+    for (let i = 0; i < 30; i++) await flush();
+    expect(cardButtons(/^Accept again$/)).toHaveLength(1);
+    expect(cardButtons(/^Reject$/).some((b) => !b.disabled)).toBe(true);
+    expect(f.main.textContent).toContain('this suggestion is closed');
+  });
+
   it('a project the agent does not answer for is a wait with plain words, never "no longer available"', async () => {
     // Real two-machine run (accept-all round 2): with the M5 frozen, the Studio's requests timed out and the
     // cards said "This suggestion is no longer available" — untrue, nothing was refused.
-    const silentFor = (url: string) => {
-      if (/sg-0123456789abcdef012[23]\/start$/.test(url)) return true;
-      if (!url.includes('/conversation-graph/nodes/')) return false;
-      const ref = JSON.parse(Buffer.from(decodeURIComponent(url.split('/').at(-1)!), 'base64url').toString());
-      return ref.kind === 'conversation' && (ref.topicId === 2 || ref.topicId === 3);
-    };
+    const silentFor = (url: string) => /sg-0123456789abcdef012[23]\/accept$/.test(url);
     const server = acceptServer([1, 2, 3], (url) => silentFor(url) ? { status: 408, body: {} } : null);
     const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
     allButton(f.main).click();
     for (let i = 0; i < 60; i++) await flush();
     expect(server.accepted).toEqual([1]);
-    expect(progressLine(f.main)).toBe('Stopped at 3 of 3: your agent is not answering right now. 1 of 3 accepted. Tap Continue to try again; nothing is lost.');
+    // Two projects in a row without an answer no longer stop the run early (the stop needs three:
+    // ACCEPT_ALL_STOP_AFTER_WAITING); the run ends and says how many did not finish.
+    expect(progressLine(f.main)).toBe('1 of 3 projects accepted. 2 did not finish; their cards say why. Tap Continue to try again.');
     expect(f.main.textContent).not.toContain('no longer available');
     expect(f.main.textContent).toContain('The agent did not answer. Tap Continue to try again; nothing is lost.');
+    expect(allButton(f.main).disabled).toBe(false);
+  });
+
+  it('three projects in a row without an answer stop Accept all with plain words', async () => {
+    const silentFor = (url: string) => /sg-0123456789abcdef012[234]\/accept$/.test(url);
+    const server = acceptServer([1, 2, 3, 4, 5], (url) => silentFor(url) ? { status: 408, body: {} } : null);
+    const f = await boot('#/work/conversations?view=suggestions', server.handler, { selfRefreshing: vi.fn() });
+    allButton(f.main).click();
+    for (let i = 0; i < 80; i++) await flush();
+    expect(server.accepted).toEqual([1]); // project 5 is not tried after three in a row did not answer
+    expect(progressLine(f.main)).toBe('Stopped at 4 of 5: your agent is not answering right now. 1 of 5 accepted. Tap Continue to try again; nothing is lost.');
     expect(allButton(f.main).disabled).toBe(false);
   });
 
@@ -326,7 +362,7 @@ describe('native console Conversations', () => {
   it('clears private DOM on PIN-proof expiry without waiting for page refresh or sheet dismissal', async()=>{
     const f=await boot('#/work/conversations',url=>({body:url.includes('/pending')?{items:[]}:{...page([{...row(0),title:'PRIVATE-EXPIRY-CANARY'}]),capabilities:{ownerCorrections:true}}}));
     expect(f.main.textContent).toContain('PRIVATE-EXPIRY-CANARY');
-    const create=[...f.main.querySelectorAll('button')].find(button=>button.textContent==='Create effort')!;
+    const create=[...f.main.querySelectorAll('button')].find(button=>button.textContent==='Create group')!;
     create.click();for(let i=0;i<4;i++)await flush();
     expect(document.querySelector('[role=dialog]')).not.toBeNull();
     const before=f.requests.length,actualNow=Date.now();vi.spyOn(Date,'now').mockReturnValue(actualNow+901000);
@@ -337,23 +373,23 @@ describe('native console Conversations', () => {
 
   it.each([false,true,'true'])('keeps privacy erasure separate from unavailable ordinary correction capability (%s)',async ownerErasure=>{
     const {main,requests}=await boot('#/work/conversations?node=retained-effort',()=>({body:{partial:true,replicationState:'pending',node:row(1),children:{items:[],nextCursor:null},capabilities:{ownerCorrections:false,ownerErasure},erasure:{headerForgotten:false}}}));
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Forget name')).toBe(ownerErasure===true);expect([...main.querySelectorAll('button')].some(b=>['Move','Rename effort','Choose front door'].includes(b.textContent||''))).toBe(false);
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Forget name')).toBe(ownerErasure===true);expect([...main.querySelectorAll('button')].some(b=>['Move','Rename group','Choose front door'].includes(b.textContent||''))).toBe(false);
     if(ownerErasure===true){([...main.querySelectorAll('button')].find(b=>b.textContent==='Forget name') as HTMLButtonElement).click();expect(document.querySelector('[role=dialog]')?.textContent).toContain('Original messages stay');expect(requests.some(r=>r.method==='POST'&&r.url==='/conversation-graph/forget-header')).toBe(false);}
   });
 
   it.each([false,true])('mounts root effort creation only with actual server capability (%s)',async enabled=>{
     const {main}=await boot('#/work/conversations',()=>({body:{...page([]),capabilities:{ownerCorrections:enabled}}}));
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Create effort')).toBe(enabled);
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Create group')).toBe(enabled);
   });
   it.each(['effort','conversation'])('mounts effort controls only on an effort node (%s)',async kind=>{
     const node=kind==='effort'?row(1):{ref:{kind:'conversation',platform:'telegram',chatId:'-100123',topicId:42},title:'Worker'};
     const {main}=await boot('#/work/conversations?node=opaque-node',url=>url.endsWith('/pending')?{body:{items:[]}}:{body:{partial:false,node,children:{items:[],nextCursor:null},correction:{moveEligible:true,replacesPlacementEventIds:[],replacesFrontDoorEventIds:[],headerVersion:0}}});
-    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Rename effort')).toBe(kind==='effort');
+    expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Rename group')).toBe(kind==='effort');
     expect([...main.querySelectorAll('button')].some(b=>b.textContent==='Choose front door')).toBe(kind==='effort');
   });
   it('synchronously clears an actual mounted naming sheet when owner proof is forgotten',async()=>{
     await boot('#/work/conversations?node=opaque-node',url=>url.endsWith('/pending')?{body:{items:[]}}:{body:{partial:false,node:row(1),children:{items:[],nextCursor:null},correction:{moveEligible:true,replacesPlacementEventIds:[],replacesFrontDoorEventIds:[],headerVersion:0}}});
-    ([...document.querySelectorAll('button')].find(b=>b.textContent==='Rename effort') as HTMLButtonElement).click();for(let i=0;i<5;i++)await flush();
+    ([...document.querySelectorAll('button')].find(b=>b.textContent==='Rename group') as HTMLButtonElement).click();for(let i=0;i<5;i++)await flush();
     const input=document.querySelector('[role=dialog] input') as HTMLInputElement;input.value='private mounted draft';
     const {forgetOperatorSession}=await import('../../dashboard/console/ui.js');forgetOperatorSession();
     expect(input.value).toBe('');expect(document.querySelector('[role=dialog]')).toBeNull();expect(document.querySelector('main')?.textContent).toContain('Unlock');
@@ -487,7 +523,7 @@ describe('native console Conversations', () => {
   it('a dark or missing route is an honest unavailable state', async () => {
     const { main } = await boot('#/work/conversations', () => ({ status: 503, body: { code: 'conversation-graph-off' } }));
     expect(main.textContent).toContain('not switched on');
-    expect(main.textContent).not.toContain('No efforts');
+    expect(main.textContent).not.toContain('No groups');
   });
   it.each([200,404])('resolves a worker front door only from an authorized ancestor effort read (%s)',async(status)=>{
     const worker={kind:'conversation',platform:'telegram',chatId:'-100123',topicId:456};
@@ -508,4 +544,21 @@ describe('native console Conversations', () => {
     if(shortcut)expect(shortcut.getAttribute('href')).toContain(encodeNodeRef(frontDoor));
     expect([...main.querySelectorAll('a')].find(a=>a.textContent==='Back to results')?.getAttribute('href')).toBe('#/work/conversations?view=all&q=worker');
   });
+});
+
+it('mounts source cards beside the original history after owner unlock', async () => {
+  const ref={kind:'conversation',platform:'telegram',chatId:'-1001',topicId:42};
+  const token=Buffer.from(JSON.stringify({chatId:'-1001',kind:'conversation',platform:'telegram',topicId:42})).toString('base64url');
+  const {main,requests}=await boot('#/work/conversations?node='+token,url=>{
+    if(url.includes('/messages?'))return {body:{messages:[{messageId:1,text:'Choose the launch date',timestamp:'2026-11-17T12:00:00Z',fromUser:true}]}};
+    if(url.startsWith('/conversation-graph/nodes/'))return {body:{node:{ref,title:'Website launch',source:{platform:'telegram',conversationId:42}},partial:false,children:{items:[]}}};
+    if(url.startsWith('/work-board?'))return {body:{cards:[{id:'wc_1234567890abcdef',title:'Choose the launch date',needLine:'Yours to do',source:{conversationKey:'telegram:42',messageId:'1'}}],total:1,nextPage:null,newestHlc:{physical:1,logical:0,node:'m'},sourceRevision:'a'.repeat(64),behind:null}};
+    if(url==='/conversation-graph/pending')return {body:{items:[],total:0,nextOffset:null}};
+    return {status:404,body:{}};
+  });
+  expect(main.querySelector('.conversation-transcript')?.textContent).toContain('Choose the launch date');
+  const tile=main.querySelector('.conversation-source-cards a');expect(tile?.textContent).toContain('Choose the launch date');
+  expect(tile?.getAttribute('href')).toBe('#/work/board?card=wc_1234567890abcdef');
+  const read=requests.find(r=>r.url.startsWith('/work-board?'));expect(read?.headers['X-Instar-Operator-Session']).toBe('human-proof');
+  expect(read?.url).toContain('sourceConversationKey=telegram%3A42');
 });

@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
+import { liveGeminiSmokeEnabled, withGeminiSmokeWorkspace } from '../helpers/geminiSmokeWorkspace.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import { GEMINI_WIZARD_MODEL } from '../../src/commands/setup-wizard/model-constants.js';
 import {
@@ -20,19 +21,17 @@ const geminiPath = detectGeminiPath();
 const haveGemini = !!geminiPath;
 
 describe('Gemini setup wizard narrative one-shot (E2E)', () => {
-  it.skipIf(!haveGemini)(
+  it.skipIf(!haveGemini && !liveGeminiSmokeEnabled)(
     'a real gemini-cli one-shot can produce bounded setup narrative',
-    async () => {
+    () => withGeminiSmokeWorkspace(async () => {
+      expect(geminiPath).not.toBeNull();
       const prompt = `
 You are the Instar setup wizard. Generate exactly one short welcoming
 paragraph for a new user. Do not include commands, shell snippets, file
 paths, tool names, bullet lists, or questions. Output prose only.
 `.trim();
 
-      const baseEnv = {
-        ...buildGeminiChildEnv(),
-        GEMINI_CLI_TRUST_WORKSPACE: 'true',
-      };
+      const baseEnv = buildGeminiChildEnv();
       let result = await spawnGeminiAndWait(
         geminiPath!,
         buildGeminiOneShotArgv(GEMINI_WIZARD_MODEL, prompt),
@@ -63,7 +62,7 @@ paths, tool names, bullet lists, or questions. Output prose only.
       // The binary being INSTALLED is not the binary being USABLE — see tests/helpers/geminiEnvRefusal.ts.
       // This hatch previously covered quota only; an uncredentialed CLI exits 41 before it reads our
       // prompt, which made this test red on the one kind of box that actually runs it.
-      const refusal = result.exitCode !== 0 ? geminiEnvRefusal(result.stderr) : null;
+      const refusal = !liveGeminiSmokeEnabled && result.exitCode !== 0 ? geminiEnvRefusal(result.stderr) : null;
       if (refusal) {
         console.warn(`Skipping live Gemini narrative assertion: ${refusal}.`);
         return;
@@ -73,7 +72,7 @@ paths, tool names, bullet lists, or questions. Output prose only.
       const out = result.stdout.trim();
       expect(out.length).toBeGreaterThan(20);
       expect(out).not.toMatch(/\b(run|execute|shell|command|tool|read_file|search_file_content)\b/i);
-    },
+    }),
     60_000,
   );
 });

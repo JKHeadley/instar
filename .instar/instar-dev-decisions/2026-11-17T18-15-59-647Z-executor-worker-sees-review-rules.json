@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-17T18:15:59.647Z",
+  "slug": "executor-worker-sees-review-rules",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/executorSession.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/feedback-factory/execute/reviewRules.ts"
+    ],
+    "addedLines": 70,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/feedback-factory/execute-review-rules-shared.test.ts",
+      "howCaught": "both prompts render from reviewRuleLines(); the test fails if the worker prompt lacks any rule line the reviewer applies, and pins the reviewer prompt bytes"
+    },
+    "component": "FeedbackExecutor"
+  },
+  "verdict": "pass"
+}
