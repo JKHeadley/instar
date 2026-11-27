@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "worktree-runtime-readiness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T11:12:35.654Z",
+  "artifactPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "artifactSha256": "593192ed8939cb31234a3d8bc5ccd3f8d4093c418985fda54826d833bfb47774",
+  "coveredFiles": [
+    "tests/unit/SqliteRegistry-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Document the lifetime of one existing child-process probe in the registry test inventory.",
+  "eli16Path": "docs/specs/worktree-runtime-readiness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

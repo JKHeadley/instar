@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "accounts-repair-view",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T20:18:07.706Z",
+  "artifactPath": "upgrades/side-effects/accounts-repair-view.md",
+  "artifactSha256": "3026a77f08e18caadd15ac95f3c003b1259fc1dd2bc157c8e3e327e7c12fbb09",
+  "coveredFiles": [
+    "dashboard/console/accounts.js",
+    "docs/specs/accounts-repair-view.eli16.md",
+    "tests/unit/console-accounts-lifecycle.test.ts",
+    "tests/unit/console-accounts.test.ts",
+    "tests/unit/console-needs-first-screen.test.ts",
+    "upgrades/next/accounts-repair-view.md",
+    "upgrades/side-effects/accounts-repair-view.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Move existing repair controls to a dedicated Accounts view while preserving links and authorization.",
+  "eli16Path": "docs/specs/accounts-repair-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-repair-view.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

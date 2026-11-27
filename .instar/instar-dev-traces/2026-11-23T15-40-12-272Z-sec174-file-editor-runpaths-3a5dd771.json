@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "sec174-file-editor-runpaths",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:40:12.272Z",
+  "artifactPath": "upgrades/side-effects/sec174-file-editor-runpaths.md",
+  "artifactSha256": "a6998fef7ee331cfc76dd073686238b1127e53906c74d1ed470c5add6327a48d",
+  "coveredFiles": [
+    "docs/specs/sec174-file-editor-runpaths.eli16.md",
+    "src/server/fileRoutes.ts",
+    "tests/e2e/file-viewer-e2e.test.ts",
+    "tests/unit/sec174-file-editor-runpaths.test.ts",
+    "upgrades/next/sec174-file-editor-runpaths.md",
+    "upgrades/side-effects/sec174-file-editor-runpaths.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-174 refreshed on main after SEC-173 merged: two list entries and an any-depth name match in one source file; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec174-file-editor-runpaths.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec174-file-editor-runpaths.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

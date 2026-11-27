@@ -1,0 +1,80 @@
+{
+  "version": 3,
+  "slug": "internal-work-owner-surfaces",
+  "sessionId": "2298638c-0f8f-48bb-8203-4470cf1831bf",
+  "timestamp": "2026-11-23T20:49:31.146Z",
+  "artifactPath": "upgrades/side-effects/internal-work-owner-surfaces.md",
+  "artifactSha256": "e8083c6b493c62e9fc30cb24a57410eb20b4e7387d2f52e3ad47f2614794382c",
+  "coveredFiles": [
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "docs/audits/internal-work-owner-surfaces.md",
+    "docs/specs/agent-work-cards-default.md",
+    "src/core/AppConversationStore.ts",
+    "src/core/ConversationUnreadService.ts",
+    "src/core/WorkBoardPickupController.ts",
+    "src/core/WorkBoardRuntime.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "src/core/workFrontDoorsGraph.ts",
+    "src/core/workSourceCards.ts",
+    "src/data/awareness/agent-work-cards.md",
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphSurface.ts",
+    "src/server/conversationGraphViewer.ts",
+    "src/server/conversationMeaningSearch.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileConversationSearchRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/workBoardRoutes.ts",
+    "tests/e2e/agent-work-cards-alive.test.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/agent-work-cards-routes.test.ts",
+    "tests/integration/conversation-list-pins.test.ts",
+    "tests/unit/console-work-my-board.test.ts",
+    "tests/unit/conversation-graph-viewer-review.test.ts",
+    "tests/unit/internal-work-conversation-lifecycle.test.ts",
+    "tests/unit/internal-work-discovery.test.ts",
+    "tests/unit/internal-work-owner-surfaces.test.ts",
+    "tests/unit/work-board-creation-context.test.ts",
+    "tests/unit/work-board-wiring.test.ts",
+    "tests/unit/work-card-closeout.test.ts",
+    "tests/unit/work-front-doors-graph.test.ts",
+    "upgrades/next/internal-work-owner-surfaces.md",
+    "upgrades/side-effects/internal-work-owner-surfaces.eli16.md",
+    "upgrades/side-effects/internal-work-owner-surfaces.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible repair of existing owner read projections and lazy internal history creation; no approval authority, schema migration, record deletion or policy change. The broad file count follows the same leaked projection across existing consumers.",
+  "eli16Path": "upgrades/side-effects/internal-work-owner-surfaces.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/internal-work-owner-surfaces.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build:STANDARD",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "complete",
+        "verified": false
+      },
+      {
+        "name": "iterative-converging-audit",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/audits/internal-work-owner-surfaces.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

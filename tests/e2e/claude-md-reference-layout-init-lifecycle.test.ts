@@ -54,6 +54,10 @@ describe('fresh init writes the small CLAUDE.md + reference files', () => {
     expect(index).toContain('Normal-Chrome browser');
     const allRef = fs.readdirSync(refDir).map(f => fs.readFileSync(path.join(refDir, f), 'utf-8')).join('\n');
     expect(allRef).toContain('### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)');
+    expect(md).toContain('| Where did we discuss this before? | `GET /mobile/conversations/search?q=...&scope=pool`');
+    expect(allRef).toContain('http://localhost:4098/mobile/conversations/search?scope=pool&limit=10');
+    expect(md).not.toContain('/memory/search');
+    expect(allRef).not.toContain('/memory/search');
 
     // First server start: the migrator runs (now with Telegram configured).
     const result = new PostUpdateMigrator({

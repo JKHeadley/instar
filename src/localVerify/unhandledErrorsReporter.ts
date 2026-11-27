@@ -109,10 +109,12 @@ export default class LocalVerifyUnhandledErrorsReporter {
 }
 
 /** Parse the file the reporter wrote; null when absent or unreadable (unknown ⇒ never re-run). */
-export function readUnhandledErrors(text: string | null): number | null {
+export function readUnhandledErrors(text: string | null, requireEmptyMessagesForZero = false): number | null {
   if (text === null) return null;
   try {
     const o = JSON.parse(text) as Partial<UnhandledErrorsFile>;
+    if (requireEmptyMessagesForZero && o.unhandledErrors === 0
+      && (!Array.isArray(o.messages) || o.messages.length !== 0)) return null;
     return o.v === 1 && Number.isInteger(o.unhandledErrors) && (o.unhandledErrors as number) >= 0 ? (o.unhandledErrors as number) : null;
   } catch {
     return null;

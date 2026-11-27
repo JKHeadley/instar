@@ -51,4 +51,4 @@ Some services cost money before they work at all. Jev is one: TypeSafe won't giv
 
 ## Asking again after a real problem (rollout step 4)
 
-The "real problem" part has started, switched off by default. The first problem that can bring a no back once is a voice note nothing on the machine can read, which asks about voice transcription again. The details are in `recommended-services-reoffers.eli16.md`. More problems and the judged part (a change that matters to you, or a long cool-off) come next.
+The "real problem" part is being built, switched off by default. Problems that can bring a no back once so far: a voice note nothing on the machine can read (asks about voice transcription again), and a password or key the settings point at that is missing with no vault (asks about Bitwarden again). The details are in `recommended-services-reoffers.eli16.md`. The judged part (a change that matters to you, or a long cool-off) comes next.
