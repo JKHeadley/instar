@@ -1,29 +1,29 @@
 ---
 title: What is Instar?
-description: Coherence infrastructure for your self-evolving agent. Memory that survives, identity that persists, and the same self-improving loop that built Instar itself.
+description: Your own AI agent, a colleague you can trust. Memory that lasts, promises it keeps, and judgment about when to ask you.
 ---
 
-**Coherence infrastructure for your self-evolving agent.**
+**Your own AI agent. A colleague you can trust.**
 
-Your AI agent shouldn't have amnesia. This one doesn't. Instar remembers what you discussed last week, catches its own contradictions before you do, follows through on commitments across restarts, and carries the same self-improving loop that built Instar itself — on the Claude Code or Codex subscription you already have.
+Instar turns an AI you chat with into an agent that works with you over time. It remembers what you discussed last week, keeps the promises it makes, works while you are away, and asks you only when a decision is really yours. You talk to it from the Instar app on your phone or computer, or from Telegram or Slack. It runs on the Claude Code or Codex subscription you already have.
 
 Named after the developmental stages between molts in arthropods, where each instar is more developed than the last.
 
 ## The Problem
 
-Every popular agent framework ships something hobbled. Users complain in the same words across the dev community:
+Most AI forgets you the moment the chat ends. Agents built on it fail in the same ways:
 
 - *"My agent forgot what I told it three sessions ago."*
 - *"It contradicted its own past decisions."*
 - *"It lost the thread halfway through the project."*
 - *"It broke when the framework updated."*
-- *"Default permissions are ALLOW-ALL — I had to figure out hardening myself."*
+- *"It could do anything, and nobody had decided what it should be allowed to do."*
 
-These aren't bad prompts or wrong models. They're the same architectural failure: an agent spun up with no machinery to be coherent — no memory across boundaries, no accountability for what a past instance did, no way to evolve itself. Power without coherence is unreliable, and most "memory" in popular frameworks is bolted-on (a vector DB, a buffer, a tutorial-shaped fix) rather than built into the architecture.
+These are not bad prompts or wrong models. They are the same architectural failure: an agent with no structure for staying coherent. No memory across boundaries, no accountability for what an earlier session did, no way to learn from its corrections. Instar is what was left after most of a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering.
 
 ## The Solution
 
-Instar is the scaffolding that un-hobbles agents. It solves six dimensions of agent coherence structurally:
+Instar builds six dimensions of coherence into the agent as structure, not as instructions it might forget:
 
 | Dimension | What it means |
 |-----------|---------------|
@@ -36,39 +36,37 @@ Instar is the scaffolding that un-hobbles agents. It solves six dimensions of ag
 
 ## Two Configurations
 
-- **General Agent** -- A personal AI partner on your computer. Runs in the background, handles scheduled tasks, messages you on Telegram or WhatsApp proactively, and grows through experience.
-- **Project Agent** -- A partner embedded in your codebase. Monitors, builds, maintains, and messages you -- the same two-way communication, scoped to your project.
+- **General Agent** -- A personal AI colleague on your computer. Runs in the background, handles scheduled tasks, and reaches you through the app or your messaging channel when something needs you.
+- **Project Agent** -- An agent for one codebase. Monitors, builds and maintains it, scoped to that project.
 
 ## How It Works
 
 ```
-You (Telegram / WhatsApp / Terminal)
+You (Instar app / Telegram / Slack / dashboard)
          |
     conversation
          |
          v
 +-------------------------+
-|    Your AI Partner       |
-|    (Instar Server)       |
+|     Your agent           |
+|    (Instar server)       |
 +--------+----------------+
-         |  manages its own infrastructure
+         |  runs and supervises its own sessions
          |
-         +- Claude Code session (job: health-check)
-         +- Claude Code session (job: email-monitor)
-         +- Claude Code session (interactive chat)
-         +- Claude Code session (job: reflection)
+         +- session (job: email check)
+         +- session (your conversation about a project)
+         +- session (job: reflection)
 ```
 
-Each session is a **real Claude Code process** with extended thinking, native tools, sub-agents, hooks, skills, and MCP servers. Not an API wrapper -- the full development environment. The agent manages all of this autonomously.
+Each session is a real Claude Code or Codex process with its native tools, sub-agents, hooks and skills. Not an API wrapper. The server supervises all of it: memory, scheduling, recovery after crashes and restarts, and the checks that keep the agent honest. Link several computers and they act as one agent with one memory.
 
 ## Requirements
 
-- Node.js 20+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
-- API key or Claude subscription (Max or Pro)
+- **With the Mac app:** a Mac on macOS 14 or later, and a Claude or ChatGPT subscription.
+- **From the terminal:** Node.js 20+, and [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex signed in to your subscription.
 
 ## Next Steps
 
-Ready to get started? [Install Instar](/installation) in one command.
+Ready to start? Follow the [Quick Start](/quickstart), with the Mac app or one command.
 
 Want to understand the philosophy? Read about [the coherence problem](/concepts/coherence).

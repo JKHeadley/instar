@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "private-authored-registry-fixture",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-24T01:31:06.303Z",
+  "artifactPath": "upgrades/side-effects/private-authored-registry-fixture.md",
+  "artifactSha256": "59f8c04b4dbf9a484b08b9f5f58a169fd8d3d0e733c77f0377ed2a92c67ea997",
+  "coveredFiles": [
+    "docs/specs/private-authored-registry-fixture.eli16.md",
+    "tests/unit/standards-registry-asset.test.ts",
+    "upgrades/next/private-authored-registry-fixture.md",
+    "upgrades/side-effects/private-authored-registry-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test-only fixture state isolation. Production resolver, auditor, article count, admission and approval authorities remain unchanged; focused complete-file verification and fresh independent final-artifact review passed.",
+  "eli16Path": "docs/specs/private-authored-registry-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/private-authored-registry-fixture.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This is a one-shot test fixture setup and cleanup, not an autonomous retry, repair or restart loop; no production controller or self-triggered action is added."
+  }
+}

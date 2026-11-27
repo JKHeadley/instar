@@ -1,0 +1,58 @@
+{
+  "ts": "2026-11-20T20:58:02.814Z",
+  "slug": "no-data-loss-repo-registry",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 24,
+  "loc": 1553,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/OwnedRepoReplicatedStore.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/SafeGitExecutor.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/awareness/no-data-loss.md",
+      "src/data/feature-ladders.json",
+      "src/data/state-coherence-registry.json",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/monitoring/DiskSteward.ts",
+      "src/monitoring/DiskStewardPoster.ts",
+      "src/monitoring/diskSteward/wiring.ts",
+      "src/monitoring/ownedRepos/OwnedRepoRegistry.ts",
+      "src/monitoring/ownedRepos/repoDiscovery.ts",
+      "src/monitoring/ownedRepos/repoGit.ts",
+      "src/monitoring/ownedRepos/repoInspect.ts",
+      "src/monitoring/ownedRepos/wiring.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/diskStewardRoutes.ts",
+      "src/server/needsRoutes.ts",
+      "src/server/ownedRepoRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1528,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The only self-triggered action changed is the disk-steward post retry: a quiet hold (not-delivered) now takes the same path as a failed send, which the registered disk-steward controller already drives to its bound (send backoff 15 min to 6 h, each post dropped after 24 h, next waits a full repeat window). The owned-repository registry adds a fixed 15-minute read-only tick with a single-flight guard and a 60 s budget; it sends nothing and raises no notice itself."
+    }
+  },
+  "verdict": "pass"
+}

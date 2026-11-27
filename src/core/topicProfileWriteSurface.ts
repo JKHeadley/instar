@@ -55,6 +55,7 @@ import {
   type ValidatedProfilePatch,
 } from './topicProfileValidation.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { CROSS_TOPIC_FIELDS } from './topicCreationProvenance.js';
 
 // ── locally-defined shared types (noted in the build report) ────────────────
 
@@ -207,11 +208,11 @@ export class TopicProfileWriteSurface {
 
     // ── §10.1 principal / bound-operator gate ──────────────────────────────
     if (req.crossTopicConfirm) {
-      // Defense in depth: a cross-conversation yes changes only everyday run settings.
-      const outside = Object.keys(req.patch).filter((k) => !['model', 'modelTier', 'thinkingMode', 'effort'].includes(k));
+      // Defense in depth: the route and write surface share the same owner-confirmable fields.
+      const outside = Object.keys(req.patch).filter((k) => !CROSS_TOPIC_FIELDS.includes(k));
       if (outside.length) {
         this.deps.audit({ type: 'write', outcome: 'refused', reason: 'cross-topic-field', topic: topicKey, fields: outside, origin: req.origin });
-        return { ok: false, reply: 'From another conversation I can change only the model, model tier, thinking mode or effort.', refusal: { reason: 'cross-topic-field' } };
+        return { ok: false, reply: 'From another conversation I can change only the engine, model, model tier, thinking mode or effort.', refusal: { reason: 'cross-topic-field' } };
       }
     }
     const authRefusal = this.authorize(topicKey, req.principal, req.origin, req.crossTopicConfirm);

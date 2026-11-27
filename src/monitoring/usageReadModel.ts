@@ -268,6 +268,8 @@ export function usageCoverage(ctx: ReadContext, sinceMs = ctx.now - 30 * DAY_MS)
     },
     unpricedModels: Object.fromEntries(acc.unpricedModels),
     pairs: l.pairCounts(),
+    // quota-pacing step 3: this machine's tagged-vs-served disagreements (the list: GET /usage/account-mismatches).
+    accountMismatches: l.accountMismatches(sinceMs, 1, null).total,
     counters: l.coverageCounters(),
     snapshot: l.snapshotStatus(),
     peers: l.peerCursors(),

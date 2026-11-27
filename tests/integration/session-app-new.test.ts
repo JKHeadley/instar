@@ -140,6 +140,7 @@ function memoryRequests() {
 const rid = () => `${Date.now()}-${'0f9c1d2e-3b4a-4c5d-8e6f-' + Math.floor(Math.random() * 1e12).toString(16).padStart(12, '0')}`;
 function appSvc(owner = true): Svc & Record<string, unknown> {
   const svc: Svc & Record<string, unknown> = { creates: [], owner, deps: { requests: memoryRequests() } };
+  svc.liveConversation = (key: string) => svc.creates.find(c => c.key === key) ?? null;
   svc.servesNewConversations = () => svc.owner;
   svc.serves = () => svc.owner;
   svc.applyCreate = (_d: string, _r: string, key: string, title: string) => { svc.creates.push({ key, title }); return { status: 200, body: { conversationKey: key, title } }; };
@@ -147,6 +148,36 @@ function appSvc(owner = true): Svc & Record<string, unknown> {
 }
 
 describe('POST /sessions/create — an Instar app conversation', () => {
+  it('reserves recorded session provenance, honors parent intent and rejects changed-parent reuse', async () => {
+    const bundle = buildBundle(FLEET_REGIME);
+    const svc = appSvc();
+    const calls: any[][] = [];
+    const original = svc.applyCreate as (...args: any[]) => unknown;
+    svc.applyCreate = (...args: any[]) => { calls.push(args); return original(...args); };
+    svc.liveConversation = (key: string) => key === '22222222-2222-4222-8222-222222222222' || svc.creates.some(c => c.key === key) ? { conversationKey: key } : null;
+    const app = buildApp(bundle, { appConversations: svc }, { startAppSession: async () => ({ session: 'test', refusal: null }), appSessionReady: () => ({ ready: true }) });
+    const requestId = rid();
+    const send = (parent: string | null) => request(app).post('/sessions/create').set('X-Instar-Request', '1').send({ name: 'Child', platform: 'app', requestId, parentConversationKey: parent });
+    const first = await send('22222222-2222-4222-8222-222222222222');
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    expect(calls[0][5]).toEqual({ v: 1, source: { kind: 'session', requestId }, parentConversationKey: 'app:22222222-2222-4222-8222-222222222222', parentBasis: 'explicit' });
+    const repeated = await send('app:22222222-2222-4222-8222-222222222222');
+    expect(repeated.status, JSON.stringify(repeated.body)).toBe(201);
+    expect(calls).toHaveLength(1);
+    const changed = await send(null);
+    expect(changed.status).toBe(409);
+    expect(changed.body.code).toBe('request-id-reused');
+    svc.liveConversation = () => null;
+    const unavailable = await send('app:22222222-2222-4222-8222-222222222222');
+    expect(unavailable.status).toBe(409); expect(unavailable.body.code).toBe('conversation-unavailable');
+  });
+  it('refuses a nonexistent parent before creating a child', async () => {
+    const bundle = buildBundle(FLEET_REGIME); const svc = appSvc(); svc.liveConversation = () => null;
+    const app = buildApp(bundle, { appConversations: svc }, { startAppSession: async () => ({ session: 'test', refusal: null }) });
+    const r = await request(app).post('/sessions/create').set('X-Instar-Request', '1').send({ name: 'Child', platform: 'app', parentConversationKey: 'app:22222222-2222-4222-8222-222222222222' });
+    expect(r.status).toBe(400); expect(r.body.code).toBe('parent-unavailable'); expect(svc.creates).toHaveLength(0);
+  });
+
   it('creates the conversation, seeds its engine, starts its session, and answers the key', async () => {
     const bundle = buildBundle(FLEET_REGIME);
     const svc = appSvc();
@@ -225,6 +256,8 @@ describe('POST /sessions/create — an Instar app conversation', () => {
     expect(one.status).toBe(201);
     // A new process: a fresh store instance over the same file, a fresh route (no in-memory state).
     const second = appSvc();
+    // The conversation survived independently of the route/request-store restart.
+    second.liveConversation = first.liveConversation;
     (second as { deps: unknown }).deps = { requests: new MobileChatRequestStore(storeDir) };
     const two = await request(buildApp(buildBundle(FLEET_REGIME), { appConversations: second }, { startAppSession: async () => ({ session: 's', refusal: null }), appSessionReady: () => ({ ready: true }) }))
       .post('/sessions/create').send({ name: 'Plans', platform: 'app', requestId: id });

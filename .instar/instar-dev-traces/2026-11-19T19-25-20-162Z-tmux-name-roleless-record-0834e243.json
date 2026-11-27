@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "tmux-name-roleless-record",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T19:25:20.162Z",
+  "artifactPath": "upgrades/side-effects/tmux-name-roleless-record.md",
+  "artifactSha256": "3a44b31fc407bf83f8760ff1e0835cac1ff04e037dbae5cf4e649a2290ac0e7c",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "tests/unit/messages-reach-renamed-sessions.test.ts",
+    "upgrades/side-effects/tmux-name-roleless-record.eli16.md",
+    "upgrades/side-effects/tmux-name-roleless-record.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow same-role rule fix in pure naming function; revert restores numbered names",
+  "eli16Path": "upgrades/side-effects/tmux-name-roleless-record.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tmux-name-roleless-record.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

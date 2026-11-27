@@ -1142,13 +1142,22 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('Mystery evidence');
   });
 
-  it('keeps parser scope compatible while the protected measurement supersedes existence classification', () => {
+  // Both live-checkout tests read the same protected measurement. Keep the
+  // expensive CLI invocation once per file, with fresh parsed data per test.
+  let liveRegistryJson: string | undefined;
+  function readLiveRegistryReport() {
     const realRoot = path.resolve(__dirname, '../..');
-    const cli = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
+    liveRegistryJson ??= execFileSync('node', [SCRIPT, '--json'], {
       cwd: realRoot,
       encoding: 'utf8',
       env: { ...process.env, STANDARDS_COVERAGE_ROOT: realRoot },
-    }));
+    });
+    return JSON.parse(liveRegistryJson);
+  }
+
+  it('keeps parser scope compatible while the protected measurement supersedes existence classification', () => {
+    const realRoot = path.resolve(__dirname, '../..');
+    const cli = readLiveRegistryReport();
     const library = computeCoverage({
       registryPath: path.join(realRoot, 'docs', 'STANDARDS-REGISTRY.md'),
       projectDir: realRoot,
@@ -1192,12 +1201,7 @@ describe('standards-coverage ratchet script', () => {
   });
 
   it('the live registry closes all six family audits and includes the singleton Root at 1/1', () => {
-    const realRoot = path.resolve(__dirname, '../..');
-    const report = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
-      cwd: realRoot,
-      encoding: 'utf8',
-      env: { ...process.env, STANDARDS_COVERAGE_ROOT: realRoot },
-    })) as {
+    const report = readLiveRegistryReport() as {
       total: number;
       enforcedRatio: number;
       measurement: { status: string; errors: string[] };

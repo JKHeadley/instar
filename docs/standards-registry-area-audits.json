@@ -12,10 +12,10 @@
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-11-19T19:18:00.000Z",
-      "auditRef": "docs/audits/interaction-family-delight-after-main-merge-2026-11-19.json",
-      "auditSha256": "415b18d5ebde09d708e2061b94f183d6a37ae44fc491860b8ec56ac553571d9d",
-      "areaSha256": "e6b1baf001140fadcea264270f7910074f52c5bb1d93626532cdb73fac083404",
+      "lastAuditedAt": "2026-11-27T10:50:00.000Z",
+      "auditRef": "docs/audits/interaction-family-delight-waiting-ask-merge-2026-11-27.json",
+      "auditSha256": "b9008ca1bc0f039c7ffb1d3a8972ef17979d5c98e8e7d4d11712347f3a8750ba",
+      "areaSha256": "7e113954464e9e06b9bcc99ddccb46d3cee4ecfd4c1806c2e6bae40de0417475",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13

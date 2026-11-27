@@ -14,7 +14,7 @@
  *  - a timeout → the side left waiting is told (each side, in its own scenario).
  * Plus the same-owner path: "It's one of my agents" → no Finish tap.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
@@ -150,13 +150,21 @@ describe('pairing handshake — production path', () => {
     relayUrl = `ws://127.0.0.1:${relay.address!.port}/v1/connect`;
   }, 120_000);
 
-  afterAll(async () => {
-    for (const s of sides) {
-      await s.server.stop(); s.trust.shutdown(); if (!s.down) await s.boot.shutdown(); s.project.cleanup();
+  // Dispose each case's agents before the next one. A server can spend five
+  // seconds draining HTTP connections, and the timeout case starts four.
+  afterEach(async () => {
+    for (const s of sides.splice(0)) {
+      await s.server.stop();
+      s.trust.shutdown();
+      if (!s.down) await s.boot.shutdown();
+      s.project.cleanup();
     }
+  }, 30_000);
+
+  afterAll(async () => {
     await relay?.stop();
     relayData?.cleanup();
-  });
+  }, 45_000);
 
   it('an agent with no owner set (Cora, Nov 11): the real server\'s refusal links straight to the paste box on its tunnel address', async () => {
     // Topic 10000002573: the refusal said "Open the Threadline tab on the dashboard" with no link.

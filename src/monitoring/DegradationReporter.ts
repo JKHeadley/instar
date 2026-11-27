@@ -205,6 +205,26 @@ export interface DegradationIssuePolicy {
   hidesNow(feature: string): boolean;
 }
 
+/** SEC-125: longest feature pattern a caller may send to the mark-reported route. */
+export const FEATURE_PATTERN_MAX_CHARS = 128;
+
+/**
+ * SEC-125: compile a caller-supplied feature pattern only when it is in a safe
+ * subset that cannot backtrack badly: letters, digits, `_`, `-`, `.` (any one
+ * character), `\.` (a literal dot), the anchors `^` and `$`, and `|`
+ * alternation. No groups, classes, repeats or other escapes, so matching is
+ * linear in the feature name. Returns null (the caller answers 400) otherwise.
+ */
+export function compileFeaturePattern(source: unknown): RegExp | null {
+  if (typeof source !== 'string' || source.length === 0 || source.length > FEATURE_PATTERN_MAX_CHARS) return null;
+  if (!/^(?:[A-Za-z0-9_.\-^$|]|\\\.)+$/.test(source)) return null;
+  try {
+    return new RegExp(source);
+  } catch {
+    return null; // @silent-fallback-ok — an unparsable pattern is answered 400 by the caller
+  }
+}
+
 export class DegradationReporter {
   private static instance: DegradationReporter | null = null;
 

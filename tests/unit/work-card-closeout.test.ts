@@ -4,6 +4,7 @@
  * says whose turn it is and whether work has started; the board lists untouched cards first; a card names its
  * own conversation's read and send routes.
  */
+import { lessonsJson } from '../../src/server/workBoardRoutes.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { WorkBoardService, resolveWorkBoardSettings, transcriptLineFor, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
@@ -86,6 +87,58 @@ describe('closing a card: Done with a note, Not important with a reason', () => 
     expect(lessons[0]).toMatchObject({ cardId: id, title: 'Pick a venue', reason: 'We never use that venue', by: { kind: 'person', personKey: 'justin' } });
     expect(lessons[0].tapId).toBe(v.card.closeout!.tapId);
   });
+  it('SEC-122: a card retitled after it was dismissed keeps the dismissed title on its lesson, with the new one beside it', () => {
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'We never use that venue', titleHash: sha256Hex(card.title) });
+    t.advance(1000);
+    const e = t.svc.edit(AGENT, id, { title: 'Pay the deposit for the Hall' });
+    expect(e.ok).toBe(true);
+    const lessons = t.svc.dismissalLessons();
+    expect(lessons).toHaveLength(1);
+    expect(lessons[0]).toMatchObject({ title: 'Pick a venue', currentTitle: 'Pay the deposit for the Hall', reason: 'We never use that venue' });
+    expect(t.svc.view(id)!.card.closeout!.title).toBe('Pick a venue');
+    const json = lessonsJson(t.svc, name, 50);
+    expect(json[0]).toMatchObject({ cardTitle: 'Pick a venue', cardTitleNow: 'Pay the deposit for the Hall', retitledAfterClose: true });
+  });
+  it('SEC-122: an edit that lands before the tap does not take over the reason: the title the screen sent wins', () => {
+    expect(t.svc.edit(AGENT, id, { title: 'Pay the deposit for the Hall' }).ok).toBe(true); // the person still sees "Pick a venue"
+    t.advance(1000);
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'We never use that venue', titleHash: sha256Hex('Pick a venue') });
+    const l = t.svc.dismissalLessons()[0]!;
+    expect(l).toMatchObject({ title: 'Pick a venue', currentTitle: 'Pay the deposit for the Hall' });
+    expect(l).not.toHaveProperty('titleUnconfirmed');
+  });
+  it('SEC-122: a screen title that matches no title the card ever had is marked unconfirmed', () => {
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'Not ours', titleHash: sha256Hex('Something else entirely') });
+    const l = t.svc.dismissalLessons()[0]!;
+    expect(l).toMatchObject({ title: 'Pick a venue', titleUnconfirmed: true });
+    expect(lessonsJson(t.svc, name, 50)[0]).toMatchObject({ titleUnconfirmed: true });
+  });
+  it('SEC-122: close, reopen, retitle, close again: the lesson carries the second close\'s title', () => {
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'Not now', titleHash: sha256Hex(card.title) });
+    const first = t.svc.view(id)!.card.closeout!.tapId;
+    expect(t.svc.tap(OWNER, id, { action: 'unarchive', names: first, titleHash: sha256Hex(card.title) }).ok).toBe(true);
+    t.advance(1000);
+    expect(t.svc.edit(AGENT, id, { title: 'Pick a venue for March' }).ok).toBe(true);
+    t.advance(1000);
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'March is cancelled', titleHash: sha256Hex('Pick a venue for March') });
+    const ls = t.svc.dismissalLessons();
+    expect(ls).toHaveLength(1);
+    expect(ls[0]).toMatchObject({ title: 'Pick a venue for March', reason: 'March is cancelled' });
+    expect(ls[0]).not.toHaveProperty('currentTitle');
+    expect(cardJson(t.svc, t.svc.view(id)!, VIEWER, name).closeout).toMatchObject({ title: 'Pick a venue for March' });
+  });
+  it('SEC-122: a lesson on a card that was never retitled carries no current title, and a confirmed close no flag', () => {
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'We never use that venue', titleHash: sha256Hex(card.title) });
+    const l = t.svc.dismissalLessons()[0]!;
+    expect(l.title).toBe('Pick a venue');
+    expect(l).not.toHaveProperty('currentTitle');
+    expect(l).not.toHaveProperty('titleUnconfirmed');
+    expect(lessonsJson(t.svc, name, 50)[0]).not.toHaveProperty('retitledAfterClose');
+  });
+  it('SEC-122: a close sent without the screen\'s title hash (an older client) is marked unconfirmed', () => {
+    t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'We never use that venue' });
+    expect(t.svc.dismissalLessons()[0]).toMatchObject({ title: 'Pick a venue', titleUnconfirmed: true });
+  });
   it('reopening (unarchive naming the close) drops the close and its lesson', () => {
     t.svc.tap(OWNER, id, { action: 'archive', closeAs: 'not-important', note: 'Not needed' });
     const tapId = t.svc.view(id)!.card.closeout!.tapId;
@@ -157,7 +210,7 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
     const r = t.svc.createCard(AGENT, card); if (!r.ok) throw new Error('create');
     t.svc.edit(AGENT, r.cardId, { recommendation: 'Book the Hall' });
     let j = cardJson(t.svc, t.svc.view(r.cardId)!, VIEWER, name);
-    expect(j).toMatchObject({ started: false, startedAt: null, turn: 'you' });
+    expect(j).toMatchObject({ started: false, startedAt: null, turn: 'agent', agentInternal: true });
     t.advance(1000);
     t.svc.tap(OWNER, r.cardId, { action: 'hold' });
     j = cardJson(t.svc, t.svc.view(r.cardId)!, VIEWER, name);
@@ -166,9 +219,10 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
   });
   it('"Waiting on you" lists untouched cards first, then oldest first', () => {
     const t = makeService();
-    const a = t.svc.createCard(AGENT, { ...card, title: 'A' }); if (!a.ok) throw new Error('a');
+    // Asks (outward): an inward agent-work card is `not-started`, with the agent, never in "Waiting on you" (agent-work-cards-default §1).
+    const a = t.svc.createCard(AGENT, { ...card, outward: true, title: 'A' }); if (!a.ok) throw new Error('a');
     t.advance(1000);
-    const b = t.svc.createCard(AGENT, { ...card, title: 'B' }); if (!b.ok) throw new Error('b');
+    const b = t.svc.createCard(AGENT, { ...card, outward: true, title: 'B' }); if (!b.ok) throw new Error('b');
     t.advance(1000);
     t.svc.tap(OWNER, a.cardId, { action: 'hold' }); // A is started (held: still waiting on the owner)
     const board = boardJson(t.svc, VIEWER, () => true, name, { softOpenCards: 30 });
@@ -177,13 +231,13 @@ describe('whose turn, untouched first, and the conversation inside the card', ()
   });
   it('the soft cut still keeps the oldest waiting cards; untouched-first only orders what is shown', () => {
     const t = makeService();
-    const a = t.svc.createCard(AGENT, { ...card, title: 'Old started' }); if (!a.ok) throw new Error('a');
+    const a = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Old started' }); if (!a.ok) throw new Error('a');
     t.advance(1000);
     t.svc.tap(OWNER, a.cardId, { action: 'hold' });
     t.advance(1000);
-    const b = t.svc.createCard(AGENT, { ...card, title: 'Newer untouched' }); if (!b.ok) throw new Error('b');
+    const b = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Newer untouched' }); if (!b.ok) throw new Error('b');
     t.advance(1000);
-    const c = t.svc.createCard(AGENT, { ...card, title: 'Newest untouched' }); if (!c.ok) throw new Error('c');
+    const c = t.svc.createCard(AGENT, { ...card, outward: true, title: 'Newest untouched' }); if (!c.ok) throw new Error('c');
     const board = boardJson(t.svc, VIEWER, () => true, name, { softOpenCards: 2 });
     const waiting = (board.lanes as Array<{ lane: string; cards: Array<{ title: string }>; more?: number }>).find((l) => l.lane === 'waiting-on-you')!;
     expect(waiting.cards.map((x) => x.title)).toEqual(['Newer untouched', 'Old started']);

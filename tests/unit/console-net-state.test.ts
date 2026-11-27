@@ -137,14 +137,14 @@ describe('the top line', () => {
     expect(lineText({ mode: 'fresh', shownAt: null }, now)).toBe('');
   });
   it('says offline and the time of what is shown', () => {
-    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
   it('says weak connection and that it is trying again', () => {
-    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Weak connection. Showing what I had at 1:52 pm. Trying again.');
+    expect(lineText({ mode: 'weak', shownAt: new Date(2026, 10, 16, 13, 52).getTime() }, now)).toBe('Connecting… Showing what I had at 1:52 pm.');
   });
   it('says plainly when nothing is saved', () => {
-    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Offline\. Nothing saved on this device yet\./);
-    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Weak connection. Still trying to reach the agent.');
+    expect(lineText({ mode: 'offline', shownAt: null }, now)).toMatch(/^Waiting for network… Nothing saved on this device yet\./);
+    expect(lineText({ mode: 'weak', shownAt: null }, now)).toBe('Connecting… Still trying to reach the agent.');
   });
   it('names yesterday and older days', () => {
     expect(whenWords(new Date(2026, 10, 15, 18, 10).getTime(), now)).toBe('yesterday 6:10 pm');
@@ -164,7 +164,7 @@ describe('reading on a weak or missing connection', () => {
     expect(res.headers.get('X-Instar-Saved-At')).toBe(String(new Date(2026, 10, 16, 13, 52).getTime()));
     expect(r.fetchFn.mock.calls.length).toBe(before); // no network wait at all
     expect(r.net.state()).toEqual({ mode: 'offline', shownAt: new Date(2026, 10, 16, 13, 52).getTime() });
-    expect(lineText(r.net.state(), Date.now())).toBe('Offline. Showing what I had at 1:52 pm.');
+    expect(lineText(r.net.state(), Date.now())).toBe('Waiting for network… Showing what I had at 1:52 pm.');
   });
 
   it('fails at once offline when nothing is saved (no 40 s placeholder)', async () => {
@@ -296,5 +296,55 @@ describe('review fixes', () => {
     const get = new Request(`${ORIGIN}/needs`, { headers: { Authorization: 'Bearer tok-1' } });
     expect(isStorable('/needs', undefined, get)).toBe(true);
     expect(bearerOf(undefined, get)).toBe('tok-1');
+  });
+});
+
+
+describe('actual reconnect catch-up', () => {
+  it('shows Updating until page reads finish; successful probes do not finish or duplicate catch-up', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true });
+    await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    expect(lineText(r.net.state(), Date.now())).toBe('Updating…');
+    await r.net.fetch('/health');
+    await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    expect(r.onBack).toHaveBeenCalledTimes(1);
+    finish(true); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('fresh');
+  });
+
+  it('does not let an old catch-up clear a newer offline state', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    expect(r.net.state().mode).toBe('updating');
+    r.set({ online: false }); r.net.wentOffline();
+    finish(true); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('offline');
+  });
+
+  it('retains a weak state and retry when actual page catch-up fails', async () => {
+    const r = rig({ online: false });
+    r.onBack.mockResolvedValue(false);
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('weak');
+    expect(r.onBack).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+  });
+
+  it('sign-out clear invalidates catch-up and its retry timer', async () => {
+    const r = rig({ online: false });
+    let finish!: (ok: boolean) => void;
+    r.onBack.mockImplementation(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    r.net.wentOffline(); r.set({ online: true }); await r.net.probeNow();
+    r.net.clear(); finish(false); await vi.advanceTimersByTimeAsync(0);
+    expect(r.net.state().mode).toBe('fresh');
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

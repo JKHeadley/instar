@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "home-listener-phone-limits",
+  "sessionId": "16774a01-4bef-4ab0-87b4-2a1b1c7f4b06",
+  "timestamp": "2026-11-21T20:53:57.396Z",
+  "artifactPath": "upgrades/side-effects/home-listener-phone-limits.md",
+  "artifactSha256": "1217397b3a003ce153df7ce3a3a33d814280397371abf0c71b28268dc3d301b7",
+  "coveredFiles": [
+    "docs/specs/home-listener-phone-limits.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "src/core/UpdateChecker.ts",
+    "src/data/awareness/same-network-first-phone.md",
+    "src/server/phoneSetupRoutes.ts",
+    "src/server/sameNetworkListener.ts",
+    "src/server/sameNetworkRefusals.ts",
+    "tests/e2e/same-network-first-phone-alive.test.ts",
+    "tests/integration/same-network-refusals.test.ts",
+    "tests/unit/same-network-home-limits.test.ts",
+    "tests/unit/same-network-wsl-listener.test.ts",
+    "upgrades/next/home-listener-phone-limits.md",
+    "upgrades/side-effects/home-listener-phone-limits.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert fully undoes it: three numeric limits on the home listener, a door-sized bucket for the mirrored-mode pass-through address, and an observability-only refusal log with one local read route; no config, no migration, no new blocking authority.",
+  "eli16Path": "docs/specs/home-listener-phone-limits.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/home-listener-phone-limits.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

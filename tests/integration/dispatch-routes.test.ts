@@ -41,6 +41,7 @@ describe('Dispatch Routes (integration)', () => {
       stateDir: project.stateDir,
       port: 0,
       authToken: AUTH_TOKEN,
+      dashboardPin: '482915',
       sessions: {
         tmuxPath: '/usr/bin/tmux',
         claudePath: '/usr/bin/claude',
@@ -140,10 +141,47 @@ describe('Dispatch Routes (integration)', () => {
     expect(res.body.context).toContain('[HIGH]');
   });
 
+  it('POST /dispatches/:id/apply of an unsigned dispatch needs the owner PIN, not only the API key (SEC-153)', async () => {
+    const noPin = await request(app)
+      .post('/dispatches/dsp-route-test1/apply')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(noPin.status).toBe(403);
+    const approve = await request(app)
+      .post('/dispatches/dsp-route-test1/evaluate')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ decision: 'accepted', reason: 'looks fine' });
+    expect(approve.status).toBe(403);
+    // Rejecting needs no PIN: it narrows.
+    expect(dispatches.get('dsp-route-test1')!.applied).toBe(false);
+  });
+
+  it('GET /dispatches/context names what is waiting but never carries the remote text (SEC-153)', async () => {
+    const res = await request(app)
+      .get('/dispatches/context')
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(res.status).toBe(200);
+    for (const d of dispatches.pending()) expect(res.body.context).not.toContain(d.content);
+  });
+
+  it('the dispatch lists withhold the text of an unsigned dispatch; the owner reads it with the PIN (SEC-153)', async () => {
+    const list = await request(app).get('/dispatches/pending').set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(list.status).toBe(200);
+    for (const d of list.body.dispatches) {
+      expect(d.content).toBeUndefined();
+      expect(d.contentWithheld).toBe(true);
+    }
+    const noPin = await request(app).post('/dispatches/dsp-route-test1/read').set('Authorization', `Bearer ${AUTH_TOKEN}`);
+    expect(noPin.status).toBe(403);
+    const withPin = await request(app).post('/dispatches/dsp-route-test1/read').set('Authorization', `Bearer ${AUTH_TOKEN}`).send({ pin: '482915' });
+    expect(withPin.status).toBe(200);
+    expect(withPin.body.dispatch.content).toBe('Test content for route testing.');
+  });
+
   it('POST /dispatches/:id/apply marks dispatch as applied', async () => {
     const res = await request(app)
       .post('/dispatches/dsp-route-test1/apply')
-      .set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      .set('Authorization', `Bearer ${AUTH_TOKEN}`)
+      .send({ pin: '482915' });
 
     expect(res.status).toBe(200);
     expect(res.body.applied).toBe(true);

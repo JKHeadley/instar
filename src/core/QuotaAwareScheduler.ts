@@ -1,3 +1,4 @@
+import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 /**
  * QuotaAwareScheduler — P1.3 of the Subscription & Auth Standard.
  *
@@ -29,6 +30,7 @@ import type {
   SubscriptionFramework,
 } from './SubscriptionPool.js';
 import { isLocallyExecutable, requiresOwnerRelogin } from './SubscriptionPool.js';
+import { rankAccounts, windowAwareBindingPct, windowNow, isValidState, compareCodexWeeklyReset } from './windowAwareChoice.js';
 
 /** The binding window for swap decisions: the 7-day window is the scarce one. */
 export interface SelectionOptions {
@@ -39,6 +41,21 @@ export interface SelectionOptions {
   nowMs?: number;
   /** Restrict placement/headroom to accounts usable by this session framework. */
   framework?: SubscriptionFramework;
+  /**
+   * quota-pacing step 2 (docs/specs/quota-pacing-account-choice.md): read each window as it
+   * stands now and rank in two tiers. Absent/false = today's selection, unchanged.
+   */
+  windowAware?: boolean;
+  /** The model the session will launch (window-aware only; Fable binds the Fable window). */
+  model?: string | null;
+  /** Fire-and-forget request for an out-of-cycle reading (window-aware only). */
+  requestRead?: (accountId: string) => void;
+  /** Consecutive failed out-of-cycle reads (window-aware only; ends the 5-hour grace). */
+  failedReads?: (accountId: string) => number;
+  /** The poll cadence the 5-hour grace is measured in (window-aware only). */
+  pollIntervalMs?: number;
+  /** The account's out-of-cycle re-read breaker is open (window-aware poolHeadroom reports it). */
+  breakerOpen?: (accountId: string) => boolean;
 }
 
 const DEFAULT_SOFT_THRESHOLD = 90;
@@ -54,7 +71,21 @@ const DEFAULT_SOFT_THRESHOLD = 90;
  * input, which is why the anti-thrash validity gate exists on top:
  * swap-continuity-antithrash §3.3 bound 0).
  */
-export function bindingUtilization(snap: AccountQuotaSnapshot | null | undefined): number {
+export function bindingUtilization(snap: AccountQuotaSnapshot | null | undefined): number;
+/**
+ * Window-aware form (quota pacing step 2, §2): the highest VALID percent over the binding
+ * windows (a rolled, unknown, unread or stale window contributes nothing), or null when none
+ * is valid. Display callers keep the one-argument form, unchanged.
+ */
+export function bindingUtilization(
+  snap: AccountQuotaSnapshot | null | undefined,
+  at: { nowMs: number; model?: string | null; provider?: string },
+): number | null;
+export function bindingUtilization(
+  snap: AccountQuotaSnapshot | null | undefined,
+  at?: { nowMs: number; model?: string | null; provider?: string },
+): number | null {
+  if (at) return windowAwareBindingPct(snap, at);
   if (!snap) return 0;
   const utils: number[] = [];
   if (snap.sevenDay) utils.push(snap.sevenDay.utilizationPct);
@@ -106,6 +137,18 @@ export function selectAccount(
 ): SubscriptionAccount | null {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   const nowMs = opts.nowMs ?? Date.parse('2026-01-01T00:00:00Z'); // tests pass nowMs; prod callers always set it
+  if (opts.windowAware === true) {
+    return rankAccounts(accounts, {
+      nowMs,
+      softThresholdPct: soft,
+      framework: opts.framework,
+      model: opts.model,
+      excludeId,
+      failedReads: opts.failedReads,
+      pollIntervalMs: opts.pollIntervalMs,
+      onNeedsRead: opts.requestRead,
+    }).ranked[0]?.account ?? null;
+  }
   const eligible = accounts.filter(
     (a) =>
       isLocallyExecutable(a) &&
@@ -114,9 +157,10 @@ export function selectAccount(
       bindingUtilization(a.lastQuota) < soft,
   );
   if (eligible.length === 0) return null;
+  const codexOnly = eligible.every((a) => a.framework === CODEX_CLI_FRAMEWORK);
   return eligible
     .map((a) => ({ a, s: scoreAccount(a, nowMs) }))
-    .sort((x, y) => y.s - x.s)[0].a;
+    .sort((x, y) => (codexOnly ? compareCodexWeeklyReset(x.a, y.a, nowMs) : 0) || y.s - x.s)[0].a;
 }
 
 /**
@@ -156,8 +200,11 @@ export function poolHeadroom(
    * changed job scheduling for agents that never opted into grok.
    */
   bestFramework?: SubscriptionFramework;
+  /** quota-pacing step 2: the best account's out-of-cycle re-read breaker is open. */
+  rereadBreaker?: 'open';
 } {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
+  if (opts.windowAware === true) return windowAwarePoolHeadroom(accounts, opts, soft);
   const eligible = accounts.filter(
     (a) =>
       isLocallyExecutable(a) &&
@@ -177,6 +224,56 @@ export function poolHeadroom(
   const fiveHourPercent = clamp(best.lastQuota?.fiveHour?.utilizationPct);
   const degraded = weeklyPercent === null && fiveHourPercent === null;
   return { placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.framework };
+}
+
+/**
+ * Window-aware pool headroom (quota pacing step 2, §3). Model-blind by design, and it
+ * counts unmeasured-tier accounts as placeable exactly as `selectAccount` falls back to that
+ * tier, so `placeable ⟺ selectAccount(...) !== null` holds for every model (a Fable window
+ * can only reorder or fall back, never empty the pick). The best account comes from the
+ * measured tier first (most headroom); only a best account from the unmeasured tier sets
+ * `degraded`. A rolled, unknown or unread window reports null, never last cycle's number.
+ */
+function windowAwarePoolHeadroom(
+  accounts: SubscriptionAccount[],
+  opts: SelectionOptions,
+  soft: number,
+): ReturnType<typeof poolHeadroom> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const ranked = rankAccounts(accounts, {
+    nowMs,
+    softThresholdPct: soft,
+    framework: opts.framework,
+    model: null,
+    failedReads: opts.failedReads,
+    pollIntervalMs: opts.pollIntervalMs,
+  }).ranked;
+  if (ranked.length === 0) {
+    return { placeable: false, weeklyPercent: null, fiveHourPercent: null, degraded: false };
+  }
+  const measured = ranked.filter((x) => x.tier === 'measured');
+  const pool = measured.length > 0 ? measured : ranked;
+  let best = pool[0];
+  for (const x of pool) {
+    const bx = x.bindingPct ?? 101;
+    const bb = best.bindingPct ?? 101;
+    if (bx < bb || (bx === bb && x.account.id < best.account.id)) best = x;
+  }
+  const clamp = (v: number | null): number | null =>
+    typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(100, v)) : null;
+  const pctOf = (key: 'sevenDay' | 'fiveHour'): number | null => {
+    const r = windowNow(best.account.lastQuota, key, nowMs, { provider: best.account.provider });
+    return isValidState(r.state) ? clamp(r.pct) : null;
+  };
+  const weeklyPercent = pctOf('sevenDay');
+  const fiveHourPercent = pctOf('fiveHour');
+  const degraded = best.tier === 'unmeasured' || (weeklyPercent === null && fiveHourPercent === null);
+  let breakerOpen = false;
+  try { breakerOpen = opts.breakerOpen?.(best.account.id) === true; } catch { breakerOpen = false; } // @silent-fallback-ok: display-only field
+  return {
+    placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.account.framework,
+    ...(breakerOpen ? { rereadBreaker: 'open' as const } : {}),
+  };
 }
 
 /** Is this account at/over the soft pressure threshold on its binding window? */
@@ -201,7 +298,9 @@ export type RefreshFn = (opts: {
   /** The account id to record on the resumed session. */
   accountId: string;
   /** Work-gate caller class (swap-continuity-antithrash §4.2) — server-internal only (I11). */
-  callerClass?: 'proactive-swap' | 'reactive-swap';
+  callerClass?: 'proactive-swap' | 'reactive-swap' | 'interactive-refresh';
+  /** Final synchronous consistency check after refresh work gates and before any kill. */
+  beforeKill?: () => boolean;
 }) => Promise<boolean | { ok: boolean; code?: string }>;
 
 export interface SwapResult {
@@ -246,6 +345,16 @@ export interface QuotaAwareSchedulerConfig {
   softThresholdPct?: number;
   /** Anti-thrash observation + revalidation hooks (optional, additive). */
   antiThrash?: QuotaSwapAntiThrashHooks;
+  /**
+   * quota-pacing step 2: window-aware selection inputs, read live per decision. Absent, or
+   * `enabled()` false = today's selection, unchanged.
+   */
+  windowAware?: {
+    enabled: () => boolean;
+    requestRead?: (accountId: string) => void;
+    failedReads?: (accountId: string) => number;
+    pollIntervalMs?: () => number;
+  };
   logger?: { log: (m: string) => void; warn: (m: string) => void };
 }
 
@@ -273,7 +382,22 @@ export class QuotaAwareScheduler {
       softThresholdPct: this.cfg.softThresholdPct,
       nowMs,
       framework,
+      ...this.windowAwareOpts(),
     });
+  }
+
+  /** The window-aware selection options when the switch is on, else nothing (today's rule). */
+  private windowAwareOpts(): Partial<SelectionOptions> {
+    const wa = this.cfg.windowAware;
+    let on = false;
+    try { on = wa?.enabled() === true; } catch { on = false; } // @silent-fallback-ok: an unreadable switch is off
+    if (!wa || !on) return {};
+    return {
+      windowAware: true,
+      requestRead: wa.requestRead,
+      failedReads: wa.failedReads,
+      pollIntervalMs: wa.pollIntervalMs?.(),
+    };
   }
 
   /**
@@ -304,10 +428,15 @@ export class QuotaAwareScheduler {
     /** Level-triggered source condition. Login loss is revalidated at the same
      * kill boundary as the untagged default-account identity. */
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+    /** Server-owned explicit manual balance intent; never read directly from a request. */
+    manualBalanceTarget?: string;
+    manualBalanceSourceCurrent?: () => boolean;
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
+    const isManual = args.manualBalanceTarget !== undefined;
     const isProactive = targetAccountId !== undefined;
-    const callerClass = args.callerClass ?? (isProactive ? 'proactive-swap' : 'reactive-swap');
+    if (isManual && isProactive) return { swapped: false, toAccountId: null, reason: 'conflicting-swap-intent' };
+    const callerClass = isManual ? 'interactive-refresh' : args.callerClass ?? (isProactive ? 'proactive-swap' : 'reactive-swap');
     const accounts = this.cfg.listAccounts();
     const sourceAccount = accounts.find((a) => a.id === exhaustedAccountId);
     const framework = args.framework ?? sourceAccount?.framework;
@@ -319,7 +448,16 @@ export class QuotaAwareScheduler {
     }
 
     let next: SubscriptionAccount | null;
-    if (isProactive) {
+    if (isManual) {
+      if (!args.manualBalanceSourceCurrent?.()) return { swapped: false, toAccountId: null, reason: 'manual-balance-source-changed' };
+      // Manual authority is the authenticated, explicit opt-in; this is not a quota-wall intent.
+      // The route revalidates source identity and supplies only fresh measured eligible targets.
+      next = accounts.find((a) => a.id === args.manualBalanceTarget) ?? null;
+      const eligible = rankAccounts(accounts, { nowMs, framework: CODEX_CLI_FRAMEWORK, excludeId: exhaustedAccountId, softThresholdPct: Math.min(this.cfg.softThresholdPct ?? 90, 100) }).ranked;
+      if (framework !== CODEX_CLI_FRAMEWORK || !next || !eligible.some((x) => x.account.id === next!.id && x.tier === 'measured')) {
+        return { swapped: false, toAccountId: next?.id ?? null, reason: 'manual-target-ineligible' };
+      }
+    } else if (isProactive) {
       // ── Execute-time revalidation (§3.3, R4-m4) — refuse, never re-select ──
       const at = this.cfg.antiThrash;
       next = accounts.find((a) => a.id === targetAccountId) ?? null;
@@ -369,7 +507,7 @@ export class QuotaAwareScheduler {
       // ── Reactive semantics — byte-identical to v1.3.722 (I6) ──
       next = selectAccount(
         accounts,
-        { softThresholdPct: this.cfg.softThresholdPct, nowMs, framework },
+        { softThresholdPct: this.cfg.softThresholdPct, nowMs, framework, ...this.windowAwareOpts() },
         exhaustedAccountId,
       );
       if (!next) {
@@ -381,20 +519,22 @@ export class QuotaAwareScheduler {
       }
     }
 
+    if (isManual && !args.manualBalanceSourceCurrent?.()) return { swapped: false, toAccountId: next.id, reason: 'manual-balance-source-changed' };
     let refreshOutcome: boolean | { ok: boolean; code?: string };
     try {
       refreshOutcome = await this.cfg.refreshFn({
         sessionName,
-        reason: `${args.sourceTrigger === 'login-loss' ? 'login-loss-swap' : 'quota-swap'}: ${exhaustedAccountId} → ${next.id}`,
+        reason: `${isManual ? 'manual-balance-swap' : args.sourceTrigger === 'login-loss' ? 'login-loss-swap' : 'quota-swap'}: ${exhaustedAccountId} → ${next.id}`,
         configHome: next.configHome,
         accountId: next.id,
         callerClass,
+        ...(isManual ? { beforeKill: args.manualBalanceSourceCurrent } : {}),
       });
     } catch (err) {
       // §3.1/§3.6 fix-alongside: reactive execution failures were previously a
       // silent discarded promise — now observed (failed rows, kind 'reactive')
       // before the error propagates exactly as before.
-      if (!isProactive) {
+      if (!isProactive && !isManual) {
         this.cfg.antiThrash?.onReactiveFailed?.({
           session: sessionName,
           from: exhaustedAccountId,
@@ -411,7 +551,7 @@ export class QuotaAwareScheduler {
       this.cfg.logger?.warn(
         `[QuotaAwareScheduler] ${sessionName}: swap to ${next.id} — refresh reported failure${code ? ` (${code})` : ''}`,
       );
-      if (!isProactive) {
+      if (!isProactive && !isManual) {
         if (code === 'rate_limited') {
           // The one state where a session is stranded on a walled account with
           // no further mechanical rescue this window (§3.1 trigger 2).
@@ -430,7 +570,7 @@ export class QuotaAwareScheduler {
     this.cfg.logger?.log(
       `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
     );
-    if (!isProactive) {
+    if (!isProactive && !isManual) {
       this.cfg.antiThrash?.onReactiveExecuted?.({
         session: sessionName,
         from: exhaustedAccountId,

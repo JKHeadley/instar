@@ -34,7 +34,7 @@ Accept runs, from the owner's dashboard session, exactly the owner changes a man
 
 ## 5. Multi-machine posture
 
-Suggestion state (the built list, rejections, acceptances) is one small file in the serving machine's state directory: machine-local by design. Suggestions are advice regenerated from shared inputs. The graph changes an Accept makes are the ordinary replicated owner events. A rejection recorded on one machine is not known to another, so a different machine's dashboard could offer the same grouping again. Moving this state onto a replicated store is tracked <!-- tracked: CMT-1650 -->.
+The built list of suggestions is machine-local: a cache of advice regenerated from unified inputs, and each machine builds its own. The owner's decisions (rejected, accepted, an Accept in progress and its request id) replicate to every machine as `conversation-graph-suggestion-record` on the WS2 replicated-record path (spec `conversation-graph-suggestions-replicated-decisions.md`, which closes <!-- tracked: CMT-1650 -->), so a rejection on one machine is honored on every machine and an Accept continued on another machine continues the same request. The graph changes an Accept makes are the ordinary replicated owner events.
 
 ## 6. Out of this change
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { mountNeedsStrip, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { homeNeedsModel, mountNeedsStrip, needGroups, stripModel, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { readHeaders } from '../../dashboard/console/needs-actions.js';
 
 const next = 'next+?=/';
 const first = 'first/';
@@ -16,6 +17,34 @@ function page(start = 0) {
   } };
 }
 
+describe('grouping Needs-you requests', () => {
+  it('keeps every action, including identical titles, and uses source fields rather than title guesses', () => {
+    const rows = [
+      { title: 'Approve this', source: 'health', tone: 'bad', action: { kind: 'attention' } },
+      { title: 'Same title', source: 'workBoard', tone: 'attn', action: { kind: 'href', href: '#/one' } },
+      { title: 'Same title', source: 'plans', tone: 'attn', action: { kind: 'href', href: '#/two' } },
+      { title: 'An unfamiliar request', source: 'future-source', action: { kind: 'href', href: '#/three' } },
+    ];
+    const groups = needGroups(rows);
+    expect(groups.map(g => g.label)).toEqual(['Problems to check', 'Work that needs you', 'Plans to review', 'Other requests']);
+    expect(groups.flatMap(g => g.rows)).toEqual(rows);
+  });
+});
+
+describe('Needs-you transport contract', () => {
+  it('sends the in-place contract on every Needs page without changing other reads', () => {
+    expect(readHeaders('/needs', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/needs?cursor=next', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/health', 'owner-token')).toEqual({ Authorization: 'Bearer owner-token' });
+  });
+});
+
 describe('paging the Needs-you strip', () => {
   let dom: JSDOM, host: HTMLElement, stop: () => void;
   beforeEach(() => {
@@ -26,7 +55,7 @@ describe('paging the Needs-you strip', () => {
   });
   afterEach(() => { stop?.(); dom.window.close(); vi.unstubAllGlobals(); vi.useRealTimers(); });
   async function mount(get: (path: string) => Promise<unknown>) {
-    stop = mountNeedsStrip(host, { get, hrefFor: (a: { href: string }) => a.href });
+    stop = mountNeedsStrip(host, { get, hrefFor: (a: { href: string }) => a.href, open: true });
     await Promise.resolve();
   }
   async function press(label: string) {
@@ -35,12 +64,48 @@ describe('paging the Needs-you strip', () => {
     control!.click();
     await Promise.resolve();
   }
+  it('uses the server count while showing only supported strict actions', async () => {
+    const response = { ok: true, data: { schemaVersion: 2, count: 4, complete: false, divertedCount: 2,
+      couldNotCheck: ['one source'], items: [
+        { title: 'Physical step', action: { kind: 'instructions', steps: ['First', 'Second'] } },
+        { title: 'Nonlocal step', localAction: false, action: { kind: 'instructions', steps: ['Do not display'] } },
+        { title: 'Unavailable credential', localAction: true, action: { kind: 'credential', requestId: 'opaque' } },
+        { title: 'Old referral', action: { kind: 'href', href: '#/work' } },
+      ] } };
+    await mount(vi.fn().mockResolvedValue(response));
+    expect(homeNeedsModel(stripModel(response))).toMatchObject({ count: 4, state: 'partial', authoritative: true });
+    expect([...host.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(['First', 'Second']);
+    expect(host.querySelector('a, .needs-consent')).toBeNull();
+    expect(host.textContent).not.toMatch(/Old referral|Unavailable credential|Nonlocal step/);
+    expect(host.textContent).toContain('Could not check one source.');
+    expect(host.textContent).toContain('2 items were left out because they had no verified owner action.');
+    expect(host.textContent).toContain('Some requests cannot be completed on this device.');
+  });
+
+  it('passes the exact reference to the signed adapter and refreshes a stale request', async () => {
+    const current = { ok: true, data: { schemaVersion: 2, count: 1, complete: true,
+      items: [{ title: 'Approval', action: { kind: 'approval', requestId: 'exact-request' } }] } };
+    const get = vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce({ ok: true,
+      data: { schemaVersion: 2, count: 0, complete: true, items: [] } });
+    const approval = vi.fn().mockResolvedValue('stale');
+    stop = mountNeedsStrip(host, { get, open: true, signedAdapters: { approval } });
+    await Promise.resolve();
+    await press('Review approval');
+    await Promise.resolve();
+    expect(approval).toHaveBeenCalledWith('exact-request', expect.anything());
+    expect(get.mock.calls).toEqual([['/needs'], ['/needs']]);
+    expect(host.textContent).toContain('This request has changed.');
+    expect(host.querySelector('.needs-consent')).toBeNull();
+  });
+
   it('opens action 105, page by page, and reads previous pages without retaining their rows', async () => {
     const get = vi.fn(async path => page(path.endsWith(encodeURIComponent(next)) ? 100 : 0));
     await mount(get);
     expect(host.querySelectorAll('li')).toHaveLength(3);
     await press('Show more needs');
     expect(host.querySelectorAll('li')).toHaveLength(100);
+    expect(host.querySelector('.needs-groups')?.getAttribute('tabindex')).toBe('0');
+    expect(host.querySelector('.needs-group-heading')?.textContent).toBe('Other requests · 100');
     await press('Next page');
     expect(get).toHaveBeenLastCalledWith('/needs?cursor=' + encodeURIComponent(next));
     expect(host.textContent).toContain('Showing 101–105 of 105');
@@ -53,6 +118,21 @@ describe('paging the Needs-you strip', () => {
     expect(host.textContent).toContain('Showing 1–100 of 105');
     await press('Show fewer');
     expect(host.querySelectorAll('li')).toHaveLength(3);
+  });
+  it('focuses the complete grouped region and preserves keyboard scrolling during refresh', async () => {
+    const mixed = page();
+    mixed.data.items = mixed.data.items.slice(0, 4).map((r, i) => ({ ...r, source: ['health', 'workBoard', 'plans', 'accounts'][i] }));
+    mixed.data.count = 4;
+    mixed.data.continuation = { start: 0, nextCursor: null, previousCursor: null };
+    const get = vi.fn().mockResolvedValue(mixed);
+    await mount(get); await press('One more thing needs you. Show it');
+    const region = host.querySelector<HTMLElement>('.needs-groups')!;
+    expect(document.activeElement).toBe(region);
+    expect(region.querySelectorAll('li')).toHaveLength(4);
+    region.scrollTop = 100;
+    await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS);
+    expect(host.querySelector('.needs-groups')).toBe(region);
+    expect(region.scrollTop).toBe(100);
   });
   it('offers retry for a dropped page and starts at the current first page after a stale cursor', async () => {
     const get = vi.fn().mockResolvedValueOnce(page()).mockRejectedValueOnce(new Error('offline'))
@@ -105,5 +185,46 @@ describe('paging the Needs-you strip', () => {
     await press('Show more needs'); await press('Next page');
     expect(host.textContent).toContain('page could not be read');
     expect(host.querySelector('li')).toBeNull();
+  });
+});
+
+describe('the Needs-you strip is one calm line until opened (Justin, 2026-11-20)', () => {
+  let dom: JSDOM, host: HTMLElement, stop: () => void;
+  beforeEach(() => {
+    dom = new JSDOM('<section></section>', { pretendToBeVisual: true, url: 'https://example.test/' });
+    vi.stubGlobal('document', dom.window.document);
+    host = document.querySelector('section')!;
+  });
+  afterEach(() => { stop?.(); dom.window.close(); vi.unstubAllGlobals(); });
+  const answer = (over: Record<string, unknown> = {}) => ({ ok: true, data: { complete: false, count: 12, couldNotCheck: ['accounts on M5 Pro'],
+    items: [{ id: 'a', title: 'Rebuild any machine in one step', why: 'Waiting for your OK', tone: 'attn', action: { kind: 'href', href: '#/work/plans' } },
+      { id: 'b', title: 'Second', why: '', tone: 'attn', action: { kind: 'href', href: '#/x' } }], ...over } });
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+  it('closed: one button with the dot, "Needs you · 12+", the first need, and no list or could-not-check prose', async () => {
+    stop = mountNeedsStrip(host, { get: async () => answer(), hrefFor: (a: { href: string }) => a.href, open: false });
+    await settle();
+    const line = host.querySelector('button.needs-compact')!;
+    expect(line.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector('.needs-compact-label')!.textContent).toBe('Needs you · 12+');
+    expect(host.querySelector('.needs-compact-first')!.textContent).toBe('Rebuild any machine in one step');
+    expect(host.querySelector('.needs-rows')).toBeNull();
+    expect(host.textContent).not.toContain('Could not check');
+  });
+  it('opening shows the full list and the could-not-check line; Hide closes it again', async () => {
+    stop = mountNeedsStrip(host, { get: async () => answer(), hrefFor: (a: { href: string }) => a.href, open: false });
+    await settle();
+    (host.querySelector('button.needs-compact') as HTMLButtonElement).click();
+    expect(host.querySelectorAll('.needs-rows li')).toHaveLength(2);
+    expect(host.textContent).toContain('Could not check accounts on M5 Pro.');
+    (host.querySelector('button.needs-close') as HTMLButtonElement).click();
+    expect(host.querySelector('button.needs-compact')).not.toBeNull();
+  });
+  it('compactLine covers loading, a failed read and an incomplete zero', async () => {
+    const { compactLine, stripModel } = await import('../../dashboard/console/needs-strip.js');
+    expect(compactLine(stripModel(null))!.label).toBe('Checking what needs you…');
+    expect(compactLine(stripModel({ ok: false, reason: 'x' }))!.label).toBe('Could not check what needs you');
+    expect(compactLine(stripModel({ ok: true, data: { complete: false, count: 0, items: [], couldNotCheck: ['a'] } }))!.label).toBe('Needs you · ?');
+    expect(compactLine(stripModel({ ok: true, data: { complete: true, count: 0, items: [], couldNotCheck: [] } }))).toBeNull();
   });
 });

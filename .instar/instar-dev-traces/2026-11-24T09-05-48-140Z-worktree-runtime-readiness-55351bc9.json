@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "worktree-runtime-readiness",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T09:05:48.140Z",
+  "artifactPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "artifactSha256": "fa8be35251a8f679c561d861252fda4dfb5d9a64b3ea60633405a7c29cbcbb02",
+  "coveredFiles": [
+    "src/core/InstarWorktreeManager.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Correct module loading in the existing checkout probe.",
+  "eli16Path": "docs/specs/worktree-runtime-readiness.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-runtime-readiness.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

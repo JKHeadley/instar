@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { WebSocketManager } from '../../src/server/WebSocketManager.js';
+import { WebSocketManager, upgradeRefusalCollector } from '../../src/server/WebSocketManager.js';
 import { WebSocket } from 'ws';
 
 /**
@@ -1023,5 +1023,23 @@ describe('WebSocketManager — dashboard input durability (native-conversation-a
       sendMessage(late.client, { type: 'subscribe', session: 'new1', machineId: 'm_peer' });
       expect(late.ws.sentMessages).toContainEqual({ type: 'input_caps', session: 'new1', inputAck: 2, remoteInput: true, machineId: 'm_peer' });
     });
+  });
+});
+
+describe('upgradeRefusalCollector (SEC-147: a signed rejection rides the upgrade 403)', () => {
+  it('writes a 403 carrying a header the middleware set', () => {
+    const r = upgradeRefusalCollector();
+    r.status(403).json({ error: 'binding-mismatch' });
+    r.setHeader('X-Machine-Auth-Reject', 'm_abc.c2lnbmF0dXJl');
+    expect(r.forbiddenResponse()).toBe('HTTP/1.1 403 Forbidden\r\nX-Machine-Auth-Reject: m_abc.c2lnbmF0dXJl\r\nConnection: close\r\n\r\n');
+  });
+  it('drops a header that could split the response', () => {
+    const r = upgradeRefusalCollector();
+    r.setHeader('X-Evil', 'a\r\nSet-Cookie: x=1');
+    r.setHeader('Bad Name', 'v');
+    expect(r.forbiddenResponse()).toBe('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+  });
+  it('is the plain 403 when nothing was set', () => {
+    expect(upgradeRefusalCollector().forbiddenResponse()).toBe('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
   });
 });

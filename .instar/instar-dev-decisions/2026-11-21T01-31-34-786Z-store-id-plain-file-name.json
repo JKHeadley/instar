@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-21T01:31:34.786Z",
+  "slug": "store-id-plain-file-name",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/safeFileId.ts",
+      "src/messaging/MessageRouter.ts",
+      "src/messaging/MessageStore.ts",
+      "src/threadline/ThreadLog.ts",
+      "src/threadline/ThreadlineReapRecovery.ts",
+      "src/threadline/ThreadlineReplyValidation.ts",
+      "src/threadline/recordThreadMessage.ts"
+    ],
+    "addedLines": 78,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -33,30 +33,30 @@ describe('buildFtsQueryVariants', () => {
   it('drops stopwords that would zero an implicit-AND query', () => {
     const v = buildFtsQueryVariants('why is Codey not replying');
     expect(v).not.toBeNull();
-    expect(v!.strict).toBe('Codey replying');
+    expect(v!.strict).toBe('"Codey" "replying"');
   });
 
   it('ORs the content words for the fallback expression', () => {
     const v = buildFtsQueryVariants('can I reach Codey');
-    expect(v!.strict).toBe('reach Codey');
-    expect(v!.loose).toBe('reach OR Codey');
+    expect(v!.strict).toBe('"reach" "Codey"');
+    expect(v!.loose).toBe('"reach" OR "Codey"');
   });
 
   it('leaves a pure keyword query untouched', () => {
     const v = buildFtsQueryVariants('telegram bot');
-    expect(v!.strict).toBe('telegram bot');
+    expect(v!.strict).toBe('"telegram" "bot"');
   });
 
   it('keeps the original tokens when a query is ALL stopwords', () => {
     // Must degrade to previous semantics, never to an empty match-everything query.
     const v = buildFtsQueryVariants('what is it');
-    expect(v!.strict).toBe('what is it');
+    expect(v!.strict).toBe('"what" "is" "it"');
   });
 
   it('collapses to a single term without an OR when only one word survives', () => {
     const v = buildFtsQueryVariants('what about Codey');
-    expect(v!.strict).toBe('Codey');
-    expect(v!.loose).toBe('Codey');
+    expect(v!.strict).toBe('"Codey"');
+    expect(v!.loose).toBe('"Codey"');
   });
 
   it('returns null for an empty or syntax-only query', () => {
@@ -70,26 +70,11 @@ describe('buildFtsQueryVariants', () => {
     expect(v!.strict).not.toContain('AND');
   });
 
-  it('strips the apostrophe, which FTS5 reads as a string delimiter', () => {
-    // Measured live 2026-07-27 against the running agent: this exact query threw
-    // `fts5: syntax error near "'"` on BOTH /semantic/search and
-    // /semantic/search/hybrid, while the identical query without the apostrophe
-    // returned the correct entity at rank 1. Contractions and possessives are
-    // ordinary in the raw user message recall is fed, so the character that broke
-    // retrieval was one of the most common in the input.
-    const v = buildFtsQueryVariants("why can a telegram bot not see another bot's messages");
-    expect(v).not.toBeNull();
-    expect(v!.strict).not.toContain("'");
-    expect(v!.fallback ?? '').not.toContain("'");
-    // The word survives the strip — this must not silently drop the content term.
-    expect(v!.strict.toLowerCase()).toContain('bot');
-  });
-
-  it('strips apostrophes from contractions too, not only possessives', () => {
-    const v = buildFtsQueryVariants("what doesn't the relay deliver");
-    expect(v).not.toBeNull();
-    expect(v!.strict).not.toContain("'");
-    expect(v!.strict.toLowerCase()).toContain('relay');
+  it('quotes possessives and contractions as literal phrases', () => {
+    const v = buildFtsQueryVariants("why doesn't the bot's relay deliver");
+    expect(v!.strict).toContain(`"doesn't"`);
+    expect(v!.strict).toContain(`"bot's"`);
+    expect(v!.loose).toContain(`"bot's"`);
   });
 });
 
