@@ -71,6 +71,18 @@ function buildDefaultRules(redactHomePath: boolean): RedactionRule[] {
     category: 'secret',
   });
 
+  // Project app narrow keys (project-apps-sandbox §3.7) — the header form and the bare key.
+  rules.push({
+    pattern: /X-Project-App-Key\s*[:=]\s*\S+/gi,
+    replacement: 'X-Project-App-Key: <REDACTED>',
+    category: 'secret',
+  });
+  rules.push({
+    pattern: /\bpak_[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{43}\b/g,
+    replacement: 'pak_<REDACTED>',
+    category: 'secret',
+  });
+
   // Telegram bot tokens — numeric chat-id : random suffix.
   rules.push({
     pattern: /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/g,

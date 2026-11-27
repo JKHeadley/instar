@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2b-cards",
+  "sessionId": "9ff214e1-274c-4f8e-a770-7b331015831c",
+  "timestamp": "2026-11-16T17:11:27.734Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2b-cards.md",
+  "artifactSha256": "783871dda8b32e1a3fd1861c43262e6fdd7769a734013dd074bef812c1ced283",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "dashboard/console/conversations-model.js",
+    "dashboard/console/conversations.js",
+    "src/core/conversationGraphRead.ts",
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphReadSource.ts",
+    "src/server/ConversationGraphSurface.ts",
+    "tests/unit/console-conversation-suggestions.test.ts",
+    "tests/unit/conversation-graph-card-proposed.test.ts",
+    "upgrades/next/work-front-doors-stage2b-projects.md",
+    "upgrades/side-effects/work-front-doors-stage2b-cards.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

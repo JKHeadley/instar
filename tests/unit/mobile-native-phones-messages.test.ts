@@ -15,7 +15,8 @@ const NOW = Date.parse('2026-11-04T12:00:00.000Z');
 const H = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
 const names: Record<string, string> = { m_peer: 'Mac Mini', m_far: 'Laptop' };
 const topics: Record<string, string> = { '134088': 'Instar app' };
-const opts = { now: NOW, topicName: (id: string) => topics[id] ?? null, nicknameOf: (id: string) => names[id] ?? null };
+// The answering machine is named in every line (never "this machine": the phone talks to the agent).
+const opts = { now: NOW, topicName: (id: string) => topics[id] ?? null, nicknameOf: (id: string) => names[id] ?? null, selfName: 'Mac Studio' };
 const FAKE_KEY = 'ghp_' + 'Q'.repeat(36);
 
 const held = (over: Record<string, unknown>) => ({ operationId: 'op-' + Math.random().toString(36).slice(2), hold_reason: 'lease-not-held', since: H(2), producerKind: 'session', holder: 'm_secret', deadlineAt: H(-1), ...over });
@@ -32,7 +33,7 @@ describe('messages: this machine', () => {
     ]), opts) as any;
     expect(r.state).toBe('ok');
     expect(r.heldCount).toBe(5);
-    expect(r.headline).toBe('3 replies and 2 automatic messages are held on this machine.');
+    expect(r.headline).toBe('3 replies and 2 automatic messages are held on Mac Studio.');
     expect(r.sub).toBe('I need to restore delivery. This is not a task for you. The oldest has waited 3 h.');
     expect(r.groups.map((g: any) => [g.title, g.count, g.reasonWords])).toEqual([
       ['2 delayed messages', 2, 'Telegram did not confirm it arrived'],
@@ -46,8 +47,9 @@ describe('messages: this machine', () => {
   });
 
   it('the reply/automatic split falls back to a plain count when a producer kind is unknown', () => {
-    expect(heldHeadline(2, 0, 0, 2)).toBe('2 messages are held on this machine.');
-    expect(heldHeadline(1, 1, 0, 0)).toBe('1 reply is held on this machine.');
+    expect(heldHeadline(2, 0, 0, 2)).toBe('2 messages are held.');
+    expect(heldHeadline(2, 0, 0, 2, 'Mac Studio')).toBe('2 messages are held on Mac Studio.');
+    expect(heldHeadline(1, 1, 0, 0)).toBe('1 reply is held.');
     expect(heldHeadline(0)).toBe('No messages are held.');
     expect(heldHeadline(undefined)).toBe("Can't tell how many messages are held.");
   });
@@ -94,7 +96,7 @@ describe('messages: this machine', () => {
     expect(r.headline).toBe('2 replies are waiting to be passed to the machine that holds the conversation.');
     expect(forwardsHeadline(0)).toMatch(/^No replies are waiting to be passed on; other held messages can't be read/);
     expect((summarizeLocalMessages({ state: 'unavailable' }, opts) as any).headline).toBe("Can't tell how many messages are held.");
-    expect((summarizeLocalMessages({ state: 'off' }, opts) as any)).toMatchObject({ state: 'off', sub: 'Message recording is not running on this machine.' });
+    expect((summarizeLocalMessages({ state: 'off' }, opts) as any)).toMatchObject({ state: 'off', sub: 'Message recording is not running on Mac Studio.' });
     // A status that answers without its held list is unavailable, not "nothing held".
     expect((summarizeLocalMessages({ state: 'ok', data: { metrics: {} } }, opts) as any).state).toBe('unavailable');
   });
@@ -113,9 +115,9 @@ describe('messages: across machines', () => {
     const r = summarizeMessages(status([held({ topicId: '134088' })]), peers, opts) as any;
     expect(r.groups.map((g: any) => [g.title, g.count, g.machine])).toEqual([['Instar app', 3, 'Mac Mini'], ['Instar app', 1, null]]);
     expect(new Set(r.groups.map((g: any) => g.key)).size).toBe(2);
-    expect(r.machines).toEqual([{ name: 'This machine', count: 1, complete: true, state: 'ok' }, { name: 'Mac Mini', count: 3, complete: true, state: 'ok' }]);
+    expect(r.machines).toEqual([{ name: 'Mac Studio', count: 1, complete: true, state: 'ok' }, { name: 'Mac Mini', count: 3, complete: true, state: 'ok' }]);
     expect(r.unread).toEqual({ count: 1, names: ['Laptop'] });
-    expect(r.headline).toBe('1 reply is held on this machine; 3 more on other machines. Machines that did not answer or can\'t tell are not counted.');
+    expect(r.headline).toBe('1 reply is held on Mac Studio; 3 more on other machines. Machines that did not answer or can\'t tell are not counted.');
     expect(r.footerLine).toBe(FOOTER_LINE);
     for (const leak of ['m_peer', 'm_far']) expect(JSON.stringify(r)).not.toContain(leak);
   });
@@ -158,7 +160,7 @@ describe('messages: across machines', () => {
   it('a held read that filled its page is a lower bound and marks the answer truncated', () => {
     const rows = Array.from({ length: 200 }, () => held({ topicId: '134088' }));
     const r = summarizeLocalMessages({ state: 'ok', data: { ...status(rows).data, heldComplete: false } }, opts) as any;
-    expect(r.headline).toBe('At least 200 messages are held on this machine (more may not be listed).');
+    expect(r.headline).toBe('At least 200 messages are held on Mac Studio (more may not be listed).');
     expect(r.groups).toHaveLength(1);
     expect(r.truncated).toBe(true);
     expect(r.heldComplete).toBe(false);
@@ -173,7 +175,7 @@ describe('messages: across machines', () => {
     expect(r.headline).toBe('At least 200 messages are held on other machines.');
     expect(r.machines[1]).toEqual({ name: 'Mac Mini', count: 200, complete: false, state: 'ok' });
     const both = summarizeMessages(status([held({ topicId: '134088' })]), [{ machineId: 'm_peer', state: 'ok', data }], opts) as any;
-    expect(both.headline).toBe('1 reply is held on this machine; at least 200 more on other machines.');
+    expect(both.headline).toBe('1 reply is held on Mac Studio; at least 200 more on other machines.');
   });
 
   it('a local read that failed keeps both facts: the local forwards and the peers\' held count', () => {
@@ -186,7 +188,7 @@ describe('messages: across machines', () => {
 
   it('an unknown peer count qualifies a healthy local headline', () => {
     const r = summarizeMessages(status([held({ topicId: '134088' })]), [{ machineId: 'm_peer', state: 'ok', data: summarizeLocalMessages({ state: 'unavailable' }, opts) }], opts) as any;
-    expect(r.headline).toBe("1 reply is held on this machine. Machines that did not answer or can't tell are not counted.");
+    expect(r.headline).toBe("1 reply is held on Mac Studio. Machines that did not answer or can't tell are not counted.");
   });
 
   it('caps groups across machines', () => {

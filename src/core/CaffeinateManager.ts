@@ -10,7 +10,7 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { spawn, spawnSync, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
@@ -94,7 +94,7 @@ export class CaffeinateManager extends EventEmitter {
 
   private spawnCaffeinate(): void {
     try {
-      const proc = spawn('caffeinate', ['-s'], {
+      const proc = spawn('caffeinate', ['-s', '-w', String(process.pid)], {
         detached: true,
         stdio: 'ignore',
       });
@@ -106,6 +106,7 @@ export class CaffeinateManager extends EventEmitter {
       this.writePidFile();
 
       proc.on('exit', (code, signal) => {
+        if (this.process !== proc) return;
         if (!this.stopping) {
           console.warn(`[CaffeinateManager] caffeinate exited (code: ${code}, signal: ${signal})`);
           this.emit('died', { code, signal });
@@ -115,6 +116,7 @@ export class CaffeinateManager extends EventEmitter {
       });
 
       proc.on('error', (err) => {
+        if (this.process !== proc) return;
         console.error('[CaffeinateManager] caffeinate spawn error:', err.message);
         this.process = null;
         this.pid = null;
@@ -128,9 +130,9 @@ export class CaffeinateManager extends EventEmitter {
   }
 
   private killCaffeinate(): void {
-    if (this.pid) {
+    if (this.process) {
       try {
-        process.kill(this.pid, 'SIGTERM');
+        this.process.kill('SIGTERM');
       } catch {
         // @silent-fallback-ok — process already dead
       }
@@ -162,35 +164,10 @@ export class CaffeinateManager extends EventEmitter {
   }
 
   private cleanupStale(): void {
-    // Kill ALL orphaned caffeinate processes, not just the one in our PID file.
-    // Orphans accumulate when the server crashes without calling stop() — each
-    // restart spawns a new detached caffeinate but the old one keeps running.
-    // With repeated crash/restart cycles, dozens (or hundreds) of caffeinate
-    // processes pile up. We're about to spawn a fresh one, so kill them all.
-    try {
-      const result = spawnSync('pgrep', ['-x', 'caffeinate'], {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
-      const pids = (result.stdout ?? '').trim().split('\n').filter(Boolean);
-      let killed = 0;
-      for (const pidStr of pids) {
-        const pid = parseInt(pidStr, 10);
-        if (!isNaN(pid) && pid > 0) {
-          try {
-            process.kill(pid, 'SIGTERM');
-            killed++;
-          } catch {
-            // Process already dead
-          }
-        }
-      }
-      if (killed > 0) {
-        console.log(`[CaffeinateManager] Killed ${killed} orphaned caffeinate process${killed === 1 ? '' : 'es'}`);
-      }
-    } catch {
-      // pgrep not found or no caffeinate processes — both fine
-    }
+    // Never enumerate helpers owned by other agents, sessions or the operator.
+    // New assertions watch this exact parent with -w and exit when it dies,
+    // including SIGKILL recovery tests. A legacy bare PID cannot prove ownership
+    // after reuse, so it is not authority to signal any process.
 
     this.removePidFile();
   }

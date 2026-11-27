@@ -546,6 +546,19 @@ describe('action list (§5)', () => {
     h.now.value += DAY;
     expect(await h.service.sendActionList()).toMatchObject({ sent: false, reason: 'nothing-new' });
   });
+  it('waits, unstamped, while the dashboard link would not open on a phone (tunnel starting), then sends once it can', async () => {
+    h = await createHarness({ approve: false });
+    let link: string | null = null;
+    (h.service as any).opts.dashboardLink = () => link;
+    expect(await h.service.sendActionList()).toMatchObject({ sent: false, reason: 'public-link-pending' });
+    expect(h.service.composeActionList()).toBeNull();
+    expect(h.attention).toHaveLength(0);
+    expect(h.store.meta('action_list:last_day')).toBeNull();
+    link = 'https://agent.example/dashboard?tab=feedback-drain';
+    const sent = await h.service.sendActionList();
+    expect(sent.sent).toBe(true);
+    expect(h.attention[0].description).toContain('https://agent.example/dashboard?tab=feedback-drain');
+  });
   it('carries serious needs-review holds once each, at most 10 plus a count line, to the configured topic', async () => {
     h = await createHarness({ config: { actionTopicId: 4242, maxBatchChars: 200_000 } });
     h.second.verdict = false;

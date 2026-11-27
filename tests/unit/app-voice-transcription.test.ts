@@ -61,14 +61,15 @@ describe('transcribeAudioFile', () => {
   it('no provider is TranscriptionUnavailableError; an API error or a missing text is a plain error', async () => {
     const f = path.join(tmp(), 'v.ogg');
     fs.writeFileSync(f, 'x');
-    await expect(transcribeAudioFile(f, { env: {} })).rejects.toBeInstanceOf(TranscriptionUnavailableError);
+    await expect(transcribeAudioFile(f, { env: {}, storedKey: () => null, localEnabled: false })).rejects.toBeInstanceOf(TranscriptionUnavailableError);
     const bad = (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch;
-    const err = await transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: bad }).catch((e) => e);
+    const err = await transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: bad, localEnabled: false }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(TranscriptionUnavailableError);
     expect(String(err.message)).toContain('500');
+    expect(err.reason).toBe('Groq answered with an error (500)');
     const empty = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
-    await expect(transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: empty })).rejects.toThrow('no text');
+    await expect(transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: empty, localEnabled: false })).rejects.toThrow(/answered with an error|no text/);
   });
 });
 
@@ -84,17 +85,20 @@ describe('voice session lines', () => {
 
 const m4a = () => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(500)]);
 
-function service(transcribeVoice?: (p: string, t: string) => Promise<string>, transcribeDeadlineMs?: number) {
+function service(transcribeVoice?: (p: string, t: string) => Promise<string>, transcribeDeadlineMs?: number, disk: { free: number; total: number } = ROOMY) {
   const dir = tmp();
   const reports: string[] = [];
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry: new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true }),
     requests: new MobileChatRequestStore(dir), holdsLease: () => true, ownerName: () => 'Justin', dispatch: () => null,
-    reportDegradation: (_w, d) => reports.push(d),
+    reportDegradation: (_w, d) => reports.push(d), mediaDiskSpace: () => disk,
     ...(transcribeVoice ? { transcribeVoice } : {}), ...(transcribeDeadlineMs !== undefined ? { transcribeDeadlineMs } : {}),
   });
   return { svc, reports };
 }
+
+/** A disk with room, whatever this machine's disk holds. */
+const ROOMY = { free: 1e12, total: 2e12 };
 
 async function voiceMessage(svc: AppConversationService, transcript?: string): Promise<MediaMessageEvent> {
   const bytes = m4a();
@@ -140,7 +144,7 @@ describe('sessionLinesFor — voice notes', () => {
   it('no provider: an honest unavailable note with the path, nothing reported', async () => {
     const { svc, reports } = service(async () => { throw new TranscriptionUnavailableError(); });
     const ev = await voiceMessage(svc);
-    expect((await linesFor(svc, ev))[0]).toMatch(/^\[voice:.+\] \(transcription unavailable: no transcription provider is configured; the audio file is at that path\)$/);
+    expect((await linesFor(svc, ev))[0]).toMatch(/^\[voice:.+\] \(transcription unavailable: no transcription service is set up; the audio file is at that path\)$/);
     expect(reports).toEqual([]);
   });
 
@@ -162,5 +166,14 @@ describe('sessionLinesFor — voice notes', () => {
     const { svc } = service();
     const ev = await voiceMessage(svc);
     expect((await linesFor(svc, ev))[0]).toMatch(/\(transcription unavailable: no voice transcription on this machine; /);
+  });
+});
+
+describe('the disk floor, whatever this machine holds', () => {
+  it('a voice note is taken with room and refused below the floor', async () => {
+    const roomy = service(undefined, undefined, ROOMY).svc;
+    await expect(voiceMessage(roomy)).resolves.toBeTruthy();
+    const full = service(undefined, undefined, { free: 1e9, total: 2e12 }).svc;
+    await expect(voiceMessage(full)).rejects.toThrow('upload refused');
   });
 });

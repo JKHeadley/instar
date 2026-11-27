@@ -204,6 +204,7 @@ function deepMergeSecrets(
   const result = { ...config };
 
   for (const [key, secretValue] of Object.entries(secrets)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     const configValue = result[key];
 
     if (isSecretPlaceholder(configValue)) {

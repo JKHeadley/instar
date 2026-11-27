@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "shared-close-touch-target",
+  "sessionId": "2298638c-0f8f-48bb-8203-4470cf1831bf",
+  "timestamp": "2026-11-23T21:15:01.009Z",
+  "artifactPath": "upgrades/side-effects/shared-close-touch-target.md",
+  "artifactSha256": "3438ff72e0308cb89dd9e9d7b301aec4858f9898592e5b2af5f1ee0bcc25bec5",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "upgrades/next/shared-close-touch-target.md",
+    "upgrades/side-effects/shared-close-touch-target.eli16.md",
+    "upgrades/side-effects/shared-close-touch-target.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One reversible CSS target-size repair; no authority, persistence or behavior changes. Actual browser hit tests prove phone44px touch floor and preserve desktop minimum distinction.",
+  "eli16Path": "upgrades/side-effects/shared-close-touch-target.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/shared-close-touch-target.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build:SMALL",
+      "version": null,
+      "verified": false
+    }
+  }
+}

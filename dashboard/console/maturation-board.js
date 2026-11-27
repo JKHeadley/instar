@@ -8,6 +8,7 @@
 import { el, cantTell, setKids, firstPaint, arrivalScroll, askLink } from './ui.js';
 import { maturationPaceNode } from './pace.js';
 import { coveragePanel } from './measurement-coverage.js';
+import { qualityHistoryView, QUALITY_HREF } from './quality-history.js';
 import {
   GROUPS, groupOf, groupCounts, headline, subline, parseState, stateQuery, openGroups,
   filterRows, orderInGroup, sortRows, SORTS, squares, humanName, humanArea, ownerChip, statusLine, timeline, fmtDate, metricText, ladderOf, card, isNobody,
@@ -25,6 +26,13 @@ let ladderApi = null;
  */
 export async function renderMaturation(main, api, nav = consoleNav()) {
   ladderApi = api;
+  // Quality history at a glance: its own direct link (#/work/maturation?s=quality).
+  if (parseState(nav.read()).s === 'quality') {
+    if (!main.querySelector('.qh')) firstPaint(main, el('p', { class: 'mb-loading', text: 'Reading recorded measurements…' }));
+    const q = await api.get('/maturation/board?part=quality', 30_000).catch(() => ({ ok: false }));
+    setKids(main, qualityHistoryView(q.ok ? q.data : null, { backHref: nav.href ? nav.href('') : '#/work/maturation' }));
+    return;
+  }
   if (!lastBoard) firstPaint(main, el('p', { class: 'mb-loading', text: 'Reading every machine…' }));
   const [r, coverage] = await Promise.all([
     api.get('/maturation/board?scope=pool', POOL_TIMEOUT_MS),
@@ -51,6 +59,7 @@ export function consoleNav() {
   return {
     read() { const h = location.hash; const i = h.indexOf('?'); return i >= 0 ? h.slice(i) : ''; },
     write(q) { const base = location.hash.split('?')[0] || '#/work/maturation'; history.replaceState(null, '', base + q); },
+    href(q) { return '#/work/maturation' + q; },
   };
 }
 
@@ -70,6 +79,7 @@ function draw(main, board, nav, pace = null) {
     el('div', { class: 'eyebrow', text: 'Feature maturation' }),
     el('h1', { class: 'mb-answer', text: headline(board) }),
     el('p', { class: 'mb-sub', text: subline(board) }),
+    el('a', { class: 'mb-link qh-entry', href: nav.href ? nav.href('?s=quality') : QUALITY_HREF, text: 'Quality history charts' }),
     pace);
 
   // 2. The glance: one square per feature, coloured by group; a dot marks "no fix planned".

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-10T09:17:19.988Z",
+  "slug": "cb-fold-coordinator",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 863,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/BackupManager.ts",
+      "src/core/PendingInjectStore.ts",
+      "src/core/foldLeaseFactory.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/monitoring/FoldCoordinator.ts",
+      "src/monitoring/clearSeedPointer.ts",
+      "src/monitoring/foldCarriers.ts",
+      "src/monitoring/foldCoordinatorBoot.ts",
+      "src/monitoring/keepInstructions.ts"
+    ],
+    "addedLines": 858,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

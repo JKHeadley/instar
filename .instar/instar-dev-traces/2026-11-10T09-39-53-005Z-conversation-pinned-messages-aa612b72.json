@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-pinned-messages",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T09:39:53.005Z",
+  "artifactPath": "upgrades/side-effects/conversation-pinned-messages.md",
+  "artifactSha256": "5721f9f80f181614546aa84dd68534a842c84b6e460ab7873802ab71d620634f",
+  "coveredFiles": [
+    "docs/specs/conversation-pinned-messages.eli16.md",
+    "src/server/mobilePinRoutes.ts",
+    "tests/unit/dashboard-refresh-keeps-place.test.ts",
+    "upgrades/side-effects/conversation-pinned-messages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Repo-floor fixes only: mark a reported catch, allow the tap-driven pin jump in the scroll floor; no behavior change",
+  "eli16Path": "docs/specs/conversation-pinned-messages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-pinned-messages.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

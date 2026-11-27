@@ -25,6 +25,25 @@
 export type PollAction = 'start' | 'stop' | 'hold';
 export type PollOverride = 'force-poll' | 'force-mute' | null;
 
+export interface PollOverrideConfig {
+  telegramPolling?: boolean;
+  pollOverride?: string;
+  leaseSelfHeal?: { leaseRole?: string | null };
+}
+
+/** One operator floor for both boot and reconciliation. Explicit force-poll wins. */
+export function resolvePollOverride(config?: PollOverrideConfig): PollOverride {
+  if (config?.pollOverride === 'force-poll') return 'force-poll';
+  if (config?.pollOverride === 'force-mute' || config?.telegramPolling === false
+    || config?.leaseSelfHeal?.leaseRole === 'observe-only') return 'force-mute';
+  return null;
+}
+
+/** These are the coordinator paths that can publish lease-derived poll intent. */
+export function supportsLeasePollIntent(hasMachineIdentity: boolean, coordinationMode?: string): boolean {
+  return hasMachineIdentity && coordinationMode !== 'independent';
+}
+
 export interface PollDecisionInputs {
   /** Is the lifeline currently running getUpdates? */
   currentlyPolling: boolean;
@@ -88,7 +107,7 @@ export function hasRecent409(i: { consecutive409s: number; last409AtMs: number; 
   return i.consecutive409s > 0 && i.nowMs - i.last409AtMs < RECENT_409_WINDOW_MS;
 }
 
-/** How long a held boot waits for the lease's opinion before polling as it always did. */
+/** Original bounded wait before an unmuted lifeline restores emergency reachability. */
 export const BOOT_POLL_HOLD_MAX_MS = 180_000;
 
 /**
@@ -97,19 +116,19 @@ export const BOOT_POLL_HOLD_MAX_MS = 180_000;
  * slot on every start. Only when poll-follows-lease is live (`enabled` already resolved by
  * the caller, `dryRun:false`); `telegramPolling:false` is the force-mute and never polls.
  */
-export function holdPollAtBoot(i: { followsLeaseEnabled: boolean; dryRun: boolean | undefined; telegramPolling: boolean | undefined; pollOverride: string | undefined }): boolean {
+export function holdPollAtBoot(i: { followsLeaseEnabled: boolean; dryRun: boolean | undefined; telegramPolling: boolean | undefined; pollOverride: string | undefined; leaseSelfHeal?: { leaseRole?: string | null } }): boolean {
   if (!i.followsLeaseEnabled || i.dryRun !== false) return false;
-  if (i.telegramPolling === false || i.pollOverride === 'force-mute' || i.pollOverride === 'force-poll') return false;
+  if (resolvePollOverride(i) !== null) return false;
   return true;
 }
 
 /**
  * What a held boot does on one reconcile. With an opinion the normal decision runs; the
  * caller ends the hold only once a poll has started or the lease says standby, so an
- * opinion that vanishes still reaches the bound. No opinion past the bound starts the
- * poll: a single machine or a
- * server that never came up writes no intent, and holding forever would be silence. That
- * is the same blind start every boot made before the hold, only later.
+ * opinion that vanishes still reaches the bound. No opinion past the bound reports expired.
+ * The caller retains the original emergency fallback for unmuted roles so /restart
+ * works without a bootable server; this is not proof of lease ownership.
+ * Single-machine/independent startup does not arm this hold.
  */
 export function bootHoldStep(i: { heldSinceMs: number; nowMs: number; intentShouldPoll: boolean | null }): 'wait' | 'release' | 'expired' {
   if (i.intentShouldPoll !== null) return 'release';

@@ -53,6 +53,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { APP_PLACEMENT_KEY } from './CoherenceJournal.js';
 import {
   type ThreadlineConversationAction,
   type GuardLatchAction,
@@ -250,6 +251,16 @@ const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
   'learning-record': 'multiMachine.stateSync.learnings',
   'pref-record': 'multiMachine.stateSync.preferences',
   'topic-pin-record': 'multiMachine.seamlessness.ws13PinReplicate',
+  'chief-of-staff-record': 'multiMachine.stateSync.chiefOfStaff',
+  'work-card-record': 'multiMachine.stateSync.workBoard',
+  'trust-grant-record': 'multiMachine.stateSync.trustJourney',
+  'trust-outcome-record': 'multiMachine.stateSync.trustJourneyOutcomes',
+  'project-app-record': 'multiMachine.stateSync.projectApps',
+  'project-app-blob': 'multiMachine.stateSync.projectAppBlobs',
+  'conversation-graph-suggestion-record': 'multiMachine.stateSync.conversationGraphSuggestions',
+  'telegram-topic-name-record': 'multiMachine.stateSync.telegramTopicNames',
+  'context-layer-record': 'multiMachine.stateSync.contextLayers',
+  'session-transcript-checkpoint': 'multiMachine.stateSync.sessionTranscripts',
 };
 /** A peer retries a refused batch every sync, so one row per stream and verdict per hour. */
 const STATE_SYNC_REFUSAL_EVIDENCE_WINDOW_MS = 60 * 60 * 1000;
@@ -575,6 +586,9 @@ export class JournalSyncApplier {
     // as well as the transport entry, so a peer cannot impersonate another
     // case's sole writer. Other historical kinds keep their existing contract.
     if (kind === 'failure-callout-chunk' && entry.data?.origin !== senderMachineId) return 'forged';
+    // Transcript checkpoints (native-conversation-any-machine-access §3f) come only from the machine
+    // that ran the session: the inner origin and the named source must both be the sender.
+    if (kind === 'session-transcript-checkpoint' && (entry.data?.origin !== senderMachineId || entry.data?.sourceMachineId !== senderMachineId)) return 'forged';
 
     // Size cap (parseable ≤ cap). The line we'd write is the serialized entry.
     let line: string;
@@ -659,7 +673,10 @@ export class JournalSyncApplier {
       if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
       if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
       if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;
-      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
+      // app-conversations-in-the-pool §2.7: an app row carries its key and, for "bring it back here", the marker.
+      if (raw.sessionKey !== undefined && (typeof raw.sessionKey !== 'string' || !APP_PLACEMENT_KEY.test(raw.sessionKey))) return false;
+      if (raw.takeover !== undefined && raw.takeover !== true) return false;
+      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight', 'sessionKey', 'takeover'];
       return keys.every((k) => known.includes(k));
     }
     if (kind === 'session-lifecycle') {

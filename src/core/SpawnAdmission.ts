@@ -114,7 +114,9 @@ export interface AdmitInput {
     // mobile-native-conversations §4.2: a native app conversation's inbound spawn.
     | 'app-inbound-spawn'
     // session-swap-any-conversation §3.3: an app conversation restarted on a new engine.
-    | 'app-respawn';
+    | 'app-respawn'
+    // session-conversation-for-every-session §2.1: a new session created with its own app conversation.
+    | 'app-new-session';
   /**
    * TOCTOU guard (§3.1 item 2): when the router already produced a verdict for
    * this message, the seam CONSUMES it rather than re-resolving — the admission

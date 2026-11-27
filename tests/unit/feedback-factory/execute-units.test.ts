@@ -12,22 +12,22 @@ import http from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
-  EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath,
-  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
+  EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath, nodeInstallReadAllows,
+  pathSlug, resolveExecuteConfig, systemTempDenies, systemTempRoots, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
-import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
+import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, readBaseFile, addsCredentialShape, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, dependencyManifestText, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
-import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
+import { attemptTrashPending, attemptTrashSettled, removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
+afterEach(async () => { await attemptTrashSettled(); for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
 function tmp(prefix = 'exec-units-'): string { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; }
 function write(root: string, rel: string, text: string | Buffer) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
 
@@ -54,6 +54,13 @@ describe('policy', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/host-test-runner-holders.json', homeDir: '/u' };
     const s = buildSandboxRuntimeSettings(p);
     expect(s.network.allowedDomains).toEqual([]);
+    expect(s.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
+    expect(buildSandboxRuntimeSettings(p, { platform: 'darwin' }).network).toMatchObject({
+      allowedDomains: [], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
+      allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'],
+    });
+    expect(buildSandboxRuntimeSettings(p, { platform: 'linux' }).network.allowMachLookup).toBeUndefined();
+    expect(buildSandboxRuntimeSettings(p, { platform: 'win32' }).network.allowMachLookup).toBeUndefined();
     expect(s.filesystem.allowWrite).toEqual(['/h/.worktrees/w', '/h/.worktrees/w-tmp', ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile)]);
     expect(s.filesystem.denyWrite).toEqual(expect.arrayContaining(['/h/.worktrees/w/.git', `/h/.worktrees/w/${EVIDENCE_FILE}`, '/h/.worktrees/w/.claude', '/h/.worktrees/w/.instar', p.depsCache, p.publishClone, '/tmp']));
     expect(s.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/tmp', '/h', p.publishClone, '/u/.ssh', '/u/.claude', '/u/.config']));
@@ -87,13 +94,79 @@ describe('policy', () => {
     expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
   });
 
+  it('SEC-098: reads stay denied across the WHOLE shared temp even though the attempt temp lives under it', () => {
+    const realTmp = fs.realpathSync('/tmp');
+    const tmpDir = `${realTmp}/fb-abc1234567`;
+    const paths = { workspace: '/h/.worktrees/w', tmpDir, depsCache: '/h/.cache/deps', agentHome: '/h', publishClone: '/h/.worktrees/w-publish', homeDir: '/u', testRunnerHoldersFile: '/h/.instar/state/host-test-runner-holders.json' } as Parameters<typeof buildSandboxRuntimeSettings>[0];
+    const runtime = buildSandboxRuntimeSettings(paths);
+    // The read deny list carries every temp root, the attempt temp's ancestor included…
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', '/var/tmp', realTmp]));
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(systemTempRoots()));
+    // …and only the attempt's own temp is re-allowed (allowRead wins inside a denied region).
+    expect(runtime.filesystem.allowRead).toContain(tmpDir);
+    expect(runtime.filesystem.allowRead).not.toContain(realTmp);
+    // The write side keeps the ancestor filtering (the 2026-10-22 base-unit-smoke EPERM fix).
+    expect(runtime.filesystem.denyWrite).not.toContain(realTmp);
+    // The session worker inherits the same read deny list.
+    const worker = buildClaudeSandboxSettings({ paths, agentHomeChildren: [] }) as { sandbox: { filesystem: { denyRead: string[]; allowRead: string[] } } };
+    expect(worker.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', realTmp]));
+    expect(worker.sandbox.filesystem.allowRead).toContain(tmpDir);
+  });
+
+  it('re-allows reads of a Node install under home (nvm), never one that would re-open a denied path (fb-c238c6c9-f0d)', () => {
+    const base = { agentHome: '/u/.instar/agents/a', publishClone: '/u/.instar/agents/a/.worktrees/w-publish', homeDir: '/u' };
+    // nvm-style install under home: its root is re-allowed, and it reaches the runtime and worker settings.
+    const nvm = { ...base, nodeExecPath: '/u/.nvm/versions/node/v24.15.0/bin/node' };
+    expect(nodeInstallReadAllows(nvm)).toEqual(['/u/.nvm/versions/node/v24.15.0']);
+    const paths = { ...nvm, workspace: '/u/.instar/agents/a/.worktrees/w', tmpDir: '/tmp/fb-1', depsCache: '/u/.instar/agents/a/.worktrees/.feedback-deps/x', testRunnerHoldersFile: '/u/.instar/h.json' };
+    expect(buildSandboxRuntimeSettings(paths).filesystem.allowRead).toEqual([paths.workspace, paths.depsCache, paths.tmpDir, '/u/.nvm/versions/node/v24.15.0']);
+    const worker = buildClaudeSandboxSettings({ paths, agentHomeChildren: [] }) as { sandbox: { filesystem: { allowRead: string[]; denyRead: string[] } } };
+    expect(worker.sandbox.filesystem.allowRead).toContain('/u/.nvm/versions/node/v24.15.0');
+    // Home stays denied, and so do the credential paths beside the install.
+    expect(worker.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/u/.ssh', '/u/.config']));
+    // The install's global npm config can carry a registry token: it stays denied (the more specific deny wins).
+    expect(buildSandboxRuntimeSettings(paths).filesystem.denyRead).toContain('/u/.nvm/versions/node/v24.15.0/etc/npmrc');
+    expect(buildSandboxRuntimeSettings({ ...paths, nodeExecPath: '/usr/local/bin/node' }).filesystem.denyRead.some((d) => d.endsWith('/etc/npmrc'))).toBe(false);
+    // A system install is outside home and needs nothing.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/usr/local/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/opt/homebrew/bin/node' })).toEqual([]);
+    // ~/bin/node: the root would be home itself.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/bin/node' })).toEqual([]);
+    // A root that contains the agent home or a credential path.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, homeDir: '/u', nodeExecPath: '/u/Library/bin/node' })).toEqual([]);
+    // A root inside the agent home or the publish clone.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/agents/a/tools/node/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/agents/a/.worktrees/w-publish/n/bin/node' })).toEqual([]);
+    // The publish-clone guard on its own: a clone outside the agent home.
+    expect(nodeInstallReadAllows({ ...base, publishClone: '/u/clones/p', nodeExecPath: '/u/clones/p/n/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, publishClone: '/u/clones/p', nodeExecPath: '/u/clones/bin/node' })).toEqual([]);
+    // No bin/ directory: the binary's own directory is the root.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.volta/tools/image/node/24/node' })).toEqual(['/u/.volta/tools/image/node/24']);
+  });
+
+  it('returns both spellings of a Node install reached through a symlink, and matches a symlinked home', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'node-install-'));
+    try {
+      const real = path.join(root, '.nvm', 'versions', 'node', 'v1');
+      fs.mkdirSync(path.join(real, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(real, 'bin', 'node'), '');
+      fs.symlinkSync(real, path.join(root, '.nvm', 'current'));
+      const got = nodeInstallReadAllows({ agentHome: path.join(root, 'agent'), publishClone: path.join(root, 'agent', 'p'), homeDir: root, nodeExecPath: path.join(root, '.nvm', 'current', 'bin', 'node') });
+      expect(got).toContain(path.join(root, '.nvm', 'current'));
+      expect(got).toContain(fs.realpathSync(real));
+    } finally { SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/feedback-factory/execute-units.test.ts:node-install-symlink' }); }
+  });
+
   it('Claude settings: dontAsk allowlist, denies web/MCP and the agent home entries, no system-temp write deny', () => {
     const p = { workspace: '/h/.worktrees/w', publishClone: '/h/.worktrees/w-publish', tmpDir: '/h/.worktrees/w-tmp', depsCache: '/h/.worktrees/.feedback-deps/x', agentHome: '/h', testRunnerHoldersFile: '/u/.instar/h.json', homeDir: '/u' };
     const s = buildClaudeSandboxSettings({ paths: p, agentHomeChildren: ['.instar', '.worktrees', 'src'] }) as {
-      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
+      sandbox: { enabled: boolean; failIfUnavailable: boolean; allowUnsandboxedCommands: boolean; network: { allowedDomains: string[]; allowMachLookup?: string[] }; filesystem: { denyWrite: string[]; denyRead: string[]; allowRead: string[] } };
       permissions: { defaultMode: string; deny: string[]; allow: string[] }; env: Record<string, string>;
     };
     expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(s.sandbox.network.allowedDomains).toEqual([]);
+    expect(s.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
     expect(s.sandbox.filesystem.denyWrite).not.toContain('/tmp');
     expect(s.permissions.defaultMode).toBe('dontAsk');
     expect(s.permissions.deny).toEqual(expect.arrayContaining(['WebFetch', 'WebSearch', 'mcp__*', 'Read(//h/.instar/**)', 'Read(//h/src/**)', 'Read(//h/.worktrees/w-publish/**)', 'Edit(//h/.worktrees/w/.git/**)', 'Edit(//h/.worktrees/w/.claude/**)', 'Edit(//h/.worktrees/w/.instar/**)']));
@@ -136,7 +209,21 @@ describe('change set', () => {
     return { root, ws, pub };
   }
 
-  it('added, modified and deleted files by bytes; .git, node_modules, evidence and result files are never part of it', () => {
+  it('leaves the event loop running while it reads two whole trees (a sync walk froze the server for 84 s)', async () => {
+    const { ws, pub } = trees();
+    for (let i = 0; i < 300; i++) { write(ws, `src/many/f${i}.ts`, `same ${i}`); write(pub, `src/many/f${i}.ts`, `same ${i}`); }
+    let turns = 0;
+    let stop = false;
+    const turn = () => { turns += 1; if (!stop) setImmediate(turn); };
+    setImmediate(turn);
+    const cs = await buildChangeSet(ws, pub);
+    stop = true;
+    expect(cs.entries).toHaveLength(0);
+    // Every file costs several awaited reads; a sync build would give the timer no turn at all.
+    expect(turns).toBeGreaterThan(300);
+  });
+
+  it('added, modified and deleted files by bytes; .git, node_modules, evidence and result files are never part of it', async () => {
     const { ws, pub } = trees();
     write(ws, 'src/a.ts', 'A');
     write(ws, 'src/new.ts', 'n');
@@ -147,13 +234,13 @@ describe('change set', () => {
     fs.writeFileSync(path.join(ws, '.git', 'config'), 'changed');
     fs.symlinkSync('/nonexistent', path.join(ws, 'node_modules'));
     write(ws, 'dist/out.js', 'built');
-    const cs = buildChangeSet(ws, pub);
+    const cs = await buildChangeSet(ws, pub);
     expect(cs.entries.map((e) => [e.path, e.kind])).toEqual([['src/a.ts', 'modified'], ['src/gone.ts', 'deleted'], ['src/new.ts', 'added'], ['tests/new.test.ts', 'added']]);
     expect(testEntries(cs).map((e) => e.path)).toEqual(['tests/new.test.ts']);
     expect(sourcePaths(cs)).toEqual(['src/a.ts', 'src/new.ts']);
   });
 
-  it('keeps a spec draft when build and lint create their known untracked output', () => {
+  it('keeps a spec draft when build and lint create their known untracked output', async () => {
     const { ws, pub } = trees();
     const expected = 'docs/specs/feedback-item.md';
     write(ws, expected, '---\ntitle: Draft\n---\nProposal');
@@ -165,38 +252,38 @@ describe('change set', () => {
       'src/data/standards-registry.md',
       'src/data/standards-registry.meta.json',
     ]) write(ws, generated, 'generated');
-    expect(checkSpecDraft(buildChangeSet(ws, pub), expected)).toEqual({ ok: true });
+    expect(checkSpecDraft(await buildChangeSet(ws, pub), expected)).toEqual({ ok: true });
 
     // Tracked files and unrelated source files remain real changes.
     write(pub, 'src/data/standards-registry.md', 'old');
     write(ws, 'src/data/unrelated.json', 'changed');
-    expect(buildChangeSet(ws, pub).entries.map((entry) => entry.path)).toEqual([
+    expect((await buildChangeSet(ws, pub)).entries.map((entry) => entry.path)).toEqual([
       expected,
       'src/data/standards-registry.md',
       'src/data/unrelated.json',
     ]);
   });
 
-  it('a symlink, a nested .git or a reappeared .claude/ fails; an identical symlink in both trees is fine', () => {
+  it('a symlink, a nested .git or a reappeared .claude/ fails; an identical symlink in both trees is fine', async () => {
     const { ws, pub } = trees();
     fs.symlinkSync('a.ts', path.join(ws, 'src', 'same'));
     fs.symlinkSync('a.ts', path.join(pub, 'src', 'same'));
-    expect(buildChangeSet(ws, pub).entries).toHaveLength(0);
+    expect((await buildChangeSet(ws, pub)).entries).toHaveLength(0);
     fs.symlinkSync('/etc/passwd', path.join(ws, 'src', 'evil'));
-    expect(() => buildChangeSet(ws, pub)).toThrow(/special-file/);
+    await expect(buildChangeSet(ws, pub)).rejects.toThrow(/special-file/);
     SafeFsExecutor.safeUnlinkSync(path.join(ws, 'src', 'evil'), { operation: 'test' });
     fs.mkdirSync(path.join(ws, 'sub', '.git'), { recursive: true });
-    expect(() => buildChangeSet(ws, pub)).toThrow(/nested git/);
+    await expect(buildChangeSet(ws, pub)).rejects.toThrow(/nested git/);
     SafeFsExecutor.safeRmSync(path.join(ws, 'sub'), { recursive: true, force: true, operation: 'test' });
     fs.mkdirSync(path.join(ws, '.claude'));
     // An EMPTY .claude/ carries nothing that could load (Claude Code may also clear its own
     // .cc-writes/ bookkeeping); a file in it is still a breach.
-    expect(buildChangeSet(ws, pub).entries).toHaveLength(0);
+    expect((await buildChangeSet(ws, pub)).entries).toHaveLength(0);
     fs.writeFileSync(path.join(ws, '.claude', 'settings.json'), '{}');
-    expect(() => buildChangeSet(ws, pub)).toThrow(ChangeSetError);
+    await expect(buildChangeSet(ws, pub)).rejects.toThrow(ChangeSetError);
   });
 
-  it('Claude Code\'s own empty .claude/.cc-writes/ is not a breach; anything else under .claude/ still is', () => {
+  it('Claude Code\'s own empty .claude/.cc-writes/ is not a breach; anything else under .claude/ still is', async () => {
     // 2026-10-26: Claude Code 2.1.310 creates an empty .claude/.cc-writes/ whenever its sandboxed
     // shell runs, and both of that morning's attempts were discarded as sandbox-breach on it.
     const { ws, pub } = trees();
@@ -206,10 +293,10 @@ describe('change set', () => {
     expect(claudeDirBreach(ws)).toBeNull(); // absent
     fs.mkdirSync(cc, { recursive: true });
     expect(claudeDirBreach(ws)).toBeNull(); // the exact shape Claude Code leaves
-    expect(buildChangeSet(ws, pub).entries.map((e) => e.path)).not.toContain('.claude/.cc-writes');
+    expect((await buildChangeSet(ws, pub)).entries.map((e) => e.path)).not.toContain('.claude/.cc-writes');
     fs.writeFileSync(path.join(cc, 'x'), 'x'); // something inside it
     expect(claudeDirBreach(ws)).toMatch(/not empty/);
-    expect(() => buildChangeSet(ws, pub)).toThrow(/sandbox-breach/);
+    await expect(buildChangeSet(ws, pub)).rejects.toThrow(/sandbox-breach/);
     reset(); fs.mkdirSync(cc, { recursive: true });
     fs.writeFileSync(path.join(claude, 'settings.local.json'), '{}'); // a settings file beside it
     expect(claudeDirBreach(ws)).toMatch(/reappeared/);
@@ -241,63 +328,117 @@ describe('change set', () => {
     expect(claudeDirBreach(ws)).toBeNull();
   });
 
-  it('admits the measured paired source files plus tests, but caps at 200 files or 5 MiB', () => {
+  it('admits the measured paired source files plus tests, but caps at 200 files or 5 MiB', async () => {
     const { ws, pub } = trees();
     for (let i = 0; i < 201; i++) write(ws, `src/many/f${i}.ts`, 'x');
-    expect(() => buildChangeSet(ws, pub)).toThrow(/changeset-too-large/);
+    await expect(buildChangeSet(ws, pub)).rejects.toThrow(/changeset-too-large/);
     const t2 = trees();
     write(t2.pub, 'src/commands/server.ts', 'a'.repeat(2_006_095));
     write(t2.ws, 'src/commands/server.ts', 'b'.repeat(2_006_095));
     write(t2.pub, 'src/server/routes.ts', 'a'.repeat(2_349_959));
     write(t2.ws, 'src/server/routes.ts', 'b'.repeat(2_349_959));
     write(t2.ws, 'tests/unit/fix.test.ts', 'x'.repeat(250_000));
-    expect(buildChangeSet(t2.ws, t2.pub).totalBytes).toBe(4_606_054);
+    expect((await buildChangeSet(t2.ws, t2.pub)).totalBytes).toBe(4_606_054);
     const t3 = trees();
     write(t3.ws, 'src/big.ts', 'x'.repeat(5 * 1024 * 1024));
-    expect(buildChangeSet(t3.ws, t3.pub).totalBytes).toBe(5 * 1024 * 1024);
+    expect((await buildChangeSet(t3.ws, t3.pub)).totalBytes).toBe(5 * 1024 * 1024);
     write(t3.ws, 'src/big.ts', 'x'.repeat(5 * 1024 * 1024 + 1));
-    expect(() => buildChangeSet(t3.ws, t3.pub)).toThrow(/changeset-too-large/);
+    await expect(buildChangeSet(t3.ws, t3.pub)).rejects.toThrow(/changeset-too-large/);
     const t4 = trees();
     write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0]), Buffer.alloc(4 * 1024 * 1024 - 1)]));
-    expect(buildChangeSet(t4.ws, t4.pub).totalBytes).toBe(4 * 1024 * 1024);
+    expect((await buildChangeSet(t4.ws, t4.pub)).totalBytes).toBe(4 * 1024 * 1024);
     write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0]), Buffer.alloc(4 * 1024 * 1024)]));
-    expect(() => buildChangeSet(t4.ws, t4.pub)).toThrow(/binary content above 4 MiB/);
+    await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/binary content above 4 MiB/);
     write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0xff]), Buffer.alloc(4 * 1024 * 1024, 0x61)]));
-    expect(() => buildChangeSet(t4.ws, t4.pub)).toThrow(/non-UTF-8 content above 4 MiB/);
+    await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/non-UTF-8 content above 4 MiB/);
   });
 
-  it('diff gate and secret gate (names only)', () => {
+  describe('secret gate judges a modified file on what it adds', () => {
+    const TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+    const clean = { notes: 'clean', prTitle: 't', prBody: 'b' };
+    const modified = (text: string) => ({ entries: [{ path: 'src/a.ts', kind: 'modified' as const, bytes: Buffer.from(text) }], totalBytes: text.length });
+    const base = `const old = '${TOKEN}';\nconst keep = 1;\n`;
+    it('holds nothing for a credential shape already in the base', () => {
+      expect(secretGate(modified(`${base}const added = 2;\n`), clean, () => Buffer.from(base))).toEqual([]);
+    });
+    it('holds a new credential in a file that already matched', () => {
+      expect(secretGate(modified(`${base}const added = '${TOKEN.replace('a1', 'z9')}';\n`), clean, () => Buffer.from(base))).toEqual(['src/a.ts']);
+    });
+    it('holds a value on a new line whose label was already in the base, across blank lines', () => {
+      const value = `Zx9${'q7W2e'.repeat(6)}`;
+      expect(addsCredentialShape(`password:\n\n\n${value}\n`, 'password:\n\n\n')).toBe(true);
+    });
+    it('holds a new value placed against a known one, which the scrub alone would mask as an overlap', () => {
+      const known = `password=abc.${'1'.repeat(12)}`;
+      const added = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+      expect(addsCredentialShape(`${known}:${added}\n`, `${known}\n`)).toBe(true);
+    });
+    it('holds a PEM body added under a BEGIN line the base already had, split by blank lines', () => {
+      const begin = '-----BEGIN RSA PRIVATE KEY-----', end = '-----END RSA PRIVATE KEY-----';
+      const body = 'MIIEvQ'.repeat(40);
+      expect(addsCredentialShape(`${begin}\n\n\n${body}\n${end}\n`, `${begin}\nnot a key\n`)).toBe(true);
+    });
+    it('sees a PEM block straddling a chunk boundary, even in an added file', () => {
+      const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIEvQ'.repeat(400)}\n-----END RSA PRIVATE KEY-----`;
+      expect(credentialShaped(`${'x '.repeat(32_000 - 600)}\n${pem}\n`)).toBe(true);
+    });
+    it('holds on any match when the base is unavailable, has a NUL byte, or no reader is given', () => {
+      const text = `${base}const added = 2;\n`;
+      expect(secretGate(modified(text), clean, () => null)).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean, () => Buffer.from(`${base}\0`))).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean)).toEqual(['src/a.ts']);
+    });
+    it('holds an added file on any match, whatever the reader returns', () => {
+      const entries = [{ path: 'src/new.ts', kind: 'added' as const, bytes: Buffer.from(base) }];
+      expect(secretGate({ entries, totalBytes: base.length }, clean, () => Buffer.from(base))).toEqual(['src/new.ts']);
+    });
+    it('readBaseFile refuses a path outside the clone, a symlink and a missing file', () => {
+      const { pub } = trees();
+      write(pub, 'src/real.ts', 'x');
+      fs.symlinkSync(path.join(pub, 'src/real.ts'), path.join(pub, 'src/link.ts'));
+      expect(readBaseFile(pub, 'src/real.ts')?.toString()).toBe('x');
+      expect(readBaseFile(pub, '../outside.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/link.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/none.ts')).toBeNull();
+    });
+    it('the executor passes the publish clone to the gate', () => {
+      const source = fs.readFileSync(path.join(process.cwd(), 'src/feedback-factory/execute/FeedbackExecutorService.ts'), 'utf-8');
+      expect(source).toContain('publishClone ? (rel) => readBaseFile(publishClone, rel) : undefined');
+    });
+  });
+
+  it('diff gate and secret gate (names only)', async () => {
     const { ws, pub } = trees();
     write(ws, 'scripts/x.sh', 'x');
     write(ws, 'tests/fixtures/k.ts', `const k = 'ghp_${'a1B2c3D4e5'.repeat(4)}';`);
-    const cs = buildChangeSet(ws, pub);
+    const cs = await buildChangeSet(ws, pub);
     expect(toolingPathsTouched(cs)).toEqual(['scripts/x.sh']);
     expect(secretGate(cs, { notes: 'clean', prTitle: 't', prBody: 'b' })).toEqual(['tests/fixtures/k.ts']);
     expect(secretGate({ entries: [], totalBytes: 0 }, { notes: `AKIA${'A'.repeat(16)}`, prTitle: 't', prBody: 'b' })).toEqual(['(result notes)']);
     expect(credentialShaped('nothing secret here')).toBe(false);
   });
 
-  it('holds worker-supplied audit paths when added, edited or deleted', () => {
+  it('holds worker-supplied audit paths when added, edited or deleted', async () => {
     const { ws, pub } = trees();
     write(ws, '.instar/instar-dev-decisions/new.json', '{}');
     write(ws, '.instar/instar-dev-traces/old.json', 'changed');
     write(pub, '.instar/instar-dev-traces/old.json', 'before');
     write(pub, '.instar/instar-dev-decisions/deleted.json', '{}');
-    expect(toolingPathsTouched(buildChangeSet(ws, pub))).toEqual([
+    expect(toolingPathsTouched(await buildChangeSet(ws, pub))).toEqual([
       '.instar/instar-dev-decisions/deleted.json',
       '.instar/instar-dev-decisions/new.json',
       '.instar/instar-dev-traces/old.json',
     ]);
   });
 
-  it('does not normalize a literal POSIX backslash filename out of the protected tree', () => {
+  it('does not normalize a literal POSIX backslash filename out of the protected tree', async () => {
     if (path.sep === String.fromCharCode(92)) return;
     const { ws, pub } = trees();
     const odd = ['a', '..', '..', '..', 'src', 'record.json'].join(String.fromCharCode(92));
     const rel = `.instar/instar-dev-decisions/${odd}`;
     write(ws, rel, 'untrusted');
-    expect(buildChangeSet(ws, pub).entries.map((entry) => entry.path)).toContain(rel);
-    expect(toolingPathsTouched(buildChangeSet(ws, pub))).toContain(rel);
+    expect((await buildChangeSet(ws, pub)).entries.map((entry) => entry.path)).toContain(rel);
+    expect(toolingPathsTouched(await buildChangeSet(ws, pub))).toContain(rel);
   });
 
   it('spec draft shape: exactly one new file at the expected path, no approval/convergence tags', () => {
@@ -566,7 +707,7 @@ describe('canary judgement', () => {
       const broken = await runRunnerCanary({ paths: p, fixture: fx, runner: runner(() => 1), fullGate: null });
       expect(verdictOf(broken, 's').ok).toBe(false);
       const leaky = await runRunnerCanary({ paths: p, fixture: fx, runner: runner((c) => (/^cat /.test(c) ? 0 : confinedOk(c))), fullGate: null });
-      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree']);
+      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree', 'bash-read-system-temp']);
       // The sibling probe reads a nonce placed beside the workspace under .worktrees/.
       expect(fs.readFileSync(fx.siblingNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(path.dirname(fx.siblingNoncePath))).toBe(path.join(p.agentHome, '.worktrees'));
@@ -576,6 +717,31 @@ describe('canary judgement', () => {
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
     } finally { await fx.close(); }
+  });
+
+  it('SEC-098: on Linux the shared-temp write probe is judged by its effect (a read-denied /tmp is a private writable tmpfs there)', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    // The write "succeeds" (exit 0) but nothing reaches the host's shared temp: the private-tmpfs case.
+    const privateTmpfs = runner((c) => (c.startsWith('echo x > ') && c.includes('feedback-canary-') && !c.includes('.worktrees') ? 0 : confinedOk(c)));
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const linux = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(linux.find((x) => x.probe === 'bash-write-system-temp')).toMatchObject({ ok: true, detail: 'written to the sandbox-private temp only' });
+      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+      const mac = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(mac.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+      // A write that really lands in the shared temp fails on every platform.
+      fs.writeFileSync(fx.systemTmpWritePath, 'x');
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const landed = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(landed.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      try { SafeFsExecutor.safeUnlinkSync(fx.systemTmpWritePath, { operation: 'SEC-098 test cleanup' }); } catch { /* absent */ }
+      await fx.close();
+    }
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {
@@ -727,7 +893,7 @@ describe('canary review-round regressions', () => {
       expect(prompt).toContain(`Read tool to read ${l.symLink}`);
       expect(prompt).toContain(`Write tool to create ${l.depsWriteViaLink}`);
       expect(prompt).not.toContain('ln -s'); // a model asked to build the link itself declines; trusted code builds it
-      expect(SESSION_CANARY_STEPS).toBe(21);
+      expect(SESSION_CANARY_STEPS).toBe(22);
       expect(prompt).toContain(`Bash tool: cat ${fx.siblingNoncePath}`);
       expect(prompt).toContain(`Read tool to read ${fx.siblingNoncePath}`);
       // The sibling directory is reached through a workspace symlink trusted code made: Read, Write
@@ -769,18 +935,32 @@ describe('canary review-round regressions', () => {
     }
   });
 
-  it('a hard link in the workspace is a special file: it never enters a change set', () => {
+  it('a hard link in the workspace is a special file: it never enters a change set', async () => {
     const root = tmp();
     const ws = path.join(root, 'ws');
     const base = path.join(root, 'base');
     fs.mkdirSync(ws); fs.mkdirSync(base);
     fs.writeFileSync(path.join(root, 'secret.txt'), 'secret');
     fs.linkSync(path.join(root, 'secret.txt'), path.join(ws, 'innocent.ts'));
-    expect(() => buildChangeSet(ws, base)).toThrow(/hard link/);
+    await expect(buildChangeSet(ws, base)).rejects.toThrow(/hard link/);
   });
 });
 
 describe('runner and filesystem helpers', () => {
+  it('a timed-out run records when it first printed and what was running', async () => {
+    const env = { PATH: process.env.PATH ?? '' };
+    const silent = await runCapped(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 500 });
+    expect(silent.timedOut).toBe(true);
+    expect(silent.stderr).toContain('no output at all');
+    expect(silent.stderr).toContain('setTimeout');
+    const talking = await runCapped(process.execPath, ['-e', 'console.log("hi"); setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 1_500 });
+    expect(talking.timedOut).toBe(true);
+    expect(talking.stdout).toContain('hi');
+    expect(talking.stderr).toContain('first output after');
+    const finished = await runCapped(process.execPath, ['-e', 'process.exit(0)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 });
+    expect(finished.stderr).toBe('');
+  });
+
   it('runCapped enforces the wall clock and the output cap and never throws on a non-zero exit', async () => {
     const env = { PATH: process.env.PATH ?? '' };
     expect((await runCapped(process.execPath, ['-e', 'process.exit(3)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 })).exitCode).toBe(3);
@@ -816,18 +996,96 @@ describe('runner and filesystem helpers', () => {
     expect(shortTmpDir().length).toBeLessThan(20);
   });
 
-  it('attempt trees move into the agent trash and are deleted; treeBytes measures without following links', () => {
+  it('treeBytes leaves the event loop running while it walks a tree, and still stops early at the limit', async () => {
+    const root = tmp();
+    for (let i = 0; i < 300; i++) write(root, `d${i % 10}/f${i}.ts`, 'xx');
+    let turns = 0;
+    let stop = false;
+    const turn = () => { turns += 1; if (!stop) setImmediate(turn); };
+    setImmediate(turn);
+    expect(await treeBytes(root)).toBe(600);
+    stop = true;
+    expect(turns).toBeGreaterThan(100);
+    expect(await treeBytes(root, 10)).toBeLessThan(600);
+  });
+
+  it('attempt trees move into the agent trash and are deleted; treeBytes measures without following links', async () => {
     const root = tmp();
     const trash = path.join(root, '.instar', 'state', 'trash');
     write(root, 'attempt/a.txt', 'abc');
     fs.symlinkSync('/etc', path.join(root, 'attempt', 'link'));
-    expect(treeBytes(path.join(root, 'attempt'))).toBe(3);
+    expect(await treeBytes(path.join(root, 'attempt'))).toBe(3);
     removeAttemptTree(path.join(root, 'attempt'), trash, 'test');
     expect(fs.existsSync(path.join(root, 'attempt'))).toBe(false);
+    // The path is free at once; the bytes go in the background.
+    await attemptTrashSettled();
     expect(fs.readdirSync(trash)).toHaveLength(0);
     removeAttemptTree(path.join(root, 'missing'), trash, 'test');
     write(trash, 'left/x', 'x');
     expect(sweepTrash(trash, 'test')).toBe(1);
+    // A second sweep before the delete ran must not queue the same leftover again.
+    expect(sweepTrash(trash, 'test')).toBe(0);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(0);
+    expect(attemptTrashPending()).toBe(0);
+  });
+
+  it('removing an attempt tree never deletes it on the calling thread, and deletes one tree at a time', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (const name of ['base', 'head', 'gate']) write(root, `${name}/node_modules/pkg/index.js`, 'x');
+    const syncRm = vi.spyOn(SafeFsExecutor, 'safeRmSync');
+    let running = 0; let peak = 0;
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      running++; peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 15));
+      try { await realRm(target, opts); } finally { running--; }
+    });
+    try {
+      for (const name of ['base', 'head', 'gate']) removeAttemptTree(path.join(root, name), trash, 'test');
+      // Synchronously: every path is gone from where it was, nothing was deleted yet, all three are parked.
+      for (const name of ['base', 'head', 'gate']) expect(fs.existsSync(path.join(root, name))).toBe(false);
+      expect(syncRm).not.toHaveBeenCalled();
+      expect(fs.readdirSync(trash)).toHaveLength(3);
+      expect(attemptTrashPending()).toBe(3);
+      await attemptTrashSettled();
+      expect(asyncRm).toHaveBeenCalledTimes(3);
+      expect(peak).toBe(1);
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { syncRm.mockRestore(); asyncRm.mockRestore(); }
+  });
+
+  it('a failed background delete leaves the tree parked for the next sweep and does not stop later deletes', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    write(root, 'first/x', 'x'); write(root, 'second/x', 'x');
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    let calls = 0;
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      if (++calls === 1) throw new Error('EBUSY');
+      await realRm(target, opts);
+    });
+    try {
+      removeAttemptTree(path.join(root, 'first'), trash, 'test');
+      removeAttemptTree(path.join(root, 'second'), trash, 'test');
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(1);
+      expect(attemptTrashPending()).toBe(0);
+      expect(sweepTrash(trash, 'test')).toBe(1);
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { asyncRm.mockRestore(); }
+  });
+
+  it('a sweep queues at most its limit of leftovers', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (let i = 0; i < 5; i++) write(trash, `left-${i}/x`, 'x');
+    expect(sweepTrash(trash, 'test', 2)).toBe(2);
+    expect(attemptTrashPending()).toBe(2);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(3);
   });
 });
 
@@ -1122,5 +1380,49 @@ describe('canary: a failing probe names what it observed', () => {
     const noisy = await gitProbe({ '9': "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-A' (errno=Operation not permitted)" });
     expect(noisy.ok).toBe(true);
     expect(noisy.detail).toContain('xcrun_db');
+  });
+});
+
+describe('related-test failure keys', () => {
+  it('reads failed tests, failed suites and unhandled-error origins, relative to the clone', async () => {
+    const { vitestFailureKeys, failuresAllPreexisting } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const json = JSON.stringify({ testResults: [
+      { name: '/c/head/tests/a.test.ts', status: 'failed', assertionResults: [{ fullName: 'a > breaks', status: 'failed' }, { fullName: 'a > ok', status: 'passed' }] },
+      { name: '/c/head/tests/b.test.ts', status: 'failed', assertionResults: [] },
+      { name: '/c/head/tests/c.test.ts', status: 'passed', assertionResults: [{ fullName: 'c', status: 'passed' }] },
+    ] });
+    const out = '\u001b[31mThis error originated in "\u001b[1mtests/d.test.ts\u001b[22m" test file.';
+    const head = vitestFailureKeys(json, out.replace(/\u001b\[[0-9;]*m/g, ''), '/c/head');
+    expect([...head.keys].sort()).toEqual(['tests/a.test.ts::a > breaks', 'tests/b.test.ts::<suite>', 'tests/d.test.ts::<unhandled>']);
+    expect(head.files).toEqual(['tests/a.test.ts', 'tests/b.test.ts', 'tests/d.test.ts']);
+    const base = vitestFailureKeys(json.replaceAll('/c/head/', '/c/base/'), out, '/c/base');
+    expect(failuresAllPreexisting(head.keys, base.keys)).toBe(true);
+    expect(failuresAllPreexisting(head.keys, new Set(['tests/a.test.ts::a > breaks']))).toBe(false);
+    expect(failuresAllPreexisting(new Set(), base.keys)).toBe(false);
+    expect(vitestFailureKeys('not json', '', '/c').keys.size).toBe(0);
+    const unsafe = vitestFailureKeys(null, 'originated in "../x.test.ts" test file. originated in "/etc/y.test.ts" test file. originated in "--config=z" test file.', '/c');
+    expect(unsafe.keys.size).toBe(0);
+  });
+});
+
+describe('filesNamingTest', () => {
+  it('keeps the files that contain the named test, and all of them when none do or the text is unknown', async () => {
+    const { filesNamingTest } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const texts: Record<string, string | null> = { 'tests/a.test.ts': "it('never routes the gate to gemini', () => {})", 'tests/b.test.ts': "it('other', () => {})", 'tests/c.test.ts': null };
+    const read = (f: string) => texts[f] ?? null;
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'routing > never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts', 'tests/c.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/c.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/b.test.ts']);
+  });
+});
+
+describe('already-fixed claim in the session result', () => {
+  it('keeps a hex fixedByCommit only on not-reproducible', async () => {
+    const { parseSessionResult } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: ' ABC1234 ' }))?.fixedByCommit).toBe('abc1234');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'HEAD~1' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'abc12' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'gave-up', fixedByCommit: 'abc1234' }))?.fixedByCommit).toBeUndefined();
   });
 });

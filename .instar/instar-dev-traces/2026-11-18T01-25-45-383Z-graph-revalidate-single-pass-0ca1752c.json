@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "graph-revalidate-single-pass",
+  "sessionId": "11ccc009-6185-4f9f-aa43-d1961f453a76",
+  "timestamp": "2026-11-18T01:25:45.383Z",
+  "artifactPath": "upgrades/side-effects/graph-revalidate-single-pass.md",
+  "artifactSha256": "2d3367ac8e842959db2f9189fe399a8e42166c66ef1d9160aec21de0689a705a",
+  "coveredFiles": [
+    "docs/specs/graph-revalidate-single-pass.eli16.md",
+    "src/core/ConversationGraphReplication.ts",
+    "src/core/ConversationGraphSourceObservationRecovery.ts",
+    "tests/unit/conversation-graph-replication.test.ts",
+    "upgrades/next/graph-revalidate-single-pass.md",
+    "upgrades/side-effects/graph-revalidate-single-pass.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Performance only: same verdicts, fewer redundant verification passes; no persisted state; a revert fully undoes it",
+  "eli16Path": "docs/specs/graph-revalidate-single-pass.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-revalidate-single-pass.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

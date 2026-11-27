@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "team-requests",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T17:51:38.460Z",
+  "artifactPath": "upgrades/side-effects/team-requests.md",
+  "artifactSha256": "f68c980902021c61517450b54f1ec00ed69b366ede06ae0cb2ff65954a50db9b",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/core/TeamRequests.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "tests/unit/team-requests.test.ts",
+    "upgrades/side-effects/team-requests.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

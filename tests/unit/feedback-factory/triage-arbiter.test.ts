@@ -70,6 +70,14 @@ describe('FeedbackTriageArbiter contract', () => {
     await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, promptVersion: 'feedback-triage-v0' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
     expect(called).toBe(false);
     await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, modelFamily: 'gpt-6-sol' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
+    await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, modelFamily: 'gpt-6.2-sol' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
+  });
+  it('an authority bound to gpt-6.2-astra runs pinned to that exact id', async () => {
+    const answer = (prompt: string) => JSON.stringify({ decisions: [] , _p: prompt.length });
+    const a62 = { ...authority, modelFamily: 'gpt-6.2-astra' };
+    expect(() => new FeedbackTriageArbiter(provider(answer, 'gpt-6.2-astra')).checkAuthority(a62)).not.toThrow();
+    // A gpt-6.2-astra authority answered by gpt-6-astra is a resolved-model mismatch.
+    await expect(new FeedbackTriageArbiter(provider(answer, 'gpt-6-astra')).decideBatch(a62, [packet('c1')])).rejects.toMatchObject({ check: 'resolved-model-mismatch' });
   });
   it('a batch outside the registered envelope is refused', async () => {
     const p = provider(() => '');

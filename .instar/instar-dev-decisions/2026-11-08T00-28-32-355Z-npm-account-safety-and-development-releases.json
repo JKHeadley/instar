@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-08T00:28:32.355Z",
+  "slug": "npm-account-safety-and-development-releases",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: scripts/development-release.mjs touches release script (fleet publish path)",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 263,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/development-release.mjs",
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/UpdateChecker.ts",
+      "src/data/accountActionSafety.ts",
+      "src/data/accountPageSafetyScript.ts",
+      "src/data/builtinSkillContent.ts",
+      "src/templates/scripts/browser/chrome-js.sh",
+      "src/templates/scripts/browser/chrome-mainworld.sh"
+    ],
+    "addedLines": 249,
+    "deletedLines": 14
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Account operation used stored recovery code after a truncated page read; durable shared account guidance and an npm-independent dev distribution lane were absent. Incident evidence in topic10000002397 and linked topic130715."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-driven development install/pack and per-call browser review, not a self-triggered controller"
+  },
+  "verdict": "pass"
+}

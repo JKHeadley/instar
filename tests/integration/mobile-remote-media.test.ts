@@ -66,6 +66,7 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => id, registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger, dispatch: () => null,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
   });
   cleanups.push(() => svc.stop());
   const app = express();
@@ -720,7 +721,12 @@ describe('the owner phone opens a Slack file held by another machine', () => {
     });
     set([unknown]);
     const r = await phoneGet(a, p, route(sha(big), REF, 'm_b'));
-    expect(r.complete).toBe(false);
+    // Two correct outcomes, decided by how the holder's bytes arrive: if its first reads
+    // already pass the ceiling, nothing has gone to the phone yet and it gets a clean
+    // 502 refusal; otherwise the stream already started and is cut short. Either way the
+    // phone never gets a completed file and never more than the ceiling.
+    if (r.status === 502) expect(r.json.error).toBe('holder-too-large');
+    else expect(r.complete).toBe(false);
     expect(r.body.length).toBeLessThanOrEqual(100_000);
   });
 

@@ -45,6 +45,12 @@ export interface AttemptGit {
    * `'none'` when no release contains it yet; null when it cannot be determined.
    */
   firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null>;
+  /**
+   * The full SHA and committer time of `commit` when it names a commit the trusted source checkout
+   * has AND `baseSha` contains it; null otherwise (unknown, not an ancestor, or unreadable).
+   * Optional: without it a session's "already fixed by" claim is never trusted.
+   */
+  commitInBase?(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null>;
 }
 
 export interface GitHubGateway {
@@ -165,6 +171,18 @@ export class SafeAttemptGit implements AttemptGit {
     } catch { return null; } // @silent-fallback-ok: an unreadable origin makes the executor report no-source-repo
   }
 
+  async commitInBase(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null> {
+    if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(baseSha)) return null;
+    const read = (args: string[], operation: string) => SafeGitExecutor.readSync(args, { cwd: sourceRepoPath, operation, sourceTreeReadOk: true, timeout: 60_000 });
+    try {
+      const full = read(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`], 'feedback-execute already-fixed resolve').trim();
+      if (!/^[0-9a-f]{40}$/.test(full)) return null;
+      read(['merge-base', '--is-ancestor', full, baseSha], 'feedback-execute already-fixed ancestry');
+      const committedAt = Date.parse(read(['log', '-1', '--format=%cI', full], 'feedback-execute already-fixed date').trim());
+      return Number.isFinite(committedAt) ? { sha: full, committedAt } : null;
+    } catch { return null; } // @silent-fallback-ok: unknown or not an ancestor → the claim is not trusted and the attempt counts as plain not-reproducible
+  }
+
   async firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null> {
     if (!/^[0-9a-f]{7,40}$/.test(commit)) return null;
     const read = (args: string[], operation: string) => {
@@ -201,6 +219,17 @@ function compareVersionTags(a: string, b: string): number {
   const pb = b.slice(1).split('.').map(Number);
   for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
   return 0;
+}
+
+/**
+ * True when a failed `gh api -X DELETE …/labels/<label>` means only that the label was not on the
+ * issue: GitHub's 404 with the message "Label does not exist". Any other 404 (a missing PR or repo,
+ * no access) stays a failure.
+ */
+export function labelAlreadyAbsent(error: unknown): boolean {
+  const e = error as { stdout?: unknown; stderr?: unknown } | null;
+  const text = `${String(e?.stdout ?? '')}\n${String(e?.stderr ?? '')}`;
+  return /Label does not exist/.test(text) && /\b404\b/.test(text);
 }
 
 export class GhGateway implements GitHubGateway {
@@ -277,7 +306,13 @@ export class GhGateway implements GitHubGateway {
   }
 
   async removeLabel(slug: string, pr: number, label: string): Promise<boolean> {
-    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; } catch { return false; } // @silent-fallback-ok: caller records the failure
+    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; }
+    catch (error) {
+      // Idempotent: the label already gone is the wanted state. GitHub answers 404 "Label does not
+      // exist" for that, and reading it as a failure stalled every admitted PR before its merge.
+      if (labelAlreadyAbsent(error)) return true;
+      return false; // @silent-fallback-ok: caller records the failure
+    }
   }
 
   /**

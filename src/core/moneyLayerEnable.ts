@@ -22,14 +22,21 @@
  * IFF it is a member of this enum — keyed on the ACTION VALUE, never on "the
  * body looks like an enable", so the exempt set is greppable and testable.
  *
- * FOUR public actions. `money-layer-disable-store-only` is public precisely so
+ * FIVE public actions. `money-layer-disable-store-only` is public precisely so
  * that what the operator approved is visible in the signed plan and the audit.
+ *
+ * `gemini-payg-setup` (docs/specs/gemini-payg-metered-lane.md §8, FD-G18) writes the
+ * enable flag PLUS one pending-setup intent file, and NEVER the caps store while money
+ * is off — the caps are written by the money layer itself, under money on, when it
+ * applies the intent. Its commit also schedules the supervised restart under the SAME
+ * PIN, through the restart route's safeguards.
  */
 export const MONEY_LAYER_PREGATE_ACTIONS = [
   'money-layer-enable',
   'money-layer-mirror-config',
   'money-layer-disable',
   'money-layer-disable-store-only',
+  'gemini-payg-setup',
 ] as const;
 
 export type MoneyLayerPregateAction = (typeof MONEY_LAYER_PREGATE_ACTIONS)[number];

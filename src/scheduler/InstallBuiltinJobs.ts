@@ -33,10 +33,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
+import { Cron } from 'croner';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { buildPerSlugManifest, coerceDurationMinutes, coerceBool } from './buildPerSlugManifest.js';
 import { validateManifest } from './AgentMdJobLoader.js';
 import type { JobPriority, ModelTier } from '../core/types.js';
+import { THINKING_MODES } from '../core/topicProfileValidation.js';
 
 export interface InstallBuiltinJobsOptions {
   /** Agent state directory root (typically `<projectDir>/.instar`). */
@@ -56,6 +58,28 @@ export interface InstallReport {
   retired: string[];        // slugs removed from templates (now retired)
   errors: Array<{ slug?: string; reason: string }>;
 }
+
+/** Job Scheduler awareness bullet (CLAUDE.md template + migration). Marker: `shippedSchedule`. */
+export const BUILTIN_SCHEDULE_EDIT_AWARENESS =
+  '- **Changing a BUILT-IN job\'s schedule — edit `schedule` in `.instar/jobs/schedule/<slug>.json`.** ' +
+  'Updates keep it: each install records the shipped value as `shippedSchedule`, and a `schedule` that differs ' +
+  'from it is treated as yours. Set it back to the shipped value to follow future defaults again. A manifest ' +
+  'written before an update that adds `shippedSchedule` takes the shipped value once, so re-apply an earlier ' +
+  'edit after that update. Applies at the next server restart.\n';
+
+/**
+ * Job Scheduler awareness bullet for the per-job thinking mode (docs/specs/job-launch-intent-record.md,
+ * Migration parity): CLAUDE.md template + migrateClaudeMd insert, byte-identical. Content-sniff key:
+ * the phrase "a job can set `thinkingMode`" (the bare word already appears in the topic-profile line).
+ */
+export const JOB_THINKING_MODE_SNIFF = 'a job can set `thinkingMode`';
+export const JOB_THINKING_MODE_AWARENESS =
+  '- **Per-job thinking mode:** a job can set `thinkingMode` in its manifest to choose how hard the engine thinks ' +
+  '(`off`/`low`/`medium`/`high`/`max`; for a built-in or agentmd job that is `.instar/jobs/schedule/<slug>.json`). ' +
+  'Absent means the engine default. Each run row in `GET /jobs/SLUG/history` carries a `launch` record: what was ' +
+  'requested, what the launch actually sent (`applied`), what was dropped and why (`not-supported` on an engine with ' +
+  'no reasoning setting, `overridden-by-effort-pin`, `invalid`), and the CLI version (`unknown` until it is read). ' +
+  '`applied` means sent, not that it helped.\n';
 
 const PORT_SENTINEL = '4042';
 
@@ -107,6 +131,16 @@ function installBuiltinScripts(templatesDir: string, installedDir: string, repor
     }
   }
   return shipped;
+}
+
+function isValidCron(expr: string): boolean {
+  try {
+    new Cron(expr, { paused: true }).stop();
+    return true;
+  } catch {
+    // @silent-fallback-ok — the caller reports the reset in InstallReport.errors.
+    return false;
+  }
 }
 
 export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallReport {
@@ -183,12 +217,23 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     const manifestPath = path.join(scheduleDir, `${slug}.json`);
     let existingEnabled: boolean | undefined;
     let existingDisabledAtBodyHash: string | undefined;
+    let existingSchedule: string | undefined;
+    let existingShippedSchedule: string | undefined;
+    // Operator-set thinking mode on an installed built-in (the awareness bullet tells
+    // agents to set it in this manifest) survives reinstall, like `enabled` does.
+    let existingThinkingMode: string | undefined;
     if (fs.existsSync(manifestPath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
         if (typeof existing.enabled === 'boolean') existingEnabled = existing.enabled;
         if (typeof existing.disabledAtBodyHash === 'string') {
           existingDisabledAtBodyHash = existing.disabledAtBodyHash;
+        }
+        if (typeof existing.schedule === 'string') existingSchedule = existing.schedule;
+        if (typeof existing.shippedSchedule === 'string') existingShippedSchedule = existing.shippedSchedule;
+        if (typeof existing.thinkingMode === 'string'
+          && (THINKING_MODES as readonly string[]).includes(existing.thinkingMode)) {
+          existingThinkingMode = existing.thinkingMode;
         }
       } catch {
         // malformed; we'll overwrite with a fresh one
@@ -243,10 +288,28 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     // expectedDurationMinutes, model + pass-throughs are carried here (their
     // omission is the bug this fixes). The typed return means a dropped required
     // field is a compile error.
+    // An operator's schedule edit survives updates (CMT-1586, fb-d075a5c4-c4c).
+    // `shippedSchedule` records the template's schedule at each write, so a
+    // saved `schedule` that differs from it was changed on this agent and is
+    // kept; one that still matches follows a new shipped default. A manifest
+    // written before this field existed cannot be told apart and takes the
+    // shipped value once (today's behaviour), after which edits are kept.
+    const shippedSchedule = String(frontmatter.schedule ?? '');
+    let schedule = shippedSchedule;
+    if (existingSchedule !== undefined && existingShippedSchedule !== undefined
+      && existingSchedule.trim() && existingSchedule !== existingShippedSchedule) {
+      if (isValidCron(existingSchedule)) {
+        schedule = existingSchedule;
+      } else {
+        report.errors.push({ slug, reason: `saved schedule ${JSON.stringify(existingSchedule)} is not a valid cron expression; reset to the shipped ${JSON.stringify(shippedSchedule)}` });
+      }
+    }
+
     const manifest = buildPerSlugManifest({
       slug,
       origin: 'instar',
-      schedule: String(frontmatter.schedule ?? ''),
+      schedule,
+      shippedSchedule,
       priority: frontmatter.priority as JobPriority,
       expectedDurationMinutes: durationMinutes,
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',
@@ -259,6 +322,13 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
         ? frontmatter.frameworkModel
         : undefined,
       leanContext: coerceBool(frontmatter.leanContext),
+      // Carried as written: the producer self-check below (validateManifest) refuses an
+      // out-of-enum value by name, so an invalid frontmatter value is reported, never installed.
+      thinkingMode: existingThinkingMode !== undefined
+        ? existingThinkingMode as import('./AgentMdJobLoader.js').PerSlugManifest['thinkingMode']
+        : frontmatter.thinkingMode != null
+        ? frontmatter.thinkingMode as import('./AgentMdJobLoader.js').PerSlugManifest['thinkingMode']
+        : undefined,
       tags: Array.isArray(frontmatter.tags) ? (frontmatter.tags as string[]) : undefined,
       unrestrictedTools: coerceBool(frontmatter.unrestrictedTools),
       gate: frontmatter.gate != null ? String(frontmatter.gate) : undefined,

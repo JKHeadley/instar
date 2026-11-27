@@ -1,6 +1,23 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
+import { workBoardEnabled } from '../core/WorkCardStore.js';
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
+import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
+import { mayBeLocalArrival } from '../core/requestArrival.js';
+import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
+import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
+import { orgDecisionJournal } from '../core/OrgActionCheck.js';
+import { bootReadiness } from './BootReadiness.js';
+import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
+import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
+import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
+import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
 const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { decisionQualityMachineSegment } from '../core/decisionQualityTypes.js';
 import { readMeasurementTargets } from './measurementCoverageRead.js';
@@ -19,7 +36,10 @@ import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
+import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
+import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { setAutonomousRunProbe } from '../core/appConversationMove.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -73,6 +93,7 @@ import { createConversationBindAuth } from '../core/conversationBindToken.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
 import { DashboardOperatorSessionStore } from './DashboardOperatorSessionStore.js';
+import { DashboardSessionStore } from './DashboardSessionStore.js';
 import { UserManager } from '../users/UserManager.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
@@ -99,8 +120,11 @@ import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainSer
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { deriveConsumerPromotionProposal, effectiveClaimsPerRun, promotionRecordMarker, type PromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
+import { createUsageLedgerTick } from '../monitoring/usageLedgerTick.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
 import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
@@ -111,12 +135,19 @@ import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
 import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { ConversationGraphOwnerGrantStore } from './ConversationGraphOwnerGrant.js';
+import {readConversationGraphOwnerCredential,readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../core/ConversationGraphOwnerPolicy.js';
+import {LiveConfig} from '../config/LiveConfig.js';
+import crypto from 'node:crypto';
+import { payloadHash } from '../core/MobileChatRequests.js';
+import { chatRecordDelivered } from '../documents/decisions.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { InstarConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -149,7 +180,10 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
 import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
-import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
+import { createPromptContextRoutes } from './promptContextRoutes.js';
+import { computeOverallRework } from '../monitoring/contextBudgetMetrics.js';
+import { SeedFetchLog, reworkBaselineOf, type ReworkBaseline } from '../monitoring/contextLayers/promptContext.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -162,6 +196,7 @@ import { LlmQueue } from '../monitoring/LlmQueue.js';
 import { ClaimObservationHousekeeper, ClaimObservationRecorder } from '../monitoring/ClaimObservation.js';
 import { ClaimObservationAdmissionQueue } from '../monitoring/ClaimObservationAdmissionQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import { runTurnEvidenceBootCanary } from '../monitoring/TurnEvidence.js';
 import { BlockerLedger } from '../monitoring/BlockerLedger.js';
 import { buildB17SettleAuthority } from '../monitoring/blockerSettleAuthority.js';
@@ -191,16 +226,66 @@ import { createHandoffInitiateRoutes } from './handoffInitiateRoutes.js';
 import { createThroughputRoutes } from './throughputRoutes.js';
 import { getMigrationDefaults } from '../config/ConfigDefaults.js';
 import { createMaturationLadderRoutes, isMaturationLadderEnabled } from './maturationLadderRoutes.js';
+import { createNeverSilentRoutes } from './neverSilentRoutes.js';
 import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } from '../monitoring/MaturationLadderService.js';
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
+import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
+import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
+import { createDocumentPageRoutes, notADocumentDevice, notADocumentDeviceRow } from './documentPageRoutes.js';
+import { documentDecisionRootOf } from './documentDecisionRoot.js';
+import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
+import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
+import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { createAgentLinkRoutes } from './agentLinkRoutes.js';
+import { buildGeminiPaygLane, type GeminiPaygLane } from './geminiPaygWiring.js';
+import { buildGeminiPaygGoLive, type GeminiPaygGoLive } from './geminiPaygGoLiveWiring.js';
+import type { MeteredLaneRuntime } from './meteredLaneRuntime.js';
+import { createDocumentLinkRoutes, joinedComputerStanding, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink, callerAddress, ownLoopbackHost } from './documentLinkRoutes.js';
+import { computerStandingIn, computerHomeAt, renewDue } from '../core/TeamComputers.js';
+import { createDocumentJoinRoutes, joinedEndsAt, reconcileJoinedComputers } from './documentJoinRoutes.js';
+import { PinThrottle, normalizePinSource, UNATTRIBUTED_PIN_SOURCE } from '../core/PinThrottle.js';
+import { PIN_MARKER_COOKIE, issuePinMarker, verifyPinMarker, pinMarkerCookieOptions } from './pinUnlockMarker.js';
+import { setDashboardSessionFamilyLookup } from './ownerPinSource.js';
+import { setDocumentScopedSend, deviceRouteTakesBody } from './mobilePairingRoutes.js';
+import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
+import { DocumentStore } from '../documents/store.js';
+import { DocumentService } from '../documents/service.js';
+import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../documents/teamAdapter.js';
+import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createQuotaPacingRoutes } from './quotaPacingRoutes.js';
+import { QuotaHistoryLedger, buildLocalSummaries, isQuotaPacingEnabled } from '../monitoring/QuotaHistoryLedger.js';
+import { mergeLogins as mergeQuotaLogins, assembleProviders as assembleQuotaProviders } from '../monitoring/quotaPacing.js';
+import { createSkillLearningRoutes } from './skillLearningRoutes.js';
+import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { SameNetworkListener } from './sameNetworkListener.js';
+import { sameNetworkGate, homeAddressInUse } from './phoneSetupRoutes.js';
+import { ThrowawayOwnerChat, standInEverUsed } from './throwawayOwnerChat.js';
+import { mountThrowawayOwnerChatRoutes } from './throwawayOwnerChatRoutes.js';
+import type { OwnerChatSurface } from '../messaging/ownerChatTap.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, DEVICE_ALLOWLIST, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL, principalOf } from './mobilePairingRoutes.js';
+import { createOrgPackRouter, mountPublicOrgPackRoutes } from './orgPackRoutes.js';
+import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
+import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
+import { ConversationListPinStore } from '../core/ConversationListPins.js';
+import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
-import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
+import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
+import { conversationIndexSources } from './conversationMeaningSearch.js';
+import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
+import { telegramRowId } from '../core/ConversationReadMarkers.js';
+import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
+import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
+import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
+import { PeerLacksSwitchRoute, PeerRefusedSwitch, PeerSwitchFailed, TeamSwitchApplier, type LocalApply, type SwitchPeer, type TeamSwitchSetting } from '../core/TeamSwitches.js';
+import type { TeamAccessRow } from '../core/TeamAccessLog.js';
+import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
+import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId, slackUnreadSource } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -210,8 +295,8 @@ import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
-import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
-import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { transcribeAudioFileDetailed, configuredVoiceProvider, describeVoiceTranscription } from '../core/VoiceTranscription.js';
+import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
@@ -229,11 +314,13 @@ import { WorkQueueRegistry } from '../core/WorkQueue.js';
 import type { WorktreeManager } from '../core/WorktreeManager.js';
 import { NativeHookEventIngest } from '../monitoring/NativeHookEvents.js';
 import { NATIVE_HOOK_EVENTS_PATH } from '../data/http-hook-templates.js';
+import { resolveKnownOrigin as resolveProjectAppOrigin, hostOf as projectAppHostOf, type OriginDeps as ProjectAppOriginDeps } from './ProjectAppSandbox.js';
+import { boundedBody, closeUnreadBodyOnError, credentialAwareJsonParser, type BodyBudgetDeps } from './bodyBudget.js';
 import { corsMiddleware, authMiddleware, requestTimeout, buildRequestTimeoutOverrides, errorHandler, dashboardSecurityHeaders, dashboardCacheControl, DASHBOARD_STATIC_OPTIONS, duplicateResponseGuard } from './middleware.js';
 import { WebSocketManager } from './WebSocketManager.js';
 import { DesktopStreamManager } from './DesktopStreamManager.js';
 import { DirectDesktopAccess } from '../core/DirectDesktopAccess.js';
-import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { desktopProbeUnavailableReason, DESKTOP_CHECK_FAILED_REASON, DESKTOP_PEER_REASON_MAX } from '../core/DesktopProbeReadiness.js';
 import { DesktopHelperRetention } from '../core/DesktopHelperRetention.js';
 import { getInstarVersion } from '../core/Config.js';
 import { DesktopHelperPermissionNotice } from '../core/DesktopHelperPermissionNotice.js';
@@ -249,7 +336,7 @@ import { verifyDesktopLockedAssertion, type DesktopLockedAssertion } from '../co
 import { DesktopSetupTarget } from '../core/DesktopSetupTarget.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { LinuxAutoDesktopHost } from '../core/HyprlandDesktopHost.js';
-import { WindowsDesktopHost } from '../core/WindowsDesktopHost.js';
+import { WindowsDesktopHost, resolveWindowsDesktopVideo } from '../core/WindowsDesktopHost.js';
 import { windowsDesktopLocalSend } from '../core/WindowsDesktopLocalTransport.js';
 import { discoverWindowsDesktopCompanion } from '../core/WindowsDesktopCompanionDiscovery.js';
 import { readWindowsDesktopBootstrapStatus } from '../core/WindowsDesktopBootstrapStatus.js';
@@ -264,7 +351,17 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { ServedAccountResolver, type ServedLedgerView } from '../monitoring/servedAccount.js';
+import { IdentityCheckLog } from '../monitoring/IdentityCheckLog.js';
+import { ServedSwitchHistory } from '../monitoring/servedAccountReport.js';
+import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
+import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
+import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { buildReadinessAccountAdmission, resolveReadinessAccountConfig } from '../feedback-factory/drain/readinessAccountAdmission.js';
+import { FeedbackTriageAccountSelector } from '../feedback-factory/triage/FeedbackTriageAccountSelector.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -295,15 +392,18 @@ import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
 import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
 import { moneyLayerShouldConstruct } from '../core/moneyLayerEnable.js';
 import { PinAttemptStore } from '../core/PinAttemptStore.js';
+import { PUBLIC_PIN_REQUEST_MAX, type PublicPinHook, type PublicPinPath, type PublicPinVerdict } from './publicPinHook.js';
 import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertResolver.js';
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
 import { isRegistryEntryActive, MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
-import { activeOwnerPhone } from './mobileConsoleTicket.js';
+import { activeOwnerPhone, signedHost } from './mobileConsoleTicket.js';
 import { isOwnerPresenceEnabled } from './mobileOwnerPresenceRoutes.js';
 import { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
+import { OwnerApprovedActionStore } from './OwnerApprovedActionStore.js';
+import { PendingApprovalRegistry } from './PendingApprovalRegistry.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
@@ -312,10 +412,9 @@ import { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { PendingRelayStore as SpendAlertRelayStore } from '../messaging/pending-relay-store.js';
 import { ProviderCostReportStore } from '../monitoring/ProviderCostReportStore.js';
 import { ProviderReconciliationSweep } from '../monitoring/ProviderReconciliationSweep.js';
-import { meteredKeysFromChains } from '../core/routingSpendView.js';
+import { meteredKeyDoors, knownMeteredKeyRefs } from '../core/routingSpendView.js';
 import { DEFAULT_FRESHNESS_SLA_DAYS } from '../core/routingPriceAuthority.js';
 import { METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
-import { DEFAULT_METERED_CAPS } from '../core/routingSpendView.js';
 import { A2ADeliveryTracker } from '../threadline/A2ADeliveryTracker.js';
 import { buildInboundIdLedgerController } from '../threadline/InboundIdLedger.js';
 import { setFeatureMetricsRecorder } from '../core/CircuitBreakingIntelligenceProvider.js';
@@ -362,6 +461,8 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PlatformMediaForSession, getPlatformMediaForSession, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
+import { telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
@@ -460,35 +561,100 @@ export interface LiveTestRunnerWiring {
 }
 
 export class AgentServer {
+  private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
+  /** Project apps part 2: the known-address inputs for the frame/wrapper origin (project-apps-sandbox §3.6). */
+  private projectAppOriginDeps: ProjectAppOriginDeps = { knownHttpsHosts: () => [] };
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
   /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
+  private teamPullTimer: ReturnType<typeof setInterval> | null = null;
+  /** The owner's one tap that turns a team setting on for every machine (team-switches-agent-wide). */
+  teamSwitchApplier: TeamSwitchApplier | null = null;
+  /** Each dialable peer, as the switch applier reaches it; set when the team exchange starts. */
+  private teamSwitchPeers: () => SwitchPeer[] = () => [];
+  private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
+  /** The stand-in owner chat for a throwaway agent with no owner (docs/specs/throwaway-owner-chat.md); null on every other agent. */
+  throwawayOwnerChat: ThrowawayOwnerChat | null = null;
+  /** "Make this group a project" phone confirm, filled by the conversation graph surface once it opens (conversation-groups-phone §3). */
+  readonly groupProjectConfirm: import('./ConversationGroupProjectDrafts.js').GroupProjectConfirmHolder = { confirm: null };
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
+  platformMedia: PlatformMediaForSession | null = null;
+  /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
+  conversationUnread: ConversationUnreadService | null = null;
+  /** Meaning search over conversations (conversation-search §4): the index and its background feeder, when the model is here. */
+  conversationEmbeddings: { index: ConversationEmbeddingIndex; feeder: ConversationEmbeddingFeeder } | null = null;
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
+  /** SEC-002b: the scoped dashboard session (dst_) token store — the browser's primary bearer in
+   *  place of the master token. Ships DARK (opt-in) until the full live dashboard proof passes.
+   *  Initialized in the constructor (needs this.config). */
+  private dashboardSessionStore!: DashboardSessionStore;
+  /** SEC-002b: the short-lived fresh-PIN STEP-UP proof store for credential operations (distinct
+   *  from the unlock-time operator session; minted only by POST /dashboard/session/step-up). */
+  private readonly dashboardStepUpSessions = new DashboardOperatorSessionStore({ ttlMs: 5 * 60_000 });
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
   /** Desktop-only sessions the owner's phone mints with Face ID (docs/specs/mobile-owner-presence-pin.md §2.1). */
   private readonly phoneDesktopSessions = new PhoneDesktopSessionStore();
+  /** SEC-018: owner-approved sensitive actions (docs/specs/owner-approved-sensitive-action.md).
+   *  One shared instance each — the phone's approval routes write, the MCP handler reads. Provided
+   *  by server.ts (the same instances it hands the MCP http service) so both sides share state;
+   *  falls back to fresh instances for callers/tests that don't supply them. */
+  private readonly ownerApprovedActionStore: OwnerApprovedActionStore;
+  private readonly ownerApprovedActionPending: PendingApprovalRegistry;
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
   private dashboardPinVersion: string | null = null;
 
-  private syncDashboardPinVersion(): void {
-    const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
+  private usesDurableGraphOwnerPolicy(): boolean {
+    return this.config.multiMachine?.conversationGraph?.readEnabled===true
+      || fs.existsSync(path.join(this.config.stateDir,'conversation-graph','owner-intent-policy.json'))
+      || fs.existsSync(path.join(this.config.stateDir,'conversation-graph-owner-policy-head.json'));
+  }
+
+  private syncDashboardPinVersion(): boolean {
+    let version=createHash('sha256').update(this.config.dashboardPin??'').digest('hex'),available=true;
+    if(this.usesDurableGraphOwnerPolicy()){
+      try{
+        const policy=readConversationGraphOwnerPolicy({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey});
+        this.config.dashboardPin=policy?.pin??readConversationGraphOwnerCredential({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})??undefined;
+        this.config.dashboardPinGeneration=policy?.generation;
+        version=policy?createHash('sha256').update(JSON.stringify(policy)).digest('hex'):'graph-owner-policy-uninitialized';
+        available=policy!==null;
+      }catch{
+        this.dashboardOperatorSessions.clear();this.dashboardPinVersion=null;return false;
+      }
+    }
+    if (this.dashboardPinVersion !== version && fs.existsSync(path.join(this.config.stateDir, 'conversation-graph', 'owner-intent-policy.json'))) {
+      try {
+        new ConversationGraphOwnerGrantStore({stateDir:this.config.stateDir,
+          agentId:this.config.multiMachine?.conversationGraph?.agentId??this.config.projectName,
+          secrets:new SecretStore({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey}),
+          dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})}).observePolicy();
+      } catch {
+        DegradationReporter.getInstance().report({feature:'Conversations.owner-policy',primary:'Advance durable owner policy generation',
+          fallback:'Leave queued promotion unavailable until policy is verified',reason:'owner-policy-generation-unavailable',
+          impact:'A queued edit may still require authorization recovery',internalOnly:true});
+      }
+    }
     if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
       this.dashboardOperatorSessions.clear();
       // A new PIN ends every "a human is here" proof, the phone's desktop sessions included.
       this.phoneDesktopSessions.clear();
+      // SEC-044: a new PIN must also end every live scoped dashboard session (dst_). `revokeAll`
+      // fires each family's onFamilyInvalidated listeners (closing open WS/SSE streams) and clears
+      // the token/family/tombstone maps — a stolen dst_ does not survive a PIN rotation.
+      this.dashboardSessionStore.revokeAll();
     }
     this.dashboardPinVersion = version;
+    return available;
   }
 
   private verifyDashboardOperatorSession(token: string | undefined): boolean {
-    this.syncDashboardPinVersion();
-    return this.dashboardOperatorSessions.verify(token);
+    return this.syncDashboardPinVersion()&&this.dashboardOperatorSessions.verify(token);
   }
 
   /**
@@ -528,6 +694,197 @@ export class AgentServer {
    * attention list and pushed to paired phones. Returns true only when the owner
    * can now see it, so the controller retries otherwise.
    */
+  /**
+   * The second-person notice (team-roles-and-access §3.10): at boot, hourly, and on a new sender,
+   * on the lease holder only. At most one pass a minute, however many senders arrive.
+   */
+  /** Rows arrived from a peer: end what they changed here, and re-check this machine's phones. */
+  private async afterTeamRows(touched: string[]): Promise<void> {
+    for (const ref of touched) {
+      try {
+        await this.teamConversationChange?.(ref, () => undefined);
+        this.mobilePairing?.teamLog()?.releaseAccess(ref);
+      } catch (err) {
+        // @silent-fallback-ok — reported; the spawn check reads the same confined list either way.
+        this.mobilePairing?.reportTeamFault('TeamAccess.endSession', err);
+      }
+    }
+    this.mobilePairing?.reconcileTeamPhones();
+  }
+
+  /**
+   * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
+   * Restarts this machine (a supervised, planned restart) when what is running is not yet on.
+   */
+  private async applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
+    config: InstarConfig;
+    liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
+    sessionManager: { memoryPrivacyStatus?(): { enabled?: boolean } | null | undefined };
+  }, by: string): Promise<LocalApply> {
+    const live = options.liveConfig;
+    if (!live?.get) throw new Error('team-switch-no-live-config');
+    let changed = false;
+    const ensure = (dotPath: string, on: boolean): void => {
+      if (on) return;
+      live.set(dotPath, true);
+      changed = true;
+    };
+    let running: boolean;
+    if (setting === 'memory-privacy') {
+      ensure('memoryPrivacy.enabled', live.get<unknown>('memoryPrivacy.enabled', undefined) === true);
+      running = options.sessionManager.memoryPrivacyStatus?.()?.enabled === true;
+    } else {
+      // App conversations need phone pairing on too; both are read as the gate reads them.
+      ensure('mobilePairing.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.enabled', undefined), options.config));
+      ensure('mobilePairing.native.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.enabled', undefined), options.config));
+      running = isMobileNativeEnabled(options.config);
+      if (setting === 'files') {
+        // Files in app conversations ride on app conversations; the media gate is read at boot.
+        ensure('mobilePairing.native.media.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.media.enabled', undefined), options.config));
+        running = isMobileMediaEnabled(options.config);
+      }
+    }
+    console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
+    if (running && !changed) return { changed: false, restarting: false };
+    if (!(await this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`))) throw new Error('team-switch-restart-unavailable');
+    return { changed, restarting: true };
+  }
+
+  /**
+   * Instar Documents sync (instar-document-viewer §5.1): pull pages of rows and blobs from every peer
+   * every PULL_INTERVAL_MS. Independent of team access, so owner-only documents replicate too.
+   */
+  private startDocumentPuller(options: Parameters<AgentServer['startTeamPuller']>[0]): void {
+    if (this.documentPuller) return;
+    const self = options.coordinator?.identity?.machineId;
+    if (!self || !options.resolvePeerUrls) return;
+    const call = async (peer: { machineId: string; url: string; kind: PeerEndpointKind }, route: string, body: unknown): Promise<globalThis.Response> => {
+      const key = options.coordinator!.managers!.identityManager!.loadSigningKey();
+      return poolPeerFetch(options.recordRopeResult, peer, route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(self, key, body) },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      });
+    };
+    this.documentPuller = new DocumentPuller(
+      () => (isDocumentsEnabled(options.config) ? this.openDocuments(options.config.stateDir)?.store ?? null : null),
+      () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+        machineId: peer.machineId,
+        fetchPage: async (have: Record<string, number>) => {
+          const r = await call(peer, '/api/documents/rows', { have });
+          if (!r.ok) throw new Error(`documents-rows-${r.status}`);
+          return await r.json();
+        },
+      })),
+    );
+    if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
+    this.documentPullTimer = setInterval(() => { void this.documentPuller?.tick(); }, PULL_INTERVAL_MS);
+    this.documentPullTimer.unref();
+  }
+
+  /** The regular exchange of access rows. Silent with no peers, so a one-machine agent sees nothing. */
+  private startTeamPuller(options: {
+    config: InstarConfig;
+    coordinator?: { enabled?: boolean; leaseObservedAt?(machineId: string): number | null; setLeaseHold?(hold: () => boolean): void; identity?: { machineId: string } | null; managers?: { identityManager?: { loadSigningKey(): string } } } | null;
+    resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: PeerEndpointKind }>;
+    recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
+    sessionManager: { applyConversationChange?<T>(ref: string, change: () => Promise<T> | T): Promise<T> };
+    mobileRoutes?: { start?: boolean };
+  }): void {
+    const svc = this.mobilePairing;
+    const self = options.coordinator?.identity?.machineId;
+    if (!svc || svc.teamPuller || !self || !options.resolvePeerUrls) return;
+    fs.mkdirSync(path.join(options.config.stateDir, TEAM_ACCESS_DIR), { recursive: true, mode: 0o700 });
+    this.teamConversationChange = (ref, change) => options.sessionManager.applyConversationChange!(ref, change);
+    const call = async (peer: { machineId: string; url: string; kind: PeerEndpointKind }, route: string, body: unknown): Promise<globalThis.Response> => {
+      const key = options.coordinator!.managers!.identityManager!.loadSigningKey();
+      return poolPeerFetch(options.recordRopeResult, peer, route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(self, key, body) },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      });
+    };
+    this.teamSwitchPeers = () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+      machineId: peer.machineId,
+      turnOn: async (setting: TeamSwitchSetting, requestedBy?: string | null): Promise<LocalApply> => {
+        const r = await call(peer, '/api/team-access/switch-on', { setting, ...(requestedBy ? { requestedBy } : {}) });
+        if (r.status === 404) throw new PeerLacksSwitchRoute(peer.machineId);
+        if (r.status === 400) throw new PeerRefusedSwitch(peer.machineId);
+        if (r.status === 500) throw new PeerSwitchFailed(`${peer.machineId} could not apply it`);
+        if (!r.ok) throw new Error(`team-switch-on-${r.status}`);
+        const body = await r.json() as { changed?: unknown; restarting?: unknown };
+        return { changed: body.changed === true, restarting: body.restarting === true };
+      },
+    }));
+    svc.teamPuller = new TeamAccessPuller({
+      log: () => svc.teamLog(),
+      peers: () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+        machineId: peer.machineId,
+        fetchRows: async (have, heads) => {
+          const r = await call(peer, '/api/team-access/rows', { have, heads });
+          if (r.status === 404) throw new PeerHasNoLog(peer.machineId);
+          if (!r.ok) throw new Error(`team-access-rows-${r.status}`);
+          return await r.json() as PeerRows;
+        },
+        pushRows: async (rows) => { await call(peer, '/api/team-access/push', { rows }); },
+      })),
+      leaseEvidenceAt: (id) => options.coordinator?.leaseObservedAt?.(id) ?? null,
+      afterIngest: (touched) => this.afterTeamRows(touched),
+      strictStaleness: () => options.config.mobilePairing?.team?.strictStaleness === true,
+      standingFile: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'peers.json'),
+      reportError: (err) => svc.reportTeamFault('TeamAccess.pull', err),
+    });
+    options.sleepWakeDetector?.on('wake', () => svc.teamPuller?.noteWake());
+    // With a team on, native off is below the floor, and a machine behind a reachable peer waits to catch up.
+    options.coordinator?.setLeaseHold?.(() => (svc.teamOn() || (svc.teamLog()?.mayHaveTeam() ?? false)) && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
+    if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
+    void svc.teamPuller.tick();
+    // Requests a machine missed (asleep, no address, an older build) are tried again on the same tick.
+    this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); void this.teamSwitchApplier?.retryPending(); }, PULL_INTERVAL_MS);
+    this.teamPullTimer.unref();
+  }
+
+  private startReachNotices(options: { config: InstarConfig; reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople; coordinator?: MultiMachineCoordinator; resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: import('./peerUrlGuard.js').PeerEndpointKind }>; meshSelfId?: string | null }): void {
+    const people = options.reachablePeople;
+    if (!people) return;
+    let last = 0;
+    const pass = (): void => {
+      const now = Date.now();
+      if (now - last < 60_000) return;
+      last = now;
+      void import('./teamPeople.js').then(({ runReachNotices }) => runReachNotices({
+        people, selfMachineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+        authToken: () => options.config.authToken, peers: () => options.resolvePeerUrls?.() ?? [],
+        peerUrlAllowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+        holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+        raise: (n) => this.raiseReachNotice(n),
+      }));
+    };
+    people.onNewSender = pass;
+    const boot = setTimeout(pass, 3 * 60_000); boot.unref();
+    const hourly = setInterval(pass, 60 * 60_000); hourly.unref();
+  }
+
+  /** With Telegram, an attention item keyed by condition; without, the local list and a push. */
+  private async raiseReachNotice(n: { conditionKey: string; title: string; text: string }): Promise<boolean> {
+    const id = `agent:${n.conditionKey}`;
+    if (!this.telegramAdapter) {
+      const stored = this.localAttention?.raise({ id, title: n.title, summary: n.text, description: n.text, priority: 'NORMAL', category: 'privacy', source: 'agent', sourceContext: 'team-people' }) ?? false;
+      if (stored) {
+        try {
+          this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'NORMAL' });
+        } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      }
+      return stored;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: n.conditionKey, title: n.title, summary: n.text, description: n.text, priority: 'NORMAL', category: 'privacy', sourceContext: 'team-people' });
+      return true;
+    } catch (err) {
+      console.warn(`[team-people] notice not raised, the next pass retries: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   private async raiseLockedSecurityItem(item: { key: string; title: string; body: string }): Promise<boolean> {
     if (!this.telegramAdapter) {
       // No Telegram: the item goes to the local attention list (GET /attention, the app)
@@ -564,6 +921,38 @@ export class AgentServer {
     }
   }
 
+  /**
+   * The owner's security notice for a new browser device (dashboard-conversations-browser-device
+   * §4.2 step 10), built like raiseLockedSecurityItem: a Telegram attention item when Telegram is
+   * configured, else the local attention list plus one push to owner phones. `localOnly` forces the
+   * local item and its push (the one-time fallback after 24 failed Telegram attempts). Raised at
+   * once: this is a security event for the owner, not an internal fault (Self-Heal Before Notify
+   * does not apply). True once raised; the caller retries otherwise and never drops it.
+   */
+  private async raiseBrowserNotice(item: { key: string; title: string; body: string }, opts: { localOnly: boolean }): Promise<boolean> {
+    const id = `agent:${item.key}`;
+    if (!this.telegramAdapter || opts.localOnly) {
+      const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', category: 'security', source: 'agent',
+        sourceContext: 'browser-device' }) ?? false;
+      if (!stored) return false;
+      try {
+        this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+      } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      return true;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: item.key,
+        title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+        category: 'security', sourceContext: 'browser-device' } as never);
+      return true;
+    } catch (error) {
+      // @silent-fallback-ok — not dropped: the caller (BrowserDeviceController.runEffects) retries with backoff and reports through DegradationReporter after 24 attempts
+      console.warn(`[instar] browser-device security notice could not be raised (${error instanceof Error ? error.message : String(error)}); it is retried`);
+      return false;
+    }
+  }
+
   private desktopLockedOsMajor: number | undefined;
   /** Removes the tunnel lifecycle listener that refreshes open desktop viewers. */
   private desktopTunnelListenerOff: (() => void) | null = null;
@@ -574,6 +963,10 @@ export class AgentServer {
   private poolLink?: import('./routes.js').RouteContext['poolLink'];
   private poolPollCache?: import('./PoolPollCache.js').PoolPollCache | null;
   private meshSelfId?: string;
+  /** sibling-machine-reach: stops the holdings cache's refresh timers on shutdown. */
+  private siblingHoldingsStop: (() => void) | null = null;
+  /** The pool registry, for the document-decisions peer gate (document-decisions §6). */
+  private docPoolRegistry: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | null = null;
   private deliverA2aToMachine?: (input: {
     machineId: string;
     targetAgent: string;
@@ -595,6 +988,15 @@ export class AgentServer {
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+    /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -614,6 +1016,13 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  /** The token ledger (read-only), for in-process consumers built after the server (the context budget's shadow runner). */
+  getTokenLedger(): TokenLedger | null { return this.tokenLedger; }
+  private usageLedger: UsageLedger | null = null;
+  private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private identityCheckLog: IdentityCheckLog | null = null;
+  private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
+  private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
@@ -626,6 +1035,13 @@ export class AgentServer {
    * (docs/specs/money-layer-operator-enable-surface.md).
    */
   private moneyLayerEnableSurface: MoneyLayerEnableSurface | null = null;
+  /** gemini-payg-metered-lane: the lane's server pieces (built on every machine; dark until go-live). */
+  private geminiPaygLane: GeminiPaygLane | null = null;
+  /** gemini-payg §6: the lane runtime the mesh handlers and secret sync read. */
+  meteredLaneRuntime: MeteredLaneRuntime | null = null;
+  /** gemini-payg §8: the go-live, release gate and reduce-only routes (built on every machine). */
+  geminiPaygGoLive: GeminiPaygGoLive | null = null;
+  private geminiPaygTimer: ReturnType<typeof setInterval> | null = null;
   private moneyLayerAudit: MoneyLayerAuditLog | null = null;
   /** Read EARLY — the operator flag is half of MLE-1 and decides whether the money layer constructs at all. */
   private moneyLayerEnableStore: MoneyLayerEnableStore | null = null;
@@ -640,6 +1056,8 @@ export class AgentServer {
   private meteredSpendGate: MeteredSpendGate | null = null;
   private spendPlanStore: RenderedPlanStore | null = null;
   private pinAttemptStore: PinAttemptStore | null = null;
+  /** SEC-135: sign-in's public PIN limits, handed to routes as ctx.publicPin. Set in the constructor. */
+  private publicPinHook: PublicPinHook | null = null;
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
   private spendAlertResolver: SpendAlertResolver | null = null;
   private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
@@ -652,6 +1070,9 @@ export class AgentServer {
   private providerCostReportStore: ProviderCostReportStore | null = null;
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** SEC-045: scheduled deadline enforcement for dst_ families — closes a past-deadline family's
+   *  streams without waiting for the next unlock. */
+  private dashboardSessionPruneTimer: ReturnType<typeof setInterval> | null = null;
   /** Feedback executor stop path while the executor is not built (triage dark): disarm open executor PRs. */
   private feedbackExecuteDisarmTimer: ReturnType<typeof setInterval> | null = null;
   /** Queue pace (docs/specs/queue-pace.md): tick-row sink, ledger, tuner and their timers. */
@@ -661,6 +1082,11 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Quota pacing (docs/specs/quota-pacing-forecast.md): the reading history, attached to the poller. */
+  private quotaPacingLedger: QuotaHistoryLedger | null = null;
+  private quotaPacingPoller: import('../core/QuotaPoller.js').QuotaPoller | null = null;
+  /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
+  private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
   private feedbackOwnerServing: (() => boolean) | null = null;
   private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
@@ -724,6 +1150,8 @@ export class AgentServer {
     service: FeedbackDrainService;
     store: FeedbackDrainStore;
     promotion: FeedbackConsumerPromotionStore;
+    /** The current consumer-promotion proposal (state + hashed batch), derived fresh on every call. */
+    promotionProposal: () => PromotionProposal;
     tickProxy: FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -805,6 +1233,11 @@ export class AgentServer {
   /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
   private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
   private maturationLadder: MaturationLadderService | null = null;
+  /** Instar Documents (docs/specs/instar-document-viewer.md): opened on first use while the switch is on. */
+  private documents: { store: DocumentStore; service: DocumentService } | null = null;
+  private documentPuller: DocumentPuller | null = null;
+  private documentRecheckTimer: ReturnType<typeof setInterval> | null = null;
+  private documentPullTimer: NodeJS.Timeout | null = null;
   private maturationLadderOn: (() => boolean) | null = null;
   private featureEvidenceLog: FeatureEvidenceLog | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
@@ -816,6 +1249,9 @@ export class AgentServer {
   private apprenticeshipMatrixAcceptance: MatrixAcceptanceStore | null = null;
   private apprenticeshipCycleStore: ApprenticeshipCycleStore | null = null;
   private apprenticeshipCycleSlaMonitor: ApprenticeshipCycleSlaMonitor | null = null;
+  /** native-conversation-any-machine-access §3f: the source's transcript copy pass (null: dark). */
+  private transcriptCheckpointTick: (() => Promise<void>) | null = null;
+  private transcriptCheckpointTimer: ReturnType<typeof setInterval> | null = null;
   private geminiCapacityEscalationMonitor: GeminiCapacityEscalationMonitor | null = null;
   // Burn-detection-and-self-heal system (six-phase umbrella spec at
   // docs/specs/token-burn-detection-and-self-heal.md). Lazy-initialised
@@ -846,6 +1282,11 @@ export class AgentServer {
   private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
+
+  /** Bind (or unbind) the running Skill Learning Sentinel; `/skills/learned*` answers 503 `skill-learning-disabled` until one is set. */
+  setSkillLearningSentinel(sentinel: SkillLearningSentinelLike | null): void {
+    this.skillLearningSentinel = sentinel;
+  }
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
@@ -961,6 +1402,7 @@ export class AgentServer {
   }
 
   constructor(options: {
+    plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
@@ -980,6 +1422,8 @@ export class AgentServer {
     publisher?: TelegraphService;
     viewer?: PrivateViewer;
     jobAnomalySendAutomationReply?: JobAnomalyPusherDeps['sendAutomationReply'];
+    /** Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md §3.4): posts one automation reply as the pairing-outcome producer. */
+    mobilePairingAutomationReply?: import('./pairingOutcomeNotice.js').AutomationPost;
     tunnel?: TunnelManager;
     /**
      * Multi-route own names (docs/specs/mobile-multi-route.md): inject the Tailscale CLI and the
@@ -987,6 +1431,8 @@ export class AgentServer {
      * never used and the loop is not started unless a test injects these.
      */
     mobileRoutes?: { tailscaleExec?: import('../core/MobileOwnNames.js').TailscaleExec | null; fetchFn?: typeof fetch; start?: boolean };
+    /** Same-network listener overrides for tests (identity A4): network observer, port, bind address, WSL. */
+    sameNetwork?: Pick<import('./sameNetworkListener.js').SameNetworkListenerDeps, 'observe' | 'port' | 'bindHost' | 'wsl' | 'announce' | 'machineName'>;
     evolution?: EvolutionManager;
     watchdog?: SessionWatchdog;
     triageNurse?: StallTriageNurse;
@@ -1002,6 +1448,7 @@ export class AgentServer {
     operationGate?: import('../core/ExternalOperationGate.js').ExternalOperationGate;
     sentinel?: import('../core/MessageSentinel.js').MessageSentinel;
     adaptiveTrust?: import('../core/AdaptiveTrust.js').AdaptiveTrust;
+    trustAccountPath?: import('../core/trustJourney/TrustJourneyRuntime.js').TrustAccountPathRuntime;
     memoryMonitor?: import('../monitoring/MemoryPressureMonitor.js').MemoryPressureMonitor;
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
@@ -1019,6 +1466,14 @@ export class AgentServer {
     /** Duplicate-session stand-down registry (docs/specs/duplicate-session-standdown.md).
      *  Absent ⇒ the feature is dark on this agent ⇒ every /standdown route 503s. */
     standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry;
+    /** context-budget-layered-summaries §10: the egress fold hold (outbound chokepoints refuse `fold-hold`). */
+    foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore;
+    /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel (null ⇒ GET /context-budget/sentinel is 503). */
+    contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel;
+    /** Context budget layer store + archive (§9.7); absent when `contextBudget.enabled` is off. */
+    contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers;
+    chunkBuilder?: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder;
+    h3Builder?: import('../monitoring/contextLayers/h3Builder.js').H3Builder;
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -1036,12 +1491,15 @@ export class AgentServer {
     accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
     credentialRepointing?: import('./routes.js').RouteContext['credentialRepointing'];
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
+    /** Meaning search over conversations: the embedding model (default: SemanticMemory's shared provider). Tests inject a fake. */
+    conversationEmbedder?: Embedder;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
     releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
+    localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
@@ -1168,10 +1626,25 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
+    conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
+    conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
+    conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime;
+    getConversationGraphDelegation?: import('./ConversationGraphDelegationManager.js').ConversationGraphDelegationGetter;
+    /** The read-marker store (mobile-unread-messages §3.3), built by server.ts on the replication path. */
+    readMarkers?: ConversationReadMarkerStore | null;
+    /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
+    readMarkersHlcNowMs?: () => number;
+    /** Conversation-list pins (docs/specs/conversation-list-pins.md), built by server.ts on the replication path. Absent ⇒ a local store is built here. */
+    conversationListPins?: ConversationListPinStore | null;
+    /** The owner's Conversations suggestion decisions on every machine (docs/specs/conversation-graph-suggestions-replicated-decisions.md), built by server.ts on the replication path. Absent ⇒ decisions stay on this machine. */
+    conversationGraphSuggestionDecisions?: import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore | null;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
     recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger;
+    /** Who can reach the agent (team-roles-and-access §3.10). */
+    reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople;
     /** Test seams for the idea pipeline: external I/O only. */
     ecosystemDeps?: import('../ecosystem/buildEcosystemIdeas.js').BuildEcosystemInput['overrides'];
     judgmentProvenance?: import('../core/JudgmentProvenanceLog.js').JudgmentProvenanceLog;
@@ -1208,7 +1681,9 @@ export class AgentServer {
     /** WS1.4 consent preflight against the machine that owns the run registry. */
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
-    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    kickWorkingSetOnMachine?: (machineId: string, topic: number | string) => void;
+    /** Unroutable-owner release: the recorded owner can never be routed to (revoked / unregistered + silent). */
+    isOwnerUnroutable?: (machineId: string) => boolean;
     /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
      *  machine as the topic's owner when a topic-bound session is started here,
      *  so a peer's router never treats the topic as unowned and starts a second
@@ -1225,6 +1700,12 @@ export class AgentServer {
     }>;
     /** Rope-health feedback for pool dials — see RouteContext.recordRopeResult. */
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    /** native-conversation-any-machine-access §3d: one signed read of a peer — see RouteContext.meshSignedRead. */
+    meshSignedRead?: (machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>;
+    /** native-conversation-any-machine-access §3f: transcript copies — see RouteContext.transcriptCopies. */
+    transcriptCopies?: import('./routes.js').RouteContext['transcriptCopies'];
+    /** §3f: the source's copy pass, run on the token-ledger poller's cadence. */
+    transcriptCheckpointTick?: () => Promise<void>;
     /**
      * a2a-single-agent-identity §1–§2: the multi-machine deps for the agent-identity runtime
      * (coherence detector, posture, reload lever, adoption status). Absent on a single
@@ -1378,10 +1859,13 @@ export class AgentServer {
      *  shared forward context — boot secret, standby fact, forwarder, counters.
      *  Absent ⇒ relay-send behaves exactly as before. */
     a2aRelayForward?: NonNullable<import('./routes.js').RouteContext['a2aRelayForward']>;
-    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+    threadlineReplyWaiters?: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null; routedFp?: string | null }>;
     /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md): the
      *  service behind POST /mcp/threadline. Mounted whenever Threadline runs. */
     threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService;
+    /** SEC-018: the shared owner-approval store/registry (same instances the MCP http service gets). */
+    ownerApprovedActionStore?: OwnerApprovedActionStore;
+    ownerApprovedActionPending?: PendingApprovalRegistry;
     /** Memory privacy: resolves session tokens at the auth layer. */
     memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacy;
     listenerManager?: import('../threadline/ListenerSessionManager.js').ListenerSessionManager;
@@ -1413,6 +1897,8 @@ export class AgentServer {
      *  A factory (not a pre-bound runner) so the route can wrap the request-built
      *  RealChannelDriver, sharing the gate's artifact store. Undefined when dark/unwired. */
     liveTestRunnerCtx?: LiveTestRunnerWiring;
+    /** Skill Learning Sentinel (skill-learning-sentinel §3.10) — server.ts binds it via `setSkillLearningSentinel()` right after construction (off the constructor line); the option remains for tests and embedders. */
+    skillLearningSentinel?: SkillLearningSentinelLike | null;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -1475,6 +1961,14 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1.7): GET /repos. */
+    ownedRepos?: () => import('./ownedRepoRoutes.js').OwnedRepoRouteDeps | null;
+    /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
+    ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
+    /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
+    workBoard?: () => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null;
+    workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null };
     /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
      *  GET /external-hog + the PIN-gated arm/disarm routes. */
     externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
@@ -1504,6 +1998,17 @@ export class AgentServer {
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+    /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+    ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
+    chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
+    /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
+    projectAppsRuntime?: () => import('./ProjectAppsRuntime.js').ProjectAppsRuntime | null;
+    /** Project apps part 2 serving (docs/specs/project-apps-sandbox.md §3.6-3.7): late-bound, null until storage provides a source. */
+    projectAppSandbox?: () => import('./ProjectAppSandbox.js').ProjectAppSandbox | null;
+    /** Project apps part 2 storage + approvals (docs/specs/project-apps-sandbox.md §3.2-3.4): late-bound, null where custom apps are off. */
+    projectAppCustom?: () => import('./ProjectAppCustomSource.js').ProjectAppCustomSource | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -1526,10 +2031,24 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.dashboardSessionStore = new DashboardSessionStore(
+      (this.config as { security?: { dashboardScopedToken?: Record<string, number> } }).security?.dashboardScopedToken,
+    );
+    setDashboardSessionFamilyLookup((token) => this.dashboardSessionStore.familyIdForToken(token));
+    // SEC-045: scheduled sweep so a dst_ family's streams close at its absolute deadline without
+    // waiting for the next unlock to run prune(). Cheap no-op on an empty store; unref'd so it never
+    // holds the event loop open.
+    this.dashboardSessionPruneTimer = setInterval(() => {
+      try { this.dashboardSessionStore.prune(); } catch { /* @silent-fallback-ok: housekeeping sweep is best-effort */ }
+    }, 60_000);
+    this.dashboardSessionPruneTimer.unref?.();
+    this.transcriptCheckpointTick = options.transcriptCheckpointTick ?? null;
+    this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
@@ -1540,21 +2059,59 @@ export class AgentServer {
     this.poolLink = options.poolLink ?? undefined;
     this.poolPollCache = options.poolPollCache ?? undefined;
     this.meshSelfId = options.meshSelfId ?? undefined;
+    this.docPoolRegistry = options.machinePoolRegistry ?? null;
     this.deliverA2aToMachine = options.deliverA2aToMachine;
     this.state = options.state;
     this.hookEventReceiver = options.hookEventReceiver ?? undefined;
     this.toneGate = options.messagingToneGate ?? null;
     this.app = express();
+    // SEC-118-R1: an error answer to a request whose body was never read closes the connection
+    // instead of draining the rest (mounted first so every refusal is covered).
+    this.app.use(closeUnreadBodyOnError());
+    // takeover-ready-pool R1 (boot claim safety): Instar's response marker on EVERY response,
+    // errors included, so a peer probing this machine can tell "this machine's Instar answered"
+    // from a tunnel edge or any other server. A fingerprint bound to the machine id, not the id.
+    {
+      let marker: string | null | undefined;
+      const markerFor = (): string | null => {
+        if (marker !== undefined && marker !== null) return marker;
+        const id = options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null;
+        marker = id ? instarMachineMarker(id) : null;
+        return marker;
+      };
+      this.app.use((_req, res, next) => {
+        const m = markerFor();
+        if (m) res.setHeader(INSTAR_MACHINE_HEADER, m);
+        next();
+      });
+    }
 
     // Middleware
     // Claim observation has a much smaller privacy/cost boundary than the
     // general API. Parse it under 96 KiB before the broad server parser.
     // Mobile device keys sign the exact request bytes: every JSON parser keeps them (req.rawBody).
     const keepRawBody = (req: unknown, _res: unknown, buf: Buffer) => { (req as { rawBody?: Buffer }).rawBody = buf; };
-    this.app.use('/completion-claim/observe', express.json({ limit: '96kb', verify: keepRawBody }));
+    // SEC-103: one credential check (before any body is read) for every parser above 64 KB.
+    const bodyBudgetDeps: BodyBudgetDeps = {
+      authToken: () => this.config.authToken,
+      dashboardSessionValid: (token) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      memorySessionValid: options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) !== null : undefined,
+      activeDevice: (id) => this.mobilePairing?.enabled() === true && this.mobilePairing.devices.get(id)?.status === 'active',
+      // SEC-118: a device id unlocks the large budget only on a device route that takes a body.
+      deviceRouteTakesBody: (method, reqPath) => deviceRouteTakesBody(method, reqPath),
+      activeMachine: (id) => this.machineRouteContext?.authDeps.identityManager.loadRegistry().machines[id]?.status === 'active',
+      selfMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? null,
+      verify: keepRawBody,
+    };
+    this.app.use('/completion-claim/observe', boundedBody(96 * 1024, express.json({ limit: '96kb', verify: keepRawBody })));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
-    this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    this.app.use('/mcp/threadline', boundedBody(256 * 1024, express.json({ limit: '256kb' })));
+    // PostCompact record route (context-budget-layered-summaries §14 body cap):
+    // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
+    this.app.use('/hooks/post-compact', credentialAwareJsonParser({ ...bodyBudgetDeps, verify: undefined }, 2 * 1024 * 1024));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
@@ -1563,15 +2120,45 @@ export class AgentServer {
     this.nativeHookIngest = new NativeHookEventIngest({ getAuthToken: () => this.config.authToken });
     this.app.use(NATIVE_HOOK_EVENTS_PATH, this.nativeHookIngest.admissionGuard(), this.nativeHookIngest.bodyParser());
     // Public pairing redeem (docs/specs/mobile-pairing-link.md): a tiny body, parsed first.
-    this.app.use('/mobile/pairing-codes/redeem', express.json({ limit: '4kb', verify: keepRawBody }));
+    this.app.use('/mobile/pairing-codes/redeem', boundedBody(4 * 1024, express.json({ limit: '4kb', verify: keepRawBody })));
+    // The Mac app's first owner device (docs/specs/mac-app-creates-agent.md §A): public, so a tiny body.
+    this.app.use('/mobile/local-owner-device', boundedBody(4 * 1024, express.json({ limit: '4kb' })));
+    // Public organization routes (org-members-and-keepers §A, §D): small bodies only.
+    this.app.use('/org/checkin', boundedBody(4 * 1024, express.json({ limit: '4kb' })));
+    this.app.use('/org/pack/propose', boundedBody(80 * 1024, express.json({ limit: '80kb' })));
+    // A recovery copy at its limit (org-recovery-copy §A); raw body kept for the device signature.
+    this.app.use('/mobile/org/recover', credentialAwareJsonParser(bodyBudgetDeps, 32 * 1024 * 1024));
     // Media chunks (mobile-native-chat-media §4.10): the signature covers the raw chunk bytes.
-    this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
+    this.app.use('/mobile/media/uploads', boundedBody(1024 * 1024, express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }), 'application/octet-stream'));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
-    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
-    this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
+    this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, boundedBody(8 * 1024, express.text({ type: 'text/plain', limit: '8kb' }), 'text/plain'));
+    // Graph peer storage ingress has independent vault credentials and member
+    // signatures, admitted before reading a separately bounded transport body.
+    if (options.conversationGraphReplicationRuntime) this.app.use('/internal/conversation-graph',
+      options.conversationGraphReplicationRuntime.admissionGuard(), express.json({limit:'4mb'}), options.conversationGraphReplicationRuntime.router);
+    if(options.conversationGraphDefault){
+      const owned=options.conversationGraphDefault;
+      this.app.use('/internal/conversation-graph-bootstrap',owned.admissionGuard(),express.json({limit:'256kb'}));this.app.use(owned.router);
+      if(!options.conversationGraphReplicationRuntime)this.app.use('/internal/conversation-graph',(req,res,next)=>{
+        const runtime=owned.runtime;if(!runtime)return void res.status(503).json({code:'graph-peer-initialization-pending'});
+        runtime.admissionGuard()(req,res,()=>express.json({limit:'4mb'})(req,res,()=>runtime.router(req,res,next)));
+      });
+    }
+    // SEC-103: the general parser reads 12 MB only for a caller with a credential it can check
+    // before the body; a public peer route gets 2 MB, anyone else 64 KB (src/server/bodyBudget.ts).
+    this.app.use(credentialAwareJsonParser(bodyBudgetDeps));
+    this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
+    // Project app wrapper + frame (project-apps-sandbox §3.6): the request's own origin, only when it is
+    // one of this agent's known addresses (its own port locally, the tunnel, the named tunnel host,
+    // own Tailscale/Cloudflare names). dashboardSecurityHeaders reads it from app.locals.
+    this.projectAppOriginDeps = {
+      knownHttpsHosts: () => [projectAppHostOf(options.tunnel?.url ?? null), options.config.tunnel?.hostname ?? null],
+      acceptsOwnName: (host: string) => this.mobilePairing?.ownNames?.accepts(host) === true,
+    };
+    this.app.locals.projectAppOrigin = (req: Request) => resolveProjectAppOrigin(req, this.projectAppOriginDeps);
     // Dashboard security headers — set before static serving so they apply to all dashboard responses
     this.app.use(dashboardSecurityHeaders);
 
@@ -1637,12 +2224,151 @@ export class AgentServer {
     // generated after AgentServer construction (first-boot timing issue).
     // Config values are checked at request time via this.config which may be
     // updated by LiveConfig/PostUpdateMigrator after construction.
-    const pinAttempts = new Map<string, { count: number; resetAt: number }>();
-    const MAX_ATTEMPTS = 5;
-    const WINDOW_MS = 5 * 60 * 1000; // 5-minute window
     const GLOBAL_MAX_ATTEMPTS = GLOBAL_PIN_MAX_ATTEMPTS;
-    let globalPinAttempts = { count: 0, resetAt: 0 };
     const configRef = this.config;
+
+    // SEC-002: per-client throttle + known-browser (cookie) bypass + hard cap + owner alert.
+    // Ships ON; `security.pinThrottle.enabled: false` restores the legacy limiter exactly.
+    const pinThrottleCfg = configRef.security?.pinThrottle;
+    // identity-security-piece1c: the throttle is always on. The old off switch is ignored (nothing
+    // sets it) and reported once, so a stale setting can never weaken PIN protection.
+    const pinThrottle: PinThrottle = new PinThrottle(pinThrottleCfg);
+    if (pinThrottleCfg?.enabled === false) {
+      DegradationReporter.getInstance().report({ feature: 'DashboardPin.throttleSetting',
+        primary: 'PIN guessing limits as configured', fallback: 'security.pinThrottle.enabled: false is ignored; the limits stay on',
+        reason: 'the legacy off switch was found in this agent\'s config', impact: 'None: PIN guessing limits stay on.', internalOnly: true });
+    }
+    const markerTtlMs = pinThrottleCfg?.markerTtlMs ?? 30 * 24 * 60 * 60 * 1000;
+    const tunnelHostForPin = (): string | null => {
+      try { return options.tunnel?.url ? new URL(options.tunnel.url).host : null; } catch { return null; } // @silent-fallback-ok — an unparseable tunnel URL means there is no own-name tunnel host
+    };
+    const viaOwnNameForPin = (host: string): boolean => {
+      if (this.mobilePairing?.ownNames?.accepts(host)) return true;
+      const th = tunnelHostForPin();
+      return !!th && host === th;
+    };
+    const readPinMarker = (req: Request): string | null => {
+      if (!pinThrottle || !configRef.authToken) return null;
+      const raw = String(req.headers.cookie ?? '');
+      const hit = raw.split(';').map((c) => c.trim()).find((c) => c.startsWith(PIN_MARKER_COOKIE + '='));
+      if (!hit) return null;
+      // decodeURIComponent throws URIError on a malformed %-escape; a crafted cookie must never 500
+      // the unlock route. Treat any unparseable cookie as no marker (unmarked).
+      let value: string;
+      try { value = decodeURIComponent(hit.slice(PIN_MARKER_COOKIE.length + 1)); } catch { return null; } // @silent-fallback-ok — a malformed cookie is treated as no marker, never a 500
+      return verifyPinMarker(configRef.authToken, value, Date.now());
+    };
+
+    // identity-security-piece1c: the public PIN budget, shared by sign-in and step-up (both are
+    // reachable without a bearer). Synchronous: admission, compare and charge happen with no await
+    // between them. One context per request; the route compares the PIN itself.
+    type PublicPinCtx = { ip: string; markerId: string | null; isLocalDirect: boolean; localUnmarked: boolean };
+    // Checked on the raw address, before normalizePinSource (which turns ::1 into a /64 key).
+    const isLoopbackSource = (a: string): boolean => a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.') || a === 'v6/0:0:0:0';
+    const publicPinContext = (req: Request): PublicPinCtx => {
+      const host = String(req.headers.host ?? '');
+      const isLocalDirect = ownLoopbackHost(req, host, configRef.port);
+      const raw = callerAddress(req, viaOwnNameForPin(host));
+      // A loopback request that is not the machine itself and carries no own-tunnel client header is
+      // unattributable (localtunnel, relays): charged to the global budget only, never to a shared key.
+      // A same-network arrival (identity A4) is never loopback; its address is already rewritten to sn:<addr>.
+      const ip = mayBeLocalArrival(req) && !isLocalDirect && isLoopbackSource(raw) ? UNATTRIBUTED_PIN_SOURCE : normalizePinSource(raw);
+      const markerId = readPinMarker(req);
+      return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
+    };
+    // SEC-135: admission, failure and success are decided here once and shared by sign-in, step-up
+    // and the confirm-page verifier (ctx.publicPin.verify), so the limits cannot drift apart.
+    // Sign-in and step-up render their own answers (publicPinAdmit); the confirm route renders its own.
+    type PublicPinAdmission = { ok: true } | { ok: false; limit: 'local' | 'throttle' | 'durable'; retryAfterSeconds: number };
+    const publicPinAdmission = (c: PublicPinCtx, now: number): PublicPinAdmission => {
+      if (c.localUnmarked && localPinBlocked(now)) return { ok: false, limit: 'local', retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000) };
+      if (c.isLocalDirect && !c.markerId) return { ok: true };
+      const decision = pinThrottle.consult(c.ip, c.markerId, now);
+      if (!decision.allow) return { ok: false, limit: 'throttle', retryAfterSeconds: decision.retryAfterSeconds as number };
+      if (!c.isLocalDirect && !c.markerId) {
+        // Durable cross-restart backstops, never applied to a known browser: the real client's own
+        // budget, and the shared unmarked budget (a restart no longer resets it).
+        if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
+          return { ok: false, limit: 'durable', retryAfterSeconds: this.pinAttemptStore?.windowSeconds ?? 300 };
+        }
+      }
+      return { ok: true };
+    };
+    /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
+    const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
+      const admission = publicPinAdmission(c, now);
+      if (admission.ok) return true;
+      if (admission.limit === 'local') {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: admission.retryAfterSeconds,
+        });
+      } else if (admission.limit === 'throttle') {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: admission.retryAfterSeconds });
+      } else {
+        res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
+          ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
+          : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
+      }
+      return false;
+    };
+    /**
+     * Charge one wrong PIN. Every durable key it counts against (the caller's class budget plus any
+     * `extra` key, e.g. an approval link's per-request key) is written in ONE store write. Returns
+     * each charged key's attempts remaining (empty when there is no store).
+     */
+    const publicPinFailure = (c: PublicPinCtx, now: number, extra: ReadonlyArray<{ key: string; max?: number }> = []): Map<string, number> => {
+      const keys: Array<{ key: string; max?: number }> = [];
+      let bruteForceAlert = false;
+      if (!c.isLocalDirect || c.markerId) {
+        bruteForceAlert = !!pinThrottle.recordFailure(c.ip, c.markerId, now).alert;
+        if (!c.isLocalDirect && !c.markerId) {
+          if (c.ip) keys.push({ key: c.ip });
+          keys.push({ key: GLOBAL_PIN_KEY, max: GLOBAL_MAX_ATTEMPTS });
+        }
+      }
+      if (c.localUnmarked && this.pinAttemptStore) keys.push({ key: LOCAL_PIN_KEY, max: LOCAL_PIN_MAX_FAILURES });
+      keys.push(...extra);
+      const remaining = this.pinAttemptStore ? this.pinAttemptStore.recordFailures(keys) : new Map<string, number>();
+      if (bruteForceAlert) {
+        // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
+        DegradationReporter.getInstance().report({
+          feature: 'DashboardPin.bruteForce',
+          primary: 'An attack on the dashboard PIN is under way',
+          fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
+          reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
+          impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
+        });
+      }
+      const localCapReached = c.localUnmarked && (this.pinAttemptStore ? (remaining.get(LOCAL_PIN_KEY) ?? 1) <= 0 : recordLocalPinFailureInMemory(now));
+      if (localCapReached && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+        lastLocalPinAlertAt = now;
+        DegradationReporter.getInstance().report({
+          feature: 'DashboardPin.localGuessing',
+          primary: 'Repeated wrong PINs are being entered from this machine itself',
+          fallback: 'PIN entry from this machine is paused for a few minutes; a browser you have unlocked before still works',
+          reason: `${LOCAL_PIN_MAX_FAILURES} wrong PINs from an unknown local caller within the window`,
+          impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
+        });
+      }
+      return remaining;
+    };
+    /** A correct PIN clears only this source's own counters, never a shared budget. */
+    const publicPinSuccess = (c: PublicPinCtx): void => {
+      pinThrottle.recordSuccess(c.ip, c.markerId);
+      if (c.ip) this.pinAttemptStore?.recordSuccess(c.ip);
+    };
+    /**
+     * The PIN sign-in compares against, read the way sign-in reads it (the durable owner credential
+     * when that policy is in use, else the config). 'unreadable' when the credential read failed.
+     */
+    const readCurrentPin = (): string | null | 'unreadable' => {
+      if (this.usesDurableGraphOwnerPolicy()) {
+        try { configRef.dashboardPin = readConversationGraphOwnerCredential({ stateDir: this.config.stateDir, forceFileKey: this.config.secrets?.forceFileKey }) ?? undefined; }
+        catch { return 'unreadable'; } // @silent-fallback-ok — the caller answers 503; nothing is compared
+      }
+      return configRef.dashboardPin || null;
+    };
 
     // One rule for whether this connection may unlock, shared by the unlock route
     // and the check the console makes BEFORE it shows a PIN box (a box the server
@@ -1660,35 +2386,97 @@ export class AgentServer {
       });
     });
 
+    // SEC-070 local-guess budget: durable when the attempt store is available, else in memory.
+    const LOCAL_PIN_KEY = 'local-direct-unmarked';
+    const LOCAL_PIN_MAX_FAILURES = 10;
+    const LOCAL_PIN_WINDOW_MS = 5 * 60 * 1000;
+    let localPinMem = { count: 0, resetAt: 0 };
+    const localPinBlocked = (now: number): boolean => {
+      if (this.pinAttemptStore) return this.pinAttemptStore.blocked(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES);
+      return now <= localPinMem.resetAt && localPinMem.count >= LOCAL_PIN_MAX_FAILURES;
+    };
+    /** Records one local failure when there is no durable store; true when it reached the cap (alert once). */
+    const recordLocalPinFailureInMemory = (now: number): boolean => {
+      if (now > localPinMem.resetAt) localPinMem = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS };
+      localPinMem.count++;
+      return localPinMem.count === LOCAL_PIN_MAX_FAILURES;
+    };
+    const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+    let lastLocalPinAlertAt = -Infinity;
+
+    // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §1-2): one synchronous verifier for the
+    // recommended-services confirm page, on sign-in's own limits. No await anywhere in it, so parallel
+    // requests (sign-in or confirm) cannot pass a limit together.
+    const requestKeyMem = new Map<string, { count: number; resetAt: number }>();
+    const memRequestBlocked = (key: string, now: number): boolean => {
+      const e = requestKeyMem.get(key);
+      if (e && now > e.resetAt) { requestKeyMem.delete(key); return false; }
+      return !!e && e.count >= PUBLIC_PIN_REQUEST_MAX;
+    };
+    const memRequestCharge = (key: string, now: number): void => {
+      let e = requestKeyMem.get(key);
+      if (!e || now > e.resetAt) { e = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS }; requestKeyMem.set(key, e); }
+      e.count++;
+      if (requestKeyMem.size > 4096) { const oldest = requestKeyMem.keys().next().value; if (oldest !== undefined) requestKeyMem.delete(oldest); }
+    };
+    /** Whether the strangers' shared aggregate is used up right now (read-only). */
+    const publicAggregateFull = (now: number): boolean =>
+      pinThrottle.consult(UNATTRIBUTED_PIN_SOURCE, null, now).reason === 'global-cap'
+      || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS) === true;
+    const publicPinVerify = (req: Request, candidate: unknown, opts: { requestKey: string; alertKey?: string }): PublicPinVerdict => {
+      if (unlockRefusedHere(req)) return { ok: false, reason: 'insecure-connection' };
+      const current = readCurrentPin();
+      if (current === 'unreadable' || !current) return { ok: false, reason: 'unavailable' };
+      const now = Date.now();
+      const c = publicPinContext(req);
+      const path: PublicPinPath = c.isLocalDirect && !c.markerId ? 'local' : c.markerId ? 'marker' : 'public';
+      const store = this.pinAttemptStore;
+      const admission = publicPinAdmission(c, now);
+      if (!admission.ok) return { ok: false, reason: 'paused', path, retryAfterSeconds: admission.retryAfterSeconds, aggregateFull: publicAggregateFull(now) };
+      // The per-request key is enforced on all three paths, durable when the store is there, else in memory.
+      if (store ? store.blocked(opts.requestKey, PUBLIC_PIN_REQUEST_MAX) : memRequestBlocked(opts.requestKey, now)) {
+        return { ok: false, reason: 'paused', path, retryAfterSeconds: store?.windowSeconds ?? Math.ceil(LOCAL_PIN_WINDOW_MS / 1000), aggregateFull: publicAggregateFull(now) };
+      }
+      if (typeof candidate !== 'string' || !candidate) return { ok: false, reason: 'missing', path };
+      const ha = createHash('sha256').update(candidate).digest();
+      const hb = createHash('sha256').update(current).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        const extra: Array<{ key: string; max?: number }> = [{ key: opts.requestKey, max: PUBLIC_PIN_REQUEST_MAX }];
+        // Stranger guesses feed the throttle's brute-force alert; marked and local ones feed the alert-only count.
+        const countAlert = path !== 'public' && !!opts.alertKey && !!store && !store.blocked(opts.alertKey, GLOBAL_MAX_ATTEMPTS);
+        if (countAlert) extra.push({ key: opts.alertKey as string, max: GLOBAL_MAX_ATTEMPTS });
+        const remaining = publicPinFailure(c, now, store ? extra : []);
+        if (!store) memRequestCharge(opts.requestKey, now);
+        if (countAlert && remaining.get(opts.alertKey as string) === 0) {
+          DegradationReporter.getInstance().report({ feature: 'DashboardPin.approvalLinkGuessing',
+            primary: 'Wrong PINs are being entered on approval links', fallback: 'Each approval link allows only a few wrong PINs',
+            reason: `${GLOBAL_MAX_ATTEMPTS} wrong PINs on approval links within the window`,
+            impact: 'If this was not you, someone may be trying to guess your PIN through an approval link.' });
+        }
+        return { ok: false, reason: 'wrong-pin', path, retryAfterSeconds: 0, aggregateFull: publicAggregateFull(now) };
+      }
+      const aggregateFull = publicAggregateFull(now);
+      publicPinSuccess(c);
+      return { ok: true, path, aggregateFull };
+    };
+    this.publicPinHook = { context: publicPinContext, verify: publicPinVerify };
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
         return;
       }
+      if (readCurrentPin() === 'unreadable') return void res.status(503).json({error:'PIN authentication is temporarily unavailable.'});
       if (!configRef.dashboardPin || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
       }
 
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-
-      // Rate limit by IP
       const now = Date.now();
-      if (now > globalPinAttempts.resetAt) globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      if (globalPinAttempts.count >= GLOBAL_MAX_ATTEMPTS
-        || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.' });
-        return;
-      }
-      let entry = pinAttempts.get(ip);
-      if (entry && now > entry.resetAt) {
-        pinAttempts.delete(ip);
-        entry = undefined;
-      }
-      if ((entry && entry.count >= MAX_ATTEMPTS) || this.pinAttemptStore?.blocked(ip)) {
-        res.status(429).json({ error: 'Too many attempts. Try again later.' });
-        return;
-      }
+      // identity-security-piece1c: the public PIN budget (shared with step-up). Admission first, so
+      // a refused attempt is never compared.
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
 
       const { pin } = req.body;
       if (!pin || typeof pin !== 'string') {
@@ -1699,41 +2487,148 @@ export class AgentServer {
       const ha = createHash('sha256').update(pin).digest();
       const hb = createHash('sha256').update(configRef.dashboardPin).digest();
       if (!timingSafeEqual(ha, hb)) {
-        // Track failed attempt
-        if (!entry) {
-          entry = { count: 0, resetAt: now + WINDOW_MS };
-          pinAttempts.set(ip, entry);
-        }
-        entry.count++;
-        globalPinAttempts.count++;
-        const remaining = this.pinAttemptStore?.recordFailure(ip) ?? (MAX_ATTEMPTS - entry.count);
-        this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
-        res.status(403).json({
-          error: 'Incorrect PIN',
-          attemptsRemaining: remaining,
-        });
+        publicPinFailure(pinCtx, now);
+        res.status(403).json({ error: 'Incorrect PIN' });
         return;
       }
 
-      pinAttempts.delete(ip);
-      this.pinAttemptStore?.recordSuccess(ip);
-      globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
-      this.pinAttemptStore?.recordSuccess(GLOBAL_PIN_KEY);
+      if(this.usesDurableGraphOwnerPolicy()){
+        try{
+          const policy=initializeConversationGraphOwnerPolicy({stateDir:this.config.stateDir,
+            liveConfig:options.liveConfig instanceof LiveConfig?options.liveConfig:new LiveConfig(this.config.stateDir),forceFileKey:this.config.secrets?.forceFileKey});
+          if(!policy||!timingSafeEqual(createHash('sha256').update(pin).digest(),createHash('sha256').update(policy.pin).digest())){
+            this.dashboardOperatorSessions.clear();return void res.status(403).json({error:'PIN authorization changed. Please unlock again.'});
+          }
+          configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
+        }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
+      }
+      // The local count and the global budget are NOT reset by a success: an owner's unlock must not
+      // hand a guessing program a fresh budget.
+      publicPinSuccess(pinCtx);
+      // Set the prior-unlock marker so this browser is a known browser next time (bypasses the
+      // stranger cap). Signed, httpOnly, Secure, SameSite=Strict, agent-bound, expiring.
+      if (configRef.authToken) {
+        const marker = issuePinMarker(configRef.authToken, now, markerTtlMs);
+        res.cookie?.(PIN_MARKER_COOKIE, marker, pinMarkerCookieOptions(markerTtlMs));
+      }
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
       // for explicitly operator-gated actions.
-      this.syncDashboardPinVersion();
+      if(!this.syncDashboardPinVersion())return void res.status(503).json({error:'PIN authorization is temporarily unavailable.'});
       const operatorSession = this.dashboardOperatorSessions.issue();
+      // SEC-002b: when the scoped-token feature is on, hand the browser a short-lived, revocable
+      // SESSION token (dst_) instead of the permanent master token. Dark by default → returns the
+      // master exactly as before (the single-switch rollback and back-compat).
+      const scopedEnabled = (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } })
+        .security?.dashboardScopedToken?.enabled === true;
+      const scoped = scopedEnabled ? this.dashboardSessionStore.issue() : null;
       res.json({
-        token: configRef.authToken,
+        token: scoped ? scoped.token : configRef.authToken,
+        sessionExpiresAt: scoped?.expiresAt,
+        sessionFamilyExpiresAt: scoped?.familyExpiresAt,
         operatorSessionToken: operatorSession.token,
         operatorSessionExpiresAt: operatorSession.expiresAt,
       });
     });
 
+    // SEC-002b dashboard session lifecycle (docs/specs/dashboard-scoped-session-token.md §4). All
+    // three are GATED behind the enabled flag so the feature adds NO surface when it ships dark
+    // (a true single-switch no-op). When enabled they self-auth: the caller's own dst_ token for
+    // refresh/revoke, and a live-PIN check (through the SAME brute-force limiter as /dashboard/unlock)
+    // for step-up.
+    const scopedTokenOn = (): boolean =>
+      (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true;
+    this.app.post('/dashboard/session/refresh', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      const next = token.startsWith('dst_') ? this.dashboardSessionStore.refresh(token) : null;
+      if (!next) { res.status(401).json({ error: 'Session expired. Unlock again with your PIN.' }); return; }
+      res.json({ token: next.token, sessionExpiresAt: next.expiresAt, sessionFamilyExpiresAt: next.familyExpiresAt });
+    });
+    this.app.post('/dashboard/session/revoke', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      if (token.startsWith('dst_')) this.dashboardSessionStore.revokeFamily(token);
+      res.json({ revoked: true });
+    });
+    // SEC-045: explicit owner "sign out all dashboard sessions on THIS agent" control. Scope is this
+    // agent-server only (not a fleet-wide "everywhere" — PIN rotation is the fleet-wide path). Gated
+    // identically to the credential/step-up surface: the MASTER token, OR a dst_ session that has
+    // proven a FRESH PIN step-up — so a plain stolen dst_ cannot sign everyone out. Dark-gated (404
+    // when the feature is off), like the sibling session endpoints.
+    this.app.post('/dashboard/session/revoke-all', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      const header = String(req.headers.authorization ?? '');
+      const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+      let masterOk = false;
+      if (configRef.authToken && token.length === configRef.authToken.length && token.length > 0) {
+        try {
+          masterOk = timingSafeEqual(
+            createHash('sha256').update(token).digest(),
+            createHash('sha256').update(configRef.authToken).digest(),
+          );
+        } catch { masterOk = false; }
+      }
+      const stepUpOk = token.startsWith('dst_')
+        && this.dashboardSessionStore.verify(token)
+        && this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined);
+      if (!masterOk && !stepUpOk) {
+        res.status(403).json({ error: 'step-up-required', reason: 'Re-enter your PIN to sign out all dashboard sessions on this agent.' });
+        return;
+      }
+      this.dashboardSessionStore.revokeAll();
+      res.json({ revoked: true, scope: 'this-agent' });
+    });
+    // Fresh-PIN step-up for credential operations. It verifies the LIVE PIN, so it MUST share the
+    // unlock route's brute-force limiter — otherwise it is an unthrottled PIN oracle. It uses the
+    // SAME public budget helpers as /dashboard/unlock (identity-security-piece1c), and is gated
+    // behind the enabled flag.
+    this.app.post('/dashboard/session/step-up', (req: Request, res: Response) => {
+      if (!scopedTokenOn()) { res.status(404).json({ error: 'Not found' }); return; }
+      if (unlockRefusedHere(req)) { res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' }); return; }
+      if (!configRef.dashboardPin) { res.status(503).json({ error: 'PIN authentication not yet available.' }); return; }
+      // identity-security-piece1c: step-up is reachable without a bearer (the dashboard calls it with
+      // its cookie only), so it is on the public budget, exactly as sign-in: the owner's browser is
+      // judged on its own remembered-browser cookie and strangers cannot drain it.
+      const now = Date.now();
+      const pinCtx = publicPinContext(req);
+      if (!publicPinAdmit(pinCtx, res, now)) return;
+      const { pin } = req.body ?? {};
+      if (!pin || typeof pin !== 'string') { res.status(400).json({ error: 'Missing PIN' }); return; }
+      const ha = createHash('sha256').update(pin).digest();
+      const hb = createHash('sha256').update(configRef.dashboardPin).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        publicPinFailure(pinCtx, now);
+        res.status(403).json({ error: 'Incorrect PIN' });
+        return;
+      }
+      publicPinSuccess(pinCtx);
+      const proof = this.dashboardStepUpSessions.issue();
+      res.json({ stepUpToken: proof.token, stepUpExpiresAt: proof.expiresAt });
+    });
+
+    // The stand-in owner chat (docs/specs/throwaway-owner-chat.md): built only for a home that asked
+    // for it or ran it before; live only while its four conditions hold. Never assigned to options.telegram.
+    const standIn = this.config.stateDir && this.config.projectDir ? ThrowawayOwnerChat.forBoot({
+      projectDir: this.config.projectDir,
+      stateDir: this.config.stateDir,
+      adapterStarted: () => !!(options.telegram || options.slack || options.whatsapp || options.imessage),
+      log: (line) => console.log(line),
+    }) : null;
+    this.throwawayOwnerChat = standIn;
+    // The owner's private chat the approval flows use: Telegram when configured, else a live stand-in.
+    const ownerChat = (): OwnerChatSurface | null => options.telegram ?? (standIn && !standIn.isOff() ? standIn : null);
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
+      // Team phones need the sandbox on (§3.6).
+      teamGate: () => {
+        const status = options.sessionManager.memoryPrivacyStatus?.();
+        if (!status?.enabled || !status.sandboxReady) return 'memory-privacy-required';
+        return 'ok';
+      },
       config: this.config,
       stateDir: options.config.stateDir,
       tunnel: () => options.tunnel,
@@ -1757,28 +2652,52 @@ export class AgentServer {
           feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
         }),
+      // A new browser's owner notice (dashboard-conversations-browser-device §4.2 step 10).
+      raiseBrowserNotice: (item, opts) => this.raiseBrowserNotice(item, opts),
       ownerDM: async (text, declineData, approveData) => {
-        if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, [
+        const chat = ownerChat();
+        if (!chat) return null;
+        return chat.sendOwnerDMWithButton(text, [
           ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
           ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
-        ]);
+        ], { reportHeld: true });
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
-      telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // The throwaway stand-in counts as an owner chat while live; it has no owner user id (telegramOwnerId stays Telegram's).
+      telegramOwnerPresent: () => (options.telegram ? !!options.telegram.getOwnerUserId?.() : standIn?.ownerChatPresent() === true),
       // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
       readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
+      // Permanent agent links (docs/specs/permanent-agent-links.md): off unless `agentLinks.enabled` is true, read live.
+      agentLinksEnabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
       // People and roles: the Telegram owner id decides which registry profile is the owner.
       telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
       // The same namespace the app conversation store stamps (people and roles §5).
       peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      leaseFreshness: () => options.coordinator?.enabled ? options.coordinator.leaseFreshness() : null,
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
         ? options.mobileRoutes.tailscaleExec ?? null
         : (process.env.VITEST ? null : defaultTailscaleExec(wslWindowsHostAddress() !== null)),
       isWsl: wslWindowsHostAddress() !== null,
       ...(options.mobileRoutes?.fetchFn ? { fetchFn: options.mobileRoutes.fetchFn } : {}),
+      // Pairing outcome notice (docs/specs/mobile-pairing-outcome-notice.md): a line in the topic that asked for the link.
+      ...(options.mobilePairingAutomationReply ? { outcomeNotice: createPairingOutcomeNotice({
+        post: options.mobilePairingAutomationReply,
+        port: options.config.port,
+        authToken: options.config.authToken ?? '',
+        available: () => !!options.telegram && !!options.telegramOrigin?.service,
+        recentOperatorInbound: (topicId, withinMs) => options.telegram?.selectivity?.recentOperatorInbound(topicId, withinMs) ?? null,
+        upsertAttention: async (item) => {
+          if (!options.telegram) throw new Error('Telegram not configured');
+          return options.telegram.upsertAttentionItem({
+            id: item.id, title: item.title, summary: item.summary, description: item.summary, priority: 'NORMAL',
+            category: 'mobile-pairing', sourceContext: 'mobile-pairing-outcome', contextTopicIds: [item.topicId],
+          } as Parameters<NonNullable<typeof options.telegram>['upsertAttentionItem']>[0]);
+        },
+      }) } : {}),
       raiseAttention: (title, body) => {
         void options.telegram?.createAttentionItem({
           id: 'mobile-pairing:paused', title, summary: body, description: body, priority: 'HIGH', category: 'security', sourceContext: 'mobile-pairing',
@@ -1788,8 +2707,38 @@ export class AgentServer {
       },
     });
     mountPublicMobilePairingRoutes(this.app, this.mobilePairing);
+    // The same-network listener for a first phone at home (identity A4): built here, closed until
+    // the owner asks at the computer; `mobilePairing.sameNetwork.enabled: false` is its kill switch.
+    if ((this.config.mobilePairing as { sameNetwork?: { enabled?: unknown } } | undefined)?.sameNetwork?.enabled !== false && this.config.stateDir) {
+      const svc = this.mobilePairing;
+      const listener: SameNetworkListener = new SameNetworkListener({
+        stateDir: this.config.stateDir,
+        agentName: String(this.config.projectName ?? 'agent'),
+        mainPort: this.config.port,
+        app: this.app,
+        gate: sameNetworkGate({
+          device: (id) => svc.devices.get(id),
+          deviceRoute: (method, pathNorm) => DEVICE_ALLOWLIST.some((r) => r.method === method && r.re.test(pathNorm)),
+          ownHost: () => (listener.listening() ? listener.host() : null),
+        }),
+        inUse: () => homeAddressInUse(svc),
+        ...(options.sameNetwork ?? {}),
+        reportDegradation: (what, err) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'serve the agent\'s home address for a phone on the same network',
+          fallback: 'the home address stays closed', reason: err instanceof Error ? err.message : String(err),
+          impact: 'A phone added at home cannot reach the agent until the address opens again.',
+        }),
+      });
+      svc.sameNetwork = listener;
+    }
+    // The published organization pack, read by joined agents' update checks (org-pack-and-join §B).
+    mountPublicOrgPackRoutes(this.app, options.config.stateDir);
     // Console sign-in from an owner phone: the public, single-use ticket redeem (mobile-console-device-signin §3.3).
-    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken);
+    mountConsoleTicketRedeemRoute(this.app, this.mobilePairing, () => configRef.authToken,
+      // SEC-046: when the dashboard scoped-session feature is on, the console redeem mints a scoped
+      // dst_ token (not the master), so this owner-phone sign-in path stays inside the scoped model.
+      () => ((this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        ? this.dashboardSessionStore.issue() : null));
     // Multi-route own names: the tailscale-serve boot step + the bounded probe loop (§4.1).
     if (this.mobilePairing.ownNames && (options.mobileRoutes?.start ?? !process.env.VITEST)) this.mobilePairing.ownNames.start();
     {
@@ -1809,30 +2758,63 @@ export class AgentServer {
         machineId: options.coordinator?.identity?.machineId ?? 'local',
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
-        mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
+        mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
+        mayDecideDocument: (deviceId, docId) => this.documentDecidePushAllowed(deviceId, docId),
+        receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
+        // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
+        badgeFor: (deviceId, conversationKey, messageId) => {
+          const u = this.conversationUnread;
+          if (!u || !u.enabled() || !isAppConversationKey(conversationKey)) return null;
+          const d = mp.devices.get(deviceId);
+          const person = d ? mp.personOfDevice(d) : null;
+          if (!person || !person.ok) return null;
+          const reader = u.resolveReader({ person, viaDevice: true });
+          return reader ? u.badgeFor(reader, messageId ? { conversationKey, messageId } : undefined) : null;
+        },
+        phoneStillCounts: (deviceId) => {
+          const d = mp.devices.get(deviceId);
+          return !!d && mp.personOfDevice(d).ok;
+        },
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
           const keyId = pushKeys.get('apns_key_id');
           const teamId = this.config.mobilePairing?.push?.teamId;
           return typeof keyPem === 'string' && typeof keyId === 'string' && typeof teamId === 'string' && teamId ? { keyPem, keyId, teamId } : null;
         },
+        // Android (docs/specs/mobile-android-app.md §2.3): the Firebase service-account key, read before each send.
+        fcmKey: () => pushKeys.get('fcm_service_account_json'),
+        // An approval notice reaches an Android phone only when it can approve: active owner phone with a presence key.
+        canApprove: (deviceId) => { const d = mp.devices.get(deviceId); return !!d?.presenceKey && activeOwnerPhone(mp, deviceId); },
         fanOut: (t) => fanOutPushTrigger(mp.pushPoolCtx, t),
         reportDegradation: (what, err) => DegradationReporter.getInstance().report({
-          feature: what, primary: 'send a push notification to a paired phone', fallback: 'no push for this event; the item is still in Telegram and the app',
+          feature: what, primary: 'send a push notification to a paired phone', fallback: "no push for this event; the item is still in the app and the agent's other channels",
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone notification was not sent.',
         }),
       });
       mp.push.start();
-      if (options.telegram) {
-        options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
-        options.telegram.mobileApproveHandler = (nonce) => {
-          const outcome = mp.approveByNonce(nonce);
-          return outcome === 'approved' ? { outcome, text: '' }
-            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? 'This pairing has already ended.' : APPROVE_REFUSAL[outcome].detail };
+      // Every owner-chat surface present gets the same Approve/Decline handlers: the adapter, and the
+      // throwaway stand-in whether live or shut off (its shut-off sweep presses Decline through them).
+      for (const chat of [options.telegram, standIn].filter((c): c is NonNullable<typeof c> => !!c) as OwnerChatSurface[]) {
+        // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
+        // read before the nonce is consumed.
+        chat.mobileDeclineHandler = (nonce) => {
+          const client = mp.nonceClient(nonce);
+          return { result: mp.declineByNonce(nonce), client };
         };
+        chat.mobileApproveHandler = (nonce) => {
+          const client = mp.nonceClient(nonce);
+          const outcome = mp.approveByNonce(nonce);
+          return outcome === 'approved' ? { outcome, text: '', client }
+            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? (client === 'browser' ? 'This browser setup has already ended.' : 'This pairing has already ended.') : APPROVE_REFUSAL[outcome].detail, client };
+        };
+      }
+      if (options.telegram) {
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
+      // A stand-in that is off (refused at boot after an earlier build, or shut off) ends what it carried, now that its handlers are wired.
+      standIn?.finishShutOff();
     }
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -1848,6 +2830,7 @@ export class AgentServer {
           nonceStore: coord.managers.nonceStore,
           securityLog: coord.managers.securityLog,
           localMachineId: coord.identity!.machineId,
+          localSigningKeyPem: options.localSigningKeyPem || undefined,
         },
         localMachineId: coord.identity!.machineId,
         localSigningKeyPem: options.localSigningKeyPem ?? '',
@@ -1859,7 +2842,7 @@ export class AgentServer {
             probe = await this.directDesktopAccess.probe();
           } catch {
             return { ...target, ready: false,
-              unavailableReason: 'Desktop capture is not available on this machine.' };
+              unavailableReason: DESKTOP_CHECK_FAILED_REASON };
           }
           const reason = desktopProbeUnavailableReason(probe);
           return { ...target, ready: probe.ready,
@@ -1990,7 +2973,10 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined, // returns the resulting observed epoch → accept-ack (Decision 9)
-        onLeasePullRequest: options.onLeasePullRequest,
+        onLeasePullRequest: () => {
+          options.coordinator?.noteLeasePeerPull();
+          return options.onLeasePullRequest?.() ?? null;
+        },
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
           ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)
@@ -2018,6 +3004,45 @@ export class AgentServer {
           ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
+      };
+      // A throwaway home that ran the stand-in owner chat is never paired with another machine (throwaway-owner-chat §2.4).
+      machineRouteContext.pairBlocked = () => ((this.config.stateDir && standInEverUsed(this.config.stateDir)) || (this.throwawayOwnerChat && !this.throwawayOwnerChat.isOff()) ? 'stand-in-owner-chat-used' : null);
+      machineRouteContext.teamJoinBlocked = (enforcement) => {
+        if (enforcement >= TEAM_ENFORCEMENT_VERSION) return false;
+        if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
+        const entries = new TeamConfinement(options.config.stateDir).entries();
+        return entries === null || entries.size > 0;
+      };
+      machineRouteContext.teamAccessRows = (have, heads, senderId) => {
+        const log = this.mobilePairing?.teamLog() ?? null;
+        const missing = log?.rowsBeyond(have, heads) ?? [];
+        // A peer that already holds everything here has nothing to push, and that counts as answering.
+        this.mobilePairing?.teamPuller?.noteInbound(senderId, missing.length === 0);
+        const privacy = options.sessionManager.memoryPrivacyStatus?.();
+        return {
+          rows: missing.slice(0, ROWS_PER_CALL), vector: log?.vector() ?? {}, starts: log?.starts() ?? {},
+          standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
+        };
+      };
+      machineRouteContext.teamSwitchOn = (setting, senderId, requestedBy) => this.applyTeamSwitchHere(setting, options, `machine ${senderId}${requestedBy ? ` for ${requestedBy}` : ''}`);
+      machineRouteContext.teamAccessPush = async (rows, senderId) => {
+        const log = this.mobilePairing?.teamLog() ?? null;
+        if (!log) throw new Error('team-access-unavailable');
+        const { added, refused, touched } = log.ingest(rows as TeamAccessRow[]);
+        this.mobilePairing?.teamPuller?.noteInbound(senderId, true);
+        if (added > 0) await this.afterTeamRows(touched);
+        return { added, refused };
+      };
+      // Instar Documents (instar-document-viewer §5.1): pages of rows and blobs, verified by the receiver.
+      machineRouteContext.documentsPage = (have) => {
+        if (!isDocumentsEnabled(options.config)) return { rows: [], blobs: [], purged: [], pruned: {}, vector: {} };
+        const docs = this.openDocuments(options.config.stateDir);
+        return docs ? buildSyncPage(docs.store, have) : { rows: [], blobs: [], purged: [], pruned: {}, vector: {} };
+      };
+      machineRouteContext.documentsPush = (page) => {
+        const docs = isDocumentsEnabled(options.config) ? this.openDocuments(options.config.stateDir) : null;
+        if (!docs) throw new Error('documents-unavailable');
+        return applySyncPage(docs.store, page);
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
@@ -2059,6 +3084,10 @@ export class AgentServer {
     // immediately invalidates old bearer tokens AND old HMAC-signed view
     // URLs without a restart.
     this.threadlineMcpHttp = options.threadlineMcpHttp ?? null;
+    // SEC-018: share the owner-approval store/registry with the MCP http service (server.ts
+    // supplies the same instances it hands the MCP server), else fresh (callers/tests).
+    this.ownerApprovedActionStore = options.ownerApprovedActionStore ?? new OwnerApprovedActionStore();
+    this.ownerApprovedActionPending = options.ownerApprovedActionPending ?? new PendingApprovalRegistry();
     this.app.use(authMiddleware(
       () => this.config.authToken,
       options.config.projectName,
@@ -2071,6 +3100,14 @@ export class AgentServer {
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
       options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
+      // SEC-002b: a dst_ scoped session token is accepted ONLY when the feature is enabled (dark by
+      // default until the full live dashboard proof); read per-request so LiveConfig takes effect.
+      (token: string) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && this.dashboardSessionStore.verify(token),
+      // SEC-002b: a credential route with a dst_ token needs a fresh live-PIN step-up proof (distinct
+      // token type, minted only by POST /dashboard/session/step-up).
+      (req: Request) => this.dashboardStepUpSessions.verify(req.get('X-Instar-Step-Up') ?? undefined),
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -2123,6 +3160,12 @@ export class AgentServer {
         bridgeNativeHealToDegradation();
         const dbPath = path.join(serverDataDir, 'token-ledger.db');
         const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+        // Every config home a session can be routed to (fb-7e0b2088-ae5): the
+        // process default, every ~/.claude* login on the host, and every
+        // claude-code account in the subscription pool. Re-read each scan, so a
+        // login enrolled after boot is picked up; de-duplicated by real path.
+        const subscriptionPoolForRoots = options.subscriptionPool ?? null;
+        const claudeProjectsDirs = () => claudeTranscriptRoots({ pool: subscriptionPoolForRoots });
         // Bound the first-boot scan: with deep history (eg one local agent
         // had 119k JSONLs / 12GB of transcripts), an unbounded synchronous
         // scan blocks the event loop for minutes. We cap per-tick work and
@@ -2131,6 +3174,7 @@ export class AgentServer {
         this.tokenLedger = new TokenLedger({
           dbPath,
           claudeProjectsDir,
+          claudeProjectsDirs,
           maxFileAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
           maxFilesPerScan: 500,
           yieldEveryNFiles: 25,
@@ -2142,6 +3186,171 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
+    // Dev-gated (live on a development agent, dark on the fleet). Read-only against
+    // source transcripts; writes only server-data/usage-ledger.db (git-sync excluded).
+    // Separate from TokenLedger by design: nothing the old ledger, its routes or the
+    // burn alerts see changes.
+    try {
+      if (options.config.stateDir && resolveDevAgentGate(options.config.usage?.ledger?.enabled, options.config)) {
+        const projectDir = options.config.projectDir ?? process.cwd();
+        const homes = [...new Set([path.resolve(projectDir), path.resolve(process.cwd())])];
+        let otherHomes: string[] = [];
+        try {
+          const reg = JSON.parse(fs.readFileSync(agentRegistryPath(), 'utf-8')) as { agents?: Array<{ path?: string }> } | Array<{ path?: string }>;
+          const list = Array.isArray(reg) ? reg : reg.agents ?? [];
+          otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
+        } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const subscriptionPool = options.subscriptionPool;
+        // quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): which account served each
+        // row. Dev-gated separately; the column migration runs regardless (additive, idempotent).
+        const servedStateDir = options.config.stateDir;
+        const servedEnabled = () => resolveDevAgentGate(options.config.usage?.ledger?.servedAccount, options.config);
+        const servedSwitch = new ServedSwitchHistory(servedStateDir);
+        servedSwitch.note(servedEnabled());
+        const identityChecks = new IdentityCheckLog({ stateDir: servedStateDir });
+        options.quotaPoller?.setIdentityCheckLog?.(identityChecks);
+        this.identityCheckLog = identityChecks;
+        const credLedger = options.subscriptionEmailBinding as unknown as ServedLedgerView | undefined;
+        const servedPoolAccounts = () => (subscriptionPool?.list() ?? []).map(a => ({
+          id: a.id, framework: a.framework, configHome: a.configHome, provider: a.provider, email: a.email ?? null,
+        }));
+        const servedResolver = new ServedAccountResolver({
+          pool: servedPoolAccounts,
+          ledger: () => (credLedger && typeof credLedger.getAssignment === 'function' ? credLedger : null),
+          checks: identityChecks,
+          pollIntervalMs: 15 * 60_000,
+        });
+        const ledger = new UsageLedger({
+          servedAccount: { enabled: () => { const on = servedEnabled(); servedSwitch.note(on); return on; }, resolver: servedResolver },
+          dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
+          machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+          agentId: options.config.projectName ?? path.basename(projectDir),
+          agentHomes: homes,
+          otherAgentHomes: otherHomes,
+          poolHomes: subscriptionPool ? () => subscriptionPool.transcriptHomes() : undefined,
+        });
+        if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
+        ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
+        const sm = options.sessionManager as SessionManager;
+        sm.setClaudeSessionBoundSink?.((session, claudeSessionId) => {
+          const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession) : null;
+          if (configHome) ledger.addClaudeRoot(configHome, 'session');
+          ledger.recordBinding({
+            sessionId: claudeSessionId,
+            framework: 'claude-code',
+            sessionKind: session.jobSlug ? 'job' : 'interactive',
+            cwd: session.cwd ?? projectDir,
+            topicId: session.telegramTopicId != null ? String(session.telegramTopicId) : null,
+            jobSlug: session.jobSlug ?? null,
+            runId: session.jobSlug ? session.id : null,
+            accountId: session.subscriptionAccountId ?? null,
+            validFrom: Date.now(),
+          });
+        });
+        // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
+        if (process.env.CODEX_HOME) ledger.addCodexRoot(process.env.CODEX_HOME, 'server-env');
+        ledger.addCodexRoot(path.join(os.homedir(), '.codex'), 'default');
+        setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
+        this.usageLedger = ledger;
+        // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
+        // written hourly (never while empty) for BackupManager to copy.
+        const snapshotPath = path.join(options.config.stateDir, 'server-data', 'usage-ledger.snapshot.db');
+        try {
+          const livePeers = new Set((options.resolvePeerUrls?.() ?? []).map(p => p.machineId));
+          const imp = ledger.importSnapshotIfEmpty(snapshotPath, { isLivePoolMember: (id) => livePeers.has(id) });
+          if (imp.outcome !== 'none') console.log(`[instar] usage-ledger snapshot: ${imp.outcome}${imp.fromMachine ? ` (from ${imp.fromMachine})` : ''}`);
+        } catch (err) { /* @silent-fallback-ok: a snapshot that cannot be read leaves the live ledger to rebuild from source files; the outcome is in coverage */
+          console.warn('[instar] usage-ledger snapshot import failed (non-fatal):', err);
+        }
+        // Equivalent-cost prices come from the manifest that ships INSIDE the instar package
+        // (its scripts/ folder is published), not the agent's project dir — an agent install
+        // has no source checkout, so the project dir has no manifest. Canonical points only.
+        const usageThisDir = path.dirname(fileURLToPath(import.meta.url));
+        const usagePkgRoot = [path.resolve(usageThisDir, '..', '..'), path.resolve(usageThisDir, '..', '..', '..')]
+          .find(d => fs.existsSync(path.join(d, 'scripts', 'routing-prices.manifest.json'))) ?? projectDir;
+        const usagePrices = new RoutingPriceAuthority({ projectDir: usagePkgRoot, stateDir: options.config.stateDir });
+        const isUsageHolder = (): boolean => {
+          try { return options.coordinator?.enabled ? options.coordinator.getSyncStatus().holdsLease : true; } catch { return false; }
+        };
+        const peerTarget = (machineId: string) => (options.resolvePeerUrls?.() ?? []).find(p => p.machineId === machineId) ?? null;
+        const peerGet = async (machineId: string, route: string): Promise<{ status: number; body: unknown } | null> => {
+          const peer = peerTarget(machineId);
+          if (!peer) return null;
+          const r = await poolPeerFetch(options.recordRopeResult, peer, route, {
+            headers: { Authorization: `Bearer ${options.config.authToken}`, 'x-usage-proxied': '1' },
+            signal: AbortSignal.timeout(8_000),
+          });
+          return { status: r.status, body: await r.json().catch(() => null) };
+        };
+        this.usagePuller = new UsagePoolPuller({
+          ledger,
+          peers: () => (options.resolvePeerUrls?.() ?? []).map(p => ({ machineId: p.machineId })),
+          fetchPeer: async (machineId, route) => {
+            const r = await peerGet(machineId, route);
+            if (!r) throw new Error('no known address for that machine');
+            if (r.status !== 200) throw new Error(`the machine answered HTTP ${r.status}`);
+            return r.body;
+          },
+          isHolder: isUsageHolder,
+        });
+        this.usagePuller.start();
+        // First pull a minute after boot (not at boot): keeps startup light and gives
+        // the lease a moment to settle before the holder decides to pull.
+        const firstPull = setTimeout(() => { void this.usagePuller?.pullAll(); }, 60_000);
+        if (typeof firstPull.unref === 'function') firstPull.unref();
+        this.usageRouteDeps = {
+          ledger,
+          prices: usagePrices,
+          puller: this.usagePuller,
+          isHolder: isUsageHolder,
+          fromHolder: async (route) => {
+            const holder = options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null;
+            if (!holder) return null;
+            return peerGet(holder, route).catch(() => null);
+          },
+          fromPeer: (machineId, route) => peerGet(machineId, route),
+          bearerOk: () => true,
+          servedAccount: {
+            enabled: servedEnabled,
+            switchHistory: servedSwitch,
+            fanOut: { config: options.config, resolvePeerUrls: options.resolvePeerUrls, recordRopeResult: options.recordRopeResult } as import('./poolFanOut.js').FanOutCtx,
+            history: () => this.quotaPacingLedger ?? null,
+            poolAccounts: servedPoolAccounts,
+          },
+        } as import('./usageRoutes.js').UsageRouteDeps;
+        // The listing of every transcript file runs off the event loop (scanTickAsync):
+        // done synchronously here it held the main thread for over a minute on a
+        // contended disk and the supervisor killed the server (2026-11-13). The tick's
+        // rules (one at a time, a stuck listing is reported) are in usageLedgerTick.ts.
+        const usageTick = createUsageLedgerTick({
+          getLedger: () => this.usageLedger,
+          snapshotPath,
+          // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+          onTick: (rep, tickMs) => {
+            if (tickMs > 60_000) console.warn(`[instar] usage-ledger tick took ${Math.round(tickMs / 1000)} s (files read ${rep.filesRead}, pending ${rep.pending})`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending, tickMs } });
+            // Ladder evidence (feature-ladders.json → usage.ledger.servedAccount): attribution ran this hour.
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'served-attribution-tick', context: { rowsCounted: rep.rowsCounted } });
+          },
+          onError: (err) => { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
+            console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+            if (servedEnabled()) featureEvidence.recordAtMostEvery('usage.ledger.servedAccount', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+          },
+          onStuck: (skipped, runningMs) => {
+            console.warn(`[instar] usage-ledger tick has been running ${Math.round(runningMs / 60000)} min; ${skipped} ticks skipped behind it`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-stuck', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-stuck', context: { skipped, runningMs } });
+          },
+        });
+        this.usageLedgerTimer = setInterval(() => { void usageTick(); }, 60_000);
+        if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
+      }
+    } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
+      console.warn('[instar] usage-ledger init failed (non-fatal):', err);
+      this.usageLedger = null;
     }
 
     // Framework-Onboarding Mentor System issue ledger — read-only observability,
@@ -2376,7 +3585,11 @@ export class AgentServer {
               retentionDays: rsCfg?.providerReportRetentionDays ?? 400,
             });
             this.providerCostReportStore.prune(); // boot prune (batched — scal-F4)
-            const doorToKey = new Map(meteredKeysFromChains().map((m) => [m.door, m.keyRef]));
+            // gemini-payg §2: metered keys come from the caps store + defaults, never
+            // the routing chains (which no longer carry a metered gemini position).
+            const doorToKey = new Map(
+              meteredKeyDoors().filter((m) => !m.retired).map((m) => [m.door, m.keyRef]),
+            );
             const sweep = new ProviderReconciliationSweep({
               store: this.providerCostReportStore,
               // Internal-derived per (keyRef, door): the metered doors' daily token
@@ -2451,6 +3664,17 @@ export class AgentServer {
             this.meteredSpendLedger = new MeteredSpendLedger({
               stateDir: options.config.stateDir,
               reserveTtlMs: moneyCfg?.reserveTtlMs,
+              // The current period zone per key comes from the PIN caps store
+              // (gemini-payg §5); rows keep the period they were charged to.
+              zoneForKey: (keyRef) => {
+                try {
+                  return this.routingSpendCapsStore?.read().caps[keyRef]?.periodTimeZone;
+                } catch {
+                  // @silent-fallback-ok: an unreadable store makes the gate fail closed
+                  // on its own read; here it only picks which period the totals view rolls to.
+                  return undefined;
+                }
+              },
             });
             this.routingSpendCapsStore = new RoutingSpendCapsStore({
               stateDir: options.config.stateDir,
@@ -2459,11 +3683,16 @@ export class AgentServer {
               // METERED_ROUTING_DOORS / DEFAULT_METERED_CAPS: those drive the
               // operator's arming UI, the spend summaries and the bench coverage
               // map, and the probe door must appear in none of them (T41).
-              knownKeyRefs: new Set([...Object.keys(DEFAULT_METERED_CAPS), PROBE_KEY_REF]),
+              // Retired keyRefs (metered_gemini_bench) stay known so an existing
+              // caps file holding one loads unchanged (gemini-payg §10).
+              knownKeyRefs: new Set([...knownMeteredKeyRefs(), PROBE_KEY_REF]),
               knownDoors: new Set([...METERED_ROUTING_DOORS, PROBE_DOOR] as string[]),
             });
             this.spendPlanStore = new RenderedPlanStore();
-            const machineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            // gemini-payg §6: the money layer's machine id is the MESH id. `config.machineId`
+            // is unset on most agents, so the old fallback made every machine of a pool call
+            // itself 'single-machine' — and pass the designation check together.
+            const machineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
             // The reserved cap-gate probe door, installed idempotently so the
             // readiness probe has an ordinary live door to be refused by.
             this.routingSpendCapsStore.ensureProbeDoor(machineId);
@@ -2484,7 +3713,10 @@ export class AgentServer {
                   // lands with the metered dispatch seam — until then the gate
                   // SELF-FENCES (fails closed) there, the safe direction, matching
                   // the spec's own "paid routing is single-machine until D".
-                  leaseConfirmedAgoMs: () => (poolOn ? null : 0),
+                  // gemini-payg §6: on a pool, the holder's active designation echo
+                  // (MeteredLaneRuntime) is the positive confirmation; absent or unknown
+                  // ⇒ null, which still self-fences.
+                  leaseConfirmedAgoMs: () => (poolOn ? (this.meteredLaneRuntime?.leaseConfirmedAgoMs() ?? null) : 0),
                 })
               : null;
             // Reserve-expiry sweep: at boot + cadence (money-side; takes the per-key mutex).
@@ -2735,7 +3967,7 @@ export class AgentServer {
       const enableStore = this.moneyLayerEnableStore ?? new MoneyLayerEnableStore({ stateDir: options.config.stateDir });
       this.moneyLayerEnableStore = enableStore;
       const enableAudit = new MoneyLayerAuditLog({ stateDir: options.config.stateDir });
-      const surfaceMachineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      const surfaceMachineId = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
       this.moneyLayerAudit = enableAudit;
       this.moneyLayerEnableSurface = new MoneyLayerEnableSurface({
         store: enableStore,
@@ -2763,6 +3995,8 @@ export class AgentServer {
         lockHeld: () => options.singleInstanceLock?.revalidate() ?? false,
         settlingCount: () => this.meteredSpendLedger?.outstandingReserveCount() ?? 0,
         limits: (options.config as { routingSpend?: { money?: { limits?: Record<string, number> } } }).routingSpend?.money?.limits,
+        // gemini-payg §8: late-bound — the go-live is built after the lane, below.
+        geminiPayg: () => this.geminiPaygGoLive?.port ?? null,
       });
       if (this.moneyConstructionFailure) {
         enableStore.recordFailure('construction-failed', `money-layer-init:${this.moneyConstructionFailure.slice(0, 200)}`);
@@ -2779,6 +4013,132 @@ export class AgentServer {
       // must not die because one surface failed to construct.
       console.error('[instar] money-layer enable surface init FAILED (its routes will 503):', err);
       this.moneyLayerEnableSurface = null;
+    }
+
+    // gemini-payg-metered-lane: build the lane on EVERY machine. A non-holder needs it to
+    // forward reviews and second opinions whatever its own money state (§6); every read is
+    // a late-bound closure, so nothing here captures freeze/serving/designation at boot.
+    try {
+      const laneSelf = this.meshSelfId ?? (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      this.geminiPaygLane = buildGeminiPaygLane({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        capsStore: () => this.routingSpendCapsStore,
+        gate: () => this.meteredSpendGate,
+        ledger: () => this.meteredSpendLedger,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        peers: () => {
+          const lanePool = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+          const mgr = options.coordinator?.managers?.identityManager;
+          // A pool agent with no readable registry is UNKNOWN (null), which fences — never "single machine".
+          if (!mgr) return lanePool ? null : [];
+          try {
+            return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf);
+          } catch { return null; } // @silent-fallback-ok — unreadable registry is unknown, which fences
+        },
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; } /* @silent-fallback-ok: an unverifiable session is recorded as self-reported, never trusted */
+        },
+        reviewRoots: () => [path.dirname(options.config.stateDir)],
+        // §5/§9: every lane notice goes to the spend-alert voice through the go-live's
+        // notices (late-bound: the go-live is built just below). Logged as well.
+        notify: (kind, message, meta) => {
+          console.error(`[instar] gemini-payg ${kind}: ${message}`);
+          this.geminiPaygGoLive?.laneNotify(kind, message, meta);
+        },
+        onRefusal: (err) => this.geminiPaygGoLive?.onRefusal(err),
+        releaseProof: async (origin, payload) => this.geminiPaygGoLive
+          ? this.geminiPaygGoLive.releaseProofForwarded(origin, payload)
+          : { status: 503, body: { status: 'unavailable', reason: 'release-recorder-unavailable' } },
+        renderSetup: async (requestedBy) => {
+          if (!this.geminiPaygGoLive) throw new Error('gemini-payg go-live unavailable');
+          return this.geminiPaygGoLive.renderForPeer(requestedBy);
+        },
+      });
+      this.meteredLaneRuntime = this.geminiPaygLane.runtime;
+      this.meteredLaneRuntime.resumePendingStops();
+      const lanePoolOn = (options.config as { multiMachine?: { sessionPool?: { enabled?: boolean } } }).multiMachine?.sessionPool?.enabled === true;
+      if (lanePoolOn) this.meteredLaneRuntime.startEcho();
+
+      // gemini-payg §8: the go-live (setup plan port, pending-intent apply, release gate,
+      // reduce-only routes, the lane's notices). Built on every machine; dark until the
+      // operator's one PIN commit.
+      const lane = this.geminiPaygLane;
+      const lanePeers = () => {
+        const mgr = options.coordinator?.managers?.identityManager;
+        if (!mgr) return [] as string[];
+        try { return mgr.getActiveMachines().map((m) => m.machineId).filter((id) => id !== laneSelf); } catch { return [] as string[]; } // @silent-fallback-ok — used only for "is this a multi-machine agent"; unknown peers keep (b)/(e) required below
+      };
+      this.geminiPaygGoLive = buildGeminiPaygGoLive({
+        stateDir: options.config.stateDir,
+        selfMachineId: laneSelf,
+        selfMachineName: (options.config as { machineNickname?: string }).machineNickname ?? null,
+        lane,
+        capsStore: () => this.routingSpendCapsStore,
+        ledger: () => this.meteredSpendLedger,
+        prices: () => this.routingPriceAuthority,
+        servingReady: () => this.moneyLayerEnableSurface?.servingReady() ?? false,
+        moneyAudit: () => this.moneyLayerAudit,
+        failoverThresholdMs: () => ((options.config as { multiMachine?: { failoverTimeoutMinutes?: number } }).multiMachine?.failoverTimeoutMinutes ?? 15) * 60_000,
+        // A pool agent counts as multi-machine even when its registry is momentarily empty,
+        // so checks (b) and (e) can never be skipped by an unreadable registry.
+        multiMachine: () => lanePoolOn || lanePeers().length > 0,
+        isLiveSession: (name) => {
+          try { return options.sessionManager.listRunningSessions().some((x) => x.tmuxSession === name || x.name === name); } catch { return false; }
+        },
+        deliverNotice: (n) => this.deliverGeminiPaygNotice(n),
+        openCard: (c) => {
+          try {
+            const rt = options.workBoard?.();
+            if (!rt) return false;
+            const r = rt.svc.createCard({ kind: 'agent' }, {
+              title: c.title,
+              need: c.need,
+              recommendation: c.recommendation,
+              whyYou: c.whyYou,
+              doneWhen: c.doneWhen,
+              ...(c.link && c.link.startsWith('https://') ? { links: [{ url: c.link, label: 'The prefilled plan on the Spend tab' }] } : {}),
+            });
+            return r.ok === true;
+          } catch (err) { // @silent-fallback-ok: logged; the caller reports the card as not opened
+            console.error(`[instar] gemini-payg: the Work Board card could not be opened: ${String(err)}`);
+            return false;
+          }
+        },
+        spendTabLink: () => {
+          const base = options.tunnel?.url ?? null;
+          return base ? `${base.replace(/\/$/, '')}/dashboard?tab=spend` : null;
+        },
+        verifyLiveTest: options.liveTestRunnerCtx
+          ? (ref) => {
+              const v = options.liveTestRunnerCtx!.artifactStore.verifyEntry(ref.featureId, ref.runId);
+              if (!v.ok) return { ok: false, reason: v.reason };
+              const allPass = (v.artifact?.scenarios ?? []).length > 0 && v.artifact!.scenarios.every((sc) => sc.verdict === 'PASS');
+              return allPass ? { ok: true } : { ok: false, reason: 'not every scenario passed' };
+            }
+          : null,
+      });
+      this.geminiPaygGoLive.setRenderer(() => {
+        const surface = this.moneyLayerEnableSurface;
+        if (!surface) throw new Error('money-layer enable surface unavailable');
+        return surface.renderPlanAsync('gemini-payg-setup');
+      });
+      // §8 "Apply": the pending intent is applied by the money layer itself, before this
+      // server serves. A failed apply freezes the door and notices once — never a crash.
+      if (this.routingSpendCapsStore) {
+        const applied = this.geminiPaygGoLive.applyPending(this.routingSpendCapsStore);
+        if (applied.kind !== 'none') console.log(`[instar] gemini-payg go-live intent: ${applied.kind}${applied.kind === 'failed' ? ` (${applied.reason})` : ''}`);
+      }
+      this.geminiPaygGoLive.notices.start();
+      const goLive = this.geminiPaygGoLive;
+      this.geminiPaygTimer = setInterval(() => { void goLive.checkMonth().catch(() => undefined); } /* @silent-fallback-ok: retried every 5 minutes */, 5 * 60_000);
+      this.geminiPaygTimer.unref?.();
+    } catch (err) {
+      // @silent-fallback-ok: NOT silent — logged; the lane's routes are then absent and
+      // nothing can spend (the gate still requires the runtime's lease confirmation).
+      console.error('[instar] gemini-payg lane init FAILED (lane unavailable):', err);
+      this.geminiPaygLane = null;
+      this.meteredLaneRuntime = null;
     }
 
     // Close-the-Loop action reach: the dated overdue checker cannot see pending
@@ -3125,8 +4485,10 @@ export class AgentServer {
                 // PowerShell interop can reach the Windows-local companion even
                 // when WSL's TCP path to the host is filtered by Windows.
                 return new WindowsDesktopHost(companion.endpoint, companion.secret,
-                  windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000);
+                  windowsDesktopLocalSend(companion.endpoint, companion.localTransportScript), 5_000,
+                  { video: resolveWindowsDesktopVideo(options.config) });
               })();
+          const desktopAudit = new DesktopAccessAudit(options.config.stateDir);
           this.directDesktopAccess = new DirectDesktopAccess(
           this.meshSelfId, label, host, new FileRemoteStepUpLockouts(options.config.stateDir),
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
@@ -3147,7 +4509,7 @@ export class AgentServer {
           },
           grantId => this.desktopStreamManager?.closeGrant(grantId),
           Date.now,
-          new DesktopAccessAudit(options.config.stateDir),
+          desktopAudit,
           'pin',
           (token, machineId) => this.desktopDelegatedSessions.belongsTo(token, machineId),
           this.desktopLockedController,
@@ -3170,6 +4532,7 @@ export class AgentServer {
             machineLabel: label, machineId: this.meshSelfId,
             probe: () => access.probe(),
             sourceHash: () => helperRetention.currentSourceHash(),
+            recentlyUsed: () => desktopAudit.hasStartWithin(30 * 24 * 60 * 60_000),
             // An agent that cannot post must leave the notice for one that can.
             claim: () => !!telegram && helperRetention.claimNotice(),
             release: () => helperRetention.releaseNotice(),
@@ -3545,6 +4908,16 @@ export class AgentServer {
         // Queue pace measures the feedback queues only on their configured operated host.
         if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        // Readiness reuses the triage account selector (same pool, same live quota reader), read
+        // live per call: a pin or triage.accountSelectionMode set later takes effect without a restart.
+        const readinessUsageReader = options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool);
+        const readinessAccount = buildReadinessAccountAdmission({
+          config: () => resolveReadinessAccountConfig(options.config.feedbackFactory),
+          selector: options.subscriptionPool && readinessUsageReader
+            ? new FeedbackTriageAccountSelector(options.subscriptionPool, (opts) => readinessUsageReader(opts))
+            : null,
+          pool: options.subscriptionPool ?? null,
+        });
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -3557,10 +4930,12 @@ export class AgentServer {
           isCanonicalOwner,
           isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          consumerApprovedWorkIds: () => promotion.approvedWorkIds(),
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          readinessAccount,
           raiseAttention: async (item) => {
             const enqueue = this.telegramAdapter?.createAttentionItem;
             if (!enqueue) throw new Error('durable attention enqueue unavailable');
@@ -3624,7 +4999,24 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+        // The exact batch the operator approves on consumer promotion (proposal-set bound):
+        // re-derived on every read and again immediately before the promote write.
+        const promotionProposal = (): PromotionProposal => {
+          const claimsPerRun = effectiveClaimsPerRun(options.config.feedbackFactory?.consumer?.maxClaimsPerTick);
+          const currentRecord = promotion.read();
+          return deriveConsumerPromotionProposal({
+            available: true,
+            restorePending,
+            isCanonicalOwner: holdsCanonicalLease(),
+            consumerEnabled,
+            configuredDryRun: options.config.feedbackFactory?.consumer?.dryRun,
+            promotionRecord: currentRecord ? { approvedBatchBound: currentRecord.approvedBatchBound, revokedAt: currentRecord.revokedAt, proposalBound: FeedbackConsumerPromotionStore.isProposalBound(currentRecord) } : null,
+            priorRecordMarker: promotionRecordMarker(currentRecord),
+            claimsPerRun,
+            claimable: store.claimableWork(claimsPerRun),
+          });
+        };
+        this.feedbackDrain = { service, store, promotion, promotionProposal, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner
@@ -3653,6 +5045,7 @@ export class AgentServer {
                 return enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
+              tunnelConfigured: () => !!options.tunnel,
               paceTicks: this.queuePaceTickLog(options.config),
               overrides: options.feedbackTriageDeps,
             });
@@ -3684,12 +5077,15 @@ export class AgentServer {
                 updatePending: () => {
                   try { return executorUpdatePending(options.autoUpdater?.getStatus()); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
                 },
+                // The attempt hold yields to a restart Local Verify's queued work is waiting for.
+                localVerifyNeedsRestart: () => options.localVerify?.restartNeededForQueuedWork() === true,
                 raiseAttention: async (item) => {
                   const enqueue = this.telegramAdapter?.createAttentionItem;
                   if (!enqueue) throw new Error('durable attention enqueue unavailable');
                   await enqueue.call(this.telegramAdapter, item);
                 },
                 tunnelUrl: () => options.tunnel?.url ?? null,
+                tunnelConfigured: () => !!options.tunnel,
                 paceTicks: this.queuePaceTickLog(options.config),
                 overrides: options.feedbackExecuteDeps,
               });
@@ -3761,7 +5157,19 @@ export class AgentServer {
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
             if (!isCanonicalOwner()) return;
-            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+            // The bulk copy runs in a worker thread: on a disk busy with a test run the
+            // synchronous copy held the event loop for over a minute and the supervisor
+            // killed the server (2026-11-13). The checkpoint and the staging of the
+            // database files stay here, back to back, on this thread.
+            const tick = backupCadence.maybeHourlyOffThread(
+              (trigger) => createBackupSnapshotInWorker({ stateDir: options.config.stateDir, config: options.config.backup, trigger }),
+              () => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch),
+            );
+            if (tick.started) {
+              tick.done.catch((error) => { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); });
+            } else if (tick.reason === 'in-flight' && tick.runningMs >= 30 * 60 * 1000) {
+              console.warn(`[feedback-factory] hourly checkpoint has been copying for ${Math.round(tick.runningMs / 60000)} minutes; no new one starts until it ends`);
+            }
           };
           setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
           this.feedbackDrainBackupTimer = setInterval(() => {
@@ -4269,6 +5677,9 @@ export class AgentServer {
           // wrapper with no routing surface, so resolving from it would silently disable the
           // general-envelope gate in production while unit tests still passed.
           resolveFramework: buildCompletionClaimFrameworkResolver(options.intelligence),
+          // CMT-1679: exact replay input on the provenance row, live on dev agents and
+          // dark on the fleet (byte-identical rows there). Machine-local, never served.
+          recordReplayInput: resolveDevAgentGate(cfg.recordReplayInput, options.config),
           stateDir: options.config.stateDir,
           enabled: true,
           dryRun: cfg.dryRun !== false,
@@ -5048,8 +6459,11 @@ export class AgentServer {
           return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
         }
       : null);
-    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topicRef: number | string) => {
+      // An app conversation's key resolves to this machine's alias here, and to the target's own on arrival.
       if (machineId === options.meshSelfId) {
+        const topic = typeof topicRef === 'number' ? topicRef : options.conversationRegistry?.appAliasFor(topicRef.replace(/^app:/, '')) ?? null;
+        if (topic === null) return;
         const coordinator = options.workingSetPullCoordinator;
         if (!coordinator) return;
         void (async () => {
@@ -5079,7 +6493,7 @@ export class AgentServer {
             const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic }),
+              body: JSON.stringify({ topic: topicRef }),
               signal: AbortSignal.timeout(5_000),
             });
             if (!response.ok) continue;
@@ -5090,6 +6504,7 @@ export class AgentServer {
       })();
     });
     setMoveAftercare(kickWorkingSetOnMachine);
+    setAutonomousRunProbe(autonomousRunOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -5376,6 +6791,7 @@ export class AgentServer {
         { ...cadenceRaw, enabled: true },
       ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
+      plannedRestartLeaseAdmission: options.plannedRestartLeaseAdmission,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
@@ -5403,6 +6819,9 @@ export class AgentServer {
       quotaTracker: options.quotaTracker ?? null,
       publisher: options.publisher ?? null,
       viewer: options.viewer ?? null,
+      documentsReplaceViews: () => this.documentsReplaceViews(),
+      publishSystemDocument: (title: string, markdown: string, preferred?: string | null) => this.publishSystemDocument(title, markdown, preferred),
+      systemDocumentLink: (id: string) => this.systemDocumentLink(id),
       tunnel: options.tunnel ?? null,
       evolution: options.evolution ?? null,
       undatedActionResurfacer: this.undatedActionResurfacer,
@@ -5419,6 +6838,7 @@ export class AgentServer {
       operationGate: options.operationGate ?? null,
       sentinel: options.sentinel ?? null,
       adaptiveTrust: options.adaptiveTrust ?? null,
+      trustAccountPath: options.trustAccountPath ?? null,
       memoryMonitor: options.memoryMonitor ?? null,
       orphanReaper: options.orphanReaper ?? null,
       coherenceMonitor: options.coherenceMonitor ?? null,
@@ -5426,19 +6846,44 @@ export class AgentServer {
       workQueue: options.workQueue ?? null,
       prHandLease: options.prHandLease ?? null,
       standDownRegistry: options.standDownRegistry ?? null,
+      foldHolds: options.foldHolds ?? null,
+      contextBudgetSentinel: options.contextBudgetSentinel ?? null,
+      contextLayers: options.contextLayers ?? null,
+      chunkBuilder: options.chunkBuilder ?? null,
+      h3Builder: options.h3Builder ?? null,
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
       verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
+      // SEC-002b: scoped dashboard session verify + stream-invalidation registration for SSE/WS.
+      dashboardScopedSessionVerify: (token: string | undefined) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && typeof token === 'string' && token.startsWith('dst_') && this.dashboardSessionStore.verify(token),
+      // SEC-045: FAMILY-liveness for the per-delivery stream re-check (does not over-close on rotation).
+      dashboardScopedSessionFamilyLive: (token: string | undefined) =>
+        (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+        && typeof token === 'string' && token.startsWith('dst_') && this.dashboardSessionStore.familyLiveForToken(token),
+      dashboardScopedSessionOnInvalidated: (token: string, cb: () => void) => this.dashboardSessionStore.onFamilyInvalidated(token, cb),
+      conversationGraphDelegationRuntime: options.conversationGraphDelegationRuntime,
+      conversationGraphDelegationRemoteRuntime: options.conversationGraphDelegationRemoteRuntime,
+      getConversationGraphDelegation: options.getConversationGraphDelegation,
       verifyDesktopOperatorSession: (token: string | undefined) => this.verifyDesktopOperatorSession(token),
       phoneDesktopSessions: this.phoneDesktopSessions,
+      ownerApprovedActionStore: this.ownerApprovedActionStore,
+      ownerApprovedActionPending: this.ownerApprovedActionPending,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
       accountFollowMePeerViews: options.accountFollowMePeerViews,
       quotaPoller: options.quotaPoller ?? null,
       quotaAwareScheduler: options.quotaAwareScheduler ?? null,
+      manualBalanceForecasts: async () => {
+        if (!this.quotaPacingLedger || !options.subscriptionPool || !isQuotaPacingEnabled(options.config)) return null;
+        const local = await buildLocalSummaries(this.quotaPacingLedger, options.subscriptionPool,
+          { machineId: this.meshSelfId ?? 'local', pollIntervalMs: 15 * 60_000, now: Date.now() });
+        return local.summaries;
+      },
       proactiveSwapMonitor: options.proactiveSwapMonitor,
       usageWallRescue: options.usageWallRescue,
       inUseAccountResolver: options.inUseAccountResolver,
@@ -5452,6 +6897,7 @@ export class AgentServer {
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
+      localVerifyHelper: options.localVerifyHelper ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,
@@ -5515,6 +6961,7 @@ export class AgentServer {
           ? { get: options.liveConfig.get.bind(options.liveConfig) }
           : null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
+      topicIntentStore: options.topicIntentStore ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
@@ -5542,6 +6989,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      usageRouteDeps: () => this.usageRouteDeps,
       // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
       // here — the composition root — so tests that build routes with a bare
       // ctx stay rollout-only and never spawn a real `codex` subprocess.
@@ -5558,8 +7006,11 @@ export class AgentServer {
       spendPlanStore: this.spendPlanStore,
       moneyLayerEnableSurface: this.moneyLayerEnableSurface,
       moneyLayerAudit: this.moneyLayerAudit,
+      geminiPaygGoLive: this.geminiPaygGoLive,
+      meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      publicPin: this.publicPinHook,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
@@ -5648,6 +7099,8 @@ export class AgentServer {
             ...(probe.helperFallback ? { helperFallback: probe.helperFallback } : {}),
             ...(probe.helperChange ? { helperChange: probe.helperChange,
               permissionStep: desktopProbeUnavailableReason(probe) } : {}),
+            // A Windows companion reports its lock under `windows`; the guide reads screenLocked.
+            ...(probe.windows?.locked === true ? { screenLocked: true } : {}),
             ...(['consoleSessionPresent', 'onConsole', 'loginDone', 'screenLocked'] as const)
               .reduce((details, key) => {
                 if (typeof probe[key] === 'boolean') details[key] = probe[key];
@@ -5727,7 +7180,8 @@ export class AgentServer {
           const { value, done } = await reader.read();
           if (done) break;
           bytes += value.byteLength;
-          if (bytes > 2_048) {
+          // Room for a full readiness reason (DESKTOP_PEER_REASON_MAX characters, some multi-byte).
+          if (bytes > 4_096) {
             await reader.cancel();
             throw new Error('desktop-peer-response-bound');
           }
@@ -5739,7 +7193,7 @@ export class AgentServer {
           throw new Error('desktop-peer-identity-mismatch');
         }
         return { machineId, label: result.label.slice(0, 80), ready: result.ready,
-          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, 160) } : {}) };
+          ...(typeof result.unavailableReason === 'string' ? { unavailableReason: result.unavailableReason.slice(0, DESKTOP_PEER_REASON_MAX) } : {}) };
       },
       selfUnblockRunStore: this.selfUnblockRunStore,
       selfUnblockChecklist: this.selfUnblockChecklist,
@@ -5758,6 +7212,11 @@ export class AgentServer {
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      diskSteward: options.diskSteward ?? null,
+      ownedRepos: options.ownedRepos ?? null,
+      ownerRecord: options.ownerRecord ?? null,
+      workBoard: options.workBoard ?? null,
+      workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
@@ -5769,6 +7228,15 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      ownerNeedsCandidate: options.ownerNeedsCandidate,
+      ownerNeedsWithdrawalJournalFor: options.ownerNeedsWithdrawalJournalFor,
+      chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      groupProjectConfirm: this.groupProjectConfirm,
+      projectAppsRuntime: options.projectAppsRuntime,
+      projectAppSandbox: options.projectAppSandbox,
+      projectAppCustom: options.projectAppCustom,
+      projectAppOrigin: this.projectAppOriginDeps,
+      chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
@@ -5781,6 +7249,8 @@ export class AgentServer {
       threadlineFlowBridge: options.threadlineFlowBridge ?? null,
       coordinator: options.coordinator ?? null,
       machinePoolRegistry: options.machinePoolRegistry ?? null,
+      meshSignedRead: options.meshSignedRead ?? null,
+      transcriptCopies: options.transcriptCopies ?? null,
       mutualSshHealth: options.mutualSshHealth ?? (() => {
         if (!resolveDevAgentGate(options.config.multiMachine?.mutualSsh?.enabled, options.config)) return null;
         const live = (globalThis as { __instarMutualSshRuntime?: import('../core/MutualSshRuntime.js').MutualSshRuntime }).__instarMutualSshRuntime;
@@ -5864,6 +7334,7 @@ export class AgentServer {
       sendDrain: options.sendDrain ?? null,
       autonomousRunOnMachine,
       kickWorkingSetOnMachine,
+      isOwnerUnroutable: options.isOwnerUnroutable ?? null,
       claimTopicOwnershipOnSpawn: options.claimTopicOwnershipOnSpawn ?? null,
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
@@ -5895,6 +7366,23 @@ export class AgentServer {
         const run = this.feedbackDrain?.service.stats().lastRun;
         if (!run) return null;
         return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
+      });
+      // The fleet bar for the drain: the share of finished drain runs in the last 7 days that
+      // succeeded, read from the durable run table so it survives restarts (CMT-1613).
+      // `ran` is the count of finished runs; the share is a quality bar, so a real 0% reads as a
+      // hold rather than as no data.
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.finished-runs-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        return { value: finished, samples: finished };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.run-success-share-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { succeeded, finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        if (finished === 0) return null;
+        return { value: succeeded / finished, samples: finished };
       });
       this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
         const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
@@ -5956,6 +7444,16 @@ export class AgentServer {
     // Native app conversations (docs/specs/mobile-native-conversations.md, increment 1). The gate
     // is read ONCE here, at boot. The bootstrap-wired service (server.ts) takes precedence; on any
     // other init path it is default-constructed over the same registry and request store.
+    // With native off this machine still keeps the access log and the locks, because a team may exist on its peers.
+    if (this.mobilePairing && !isMobileNativeEnabled(options.config) && options.coordinator?.identity) {
+      const signer = loadMachineSigner(options.config.stateDir);
+      if (signer) {
+        this.mobilePairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup: identityKeyLookup(options.config.stateDir) });
+        this.startTeamPuller(options);
+        this.startDocumentPuller(options);
+        options.sessionManager.refuseConfinedSpawns?.();
+      }
+    }
     if (this.mobilePairing && isMobileNativeEnabled(options.config)) {
       this.mobilePairing.nativeOn = true;
       try {
@@ -5976,8 +7474,14 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
+            // SEC-164 §3.5: a server transcript has its live keys masked before it is stored.
+            credentialScrubEnabled: credentialScrubEnabledReader(options.config.projectDir),
+            confineStranded: () => { throw new Error('pairing-not-ready'); },
+            documentNotes: (key: string) => this.documentNotesFor(`app:${key}`),
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+            // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
+            machineName: () => (options.meshSelfId ? verifiedEntityName(options.meshSelfId, options.machinePoolRegistry?.getCapacity(options.meshSelfId)?.nickname) : null),
             registry: routeCtx.conversationRegistry!,
             requests,
             holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
@@ -5985,16 +7489,16 @@ export class AgentServer {
             dispatch: () => dispatch,
             killSession: (name) => sm?.killSessionByTmuxName?.(name) === true,
             pauseSession: (name) => { sm?.sendKey?.(name, 'Escape'); },
-            onEmergencyStop: (alias) => {
-              try { options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
+            onEmergencyStop: (alias, scope) => {
+              try { if (scope !== 'conversation') options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
             mediaMaxStoreBytes: () => options.config.mobilePairing?.native?.media?.maxStoreBytes,
             // §4.5.1: voice notes the phone did not transcribe use Telegram's transcriber (same provider).
             // The dispatch waits 60 s; the provider call itself may run longer (a late transcript).
-            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFile(filePath, { explicit: configuredVoiceProvider(options.config), mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
-            voiceProviderName: () => resolveTranscriptionProvider({ explicit: configuredVoiceProvider(options.config) })?.name,
+            transcribeVoice: (filePath, mediaType, timeoutMs) => transcribeAudioFileDetailed(filePath, { explicit: configuredVoiceProvider(options.config), channel: 'app', mediaType, timeoutMs: timeoutMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }),
+            voiceProviderName: () => describeVoiceTranscription({ explicit: configuredVoiceProvider(options.config), cachedOnly: true }).active ?? undefined,
             raiseAttention: (item) => { void options.telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-media' }); },
             clearAttention: (conditionKey) => { options.telegram?.clearAttentionCondition({ conditionKey }, 'cleared: the app media store has room again'); },
             reportDegradation: (what, detail) => DegradationReporter.getInstance().report({
@@ -6004,6 +7508,7 @@ export class AgentServer {
           });
           const created = svc;
           dispatch = createAppInboundDispatch({
+            heldFromAReader: (key, message) => (this.mobilePairing?.heldFrom(key, message).length ?? 0) > 0,
             sessions: sm as unknown as Parameters<typeof createAppInboundDispatch>[0]['sessions'],
             channels: created.channels, store: created.store, stateDir: options.config.stateDir,
             spawnAdmission: () => options.spawnAdmission ?? null,
@@ -6018,8 +7523,25 @@ export class AgentServer {
         // reconciled against the device registry in both directions (a crash between the writes).
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
+        this.startTeamPuller(options);
+        this.startDocumentPuller(options);
+        const teamSvc = this.mobilePairing;
+        // The registry, not the dialable list: a peer with no usable address still counts.
+        const severalMachines = (): boolean => {
+          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().length ?? 0) > 1 || (options.resolvePeerUrls?.() ?? []).length > 0; } catch { return true; } // @silent-fallback-ok — an unreadable registry stamps, the safe direction
+        };
+        svc.store.useAccessStamps({
+          // Stamped once there could be a reader, and on any agent with peers: a cut-off machine cannot know of a first invite.
+          stamp: (ev) => (teamSvc.teamOn() || severalMachines() ? teamSvc.teamLog()?.stampMessage(ev.conversationKey, ev.role) ?? null : null),
+          saw: (stamp) => teamSvc.teamLog()?.noteMessage(stamp),
+        });
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
         this.mobilePairing.useAppConversationStore(svc.store);
+        // Set here on every path: production builds the service before this server exists.
+        const pairingForRecovery = this.mobilePairing;
+        svc.deps.confineStranded = (key, personKey, deviceId) => {
+          if (pairingForRecovery.devices.get(deviceId)?.role === 'team') pairingForRecovery.confineOwnConversation(key, personKey);
+        };
         if (keyLedger) {
           try {
             const rec = keyLedger.reconcile(this.mobilePairing.devices);
@@ -6030,6 +7552,14 @@ export class AgentServer {
             DegradationReporter.getInstance().report({
               feature: 'MobileDeviceKeyLedger', primary: 'reconcile the device-key ledger with the device registry at boot', fallback: 'the next boot retries',
               reason: err instanceof Error ? err.message : String(err), impact: 'Some signed app messages may read "couldn\'t check" until it is repaired.',
+            });
+          }
+          // Browser devices (dashboard-conversations-browser-device §4.2 step 10): finish or expire
+          // approvals a crash interrupted, and resume their effects, now that the ledger is attached.
+          try { this.mobilePairing.browser.recoverOnLedgerAttach(); } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'MobilePairing.browserRecovery', primary: 'finish browser approvals interrupted by a restart', fallback: 'retried from the pairing service tick',
+              reason: err instanceof Error ? err.message : String(err), impact: 'A browser approval or its owner notice may finish late.',
             });
           }
         } else {
@@ -6053,6 +7583,17 @@ export class AgentServer {
         svc.start();
         this.appConversations = svc;
         routeCtx.appConversations = svc;
+        if (options.workBoard) {
+          // Late-bound real board classification also covers replicas and already-created empty card chats.
+          svc.store.hiddenConversationKeys = () => {
+            const board = options.workBoard?.();
+            if (!board) {
+              if (!workBoardEnabled(options.config)) return new Set<string>();
+              throw new Error('work-card-visibility-unavailable');
+            }
+            return board.hiddenConversationKeys();
+          };
+        }
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'AppConversations', primary: 'native app conversations', fallback: 'the app conversation routes answer 503',
@@ -6061,6 +7602,9 @@ export class AgentServer {
       }
     }
     routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
+    routeCtx.reachablePeople = options.reachablePeople ?? null;
+    this.startEmail(options, routeCtx);
+    this.startReachNotices(options);
     this.startEcosystemIdeas(options, routeCtx);
     this.desktopSetupTarget = new DesktopSetupTarget({
       peerClaimAllowed: resolveDevAgentGate(options.config.remoteDesktop?.guidedSetup?.enabled, options.config),
@@ -6088,7 +7632,24 @@ export class AgentServer {
     routeCtx.desktopSetupTarget = this.desktopSetupTarget;
     this.attribution = this.createAttribution(options, routeCtx);
     routeCtx.attribution = this.attribution;
+    // Chief of Staff owner pause asks (spec cos-owner-pause-record §3.2): the source floor reads the attribution
+    // resolver and the same verified-owner principal the `cos:` button check uses. Bound here because the loop
+    // is built before attribution exists; unbound, asks answer `attribution-unavailable`.
+    {
+      const attribution = this.attribution;
+      const cosLoop = options.chiefOfStaffLoop;
+      // A stand-in loop (tests) may lack the binder; unbound, pause asks refuse 503 attribution-unavailable.
+      if (cosLoop && attribution?.enabled && typeof cosLoop.bindPauseSourceCheck === 'function') {
+        cosLoop.bindPauseSourceCheck(async (marker) => {
+          const { checkOwnerPauseSource } = await import('../core/cosOwnerPauseSource.js');
+          return checkOwnerPauseSource({ resolve: (ref) => attribution.resolve(ref), ownerUid: () => options.telegram?.getVerifiedOwner() ?? null, identity: attribution.identity.map }, marker);
+        });
+      }
+    }
     const routes = createRoutes(routeCtx);
+    this.attachWorkBoardRequestGate(options);
+    // sibling-machine-reach: the background holdings cache's timers stop with the server.
+    this.siblingHoldingsStop = () => (routes as unknown as { siblingHoldings?: { stop(): void } }).siblingHoldings?.stop();
     this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
@@ -6151,6 +7712,38 @@ export class AgentServer {
         stateDir: options.config.stateDir,
       }));
     }
+    // The per-prompt hook's single request and the delta shadow (context-budget
+    // §7.7, Phase 1 S15). Mounted BEFORE the main routes so its history-read
+    // observer (candidate re-fetches after an omission) sees /topic/context and
+    // /telegram/topics/:id/messages; it only observes and passes them through.
+    const promptSeedFetches = new SeedFetchLog();
+    const promptLayerFreshness = options.contextLayers && options.topicMemory
+      ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+      : null;
+    let reworkMemo: { at: number; value: ReworkBaseline | null } | null = null;
+    this.app.use(createPromptContextRoutes({
+      stateDir: options.config.stateDir,
+      shadowOn: () => !!options.contextLayers,
+      deltaSwitchOn: () => options.liveConfig?.get?.<boolean>('contextBudget.deltaHook.enabled', false) === true,
+      canary: () => (options.contextBudgetSentinel ? { report: options.contextBudgetSentinel.status().canary } : undefined),
+      briefing: (topicId) => {
+        if (!options.topicIntentStore) return '';
+        // Not recorded as a seed fetch: only the briefing route's own fetches can be the seed's.
+        return serveTopicIntentBriefing(options.topicIntentStore, topicId, promptLayerFreshness);
+      },
+      messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
+      seedFetches: promptSeedFetches,
+      // The measurement backend's rework rate (S13) is the delta comparison's baseline;
+      // synchronous SQLite reads, so one result is reused for 5 minutes.
+      rework: () => {
+        const at = Date.now();
+        if (reworkMemo && at - reworkMemo.at < 300_000) return reworkMemo.value;
+        const m = computeOverallRework(this.tokenLedger);
+        const value = m ? reworkBaselineOf(m) : null;
+        reworkMemo = { at, value };
+        return value;
+      },
+    }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with
@@ -6263,7 +7856,15 @@ export class AgentServer {
         clearAttention: (conditionKey, resolution) => telegram.clearAttentionCondition({ conditionKey }, resolution),
         sendAutomationReply: options.jobAnomalySendAutomationReply,
         sendDeterministicTopic: (topicId, message) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, message, { provenance: 'automation' })),
-        createPrivateView: options.viewer ? (title, markdown) => ({ id: options.viewer!.create(title, markdown).id }) : undefined,
+        // Old-link guarantee (§3.9b): a job report is a document in the job's own topic while documents replace pages.
+        // The link is posted in the job's topic, so the document must live there: when that topic is
+        // shared (the agent can't place a document in it) no link is made and the sentence points at the Jobs tab.
+        createPrivateView: options.viewer ? (title, markdown, topicId) => {
+          if (!this.documentsReplaceViews()) return { id: options.viewer!.create(title, markdown).id };
+          if (typeof topicId !== 'number' || !this.documentDepsMemo) return null;
+          const doc = publishAsDocument(this.documentDepsMemo, title, markdown, `telegram:${topicId}`, { onlyPreferred: true });
+          return doc ? { id: doc.id, url: doc.url } : null;
+        } : undefined,
         viewTunnelUrl: viewId => buildViewTunnelUrl(options.tunnel, options.config.authToken, viewId),
         ensureJobTopic: job => scheduler.ensureJobTopic(job),
         requestHealAttempt: ep => triage?.requestHealAttempt({
@@ -6486,6 +8087,72 @@ export class AgentServer {
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.startMaturationLadder(options, routeCtx);
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    // Never-Silent Conversation (docs/specs/never-silent-conversation.md §4): 503 while off.
+    this.app.use(createNeverSilentRoutes());
+    // Instar Documents (docs/specs/instar-document-viewer.md): dev-gated, 503 `documents-off` when off.
+    this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
+    // Old-link guarantee backstop (§3.9b): the viewer itself refuses new pages while documents replace them.
+    options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
+    // Permanent agent links: the agent-facing link builder (docs/specs/permanent-agent-links.md §2b; Bearer).
+    this.app.use(createAgentLinkRoutes({
+      stateDir: options.config.stateDir,
+      enabled: () => (options.liveConfig?.get
+        ? options.liveConfig.get<unknown>('agentLinks.enabled', false)
+        : (options.config as { agentLinks?: { enabled?: unknown } }).agentLinks?.enabled) === true,
+      splitMachines: () => {
+        const h = this.agentIdentityRuntime?.coherence.health();
+        if (!h || !h.selfDisk) return [];
+        return Object.values(h.siblingsPublish)
+          .filter((s) => s.status === 'observed' && s.fingerprint !== null && s.fingerprint !== h.selfDisk)
+          .map((s) => s.nickname);
+      },
+    }));
+    // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
+    this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
+    // gemini-payg-metered-lane: POST /intelligence/gemini, /intelligence/gemini/review,
+    // GET /intelligence/gemini/status (behind the Bearer middleware; loopback-only inside).
+    if (this.geminiPaygLane) this.app.use(this.geminiPaygLane.router);
+    // gemini-payg §4/§8/§9: key handoff, proposal, release proof, reduce-only stops, reconciliation.
+    if (this.geminiPaygGoLive) this.app.use(this.geminiPaygGoLive.router);
+    // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
+    {
+      const pageDeps = this.documentPageDeps(options);
+      this.app.use(createDocumentLinkRoutes({
+        config: () => options.config, pairing: () => this.mobilePairing ?? null,
+        machineId: () => this.meshSelfId ?? (options as { coordinator?: { identity?: { machineId?: string } | null } }).coordinator?.identity?.machineId ?? null,
+        isOwnHost: pageDeps.isOwnHost,
+      }));
+      setDocumentScopedSend((device, routePath, rawBody) => this.documentScopedSendOk(device, routePath, rawBody));
+      // A member's computer joining from the owner's team invite (docs/specs/member-browser-any-computer.md).
+      const joinDeps = {
+        config: () => options.config, pairing: () => this.mobilePairing ?? null,
+        machineId: () => this.meshSelfId ?? (options as { coordinator?: { identity?: { machineId?: string } | null } }).coordinator?.identity?.machineId ?? null,
+        writesBlockedBy: () => this.computerWritesBlockedBy(),
+        ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? '').trim(),
+        notice: {
+          raise: (key: string, title: string, text: string) => { void this.raiseReachNotice({ conditionKey: key, title, text }); },
+          close: (key: string) => { this.closeAgentNotice(key); },
+        },
+        addresses: () => this.computerAddresses(),
+      };
+      this.app.use(createDocumentJoinRoutes(joinDeps));
+      // The linked-computer expiry sweep also runs whenever team phones are reconciled (§3.6a item 3).
+      if (this.mobilePairing) {
+        const svc = this.mobilePairing;
+        // The pair page offers "Use this computer instead" only when computers can join here (§3.1 step 2).
+        svc.computersCanJoin = () => isDocumentsEnabled(options.config) && svc.browserOn();
+        svc.linkedBrowserSweep = () => {
+          if (!isDocumentsEnabled(options.config)) return;
+          sweepLinkedBrowsers(svc, Date.now());
+          // A joined computer's admission finished after a crash, and computers bound to this
+          // machine's own address taken over after a rebuild (§3.3.2, §3.5).
+          try { reconcileJoinedComputers(svc, joinDeps, Date.now()); } catch (err) { svc.reportTeamFault('Documents.joinReconcile', err); } // @silent-fallback-ok — reported; the next pass retries
+          try { this.adoptJoinedComputers(); } catch (err) { svc.reportTeamFault('Documents.joinAdopt', err); } // @silent-fallback-ok — reported; the next pass retries
+        };
+      }
+    }
+    // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
+    this.startDocumentPuller(options);
     this.app.use(createMaturationLadderRoutes({
       enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
       ladder: () => this.maturationLadder,
@@ -6495,6 +8162,13 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
+    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
+    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
+    // Quota pacing (docs/specs/quota-pacing-forecast.md): reading history + read-only forecast
+    // (dev-gated through subscriptionPool.pacing.enabled; 503 quota-pacing-off when it resolves off).
+    this.startQuotaPacing(options);
+    this.app.use(createQuotaPacingRoutes({ ...routeCtx, quotaPacing: () => this.quotaPacingLedger }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -6503,6 +8177,7 @@ export class AgentServer {
         dispatch: () => options.slackInboundDispatch?.() ?? null,
         killAllSessions: () => {
           try { holdAllSetups(options.config.stateDir); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
+          try { activeSlackRefusedHold()?.dropAll('emergency stop'); } catch { /* @silent-fallback-ok — the stop itself must never fail over this */ }
           let any = false;
           for (const sess of options.sessionManager.listRunningSessions()) { try { options.sessionManager.killSession(sess.id); any = true; } catch { /* @silent-fallback-ok — already gone */ } }
           return any;
@@ -6511,8 +8186,45 @@ export class AgentServer {
         holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       })
       : null;
+    let startOwnedGraphInventory:((runtime:import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,identity:import('../core/MachineIdentity.js').MachineIdentityManager)=>void)|null=null;
+    // Unread (docs/specs/mobile-unread-messages.md): the service over the replicated marker store and the
+    // three message sources the list already loads. Built only when server.ts built the store (native
+    // chat on and the flag on); `enabled()` is read live so the flag can switch unread off alone.
+    if (this.mobilePairing && this.appConversations && options.readMarkers) {
+      const mp = this.mobilePairing;
+      const appSvc = this.appConversations;
+      const telegram = options.telegram;
+      this.conversationUnread = new ConversationUnreadService({
+        store: options.readMarkers,
+        enabled: () => mp.nativeOn && isMobileUnreadEnabled(this.config),
+        machineId: () => appSvc.deps.machineId(),
+        app: appSvc.store,
+        telegram: telegram ? {
+          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          version: (topicId) => telegram.getTopicContentVersion(topicId),
+          exists: (topicId) => telegramTopicKnown(telegram, topicId),
+        } : null,
+        slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
+        ownerIdentity: () => mp.ownerIdentity(),
+        personOfReaderKey: (key) => personOfReaderKey(mp, key),
+        readerRemoved: (key) => readerRemovedHere(mp, key),
+        mayUse: (person, ref, op) => mp.mayUse(person, ref, op ?? 'read'),
+        mayReadMessage: (person, key, m) => mp.mayReadStored(person, key, m),
+        peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+        peerAllowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+        authToken: () => this.config.authToken ?? '',
+        recordRope: routeCtx.recordRopeResult ?? undefined,
+        hlcNowMs: options.readMarkersHlcNowMs,
+        report: (what, detail) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'unread counts and read markers for app conversations',
+          fallback: 'a count reads unknown or a marker is shared later', reason: detail, impact: 'An unread count in the app may lag.',
+        }),
+      });
+      routeCtx.conversationUnread = this.conversationUnread;
+    }
     if (this.mobilePairing) {
       this.app.use(createMobileSlackRouter({
+        unread: this.conversationUnread,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
         // The same machine id the conversation list puts on its rows.
@@ -6526,20 +8238,150 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
-      this.app.use(createMobileConversationRouter({
+      /** topicId → the Chief of Staff's project title, read per call (a failed read just means no fallback). */
+      const cosProjectTitles = (): Map<number, string> => {
+        try { return projectTitlesByTopic(options.chiefOfStaffLoop?.projectsSummary() ?? []); }
+        catch { return new Map(); } // @silent-fallback-ok — the title is only a fallback for a missing name
+      };
+      const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
+        unread: this.conversationUnread,
+        // Conversation-list pins: server.ts builds it replicated; a server built without it keeps pins on this machine only.
+        listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        // SEC-164 §4.5: the removed-key notice, built by createRoutes (it holds Secret Drop).
+        credentialNotice: (input) => routeCtx.appCredentialNotice?.(input),
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
-        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
+        creationHierarchySource: () => {
+          const snapshot = options.chiefOfStaffLoop?.creationPlacementSnapshot();
+          const evidence = options.workBoard?.()?.creationEvidenceSnapshot();
+          const registry = options.conversationRegistry;
+          const telegramTopicIds = new Set(options.telegram?.getAllTopicMappings().map(m => m.topicId) ?? []);
+          const slackVisibleIds = new Set(slackBridge && slackOwnerUserId(options.config) ? slackListRows(slackBridge).map(row => row.id) : []);
+          return {
+            version: JSON.stringify([[...telegramTopicIds].sort((a, b) => a - b), [...slackVisibleIds].sort((a, b) => a - b), snapshot?.version ?? 'unavailable', evidence?.version ?? 'unavailable', evidence?.complete === true, registry?.creationIdentityVersion() ?? 'unavailable']),
+            complete: snapshot?.complete === true,
+            parents: snapshot?.parents ?? new Map<string, string | null>(),
+            confirmedProjects: snapshot?.confirmedProjects ?? new Set<string>(),
+            cardEvidence: evidence?.complete ? evidence.items : [],
+            resolveRef: (raw: string, originMachineId?: string): string | null => {
+              const app = /^(?:app:)?([0-9a-f]{8}-[0-9a-f-]{27})$/i.exec(raw);
+              if (app) return this.appConversations?.liveConversation(app[1].toLowerCase()) ? `app:${app[1].toLowerCase()}` : null;
+              const topic = /^telegram:([1-9]\d*)$/.exec(raw);
+              if (topic) return telegramTopicIds.has(Number(topic[1])) ? raw : null;
+              const alias = /^slack:([^:]+):(-\d+)$/.exec(raw);
+              if (alias) {
+                if (!originMachineId || alias[1] !== originMachineId || alias[1] !== this.appConversations?.deps.machineId()) return null;
+                const resolved = registry?.resolve(Number(alias[2]));
+                return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+              }
+              const resolved = registry?.resolveByKey(raw);
+              return resolved?.platform === 'slack' && slackVisibleIds.has(resolved.id) ? resolved.key : null;
+            },
+          };
+        },
+        // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
+        chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
+        chiefOfStaff: options.chiefOfStaffLoop ? () => {
+          const loop = options.chiefOfStaffLoop!;
+          const t = this.state.get<number>('chief-of-staff-topic');
+          const parents = new Map<string, string | null>();
+          for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
+          return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
+        } : undefined,
+        telegramTopics: options.telegram ? () => {
+          // A topic with no stored name shows its bound project's title, never "Name not available yet" (2026-11-20).
+          const projectTitles = cosProjectTitles();
+          return options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
-          return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
-        }) : undefined,
+          return { topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles), lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
+          });
+        } : undefined,
+      };
+      this.app.use(createMobileConversationRouter(conversationFlatDeps));
+      // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
+      const searchDeps: ConversationSearchRouteDeps = {
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: conversationFlatDeps.machineId,
+        topicMemory: () => options.topicMemory ?? null,
+        telegramTopics: options.telegram ? () => { const projectTitles = cosProjectTitles(); return options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: topicDisplayName(m.topicId, m.topicName, projectTitles) })); } : undefined,
+        telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
+          return row ? telegramRowId(row) : null;
+        } : undefined,
+        slack: slackBridge ? () => (slackOwnerUserId(options.config) ? {
+          conversations: () => slackListRows(slackBridge).map((c) => ({ id: c.id, title: c.title })),
+          history: (id, limit) => { const conv = slackBridge.resolve(id); return conv ? slackBridge.history(conv, limit) : []; },
+        } : null) : undefined,
+        pool: routeCtx,
+      };
+      // Meaning search (§4): a machine-local message embedding index fed in the background with the
+      // shared local model (the one SemanticMemory loads at boot); off with search.meaning.enabled: false.
+      const embedder = options.conversationEmbedder ?? options.semanticMemory?.getEmbeddingProvider() ?? null;
+      if (this.appConversations && embedder) {
+        const index = new ConversationEmbeddingIndex({ dbPath: path.join(options.config.stateDir, 'state', 'conversation-embeddings.db'), dimensions: embedder.dimensions });
+        try {
+          index.open(embedder);
+          const feeder = new ConversationEmbeddingFeeder({
+            index, embedder: () => embedder, sources: () => conversationIndexSources(searchDeps),
+            enabled: () => !!this.mobilePairing?.enabled() && isMeaningSearchEnabled(options.config),
+            report: (what, detail) => DegradationReporter.getInstance().report({
+              feature: what, primary: 'meaning search over conversations (background message embedding)',
+              fallback: 'the next tick tries again; keyword search is unaffected', reason: detail, impact: 'Newer messages may not be found by meaning yet.',
+            }),
+          });
+          this.conversationEmbeddings = { index, feeder };
+          searchDeps.meaning = () => ({ index, embedder, coverage: () => feeder.coverage() });
+          feeder.start();
+        } catch (err) {
+          // @silent-fallback-ok — reported; meaning answers 503 meaning-unavailable and keyword search is unaffected
+          index.close();
+          DegradationReporter.getInstance().report({
+            feature: 'ConversationEmbeddings.open', primary: 'meaning search over conversations',
+            fallback: 'meaning search answers 503 meaning-unavailable; keyword search works', reason: err instanceof Error ? err.message : String(err),
+            impact: 'Searching by meaning is unavailable on this machine.',
+          });
+        }
+      }
+      this.app.use(createConversationSearchRouter(searchDeps));
+      if(routeCtx.conversationRegistry){
+        startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
+          // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
+          return new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime:active,identity,membership:()=>active.installedMembership,ownerPublicKey:active.ownerPublicKey,
+            telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});
+        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
+        const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
+        if(existing&&identity)startOwnedGraphInventory(existing,identity);
+      }
+      // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
+      // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
+      const pinTelegram = options.telegram ? {
+        exists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId),
+        serving: () => this.mobilePairing!.holdsLease(),
+        textOf: (topicId: number, messageId: string) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
+          return row && typeof row.text === 'string' ? deviceTextForRow(row.text) : null;
+        },
+        pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.setTopicMessagePin(topicId, messageId, pinned),
+      } : null;
+      this.app.use(createMobilePinRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        telegram: pinTelegram ? () => pinTelegram : null,
+        slack: slackBridge ? () => slackBridge : null,
       }));
+      // A pin someone makes inside Telegram is recorded here (only the polling machine receives it; the event replicates).
+      if (options.telegram && this.appConversations) {
+        const app = this.appConversations;
+        options.telegram.onTopicMessagePinned = (p) => {
+          recordTelegramPin({ config: options.config, service: app, textOf: pinTelegram?.textOf, report: (d) => app.deps.reportDegradation?.('AppConversations.telegramPin', d) }, p);
+        };
+      }
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
@@ -6558,7 +8400,7 @@ export class AgentServer {
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
         // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
-        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId) } : {}),
       }));
       // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
       // this machine and a dashboard link focused on it. The same "held here" checks as media.
@@ -6569,7 +8411,7 @@ export class AgentServer {
         pairing: this.mobilePairing,
         conversationKnown: (ref) => {
           if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
-          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          if (ref.kind === 'telegram') return !!options.telegram && telegramTopicKnown(options.telegram, ref.topicId);
           return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
         },
         sessionNameFor: (ref) => {
@@ -6587,7 +8429,11 @@ export class AgentServer {
         ownerMachineFor: (ref) => {
           // A Slack conversation is held by the machine whose registry minted it (checked above).
           if (ref.kind === 'slack') return null;
-          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          if (ref.kind === 'app') {
+            if (appSvcForSession?.serves(ref.key)) return null;
+            // A moved conversation lives where its record says (app-conversations-in-the-pool §2.1).
+            return routeCtx.sessionOwnershipRegistry?.ownerOf(`app:${ref.key}`) ?? leaseHolderNow();
+          }
           return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
         },
         selfMachineId: selfIdNow,
@@ -6614,9 +8460,36 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. A session on this machine can still read it; a session on another machine is told it has not arrived there.`);
           }
         });
+      }
+      // native-conversation-base §3c items 4 to 7: a Telegram file is readable on the machine that runs
+      // the session. File lines are built from `media[]` on the serving machine; a file that has not
+      // arrived yet gets a durable waiter that the append listener, the start-up sweep and the
+      // periodic sweep reconcile. With native media off here, sessions are told the file is on another
+      // machine (or given this machine's own download).
+      if (options.telegram) {
+        const tg = options.telegram;
+        const sm = options.sessionManager;
+        const pm = new PlatformMediaForSession({
+          service: () => (isMobileMediaEnabled(options.config) ? this.appConversations ?? null : null),
+          downloadDirs: () => telegramDownloadDirs(options.config.stateDir),
+          injectToTopic: (topicId, line) => {
+            const name = tg.getSessionForTopic(topicId);
+            if (!name || !sm.isSessionAlive(name)) return false;
+            return sm.injectMessage(name, `[telegram:${topicId}] ${line}`, { firstParty: { source: 'platform-media' } }) !== false;
+          },
+          report: (what, err) => DegradationReporter.getInstance().report({
+            feature: 'PlatformMediaForSession', primary: 'give the session a Telegram file on its own machine',
+            fallback: 'the session is told the file is still copying or on another machine',
+            reason: `${what}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A file line may arrive late.',
+          }),
+        });
+        setPlatformMediaForSession(pm);
+        this.platformMedia = pm;
+        routeCtx.platformMedia = pm;
+        pm.start();
       }
       // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
       // adapter downloads for an inbound message is also copied in, under the conversation's
@@ -6640,7 +8513,203 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      // The stand-in owner chat's test routes: mounted only when it passed its conditions at this boot.
+      if (this.throwawayOwnerChat?.builtLive) mountThrowawayOwnerChatRoutes(this.app, this.throwawayOwnerChat, { authToken: () => configRef.authToken, port: () => this.config.port });
+      // Organization pack (docs/specs/org-pack-and-join.md): bearer preparation, owner-device acts.
+      {
+        const pairing = this.mobilePairing;
+        const autonomy = options.autonomyManager ?? null;
+        this.app.use(createOrgPackRouter({
+          stateDir: options.config.stateDir,
+          machineId: this.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'single-machine',
+          updateOrigin: () => pairing.origin(),
+          ownerName: () => String((options.config as { threadline?: { ownerName?: string } }).threadline?.ownerName ?? options.config.projectName ?? 'the owner'),
+          agentName: () => String(options.config.projectName ?? ''),
+          principalKind: (req) => principalOf(req).kind,
+          intelligence: () => options.intelligence ?? null,
+          config: () => options.config,
+          journal: orgDecisionJournal(options.config.stateDir),
+          effects: () => ({
+            currentProfile: autonomy ? () => autonomy.getProfile() : undefined,
+            currentSettings: autonomy ? () => autonomy.authoritySettings() : undefined,
+            lowerProfile: autonomy ? (cap, orgName) => autonomy.lowerForOrgPolicy(cap, orgName) : undefined,
+            restoreProfile: autonomy ? (prev, cap) => { autonomy.restoreAfterOrgPolicy(prev, cap); } : undefined,
+            clampSettings: autonomy ? (cap) => autonomy.clampForOrgPolicy(cap) : undefined,
+            restoreSettings: autonomy ? (prev, cap) => autonomy.restoreClampedSettings(prev, cap) : undefined,
+          }),
+        }));
+      }
+      const pairingSvc = this.mobilePairing;
+      const appStore = this.appConversations?.store ?? null;
+      const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
+      const isSystemTopicHere = (id: number) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId();
+      const isJobTopicHere = (id: number) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id);
+      const teamSelfId = (): string | null => options.coordinator?.identity?.machineId ?? options.meshSelfId ?? null;
+      const peerStanding = (machineId: string) => pairingSvc.teamPuller?.standings().find((p) => p.machineId === machineId)?.standing ?? null;
+      const teamSwitches = new TeamSwitchApplier({
+        selfMachineId: teamSelfId,
+        peers: () => this.teamSwitchPeers(),
+        knownMachines: () => {
+          try {
+            return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false));
+          } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
+        },
+        applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
+        reportsOn: (setting, machineId) => {
+          const s = peerStanding(machineId);
+          // A machine's standing carries no files flag, so a files request is settled only by the peer's own answer.
+          if (setting === 'files') return false;
+          return !!s && (setting === 'memory-privacy' ? s.privacy : s.native);
+        },
+        file: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'switch-requests.json'),
+        reportError: (err) => pairingSvc.reportTeamFault('TeamAccess.switch', err),
+      });
+      this.teamSwitchApplier = teamSwitches;
+      // standby-durable-forward-without-token §9: a machine the owner recorded as gone closes its
+      // held-reply debt as a LOSS (one attention item each), never by silent deletion. Wired once here.
+      void import('../messaging/telegram-origin/TokenlessHeldDebt.js').then(m => m.setHeldDebtGoneCheck(
+        id => pairingSvc.teamLog()?.isGone(id) ?? false,
+        entry => {
+          /* @self-action-controller: held-debt-loss-notice */
+          void options.telegram?.createAttentionItem({ id: `telegram-origin-held-lost:${entry.originMachineId}:${entry.rootOperationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A reply was lost with a removed machine',
+            summary: `A reply${entry.topicId == null ? '' : ` to ${topicRef(entry.topicId)}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
+            sourceContext: 'telegram-origin-held-debt' }, { hubOnly: true }).catch(() => undefined); // @silent-fallback-ok — the loss is also visible in the held-debt status
+        })).catch(() => undefined); // @silent-fallback-ok — closure then waits for the next status read wiring
+      this.app.use(createTeamRouter(pairingSvc, {
+        signer: () => loadMachineSigner(options.config.stateDir),
+        applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
+        isSystemTopic: isSystemTopicHere,
+        isJobTopic: isJobTopicHere,
+        isUnconfinableTopic: (id) => {
+          const framework = options.topicProfile?.store.resolve(id)?.framework;
+          return !!framework && framework !== 'claude-code';
+        },
+        ownerProfile: () => {
+          const users = new UserManager(options.config.stateDir, options.config.users).listUsers();
+          const owners = users.filter((u) => deriveRole(u.permissions ?? [], u.orgRole) === 'owner');
+          const id = options.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? owners[0]?.id ?? null;
+          const owner = users.find((u) => u.id === id);
+          return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
+        },
+        logsDir: path.join(options.config.stateDir, 'logs'),
+        stateDir: options.config.stateDir,
+        conversationTitle: (refOrPlace) => {
+          const topic = /^telegram:(?:topic:)?(\d+)$/.exec(refOrPlace);
+          if (topic) return options.telegram?.getAllTopicMappings().find((m) => m.topicId === Number(topic[1]))?.topicName ?? null;
+          return appStore?.getConversation(refOrPlace.replace(/^app:/, ''))?.title ?? null;
+        },
+        restoreRefs: () => {
+          const keys = appStore?.liveConversationKeys() ?? [];
+          const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
+          const holdsTeamWords = (key: string): boolean => {
+            let cursor: string | null = null;
+            for (;;) {
+              const page = appStore!.syncEvents(key, cursor, 500);
+              if (page.events.some((e) => 'origin' in e && teamDevices.has((e as { origin?: { deviceId?: string } }).origin?.deviceId ?? ''))) return true;
+              if (page.events.length === 0 || page.cursor === cursor) return false;
+              cursor = page.cursor;
+            }
+          };
+          return {
+            teamRefs: keys.filter(holdsTeamWords).map(confinedEntryFor),
+            // System and job topics are never shared, so a sweep leaves them alone (§3.3).
+            allRefs: () => [...keys, ...(options.telegram?.getAllTopicMappings() ?? []).filter((m) => !isSystemTopicHere(m.topicId) && !isJobTopicHere(m.topicId)).map((m) => `telegram:${m.topicId}`)].map(confinedEntryFor),
+          };
+        },
+        requireMemoryPrivacy: () => {
+          options.liveConfig?.set('memoryPrivacy.enabled', true);
+          return this.requestSupervisedRestart('memory privacy turned on for team members', 'team-memory-privacy');
+        },
+        turnOnEverywhere: (setting, requestedBy) => teamSwitches.turnOn(setting, `owner-device-${requestedBy}`.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, '-')),
+        selfStanding: () => {
+          const privacy = options.sessionManager.memoryPrivacyStatus?.();
+          return {
+            machineId: teamSelfId() ?? 'this-machine',
+            standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
+          };
+        },
+        switchRequests: () => teamSwitches.requested(),
+        // On: the live status. Off: what turning it on for team members would give (several people).
+        agentSessionsWhenOn: () => {
+          const status = options.sessionManager.memoryPrivacyStatus?.();
+          if (status?.enabled) return status.agentSessions;
+          const refuse = options.liveConfig?.get ? options.liveConfig.get<unknown>('memoryPrivacy.refuseAgentSessions', false) : (options.config as { memoryPrivacy?: { refuseAgentSessions?: unknown } }).memoryPrivacy?.refuseAgentSessions;
+          return refuse === true ? 'refused' : 'own-place';
+        },
+      }));
     }
+
+    // Explicit release switches only. Storage and catch-up do not opt an
+    // installation into exposing the graph; every enabled read still checks
+    // actual runtime readiness and current owner admission.
+    const graphSurfaceConfig=options.config.multiMachine?.conversationGraph;
+    let graphSurfaceMounted=false;
+    // Conversations suggestion step + Chief of Staff root (docs/specs/conversation-graph-suggestions.md).
+    const graphChiefOfStaffTopicId=():number|null=>{
+      if(!options.chiefOfStaffLoop)return null;
+      const t=this.state.get<number>('chief-of-staff-topic');
+      return typeof t==='number'&&Number.isSafeInteger(t)&&t>1?t:null;
+    };
+    // work-front-doors stage 2b (spec §3.2): each open card's conversation and its project's conversation, so a
+    // project's page shows the card as proposed until the card-record graph authority exists. Read-only.
+    // work-front-doors stage 2b (spec §3.2): each open card's conversation and its project's conversation, so a
+    // project's page shows the card as proposed until the card-record graph authority exists. Read-only.
+    const graphTelegramChatId=():string=>String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'');
+    const graphMayPresent=(ref:import('../core/conversationGraph.js').NodeRef)=>{
+      if(ref.kind!=='conversation'||ref.platform!=='app')return true;
+      if(options.workBoard){const board=options.workBoard();if(!board){if(!workBoardEnabled(options.config))return true;throw new Error('work-card-visibility-unavailable');}return !board.hiddenConversationKeys().has(ref.conversationKey);}
+      return !this.appConversations?.store.isHiddenConversation(ref.conversationKey);
+    };
+    const graphCardPlacements=()=>{const board=options.workBoard?.();if(!board)return [];const hidden=board.hiddenConversationKeys();return cardPlacementsFromBoard(board.svc,graphTelegramChatId(),ck=>!hidden.has(ck));};
+    const graphSuggestions={intelligence:options.intelligence??null,evidence:(ref:import('../core/conversationGraph.js').ConversationRef)=>{
+      if(ref.platform!=='telegram')return{project:null,text:''};
+      const id=ref.topicId;
+      const binding=options.coherenceGate?.currentTopicBindings?.()[String(id)];
+      const summary=options.topicMemory?.getTopicSummary(id)??null;
+      const goals=Object.values(options.topicIntentStore?.read(id)?.refs??{})
+        .filter(r=>r.status==='live'&&r.kind==='goal').slice(-2).map(r=>r.text.slice(0,200));
+      const text=[summary?.purpose??'',goals.join(' / '),summary?.summary??''].filter(part=>part.trim()).join(' — ').slice(0,600);
+      return{project:binding?.projectName??null,text};
+    },
+    // work-front-doors stage 2b: each Chief of Staff bound project is offered as a ready-made suggestion; the
+    // owner's Accept makes it an effort with its conversation as the front door (projects become efforts only
+    // by the owner's accept). Members: the project conversation and its Chief of Staff tree children.
+    projects:()=>options.chiefOfStaffLoop?projectSuggestionSources(options.chiefOfStaffLoop,graphTelegramChatId()):[],
+    // conversation-graph-suggestions-replicated-decisions: the owner's decisions shared with the agent's other machines.
+    decisions:options.conversationGraphSuggestionDecisions??null};
+    // "Make this group a project" (docs/specs/conversation-groups-phone.md §3): the draft route needs the bound keys.
+    const graphGroupProjects={chiefOfStaffOn:()=>Boolean(options.chiefOfStaffLoop),boundProjects:()=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.boundProjectContents():null,
+      bindProject:(input:Parameters<NonNullable<typeof options.chiefOfStaffLoop>['bindProject']>[0])=>options.chiefOfStaffLoop?options.chiefOfStaffLoop.bindProject(input):{ok:false as const,reason:'write-refused' as const},confirmHolder:this.groupProjectConfirm};
+    if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
+      graphSurfaceMounted=true;
+      this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
+        runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
+        identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
+        telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
+        pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
+        ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
+          localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],
+          authToken:()=>options.config.authToken!,agentId:options.conversationGraphReplicationRuntime.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
+    }
+    else if(graphSurfaceConfig?.readEnabled===true&&!options.conversationGraphReplicationRuntime&&options.conversationGraphDefault){
+      graphSurfaceMounted=true;
+      const owned=options.conversationGraphDefault;
+      this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
+        scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
+        verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
+        onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
+        ...(options.config.authToken?{history:{selfMachineId:'pending-owned-runtime',localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],authToken:()=>options.config.authToken!,agentId:owned.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
+    }
+    // Configured off (or nothing to serve it): every graph route answers one
+    // 503 `conversation-graph-off` instead of Express's HTML "Cannot GET".
+    // Mounted at the end of route setup, just before the error handler, so it
+    // only ever answers a graph request nothing else handled.
+    const graphOff=!graphSurfaceMounted;
+    // No graph surface here: a phone project confirm answers a lasting refusal, never "try again" forever.
+    if(graphOff)this.groupProjectConfirm.off=true;
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -6762,6 +8831,10 @@ export class AgentServer {
     const topicIntentRoutes = createTopicIntentRoutes({
       topicIntentStore: options.topicIntentStore ?? null,
       arcCheck: options.topicIntentArcCheck ?? null,
+      layerFreshness: options.contextLayers && options.topicMemory
+        ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+        : null,
+      onBriefingServed: (topicId: number, text: string) => promptSeedFetches.noteBriefing(topicId, text),
     });
     this.app.use(topicIntentRoutes);
 
@@ -6799,6 +8872,10 @@ export class AgentServer {
       onInitiate: options.onHandoffInitiate ?? null,
       inProgress: options.handoffInProgress ?? null,
     }));
+
+    // Conversations off or unavailable: the graph fallback (see above). Last
+    // before the error handler, and it steps aside for anything added later.
+    if (graphOff) this.app.use(createConversationGraphOffRouter());
 
     // Error handler (must be last)
     this.app.use(errorHandler);
@@ -7927,6 +10004,80 @@ export class AgentServer {
   }
 
   /**
+   * agent-work-cards-default §3: the request-to-card gate joins the Work Board runtime to the commitments, the durable
+   * message rows (Telegram log, app conversation events), the device registry and the team record. Every input the gate
+   * reads is a recorded fact on THIS machine; absent pieces leave the gate inert (a commitment then reads
+   * `cardPending` with a retryable reason, never a silent nothing).
+   */
+  private attachWorkBoardRequestGate(options: ConstructorParameters<typeof AgentServer>[0]): void {
+    const runtime = options.workBoard?.() ?? null;
+    const tracker = options.commitmentTracker ?? null;
+    const pairing = this.mobilePairing;
+    if (!runtime || !tracker || !pairing) return;
+    if (runtime.gate) return; // already attached (a test rig, or an earlier wiring): never overwrite its seams
+    const selfId = options.meshSelfId ?? 'local';
+    const telegram = options.telegram ?? null;
+    const appStore = options.appConversations?.store ?? null;
+    const cos = options.chiefOfStaffLoop ?? null;
+    const projectKeyFor = (candidates: string[]): string | null => {
+      let rows: Array<{ conversationKey: string }> = [];
+      try { rows = cos?.projectsSummary() ?? []; } catch { /* @silent-fallback-ok: an unreadable project list puts the card in General, which the agent can move */ rows = []; }
+      const keys = new Set(rows.map((r) => r.conversationKey));
+      return candidates.find((k) => keys.has(k)) ?? null;
+    };
+    const teamPeople = () => pairing.teamLog()?.state().people ?? new Map<string, { personKey: string; links: Record<string, string | number> }>();
+    runtime.attachRequestGate({
+      operatorConversation: (conversationKey) => {
+        const tg = /^telegram:(-?\d+)$/.exec(conversationKey);
+        if (tg) return telegram ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        if (conversationKey.startsWith('slack:')) return options.slack ? { ok: true, projectKey: projectKeyFor([conversationKey]) } : { ok: false };
+        // An app conversation that exists here (a card's own conversation links to its card inside the gate).
+        if (!appStore || !appStore.getConversation(conversationKey)) return { ok: false };
+        return { ok: true, projectKey: projectKeyFor([`app:${conversationKey}`, conversationKey]) };
+      },
+      telegramRow: telegram ? (topicId, messageId) => {
+        const r = telegram.findTopicMessage(topicId, messageId, Date.now() - 30 * 86_400_000);
+        return { entry: r.entry as never, ...(r.unreadable ? { unreadable: true } : {}), ...(r.budgetExceeded ? { budgetExceeded: true } : {}) };
+      } : undefined,
+      appRow: appStore ? (conversationKey, messageId) => {
+        const ev = appStore.getMessageEvent(conversationKey, messageId) as { kind?: string; role?: 'operator' | 'agent'; text?: string; origin?: { deviceId?: string }; senderRole?: 'owner' | 'msp' | 'team'; senderPerson?: { machineId: string; userId: string } } | null;
+        if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message') || !ev.role || typeof ev.text !== 'string') return null;
+        return { role: ev.role, text: ev.text, deviceId: ev.origin?.deviceId ?? null, senderRole: ev.senderRole, senderPerson: ev.senderPerson };
+      } : undefined,
+      deviceRecord: (deviceId) => {
+        const d = pairing.devices.get(deviceId);
+        return d ? { status: String(d.status), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}), ...(d.userId ? { userId: d.userId } : {}), ...(d.role ? { role: d.role } : {}) } : null;
+      },
+      telegramOwnerId: () => pairing.ownerIdentity().telegramOwnerId ?? telegram?.getOwnerUserId() ?? null,
+      teamPersonForTelegramId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/telegram/i.test(k) && String(v) === String(id)) return p.personKey;
+        return null;
+      },
+      slackOwnerId: () => pairing.ownerIdentity().slackOwnerUserId ?? null,
+      teamPersonForSlackId: (id) => {
+        for (const p of teamPeople().values()) for (const [k, v] of Object.entries(p.links ?? {})) if (/slack/i.test(k) && String(v) === id) return p.personKey;
+        return null;
+      },
+      commitments: {
+        list: () => {
+          const own = tracker.getAll().map((c) => ({ ...c, originMachineId: c.originMachineId ?? selfId }));
+          const replicas = (options.commitmentReplicaStore?.allReplicas() ?? []).flatMap((r) => r.records.map((c) => ({ ...c, originMachineId: c.originMachineId ?? r.ownerMachineId })));
+          return [...own, ...replicas] as never;
+        },
+        annotate: (id, patch) => { tracker.annotateCard(id, patch); },
+        supersedeSentinels: (conversationKey, userRequest, agentResponse, byId) => tracker.supersedeSentinelsFor(conversationKey, userRequest, agentResponse, byId),
+      },
+      teamKey: () => pairing.teamLog()?.state().ownerPersonKey ?? 'owner',
+      log: (event, detail) => {
+        console.log(`  [work-board] ${event} ${JSON.stringify(detail)}`);
+        // Maturation evidence (workBoard.agentWorkCards ladder): one `fired` per card the gate wrote, one `error` per refusal.
+        if (event === 'work-board-request-card-written') featureEvidence.record('workBoard.agentWorkCards', { kind: 'fired', reason: detail.backfill ? 'backfill' : 'gate' });
+        else if (event === 'work-board-request-card-refused') featureEvidence.record('workBoard.agentWorkCards', { kind: 'error', reason: String(detail.error ?? 'refused') });
+      },
+    });
+  }
+
+  /**
    * Initiate the server's EXISTING supervised restart — the same
    * `state/restart-requested.json` flag the auto-updater writes, which the
    * supervisor (launchd keepalive) and the ForegroundRestartWatcher already act
@@ -7937,21 +10088,29 @@ export class AgentServer {
    * `503` naming the reason and leaves the state unchanged rather than
    * reporting a restart that will never happen.
    */
-  private requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): boolean {
+  private async requestSupervisedRestart(reason: string, requestedBy = 'money-layer-enable'): Promise<boolean> {
+    const requestedAt = new Date().toISOString();
+    // planned-restart-keeps-lead §1 step 1: the lease holder extends its lease over the coming boot
+    // before the request is visible. Never throws; resolves at once when there is nothing to extend.
+    await announceRestartRequested({ requestedBy, reason, requestedAt });
     try {
       const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
       fs.mkdirSync(path.dirname(flagPath), { recursive: true });
       const data = {
-        requestedAt: new Date().toISOString(),
+        requestedAt,
         requestedBy,
         reason,
         plannedRestart: true, // maintenance, not a crash — the supervisor reads this
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
+      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
+        const previous = readRestartRequestFile(flagPath);
+        const update = pendingUpdateRestartTarget(flagPath, previous);
+        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
+        return update;
+      });
+      if (existingUpdate) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {
@@ -8031,6 +10190,10 @@ export class AgentServer {
       });
       this.server = this.app.listen(this.config.port, host, () => {
         console.log(`[instar] Server listening on ${host}:${this.config.port}`);
+        // bootReadiness.state becomes "ready" (GET /health): the real server is serving.
+        bootReadiness().markReady();
+        // Identity A4: reopen the home address only if the owner had asked and the network is an allowed one.
+        void this.mobilePairing?.sameNetwork?.start().catch((err) => console.warn('[instar] same-network listener start failed:', err));
         // Threadline MCP over local HTTP: the boot readiness probe (D4) runs now
         // that the listener is up, against the URL built from the ACTUAL address.
         try {
@@ -8048,6 +10211,12 @@ export class AgentServer {
           sessionManager: this.sessionManager,
           state: this.state,
           authToken: this.config.authToken,
+          // SEC-002b: accept a dst_ scoped session token on /ws (dark by default) and close the
+          // stream when its session family is revoked.
+          scopedSessionVerify: (token: string) =>
+            (this.config as { security?: { dashboardScopedToken?: { enabled?: boolean } } }).security?.dashboardScopedToken?.enabled === true
+            && token.startsWith('dst_') && this.dashboardSessionStore.verify(token),
+          scopedSessionOnInvalidated: (token: string, cb: () => void) => this.dashboardSessionStore.onFamilyInvalidated(token, cb),
           instarDir: this.config.stateDir,
           hookEventReceiver: this.hookEventReceiver,
           streamTicketStore: this.streamTicketStore,
@@ -8095,6 +10264,13 @@ export class AgentServer {
         // codex_token_sessions table — closing the "ledger blind to Codex"
         // gap. process.cwd() is the agent's project dir (launchd sets the
         // server's working directory to it), matching session_meta.cwd.
+
+        // §3f: with no token-ledger poller to ride, the copy pass keeps the same 60 s cadence itself.
+        if (this.transcriptCheckpointTick && !this.tokenLedger) {
+          const tick = this.transcriptCheckpointTick;
+          this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+          if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+        }
         if (this.tokenLedger) {
           try {
             this.tokenLedgerPoller = new TokenLedgerPoller({
@@ -8107,11 +10283,19 @@ export class AgentServer {
               afterTick: async () => {
                 await this.apprenticeshipCycleSlaMonitor?.tick();
                 await this.geminiCapacityEscalationMonitor?.tick();
+                // §3f: copy new transcript rows on the same cadence that sees them grow.
+                await this.transcriptCheckpointTick?.();
               },
             });
             this.tokenLedgerPoller.start();
           } catch (err) {
             console.warn('[instar] token-ledger poller start failed:', err);
+            // §3f: the copy pass must not stop with the poller; it keeps the same cadence itself.
+            if (this.transcriptCheckpointTick && !this.transcriptCheckpointTimer) {
+              const tick = this.transcriptCheckpointTick;
+              this.transcriptCheckpointTimer = setInterval(() => { void tick().catch(() => { /* @silent-fallback-ok — the pass records its own errors as evidence */ }); }, 60_000);
+              if (typeof this.transcriptCheckpointTimer.unref === 'function') this.transcriptCheckpointTimer.unref();
+            }
           }
 
           // ── Burn-detection auto-heal system ──────────────────────────
@@ -8496,6 +10680,7 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
+  async stopGraphSourceInventory():Promise<void>{await this.graphSourceInventory.close();}
   /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
   private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
     const config = options.config;
@@ -8537,12 +10722,40 @@ export class AgentServer {
     });
   }
 
+  /**
+   * Unread (mobile-unread-messages §3.3): start the retry and gc timers and the boot catch-up from any
+   * reachable peer, after the pool registry has had a moment to name them. Phones get no baseline
+   * until it settles. Returns the service for the boot's late-bound references, or null when off.
+   */
+  startConversationUnread(delayMs = process.env.VITEST ? 0 : 15_000): ConversationUnreadService | null {
+    const svc = this.conversationUnread;
+    if (!svc) return null;
+    svc.start();
+    const t = setTimeout(() => { void svc.catchUp().catch(() => { /* @silent-fallback-ok — the 5-minute retry resumes it */ }); }, delayMs);
+    t.unref?.();
+    return svc;
+  }
+
   async stop(): Promise<void> {
+    await this.stopGraphSourceInventory();
+    this.siblingHoldingsStop?.();
+    if (this.teamPullTimer) clearInterval(this.teamPullTimer);
+    if (this.dashboardSessionPruneTimer) { clearInterval(this.dashboardSessionPruneTimer); this.dashboardSessionPruneTimer = null; }
+    if (this.documentPullTimer) clearInterval(this.documentPullTimer);
+    if (this.documentRecheckTimer) { clearInterval(this.documentRecheckTimer); this.documentRecheckTimer = null; }
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
+    await this.mobilePairing?.sameNetwork?.stop().catch(() => { /* @silent-fallback-ok — closing a listener that is already gone */ });
     this.mobilePairing?.stop();
+    this.conversationUnread?.stop();
+    this.conversationEmbeddings?.feeder.stop();
+    this.conversationEmbeddings?.index.close();
     this.appConversations?.stop();
+    if (this.platformMedia) {
+      this.platformMedia.stop();
+      if (getPlatformMediaForSession() === this.platformMedia) setPlatformMediaForSession(null);
+    }
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);
@@ -8679,6 +10892,10 @@ export class AgentServer {
       }
       this.revertDetector = null;
     }
+    if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    try { this.identityCheckLog?.flushAll(); } catch { /* @silent-fallback-ok: at worst the last 15 minutes of confirmations read as unconfirmed */ }
+    this.usagePuller?.stop(); this.usagePuller = null;
+    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {
@@ -8720,6 +10937,11 @@ export class AgentServer {
     }
     for (const t of this.queuePaceTimers) clearInterval(t); // clearInterval cannot throw
     this.queuePaceTimers = [];
+    if (this.quotaPacingLedger) {
+      try { this.quotaPacingPoller?.setHistoryLedger(null); } catch { /* @silent-fallback-ok: detaching a sink at shutdown */ }
+      try { await this.quotaPacingLedger.stop(); } catch { /* @silent-fallback-ok: shutdown flush of observational history; a lost tail row is one 5-minute reading */ }
+      this.quotaPacingLedger = null;
+    }
     if (this.followMeConsumerTimer) {
       try { clearInterval(this.followMeConsumerTimer); } catch { /* best-effort */ }
       try { if (this.mcpIdleOffloadSweepTimer) clearInterval(this.mcpIdleOffloadSweepTimer); } catch { /* best-effort */ }
@@ -8741,11 +10963,13 @@ export class AgentServer {
     if (this.featureMetricsPruneTimer) {
       try { clearInterval(this.featureMetricsPruneTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.meteredSweepTimer) clearInterval(this.meteredSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
+      try { if (this.geminiPaygTimer) clearInterval(this.geminiPaygTimer); this.geminiPaygGoLive?.notices.stop(); this.meteredLaneRuntime?.stopEcho(); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { if (this.spendAlertTimer) clearInterval(this.spendAlertTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       try { await this.spendAlertDispatcher?.flushDigest(); } catch { /* @silent-fallback-ok: a failed final digest flush loses only a coalesced NOTICE at shutdown */ }
       try { if (this.reconSweepTimer) clearInterval(this.reconSweepTimer); } catch { /* @silent-fallback-ok: timer teardown is best-effort cleanup at shutdown */ }
       this.featureMetricsPruneTimer = null;
     }
+    if (this.transcriptCheckpointTimer) { clearInterval(this.transcriptCheckpointTimer); this.transcriptCheckpointTimer = null; }
     if (this.tokenLedger) {
       try {
         this.tokenLedger.close();
@@ -8811,6 +11035,142 @@ export class AgentServer {
 
   /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
   /** docs/specs/ecosystem-idea-pipeline.md: dev-gated server service; reviews run on the lease holder only. */
+  /** docs/specs/backup-email-sending.md: the email sender. Null until built; its routes answer 503 then. */
+  emailService: import('../email/EmailService.js').EmailService | null = null;
+  emailOutbox: import('../email/EmailOutbox.js').EmailOutbox | null = null;
+  /** Set by the server once the mesh is up: a standby's one-off or fired report travels to the holder. */
+  emailForwardToHolder: ((input: { id: string; kind: 'report' | 'one-off'; subject: string; text: string; topicText: string; fallbackTopicId: number | null; jobSlug?: string }) => Promise<{ ok: true; id: string } | { ok: false; reason: string }>) | null = null;
+
+  /** The mesh sender for a standby's email (email-send-forward). */
+  setEmailForwarder(fn: NonNullable<AgentServer['emailForwardToHolder']>): void {
+    this.emailForwardToHolder = fn;
+    if (this.emailRouteCtx) this.emailRouteCtx.emailForwardToHolder = (input) => fn({ ...input, kind: 'one-off', topicText: input.text });
+  }
+  private emailRouteCtx: import('./routes.js').RouteContext | null = null;
+
+  /**
+   * Builds the email sender. Inert until the owner's yes and the recipe's proof: with no grant every report goes to
+   * Telegram exactly as before, and jobs without `deliver` never touch it.
+   */
+  private startEmail(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
+    const config = options.config;
+    if (!config.stateDir) return;
+    this.emailRouteCtx = routeCtx;
+    if (this.emailForwardToHolder) this.setEmailForwarder(this.emailForwardToHolder);
+    void (async () => {
+      const { buildEmailService, emailRowIdForExecution } = await import('../email/wireEmail.js');
+      const { detectOutboundCredential } = await import('../messaging/outbound-credential-guard.js');
+      const { loadMachineSigner } = await import('../core/AppRecordSignatures.js');
+      const { EMAIL_OUTBOX_STORE_KEY } = await import('../email/EmailOutbox.js');
+      const { buildEmailOutboxRecordData } = await import('../email/EmailOutboxReplicatedStore.js');
+      const { fallbackLine } = await import('../email/emailCore.js');
+      const signer = loadMachineSigner(config.stateDir);
+      // The recipient hash is keyed with this machine's identity key (a deterministic signature over a fixed label).
+      const recipientKey = signer ? crypto.createHash('sha256').update(signer.sign('instar-email-recipient-hash-key-v1').sig).digest() : crypto.createHash('sha256').update(`email-recipient:${config.authToken ?? config.projectName}`).digest();
+      const machineId = signer?.machineId() ?? this.meshSelfId ?? config.projectName;
+      const coordinator = options.coordinator;
+      const holdsLease = (): boolean => { try { return coordinator?.enabled ? coordinator.holdsLease() : true; } catch { return false; } }; // @silent-fallback-ok — an unreadable lease reads as not held
+      const readSecret = (name: string): string | null => {
+        try { const v = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; } catch { return null; } // @silent-fallback-ok — an unreadable vault reads as not set up; every report falls back
+      };
+      const acked = (r: unknown): { ok: boolean; messageId?: string | number } => {
+        const m = r as { messageId?: unknown; quietId?: unknown } | null;
+        if (m && (typeof m.messageId === 'number' || typeof m.messageId === 'string')) return { ok: true, messageId: m.messageId as number | string };
+        if (m && typeof m.quietId === 'string') return { ok: true, messageId: `quiet:${m.quietId}` };
+        return { ok: false };
+      };
+      const emitter = options.replicatedRecordEmitter;
+      const built = buildEmailService({
+        stateDir: config.stateDir,
+        agentName: config.projectName ?? 'Your agent',
+        machineId,
+        recipientKey,
+        ledger: () => routeCtx.recommendedServicesLedger ?? null,
+        readSecret,
+        holdsLease,
+        detectCredential: (text) => detectOutboundCredential(text).detected,
+        config: () => (options.liveConfig?.get?.<typeof config.email>('email', config.email) ?? config.email),
+        jobs: () => options.scheduler?.getJobs?.() ?? [],
+        deliverJobReport: options.scheduler ? (job, text) => options.scheduler!.deliverJobReport(job, text) : undefined,
+        // The send itself lives in routes.ts (a reviewed notification seam with its own stamper).
+        deliverToSessionTopic: async (topicId, text) => {
+          const send = routeCtx.emailTopicSend;
+          if (!send) return { ok: false };
+          try { return acked(await send(topicId, text)); } catch { return { ok: false }; } // @silent-fallback-ok — the row stays falling-back and retries
+        },
+        relayEnqueue: (deliveryId, topicId, text) => {
+          if (!this.deliveryStore || !this.deliverySentinel) throw new Error('relay queue unavailable');
+          return this.deliveryStore.enqueue({ delivery_id: deliveryId, topic_id: topicId, text_hash: crypto.createHash('sha256').update(text).digest('hex'), text });
+        },
+        emit: emitter ? (rec) => emitter.emit(EMAIL_OUTBOX_STORE_KEY, rec.recordKey, buildEmailOutboxRecordData(rec)).outcome === 'emitted' : undefined,
+        onCredentialRefused: () => routeCtx.recommendedServicesRecheck?.('email'),
+        report: (what, detail) => DegradationReporter.getInstance().report({ feature: what, primary: 'Send a report to the owner by email', fallback: 'The report goes to its conversation instead.', reason: detail, impact: 'An email may not have gone out; the conversation copy covers it.' }),
+      });
+      this.emailService = built.service;
+      this.emailOutbox = built.outbox;
+      routeCtx.emailService = built.service;
+      const service = built.service;
+      // Reports: the holder writes the row; a standby forwards to the holder, and if the holder can't be reached
+      // the report goes to the job's topic with the not-set-up-here line. Nothing is dropped.
+      if (options.scheduler) {
+        options.scheduler.emailReports = {
+          submitReport: ({ executionId, job, subject, ownerText, topicText, reconcile }) => {
+            const id = emailRowIdForExecution(executionId);
+            if (holdsLease()) {
+              const out = service.submit({ id, kind: 'report', subject, ownerText, topicText, fallbackTopicId: job.topicId ?? null, jobSlug: job.slug, forceFallback: reconcile });
+              return out.ok ? out.id : null;
+            }
+            const forward = this.emailForwardToHolder;
+            void (async () => {
+              const fwd = forward ? await forward({ id, kind: 'report', subject, text: ownerText, topicText, fallbackTopicId: job.topicId ?? null, jobSlug: job.slug }).catch(() => ({ ok: false as const, reason: 'holder-unreachable' })) : { ok: false as const, reason: 'holder-unreachable' };
+              if (fwd.ok) return;
+              // The holder can't be reached: the copy goes to the job's topic from here, and if Telegram refuses
+              // (a standby's send waits for the lease), it waits in this machine's relay queue. Never dropped.
+              const text = `${topicText}\n\n${fallbackLine('not-set-up-here')}`;
+              const sent = await options.scheduler!.deliverJobReport(job, text);
+              if (!sent.ok && job.topicId && this.deliveryStore) {
+                this.deliveryStore.enqueue({ delivery_id: id, topic_id: job.topicId, text_hash: crypto.createHash('sha256').update(text).digest('hex'), text });
+              }
+            })().catch(() => { /* @silent-fallback-ok — reported by the scheduler's own send path */ });
+            return id;
+          },
+        };
+      }
+      // Resume events for rows waiting on Telegram: its reconnect, and the relay sentinel delivering a queued copy.
+      this.telegramAdapter?.onReconnect?.(() => service.resume());
+      const sentinel = this.deliverySentinel as unknown as { on?: (e: string, l: (p: { delivery_id: string }) => void) => void } | null;
+      const hookSentinel = (): void => {
+        const s = this.deliverySentinel as unknown as { on?: (e: string, l: (p: { delivery_id: string }) => void) => void } | null;
+        s?.on?.('sentinel:recovered', ({ delivery_id }) => { service.relayDelivered(delivery_id); service.resume(); });
+        // A queued copy the sentinel gave up on never reached the person: the row goes back to falling-back.
+        s?.on?.('sentinel:escalated', ({ delivery_id }) => service.relayFailed(delivery_id));
+        s?.on?.('sentinel:tone-gated', ({ delivery_id }) => service.relayFailed(delivery_id));
+        (s as unknown as { on?: (e: string, l: (p: { topicIds: number[] }) => void) => void } | null)?.on?.('sentinel:stale-retired', ({ topicIds }) => service.relayRetiredForTopics(topicIds));
+      };
+      if (sentinel) hookSentinel(); else setTimeout(hookSentinel, 30_000).unref?.();
+      // Boot: recover live rows and reconcile unmarked runs, then the hourly sweep (checkpoint, tombstones, reconcile).
+      // The reconciliation floor is when email delivery was first wired on this machine, kept on disk, so a run that
+      // finished just before a restart is still found.
+      const wiredAt = service.wiredSince();
+      setTimeout(() => {
+        try {
+          service.recover();
+          if (holdsLease()) options.scheduler?.reconcileEmailReports(wiredAt);
+        } catch (err) { DegradationReporter.getInstance().report({ feature: 'Email.recover', primary: 'Recover email rows at boot', fallback: 'The hourly sweep tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A report may wait an hour.' }); }
+      }, 5_000).unref?.();
+      setInterval(() => {
+        try {
+          service.hourly();
+          if (holdsLease()) options.scheduler?.reconcileEmailReports(wiredAt);
+        } catch (err) {
+          DegradationReporter.getInstance().report({ feature: 'Email.hourly', primary: 'Checkpoint the email outbox', fallback: 'The next hour tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A live email row may not reach another machine until then.' });
+        }
+      }, 60 * 60_000).unref?.();
+    })().catch((err) => {
+      DegradationReporter.getInstance().report({ feature: 'Email', primary: 'Build the email sender', fallback: 'Every report goes to its conversation; the email routes answer 503.', reason: err instanceof Error ? err.message : String(err), impact: 'Email cannot be used on this machine.' });
+    });
+  }
+
   private startEcosystemIdeas(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
     const config = options.config;
     if (!config.stateDir || !resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) return;
@@ -8848,6 +11208,657 @@ export class AgentServer {
     } catch (error) { /* @silent-fallback-ok: logged; the routes answer 503 and nothing else depends on this */
       console.warn(`[ecosystem-ideas] not started: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** The team facts documents read, from the pairing service's live team log (or "no team" without it). */
+  private documentTeamDeps(): TeamDeps {
+    const teamRef = (ref: string): string => (ref.startsWith('app:') ? ref.slice(4) : ref);
+    const svc = () => this.mobilePairing;
+    return {
+      rows: () => svc()?.teamLog()?.allRows() ?? null,
+      verify: (row) => {
+        const log = svc()?.teamLog();
+        return log ? (log.allRows().includes(row) ? 'verified' : 'unknown') : 'unknown';
+      },
+      personMay: (personKey, ref, op) => {
+        const p = svc();
+        if (!p) return false;
+        const standing = p.teamStanding(personKey);
+        if (!standing) return false;
+        return p.mayUse({ ok: true, role: 'team', userId: personKey, name: standing.name, telegramUserId: null, tier: standing.tier }, ref, op);
+      },
+      isConfined: (ref) => svc()?.teamLog()?.isConfined(teamRef(ref)) ?? false,
+      teamOn: () => svc()?.teamOn() ?? false,
+      teamRefusal: () => svc()?.teamRefusal() ?? null,
+      ownsConversation: (personKey, ref) => {
+        const p = svc();
+        if (!p) return false;
+        if (p.teamLog()?.ownerOf(teamRef(ref)) === personKey) return true;
+        const own = p.appConversationOwner?.(teamRef(ref));
+        return !!own && own.userId === personKey;
+      },
+      ownerOnly: (ref) => {
+        const p = svc();
+        if (!p || !p.teamOn()) return true;
+        const log = p.teamLog();
+        if (!log) return true;
+        if (log.ownerOf(teamRef(ref))) return false;
+        if (log.isConfined(teamRef(ref))) return false;
+        const own = p.appConversationOwner?.(teamRef(ref));
+        return !own;
+      },
+    };
+  }
+
+  private openDocuments(stateDir: string): { store: DocumentStore; service: DocumentService } | null {
+    if (this.documents) return this.documents;
+    const signer = loadMachineSigner(stateDir);
+    if (!signer) return null;
+    const deps = this.documentTeamDeps();
+    let store: DocumentStore | null = null;
+    store = new DocumentStore(stateDir, {
+      signer, keyLookup: identityKeyLookup(stateDir),
+      standing: standingCheck(deps, (docId) => store?.rowsOf(docId) ?? []),
+      // Every person or owner row is re-checked against its device's own signature (§3.6), using the
+      // replicated device-key ledger and team bindings, so it holds on every machine.
+      origin: (row, used) => checkRowOrigin(row, (deviceId, keyHash, at) => this.documentDeviceKey(deviceId, keyHash, at), used, (docId, hash) => {
+        const b = store?.getBlob(docId, hash);
+        if (!b) return null;
+        try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
+      }),
+      // Document decisions (§3.5): whichever machine runs the conversation's session tells it.
+      onApplied: (row) => { if (row.eventKind === 'decision') this.documentDecisionApplied(row); },
+    });
+    this.documents = { store, service: new DocumentService(store, teamView(deps)) };
+    // Rows waiting for a device binding or a team row are re-checked on a timer, so this works on a
+    // one-machine agent too (the puller re-checks after each page on a pool).
+    if (!this.documentRecheckTimer) {
+      this.documentRecheckTimer = setInterval(() => {
+        // Bind any newly active device (whatever path approved it), then re-check waiting rows.
+        try { this.mobilePairing?.bindTeamPhones(); } catch { /* @silent-fallback-ok — bound on the next tick */ }
+        try { if (this.mobilePairing) sweepLinkedBrowsers(this.mobilePairing, Date.now()); } catch { /* @silent-fallback-ok — swept on the next tick */ }
+        try { this.documents?.store.recheckPending(); } catch { /* @silent-fallback-ok — retried next tick; GET /docs/health shows what is waiting */ }
+      }, 60_000);
+      this.documentRecheckTimer.unref();
+    }
+    return this.documents;
+  }
+
+  /** A device key for re-checking a document row: the replicated ledger first, then the local registry. */
+  /**
+   * A documents-scoped computer's one send (§3.6a): exactly the Send template, for a document this
+   * person may read, into that document's own conversation (the route's).
+   */
+  private documentScopedSendOk(device: import('../core/MobileDeviceKeys.js').DeviceRecord, routePath: string, rawBody: Buffer | undefined): boolean {
+    const docs = this.documents;
+    if (!docs || !rawBody || !device.userId) return false;
+    const svc = this.mobilePairing;
+    if (!svc || !svc.browserOn() || !linkStillValid(device, svc, Date.now())) return false;
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>; } catch { return false; } // @silent-fallback-ok — not JSON, not the template
+    // Only the message text and its request id: nothing else rides along.
+    if (!body || typeof body !== 'object' || Object.keys(body).some((k) => k !== 'text' && k !== 'requestId')) return false;
+    const t = scopedSendTarget(body.text, routePath);
+    if (!t) return false;
+    const facts = docs.service.facts(t.docId);
+    if (!facts || facts.primary !== t.conversation || this.documentConversationRemoved(facts.primary)) return false;
+    // Exactly the template the server would write: this document's real title, a real version,
+    // this agent's own document link, and a count no larger than the person's open comments. All
+    // read as this person (a shared document is not readable by an owner-reach caller).
+    const standing = this.mobilePairing?.teamStanding(device.userId);
+    if (!standing) return false;
+    const principal = { kind: 'person' as const, personKey: device.userId, tier: standing.tier, client: 'browser' as const };
+    // Read with this person's real standing on the conversation, exactly as the page reads for them
+    // (their own conversation, else their grant rows on it); with no grants the read sees nothing.
+    const k = device.userId;
+    const reader = this.documentTeamDeps().ownsConversation(k, facts.primary)
+      ? { kind: 'own-conversation' as const, personKey: k }
+      : { kind: 'person' as const, personKey: k, grants: this.documentPersonGrants(k, facts.primary) };
+    const caller = { principal, actor: { type: 'machine' as const }, access: {}, reader };
+    // The same origin the server writes into document links (the pairing origin, else the configured named tunnel).
+    const origin = this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((this.config as { tunnel?: { type?: string; hostname?: string } } | undefined)?.tunnel) ?? null;
+    const m = /^I left (\d{1,4}) comments? on "([\s\S]*)" \(version (\d{1,6})\): (\S+)$/.exec(String(body.text));
+    if (!m || !origin) return false;
+    let read: ReturnType<typeof docs.service.read>;
+    try { read = docs.service.read(t.docId, caller); } catch { return false; } // @silent-fallback-ok — a document this person can't read gets no send
+    const labels = new Set([...read.state.versions.values()].map((v) => String(v.label)));
+    const mine = [...read.state.comments.values()].filter((c) => c.author === device.userId && !c.resolved).length;
+    const n = Number(m[1]);
+    const expected = `I left ${n} ${n === 1 ? 'comment' : 'comments'} on "${read.title ?? ''}" (version ${m[3]}): ${origin}/docs/${t.docId}`;
+    if (String(body.text) !== expected || !labels.has(m[3]) || n < 1 || n > mine) return false;
+    return docs.service.can(t.docId, caller, 'send');
+  }
+
+  /** A person's reader grant rows on a conversation (the page routes' `grantsOf`). */
+  private documentPersonGrants(personKey: string, ref: string): Array<{ stream: string; seq: number; grantRowKey: string }> {
+    const log = this.mobilePairing?.teamLog();
+    if (!log) return [];
+    const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
+    return log.readerGrantsOf(personKey, teamRef).map((g) => ({ stream: g.stream, seq: g.seq, grantRowKey: `${g.stream}#${g.seq}` }));
+  }
+
+  /**
+   * Was a document's primary conversation removed (§3.7, §10: Send disabled with its reason)? Only
+   * an app conversation this machine holds as deleted counts; one not arrived yet, or a Telegram
+   * topic, is never reported removed.
+   */
+  private documentConversationRemoved(ref: string): boolean {
+    if (!ref.startsWith('app:')) return false;
+    const c = this.appConversations?.store.getConversation(ref.slice(4));
+    return !!c && !!c.tombstoned;
+  }
+
+  /**
+   * A member's linked computer as another machine sees it (§3.6a): its binding carries the phone's
+   * whole signed link request; trusted only when the phone key it names (`linkedByKeyHash`, from the
+   * replicated ledger) signed it, that key is bound to the same person and not revoked, the request
+   * names this key, and the link has not expired.
+   */
+  private documentBrowserLinkValid(keyHash: string): { personKey: string; scope: 'documents' | 'documents-read' } | null {
+    const svc = this.mobilePairing;
+    const link = svc?.teamLog()?.state().browserLinks.get(keyHash);
+    if (!svc || !link || Date.parse(link.expiresAt) <= Date.now()) return null;
+    // Exactly the phone key that signed the link (named in the row), revoked or not, so a revoked
+    // signer is refused as revoked and a later key rotation on that phone does not break the link.
+    const phone = this.documentLedgerActivation(link.linkedByDeviceId, link.linkedByKeyHash);
+    const phoneRevoked = !!svc.keyLedger?.isRevoked(link.linkedByKeyHash, link.linkedByDeviceId) || !!svc.keyLedger?.keyRevoked(link.linkedByKeyHash);
+    const ok = verifyBrowserLink(link, phone, phone ? svc.teamLog()?.state().bindings.get(phone.keyHash) ?? null : null, phoneRevoked, Date.now());
+    return ok ? { personKey: link.boundTo, scope: link.scope } : null;
+  }
+
+  /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
+  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; host?: string; client?: 'browser' } | null {
+    const ledger = this.mobilePairing?.keyLedger;
+    if (!ledger) return null;
+    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; host?: string; client?: 'browser' } | null = null;
+    for (const r of ledger.rows()) {
+      if (r.type !== 'activation' || r.deviceId !== deviceId) continue;
+      if (keyHash ? r.keyHash !== keyHash : ledger.isRevoked(r.keyHash, deviceId)) continue;
+      if (!best || r.activatedAt > best.activatedAt) best = r;
+    }
+    return best;
+  }
+
+  /**
+   * A device key for re-checking a document row. Live standing first; a device revoked since then
+   * still stands for a row accepted under a team-log position where it stood, when a later team row
+   * (the person's removal, or the computer's `browser-unbind`) witnesses the revocation (§3.4,
+   * originCheck.ts `deviceStoodAt`). Without `at` (page reads and writes) only live standing counts.
+   */
+  private documentDeviceKey(deviceId: string, keyHash: string, at?: { access: Record<string, number>; personKey: string | null }): ReturnType<DeviceKeyLookup> {
+    const live = this.documentDeviceKeyNow(deviceId, keyHash);
+    if (live.status !== 'revoked' || !at?.personKey) return live;
+    return this.documentDeviceKeyAt(deviceId, keyHash, at.access, at.personKey) ?? live;
+  }
+
+  /** The device as it stood under the team-log prefix a row's `access` names, or null (refused as revoked). */
+  private documentDeviceKeyAt(deviceId: string, keyHash: string, access: Record<string, number>, personKey: string): ReturnType<DeviceKeyLookup> | null {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    if (!svc || !log) return null;
+    const deps = this.documentTeamDeps();
+    const rows = deps.rows();
+    if (!rows) return null;
+    const prefix = teamStateAt(rows, access, deps.verify);
+    if (prefix === 'pending') return { status: 'unknown' };
+    const local = svc.devices.get(deviceId);
+    const localKey = local ? deviceKeyOf(local) : undefined;
+    const act = this.documentLedgerActivation(deviceId, keyHash);
+    const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
+    if (!publicKey) return null;
+    const link = prefix.browserLinks.get(keyHash);
+    const joined = prefix.computerLinks.get(keyHash);
+    const client: 'phone' | 'browser' = link || joined || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    const stood = deviceStoodAt(prefix, log.state(), { keyHash, deviceId, personKey, client }, (l) => {
+      // The phone's signature over the link, checked as of the link (expiry was decided by the
+      // machine that accepted the row; a revoked linking phone is ordered by the team rows above).
+      const phone = this.documentLedgerActivation(l.linkedByDeviceId, l.linkedByKeyHash);
+      return verifyBrowserLink(l, phone, phone ? prefix.bindings.get(phone.keyHash) ?? null : null, false, Date.parse(l.linkedAt));
+    }, (kh) => computerStandingIn(log.state(), kh, Date.now()) === null);
+    if (!stood) return null;
+    const role = prefix.people.get(personKey)?.role;
+    const guest = !!role && tierOfRole(role as never) === 'guest';
+    const mayWrite = !guest && link?.scope !== 'documents-read' && joined?.scope !== 'documents-read';
+    return { status: 'ok', publicKey, role: 'person', personKey, client, mayWrite };
+  }
+
+  private documentDeviceKeyNow(deviceId: string, keyHash: string): ReturnType<DeviceKeyLookup> {
+    const svc = this.mobilePairing;
+    if (!svc) return { status: 'unknown' };
+    if (svc.keyLedger?.isRevoked(keyHash, deviceId)) return { status: 'revoked' };
+    const local = svc.devices.get(deviceId);
+    const localKey = local ? deviceKeyOf(local) : undefined;
+    const act = this.documentLedgerActivation(deviceId, keyHash);
+    const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
+    if (!publicKey) return { status: 'unknown' };
+    if (local && local.status === 'revoked') return { status: 'revoked' };
+    const client: 'phone' | 'browser' = (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    // A local record with no approvedVia predates the field: it was approved in Telegram (MobileDeviceKeys).
+    const approvedVia = local ? (local.approvedVia ?? (isBrowserDevice(local) ? null : 'telegram-dm')) : act?.approvedVia ?? null;
+    // Whose device: this machine's own record, else the replicated team binding (owner phones are
+    // bound to 'owner' there too). Never inferred from a missing binding: unknown waits for it.
+    const person = local ? svc.personOfDevice(local) : null;
+    const bound = svc.teamLog()?.state().bindings.get(keyHash) ?? null;
+    let role: 'owner' | 'person' | 'unknown' = 'unknown';
+    let personKey: string | null = null;
+    if (person && person.ok && person.role === 'owner') role = 'owner';
+    else if (person && person.ok && person.role === 'team' && person.userId) { role = 'person'; personKey = person.userId; }
+    else if (bound === 'owner' || bound === 'owner-browser') role = 'owner';
+    else if (bound && svc.teamLog()?.state().computerLinks.has(keyHash)) {
+      // A member's computer that joined from the owner's team invite (member-browser-any-computer §3.4):
+      // standing from the replicated rows and the key ledger, only while the browser switch is on.
+      const st = joinedComputerStanding(svc, keyHash, Date.now());
+      if (!st || st.deviceId !== deviceId || !svc.browserOn()) return { status: 'revoked' };
+      role = 'person'; personKey = st.personKey;
+    } else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
+      // A linked computer: only as strong as the phone that linked it, checked here (§3.6a), and
+      // only while the browser switch is on.
+      const linkRow = svc.teamLog()!.state().browserLinks.get(keyHash)!;
+      const link = this.documentBrowserLinkValid(keyHash);
+      if (!link || linkRow.deviceId !== deviceId || svc.keyLedger?.keyRevoked(keyHash) || !svc.browserOn()) return { status: 'revoked' };
+      role = 'person'; personKey = link.personKey;
+    } else if (bound) { role = 'person'; personKey = bound; }
+    // A browser approved only with the dashboard PIN can read but never write (§3.6); a guest's linked browser reads only.
+    if (local?.scope && (!linkStillValid(local, svc, Date.now()) || !svc.browserOn())) return { status: 'revoked' };
+    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope ?? svc.teamLog()?.state().computerLinks.get(keyHash)?.scope;
+    // A guest's computer reads only. Decided from the person's current tier as well as the row, so
+    // no machine can widen a guest's computer by rewriting its scope.
+    const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
+    const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
+    // SEC-088 interim: only this machine's own, matching, active owner-phone enrollment yields the
+    // Face ID key a decision row is re-checked with; replicated activation never does.
+    const localPresenceKey = local && localKey && deviceKeyHashOf(localKey) === keyHash && local.presenceKey && activeOwnerPhone(svc, deviceId) ? local.presenceKey : undefined;
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite, approvedVia, ...(localPresenceKey ? { localPresenceKey } : {}) };
+  }
+
+
+  /** The document route deps once built: the old-link guarantee reads the same facts (§3.9b). */
+  private documentDepsMemo: ReadablePageDeps | null = null;
+
+  /** True while documents replace new read-only pages on this agent (§3.9b). False before the routes are built. */
+  documentsReplaceViews(): boolean {
+    return this.documentDepsMemo ? documentsReplaceViews(this.documentDepsMemo) : false;
+  }
+
+  /** A document for something the system itself writes, or null when documents do not replace pages (§3.9b). */
+  publishSystemDocument(title: string, markdown: string, preferred?: string | null): { id: string; url: string; primary: string } | null {
+    return this.documentDepsMemo ? publishAsDocument(this.documentDepsMemo, title, markdown, preferred ?? null) : null;
+  }
+
+  /** The current link to a system document that still exists, or null (§3.9b). */
+  systemDocumentLink(id: string): string | null {
+    return this.documentDepsMemo ? systemDocumentLink(this.documentDepsMemo, id) : null;
+  }
+
+  private documentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    const built = this.buildDocumentRouteDeps(options);
+    this.documentDepsMemo = built;
+    return built;
+  }
+
+  private buildDocumentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    const stateDir = options.config.stateDir;
+    const deps = this.documentTeamDeps();
+    return {
+      config: () => options.config,
+      service: () => this.openDocuments(stateDir)?.service ?? null,
+      store: () => this.openDocuments(stateDir)?.store ?? null,
+      teamVector: () => this.mobilePairing?.teamLog()?.vector() ?? {},
+      grantsOf: (personKey: string, ref: string) => this.documentPersonGrants(personKey, ref),
+      conversationRemoved: (ref: string) => this.documentConversationRemoved(ref),
+      sessionAccessFor: (ref: string) => {
+        const log = this.mobilePairing?.teamLog();
+        return log ? log.sessionAccessFor(ref.startsWith('app:') ? ref.slice(4) : ref) : null;
+      },
+      ownsConversation: deps.ownsConversation,
+      ownerConversation: () => {
+        const id = options.telegram?.getLifelineTopicId?.();
+        return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
+      },
+      // A phone record with no approvedVia predates the field and was approved in Telegram (MobileDeviceKeys);
+      // a browser with none stays unknown, which the caller treats as PIN-approved (fail closed).
+      deviceApprovedVia: (deviceId: string) => { const d = this.mobilePairing?.devices.get(deviceId); return d ? d.approvedVia ?? (isBrowserDevice(d) ? null : 'telegram-dm') : null; },
+      decisionWritesBlockedBy: () => this.documentDecisionWritesBlockedBy(),
+      notifyDecisionAsk: (docId: string, askId: string, versionId?: string) => { void this.documentDecisionPush(docId, `doc-decide:${docId}:${askId}:${versionId ?? ''}`); },
+      linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin
+        ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel)
+        // Test-only (documents.loopbackOrigin): a development agent with no tunnel links to its own loopback address.
+        ?? ((): string | null => {
+          const c = options.config as unknown as { documents?: { loopbackOrigin?: unknown }; port?: unknown };
+          return c.documents?.loopbackOrigin === true && typeof c.port === 'number' ? `http://127.0.0.1:${c.port}` : null;
+        })(),
+      oldLinkVerdict: () => (this.documentDepsMemo ? safeVerdict(this.documentDepsMemo) : 'documents-off'),
+      viewSource: (viewId: string) => {
+        const v = (options as { viewer?: PrivateViewer | null }).viewer?.get(viewId);
+        return v ? { title: v.title, markdown: v.markdown, pinProtected: !!v.pinHash } : null;
+      },
+      notifyDocumentAnswer: (docId: string, commentKey: string) => {
+        this.mobilePairing?.push?.onHubPost({ kind: 'document', itemId: docId, commentKey, dedupeKey: `doc-answer:${docId}:${commentKey}:${Math.floor(Date.now() / 65_536)}` });
+      },
+    };
+  }
+
+  /** Last documents block sent per conversation, so it is re-sent only when the list changes (§3.7). */
+  private documentNotesSent = new Map<string, string>();
+  private documentNotesFor(ref: string): string[] | null {
+    if (!isDocumentsEnabled(this.config)) return null;
+    const docs = this.documents;
+    if (!docs) return null;
+    // Exactly what this conversation's own (confined) session may see of its documents.
+    const place = { principal: { kind: 'agent' as const, placeKey: ref, ownerReach: false }, actor: { type: 'agent' as const, placeKey: ref }, access: {}, reader: { kind: 'place' as const } };
+    const { text } = renderSessionContext(ref, docs.service.listForConversation(ref as never, place));
+    const last = this.documentNotesSent.get(ref) ?? '';
+    if (text === last) return null;
+    this.documentNotesSent.set(ref, text);
+    return text ? text.split('\n') : null;
+  }
+
+  // ── Document decisions (docs/specs/document-decisions.md) ───────────────────────────────
+
+  /**
+   * The approval root an owner device decides on (§3.2): follow `approvedBy` through this machine's
+   * own device records to the first device not approved by another phone. Refused (null) when any
+   * device on the way is a computer, a browser or missing, or the root is an agent-introduced or
+   * local-install approval, or a PIN approval on an agent that has a Telegram owner.
+   */
+  documentDecisionRoot(deviceId: string): 'telegram' | 'pin' | null {
+    const svc = this.mobilePairing;
+    if (!svc) return null;
+    return documentDecisionRootOf({
+      device: (id) => svc.devices.get(id),
+      activeOwnerPhone: (id) => activeOwnerPhone(svc, id),
+      agentHasTelegramOwner: () => this.documentAgentHasTelegramOwner(),
+    }, deviceId);
+  }
+
+  private documentAgentHasTelegramOwner(): boolean {
+    const tg = this.telegramAdapter as unknown as { getOwnerUserId?: () => unknown; getVerifiedOwner?: () => unknown } | null | undefined;
+    return !!(tg?.getVerifiedOwner?.() ?? tg?.getOwnerUserId?.());
+  }
+
+  /** A peer heard from in the last 7 days that does not read decision rows yet, by name (§6). */
+  /**
+   * The machine that holds back every computer-* team-log row (member-browser-any-computer §5): one
+   * whose last heartbeat in the last week does not say it reads them. A machine silent for longer
+   * counts as retired; an unreadable machine list fails closed. Null when every machine reads them.
+   */
+  computerWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: computer rows wait until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.teamLogComputerRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** The agent's own document addresses, this machine's first (display only, §3.6). */
+  computerAddresses(): string[] {
+    const out = new Set<string>();
+    const own = this.mobilePairing?.pairingOrigin()?.origin;
+    if (own) out.add(own.toLowerCase());
+    const reg = this.docPoolRegistry;
+    try {
+      for (const c of reg?.getCapacities() ?? []) {
+        const o = c.seamlessnessFlags?.documentsOrigin;
+        if (typeof o === 'string' && /^https:\/\/[a-z0-9.-]{1,253}(?::\d{1,5})?$/.test(o)) out.add(o);
+      }
+    } catch { /* @silent-fallback-ok — display only: the list is just shorter */ }
+    return [...out];
+  }
+
+  /** Close an attention item this server raised with raiseReachNotice (member-browser-any-computer §3.3.4). */
+  private closeAgentNotice(conditionKey: string): void {
+    const id = `agent:${conditionKey}`;
+    try {
+      if (this.telegramAdapter) void this.telegramAdapter.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' });
+      else this.localAttention?.setStatus(id, 'DONE');
+    } catch { /* @silent-fallback-ok — best-effort; an open item says only that someone was waiting */ }
+  }
+
+  /**
+   * A joined computer's signed page request verified here (§3.5): this machine is its home, so it moves
+   * the computer's end forward once a quarter of the idle window has passed, and keeps its own record's
+   * end in step with the replicated rows. Nothing is written while the pool write gate is closed.
+   */
+  private joinedComputerUsed(deviceId: string): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    const d = svc?.devices.get(deviceId);
+    if (!svc || !log || !d || d.joinedVia !== 'team-invite' || d.status !== 'active' || !d.browserPublicKey) return;
+    const kh = deviceKeyHashOf(d.browserPublicKey);
+    const now = Date.now();
+    const due = renewDue(log.state(), kh, now);
+    if (due?.due && this.meshSelfId && computerHomeAt(log.state(), kh) === this.meshSelfId && !this.computerWritesBlockedBy()) {
+      log.appendMachineEvents([{ type: 'computer-renew', keyHash: kh, expiresAt: due.expiresAt }]);
+    }
+    const ends = joinedEndsAt(svc, d, now);
+    if (ends) svc.devices.setLinkExpiry(d.id, ends);
+  }
+
+  /**
+   * Take over joined computers bound to this machine's own address that it holds no record for, e.g.
+   * after a rebuild with a new machine identity (§3.5). Writes one computer-adopt per computer.
+   */
+  private adoptJoinedComputers(): void {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    if (!svc || !log || log.healthState() !== 'ok' || !this.meshSelfId || this.computerWritesBlockedBy()) return;
+    const now = Date.now();
+    for (const link of log.state().computerLinks.values()) {
+      if (link.unbound || !svc.redeemHostEligible(link.host)) continue;
+      if (svc.devices.get(link.deviceId) || svc.devices.list().some((d) => d.browserPublicKey === link.browserPublicKey)) continue;
+      const st = joinedComputerStanding(svc, link.keyHash, now);
+      if (!st) continue;
+      const rec = svc.devices.adoptJoinedComputer({ deviceId: link.deviceId, browserPublicKey: link.browserPublicKey, host: link.host, userId: link.boundTo, scope: link.scope, linkedAt: link.linkedAt, linkExpiresAt: new Date(st.expiresAt).toISOString(), idleDays: link.idleDays, endsBy: link.endsBy });
+      if (rec && computerHomeAt(log.state(), link.keyHash) !== this.meshSelfId) log.appendMachineEvents([{ type: 'computer-adopt', keyHash: link.keyHash, host: link.host }]);
+    }
+  }
+
+  documentDecisionWritesBlockedBy(): string | null {
+    const reg = this.docPoolRegistry;
+    if (!reg) return null;
+    const now = Date.now();
+    let caps: ReturnType<typeof reg.getCapacities>;
+    // An unreadable pool is treated as "not sure every machine has the update": refuse with a reason.
+    try { caps = reg.getCapacities(); } catch { return 'the machine list (could not be read)'; } // @silent-fallback-ok — fails closed: decision writes refuse until the machine list reads
+    for (const c of caps) {
+      if (c.machineId === this.meshSelfId) continue;
+      const heardAt = Date.parse(c.seamlessnessFlagsReceivedAt ?? c.routerReceivedAt ?? '');
+      if (!Number.isFinite(heardAt) || now - heardAt > 7 * 24 * 60 * 60_000) continue;
+      if (c.seamlessnessFlags?.documentsDecisionRows !== true) return c.nickname || c.machineId;
+    }
+    return null;
+  }
+
+  /** Ask the owner's deciding phones (§3.7). The push service's own answer, in words for the page. */
+  async documentDecisionPush(docId: string, dedupeKey: string, verdict?: 'approve' | 'decline'): Promise<'sent' | 'deduped' | 'unavailable' | 'no-phone'> {
+    const push = this.mobilePairing?.push;
+    if (!push) return 'unavailable';
+    // No owner phone here that may decide: say so (the page shows how to pair one), never a silent "sent".
+    const svc = this.mobilePairing;
+    if (svc && ![...svc.devices.list()].some((d) => this.documentDecisionRoot(d.id) !== null)) return 'no-phone';
+    try {
+      const r = await push.receive({ kind: 'document', itemId: docId, decide: verdict ?? true, dedupeKey, sourceMachine: this.meshSelfId ?? 'self' }, false);
+      return r === 'accepted' ? 'sent' : r === 'deduped' ? 'deduped' : 'unavailable';
+    } catch { return 'unavailable'; } // @silent-fallback-ok — the page offers opening the document in the app
+  }
+
+  /** May this phone be asked to decide on this document? Owner phones that may decide and can read it. */
+  private documentDecidePushAllowed(deviceId: string, docId: string): boolean {
+    const docs = this.documents;
+    if (!docs || !this.documentDecisionRoot(deviceId)) return false;
+    return !!docs.service.facts(docId);
+  }
+
+  /** Did this device's chat message finish delivered on this machine (§3.4)? From the chat request record. */
+  documentChatDelivered(deviceId: string, requestId: string, sendPath: string, text: string): boolean {
+    const store = this.mobilePairing?.chatRequests();
+    if (!store) return false;
+    const t = text.trim();
+    const topic = /^\/mobile\/chat\/(\d+)$/.exec(sendPath);
+    const app = /^\/mobile\/chat\/app\/([0-9a-f-]{36})$/.exec(sendPath);
+    const hash = topic ? payloadHash(Number(topic[1]), t) : app ? crypto.createHash('sha256').update(['app-send', app[1], t].join('\n')).digest('hex') : null;
+    if (!hash) return false;
+    const l = store.lookup(deviceId, requestId, hash);
+    return l.kind === 'done' && chatRecordDelivered(l.status, l.body);
+  }
+
+  private documentDecisionNoticed = new Set<string>();
+  /**
+   * A verified decision row became readable here (written here or synced in, §3.5): if this machine
+   * runs a live session for the document's conversation, give it one fixed line, once per row.
+   */
+  private documentDecisionApplied(row: import('../documents/rows.js').DocRow): void {
+    if (row.eventKind !== 'decision') return;
+    const key = `${row.origin}/${row.incarnation}#${row.seq}`;
+    if (this.documentDecisionNoticed.has(key)) return;
+    // Only fresh decisions: a restart or a late catch-up never replays old notices.
+    const at = Date.parse(row.receivedAt);
+    if (!Number.isFinite(at) || Date.now() - at > 30 * 60_000) return;
+    this.documentDecisionNoticed.add(key);
+    if (this.documentDecisionNoticed.size > 2000) this.documentDecisionNoticed.clear();
+    setImmediate(() => {
+      try {
+        const docs = this.documents;
+        const f = docs?.service.facts(row.docId);
+        if (!docs || !f) return;
+        const d = docs.service.decision(row.docId, { principal: { kind: 'bearer' }, actor: { type: 'machine' }, access: {}, reader: { kind: 'owner' } });
+        if (!d.current || d.current.rowKey !== key) return;
+        const words = row.verdict === 'approve' ? 'Approved' : 'Declined';
+        this.documentNotifySession(f.primary, `[document decision] ${words} version ${d.current.versionLabel ?? '?'} of doc ${row.docId} by the owner's phone; confirm with GET /docs/${row.docId}/decision`, this.sessionManager as never);
+      } catch { /* @silent-fallback-ok — the owner's message and the documents block also carry it */ }
+    });
+  }
+
+  /** One fixed system line to a live Telegram-topic session for this conversation on this machine (§3.5). */
+  documentNotifySession(primary: string, line: string, sm: { isSessionAlive(n: string): boolean; injectMessage(n: string, t: string, o?: { firstParty?: { source: string } }): unknown } | null): boolean {
+    if (!sm || !primary.startsWith('telegram:')) return false;
+    const topicId = Number(primary.slice(9));
+    const name = (this.telegramAdapter as unknown as { getSessionForTopic?: (id: number) => string | null } | null)?.getSessionForTopic?.(topicId) ?? null;
+    if (!name || !sm.isSessionAlive(name)) return false;
+    return sm.injectMessage(name, `[system:document-decision telegram:${topicId}] ${line}`, { firstParty: { source: 'document-decision' } }) !== false;
+  }
+
+  /** May this phone get a push about an answer to this comment? Only its author's phones that can read the document. */
+  private documentPushAllowed(deviceId: string, docId: string, commentKey: string): boolean {
+    const svc = this.mobilePairing;
+    const docs = this.documents;
+    const d = svc?.devices.get(deviceId);
+    if (!svc || !docs || !d) return false;
+    const person = svc.personOfDevice(d);
+    if (!person.ok) return false;
+    const authorKey = person.role === 'owner' ? 'owner' : person.userId;
+    if (!authorKey || !commentKey.startsWith(`${authorKey}:`)) return false;
+    const facts = docs.service.facts(docId);
+    if (!facts) return false;
+    const principal = person.role === 'owner'
+      ? { kind: 'owner-device' as const, client: 'phone' as const, approvedVia: d.approvedVia ?? 'phone' }
+      : person.role === 'team' && person.tier ? { kind: 'person' as const, personKey: person.userId!, tier: person.tier, client: 'phone' as const } : null;
+    if (!principal) return false;
+    const reader = principal.kind === 'owner-device' ? { kind: 'owner' as const } : { kind: 'person' as const, personKey: principal.personKey, grants: [] };
+    return docs.service.can(docId, { principal, actor: { type: 'machine' }, access: {}, reader }, 'read');
+  }
+
+  /** The page's deps: devices from the pairing registry, this machine's own names, its stable link origin. */
+  private documentPageDeps(options: { config: InstarConfig; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    return {
+      ...this.documentRouteDeps(options),
+      // Document decisions (docs/specs/document-decisions.md).
+      decisionRoot: (deviceId: string) => this.documentDecisionRoot(deviceId),
+      chatDelivered: (deviceId: string, requestId: string, sendPath: string, text: string) => this.documentChatDelivered(deviceId, requestId, sendPath, text),
+      notifyDecisionPhone: (docId: string, dedupeKey: string, verdict?: 'approve' | 'decline') => this.documentDecisionPush(docId, dedupeKey, verdict),
+      notifySession: (primary: string, line: string) => this.documentNotifySession(primary, line, this.sessionManager as never),
+      machineCaller: () => ({ principal: { kind: 'bearer' as const }, actor: { type: 'machine' as const }, access: this.mobilePairing?.teamLog()?.vector() ?? {}, reader: { kind: 'owner' as const } }),
+      device: (deviceId: string) => {
+        const svc = this.mobilePairing;
+        if (!svc) return null;
+        const d = svc.devices.get(deviceId);
+        if (d) {
+          if (d.status !== 'active') return null;
+          // Identity A4: a phone paired on the home address works only on that listener (no document
+          // page there), and a phone let in at the computer has no approval power until piece 3b (a
+          // document decision is one). Neither is a document device.
+          if (notADocumentDevice(d)) return null;
+          // A member's linked computer is valid only while its link is (expiry, the linking phone).
+          if (d.scope && (!linkStillValid(d, svc, Date.now()) || !svc.browserOn())) return null;
+          const key = deviceKeyOf(d) ?? null;
+          if (key && svc.keyLedger?.isRevoked(deviceKeyHashOf(key), d.id)) return null;
+          const p = svc.personOfDevice(d);
+          const person = p.ok ? { role: p.role, userId: p.userId, name: p.name, tier: p.tier } : null;
+          return { person: person as never, client: isBrowserDevice(d) ? 'browser' as const : 'phone' as const, publicKey: key, approvedVia: d.approvedVia ?? null, scope: d.scope ?? null };
+        }
+        // A device paired on another machine: its replicated ledger activation and team binding (§3.6:
+        // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
+        const act = this.documentLedgerActivation(deviceId);
+        if (!act) return null;
+        // The same rule from the replicated row: let in at the computer, or paired on a home address
+        // (`<name>.local:<port>`, the only hosts that end that way).
+        if (notADocumentDeviceRow(act)) return null;
+        const k = this.documentDeviceKey(deviceId, act.keyHash);
+        if (k.status !== 'ok' || k.role === 'unknown') return null;
+        const standing = k.role === 'person' && k.personKey ? svc.teamStanding(k.personKey) : null;
+        if (k.role === 'person' && !standing) return null;
+        const person = k.role === 'owner'
+          ? { ok: true, role: 'owner', userId: null, name: 'Owner', telegramUserId: null }
+          : { ok: true, role: 'team', userId: k.personKey, name: standing!.name, telegramUserId: null, tier: standing!.tier };
+        return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null, scope: svc.teamLog()?.state().browserLinks.get(act.keyHash)?.scope ?? null };
+      },
+      // member-browser-any-computer §3.5: a joined computer in use here is renewed by its home.
+      deviceUsed: (deviceId: string) => this.joinedComputerUsed(deviceId),
+      computerEndsAt: (deviceId: string) => {
+        const svc = this.mobilePairing;
+        const d = svc?.devices.get(deviceId);
+        return svc && d ? joinedEndsAt(svc, d, Date.now()) : null;
+      },
+      isOwnHost: (host: string) => {
+        const svc = this.mobilePairing;
+        if (!svc) return false;
+        if (svc.ownNames?.accepts(host)) return true;
+        const o = svc.pairingOrigin();
+        return !!o && o.host.toLowerCase() === host.toLowerCase();
+      },
+      stableOrigin: () => this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel) ?? null,
+      ownerPresence: (req: import('express').Request, deviceId: string) => {
+        const svc = this.mobilePairing;
+        if (!svc || !activeOwnerPhone(svc, deviceId)) return null;
+        const key = svc.devices.get(deviceId)?.presenceKey;
+        return key ? { presenceKey: key, host: signedHost(req, svc, deviceId) } : null;
+      },
+      assetsDir: path.join(this.resolveDashboardDir(), 'docs'),
+      personName: (personKey: string) => this.mobilePairing?.teamLog()?.state().people.get(personKey)?.name ?? null,
+      agentName: () => options.config.projectName ? options.config.projectName.charAt(0).toUpperCase() + options.config.projectName.slice(1) : 'your agent',
+      conversationName: (ref: string) => {
+        if (ref.startsWith('telegram:')) return this.telegramAdapter?.getTopicName(Number(ref.slice(9))) ?? null;
+        if (ref.startsWith('app:')) return this.appConversations?.store.getConversation(ref.slice(4))?.title ?? null;
+        return null;
+      },
+      // Who can see it, in words, from the conversation's real readers (§3.6), with Telegram's own boundary.
+      audienceWords: (ref: string, viewerIsOwner: boolean) => {
+        const log = this.mobilePairing?.teamLog();
+        const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
+        const tg = ref.startsWith('telegram:') ? '; anyone else in your Telegram group can also see messages about it' : '';
+        // Others never learn who else has access (team policy: "Only the owner can see that").
+        if (!viewerIsOwner) {
+          const name = ref.startsWith('telegram:') ? this.telegramAdapter?.getTopicName(Number(ref.slice(9))) : this.appConversations?.store.getConversation(teamRef)?.title;
+          return name ? `Everyone in "${name}"` : 'Everyone in this conversation';
+        }
+        const keys = new Set<string>();
+        if (log) {
+          for (const [k] of log.state().people) if (log.readerGrantsOf(k, teamRef).length > 0) keys.add(k);
+          const owner = log.state().owned.get(teamRef);
+          if (owner) keys.add(owner);
+        }
+        const names = [...keys].map((k) => log?.state().people.get(k)?.name ?? k);
+        const base = names.length === 0 ? 'Only you' : names.length === 1 ? `You and ${names[0]}` : `You, ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+        return base + tg;
+      },
+    };
   }
 
   /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). Dev-gated; never moves a feature. */
@@ -8934,9 +11945,48 @@ export class AgentServer {
       });
       // A pass can be up to six hours away; the numbers should not read empty until then.
       setTimeout(() => { void ladder.refresh().catch(() => { /* @silent-fallback-ok — the next pass reads again */ }); }, 15_000).unref?.();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: logged; the ladder stays null and its route reports it unavailable
       console.warn('[maturation-ladder] init failed (non-fatal):', err);
       this.maturationLadder = null;
+    }
+  }
+
+  /**
+   * Build the quota-history ledger (docs/specs/quota-pacing-forecast.md) when the switch resolves
+   * on and this machine has a subscription pool, attach it to the quota poller, and start its
+   * unref'd maintenance timer (bucket flush, hourly compaction + tick row, daily retire sweep).
+   */
+  private startQuotaPacing(options: { config: InstarConfig; subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool; quotaPoller?: import('../core/QuotaPoller.js').QuotaPoller }): void {
+    const config = options.config;
+    if (!config.stateDir || !options.subscriptionPool || !isQuotaPacingEnabled(config)) return;
+    try {
+      const pool = options.subscriptionPool;
+      const machineId = this.meshSelfId ?? 'local';
+      const ledger = new QuotaHistoryLedger({
+        stateDir: config.stateDir,
+        logsDir: path.join(config.stateDir, '..', 'logs'),
+        machineId,
+        pool,
+        enabled: () => isQuotaPacingEnabled(config),
+      });
+      ledger.setTickSource(async () => {
+        const now = Date.now();
+        const { summaries } = await buildLocalSummaries(ledger, pool, { machineId, pollIntervalMs: 15 * 60_000, now });
+        const stale: Record<string, number> = {};
+        const verdicts: Record<string, number> = {};
+        for (const s of summaries) if (!s.fresh && s.staleReason) stale[s.staleReason] = (stale[s.staleReason] ?? 0) + 1;
+        for (const p of assembleQuotaProviders(mergeQuotaLogins(summaries, now).logins, now, { localOnly: false })) {
+          for (const a of p.accounts) if (a.weekly) verdicts[a.weekly.verdict] = (verdicts[a.weekly.verdict] ?? 0) + 1;
+        }
+        return { accounts: summaries.length, withHistory: summaries.filter((s) => s.newestPolledAt !== null).length, stale, verdicts };
+      });
+      options.quotaPoller?.setHistoryLedger(ledger);
+      ledger.start();
+      this.quotaPacingLedger = ledger;
+      this.quotaPacingPoller = options.quotaPoller ?? null;
+    } catch (error) { // @silent-fallback-ok: logged; the ledger stays null so GET /quota-pacing answers 503 and the poller is untouched
+      console.warn('[quota-pacing] init failed (non-fatal):', error instanceof Error ? error.message : error);
+      this.quotaPacingLedger = null;
     }
   }
 
@@ -9082,6 +12132,30 @@ export class AgentServer {
    * machine-local persisted record AND the pool-published registry field
    * (FD-6 — a future serving-lease holder inherits the id, never re-creates).
    */
+  /**
+   * gemini-payg §5 notices → the approved "💰 Routing & Spend Alerts" voice: the
+   * Increment-C dispatcher when it is up (its lanes, dedupe and dryRun soak), else the
+   * Increment-B resolver. Security-class and money-critical notices ride the money lane.
+   */
+  private async deliverGeminiPaygNotice(n: { kind: string; dedupeKey: string; text: string; urgent: boolean }): Promise<boolean> {
+    const kind = n.kind === 'month-full' ? 'cap-hit' : n.kind === 'invoice-drift' ? 'recon-drift' : n.urgent ? 'holder-dead' : 'door-dark';
+    try {
+      if (this.spendAlertDispatcher) {
+        const r = await this.spendAlertDispatcher.dispatch({ kind, dedupeKey: n.dedupeKey, text: n.text } as Parameters<SpendAlertDispatcher['dispatch']>[0]);
+        return r.decision === 'sent' || r.decision === 'sent-lifeline' || r.decision === 'queued-durable' || r.decision === 'quiet-recorded';
+      }
+      if (this.spendAlertResolver) {
+        const r = await this.spendAlertResolver.emit({ kind: 'observed-drift', dedupeKey: n.dedupeKey, text: n.text });
+        return r === 'sent' || r === 'sent-lifeline' || r === 'quiet-recorded';
+      }
+    } catch (err) { // @silent-fallback-ok: logged; the notice layer keeps it held for retry
+      console.error(`[instar] gemini-payg notice could not be delivered (${n.kind}): ${String(err)}`);
+      return false;
+    }
+    console.error(`[instar] gemini-payg notice (${n.kind}, no spend-alert channel on this machine): ` + n.text);
+    return false;
+  }
+
   private buildSpendAlertResolver(
     tg: TelegramAdapter,
     config: { stateDir: string; machineId?: string; routingSpend?: { alerts?: { telegramTopicId?: number | null } } },
@@ -9139,6 +12213,11 @@ export class AgentServer {
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });
+  }
+
+  /** The maturation ladder service (constructed late in boot); null until then or when disabled. */
+  getMaturationLadder(): MaturationLadderService | null {
+    return this.maturationLadder;
   }
 
   getTopicOperatorStore(): TopicOperatorStore | null {

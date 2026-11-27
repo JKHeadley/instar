@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "sandbox-node-install-read",
+  "sessionId": "75bd727f-c027-42f4-9efd-421e5438ca50",
+  "timestamp": "2026-11-08T08:07:02.241Z",
+  "artifactPath": "upgrades/side-effects/sandbox-node-install-read.md",
+  "artifactSha256": "82af24f5f15e8cf762e39444dba6e20eb7bd2aa8e8e1ef5d408dc58a909ab1c0",
+  "coveredFiles": [
+    "docs/specs/sandbox-node-install-read.eli16.md",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/integration/feedback-execute-dns-sandbox.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/sandbox-node-install-read.md",
+    "upgrades/side-effects/sandbox-node-install-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds the second-pass reviewer line and commits the trace so the skipIf-flagged sandbox test carries its independent review",
+  "eli16Path": "docs/specs/sandbox-node-install-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sandbox-node-install-read.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

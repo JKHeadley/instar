@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-15T17:38:24.106Z",
+  "slug": "safe-merge-gh-buffer",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/safe-merge.mjs"
+    ],
+    "addedLines": 12,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

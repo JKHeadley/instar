@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "team-2a",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T13:40:30.825Z",
+  "artifactPath": "upgrades/side-effects/team-2a.md",
+  "artifactSha256": "98b66fe662c6b148d7e2cc59d16cd0bc282954fe86a9c6cd06ce8cff9f768fac",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "docs/specs/memory-privacy.eli16.md",
+    "docs/specs/memory-privacy.md",
+    "package-lock.json",
+    "package.json",
+    "tests/unit/memory-session-safety.test.ts",
+    "upgrades/1.3.1711.md",
+    "upgrades/next/memory-session-safety.md",
+    "upgrades/side-effects/memory-session-safety.md",
+    "upgrades/side-effects/team-2a.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

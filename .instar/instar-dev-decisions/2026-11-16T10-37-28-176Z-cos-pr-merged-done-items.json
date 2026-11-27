@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-16T10:37:28.176Z",
+  "slug": "cos-pr-merged-done-items",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffEvidence.ts",
+      "src/data/awareness/chief-of-staff-checkable-done-items.md"
+    ],
+    "addedLines": 64,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

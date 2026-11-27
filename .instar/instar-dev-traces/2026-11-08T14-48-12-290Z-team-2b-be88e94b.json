@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "team-2b",
+  "sessionId": "b57d4929-6c89-42b2-9d0d-7efa5053d57b",
+  "timestamp": "2026-11-08T14:48:12.290Z",
+  "artifactPath": "upgrades/side-effects/team-2b.md",
+  "artifactSha256": "ca7d53f0f0494e1958acd2bd68c43221100e20e5c288d9576901d44ed5a038fb",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/core/ConversationUnreadService.ts",
+    "upgrades/side-effects/team-2b.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

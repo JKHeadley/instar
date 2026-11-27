@@ -10,6 +10,7 @@
 
 import { WebSocket } from 'ws';
 import { sign } from '../ThreadlineCrypto.js';
+import { isRelayChallengeNonce, reportRefusedChallenge } from './relayChallenge.js';
 import type { RegistryClient } from '../ThreadlineMCPServer.js';
 import type { IdentityInfo } from './IdentityManager.js';
 
@@ -65,6 +66,14 @@ export class RegistryRestClient implements RegistryClient {
           const frame = JSON.parse(raw.toString());
 
           if (frame.type === 'challenge') {
+            // SEC-133: never sign relay-chosen bytes of any other shape (see relayChallenge.ts).
+            if (!isRelayChallengeNonce(frame.nonce)) {
+              reportRefusedChallenge('registry', this.config.relayUrl);
+              clearTimeout(timeout);
+              try { ws.close(4000, 'challenge-refused'); } catch { /* @silent-fallback-ok — socket already closing */ }
+              reject(new Error('Registry auth refused: the relay sent a login challenge that is not 32 random bytes'));
+              return;
+            }
             // Sign the challenge
             const signature = sign(
               this.config.identity.privateKey,

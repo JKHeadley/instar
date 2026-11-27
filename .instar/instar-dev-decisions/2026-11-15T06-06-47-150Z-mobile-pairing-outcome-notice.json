@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-15T06:06:47.150Z",
+  "slug": "mobile-pairing-outcome-notice",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PairingOutcomeWatches.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "pairing-outcome-notice-retry: unchanged by this follow-up (message wording only); sends bounded by the 1 h window (15), upserts by a 12-attempt per-process give-up; 27 actions steady state."
+    }
+  },
+  "verdict": "blocked"
+}

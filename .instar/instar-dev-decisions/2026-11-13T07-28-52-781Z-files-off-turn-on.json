@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-13T07:28:52.781Z",
+  "slug": "files-off-turn-on",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": true,
+  "files": 11,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/TeamSwitches.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaHolderProxy.ts",
+      "src/server/mobileMediaOff.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

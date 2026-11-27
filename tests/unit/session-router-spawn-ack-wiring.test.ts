@@ -12,7 +12,7 @@ import path from 'node:path';
 const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
 describe('SessionRouter spawn hop — server.ts wiring', () => {
-  const at = src.indexOf('spawnOnMachine: async (machineId, msg, ownershipEpoch) => {');
+  const at = src.indexOf('spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {');
 
   it('sends the CAS-landed epoch and the sender frame, and returns the receiver ACK', () => {
     expect(at).toBeGreaterThan(-1);
@@ -34,5 +34,21 @@ describe('SessionRouter spawn hop — server.ts wiring', () => {
     expect(block).toContain('++routerNonce');
     expect(block).toContain("emitPlacement(sk, r, 'failover', placedOn)");
     expect(block).toContain('return r.ok;');
+  });
+});
+
+describe('SessionRouter offline ownership hold — server.ts wiring', () => {
+  it('records one agent-owned dashboard incident after the heartbeat or queue age threshold', () => {
+    const at = src.indexOf('reportOfflineOwnerHold: (sessionKey, owner, epoch, enqueuedAt) => {');
+    expect(at).toBeGreaterThan(-1);
+    const block = src.slice(at, src.indexOf('sleep: (ms)', at));
+    expect(src).toContain('enqueuedAt: dmsg.enqueuedAt');
+    expect(block).toContain('if (capacity?.online) return');
+    expect(block).toContain('!capacity?.routerReceivedAt');
+    expect(block).toContain("Date.parse(enqueuedAt ?? '') >= 60_000");
+    expect(block).toContain('if (telegram.getAttentionItem(id)) return');
+    expect(block).toContain('conditionKey: id');
+    expect(block).toContain('needsUser: false');
+    expect(block).toContain('{ recordOnly: true }');
   });
 });

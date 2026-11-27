@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-sentinel",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T14:17:15.489Z",
+  "artifactPath": "upgrades/side-effects/cb-sentinel.md",
+  "artifactSha256": "5fbd694333a177eb543df854b93c636933d21f8dcd7f4fa5fc4e9b5fef954588",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "upgrades/side-effects/cb-sentinel.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the task-10 slice: topicRef text renders and the required ladder entry for the dark sentinel; no behaviour change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "text renders and a registry entry; no action or loop"
+  }
+}

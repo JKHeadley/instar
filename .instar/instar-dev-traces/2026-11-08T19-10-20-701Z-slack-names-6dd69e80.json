@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "slack-names",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T19:10:20.701Z",
+  "artifactPath": "upgrades/side-effects/slack-names.md",
+  "artifactSha256": "1c1b73a1a63438558f57e824ebe81a9d460402d7e4ac82bdb87acce57dc87244",
+  "coveredFiles": [
+    "docs/specs/slack-names.eli16.md",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/messaging/slack/SlackApiClient.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "tests/e2e/mobile-slack-from-app-alive.test.ts",
+    "tests/unit/slack-names.test.ts",
+    "upgrades/next/slack-names.md",
+    "upgrades/side-effects/slack-names.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Request encoding for five read-only Slack methods plus cached display names; a revert fully undoes it; no stored state.",
+  "eli16Path": "docs/specs/slack-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-names.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

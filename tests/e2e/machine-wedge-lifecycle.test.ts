@@ -21,7 +21,7 @@ import { WEDGE_CANARY_APP, makeProbeRunner, makeReadOnlyRunner, parseBootTime, r
 import { WedgeMonitor, normalizeWedgeSettings, setActiveWedgeMonitor } from '../../src/monitoring/machineMaintenance/WedgeMonitor.js';
 import { makeMachineWedgeJudge } from '../../src/monitoring/MachineWedgeJudge.js';
 import { makeWedgeNoticeSender } from '../../src/monitoring/MachineWedgeNotice.js';
-import { MACHINE_WEDGE_CLAUDEMD_SECTION, MACHINE_WEDGE_CURRENT_F1_TEXT, MACHINE_WEDGE_STALE_F1_TEXT, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { MACHINE_WEDGE_CLAUDEMD_SECTION, MACHINE_WEDGE_CURRENT_F1_TEXT, MACHINE_WEDGE_GENTLE_TEXT, MACHINE_WEDGE_STALE_F1_TEXT, PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { isWslHost } from '../../src/core/wslPlatform.js';
 
@@ -60,6 +60,12 @@ describe('machine wedge detection lifecycle', () => {
       lockState: async () => null,
       canaryAvailable: () => wedgeCanaryAvailable(),
       ownUser: os.userInfo().username,
+      // As commands/server.ts wires it: this user's leftover canaries are read and ended.
+      ownUid: typeof process.getuid === 'function' ? process.getuid() : undefined,
+      endCanary: (pid) => { try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; } },
+      // As server.ts wires the gentle rung; the default setting (dry-run) never calls it.
+      resumeStopped: (pid) => { try { process.kill(pid, 'SIGCONT'); return true; } catch { return false; } },
+      home: os.homedir(),
       loadReading: () => null,
       spawnSystemFailures30m: () => null,
       sessionsCount: () => 0,
@@ -97,6 +103,14 @@ describe('machine wedge detection lifecycle', () => {
     const w = res.body.wedge;
     expect(w).toMatchObject({ enabled: true, dryRun: true, actuation: 'not-built', canRestart: false, canStopWork: false, noticeEnabled: false, role: 'maintainer', lastError: null });
     expect(w.lastSampleAt).toEqual(expect.any(Number));
+    // The gentle rung ships in dry-run. This samples the REAL host, and on a busy verify machine other
+    // test processes can be paused for a moment, so a wedge family may read positive and the rung may
+    // run. Whatever it read, in dry-run it never resumes anything: that is the guarantee, not a quiet host.
+    expect(w.gentleResume).toBe('dry-run');
+    if (w.lastGentle !== null) {
+      expect(w.lastGentle.mode).toBe('dry-run');
+      expect(['none-found', 'would-resume', 'unread']).toContain(w.lastGentle.result);
+    }
     // The real process table answered (a healthy test machine); the result is a reading, not a default.
     expect(['negative', 'positive']).toContain(w.families.F2.result);
     // No load report wired here: F4 is unknown, never "healthy".
@@ -106,7 +120,9 @@ describe('machine wedge detection lifecycle', () => {
         // The real canary ran through LaunchServices. A first sample can pass (negative) or, before any
         // pass this boot, fail as ineligible; it is never positive on a first sample and never unread.
         expect(w.families.F1.reason).toMatch(/^canary-/);
-        expect(['negative', 'ineligible']).toContain(w.families.F1.result);
+        // A busy test machine can still be starting the canary after the settle: unknown, named.
+        if (w.families.F1.result === 'unknown') expect(w.families.F1.reason).toBe('canary-still-running');
+        else expect(['negative', 'ineligible']).toContain(w.families.F1.result);
         expect(w.f1PassedThisBoot).toBe(w.families.F1.result === 'negative');
       } else {
         expect(w.families.F1).toMatchObject({ result: 'unknown', reason: 'canary-not-installed' });
@@ -118,7 +134,10 @@ describe('machine wedge detection lifecycle', () => {
     expect(w.candidate).toBeNull();
     expect(notices).toBe(0);
     const rows = fs.readFileSync(path.join(dir, 'logs', 'machine-maintenance.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(rows[0]).toMatchObject({ type: 'wedge-sample', feature: 'wedge', dryRun: true });
+    // When the gentle rung ran (in dry-run), its row is written before the sample row.
+    expect(rows.find((r) => r.type === 'wedge-sample')).toMatchObject({ type: 'wedge-sample', feature: 'wedge', dryRun: true });
+    if (w.lastGentle !== null) expect(rows.find((r) => r.type === 'wedge-gentle')).toMatchObject({ mode: 'dry-run' });
+    expect(rows.every((r) => r.dryRun === true)).toBe(true);
     // The host maintainer heartbeat and published state are on disk for co-resident agents.
     expect(fs.existsSync(path.join(dir, 'host', 'wedge-maintainer.json'))).toBe(true);
     expect(fs.existsSync(path.join(dir, 'host', 'wedge-state.json'))).toBe(true);
@@ -160,5 +179,24 @@ describe('machine wedge detection lifecycle', () => {
     const md = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
     expect(md).not.toContain(MACHINE_WEDGE_STALE_F1_TEXT);
     expect(md.split(MACHINE_WEDGE_CURRENT_F1_TEXT).length - 1).toBe(1);
+  });
+
+  it('an existing agent without the gentle rung line gets it once, before the when-to-use line', () => {
+    const projectDir = path.join(dir, 'proj-gentle');
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    const old = MACHINE_WEDGE_CLAUDEMD_SECTION(4321).replace(MACHINE_WEDGE_GENTLE_TEXT, '');
+    expect(old).not.toContain('Gentle rung');
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# Agent\n${old}`);
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4321, hasTelegram: false, projectName: 'mig' });
+    type R = { upgraded: string[]; skipped: string[]; errors: string[] };
+    const r1: R = { upgraded: [], skipped: [], errors: [] };
+    (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(r1);
+    const r2: R = { upgraded: [], skipped: [], errors: [] };
+    (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(r2);
+    expect(r1.upgraded).toContain('CLAUDE.md: added the machine wedge gentle rung line');
+    expect(r2.upgraded).not.toContain('CLAUDE.md: added the machine wedge gentle rung line');
+    const md = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+    expect(md.split(MACHINE_WEDGE_GENTLE_TEXT).length - 1).toBe(1);
+    expect(md.indexOf(MACHINE_WEDGE_GENTLE_TEXT)).toBeLessThan(md.indexOf('- **When to use** (PROACTIVE): the operator says a machine is frozen'));
   });
 });

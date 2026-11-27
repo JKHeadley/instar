@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "agent-connector-registry-test-isolation",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-24T01:45:45.882Z",
+  "artifactPath": "upgrades/side-effects/agent-connector-registry-test-isolation.md",
+  "artifactSha256": "25b3f61c76c0a1eb1128f6486ab995338959f184c84d364879deb364d0ac6df4",
+  "coveredFiles": [
+    "docs/specs/agent-connector-registry-test-isolation.eli16.md",
+    "tests/unit/agent-connector.test.ts",
+    "upgrades/next/agent-connector-registry-test-isolation.md",
+    "upgrades/side-effects/agent-connector-registry-test-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible test-fixture isolation repair. Production registration code, runner admission and installed behavior are unchanged; real unit-file coverage and independent review passed.",
+  "eli16Path": "docs/specs/agent-connector-registry-test-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-connector-registry-test-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "An explicitly invoked unit fixture and teardown, with no autonomous retry, restart or recovery controller."
+  }
+}

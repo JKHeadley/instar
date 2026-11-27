@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { scrubForStore } from '../../core/durableSecretScrub.js';
+import { rawSecretMatches } from '../../core/durableSecretScrub.js';
 import { GENERATED_STANDARDS_REGISTRY_OUTPUTS } from '../../core/standardsRegistryPath.js';
 import { CHANGESET_MAX_BYTES, CHANGESET_MAX_FILES, EVIDENCE_FILE, PREVIOUS_REVIEW_FILE, RESULT_FILE, isToolingPath } from './executePolicy.js';
 
@@ -56,11 +56,11 @@ export function isGitDirName(name: string): boolean {
 
 interface Walked { kind: 'file' | 'link'; mode: number; size: number; linkTarget?: string }
 
-function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> {
+async function walk(root: string, opts: { skipClaude: boolean }): Promise<Map<string, Walked>> {
   const out = new Map<string, Walked>();
-  const visit = (relDir: string) => {
+  const visit = async (relDir: string): Promise<void> => {
     let names: string[];
-    try { names = fs.readdirSync(path.join(root, relDir)); } catch (error) {
+    try { names = await fs.promises.readdir(path.join(root, relDir)); } catch (error) {
       throw new ChangeSetError('unreadable', `${relDir || '.'}: ${(error as NodeJS.ErrnoException).code ?? 'error'}`);
     }
     for (const name of names.sort()) {
@@ -69,9 +69,9 @@ function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> 
       if (!relDir && name === '.claude' && opts.skipClaude) continue;
       if (isGitDirName(name)) throw new ChangeSetError('special-file', `${rel} (nested git directory)`);
       const full = path.join(root, rel);
-      const st = fs.lstatSync(full);
-      if (st.isSymbolicLink()) { out.set(rel, { kind: 'link', mode: st.mode, size: 0, linkTarget: fs.readlinkSync(full) }); continue; }
-      if (st.isDirectory()) { visit(rel); continue; }
+      const st = await fs.promises.lstat(full);
+      if (st.isSymbolicLink()) { out.set(rel, { kind: 'link', mode: st.mode, size: 0, linkTarget: await fs.promises.readlink(full) }); continue; }
+      if (st.isDirectory()) { await visit(rel); continue; }
       if (!st.isFile()) throw new ChangeSetError('special-file', rel);
       // A hard link shares its bytes with a file elsewhere (possibly one the sandbox denies
       // reading): never publish one, whatever its name.
@@ -79,19 +79,19 @@ function walk(root: string, opts: { skipClaude: boolean }): Map<string, Walked> 
       out.set(rel, { kind: 'file', mode: st.mode, size: st.size });
     }
   };
-  visit('');
+  await visit('');
   return out;
 }
 
 /** Read a regular file without following a link swapped in after the walk. */
-function readNoFollow(full: string): Buffer {
-  const fd = fs.openSync(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+async function readNoFollow(full: string): Promise<Buffer> {
+  const file = await fs.promises.open(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
-    const st = fs.fstatSync(fd);
+    const st = await file.stat();
     if (!st.isFile()) throw new ChangeSetError('special-file', path.basename(full));
     if (st.nlink > 1) throw new ChangeSetError('special-file', `${path.basename(full)} (hard link)`);
-    return fs.readFileSync(fd);
-  } finally { fs.closeSync(fd); }
+    return await file.readFile();
+  } finally { await file.close(); }
 }
 
 /** The one directory Claude Code itself creates under `.claude/` when its sandboxed shell runs. */
@@ -137,12 +137,16 @@ export function claudeDirBreach(workspace: string): string | null {
 /**
  * Build the change set: workspace bytes vs the publish clone. Throws ChangeSetError for a
  * special file, an over-cap set, or a `.claude/` breach in the workspace (see claudeDirBreach).
+ *
+ * Asynchronous on purpose: this reads every file of two whole repository trees. Done with sync
+ * calls it held the server's event loop for over 84 s on 2026-11-07 until the supervisor killed
+ * the server. Keep every per-file call in this path off the sync fs API.
  */
-export function buildChangeSet(workspace: string, publishClone: string): ChangeSet {
+export async function buildChangeSet(workspace: string, publishClone: string): Promise<ChangeSet> {
   const breach = claudeDirBreach(workspace);
   if (breach) throw new ChangeSetError('sandbox-breach', breach);
-  const ws = walk(workspace, { skipClaude: true });
-  const base = walk(publishClone, { skipClaude: true });
+  const ws = await walk(workspace, { skipClaude: true });
+  const base = await walk(publishClone, { skipClaude: true });
   const entries: ChangeEntry[] = [];
   let totalBytes = 0;
   const skipOutput = (rel: string) => GENERATED_OUTPUT_SKIP.has(rel) || OUTPUT_SKIP.some((re) => re.test(rel));
@@ -153,10 +157,10 @@ export function buildChangeSet(workspace: string, publishClone: string): ChangeS
       throw new ChangeSetError('special-file', `${rel} (symlink)`);
     }
     if (skipOutput(rel) && !b) continue;
-    const bytes = readNoFollow(path.join(workspace, rel));
+    const bytes = await readNoFollow(path.join(workspace, rel));
     const executable = (w.mode & 0o111) !== 0;
     if (b && b.kind === 'file') {
-      const before = readNoFollow(path.join(publishClone, rel));
+      const before = await readNoFollow(path.join(publishClone, rel));
       if (before.equals(bytes) && ((b.mode & 0o111) !== 0) === executable) continue;
       entries.push({ path: rel, kind: 'modified', bytes, executable });
     } else {
@@ -195,35 +199,86 @@ export function toolingPathsTouched(changeSet: ChangeSet): string[] {
 }
 
 const SCAN_CHUNK = 64 * 1024;
-const SCAN_OVERLAP = 512;
+/** Above the longest PEM body the patterns accept, so a block across a chunk boundary is seen whole in one chunk. */
+const SCAN_OVERLAP = 16 * 1024;
+
+/**
+ * Every credential-shaped value in `text`, or null when a pattern failed and cannot vouch for it.
+ * Uses raw matches, because the scrub drops a span overlapping another and a new value beside a known
+ * one must still count. Held in memory only.
+ */
+function credentialMatches(text: string): Set<string> | null {
+  const found = new Set<string>();
+  try {
+    for (let start = 0; start < Math.max(1, text.length); start += SCAN_CHUNK - SCAN_OVERLAP) {
+      for (const value of rawSecretMatches(text.slice(start, start + SCAN_CHUNK))) found.add(value);
+      if (start + SCAN_CHUNK >= text.length) break;
+    }
+  } catch { return null; } // @silent-fallback-ok: null holds the change, the stricter path
+  return found;
+}
 
 /** True when the credential-exposure pattern set matches anywhere in `text` (chunked, overlapping). */
 export function credentialShaped(text: string): boolean {
-  for (let start = 0; start < Math.max(1, text.length); start += SCAN_CHUNK - SCAN_OVERLAP) {
-    const chunk = text.slice(start, start + SCAN_CHUNK);
-    const result = scrubForStore(chunk, { maxBytes: SCAN_CHUNK + 1 });
-    // A scrub that fails cannot vouch for the text: treat it as a match (hold, never publish).
-    if (result.error) return true;
-    if ((result.redactions ?? []).some((r) => r.kind !== 'oversize' && r.kind !== 'scrub-error')) return true;
-    if (start + SCAN_CHUNK >= text.length) break;
-  }
-  return false;
+  const found = credentialMatches(text);
+  // A scrub that fails cannot vouch for the text: treat it as a match (hold, never publish).
+  return found === null || found.size > 0;
+}
+
+/**
+ * True when `next` holds a credential-shaped value that `base` does not. Both are scanned whole, so a
+ * value on a new line still pairs with a label on an old one. A value already in the base is public
+ * in the repository and is not this change's doing (2026-11-07: 440 of 5,669 files matched as they
+ * stood, including src/commands/server.ts, so every fix touching one was held).
+ */
+export function addsCredentialShape(next: string, base: string): boolean {
+  const nextMatches = credentialMatches(next);
+  if (nextMatches === null) return true;
+  if (nextMatches.size === 0) return false;
+  const baseMatches = credentialMatches(base);
+  if (baseMatches === null) return true;
+  return [...nextMatches].some((value) => !baseMatches.has(value));
 }
 
 /**
  * Secret gate over every changed file, the result notes and the PR title and body. Returns the
- * matched FILE NAMES (and pseudo-names for notes/title/body) — never the matched text.
+ * matched FILE NAMES (and pseudo-names for notes/title/body) — never the matched text. A modified
+ * file is judged on the values it adds when `readBase` can supply the original from the trusted
+ * clone. An added file, a missing original or a file with a NUL byte is held on any match.
  */
-export function secretGate(changeSet: ChangeSet, extra: { notes: string; prTitle: string; prBody: string }): string[] {
+export function secretGate(
+  changeSet: ChangeSet,
+  extra: { notes: string; prTitle: string; prBody: string },
+  readBase?: (relPath: string) => Buffer | null,
+): string[] {
   const matched: string[] = [];
   for (const entry of changeSet.entries) {
     if (!entry.bytes) continue;
-    if (credentialShaped(entry.bytes.toString('utf8')) || credentialShaped(entry.bytes.toString('latin1'))) matched.push(entry.path);
+    const bytes = entry.bytes;
+    const base = entry.kind === 'modified' ? readBase?.(entry.path) ?? null : null;
+    const comparable = base !== null && !base.includes(0) && !bytes.includes(0);
+    const holds = (encoding: 'utf8' | 'latin1') => comparable
+      ? addsCredentialShape(bytes.toString(encoding), base!.toString(encoding))
+      : credentialShaped(bytes.toString(encoding));
+    if (holds('utf8') || holds('latin1')) matched.push(entry.path);
   }
   if (credentialShaped(extra.notes)) matched.push('(result notes)');
   if (credentialShaped(extra.prTitle)) matched.push('(pull request title)');
   if (credentialShaped(extra.prBody)) matched.push('(pull request body)');
   return matched;
+}
+
+/**
+ * A file's original in a trusted base clone. Null (hold on any match) for anything that is not a
+ * plain file inside the clone, or on any read failure.
+ */
+export function readBaseFile(cloneRoot: string, relPath: string): Buffer | null {
+  try {
+    const full = path.resolve(cloneRoot, relPath);
+    if (!full.startsWith(path.resolve(cloneRoot) + path.sep)) return null;
+    if (!fs.lstatSync(full).isFile()) return null;
+    return fs.readFileSync(full);
+  } catch { return null; } // @silent-fallback-ok: null holds on any match, the stricter path
 }
 
 /** Frontmatter keys a session-drafted spec may not carry (they belong to the trusted convergence path). */

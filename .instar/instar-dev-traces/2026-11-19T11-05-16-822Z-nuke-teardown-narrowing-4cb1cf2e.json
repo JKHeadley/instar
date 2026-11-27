@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "nuke-teardown-narrowing",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:05:16.822Z",
+  "artifactPath": "upgrades/side-effects/nuke-teardown-narrowing.md",
+  "artifactSha256": "71d961eaadd1ebd8fcbf3ce74a0eb3b9c6030999480daa3c0f8e859dc31ec1ec",
+  "specPath": "docs/specs/nuke-teardown-narrowing.md",
+  "coveredFiles": [
+    "site/src/content/docs/reference/cli.md",
+    "src/cli.ts",
+    "src/commands/nuke.ts",
+    "src/core/SafeFsExecutor.ts",
+    "tests/integration/nuke-teardown-narrowing.test.ts",
+    "tests/unit/SafeFsExecutor-nukeAgentHomeScope.test.ts",
+    "tests/unit/nuke-here.test.ts",
+    "tests/unit/nuke-teardown-narrowing.test.ts",
+    "upgrades/side-effects/nuke-teardown-narrowing.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

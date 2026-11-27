@@ -5,6 +5,7 @@ import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
 import type { InstarConfig, AutonomyProfileLevel, NotificationPreferences } from '../../src/core/types.js';
+import { provedProfile } from '../helpers/operatorProof.js';
 
 function makeConfig(overrides: Partial<InstarConfig> = {}): InstarConfig {
   return {
@@ -104,7 +105,7 @@ describe('AutonomyProfileManager', () => {
         stateDir: project.stateDir,
         config: makeConfig(),
       });
-      mgr1.setProfile('autonomous', 'test setup');
+      provedProfile(mgr1).setProfile('autonomous', 'test setup');
 
       const mgr2 = new AutonomyProfileManager({
         stateDir: project.stateDir,
@@ -179,7 +180,7 @@ describe('AutonomyProfileManager', () => {
         config: makeConfig(),
       });
 
-      const resolved = mgr.setProfile('autonomous', 'User requested full autonomy');
+      const resolved = provedProfile(mgr).setProfile('autonomous', 'User requested full autonomy');
       expect(mgr.getProfile()).toBe('autonomous');
       expect(resolved.profile).toBe('autonomous');
       expect(resolved.evolutionApprovalMode).toBe('autonomous');
@@ -191,7 +192,7 @@ describe('AutonomyProfileManager', () => {
         config: makeConfig(),
       });
 
-      mgr.setProfile('cautious', 'Testing');
+      provedProfile(mgr).setProfile('cautious', 'Testing');
       const history = mgr.getHistory();
       expect(history.length).toBeGreaterThanOrEqual(1);
       const last = history[history.length - 1];
@@ -207,7 +208,7 @@ describe('AutonomyProfileManager', () => {
       });
 
       for (let i = 0; i < 55; i++) {
-        mgr.setProfile(i % 2 === 0 ? 'cautious' : 'autonomous', `Change ${i}`);
+        provedProfile(mgr).setProfile(i % 2 === 0 ? 'cautious' : 'autonomous', `Change ${i}`);
       }
 
       expect(mgr.getHistory().length).toBeLessThanOrEqual(50);
@@ -218,7 +219,7 @@ describe('AutonomyProfileManager', () => {
         stateDir: project.stateDir,
         config: makeConfig(),
       });
-      mgr1.setProfile('autonomous', 'persistence test');
+      provedProfile(mgr1).setProfile('autonomous', 'persistence test');
 
       const mgr2 = new AutonomyProfileManager({
         stateDir: project.stateDir,
@@ -236,7 +237,7 @@ describe('AutonomyProfileManager', () => {
         stateDir: project.stateDir,
         config: makeConfig(),
       });
-      mgr.setProfile('autonomous', 'config test');
+      provedProfile(mgr).setProfile('autonomous', 'config test');
 
       const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       expect(raw.autonomyProfile).toBe('autonomous');
@@ -248,7 +249,7 @@ describe('AutonomyProfileManager', () => {
         config: makeConfig(),
       });
 
-      expect(() => mgr.setProfile('cautious', 'no config')).not.toThrow();
+      expect(() => provedProfile(mgr).setProfile('cautious', 'no config')).not.toThrow();
     });
   });
 
@@ -387,7 +388,7 @@ describe('AutonomyProfileManager', () => {
       });
 
       for (let i = 0; i < 15; i++) {
-        mgr.setProfile(i % 2 === 0 ? 'cautious' : 'autonomous', `Change ${i}`);
+        provedProfile(mgr).setProfile(i % 2 === 0 ? 'cautious' : 'autonomous', `Change ${i}`);
       }
 
       expect(mgr.getDashboard().history.length).toBeLessThanOrEqual(10);
@@ -405,7 +406,7 @@ describe('AutonomyProfileManager', () => {
 
       const levels: AutonomyProfileLevel[] = ['cautious', 'supervised', 'collaborative', 'autonomous'];
       for (const level of levels) {
-        mgr.setProfile(level, `Progressing to ${level}`);
+        provedProfile(mgr).setProfile(level, `Progressing to ${level}`);
         expect(mgr.getProfile()).toBe(level);
         expect(mgr.getResolvedState().profile).toBe(level);
       }
@@ -417,7 +418,7 @@ describe('AutonomyProfileManager', () => {
         config: makeConfig({ autonomyProfile: 'autonomous' }),
       });
 
-      mgr.setProfile('cautious', 'Lost trust');
+      provedProfile(mgr).setProfile('cautious', 'Lost trust');
       expect(mgr.getProfile()).toBe('cautious');
       const resolved = mgr.getResolvedState();
       expect(resolved.autoApplyUpdates).toBe(false);
@@ -439,7 +440,7 @@ describe('AutonomyProfileManager', () => {
 
       expect(mgr.getProfile()).toBe('collaborative');
       // setProfile should create the directory and persist
-      mgr.setProfile('cautious', 'edge case');
+      provedProfile(mgr).setProfile('cautious', 'edge case');
       expect(mgr.getProfile()).toBe('cautious');
     });
 

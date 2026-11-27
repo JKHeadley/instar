@@ -24,6 +24,22 @@ import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { generateAgentToken, deleteAgentToken } from '../../src/messaging/AgentTokenManager.js';
+import { registerAgent } from '../../src/core/AgentRegistry.js';
+
+// SEC-154: /a2a/inbox only accepts a sender that is another agent registered on this machine.
+// Each suite registers its sender in a throwaway registry (never the developer's own).
+function useSandboxRegistry(): { dir: string; previous: string | undefined } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-inbox-registry-'));
+  const previous = process.env.INSTAR_TEST_REGISTRY_DIR;
+  process.env.INSTAR_TEST_REGISTRY_DIR = dir;
+  return { dir, previous };
+}
+function restoreRegistry(sb: { dir: string; previous: string | undefined } | undefined, op: string): void {
+  if (!sb) return;
+  if (sb.previous === undefined) delete process.env.INSTAR_TEST_REGISTRY_DIR;
+  else process.env.INSTAR_TEST_REGISTRY_DIR = sb.previous;
+  SafeFsExecutor.safeRmSync(sb.dir, { recursive: true, force: true, operation: op });
+}
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 
 function createMockSessionManager() {
@@ -63,9 +79,12 @@ describe('mentor-reply via /a2a/inbox persists to mentor-replies.jsonl (E2E)', (
   let server: AgentServer;
   let app: express.Express;
   let token: string;
+  let sandbox: ReturnType<typeof useSandboxRegistry> | undefined;
   const PROJECT = 'echo'; // mentor side — localAgent must be 'echo' so marker to=echo matches
 
   beforeAll(async () => {
+    sandbox = useSandboxRegistry();
+    registerAgent(path.join(sandbox.dir, 'instar-codex-cli-agent'), 'instar-codex-cli', 49002, 'project-bound', process.pid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-reply-inbox-'));
     stateDir = path.join(tmpDir, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
@@ -97,6 +116,7 @@ describe('mentor-reply via /a2a/inbox persists to mentor-replies.jsonl (E2E)', (
     await server.stop();
     try { deleteAgentToken(PROJECT); } catch { /* best-effort */ }
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-reply-via-inbox.test.ts' });
+    restoreRegistry(sandbox, 'tests/e2e/mentor-reply-via-inbox.test.ts:registry');
   });
 
   it('a mentor-reply marker POSTed to /a2a/inbox is routed + persisted to mentor-replies.jsonl', async () => {
@@ -141,9 +161,12 @@ describe('mentor-reply: menteeAgentName override + numeric botId coercion (E2E)'
   let server: AgentServer;
   let app: express.Express;
   let token: string;
+  let sandbox: ReturnType<typeof useSandboxRegistry> | undefined;
   const PROJECT = 'echo';
 
   beforeAll(async () => {
+    sandbox = useSandboxRegistry();
+    registerAgent(path.join(sandbox.dir, 'instar-codey-agent'), 'instar-codey', 49003, 'project-bound', process.pid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mentor-reply-coerce-'));
     stateDir = path.join(tmpDir, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
@@ -168,6 +191,7 @@ describe('mentor-reply: menteeAgentName override + numeric botId coercion (E2E)'
     await server.stop();
     try { deleteAgentToken(PROJECT); } catch { /* best-effort */ }
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/mentor-reply-via-inbox.test.ts:coerce' });
+    restoreRegistry(sandbox, 'tests/e2e/mentor-reply-via-inbox.test.ts:coerce:registry');
   });
 
   it('routes a reply from the menteeAgentName-named agent with a numeric-configured botId (string senderBotId)', async () => {

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T04:04:59.705Z",
+  "slug": "document-computer-link-owner-refusal",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/documentLinkRoutes.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

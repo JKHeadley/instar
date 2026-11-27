@@ -5,6 +5,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
+import CoreFoundation
 import CoreImage
 import CoreMedia
 import CoreVideo
@@ -15,6 +16,38 @@ import IOKit
 import IOKit.pwr_mgt
 import ScreenCaptureKit
 import VideoToolbox
+
+// BEGIN SECRET ENTER BOUNDARY
+/// The existing Enter-intent write is an admission prerequisite, not telemetry.
+/// A serial input stream has only one secretType invocation in flight per producer.
+enum SecretEnterBoundary {
+    static func recordIntent(state: inout [String: Any], key: String, requestId: String,
+                             pid: Int, start: String, now: Int64) -> Bool {
+        guard pid > 1, !start.isEmpty,
+              var markers = state["markers"] as? [String: Any],
+              var entry = markers[key] as? [String: Any],
+              entry["requestId"] as? String == requestId,
+              entry["state"] as? String == "owed",
+              entry["typistPid"] as? Int == pid, entry["typistStart"] as? String == start else { return false }
+        if let value = entry["relockNow"] {
+            guard let requested = value as? NSNumber,
+                  CFGetTypeID(requested) == CFBooleanGetTypeID(), !requested.boolValue else { return false }
+        }
+        entry["enterPendingAt"] = now
+        markers[key] = entry
+        state["markers"] = markers
+        return true
+    }
+
+    static func dispatch(commit: () -> Bool?, post: () -> Void) -> Bool {
+        // nil is an outer store failure; false is a failed inner ownership check.
+        guard commit() == true else { return false }
+        // The transaction has returned: never hold the store lock across key posting.
+        post()
+        return true
+    }
+}
+// END SECRET ENTER BOUNDARY
 
 @available(macOS 14.0, *)
 private final class LatestScreenFrame: NSObject, SCStreamOutput, SCStreamDelegate {
@@ -192,6 +225,45 @@ private final class DesktopH264Encoder {
         wait.signal()
     }
 }
+
+// BEGIN GUARD OBSERVATION — compiled verbatim with inert dispatch doubles in tests.
+// Only the guard's main thread uses this value. No I/O occurs during dispatch.
+struct GuardDispatchObservation {
+    let attemptId: String
+    let key: String
+    let pid: Int
+    let start: String
+    fileprivate(set) var count: Int64 = 0
+    private(set) var complete: Bool
+    private(set) var checkpointCount: Int64? = nil
+    static let limit: Int64 = 9_007_199_254_740_991 // exactly representable in JSON consumers
+
+    init(attemptId: String, key: String, pid: Int, start: String) {
+        self.attemptId = attemptId; self.key = key; self.pid = pid; self.start = start
+        self.complete = attemptId.range(of: "^[a-f0-9-]{36}:[1-9][0-9]*$", options: .regularExpression) != nil
+            && key.range(of: "^[a-f0-9-]{36}\\.[0-9]+$", options: .regularExpression) != nil
+            && pid > 0 && !start.isEmpty
+    }
+    mutating func dispatch(direct: (() -> Void)?, fallback: (() -> Void)?) -> Bool {
+        guard let call = direct ?? fallback else { return false }
+        if count >= Self.limit { complete = false } else { count += 1 }
+        call() // observation failure never blocks the lock
+        return true
+    }
+    mutating func checkpoint() -> [String: Any] {
+        if checkpointCount != nil { complete = false }
+        checkpointCount = count
+        return witness(phase: "watch", terminal: nil)
+    }
+    func witness(phase: String, terminal: String?) -> [String: Any] {
+        var value: [String: Any] = ["schema": 1, "attemptId": attemptId, "key": key,
+            "pid": pid, "start": start, "count": count, "complete": complete, "phase": phase]
+        if let baseline = checkpointCount { value["checkpointCount"] = baseline }
+        if let terminal = terminal { value["terminal"] = terminal }
+        return value
+    }
+}
+// END GUARD OBSERVATION
 
 @available(macOS 14.0, *)
 @main
@@ -1018,7 +1090,14 @@ enum LockedStore {
         }
         if name == "read" {
             guard let state = readOnly(root: root) else { return failed("store-unreadable") }
-            return ["state": state, "attempts": currentAttempts(state),
+            // Node reads the whole store on every status check; its reply cap is 64,000 bytes.
+            // A store that outgrew it before pruning by count is read through the same trim.
+            var view = state
+            if var markers = view["markers"] as? [String: Any] {
+                for key in prunableKeys(markers) { markers[key] = nil }
+                view["markers"] = markers
+            }
+            return ["state": view, "attempts": currentAttempts(state),
                     "bootSession": bootUUID() ?? "", "loginSession": sessionUUID() ?? ""]
         }
         return withLock(root: root) { state -> [String: Any] in
@@ -1092,17 +1171,31 @@ enum LockedStore {
         }
     }
 
-    /// Keeps the store small: finished duties older than a week carry nothing.
+    /// Finished duties kept beyond those still owed or unreported, newest first.
+    /// About 500 bytes each, so this stays far under Node's 64,000-byte read.
+    static let keptFinished = 30
+
+    /// Keeps the store small: finished duties older than a week carry nothing, and
+    /// only the newest `keptFinished` of them are kept even within the week, so a
+    /// Mac that unlocks often never outgrows the read (126 did, fb-3a84590d-1e8).
     private static func pruneOld(_ state: inout [String: Any]) {
         guard var markers = state["markers"] as? [String: Any] else { return }
+        for key in prunableKeys(markers) { markers[key] = nil }
+        state["markers"] = markers
+    }
+
+    /// Keys that carry nothing: finished (and, if a failed relock, already reported),
+    /// and either older than a week or past the newest `keptFinished`.
+    static func prunableKeys(_ markers: [String: Any]) -> [String] {
         let cutoff = nowMs() - 7 * 24 * 3_600_000
+        var finished: [(key: String, created: Int64)] = []
         for (key, value) in markers {
             guard let entry = value as? [String: Any], isTerminal(entry["state"] as? String),
-                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true,
-                  ((entry["createdAt"] as? NSNumber)?.int64Value ?? 0) < cutoff else { continue }
-            markers[key] = nil
+                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true else { continue }
+            finished.append((key, (entry["createdAt"] as? NSNumber)?.int64Value ?? 0))
         }
-        state["markers"] = markers
+        finished.sort { $0.created != $1.created ? $0.created > $1.created : $0.key > $1.key }
+        return finished.enumerated().filter { $0.offset >= keptFinished || $0.element.created < cutoff }.map { $0.element.key }
     }
 
     static func isTerminal(_ state: String?) -> Bool {
@@ -1402,15 +1495,21 @@ extension InstarDesktopHost {
             abandonField()
             throw HostError.refused("aborted")
         }
-        // The relock path and the grant-end rule both read this time.
-        _ = LockedStore.withLock(root: lockedRoot) { state in
-            if var entry = LockedStore.marker(state, markerKey) {
-                entry["enterPendingAt"] = Int64(Date().timeIntervalSince1970 * 1000)
-                LockedStore.setMarker(&state, markerKey, entry)
+        // The relock path and the grant-end rule both read this time. Enter must
+        // not proceed if the owned duty disappeared or its write could not persist.
+        let typistStart = LockedStore.processInfo(getpid())?.start ?? ""
+        guard SecretEnterBoundary.dispatch(commit: {
+            LockedStore.withLock(root: lockedRoot) { state in
+                SecretEnterBoundary.recordIntent(state: &state, key: markerKey, requestId: requestId,
+                    pid: Int(getpid()), start: typistStart, now: Int64(Date().timeIntervalSince1970 * 1000))
             }
+        }, post: {
+            postKey(36, flags: [], down: true)
+            postKey(36, flags: [], down: false)
+        }) else {
+            abandonField()
+            throw HostError.refused("state-unavailable")
         }
-        postKey(36, flags: [], down: true)
-        postKey(36, flags: [], down: false)
         // Only after Enter: a kill before it leaves a full password in the field.
         _ = LockedStore.withLock(root: lockedRoot) { $0["dirty"] = nil }
     }
@@ -1439,18 +1538,20 @@ extension InstarDesktopHost {
         return onConsole ? true : nil
     }
 
+    private static var guardObservation = GuardDispatchObservation(attemptId: "", key: "", pid: 0, start: "")
+
     private static func lockNow() -> Bool {
         typealias Immediate = @convention(c) () -> Void
         if let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login", RTLD_NOW),
            let symbol = dlsym(handle, "SACLockScreenImmediate") {
-            unsafeBitCast(symbol, to: Immediate.self)()
-            return true
+            return guardObservation.dispatch(direct: { unsafeBitCast(symbol, to: Immediate.self)() }, fallback: nil)
         }
         guard let (code, _) = buildLayoutKeys()[Unicode.Scalar("q")] else { return false }
         let flags: CGEventFlags = [.maskCommand, .maskControl]
-        postKey(code, flags: flags, down: true)
-        postKey(code, flags: flags, down: false)
-        return true
+        return guardObservation.dispatch(direct: nil, fallback: {
+            postKey(code, flags: flags, down: true)
+            postKey(code, flags: flags, down: false)
+        })
     }
 
     private static func transition(root: String, key: String, from: Set<String>, to: String,
@@ -1461,6 +1562,10 @@ extension InstarDesktopHost {
             entry["state"] = to
             entry["guardAt"] = Int64(Date().timeIntervalSince1970 * 1000)
             for (name, value) in extra { entry[name] = value }
+            if to == "watching" { entry["guardWatchObservation"] = guardObservation.checkpoint() }
+            if LockedStore.isTerminal(to) {
+                entry["guardFinalObservation"] = guardObservation.witness(phase: "final", terminal: to)
+            }
             LockedStore.setMarker(&state, key, entry)
             return true
         }) else { emergencyLock(root: root, key: key) }
@@ -1505,10 +1610,14 @@ extension InstarDesktopHost {
     /// it. It holds no authority except to lock this Mac for this one duty.
     fileprivate static func runRelockGuard(root: String, key: String) -> Never {
         let me = Int(getpid())
+        let start = LockedStore.processInfo(getpid())?.start ?? ""
+        guardObservation = GuardDispatchObservation(
+            attemptId: ProcessInfo.processInfo.environment["INSTAR_GUARD_OBSERVATION"] ?? "",
+            key: key, pid: me, start: start)
         _ = LockedStore.withLock(root: root) { state in
             guard var entry = LockedStore.marker(state, key) else { return }
             entry["guardPid"] = me
-            entry["guardStart"] = LockedStore.processInfo(getpid())?.start ?? ""
+            entry["guardStart"] = start
             LockedStore.setMarker(&state, key, entry)
         }
         DispatchQueue.global().async {

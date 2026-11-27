@@ -47,7 +47,11 @@ function runChild(item: PlanItem): Promise<ChildResult> {
     delete env['FIXTURE_PROBE_EXPECT'];
     delete env['FIXTURE_STAMP_DIR'];
     delete env['FIXTURE_OUT_DIR'];
-    for (const [k, v] of Object.entries(item.env ?? {})) env[k] = v;
+    for (const [k, v] of Object.entries(item.env ?? {})) {
+      // '$HOLDER_PID' = the pid of the slot holder above this driver (from the holder's marker),
+      // for the own-suite case: a Local Verify run declares itself as its lanes' holder.
+      env[k] = v === '$HOLDER_PID' ? String(process.env['INSTAR_TEST_SEMAPHORE_HELD'] ?? '').split(':')[0] : v;
+    }
     if (item.scrubHeld) delete env['INSTAR_TEST_SEMAPHORE_HELD'];
     const vitestMjs = path.resolve(process.cwd(), 'node_modules/vitest/vitest.mjs');
     const child = spawn(

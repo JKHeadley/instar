@@ -6,7 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
-  summarizeAccounts, accountCellState, usageWindows, accountEmail, kindWord,
+  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices, topWindow, usageTone,
+  summarizeAccounts, accountCellState, repairCellView, REPAIR_RETRY_GRACE, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
   READING_STALE_MS, SAMPLE_STALE_MS, MAX_ACCOUNTS, type SpendMachine,
@@ -31,10 +32,14 @@ describe('accounts', () => {
     expect(accountCellState({ status: 'needs-reauth' }, true)).toEqual({ state: 'working', label: 'signing in now' });
   });
 
-  it('usage windows: Claude and Codex readings, highest first; non-numbers dropped', () => {
-    expect(usageWindows({ fiveHour: { utilizationPct: 20, resetsAt: at(60) }, sevenDay: { utilizationPct: 80.4, resetsAt: at(600) } }))
-      .toEqual([{ label: 'weekly', pct: 80, resetsAt: at(600) }, { label: '5-hour', pct: 20, resetsAt: at(60) }]);
-    expect(usageWindows({ primary: { usedPercent: 50, resetsAtIso: at(30) }, secondary: { usedPercent: 'x' } })).toEqual([{ label: '5-hour', pct: 50, resetsAt: at(30) }]);
+  it('usage windows: Claude and Codex readings in a fixed order (5-hour, weekly, Fable weekly), never by percentage; non-numbers dropped', () => {
+    expect(usageWindows({ sevenDay: { utilizationPct: 80.4, resetsAt: at(600) }, fiveHour: { utilizationPct: 20, resetsAt: at(60) } }, NOW))
+      .toEqual([
+        { label: '5-hour', name: '5-hour', pct: 20, resetsAt: at(60), tone: null, rolledOver: false },
+        { label: 'weekly', name: 'Weekly', pct: 80, resetsAt: at(600), tone: 'attn', rolledOver: false },
+      ]);
+    expect(usageWindows({ primary: { usedPercent: 50, resetsAtIso: at(30) }, secondary: { usedPercent: 'x' } }, NOW))
+      .toEqual([{ label: '5-hour', name: '5-hour', pct: 50, resetsAt: at(30), tone: null, rolledOver: false }]);
     expect(usageWindows(null)).toEqual([]);
     expect(usageWindows({ fiveHour: { utilizationPct: Number.NaN } })).toEqual([]);
   });
@@ -74,6 +79,22 @@ describe('accounts', () => {
     expect(r.accounts[0].stale).toBe(false);
   });
 
+  it('provides opaque grouping keys across accounts and leaves unknown machine identities unset', () => {
+    const result = summarizeAccounts(pool([
+      row({ machineId: 'self', machineNickname: 'Local display name' }),
+      row({ id: 'acct-b', machineNickname: 'Renamed local machine' }),
+      row({ id: 'acct-c', machineId: 'm_peer', machineNickname: 'Local display name', remote: true }),
+      row({ id: 'acct-d', machineId: undefined, remote: true }),
+    ]), { now: NOW });
+    const [first, second, peer, unknown] = result.accounts.map(a => a.machines[0]);
+    expect(first.machineKey).toMatch(/^[0-9a-f]{16}$/);
+    expect(second.machineKey).toBe(first.machineKey);
+    expect(peer.machineKey).not.toBe(first.machineKey);
+    expect(unknown.machineKey).toBeNull();
+    expect(result.accounts.every(a => a.machines[0].present === true)).toBe(true);
+    expect(JSON.stringify(result.accounts)).not.toContain('m_peer');
+  });
+
   it('stale on both sides of 60 minutes; tone at 74/75/89/90', () => {
     const one = (pct: number, minutesAgo: number) => summarizeAccounts(pool([row({ lastQuota: { fiveHour: { utilizationPct: pct, resetsAt: at(10) }, measuredAt: at(-minutesAgo) } })]), { now: NOW }).accounts[0];
     expect(one(10, 59).stale).toBe(false);
@@ -91,6 +112,27 @@ describe('accounts', () => {
     expect(by.Grok.usageLine).toBe("Usage isn't readable for this kind of account.");
     expect(by.New.usageLine).toBe('No reading yet.');
     expect(by.Past.windows[0].resetsAt).toBeNull();
+  });
+
+  it('DF-0001: a limit that already reset keeps its figure but no colour, and never decides the account', () => {
+    const q = { fiveHour: { utilizationPct: 100, resetsAt: at(-5) }, sevenDay: { utilizationPct: 40, resetsAt: at(3000) }, measuredAt: at(-30) };
+    const a = summarizeAccounts(pool([row({ lastQuota: q })]), { now: NOW }).accounts[0];
+    expect(a.windows.map((w) => [w.label, w.pct, w.rolledOver, w.tone])).toEqual([['5-hour', 100, true, null], ['weekly', 40, false, null]]);
+    expect(a.usageLine).toBe('40% of weekly');
+    expect(a.tone).toBeNull();
+    expect(topWindow(a.windows)?.label).toBe('weekly');
+    expect(topWindow([])).toBeNull();
+    // The pool-wide "nearly out" notice ignores the reset limit too.
+    const notices = accountNotices([{ key: 'k', name: 'Work Max', kind: 'Claude', signIn: 'signed-in', windows: a.windows, machines: [{ name: 'Studio', isSelf: true, state: 'ok', label: 'signed in', machineKey: null, present: true }] }], { localUnreadable: false, partial: false });
+    expect(notices).toEqual([]);
+  });
+
+  it('DF-0001: colour follows the rounded figure shown (89.6% shows "90%" and is red), for a limit and the account', () => {
+    const a = summarizeAccounts(pool([row({ lastQuota: { sevenDay: { utilizationPct: 89.6, resetsAt: at(3000) }, measuredAt: at(-1) } })]), { now: NOW }).accounts[0];
+    expect(a.windows[0]).toMatchObject({ pct: 90, tone: 'bad' });
+    expect(a.tone).toBe('bad');
+    expect(usageTone(89.4)).toBe('attn');
+    expect(usageTone(100, true)).toBeNull();
   });
 
   it('sign-in rollup, ordering and in-use only with a local row', () => {
@@ -117,7 +159,7 @@ describe('accounts', () => {
       row({ status: 'needs-reauth' }),
       row({ machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, status: 'needs-reauth' }),
     ]), { now: NOW, localRepairs: [{ accountId: 'acct-a', state: 'running' }, { accountId: 'other', state: 'running' }] });
-    expect(r.accounts[0].machines).toEqual([
+    expect(r.accounts[0].machines).toMatchObject([
       { name: 'Studio', isSelf: true, state: 'working', label: 'signing in now' },
       { name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in' },
     ]);
@@ -125,6 +167,45 @@ describe('accounts', () => {
     expect(done.accounts[0].machines[0].state).toBe('attn');
     const only = summarizeAccounts(pool([row({ status: 'needs-reauth' })]), { now: NOW, localRepairs: [{ accountId: 'acct-a', state: 'awaiting-code' }] });
     expect(only.accounts[0].signIn).toBe('signing-in');
+  });
+
+  it('every machine\'s repairs decide each cell: a peer repair shows on the peer, not as a bare sign-in', () => {
+    const two = () => pool([
+      row({ status: 'needs-reauth' }),
+      row({ machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, status: 'needs-reauth' }),
+    ]);
+    const running = summarizeAccounts(two(), { now: NOW, repairs: [{ accountId: 'acct-a', machineId: 'm_peer', state: 'browser-driving', updatedAt: at(-1) }] });
+    expect(running.accounts[0].machines).toMatchObject([
+      { name: 'Studio', isSelf: true, state: 'attn', label: 'needs sign-in' },
+      { name: 'Mac Mini', isSelf: false, state: 'working', label: 'signing in now' },
+    ]);
+    // The newest repair on that machine wins: an old failure, then a run now in flight.
+    const newest = summarizeAccounts(two(), { now: NOW, repairs: [
+      { accountId: 'acct-a', machineId: 'm_peer', state: 'failed', failureClass: 'agent-sign-in-unfinished', updatedAt: at(-60) },
+      { accountId: 'acct-a', machineId: 'm_peer', state: 'cli-starting', updatedAt: at(-1) },
+    ] });
+    expect(newest.accounts[0].machines[1].state).toBe('working');
+    // Supplying pooled repairs replaces the local-only list (it is already in the pool read).
+    const both = summarizeAccounts(two(), { now: NOW, repairs: [], localRepairs: [{ accountId: 'acct-a', state: 'running' }] });
+    expect(both.accounts[0].machines[0].state).toBe('attn');
+  });
+
+  it('repair wording: unattended start, approval needed, retry pending, failed with its reason', () => {
+    const r = (over: Record<string, unknown>) => repairCellView({ accountId: 'a', machineId: 'm', state: 'failed', ...over } as never, NOW);
+    expect(r({ state: 'suggested', mode: 'unattended' })).toEqual({ state: 'working', label: 'automatic repair starting' });
+    expect(r({ state: 'suggested', mode: 'approval' })).toEqual({ state: 'attn', label: 'needs your OK to repair' });
+    expect(r({ state: 'waiting-operator-only' }).state).toBe('attn');
+    const retry = r({ failureClass: 'agent-sign-in-unfinished', nextAttemptAt: at(30), slowRetryCount: 0 })!;
+    expect(retry.state).toBe('unknown');
+    expect(retry.label).toMatch(/^automatic repair will try again at /);
+    // Retries that keep failing stop counting as handled; a held retry never does.
+    expect(r({ failureClass: 'agent-sign-in-unfinished', nextAttemptAt: at(30), slowRetryCount: REPAIR_RETRY_GRACE })).toEqual({ state: 'attn', label: "automatic repair failed: the sign-in helper couldn't finish" });
+    expect(r({ nextAttemptAt: at(30), slowRetryHeld: true })).toEqual({ state: 'attn', label: 'automatic repair failed' });
+    expect(r({ nextAttemptAt: at(-5) }).state).toBe('attn');
+    expect(r({ state: 'succeeded' })).toBeNull();
+    expect(repairCellView(null, 0)).toBeNull();
+    // Only an account that needs signing in is changed by repair evidence.
+    expect(accountCellState({ status: 'active', loginCheck: 'ok' }, false, null, NOW, { accountId: 'a', machineId: 'm', state: 'failed' })).toEqual({ state: 'ok', label: 'signed in' });
   });
 
   it('headline (older app builds): never names one account as nearly out; counts are right', () => {
@@ -209,7 +290,9 @@ describe('accounts', () => {
     const r = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unavailable' }, { machineId: 'm_peer', machineNickname: 'Evil Name', error: 'HTTP 500 /Users/x' }, { machineId: 'm_x', error: 'timeout' }]), { now: NOW, nicknameOf: (id) => (id === 'm_peer' ? 'Mac Mini' : null) });
     expect(r.unread).toEqual({ count: 2, names: ['Mac Mini'] });
     expect(r.localUnreadable).toBe(true);
-    expect(r.headline).toBe("This machine's account list can't be read right now.");
+    expect(r.headline).toBe("The account list can't be read right now.");
+    // Named when the answering machine's name is known (never "this machine").
+    expect(accountNotices([], { localUnreadable: true, partial: false, selfName: 'Mac Studio' })[0].title).toBe("Mac Studio's account list can't be read right now.");
     const unconfigured = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unconfigured' }]), { now: NOW });
     expect(unconfigured.localUnreadable).toBe(false);
     expect(unconfigured.unread.count).toBe(0);
@@ -305,9 +388,9 @@ describe('spend', () => {
 
   it('headline: one machine, all machines, partial; never $0 for unpriced use', () => {
     const okL = (net: number, unpriced = 0) => ledger([], { netUsd: net, unpricedTokensIn: unpriced });
-    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on this machine; 12k tokens had no price on file.');
+    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on Studio; 12k tokens had no price on file.');
     const peer = (summary: SpendMachine['summary']): SpendMachine => ({ name: 'Mac Mini', machineId: 'm_peer', isSelf: false, summary, tokens: tok(1) });
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer(okL(2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $3.00 of pay-per-use cost in the last 30 days across 2 machines.');
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer({ ok: false, off: true })], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $1.00 of pay-per-use cost in the last 30 days on the machine that answered.');
@@ -322,32 +405,33 @@ describe('spend', () => {
     ], storeError: 'caps store unreadable: /Users/x/caps.json' } }, { ok: true, data: { lifecycleState: 'enabled', enforcementReady: true, anyKeyFrozen: true, machineId: 'm_self', machineNickname: 'Studio' } }, (id) => (id === 'm_holder' ? 'Studio' : null));
     expect(l.routes).toEqual([
       // Designated to another machine: its committed figures are not this machine's to show.
-      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, heldBy: 'Studio', committedElsewhere: true },
+      { key: rowKey('route', 'or-key-REF'), name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: null, dailyCapUsd: 25, committedLifetimeUsd: null, lifetimeCapUsd: 60, committedMonthUsd: null, monthlyCapUsd: null, heldBy: 'Studio', committedElsewhere: true },
       expect.objectContaining({ name: 'Groq · Groq', status: 'Frozen', heldBy: 'another machine' }),
     ]);
     const here = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 3, committedLifetimeUsd: 40, meteredLeaseHolder: 'm_self' }, { keyRef: 'k2', provider: 'groq', door: 'groq', committedDayUsd: 1 }] } }, { ok: false, off: true }, () => null, ['single-machine', 'm_self']);
     expect(here.routes).toEqual([
-      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'this machine', committedElsewhere: false }),
+      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'the machine the app reached', committedElsewhere: false }),
       expect.objectContaining({ committedDayUsd: 1, heldBy: null, committedElsewhere: false }),
     ]);
     // The money layer's own id for a machine without a mesh ('single-machine') is this machine too.
     const solo = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 2, meteredLeaseHolder: 'single-machine' }] } }, { ok: false, off: true }, () => null, ['single-machine']);
-    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'this machine', committedElsewhere: false })]);
-    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen on this machine.' });
+    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'the machine the app reached', committedElsewhere: false })]);
+    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen.' });
     const text = JSON.stringify(l);
     for (const leak of ['REF', 'm_holder', 'm_unnamed', 'm_self', '/Users/x', 'keyRef', 'meteredLeaseHolder']) expect(text).not.toContain(leak);
   });
 
   it('limits: every lifecycle sentence, and the two sources stay independent', () => {
-    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s });
-    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on this machine.');
-    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on this machine.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
-    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on this machine.');
-    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({}).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on this machine.');
-    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on this machine.');
+    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s }, () => null, [], 'Mac Studio');
+    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on Mac Studio.');
+    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on Mac Studio.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
+    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on Mac Studio.');
+    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({}).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on Mac Studio.');
+    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on Mac Studio.');
     const down = summarizeLimits({ ok: true, data: { keys: [] } }, { ok: false, off: false });
+    expect(summarizeLimits({ ok: false, off: true }, { ok: true, data: { lifecycleState: 'disabled' } }).sentence).toBe('Spending limits are off.');
     expect(down).toMatchObject({ routesState: 'ok', routesSentence: 'No paid route is set up.', controlsState: 'unavailable', sentence: "Can't tell whether spending limits are on." });
     expect(summarizeLimits({ ok: false, off: false }, { ok: false, off: true })).toMatchObject({ routesState: 'unavailable', controlsState: 'off' });
   });
@@ -381,6 +465,63 @@ describe('resources', () => {
     expect(old.total!.stale).toBe(true);
     expect(old.headline).toBe('Last recorded 20 min ago: Instar was using 12% CPU and 1.0 GB of memory (peak 24% in the last hour). No newer reading.');
     expect(summarizeResources([], new Map(), 'Studio', NOW).headline).toBe('No total reading yet.');
+  });
+});
+
+describe('resources across every machine', () => {
+  const proc = (key: string, cpu: number, mem = 1e9, ageMs = 30_000) => ({ key, name: key, ended: false, stale: ageMs > SAMPLE_STALE_MS, cpuPercent: cpu, memoryBytes: mem, avgCpuPercent: cpu, peakCpuPercent: cpu, peakMemoryBytes: mem, newestAt: new Date(NOW - ageMs).toISOString() });
+  const info = (key: string, name: string, extra: Partial<{ isSelf: boolean; leading: boolean; sessions: number; maxSessions: number }> = {}) => ({ key, name, isSelf: false, leading: false, sessions: 2, maxSessions: 10, version: '1.3.1703', ...extra });
+  const body = (cpu: number, mem: number, sessions = 0) => ({ enabled: true, headline: 'x', total: proc('total', cpu, mem), server: proc('server', 1), sessions: Array.from({ length: sessions }, (_, i) => proc(`s${i}`, 10 - i)) });
+
+  it('combines every machine, names the busiest, and keeps a silent machine at no numbers (never zeros)', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Mac Studio', { isSelf: true, leading: true, sessions: 14, maxSessions: 25 }), answer: { ok: true, body: body(43, 6.1e9, 8) } },
+      { info: info('b', 'Laptop', { sessions: 3, maxSessions: 15 }), answer: { ok: true, body: body(12, 2e9) } },
+      { info: info('c', 'Mama PC'), answer: { ok: false, reason: 'not-answering' } },
+    ], NOW);
+    expect(r.combined).toMatchObject({ machines: 3, answering: 2, notAnswering: ['Mama PC'], memoryBytes: 8.1e9, runningSessions: 19, maxSessions: 50 });
+    expect(r.combined.headline).toBe('2 of 3 machines · 8.1 GB of memory · 19 sessions');
+    expect(r.combined.busiest).toBe('Busiest: Mac Studio, 43% CPU');
+    const mama = r.machines.find((m) => m.name === 'Mama PC')!;
+    expect(mama).toMatchObject({ state: 'not-answering', line: 'Not answering', total: null, server: null, sessions: [] });
+    // Not answering first, so the warning is on top; then the leading machine.
+    expect(r.machines.map((m) => m.name)).toEqual(['Mama PC', 'Mac Studio', 'Laptop']);
+    const studio = r.machines.find((m) => m.name === 'Mac Studio')!;
+    expect(studio.sessions).toHaveLength(MAX_SESSIONS_PER_MACHINE);
+    expect(studio).toMatchObject({ sessionsShownOf: 8, line: '43% CPU · 6.1 GB' });
+  });
+
+  it('a machine that answers without recording is "not recorded there"; offline is named', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: false, headline: 'off' } } },
+      { info: info('b', 'Mini'), answer: { ok: false, reason: 'offline' } },
+    ], NOW);
+    expect(r.machines.map((m) => [m.name, m.state, m.line])).toEqual([['Mini', 'not-answering', 'Offline'], ['Studio', 'off', 'Not recorded there']]);
+    expect(r.combined).toMatchObject({ answering: 0, off: ['Studio'], memoryBytes: null });
+    expect(r.combined.headline).toBe("No machine's resource use could be read right now.");
+  });
+
+  it('a stale reading is dated and left out of the combined memory', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'x', total: proc('total', 30, 1e9, 20 * 60_000), sessions: [] } } },
+      { info: info('b', 'Mini'), answer: { ok: true, body: body(5, 2e9) } },
+    ], NOW);
+    expect(r.machines.find((m) => m.name === 'Studio')!.line).toBe('Last read 20 min ago: 30% CPU · 1.0 GB');
+    expect(r.combined.memoryBytes).toBe(2e9);
+    expect(r.combined.busiest).toBe('Busiest: Mini, 5% CPU');
+  });
+
+  it("a peer's answer is re-read through the allowlist: bad keys dropped, text scrubbed and capped", () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'h', total: proc('total', 1), extra: '/etc/secret', sessions: [
+        { ...proc('ok1', 3), name: `token=${'z'.repeat(30)} ${'n'.repeat(200)}`, pid: 99, path: '/Users/x' },
+        { ...proc('bad key with spaces', 2) },
+      ] } } },
+    ], NOW);
+    const m = r.machines[0];
+    expect(m.sessions).toHaveLength(1);
+    expect(m.sessions[0].name.length).toBeLessThanOrEqual(80);
+    expect(JSON.stringify(r)).not.toMatch(/z{30}|\/etc\/secret|\/Users\/x|"pid"/);
   });
 });
 

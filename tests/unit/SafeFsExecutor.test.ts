@@ -185,6 +185,87 @@ describe('SafeFsExecutor.safeRm (async)', () => {
   });
 });
 
+describe('SafeFsExecutor.safeRmTreeSerial (async, one filesystem call at a time)', () => {
+  let benign: string;
+  let fakeInstar: string;
+  beforeEach(() => {
+    benign = mkSandbox();
+    fakeInstar = makeFakeInstarSource();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmrf(benign);
+    rmrf(fakeInstar);
+  });
+
+  function tree(root: string): void {
+    for (const dir of ['a/b/c', 'a/d', 'e']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+    for (const file of ['top.txt', 'a/one.js', 'a/b/two.js', 'a/b/c/three.js', 'a/d/four.js', 'e/five.js']) fs.writeFileSync(path.join(root, file), 'x');
+  }
+
+  it('removes a nested tree, a single file, and treats a missing target as a no-op', async () => {
+    const target = path.join(benign, 'doomed');
+    tree(target);
+    await SafeFsExecutor.safeRmTreeSerial(target, { operation: 'rm-serial-test' });
+    expect(fs.existsSync(target)).toBe(false);
+    const file = path.join(benign, 'one-file');
+    fs.writeFileSync(file, 'x');
+    await SafeFsExecutor.safeRmTreeSerial(file, { operation: 'rm-serial-test' });
+    expect(fs.existsSync(file)).toBe(false);
+    await expect(SafeFsExecutor.safeRmTreeSerial(path.join(benign, 'never-existed'), { operation: 'rm-serial-test' })).resolves.toBeUndefined();
+  });
+
+  it('never has more than one filesystem call in flight', async () => {
+    const target = path.join(benign, 'doomed');
+    tree(target);
+    let inFlight = 0; let peak = 0; let calls = 0;
+    for (const name of ['lstat', 'readdir', 'unlink', 'rmdir'] as const) {
+      const real = (fs.promises[name] as (...args: unknown[]) => Promise<unknown>).bind(fs.promises);
+      vi.spyOn(fs.promises, name).mockImplementation((async (...args: unknown[]) => {
+        inFlight++; calls++; peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        try { return await real(...args); } finally { inFlight--; }
+      }) as never);
+    }
+    await SafeFsExecutor.safeRmTreeSerial(target, { operation: 'rm-serial-test' });
+    expect(fs.existsSync(target)).toBe(false);
+    // 6 directories (lstat on the root, then readdir + rmdir each) and 6 files.
+    expect(calls).toBeGreaterThanOrEqual(19);
+    expect(peak).toBe(1);
+  });
+
+  it('removes a symbolic link without following it', async () => {
+    const outside = path.join(benign, 'outside');
+    fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'keep.txt'), 'keep');
+    const target = path.join(benign, 'doomed');
+    fs.mkdirSync(target);
+    fs.symlinkSync(outside, path.join(target, 'link-to-dir'));
+    fs.symlinkSync(path.join(outside, 'keep.txt'), path.join(target, 'link-to-file'));
+    await SafeFsExecutor.safeRmTreeSerial(target, { operation: 'rm-serial-test' });
+    expect(fs.existsSync(target)).toBe(false);
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf-8')).toBe('keep');
+  });
+
+  it('finishes with the ordinary recursive remove when the walk fails part-way', async () => {
+    const target = path.join(benign, 'doomed');
+    tree(target);
+    const realUnlink = fs.promises.unlink.bind(fs.promises);
+    let failed = false;
+    vi.spyOn(fs.promises, 'unlink').mockImplementation(async (p) => {
+      if (!failed && String(p).endsWith('two.js')) { failed = true; const e = new Error('EBUSY') as NodeJS.ErrnoException; e.code = 'EBUSY'; throw e; }
+      return realUnlink(p);
+    });
+    await SafeFsExecutor.safeRmTreeSerial(target, { operation: 'rm-serial-test' });
+    expect(failed).toBe(true);
+    expect(fs.existsSync(target)).toBe(false);
+  });
+
+  it('blocks removal of the instar source tree before touching disk', async () => {
+    await expect(SafeFsExecutor.safeRmTreeSerial(fakeInstar, { operation: 'rm-serial-blocked' })).rejects.toThrow(SourceTreeGuardError);
+    expect(fs.existsSync(path.join(fakeInstar, '.instar-source-tree'))).toBe(true);
+  });
+});
+
 describe('SafeFsExecutor.safeRmdirSync / safeUnlink async', () => {
   let benign: string;
   let fakeInstar: string;

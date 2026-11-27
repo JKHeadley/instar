@@ -708,6 +708,13 @@ export function resolveAnthropicLaunchFields(
 export function readConfiguredAnthropicKey(stateDir: string): string | null | undefined {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: Record<string, unknown> };
+    // A value that is not a string (a secret-store placeholder such as { secret: true }) is only filled in
+    // at boot, so disk cannot say what the key is: keep the one in use. The key watch reads this every
+    // minute, so reading it as "no key" would wipe a working key.
+    const sessions = raw.sessions as { credentials?: { anthropic?: { value?: unknown } }; anthropicApiKey?: unknown } | undefined;
+    const credentialValue = sessions?.credentials?.anthropic?.value;
+    if ((credentialValue !== undefined && typeof credentialValue !== 'string')
+      || (sessions?.anthropicApiKey !== undefined && sessions.anthropicApiKey !== null && typeof sessions.anthropicApiKey !== 'string')) return undefined;
     return resolveAnthropicLaunchFields(raw.sessions).anthropicApiKey || null;
   } catch { return undefined; } // @silent-fallback-ok: an unreadable file keeps the last key, by contract above
 }
@@ -770,7 +777,7 @@ export function getProviderCredential(
  *   - oauth-token → (no env var — Codex CLI reads its own auth.json)
  *
  * For Google/Gemini:
- *   - api-key     → GOOGLE_API_KEY set
+ *   - api-key     → REFUSED (throws): paid keys stay inside the gemini-api door
  *
  * Returns a flat list of [`-e`, `KEY=value`, ...] suitable for tmux
  * `new-session -e KEY=VAL`. Empty if the credential is missing/unknown.
@@ -829,8 +836,19 @@ export function buildProviderEnvFlags(
       break;
 
     case 'google':
+      // A Google API key bills per token. The only sanctioned paid Gemini path is the
+      // in-server `gemini-api` metered door (gemini-payg-metered-lane §4.5), which never
+      // puts a key in a child environment. This branch had no production caller; it now
+      // refuses, as the openai case does, instead of emitting the key.
+      //
+      // RULE 3: EXEMPT — the GOOGLE_API_KEY identifier is refusal text, not an emission.
       if (credential.kind === 'api-key') {
-        push('GOOGLE_API_KEY', credential.value);
+        throw new Error(
+          'buildProviderEnvFlags refuses google api-key credential: a pay-per-use ' +
+            'Google key must never enter a child environment (GOOGLE_API_KEY). Paid ' +
+            'Gemini calls go only through the in-server gemini-api metered door. See ' +
+            'docs/specs/gemini-payg-metered-lane.md §4.5.',
+        );
       }
       if (credential.baseUrl) {
         push('GEMINI_BASE_URL', credential.baseUrl);
@@ -1304,6 +1322,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     authToken: fileConfig.authToken,
     dashboardPin: fileConfig.dashboardPin,
+    dashboardPinGeneration: fileConfig.dashboardPinGeneration,
     relationships: fileConfig.relationships || {
       relationshipsDir: path.join(stateDir, 'relationships'),
       maxRecentInteractions: 20,

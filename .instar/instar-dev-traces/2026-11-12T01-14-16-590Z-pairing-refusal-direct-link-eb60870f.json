@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "pairing-refusal-direct-link",
+  "sessionId": "91618e9d-feb6-410c-9d3a-c5aa82585d69",
+  "timestamp": "2026-11-12T01:14:16.590Z",
+  "artifactPath": "upgrades/side-effects/pairing-refusal-direct-link.md",
+  "artifactSha256": "442c00796541ad454d048662168faf02a3224869ff3fe96939a83ca896b57f4c",
+  "coveredFiles": [
+    "dashboard/console/agents.js",
+    "packages/threadline-core/src/handshake.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "src/threadline/PairingInviteTelegram.ts",
+    "src/threadline/pairingDashboardLink.ts",
+    "src/threadline/pairingHandshake.ts",
+    "tests/e2e/threadline/pairing-handshake-production-path.test.ts",
+    "tests/integration/pairing-invite-telegram-routes.test.ts",
+    "tests/unit/agent-connect-knowledge.test.ts",
+    "tests/unit/console-agents.test.ts",
+    "tests/unit/pairing-invite-never-persisted.test.ts",
+    "tests/unit/threadline/PairingInviteTelegram.test.ts",
+    "tests/unit/threadline/pairingDashboardLink.test.ts",
+    "upgrades/next/pairing-refusal-direct-link.md",
+    "upgrades/side-effects/pairing-refusal-direct-link.eli16.md",
+    "upgrades/side-effects/pairing-refusal-direct-link.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Message wording plus a direct dashboard link and one additive CLAUDE.md instruction line; no gate, permission or state changes. A revert restores the old wording; an already-migrated instruction line stays accurate.",
+  "eli16Path": "upgrades/side-effects/pairing-refusal-direct-link.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pairing-refusal-direct-link.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: a dashboard link is posted only in reply to a person tapping a refused or expired pairing button, at most once per invite per 10 minutes"
+  }
+}

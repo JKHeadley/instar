@@ -18,7 +18,7 @@
   "population": "src/templates/**/*.{sh,js,mjs}",
   "censusRef": "docs/audits/phase-b/f10-triage.md",
   "seededAt": "2026-08-06",
-  "blockingCeiling": 12,
+  "blockingCeiling": 13,
   "blocking": [
     {
       "path": "src/templates/hooks/build-stop-hook.sh",
@@ -67,6 +67,10 @@
     {
       "path": "src/templates/scripts/whatsapp-reply.sh",
       "decision": "blocks send on server tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "decision": "refuses metered (pay-per-use) vault names, exit 3, before vault resolution (gemini-payg-metered-lane §4.2; secrets ruled exception, Rule 86). The name list is pinned to src/core/meteredSecrets.ts METERED_SECRET_NAMES by a template-drift test."
     }
   ],
   "nonBlocking": [
@@ -92,8 +96,8 @@
     },
     {
       "path": "src/templates/scripts/app-reply.sh",
-      "sha256": "989a677291ac3c066d5063e91f5f43dea6a5c105fdec39309e38c6d56fc5b815",
-      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent."
+      "sha256": "c12c2d464a43248b0f1ec0a877b5c56cc67f9ea102d2afc8faec0e15d63307a2",
+      "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent. Re-declared 2026-11-16 (org-never-actions): a 422 `org-policy` answer is printed as the organization rule, who to ask and the allow-once id; the refusal is the server's, the script only reports it."
     },
     {
       "path": "src/templates/hooks/compaction-recovery.sh",
@@ -112,7 +116,7 @@
     },
     {
       "path": "src/templates/hooks/session-start.sh",
-      "sha256": "985941e22ff1b68fdaab400c96e55320d8ed345a1ed154cac178d032076031bc",
+      "sha256": "6c76a9926404681de70912f3ff5b46bf977d02fa0c07cb5bc520ff3b16b3e830",
       "reason": "injects startup context; exits open when config/port/health are unavailable"
     },
     {
@@ -132,8 +136,8 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "034db30dd4d962f9376ed690fc8e3e55e1b11a9f81848ddeb99316f325064fbd",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "ab24f08d352b983068fb8869b9ffa45eb3db0109461e3a12041739dc8bc2fb06",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
@@ -142,13 +146,13 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-mainworld.sh",
-      "sha256": "94463cecf72307831390ee8e94355cda9f50d41c262c40efd21ba91f9d843342",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "4a484b7ad45716ea932f529f04a9e79cbfede1c9e08d8bb91182e62f08f2f3bd",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
-      "sha256": "9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e",
-      "reason": "normal-chrome-cross-platform: PP's Windows normal-Chrome driver, shipped byte-identical to the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
+      "sha256": "74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92",
+      "reason": "normal-chrome-cross-platform + normal-chrome-windows-occlusion: PP's Windows normal-Chrome driver, the live-tested v5 (Mama PC, 2026-10-21, VERDICT PASS) plus the occlusion launch flag and the named ERR page-not-rendering read failure (live-run on the Mama PC 2026-11-19); it refuses only its own bad arguments or an unsafe moment (no bound target, focus not on the target, operator active, a flag outside its allowlist) and gates no message, session or other agent action"
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
@@ -167,8 +171,8 @@
     },
     {
       "path": "src/templates/scripts/instar-watchdog.sh",
-      "sha256": "207d3cf08ac5bd1030dd35f6d30f472aef9c087e5635e23d92bd574d6291af6b",
-      "reason": "monitors/self-heals/escalates; recovery, not refusal of a user or tool action"
+      "sha256": "faf8deab7bc36cd923294235c26cac339ec7524f09b3fb3988ea77a4d15243a0",
+      "reason": "Re-reviewed 2026-11-06: finite exact-agent holds and shared rule ownership constrain only internal owned watchdog actions. Active enrolled rules perform bounded fixed stop/bootstrap and skip npm, interpreter and wrapper rewrites; inactive agents keep ordinary supervision. Typed admission serializes mutation/update authority, not user or tool decisions. Real shell regression covers scope, expiry and tamper refusal. Re-reviewed 2026-11-17: the Always available skip (create-agent-accounts-and-always-on §B.5) only withholds the watchdog's own reload of an agent a system service runs; it decides nothing for a user or tool, and tests/unit/always-available-guards.test.ts runs it under set -euo pipefail."
     },
     {
       "path": "src/templates/scripts/instar-worktree-create.sh",
@@ -182,13 +186,8 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "ef56b003da3f252ea526e0f88e99d7066059e476fc9a42d90c5215e555430178",
-      "reason": "Re-declared 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
-    },
-    {
-      "path": "src/templates/scripts/secret-get.mjs",
-      "sha256": "c6acba715f339c63d53a889bcea35b5e7de4b46a51de375093631189668447c4",
-      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
+      "sha256": "18bde3905bcde5d8fb23ca660048ac3a2a97f2c5981d374722111efee19c2dad",
+      "reason": "Re-declared 2026-11-17 (secret-drop-self-mint-hardening + secret-drops-machine-local): supports safe #N field selection and reports/retries refused consume. No message or session blocking authority; browser handoff refusal stays scoped to the requested operation."
     },
     {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",
@@ -209,6 +208,36 @@
       "path": "src/templates/scripts/browser/chrome-unsaved.sh",
       "sha256": "972b35531c891c778af57e5fd9172a055588c662d34693315ea196cb43da70cc",
       "reason": "machine-self-maintenance Part B: a read-only per-tab unsaved-input check; prints yes/no/unreadable per tab and gates nothing itself (the watch-only sweep and chrome-close.sh only record its answer)"
+    },
+    {
+      "path": "src/templates/scripts/threadline-reply.sh",
+      "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
+      "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-checks.sh",
+      "sha256": "c91433a00e4b1c7ee6442c2fd6f34438ed631ea6fb6364e267d7d1ff6d692391",
+      "reason": "local-verify-borrowed-unit-slices B2 and local-verify-borrowed-slices-count (B2 amended, sandbox property test): in-sandbox containment probes run inside the borrowed helper's own Linux sandbox (the walls, the dummy interface and absent default route, the paired network test's sandbox half, and the property probe as tester and as builder); it only prints pass/fail facts, and the refuse decision (helper-containment-unproven) is authored in TypeScript (parseContainmentOutput, pairedRouteChecks, HelperService.ensureSandbox) where the ratchets walk; it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-runner.sh",
+      "sha256": "385fc5011fc5ddd7a9ec591c413eb4ddba2c9bdc7bb7089476fe4bdf83af98b9",
+      "reason": "local-verify-borrowed-unit-slices B2/E and local-verify-borrowed-slices-count B2/C/E: the root runner inside the borrowed helper's sandbox; it refuses only its own malformed arguments (an unknown lane, more than one worker outside unit, no files) or a broken wall (nft hash, surviving processes, a test network that cannot be set up, a package volume or package set that is not as it was locked, a tree that carries node_modules, a progress reporter that is not root's), and every admission decision (signature, merged base, own head, dry run, merge tree, install inputs, which commit packages are installed from, discarding a package set, slice order, budgets, cancels, governor) is authored in TypeScript (admission.ts, acceptance.ts, sliceBudget.ts, HelperService.ts); it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/provision-sandbox.sh",
+      "sha256": "862575cfe43055acd0fb4c63bed61c0abdae1b615ff705c669b0e50cd6c18f0c",
+      "reason": "local-verify-borrowed-unit-slices B2: one-time provisioning inside the borrowed helper's own sandbox (users, pinned node, nft table); it refuses an unpinned node digest and gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/helper/instar-helper-progress-reporter.mjs",
+      "sha256": "69b2a1c2c267fd876e0841ff8ced00611ecfc81b7876841b171bda1a6df5c4de",
+      "reason": "local-verify-borrowed-slices-count E (progress): a root-owned vitest reporter inside the borrowed helper's sandbox; it only writes one line per finished test file to the slice's standard error and decides nothing; what a progress line is worth (provisional until the slice's last signed answer repeats it, a contradiction withheld) is authored in TypeScript (helperProtocol.ts, HelperService.ts); it gates no message, session or agent action"
+    },
+    {
+      "path": "src/templates/scripts/secret-set.mjs",
+      "sha256": "2e0bf076e0fad233561642b4562ebe2e49bdf899e2457746255180b305c5594e",
+      "reason": "Added 2026-11-20 (gemini-payg-metered-lane §4 no-echo transfer target, found missing by the user-role live test): refuses only its own malformed invocation (no key path, a value on argv, a credential-shaped key path, a terminal on stdin, an empty value). No message, session or money blocking authority; it writes one vault entry from stdin."
     }
   ]
 }

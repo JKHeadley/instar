@@ -10,7 +10,7 @@ import { TelegramOriginHoldError } from './types.js';
  * enroll a transport or assert a deterministic author. */
 export type DeterministicOriginProducer = 'auto-updater' | 'session-monitor' | 'session-lifecycle' |
   'cold-start-fallback' | 'respawn-collision' | 'owner-dark-ladder' |
-  'telegram-lifeline' | 'topic-profile-creation-seed';
+  'telegram-lifeline' | 'topic-profile-creation-seed' | 'never-silent';
 const transports = new WeakMap<object, TelegramOriginService>();
 export function bindOriginAutomationTransport(transport: object, service: TelegramOriginService): void {
   transports.set(transport, service);
@@ -34,6 +34,20 @@ export function sendDeterministicTelegramNotice<T>(transport: { sendToTopic(topi
     : { origin: 'automated' as const, category: categoryForProducer(producerId), sourceContext: producerId };
   return withDeterministicOrigin(transports.get(transport), producerId, () => withNotificationEnvelope(envelope, async () => transport.sendToTopic(topicId, text)));
 }
+/**
+ * Never-Silent Conversation notice (docs/specs/never-silent-conversation.md §3.4): Instar's own
+ * deterministic voice, naming the waiting inbound message so the selectivity gate's
+ * `never-silent-floor` always delivers it. Optional one row of buttons (the one-tap ask).
+ */
+export function sendNeverSilentTelegramNotice<T>(
+  transport: { sendToTopic(topicId: number, text: string, options?: { inlineButtons?: Array<{ text: string; data: string }>; provenance?: 'automation' }): Promise<T> },
+  topicId: number, text: string, inboundMessageId: string, buttons?: Array<{ text: string; data: string }>,
+): Promise<T> {
+  const envelope = { origin: 'automated' as const, category: categoryForProducer('never-silent'), sourceContext: 'never-silent', inboundMessageId };
+  return withDeterministicOrigin(transports.get(transport), 'never-silent', () => withNotificationEnvelope(envelope,
+    async () => transport.sendToTopic(topicId, text, { provenance: 'automation', ...(buttons?.length ? { inlineButtons: buttons } : {}) })));
+}
+
 /** These producers include copied prose without a native author observation. */
 export async function withUnknownProducerOrigin<T>(service: TelegramOriginService | undefined,
   producerId: 'auto-dispatcher' | 'growth-digest' | 'reap-notice-drain', send: () => Promise<T>): Promise<T> {

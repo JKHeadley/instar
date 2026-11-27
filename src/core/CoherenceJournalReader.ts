@@ -75,6 +75,8 @@ export interface ReaderStreamStatus {
 }
 
 export interface ReaderQueryOpts {
+  /** An app conversation's ownership key (its rows have no numeric topic). */
+  sessionKey?: string;
   topic?: number;
   kind?: string;
   machine?: string;
@@ -318,6 +320,7 @@ export class CoherenceJournalReader {
     const kindFilter = opts.kind;
     const machineFilter = opts.machine;
     const topicFilter = typeof opts.topic === 'number' ? opts.topic : undefined;
+    const sessionKeyFilter = typeof opts.sessionKey === 'string' ? opts.sessionKey : undefined;
     const isPlacement = kindFilter === 'topic-placement';
 
     const streams = this.enumerate(machineFilter, kindFilter);
@@ -371,6 +374,7 @@ export class CoherenceJournalReader {
 
         for (const e of read.entries) {
           if (topicFilter !== undefined && e.topic !== topicFilter) continue;
+          if (sessionKeyFilter !== undefined && (e.data as { sessionKey?: unknown } | undefined)?.sessionKey !== sessionKeyFilter) continue;
           collected.push({
             ...e,
             source: group.source,
@@ -694,7 +698,9 @@ export class CoherenceJournalReader {
     const seen = new Set<string>();
     const out: ReaderEntry[] = [];
     for (const e of entries) {
-      const key = `${e.topic}:${this.epochOf(e)}`;
+      // An app row has no numeric topic: its own key keeps it from collapsing into another conversation's.
+      const appKey = (e.data as { sessionKey?: unknown } | undefined)?.sessionKey;
+      const key = `${typeof appKey === 'string' ? appKey : e.topic}:${this.epochOf(e)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(e);

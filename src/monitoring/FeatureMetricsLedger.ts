@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * FeatureMetricsLedger — per-feature observability for LLM-driven systems.
  *
@@ -31,6 +34,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
+import { isLlmErrorClass } from '../core/llmErrorClass.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 
@@ -95,6 +99,12 @@ export interface FeatureMetricRecord {
   waitMs?: number;
   /** For Phase-2 effectiveness correlation (verdict ↔ downstream outcome). */
   verdictId?: string;
+  /**
+   * CMT-2289: WHY an `outcome: 'error'` call failed, as one fixed label from
+   * LLM_ERROR_CLASSES (src/core/llmErrorClass.ts). Never message or stderr
+   * text. Ignored on non-error rows; an unknown value is stored as 'other'.
+   */
+  errorClass?: string;
   /** Defaults to now(). */
   ts?: number;
   /**
@@ -145,6 +155,11 @@ export interface FeatureRollup {
   errors: number;
   /** Error rows from LLM calls only (event errors excluded). */
   llmErrors: number;
+  /**
+   * CMT-2289: LLM error rows by fixed error class (see llmErrorClass.ts).
+   * Rows written before the column existed count as 'unrecorded'.
+   */
+  errorClasses: Record<string, number>;
   /** Circuit-open no-calls: the breaker refused the call, nothing ran. */
   shed: number;
   /** fired / (fired + noop), or null when no verdicts were classified. */
@@ -171,6 +186,8 @@ export interface FeatureReliabilityComponent {
   realCalls: number;
   errorRate: number;
   status: Exclude<FeatureReliabilityStatus, 'ok'>;
+  /** CMT-2289: this component's LLM error rows by fixed error class, when known. */
+  errorClasses?: Record<string, number>;
 }
 
 export interface FeatureReliabilitySummary {
@@ -197,7 +214,7 @@ export function withoutComponents(summary: FeatureReliabilitySummary, ignored: (
  * input: a high-volume healthy feature must never dilute a broken component.
  */
 export function summarizeFeatureReliability(
-  features: Array<Pick<FeatureRollup, 'feature' | 'realLlmCalls' | 'llmErrors' | 'errorRate'>>,
+  features: Array<Pick<FeatureRollup, 'feature' | 'realLlmCalls' | 'llmErrors' | 'errorRate'> & { errorClasses?: Record<string, number> }>,
 ): FeatureReliabilitySummary {
   const components = features
     .filter((f): f is typeof f & { errorRate: number } =>
@@ -211,6 +228,7 @@ export function summarizeFeatureReliability(
       realCalls: f.realLlmCalls,
       errorRate: f.errorRate,
       status: f.errorRate >= FEATURE_RELIABILITY_FAILING_ERROR_RATE ? 'failing' : 'degraded',
+      ...(f.errorClasses && Object.keys(f.errorClasses).length > 0 ? { errorClasses: f.errorClasses } : {}),
     }))
     .sort((a, b) => b.errorRate - a.errorRate || b.realCalls - a.realCalls || a.feature.localeCompare(b.feature));
   return {
@@ -504,6 +522,26 @@ export interface FeatureMetricsLedgerOptions {
   rawRetentionDays?: number;
 }
 
+/**
+ * THE precedence rule for a decision's winning grade (llm-decision-quality-meter
+ * §5.4): strongest rung first, then wrong before unknown before right, then the
+ * newest, then a stable tie-break. One text, used by the `decision_winning_grade`
+ * view and by the bucket-scoped recompute, so the two cannot drift.
+ */
+export const WINNING_GRADE_RANK_SQL = `ROW_NUMBER() OVER (
+           PARTITION BY o.correlation_id
+           ORDER BY
+             CASE o.rung
+               WHEN 'deterministic-ground-truth' THEN 0
+               WHEN 'recurrence'                 THEN 1
+               WHEN 'llm-interpreter'            THEN 2
+               WHEN 'self-report'                THEN 3
+               ELSE 4 END ASC,
+             CASE o.grade WHEN 'wrong' THEN 0 WHEN 'unknown' THEN 1 WHEN 'right' THEN 2 ELSE 3 END ASC,
+             o.ts DESC,
+             o.graded_by ASC
+         ) AS rn`;
+
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS feature_metrics (
      id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -712,23 +750,38 @@ const SCHEMA = [
   `CREATE VIEW IF NOT EXISTS decision_winning_grade AS
      SELECT correlation_id, grade, rung, evidence_strength, rule_id, graded_by
        FROM (
-         SELECT o.*, ROW_NUMBER() OVER (
-           PARTITION BY o.correlation_id
-           ORDER BY
-             CASE o.rung
-               WHEN 'deterministic-ground-truth' THEN 0
-               WHEN 'recurrence'                 THEN 1
-               WHEN 'llm-interpreter'            THEN 2
-               WHEN 'self-report'                THEN 3
-               ELSE 4 END ASC,
-             CASE o.grade WHEN 'wrong' THEN 0 WHEN 'unknown' THEN 1 WHEN 'right' THEN 2 ELSE 3 END ASC,
-             o.ts DESC,
-             o.graded_by ASC
-         ) AS rn
+         SELECT o.*, ${WINNING_GRADE_RANK_SQL}
          FROM decision_outcomes o
        )
       WHERE rn = 1`,
 ];
+
+/**
+ * The winning grade of every decision in ONE (decision_point, day) bucket, as a
+ * joinable subquery with the columns `correlation_id` and `grade`. Binds
+ * `@decisionPoint`, `@start` and `@end`.
+ *
+ * It is the `decision_winning_grade` view restricted to the bucket's own
+ * decisions BEFORE the ranking runs. Joining the view itself ranks every row of
+ * `decision_outcomes` first (a window function cannot be pushed below), so each
+ * bucket recompute cost a scan of the whole table: about 100 ms per query at
+ * 62,000 outcomes, twice per graded decision, up to 200 decisions in one
+ * synchronous grading pass. That held the server's event loop for over a minute
+ * and its supervisor killed it (2026-11-13 13:00Z). Restricted, the same answer
+ * takes 1 to 5 ms.
+ *
+ * Precedence is NOT reimplemented here: the ranking is `WINNING_GRADE_RANK_SQL`,
+ * the same text the view is built from.
+ */
+export const BUCKET_WINNING_GRADE_SQL = `(
+           SELECT correlation_id, grade FROM (
+             SELECT o.correlation_id, o.grade, ${WINNING_GRADE_RANK_SQL}
+               FROM decision_outcomes o
+              WHERE o.correlation_id IN (
+                SELECT correlation_id FROM decision_quality
+                 WHERE decision_point = @decisionPoint AND ts >= @start AND ts < @end)
+           ) WHERE rn = 1
+         )`;
 
 /**
  * Columns added after the table's first ship. CREATE TABLE IF NOT EXISTS never
@@ -751,6 +804,9 @@ const ADDED_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: 'job_slug', ddl: 'ALTER TABLE feature_metrics ADD COLUMN job_slug TEXT' },
   { name: 'machine_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN machine_id TEXT' },
   { name: 'run_id', ddl: 'ALTER TABLE feature_metrics ADD COLUMN run_id TEXT' },
+  // CMT-2289: fixed error class on error rows (closed set, never message text).
+  // Additive + nullable; rows written before it read as 'unrecorded'.
+  { name: 'error_class', ddl: 'ALTER TABLE feature_metrics ADD COLUMN error_class TEXT' },
 ];
 
 /** Batch ceiling for the retention prune (scal-F4): SQLite-portable bounded DELETE. */
@@ -867,8 +923,8 @@ export class FeatureMetricsLedger {
     registerSqliteHandle(() => { try { this.db?.close(); } catch { /* already closed */ } });
     this.insertStmt = this.db.prepare(
       `INSERT INTO feature_metrics
-         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id, job_slug, machine_id, run_id)
-       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId, @jobSlug, @machineId, @runId)`,
+         (ts, feature, kind, outcome, tokens_in, tokens_out, tokens_cached, latency_ms, model, framework, door, call_id, waited, wait_ms, verdict_id, job_slug, machine_id, run_id, error_class)
+       VALUES (@ts, @feature, @kind, @outcome, @tokensIn, @tokensOut, @tokensCached, @latencyMs, @model, @framework, @door, @callId, @waited, @waitMs, @verdictId, @jobSlug, @machineId, @runId, @errorClass)`,
     );
     if (this.maintainSpendRollup) {
       try {
@@ -1022,6 +1078,9 @@ export class FeatureMetricsLedger {
         jobSlug: clampLabel(r.jobSlug),
         machineId: clampLabel(r.machineId),
         runId: clampLabel(r.runId),
+        errorClass: r.outcome === 'error' && r.errorClass !== undefined
+          ? (isLlmErrorClass(r.errorClass) ? r.errorClass : 'other')
+          : null,
       });
     } catch {
       // Observability must never break the path it observes (Close the Loop:
@@ -1063,25 +1122,34 @@ export class FeatureMetricsLedger {
    */
   reliability(opts: { sinceHours?: number } = {}): FeatureReliabilitySummary {
     const sinceMs = this.sinceMsFrom(opts);
+    // One grouped query: (feature, error_class) groups, folded per feature in JS.
     const rows = this.db.prepare(
       `SELECT
          feature,
+         CASE WHEN outcome='error' THEN COALESCE(error_class, 'unrecorded') ELSE NULL END AS errorClass,
          SUM(CASE WHEN kind='llm' AND outcome!='shed' THEN 1 ELSE 0 END) AS realLlmCalls,
          SUM(CASE WHEN kind='llm' AND outcome='error' THEN 1 ELSE 0 END) AS llmErrors
        FROM feature_metrics
        WHERE ts >= ? AND kind='llm'
-       GROUP BY feature`,
-    ).all(sinceMs) as Array<{ feature: string; realLlmCalls: number; llmErrors: number }>;
-    return summarizeFeatureReliability(rows.map((row) => {
-      const realLlmCalls = Number(row.realLlmCalls) || 0;
-      const llmErrors = Number(row.llmErrors) || 0;
-      return {
-        feature: String(row.feature),
-        realLlmCalls,
-        llmErrors,
-        errorRate: realLlmCalls > 0 ? llmErrors / realLlmCalls : null,
-      };
-    }));
+       GROUP BY feature, errorClass`,
+    ).all(sinceMs) as Array<{ feature: string; errorClass: string | null; realLlmCalls: number; llmErrors: number }>;
+    const byFeature = new Map<string, { realLlmCalls: number; llmErrors: number; errorClasses: Record<string, number> }>();
+    for (const row of rows) {
+      const key = String(row.feature);
+      const acc = byFeature.get(key) ?? { realLlmCalls: 0, llmErrors: 0, errorClasses: {} };
+      acc.realLlmCalls += Number(row.realLlmCalls) || 0;
+      const errs = Number(row.llmErrors) || 0;
+      acc.llmErrors += errs;
+      if (row.errorClass && errs > 0) acc.errorClasses[row.errorClass] = (acc.errorClasses[row.errorClass] ?? 0) + errs;
+      byFeature.set(key, acc);
+    }
+    return summarizeFeatureReliability(Array.from(byFeature, ([feature, acc]) => ({
+      feature,
+      realLlmCalls: acc.realLlmCalls,
+      llmErrors: acc.llmErrors,
+      errorRate: acc.realLlmCalls > 0 ? acc.llmErrors / acc.realLlmCalls : null,
+      errorClasses: acc.errorClasses,
+    })));
   }
 
   /** Per-feature rollup over the lookback window (default: all time). */
@@ -1171,6 +1239,27 @@ export class FeatureMetricsLedger {
       }
     }
 
+    // CMT-2289: LLM error rows per (feature, error class). Bounded by the error rows
+    // in the window only; legacy rows without the column value read 'unrecorded'.
+    const errClassByFeature = new Map<string, Record<string, number>>();
+    try {
+      const ecRows = this.db
+        .prepare(
+          `SELECT feature, COALESCE(error_class, 'unrecorded') AS errorClass, COUNT(*) AS n
+             FROM feature_metrics
+            WHERE ts >= ? AND kind='llm' AND outcome='error'
+            GROUP BY feature, errorClass`,
+        )
+        .all(sinceMs) as Array<{ feature: string; errorClass: string; n: number }>;
+      for (const row of ecRows) {
+        const m = errClassByFeature.get(row.feature) ?? {};
+        m[row.errorClass] = Number(row.n) || 0;
+        errClassByFeature.set(row.feature, m);
+      }
+    } catch {
+      // @silent-fallback-ok: the error-class breakdown is descriptive only; a failed read leaves it empty.
+    }
+
     return agg.map((a) => {
       const calls = Number(a.calls) || 0;
       const fired = Number(a.fired) || 0;
@@ -1197,6 +1286,7 @@ export class FeatureMetricsLedger {
         unclassified: Number(a.unclassified) || 0,
         errors: Number(a.errors) || 0,
         llmErrors: Number(a.llmErrors) || 0,
+        errorClasses: errClassByFeature.get(String(a.feature)) ?? {},
         shed,
         fireRate: classifiedCalls > 0 ? fired / classifiedCalls : null,
         fireRateInsufficientEvidence: classifiedCalls === 0,
@@ -1774,10 +1864,10 @@ export class FeatureMetricsLedger {
            SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END) AS wrongCount,
            SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END) AS unknownCount
          FROM decision_quality q
-         JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
-         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?`,
+         JOIN ${BUCKET_WINNING_GRADE_SQL} w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = @decisionPoint AND q.ts >= @start AND q.ts < @end`,
       )
-      .get(decisionPoint, start, start + 86_400_000) as
+      .get({ decisionPoint, start, end: start + 86_400_000 }) as
       { rightCount: number | null; wrongCount: number | null; unknownCount: number | null } | undefined;
     this.db
       .prepare(
@@ -1814,7 +1904,7 @@ export class FeatureMetricsLedger {
          SELECT
            q.decision_point,
            COALESCE(NULLIF(TRIM(COALESCE(q.model, '')), ''), '__missing__') AS m,
-           ?,
+           @day,
            SUM(CASE WHEN w.grade='right'   THEN 1 ELSE 0 END),
            SUM(CASE WHEN w.grade='wrong'   THEN 1 ELSE 0 END),
            SUM(CASE WHEN w.grade='unknown' THEN 1 ELSE 0 END),
@@ -1822,13 +1912,13 @@ export class FeatureMetricsLedger {
            CASE WHEN COUNT(DISTINCT COALESCE(q.prompt_id, '')) = 1
                 THEN MIN(COALESCE(q.prompt_id, ''))
                 ELSE '__mixed__' END,
-           ?
+           @lastWriteAt
          FROM decision_quality q
-         LEFT JOIN decision_winning_grade w ON w.correlation_id = q.correlation_id
-         WHERE q.decision_point = ? AND q.ts >= ? AND q.ts < ?
+         LEFT JOIN ${BUCKET_WINNING_GRADE_SQL} w ON w.correlation_id = q.correlation_id
+         WHERE q.decision_point = @decisionPoint AND q.ts >= @start AND q.ts < @end
          GROUP BY m`,
       )
-      .run(day, this.now(), decisionPoint, start, start + 86_400_000);
+      .run({ day, lastWriteAt: this.now(), decisionPoint, start, end: start + 86_400_000 });
   }
 
   /** In-tx counter bump (column name from the closed map — never interpolated input). */

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales pipeline</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0f1115; --fg:#e8eaed; --muted:#9aa0a6; --card:#1a1d23; --line:#2a2e36; --accent:#5ec2b7; --warn:#e8b04b; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f7f7f8; --fg:#1c1e21; --muted:#5f6368; --card:#fff; --line:#e3e5e8; --accent:#11786e; --warn:#a86b00; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.4 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { padding: 14px 16px 6px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .headline { color: var(--muted); margin: 0; }
+  .status { color: var(--warn); font-size: 13px; min-height: 18px; padding: 0 16px; }
+  .stages { display: grid; gap: 10px; padding: 8px 16px 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .stage { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .stage h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; display: flex; justify-content: space-between; }
+  .deal { border-top: 1px solid var(--line); padding: 8px 0; }
+  .deal:first-of-type { border-top: 0; }
+  .deal .name { font-weight: 600; overflow-wrap: anywhere; }
+  .deal .meta { color: var(--muted); font-size: 13px; }
+  .deal select { margin-top: 6px; width: 100%; padding: 6px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); }
+  form { display: grid; gap: 8px; padding: 0 16px 24px; grid-template-columns: 1fr 120px auto; }
+  input, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); min-width: 0; }
+  button { background: var(--accent); color: #fff; border: 0; }
+  @media (max-width: 420px) { form { grid-template-columns: 1fr 1fr; } form button { grid-column: span 2; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sales pipeline</h1>
+  <p class="headline" id="headline">Loading…</p>
+</header>
+<div class="status" id="status" role="status"></div>
+<div class="stages" id="stages"></div>
+<form id="add" aria-label="Add a deal">
+  <input name="name" placeholder="Company" required maxlength="60" aria-label="Company">
+  <input name="value" placeholder="Value ($)" inputmode="numeric" pattern="[0-9]*" aria-label="Value in dollars">
+  <button type="submit">Add deal</button>
+</form>
+<script>
+// Example custom project app (docs/specs/project-apps-sandbox.md §7). It runs in the sealed frame:
+// no access to the dashboard, only its own data through the narrow key the wrapper hands it.
+(function () {
+  const STAGES = ['Lead', 'Qualified', 'Proposal', 'Won', 'Lost'];
+  const appId = (location.pathname.match(/project-apps\/(pa_[0-9a-f]{16})\//) || [])[1];
+  const api = (p) => `/project-apps/${appId}/api/${p}`;
+  let key = null, revision = null, deals = [], saving = false, pending = false, loaded = false;
+  const $ = (id) => document.getElementById(id);
+  const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+  const say = (t) => { $('status').textContent = t || ''; };
+  const openDeals = (n) => `${n} open ${n === 1 ? 'deal' : 'deals'}`;
+
+  function render() {
+    const open = deals.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
+    const openValue = open.reduce((s, d) => s + (Number(d.value) || 0), 0);
+    $('headline').textContent = `${openDeals(open.length)} worth ${money(openValue)} · ${deals.filter((d) => d.stage === 'Won').length} won`;
+    const root = $('stages'); root.textContent = '';
+    for (const stage of STAGES) {
+      const sec = document.createElement('section'); sec.className = 'stage';
+      const inStage = deals.filter((d) => d.stage === stage);
+      const h = document.createElement('h2');
+      h.append(document.createTextNode(stage));
+      const c = document.createElement('span'); c.textContent = `${inStage.length} · ${money(inStage.reduce((s, d) => s + (Number(d.value) || 0), 0))}`; h.append(c);
+      sec.append(h);
+      for (const d of inStage) {
+        const row = document.createElement('div'); row.className = 'deal';
+        const n = document.createElement('div'); n.className = 'name'; n.textContent = d.name;
+        const m = document.createElement('div'); m.className = 'meta'; m.textContent = money(Number(d.value) || 0);
+        const sel = document.createElement('select'); sel.setAttribute('aria-label', `Stage for ${d.name}`); sel.disabled = !loaded;
+        for (const s of STAGES) { const o = document.createElement('option'); o.value = s; o.textContent = s; if (s === d.stage) o.selected = true; sel.append(o); }
+        sel.addEventListener('change', () => { d.stage = sel.value; save(); });
+        row.append(n, m, sel); sec.append(row);
+      }
+      root.append(sec);
+    }
+  }
+
+  async function call(method, path, body) {
+    if (!key) throw new Error('no-key');
+    const r = await fetch(api(path), { method, headers: { 'X-Project-App-Key': key, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const data = await r.json().catch(() => ({}));
+    return { status: r.status, data };
+  }
+
+  // Editing stays off until the saved list has loaded, so a late load can never replace an edit.
+  const setEditable = (on) => { for (const el of $('add').elements) el.disabled = !on; };
+  setEditable(false);
+
+  async function load() {
+    let r;
+    try { r = await call('GET', 'data'); } catch { r = { status: 0 }; }
+    if (r.status !== 200) { say("Couldn't load the pipeline right now. Trying again…"); setTimeout(load, 5000); return; }
+    revision = r.data.revision || null;
+    deals = (r.data.body && Array.isArray(r.data.body.deals)) ? r.data.body.deals : [];
+    loaded = true; setEditable(true); render(); say('');
+  }
+
+  // One save at a time; a change made while a save runs is saved right after it (never dropped).
+  let retryTimer = null; // at most one pending retry after a rate-limit answer
+  async function save() {
+    if (!loaded) return;
+    if (saving) { pending = true; return; }
+    saving = true; pending = false; render(); say('Saving…');
+    const snapshot = deals.map((d) => ({ name: d.name, value: d.value, stage: d.stage }));
+    try {
+      const r = await call('PUT', 'data', { body: { deals: snapshot }, base: revision });
+      if (r.status === 409 && r.data && r.data.error === 'conflict') { pending = false; loaded = false; setEditable(false); render(); say('Someone else changed this; reloading.'); await load(); return; }
+      if (r.status === 429 && r.data && r.data.error === 'daily-budget') { pending = false; say('Saving is paused until tomorrow.'); return; }
+      if (r.status === 429) { pending = false; say('Busy; saving again in a moment…'); if (!retryTimer) retryTimer = setTimeout(() => { retryTimer = null; save(); }, 2000); return; }
+      if (r.status !== 200) { say("Can't save right now; your changes are still here."); return; }
+      revision = r.data.revision || revision;
+      const open = snapshot.filter((d) => d.stage !== 'Won' && d.stage !== 'Lost');
+      let sum;
+      try {
+        sum = await call('PUT', 'summary', {
+          headline: `${openDeals(open.length)} worth ${money(open.reduce((s, d) => s + (Number(d.value) || 0), 0))}`,
+          counts: STAGES.slice(0, 4).map((s) => ({ label: s, value: snapshot.filter((d) => d.stage === s).length })),
+          asOf: new Date().toISOString(),
+        });
+      } catch { sum = { status: 0 }; }
+      if (sum.status === 200) { parent.postMessage({ type: 'summary-changed' }, '*'); say('Saved.'); }
+      else say('Saved. The project row will catch up with the next save.');
+    } catch { say("Can't save right now; your changes are still here."); }
+    finally { saving = false; if (pending) save(); }
+  }
+
+  $('add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!loaded) return;
+    const f = e.target;
+    const name = String(f.name.value || '').trim(); if (!name) return;
+    deals.push({ name, value: Number(f.value.value) || 0, stage: 'Lead' });
+    f.reset(); render(); save();
+  });
+
+  window.addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || m.type !== 'instar-project-app-key' || typeof m.key !== 'string') return;
+    const first = !key; key = m.key;
+    if (first) load();
+  });
+  parent.postMessage({ type: 'ready' }, '*');
+})();
+</script>
+</body>
+</html>

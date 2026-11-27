@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T03:07:30.670Z",
+  "slug": "locked-proof-timing-evidence",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/lib.mjs"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

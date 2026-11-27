@@ -45,6 +45,27 @@ export interface PendingInjectRecord {
   doNotReplay?: boolean;
   /** Positive authorization for the one pre-rollout bootstrap dispatch. */
   freshPreRolloutBootstrap?: boolean;
+  /**
+   * context-budget-layered-summaries §9.1: the server's post-compaction
+   * fallback, staged here so it survives a restart. Always written with
+   * `doNotReplay`, so the generic boot sweep never re-injects it; the
+   * CompactionSentinel owns its idle-gated delivery and its resume at boot.
+   * Keyed `compactionFallbackKey(tmuxSession)`, never the session's own key,
+   * so it can never overwrite a pending initial-message record.
+   */
+  compactionFallback?: { tmuxSession: string; epoch: string; trigger: string; boundaryAt?: number };
+  /**
+   * context-budget-layered-summaries §9.3: an inject that belongs to a fold
+   * (its handoff or probe turn). Never redelivered by the generic sweep; the
+   * fold's terminal transition (or the fold boot sweep, for an orphan)
+   * releases it.
+   */
+  fold?: { foldId: string; topicKey: string };
+}
+
+/** The store key of a session's staged compaction fallback. */
+export function compactionFallbackKey(tmuxSession: string): string {
+  return `__compaction_fallback__-${tmuxSession}`;
 }
 
 export class PendingInjectStore {
@@ -75,6 +96,8 @@ export class PendingInjectStore {
         ...(entry.tombstone ? { tombstone: true } : {}),
         ...(entry.doNotReplay ? { doNotReplay: true } : {}),
         ...(entry.freshPreRolloutBootstrap ? { freshPreRolloutBootstrap: true } : {}),
+        ...(entry.compactionFallback ? { compactionFallback: { ...entry.compactionFallback } } : {}),
+        ...(entry.fold ? { fold: { ...entry.fold } } : {}),
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {
@@ -197,6 +220,10 @@ export async function sweepPendingInjects(
 
   for (const record of records) {
     const age = now() - Date.parse(record.createdAt);
+    if (record.fold) {
+      // Owned by its fold record (§9.3): the fold settles it, never this sweep.
+      continue;
+    }
     if (record.tombstone || record.doNotReplay) {
       if (!Number.isFinite(age) || age > 24 * 60 * 60 * 1000) {
         store.clear(record.tmuxSession);

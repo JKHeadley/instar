@@ -27,12 +27,25 @@ describe('WindowsDesktopHost WSL boundary', () => {
     });
     const host = new WindowsDesktopHost(endpoint, secret, send as typeof fetch);
     expect(await host.probe()).toEqual({ screenPermission: true, inputPermission: true,
-      sessionActive: true, displayCount: 1 });
+      sessionActive: true, displayCount: 1, windows: { locked: false } });
     await host.startIndicator(() => {});
     await host.input({ kind: 'move', x: 0.3, y: 0.6 });
     host.cancelInput();
     await vi.waitFor(() => expect(calls).toContain('release'));
     host.stopIndicator();
+  });
+
+  it('carries the companion lock reading, and reads an older companion as not locked', async () => {
+    const locked = new WindowsDesktopHost(endpoint, secret, (async () => Response.json({ screenPermission: false,
+      inputPermission: false, sessionActive: false, displayCount: 0, screenLocked: true })) as typeof fetch);
+    expect((await locked.probe()).windows).toEqual({ locked: true });
+    const unlocked = new WindowsDesktopHost(endpoint, secret, (async () => Response.json({ screenPermission: true,
+      inputPermission: true, sessionActive: true, displayCount: 1, screenLocked: false })) as typeof fetch);
+    expect((await unlocked.probe()).windows).toEqual({ locked: false });
+    // Only a real boolean true counts: a malformed field never marks a PC locked.
+    const odd = new WindowsDesktopHost(endpoint, secret, (async () => Response.json({ screenPermission: true,
+      inputPermission: true, sessionActive: true, displayCount: 1, screenLocked: 'yes' })) as typeof fetch);
+    expect((await odd.probe()).windows).toEqual({ locked: false });
   });
 
   it('accepts bounded JPEG and refuses an oversized response', async () => {

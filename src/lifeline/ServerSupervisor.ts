@@ -15,6 +15,10 @@
  * binary resolution failures, restart loops).
  */
 
+import { removeActiveRestartRequestFile } from '../core/restartRequestFile.js';
+import { describeRestartRequester, recordRestartRequest } from '../core/restartRequestAttribution.js';
+import { markRestartAdmissionTimeout, restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
+import { BOOT_STATE_HEADER } from '../server/BootReadiness.js';
 import crypto from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -245,6 +249,10 @@ export class ServerSupervisor extends EventEmitter {
   // reset — a server that has never gone healthy after 3× the grace window is
   // hung, not booting. Cleared on the first healthy tick.
   private firstSpawnedAt = 0;
+  // Listen early: when the boot beacon first answered `starting` in this episode (0 = not booting).
+  private bootingSince = 0;
+  /** What the last /health probe saw (set by checkHealth). */
+  private lastHealthProbe: 'healthy' | 'starting' | 'down' = 'down';
   private readonly graceCeilingMultiplier = 3;
   private retryCooldownMs = 5 * 60_000; // 5 minutes cooldown after max retries exhausted
   private maxRetriesExhaustedAt = 0;
@@ -301,6 +309,9 @@ export class ServerSupervisor extends EventEmitter {
   private maintenanceWaitMs = 5 * 60_000; // 5 minutes default (configurable via maintenanceWaitMinutes)
   private pendingUpdateVersion: string | null = null; // Version being applied — triggers lifeline self-restart on recovery
   private deferredRestartRequestedAt: string | null = null;
+  private deferredLeaseRequest: string | null = null;
+  private readonly plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
+    'ready' | 'wait' | 'not-applicable' | Promise<'ready' | 'wait' | 'not-applicable'>;
 
   // Agent hard-sleep (Stage B mechanism; docs/specs/agent-hard-sleep-mechanism.md).
   // When `slept` is true the server was INTENTIONALLY stopped to save resources —
@@ -373,6 +384,9 @@ export class ServerSupervisor extends EventEmitter {
      * boolean. Default false ⇒ legacy behavior (no inflight defer).
      */
     inflightDeferEnabled?: boolean;
+    /** Default off. The trusted provider checks the live preferred holder and exact confirmed window. */
+    plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) =>
+      'ready' | 'wait' | 'not-applicable' | Promise<'ready' | 'wait' | 'not-applicable'>;
   }) {
     super();
     this.projectDir = options.projectDir;
@@ -388,6 +402,7 @@ export class ServerSupervisor extends EventEmitter {
     // has projectConfig; the supervisor is config-less) and passed as a plain boolean.
     this.inflightMarkerProvider = options.inflightMarkerProvider ?? defaultInflightMarkerReader(this.stateDir);
     this.inflightDeferEnabled = options.inflightDeferEnabled ?? false;
+    this.plannedLeaseAdmission = options.plannedLeaseAdmission;
     this.sentinelEscalation = new SlowRetrySentinelEscalation({
       escalateAfterMs: options.slowRetryEscalateAfterMs,
     });
@@ -456,8 +471,9 @@ export class ServerSupervisor extends EventEmitter {
               this.pendingUpdateVersion = data.targetVersion ?? null;
             }
           } else if (fs.existsSync(restartPath)) {
-            const data = JSON.parse(fs.readFileSync(restartPath, 'utf-8'));
-            if (data.plannedRestart && (!data.expiresAt || new Date(data.expiresAt).getTime() > Date.now())) {
+            const raw = fs.readFileSync(restartPath, 'utf-8');
+            const data = JSON.parse(raw);
+            if (!restartAdmissionTimedOut(restartPath, raw) && data.plannedRestart && (!data.expiresAt || new Date(data.expiresAt).getTime() > Date.now())) {
               console.log(`[Supervisor] Found restart-requested flag on start — entering maintenance wait`);
               this.maintenanceWaitStartedAt = Date.now();
               this.pendingUpdateVersion = data.targetVersion ?? null;
@@ -539,6 +555,17 @@ export class ServerSupervisor extends EventEmitter {
     }
 
     this.isRunning = false;
+  }
+
+  /** A completed stop() can swallow tmux errors; only an independent read proves absence. */
+  observeServerStopped(): boolean | null {
+    if (!this.tmuxPath) return null;
+    try {
+      const sessions = execFileSync(this.tmuxPath, ['list-sessions', '-F', '#{session_name}'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000,
+      }).trim().split('\n');
+      return !sessions.includes(this.serverSessionName);
+    } catch { return null; } // @silent-fallback-ok: no measurable session list means unknown, never proof of a stop
   }
 
   /**
@@ -1227,6 +1254,7 @@ export class ServerSupervisor extends EventEmitter {
       console.log(`[Supervisor] Server started in tmux session: ${this.serverSessionName}`);
       this.isRunning = true;
       this.spawnedAt = Date.now();
+      this.bootingSince = 0; // a fresh process starts a fresh boot episode
       this.startHealthChecks();
       return true;
     } catch (err) {
@@ -1400,7 +1428,18 @@ export class ServerSupervisor extends EventEmitter {
       // real wall-clock. A server whose session is alive but has NEVER answered
       // /health after 3× the grace window is hung, not booting — past the ceiling
       // we fall through to act on failures normally.
-      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0) {
+      //
+      // Anchor ONLY when the current spawn has not yet answered healthy
+      // (lastHealthy < spawnedAt). A healthy tick clears the anchor; without this
+      // guard the next tick re-anchored it to the long-past spawnedAt of the
+      // running server, so a server healthy for more than 3× grace met its first
+      // outage with the ceiling already exceeded, and every respawn in that outage
+      // (which resets spawnedAt, not firstSpawnedAt) got only the ~60s
+      // alive-but-unresponsive allowance instead of the startup grace (Echo
+      // Laptop, 2026-11-21 03:00 PST, fb-6b354765-24a). With the guard, the
+      // episode anchors at its first respawn and keeps that anchor across later
+      // respawns until the server answers healthy again.
+      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0 && this.lastHealthy < this.spawnedAt) {
         this.firstSpawnedAt = this.spawnedAt;
       }
       const graceCeilingExceeded =
@@ -1412,7 +1451,7 @@ export class ServerSupervisor extends EventEmitter {
       // TelegramLifeline can forward messages immediately instead of queuing them for
       // the entire grace period. Failures are ignored — the server is still booting.
       if (!graceCeilingExceeded && this.spawnedAt > 0 && (now - this.spawnedAt) < this.startupGraceMs) {
-        this.checkRestartRequest();
+        await this.checkRestartRequest();
         // Optimistic health probe — update lastHealthy on success, ignore failures
         try {
           const alive = await this.checkHealth();
@@ -1420,6 +1459,7 @@ export class ServerSupervisor extends EventEmitter {
           if (alive) {
             this.lastHealthy = Date.now();
             this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
+            this.bootingSince = 0;
             if (!this.isRunning) {
               this.isRunning = true;
               this.emit('serverUp');
@@ -1430,8 +1470,31 @@ export class ServerSupervisor extends EventEmitter {
       }
 
       try {
+        this.lastHealthProbe = 'down';
         const healthy = await this.checkHealth();
+        // (cast: TS keeps the 'down' narrowing from the line above across the awaited call)
+        const probe = healthy ? 'healthy' : (this.lastHealthProbe as 'healthy' | 'starting' | 'down');
       if (this.detached) return; // detached while the probe was in flight: nothing below may act
+        // Listen early: the boot beacon says the process is alive and still booting. That is
+        // not a failure (a slow boot past the grace window must not be restarted mid-boot,
+        // topic 21816) and not "up" (nothing may be forwarded into it yet). Bounded: a boot
+        // still "starting" after the grace ceiling is treated as a failure like any other.
+        // The bound runs from the episode's first spawn (the existing Fix C ceiling) when the
+        // supervisor spawned it, else from the first "starting" probe (an adopted server). It is
+        // cleared only when the server answers healthy, never by a "down" probe in between.
+        // A "starting" answer is progress evidence, so it clears earlier failures: a sync-heavy
+        // boot step blocks the beacon too, and its timed-out probes must not add up to a restart
+        // of a healthy boot (second review, 2026-11-17). The ceiling stays the backstop: a boot
+        // alternating starting and down is restarted once the ceiling passes.
+        if (probe === 'starting') {
+          if (this.bootingSince === 0) this.bootingSince = now;
+          const anchor = this.firstSpawnedAt > 0 ? Math.min(this.firstSpawnedAt, this.bootingSince) : this.bootingSince;
+          if (!graceCeilingExceeded && now - anchor < this.startupGraceMs * this.graceCeilingMultiplier) {
+            this.consecutiveFailures = 0;
+            await this.checkRestartRequest();
+            return;
+          }
+        }
         if (healthy) {
           if (!this.isRunning) {
             if (this.maintenanceWaitStartedAt > 0) {
@@ -1458,6 +1521,7 @@ export class ServerSupervisor extends EventEmitter {
           this.consecutiveFailures = 0;
           this.consecutiveBindFailures = 0;
           this.firstSpawnedAt = 0; // Fix C: episode resolved healthy — re-anchor next episode
+          this.bootingSince = 0; // listen early: the boot episode is over
 
           // F-6: notify any pending Remediator restart-requested entries
           // that the planned restart has completed. Idempotent.
@@ -1482,7 +1546,7 @@ export class ServerSupervisor extends EventEmitter {
       }
 
       // Check for restart requests from the server (e.g., auto-updater)
-      this.checkRestartRequest();
+      await this.checkRestartRequest();
       // Check for debug restart requests from doctor sessions
       this.checkDebugRestartRequest();
       // Agent hard-sleep: honor a sleep-request written by the live SleepController
@@ -1501,6 +1565,17 @@ export class ServerSupervisor extends EventEmitter {
   }
 
   private async checkHealth(): Promise<boolean> {
+    this.lastHealthProbe = await this.probeHealth();
+    return this.lastHealthProbe === 'healthy';
+  }
+
+  /**
+   * One /health probe. `starting`: the boot beacon answered (a 503 marked
+   * `x-instar-boot-state: starting`, BootReadiness), so the process is alive and
+   * booting but not serving. Since 2026-11-16 the beacon no longer answers 200 there,
+   * so every caller that reads 200 as "serving" stays right.
+   */
+  private async probeHealth(): Promise<'healthy' | 'starting' | 'down'> {
     try {
       const controller = new AbortController();
       // Use 8s timeout — 5s is too aggressive under high CPU load where even localhost
@@ -1511,12 +1586,13 @@ export class ServerSupervisor extends EventEmitter {
         const response = await fetch(`http://127.0.0.1:${this.port}/health`, {
           signal: controller.signal,
         });
-        return response.ok;
+        if (response.ok) return 'healthy';
+        return response.status === 503 && response.headers.get(BOOT_STATE_HEADER) === 'starting' ? 'starting' : 'down';
       } finally {
         clearTimeout(timer);
       }
     } catch {
-      return false;
+      return 'down';
     }
   }
 
@@ -1595,6 +1671,7 @@ export class ServerSupervisor extends EventEmitter {
       this.slept = false;
       // Give the fresh server the full startup grace from now (mirrors restart path).
       this.spawnedAt = Date.now();
+      this.bootingSince = 0;
       this.consecutiveFailures = 0;
       this.restartAttempts = 0;
       this.spawnServer();
@@ -1631,7 +1708,7 @@ export class ServerSupervisor extends EventEmitter {
    * Called during the health check loop. If a valid request exists,
    * initiate a graceful restart of the server tmux session.
    */
-  private checkRestartRequest(): void {
+  private async checkRestartRequest(): Promise<void> {
     if (this.detached) return; // the lifeline let go of the server
     if (!this.stateDir) return;
     const flagPath = path.join(this.stateDir, 'state', 'restart-requested.json');
@@ -1639,9 +1716,23 @@ export class ServerSupervisor extends EventEmitter {
     try {
       if (!fs.existsSync(flagPath)) {
         this.deferredRestartRequestedAt = null;
+        this.deferredLeaseRequest = null;
         return;
       }
-      const data = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
+      const raw = fs.readFileSync(flagPath, 'utf-8');
+      if (restartAdmissionTimedOut(flagPath, raw)) return;
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        removeActiveRestartRequestFile(flagPath, raw);
+        return;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        removeActiveRestartRequestFile(flagPath, raw);
+        return;
+      }
+
 
       // Every planned restart writer uses this file, while only AutoUpdater
       // consults its in-process Local Verify hold. The verifier's durable
@@ -1659,12 +1750,43 @@ export class ServerSupervisor extends EventEmitter {
       // Check TTL
       if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()
         && !recentlyRequestedPlannedRestart(this.stateDir, data)) {
-        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:827' }); } catch { /* ignore */ }
+        if (!removeActiveRestartRequestFile(flagPath, raw)) return;
         console.log('[Supervisor] Expired restart request — ignoring');
         return;
       }
 
-      console.log(`[Supervisor] Restart requested by ${data.requestedBy} for v${data.targetVersion}`);
+      // Name the requester plainly. A hand-written flag names nobody; it still restarts
+      // (refusing would leave its change unapplied, unannounced), but it is said and recorded.
+      const requester = describeRestartRequester(data);
+      if (this.plannedLeaseAdmission && data.plannedRestart === true && data.bypassHolds !== true &&
+          data.requestedBy !== 'role-change') {
+        let admission: 'ready' | 'wait' | 'not-applicable' = 'wait';
+        if (requester.attributed && typeof data.requestedAt === 'string') {
+          try { admission = await this.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt }); }
+          catch { /* @silent-fallback-ok — the deferral below is visible */ }
+        }
+        try {
+          if (this.detached || fs.readFileSync(flagPath, 'utf-8') !== raw || restartAdmissionTimedOut(flagPath, raw)) return;
+        } catch {
+          return; // The exact request was withdrawn or cannot still be read.
+        }
+        if (admission !== 'ready' && admission !== 'not-applicable') {
+          if (markRestartAdmissionTimeout(flagPath, raw)) {
+            console.warn('[Supervisor] Planned restart admission timed out; keeping the server running');
+            return;
+          }
+          const key = JSON.stringify([requester.label, data.requestedAt]);
+          if (this.deferredLeaseRequest !== key) {
+            this.deferredLeaseRequest = key;
+            console.log('[Supervisor] Planned restart deferred for preferred-holder lease confirmation');
+          }
+          return;
+        }
+      }
+      this.deferredLeaseRequest = null;
+      console.log(typeof data.targetVersion === 'string' && data.targetVersion
+        ? `[Supervisor] Restart requested by ${requester.label} for v${data.targetVersion}`
+        : `[Supervisor] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${String(data.reason).slice(0, 200)}` : ''})`);
 
       // RESTART LOOP DETECTION: If we've already restarted for this version,
       // the binary isn't actually updating (npx cache mismatch). Don't loop.
@@ -1686,11 +1808,13 @@ export class ServerSupervisor extends EventEmitter {
 
       if (restartCount >= 2) {
         console.log(`[Supervisor] Restart loop detected — already restarted ${restartCount}x for v${data.targetVersion}. Skipping.`);
-        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:850' }); } catch { /* ignore */ }
+        if (!removeActiveRestartRequestFile(flagPath, raw)) return;
         // Clean up the count file so it doesn't block future real updates
         try { SafeFsExecutor.safeUnlinkSync(restartCountFile, { operation: 'src/lifeline/ServerSupervisor.ts:853' }); } catch { /* ignore */ }
         return;
       }
+
+      if (!removeActiveRestartRequestFile(flagPath, raw)) return;
 
       // Increment restart count for this version (update restarts only)
       if (isUpdateRestart) try {
@@ -1710,8 +1834,9 @@ export class ServerSupervisor extends EventEmitter {
         console.log(`[Supervisor] Planned restart — entering maintenance wait (${Math.round(this.maintenanceWaitMs / 60_000)}m window)`);
       }
 
-      // Clear the flag BEFORE restarting to prevent re-triggering
-      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:877' }); } catch { /* ignore */ }
+      // Recorded only once the restart is really going ahead (a request skipped as a loop is
+      // not the one that ended this process, so it must never show as previousRestart).
+      recordRestartRequest(this.stateDir, data, 'supervisor');
 
       // Also clean up legacy flag if present
       this.clearLegacyRestartFlag();
@@ -1722,10 +1847,9 @@ export class ServerSupervisor extends EventEmitter {
       // Initiate graceful restart
       this.performGracefulRestart(isUpdateRestart
         ? `update to v${data.targetVersion}`
-        : `restart requested by ${String(data.requestedBy ?? 'unknown')}`);
+        : `restart requested by ${requester.label}`);
     } catch {
-      // Malformed flag — clean up
-      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:890' }); } catch { /* ignore */ }
+      // The request may have been replaced after the read. Leave it for the next poll.
     }
   }
 

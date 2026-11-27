@@ -206,9 +206,12 @@ describe('origin service durable delivery', () => {
       return service.runWithAutomationReply(token, 42, { text: input.params.text }, () => service.sendBot(input, h.network));
     };
     expect((await send(h.service, 'beacon:0')).ok).toBe(true);
+    const stableOperation=h.service.automationOperationId('telegram-server',42,'beacon:0');
+    expect((await h.store.getOperation(stableOperation))?.operation?.operationId).toBe(stableOperation);
     await h.store.close();
     const store = await OriginStore.open({ stateDir: h.stateDir, agentId: 'echo' }, worker); stores.push(store);
     const restarted = new TelegramOriginService({ ...h.service.options, store, ownerBootId: 'boot-2' });
+    expect(restarted.automationOperationId('telegram-server',42,'beacon:0')).toBe(stableOperation);
     expect((await send(restarted, 'beacon:0')).ok).toBe(true);
     expect(h.network).toHaveBeenCalledOnce();
     expect((await store.listOrigins()).records).toHaveLength(1);
@@ -474,7 +477,10 @@ describe('origin service durable delivery', () => {
         const machineOnly = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
         expect(machineOnly.record).toMatchObject({ sessionId: null, machine: { status: 'observed', value: 'Mac Studio' },
           harness: { status: 'unknown' }, model: { status: 'unknown' } });
-        expect(machineOnly.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · unknown · unknown');
+        // Unknown harness and model are left out of the footer, never printed as "unknown".
+        const requestJson = machineOnly.admission.children[0].materializations[0].requestJson;
+        expect(requestJson).toContain('Echo · Mac Studio');
+        expect(requestJson).not.toContain('unknown');
         expect(await h.store.importLegacy({ snapshot, admission: machineOnly.admission })).toBe(true);
       }
     } finally { queue.close(); }
@@ -497,6 +503,80 @@ describe('origin service durable delivery', () => {
       await expect(h.store.importLegacy({ snapshot, admission: { ...forged.admission, record: { ...forged.admission.record, envelopeJson } } }))
         .rejects.toThrow(/legacy-origin-required/);
     } finally { queue.close(); }
+  });
+  describe('an imported queue row under the notification gate', () => {
+    const beacon = '{"status":"warming","phase":"booting"}';
+    async function gated() {
+      const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+      const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+      // An automated notice is moved to this hub topic when it is prepared.
+      gate.pushDestination = () => ({ chatId: '-100123', topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session';
+      const enroll = async (sessionId: string) => {
+        const token = await h.service.options.sessions.issue({ sessionId, harnessId: 'claude-code', projectDir: h.stateDir });
+        h.service.options.observer.track(h.service.options.sessions.getBinding(sessionId)!);
+        return createHash('sha256').update(token).digest('hex');
+      };
+      const snapshotOf = async (deliveryId: string) => (await h.store.legacyCandidates()).find(row => row.deliveryId === deliveryId)!;
+      const imported = async (deliveryId: string) => {
+        const snapshot = await snapshotOf(deliveryId);
+        const operation = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(await h.store.importLegacy({ snapshot, admission: operation.admission })).toBe(true);
+        return operation;
+      };
+      const entryState = (deliveryId: string) => queue.findByDeliveryId(deliveryId)?.state;
+      const close = async () => { queue.close(); await gate.close(); };
+      return { h, queue, gate, enroll, snapshotOf, imported, entryState, close };
+    }
+    it('a reply queued by a live session is retried as a reply, in its own topic', async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('instar-app');
+        t.queue.enqueue({ delivery_id: 'session-reply', topic_id: 42, text_hash: 'h1', text: 'Here is your answer', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        // The scope recovery happens to run in never decides a row's standing.
+        const operation = await withNotificationEnvelope({ origin: 'automated', category: 'job-status', sourceContext: 'ambient' }, () => t.imported('session-reply'));
+        expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', sessionId: 'instar-app',
+          notification: { origin: 'verified-reply', sourceContext: 'imported-origin-session' }, destination: { topicId: '42' } });
+        await t.h.service.executePreparedBot(operation, t.h.network);
+        expect(t.h.network).toHaveBeenCalledOnce();
+        expect((await t.h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('suppressed');
+      } finally { await t.close(); }
+    });
+    it("a job session's row and an unattributed row stay quiet, and the entry is not labelled delivered", async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('job-session');
+        t.queue.enqueue({ delivery_id: 'job-row', topic_id: 42, text_hash: 'h1', text: 'Nightly report', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        t.queue.enqueue({ delivery_id: 'no-session-row', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+        t.queue.enqueue({ delivery_id: 'foreign-row', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+          error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+        for (const id of ['job-row', 'no-session-row', 'foreign-row']) {
+          const operation = await t.imported(id);
+          expect(operation.record.sessionId).toBe(id === 'job-row' ? 'job-session' : null);
+          expect(operation.record.notification?.origin).toBe('automated');
+          await expect(t.h.service.executePreparedBot(operation, t.h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+          expect((await t.h.store.getOrigin(operation.record.originId))?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded' });
+          expect(t.entryState(id)).toBe('quiet-recorded');
+        }
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+    it('a reply claim on an imported row that names no session is not a reply at the last hop', async () => {
+      const t = await gated();
+      try {
+        t.queue.enqueue({ delivery_id: 'claimed-reply', topic_id: 42, text_hash: 'h1', text: 'Claims to be a reply', http_code: 503, error_body: beacon });
+        const operation = await t.imported('claimed-reply');
+        // The store refuses a changed seal (origin-store:digest-mismatch), so the
+        // claim can only be tried in memory against the last-hop classifier.
+        operation.record.notification = { origin: 'verified-reply', category: 'command-response', sourceContext: 'imported-origin-session' };
+        const stored = (await t.h.store.getOrigin(operation.record.originId))!;
+        await expect(t.h.service.classifyPreparedNotification(operation, stored)).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
   });
   it('isBootBeaconBody accepts only the beacon body', () => {
     expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
@@ -783,5 +863,33 @@ describe('origin service durable delivery', () => {
     vi.spyOn(h.service.options.observer, 'refresh').mockImplementation(async () => { await h.service.options.sessions.revoke('session'); });
     await expect(h.service.runWithSessionToken(token, h.send)).rejects.toMatchObject({ reason: 'session-no-longer-authorized' });
     expect(h.network).not.toHaveBeenCalled();
+  });
+});
+
+describe('origin service binds the native session at send time', () => {
+  // Live 2026-11-12: a session's first reply (13 s after spawn) read "native-session-unbound"
+  // because no hook had reported the Claude session id yet. The send path now asks the server's
+  // session records (Claude Code's own per-process record) for it before reading the model.
+  it('a reply before any hook reported the id still gets the observed model', async () => {
+    const h = await harness();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const pathMod = await import('node:path');
+    const native = '33333333-3333-4333-8333-333333333333';
+    const configHome = pathMod.join(h.stateDir, 'claude-home');
+    const folder = pathMod.join(configHome, 'projects', h.stateDir.replace(/[\\/.]/g, '-'));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(pathMod.join(folder, `${native}.jsonl`),
+      JSON.stringify({ type: 'user', sessionId: native, uuid: 'u1', message: { role: 'user', content: 'Hello' } }) + '\n' +
+      JSON.stringify({ type: 'assistant', sessionId: native, uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5-5', content: [] } }) + '\n');
+    const token = await h.service.options.sessions.issue({ sessionId: 'first-reply', harnessId: 'claude-code', projectDir: h.stateDir, configHome });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('first-reply')!);
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'unknown', reason: 'native-session-unbound' });
+    const asked: string[] = [];
+    h.service.resolveNativeSession = id => { asked.push(id); h.service.options.observer.bindNative(id, native); return native; };
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'observed', value: 'claude-opus-5-5' });
+    expect(asked).toEqual(['first-reply']);
+    // Once bound, the resolver is not asked again.
+    await h.service.sessionProducer(token);
+    expect(asked).toEqual(['first-reply']);
   });
 });

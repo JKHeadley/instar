@@ -21,6 +21,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig, AutonomyProfileLevel } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { provedProfile } from '../helpers/operatorProof.js';
 
 describe('E2E: Adaptive Autonomy Lifecycle', () => {
   let projectDir: string;
@@ -141,7 +142,22 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
 
   // ── Phase 2: Full Profile Progression ──────────────────────────
 
-  it('progresses cautious -> supervised -> collaborative -> autonomous', async () => {
+  it('the route refuses a wider profile from the token (trust-journey decision 4)', async () => {
+    // Start strict through the route (a narrowing), then try to widen through it.
+    expect((await fetch(`${baseUrl}/autonomy/profile`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'cautious', reason: 'start strict' }),
+    })).status).toBe(200);
+    const raise = await fetch(`${baseUrl}/autonomy/profile`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'autonomous', reason: 'self-raise' }),
+    });
+    expect(raise.status).toBe(403);
+    expect((await raise.json()).error).toBe('operator-approval-required');
+    expect((await (await fetch(`${baseUrl}/autonomy`)).json()).profile).toBe('cautious');
+  });
+
+  it('progresses cautious -> supervised -> collaborative -> autonomous with the person\'s proof', async () => {
     const progression: Array<{
       level: AutonomyProfileLevel;
       expectedEvolution: string;
@@ -154,17 +170,12 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
     ];
 
     for (const step of progression) {
-      const setRes = await fetch(`${baseUrl}/autonomy/profile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile: step.level, reason: `Progressing to ${step.level}` }),
-      });
-      expect(setRes.status).toBe(200);
-
-      const setBody = await setRes.json();
-      expect(setBody.profile).toBe(step.level);
-      expect(setBody.resolved.evolutionApprovalMode).toBe(step.expectedEvolution);
-      expect(setBody.resolved.safetyLevel).toBe(step.expectedSafety);
+      // A raise reaches the manager only with a proof (in production, from the account-path
+      // approval check); the test issues one for each exact step.
+      const resolved = provedProfile(autonomyManager).setProfile(step.level, `Progressing to ${step.level}`);
+      expect(resolved.profile).toBe(step.level);
+      expect(resolved.evolutionApprovalMode).toBe(step.expectedEvolution);
+      expect(resolved.safetyLevel).toBe(step.expectedSafety);
 
       // Verify via GET
       const getRes = await fetch(`${baseUrl}/autonomy`);
@@ -179,7 +190,7 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
     const res = await fetch(`${baseUrl}/autonomy/history`);
     const body = await res.json();
 
-    expect(body.history.length).toBeGreaterThanOrEqual(4); // At least the 4 progression changes
+    expect(body.history.length).toBeGreaterThanOrEqual(4); // At least the 4 progression changes (the refused raise is not recorded)
     // Verify last entry
     const last = body.history[body.history.length - 1];
     expect(last.to).toBe('autonomous');
@@ -265,12 +276,12 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
     await fetch(`${baseUrl}/autonomy/profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile: 'autonomous', reason: 'Config sync test' }),
+      body: JSON.stringify({ profile: 'cautious', reason: 'Config sync test' }),
     });
 
     const configPath = path.join(stateDir, 'config.json');
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    expect(raw.autonomyProfile).toBe('autonomous');
+    expect(raw.autonomyProfile).toBe('cautious');
   });
 
   // ── Phase 8: State Persistence Across Manager Instances ────────
@@ -280,7 +291,7 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
     await fetch(`${baseUrl}/autonomy/profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile: 'collaborative', reason: 'Restart test' }),
+      body: JSON.stringify({ profile: 'supervised', reason: 'Restart test' }),
     });
 
     await fetch(`${baseUrl}/autonomy/notifications`, {
@@ -300,7 +311,7 @@ describe('E2E: Adaptive Autonomy Lifecycle', () => {
       } as InstarConfig,
     });
 
-    expect(newManager.getProfile()).toBe('collaborative');
+    expect(newManager.getProfile()).toBe('supervised');
     expect(newManager.getNotificationPreferences().evolutionDigest).toBe('hourly');
     expect(newManager.getHistory().length).toBeGreaterThan(0);
   });

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "constitution-item9-app-approval",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T10:02:19.945Z",
+  "artifactPath": "upgrades/side-effects/constitution-item9-app-approval.md",
+  "artifactSha256": "9d9b85f280836fab2602bde1b6c46803ddd65fbc4eba5f14c280fc06399e22b7",
+  "coveredFiles": [
+    "docs/audits/interaction-family-paired-device-2026-11-17.json",
+    "docs/specs/reports/interaction-family-paired-device-review-2026-11-17.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/side-effects/constitution-item9-app-approval.eli16.md",
+    "upgrades/side-effects/constitution-item9-app-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Refreshes the Interaction family audit after the approved paragraph; no wording change.",
+  "eli16Path": "upgrades/side-effects/constitution-item9-app-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/constitution-item9-app-approval.md",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "audit record only"
+  }
+}

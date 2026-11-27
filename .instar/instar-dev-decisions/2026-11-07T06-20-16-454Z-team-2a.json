@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-07T06:20:16.454Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 702,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MobilePairing.ts",
+      "src/core/MobilePush.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/permissions/TeamAccess.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/teamRoutes.ts",
+      "src/users/ReachablePeople.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 675,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

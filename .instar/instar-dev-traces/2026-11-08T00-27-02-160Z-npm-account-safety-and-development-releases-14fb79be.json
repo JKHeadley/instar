@@ -1,0 +1,70 @@
+{
+  "version": 3,
+  "slug": "npm-account-safety-and-development-releases",
+  "sessionId": "c6017e21-464b-4195-98c1-cba1d8838f8c",
+  "timestamp": "2026-11-08T00:27:02.160Z",
+  "artifactPath": "upgrades/side-effects/npm-account-safety-and-development-releases.md",
+  "artifactSha256": "51b98657eeb2f3f02329ea9557689e47b9117b3542ee36cef635b7f69ca56636",
+  "specPath": "docs/specs/npm-account-safety-and-development-releases.md",
+  "coveredFiles": [
+    ".github/workflows/development-release.yml",
+    "docs/development-releases.md",
+    "docs/specs/npm-account-safety-and-development-releases.eli16.md",
+    "docs/specs/npm-account-safety-and-development-releases.md",
+    "docs/specs/reports/npm-account-safety-and-development-releases-convergence.md",
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "scripts/development-release.mjs",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/UpdateChecker.ts",
+    "src/data/accountActionSafety.ts",
+    "src/data/accountPageSafetyScript.ts",
+    "src/data/builtinSkillContent.ts",
+    "src/templates/scripts/browser/chrome-js.sh",
+    "src/templates/scripts/browser/chrome-mainworld.sh",
+    "tests/e2e/normal-chrome-browser-init-lifecycle.test.ts",
+    "tests/integration/development-artifact-update.test.ts",
+    "tests/integration/normal-chrome-browser-update.test.ts",
+    "tests/unit/PostUpdateMigrator-normalChromeBrowser.test.ts",
+    "tests/unit/account-page-safety.test.ts",
+    "tests/unit/development-artifact-update.test.ts",
+    "tests/unit/development-release-contract.test.ts",
+    "tests/unit/normal-chrome-browser-skill.test.ts",
+    "upgrades/next/npm-account-safety-and-development-releases.md",
+    "upgrades/side-effects/npm-account-safety-and-development-releases.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Account-action judgment and opt-in executable artifact distribution are security-sensitive; independent reviews, converged spec and full CI required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 3
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/npm-account-safety-and-development-releases-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-driven development install/pack and per-call browser review, not a self-triggered controller"
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Account operation used stored recovery code after a truncated page read; durable shared account guidance and an npm-independent dev distribution lane were absent. Incident evidence in topic10000002397 and linked topic130715."
+  }
+}

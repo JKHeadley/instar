@@ -153,6 +153,25 @@ describe('GreenPrAutoMerger — acting (post warm-up)', () => {
     expect(h.state.episodes[100]?.nextEligibleAt).toBeGreaterThan(1_000_000);
   });
 
+  it('an older PR refused for a red main passes the turn to a newer PR verified on the current main head', async () => {
+    const h = harness({
+      prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],
+      refetch: (n) => ({ title: 'feat: x', labels: [], isDraft: false, headRefOid: `sha${n}`, state: 'OPEN' }),
+    });
+    h.deps.runner.run = async (attempt) => {
+      h.runCalls.push(attempt);
+      return attempt.pr === 100
+        ? { outcome: 'refused:main-red', confirmedMerged: false }
+        : { outcome: 'merged', confirmedMerged: true };
+    };
+    prime(h);
+    const result = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(result.acted).toBe(true);
+    expect(h.runCalls.map((call) => call.pr)).toEqual([100, 200]);
+    expect(h.state.episodes[100]).toMatchObject({ state: 'active', attempts: 0, lastOutcome: 'refused:main-red' });
+    expect(h.attentionLines).toHaveLength(0);
+  });
+
   it('an oldest PR whose episode gave up does not block the next one (2026-11-02 head-of-line stall)', async () => {
     const h = harness({
       prs: [pr({ number: 100, headRefOid: 'sha100' }), pr({ number: 200, headRefOid: 'sha200' })],

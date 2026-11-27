@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "resource-aware-placement",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T04:28:47.208Z",
+  "artifactPath": "upgrades/side-effects/resource-aware-placement.md",
+  "artifactSha256": "670dbf7e357137e37921bb53633be6e303ccaf501c218cdeaedd4c95ab902fad",
+  "specPath": "docs/specs/resource-aware-placement.md",
+  "coveredFiles": [
+    "src/core/machineResourceProfile.ts",
+    "tests/integration/resource-aware-placement-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test isolation fix inside the converged Tier-2 change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

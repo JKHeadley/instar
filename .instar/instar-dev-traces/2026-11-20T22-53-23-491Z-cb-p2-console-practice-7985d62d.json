@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "cb-p2-console-practice",
+  "sessionId": "f07b47ce-bcaf-4d4f-840a-ab8e2c9c1a1e",
+  "timestamp": "2026-11-20T22:53:23.491Z",
+  "artifactPath": "upgrades/side-effects/cb-p2-console-practice.md",
+  "artifactSha256": "592ba941bc33b4fee2cacb9903276464f85d4fdfb71fda63a81472352f24a88f",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "dashboard/console/context-model.js",
+    "dashboard/console/context.js",
+    "tests/unit/console-context.test.ts",
+    "upgrades/next/cb-p2-console-practice.md",
+    "upgrades/side-effects/cb-p2-console-practice.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Spec-driven Phase 2 slice: read-only console section for the shadow-fold record.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

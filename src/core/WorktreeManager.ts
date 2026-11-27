@@ -24,7 +24,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { SafeGitExecutor, type SafeGitOptions } from './SafeGitExecutor.js';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 
 const execFileAsync = promisify(execFile);
@@ -101,6 +101,13 @@ const TRAILER_NONCE_BYTES = 16;
 const HEARTBEAT_STALE_MS = 60_000;
 const FORCE_TAKE_TIMEOUT_MS = 10_000;
 const MAX_ACTIVE_BINDINGS = 30;
+/**
+ * Time allowed for the git steps that check out a whole tree. They run off the
+ * event loop, so a slow one delays only the session waiting for its workspace.
+ * `worktree add` had 30 s while it ran synchronously; a busy disk can take
+ * longer for a large checkout, and failing the spawn at 30 s helps nobody.
+ */
+export const HEAVY_GIT_TIMEOUT_MS = { worktreeAdd: 120_000, clone: 120_000 } as const;
 
 // File modes
 const SECURE_FILE_MODE = 0o600;
@@ -174,6 +181,13 @@ export class WorktreeManager extends EventEmitter {
   private bindings: Map<string, WorktreeBinding> = new Map(); // key = `${topicId}:${mode}`
   private locks: Map<string, SessionLock> = new Map(); // key = worktreePath
   private fencingCounter: Map<string, number> = new Map(); // machineId → counter
+  /**
+   * Binding creations in progress, by binding key. Creation awaits git and a
+   * dependency copy, so two resolves for one topic can overlap; the second
+   * joins the first's creation, where it used to start a second `git worktree
+   * add` on the same path.
+   */
+  private creatingBindings: Map<string, Promise<WorktreeBinding>> = new Map();
 
   private bindingsFile: string;
   private fencingFile: string;
@@ -355,7 +369,13 @@ export class WorktreeManager extends EventEmitter {
 
     let binding = this.bindings.get(key);
     if (!binding) {
-      binding = await this.createBinding({ topicId, mode: args.mode, slug, sessionId: args.sessionId });
+      let creating = this.creatingBindings.get(key);
+      if (!creating) {
+        creating = this.createBinding({ topicId, mode: args.mode, slug, sessionId: args.sessionId })
+          .finally(() => { this.creatingBindings.delete(key); });
+        this.creatingBindings.set(key, creating);
+      }
+      binding = await creating;
     }
 
     // Lock-acquire
@@ -793,7 +813,7 @@ export class WorktreeManager extends EventEmitter {
       // branch and worktree in ONE `git worktree add`, the shape the guard's
       // narrow worktree-manager carve-out admits, and base a new branch on
       // origin/main: the checkout's own HEAD may be any local branch.
-      this.addInstarSourceWorktree(worktreePath, branch);
+      await this.addInstarSourceWorktree(worktreePath, branch);
       await this.fastCopyDeps(worktreePath);
     } else if (this.shouldCloneInsteadOfWorktree()) {
       // Clone-default for cross-project worktrees: when the source repo lives
@@ -811,9 +831,9 @@ export class WorktreeManager extends EventEmitter {
       // "destructive against the instar source" if cwd happens to be inside
       // it. Pin cwd to the worktrees root (always outside the source tree,
       // and guaranteed to exist since worktreePath lives there).
-      SafeGitExecutor.execSync(
+      await this.gitWriteOffLoop(
         ['clone', '--quiet', this.opts.projectDir, worktreePath],
-        { timeout: 120_000, cwd: this.worktreesRoot, operation: 'src/core/WorktreeManager.ts:clone-default' },
+        { timeout: HEAVY_GIT_TIMEOUT_MS.clone, cwd: this.worktreesRoot, operation: 'src/core/WorktreeManager.ts:clone-default' },
       );
       // Create branch on the clone (mirrors the worktree path's branch-prep).
       try {
@@ -843,7 +863,7 @@ export class WorktreeManager extends EventEmitter {
       } catch {
         SafeGitExecutor.execSync(['-C', this.opts.projectDir, 'branch', branch], { timeout: 5000, operation: 'src/core/WorktreeManager.ts:branch' });
       }
-      SafeGitExecutor.execSync(['-C', this.opts.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: 30_000, operation: 'src/core/WorktreeManager.ts:773' });
+      await this.gitWriteOffLoop(['-C', this.opts.projectDir, 'worktree', 'add', worktreePath, branch], { timeout: HEAVY_GIT_TIMEOUT_MS.worktreeAdd, operation: 'src/core/WorktreeManager.ts:773' });
 
       // Cross-platform fast-copy node_modules from main if present (avoid `cp -al` per K-fix; use clonefile/reflink only)
       await this.fastCopyDeps(worktreePath);
@@ -889,7 +909,7 @@ export class WorktreeManager extends EventEmitter {
    * no clone writes). Reuses the branch when it exists; otherwise creates it
    * from origin/main, falling back to HEAD when there is no origin/main.
    */
-  private addInstarSourceWorktree(worktreePath: string, branch: string): void {
+  private async addInstarSourceWorktree(worktreePath: string, branch: string): Promise<void> {
     const refExists = (ref: string): boolean => {
       try {
         SafeGitExecutor.readSync(['-C', this.opts.projectDir, 'rev-parse', '--verify', '--quiet', ref], { stdio: 'pipe', timeout: 3000, operation: 'src/core/WorktreeManager.ts:source-tree-ref-check', sourceTreeWorktreeManagerOk: true });
@@ -902,10 +922,67 @@ export class WorktreeManager extends EventEmitter {
     const args = refExists(`refs/heads/${branch}`)
       ? ['worktree', 'add', worktreePath, branch]
       : ['worktree', 'add', '-b', branch, worktreePath, refExists('refs/remotes/origin/main') ? 'origin/main' : 'HEAD'];
-    SafeGitExecutor.execSync(['-C', this.opts.projectDir, ...args], {
-      timeout: 30_000,
+    await this.gitWriteOffLoop(['-C', this.opts.projectDir, ...args], {
+      timeout: HEAVY_GIT_TIMEOUT_MS.worktreeAdd,
       operation: 'src/core/WorktreeManager.ts:source-tree-worktree-add',
       sourceTreeWorktreeManagerOk: true,
+    });
+  }
+
+  /**
+   * A git write that can take tens of seconds (a checkout of the whole tree, a
+   * clone), run as a child the server does not wait on synchronously. The
+   * synchronous form held the event loop for the child's whole life: on
+   * 2026-11-13 a `git worktree add` of the instar checkout on a busy disk
+   * outlasted the supervisor's 60 s of failed health checks and the server was
+   * killed. Same guard, environment scrub and audit as SafeGitExecutor.execSync
+   * (it goes through SafeGitExecutor.spawn).
+   *
+   * Git runs as the leader of its own process group. `git worktree add` does its
+   * checkout in a helper process that outlives a kill of the parent and keeps
+   * the output pipe open, so at the time limit the whole group is killed and
+   * the promise rejects at once: it never waits for the pipe to close. Rejects
+   * on a non-zero exit, a spawn error, or the time limit.
+   *
+   * What a killed creation leaves on disk is NOT cleaned up here: a partial
+   * directory, and for `worktree add` a git record locked as "initializing".
+   * The next resolve for that topic meets the directory in the "Adopt existing"
+   * branch, as it did after the old synchronous timeout.
+   */
+  private gitWriteOffLoop(args: readonly string[], opts: SafeGitOptions & { timeout: number }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let child: ReturnType<typeof SafeGitExecutor.spawn>;
+      try {
+        child = SafeGitExecutor.spawn(args, { ...opts, stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+      } catch (err) { reject(err); return; }
+      // The words of the command only (`git worktree add`, `git clone`): no paths.
+      const what = `git ${args.filter((a) => /^[a-z][a-z-]*$/.test(a)).slice(0, 2).join(' ')}`;
+      let stderr = '';
+      let settled = false;
+      const killGroup = (): void => {
+        try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+        catch { /* @silent-fallback-ok: the group is already gone, which is the state wanted */ }
+      };
+      const settle = (err?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err); else resolve();
+      };
+      child.stderr?.on('data', (d) => { stderr = (stderr + String(d)).slice(-600); });
+      const timer = setTimeout(() => {
+        killGroup();
+        settle(new Error(`${what} timed out after ${opts.timeout}ms`));
+      }, opts.timeout);
+      timer.unref?.();
+      child.on('error', (err) => settle(err));
+      // 'exit', not 'close': a helper that outlives git holds the pipe open.
+      child.on('exit', (code, signal) => {
+        if (code === 0) { settle(); return; }
+        killGroup(); // a failed git must not leave a helper still writing the tree
+        // One turn of the loop so stderr already in the pipe is read into the message.
+        setImmediate(() => settle(new Error(`${what} failed (${code === null ? `signal ${signal}` : `exit ${code}`}): ${stderr.trim()}`)));
+      });
     });
   }
 
@@ -950,12 +1027,12 @@ export class WorktreeManager extends EventEmitter {
     try {
       if (fsType === 'apfs') {
         // CoW clone — sub-second, isolation-safe (writes diverge)
-        execFileSync('cp', ['-c', '-R', mainNodeModules, wtNodeModules], { timeout: 60_000 });
+        await execFileAsync('cp', ['-c', '-R', mainNodeModules, wtNodeModules], { timeout: 60_000 });
       } else if (fsType === 'btrfs' || fsType === 'xfs') {
-        execFileSync('cp', ['-R', '--reflink=auto', mainNodeModules, wtNodeModules], { timeout: 60_000 });
+        await execFileAsync('cp', ['-R', '--reflink=auto', mainNodeModules, wtNodeModules], { timeout: 60_000 });
       } else {
         // ext4, HFS+, NTFS, tmpfs, unknown — full copy. NEVER `cp -al` (inode aliasing breaks isolation).
-        execFileSync('cp', ['-R', mainNodeModules, wtNodeModules], { timeout: 600_000 });
+        await execFileAsync('cp', ['-R', mainNodeModules, wtNodeModules], { timeout: 600_000 });
       }
     } catch (err) {
       this.emit('warn', `node_modules copy failed (${(err as Error).message}); will need fresh install`);

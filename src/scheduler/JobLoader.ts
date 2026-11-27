@@ -15,6 +15,7 @@ import path from 'node:path';
 import { Cron } from 'croner';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
 import { validJobDependencyPath } from '../core/JobDependency.js';
+import { THINKING_MODES } from '../core/topicProfileValidation.js';
 import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
@@ -425,6 +426,11 @@ export function validateJob(job: unknown, index?: number): void {
     throw new Error(`${prefix}: \"catchUpPolicy\" must be skip, run-once, or ask`);
   }
 
+  // Per-job thinking mode (job-launch-intent-record §1): closed enum, fails at load.
+  if (j.thinkingMode !== undefined && !(THINKING_MODES as readonly unknown[]).includes(j.thinkingMode)) {
+    throw new Error(`${prefix}: "thinkingMode" must be one of ${THINKING_MODES.join(', ')}`);
+  }
+
   if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32
     || j.requiredPaths.some(value => !validJobDependencyPath(value)))) {
     throw new Error(`${prefix}: requiredPaths must be at most 32 safe project-relative paths`);
@@ -442,6 +448,17 @@ export function validateJob(job: unknown, index?: number): void {
     }
   }
 
+  // deliver (docs/specs/backup-email-sending.md): where a report goes. Script jobs have no report text.
+  if (j.deliver !== undefined) {
+    const d = j.deliver;
+    if (!Array.isArray(d) || d.length === 0 || d.length > 2 || d.some((v) => v !== 'telegram' && v !== 'email') || new Set(d).size !== d.length) {
+      throw new Error(`${prefix}: "deliver" must be a list of "telegram" and/or "email" if provided`);
+    }
+    if ((j.execute as Record<string, unknown> | undefined)?.type === 'script' && d.includes('email')) {
+      throw new Error(`${prefix}: "deliver" with "email" is not available for script jobs (deliver-on-script-job): a script run has no report text to email`);
+    }
+  }
+
   // Machine scope — optional array of machine IDs or names
   if (j.machines !== undefined) {
     if (!Array.isArray(j.machines)) {
@@ -452,6 +469,11 @@ export function validateJob(job: unknown, index?: number): void {
         throw new Error(`${prefix}: "machines" entries must be non-empty strings`);
       }
     }
+  }
+
+  // Work weight (resource-aware placement §5) — optional
+  if (j.workWeight !== undefined && j.workWeight !== 'light' && j.workWeight !== 'standard' && j.workWeight !== 'heavy') {
+    throw new Error(`${prefix}: "workWeight" must be "light", "standard" or "heavy" if provided`);
   }
 
   // Grounding config — validate structure if present

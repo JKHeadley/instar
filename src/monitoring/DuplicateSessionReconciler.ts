@@ -334,6 +334,10 @@ export class DuplicateSessionReconciler {
     const now = this.nowFn();
     const sessionKey = cand.platform === 'telegram' ? cand.platformId : cand.platformId;
 
+    // app-conversations-in-the-pool §2.7: a split app conversation is closed by the close-on-loss rule,
+    // under the right key. Nothing here may converge one.
+    if (cand.platform === 'app' || sessionKey.startsWith('app:')) return { consumed: false, wrote: false };
+
     // One authority in motion per topic (§3.2.1 item 3).
     if (this.deps.topicHasAuthorityInMotion(sessionKey)) {
       this.journalRow({ kind: 'deferred-authority-in-motion', key: cand.key });

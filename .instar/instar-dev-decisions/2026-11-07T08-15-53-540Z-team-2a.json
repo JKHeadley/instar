@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-07T08:15:53.540Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileConsoleTicket.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/teamRoutes.ts",
+      "src/users/TeamConfinement.ts"
+    ],
+    "addedLines": 42,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

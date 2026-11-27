@@ -120,7 +120,7 @@ describe('single writer for identity key files', () => {
     expect(findIdentityFileWrites(aliased)).toEqual(['WriteFileSync(target)']);
   });
 
-  it('only five modules both reach the write primitive and name the legacy threadline path', () => {
+  it('only six modules both reach the write primitive and name the legacy threadline path', () => {
     const LEGACY_PATH = /'threadline',\s*'identity\.json'|threadline\/identity\.json'/;
     const namers: string[] = [];
     for (const file of listTs(SRC)) {
@@ -132,6 +132,7 @@ describe('single writer for identity key files', () => {
       'commands/identity.ts',          // `instar identity adopt`: moves BOTH files aside through the key-file module (a2a-single-agent-identity §1.4)
       'core/AgentIdentityAdoption.ts', // adoption install: canonical write + legacy mirror, both through the key-file module (§1.2)
       'core/AgentIdentityHandover.ts', // READS the legacy file for a handover; see next test
+      'core/AgentLinks.ts',            // READS both files (repair: false) to name the agent in a link; see the agent-link test below
       'identity/Migration.ts',         // repairs it through the validating reader
       'threadline/client/IdentityManager.ts',
     ]);
@@ -158,6 +159,7 @@ describe('single writer for identity key files', () => {
       'commands/identity.ts',          // a2a-single-agent-identity §1.4: operator adopt / init --standalone
       'core/AgentIdentityAdoption.ts', // a2a-single-agent-identity §1.2: the void-fill install
       'core/AgentIdentityHandover.ts',
+      'core/AgentLinks.ts',            // permanent-agent-links §2a: strict read only, never mints or repairs
       'identity/IdentityManager.ts',
       'identity/Migration.ts',
       'threadline/HandshakeManager.ts',
@@ -166,6 +168,14 @@ describe('single writer for identity key files', () => {
     ]);
     expect(fs.readFileSync(path.join(SRC, 'threadline/ThreadlineBootstrap.ts'), 'utf-8'))
       .toMatch(/import \{ IdentityFileInvalidError \} from '\.\.\/identity\/IdentityKeyFile\.js'/);
+  });
+
+  it('the agent-link reader only reads the key file, never repairs or writes it', () => {
+    const source = fs.readFileSync(path.join(SRC, 'core/AgentLinks.ts'), 'utf-8');
+    expect(source).toMatch(/import \{ readIdentityKeyFile \} from '\.\.\/identity\/IdentityKeyFile\.js'/);
+    expect(source).toMatch(/read\(file, \{ repair: false \}\)/);
+    expect(source).not.toMatch(/repair:\s*true/);
+    expect([...source.matchAll(WRITE_CALL)].map(m => m[1])).toEqual([]);
   });
 
   it('HandshakeManager source no longer generates or stores an identity key', () => {

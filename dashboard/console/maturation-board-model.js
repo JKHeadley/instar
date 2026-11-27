@@ -162,7 +162,7 @@ export function subline(board) {
 }
 
 // ── URL state ──────────────────────────────────────────────────────────────
-const KEYS = ['g', 'q', 'nobody', 'open', 'f', 'sort'];
+const KEYS = ['g', 'q', 'nobody', 'open', 'f', 'sort', 's'];
 
 export function parseState(search) {
   const p = new URLSearchParams(search || '');

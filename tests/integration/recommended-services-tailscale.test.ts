@@ -41,6 +41,7 @@ describe('Tailscale setup through the routes', () => {
   let running: string[];
   let topicSession: string | null;
   let now: number;
+  let logouts: number;
 
   const app = () => {
     const a = express();
@@ -55,6 +56,7 @@ describe('Tailscale setup through the routes', () => {
       isSetupRunning: (id) => running.includes(id), notifyStuck: stuck, clearStuck: cleared, tellOwner: told,
       readSecret: () => secret, writeSecret: (_n, v) => { secret = v; },
       tailscaleStatus: async () => status,
+      tailscaleLogout: async () => { logouts++; status = { kind: 'ok', stdout: signedOut }; return true; },
       onReady: (r) => { reconcile = r; },
     });
     a.use(router);
@@ -73,6 +75,7 @@ describe('Tailscale setup through the routes', () => {
     ledger = new RecommendedServicesLedger({ stateDir: dir, signer, keyLookup: (() => ({ status: 'unknown' })) as unknown as MachineKeyLookup });
     running = [];
     topicSession = null;
+    logouts = 0;
     start = vi.fn(async () => { running.push('sess-1'); return { sessionName: 'sess-1', topicId: 7 }; });
     finish = vi.fn(); withdraw = vi.fn(); stuck = vi.fn(async () => true); cleared = vi.fn(); told = vi.fn();
     stop = vi.fn(() => { running = []; return true; });
@@ -110,7 +113,7 @@ describe('Tailscale setup through the routes', () => {
     const a = app();
     await say(a, 'yes');
     await vi.waitFor(() => expect(start).toHaveBeenCalled());
-    expect((await verify(a)).body).toEqual({ result: 'fail', detail: 'This machine is not signed in to Tailscale yet.' });
+    expect((await verify(a)).body).toEqual({ result: 'fail', absent: true, detail: 'This machine is not signed in to Tailscale yet.' });
     expect(finish).not.toHaveBeenCalled();
     status = { kind: 'ok', stdout: signedIn };
     expect((await verify(a)).body.result).toBe('pass');
@@ -124,5 +127,67 @@ describe('Tailscale setup through the routes', () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('no-secret-for-this-service');
     expect(secret).toBeNull();
+  });
+  describe('switching Tailscale off after a confirmed no', () => {
+    const sayNoOff = async (a: express.Express) => {
+      const { body } = await request(a).get('/recommended-services/tailscale/confirm');
+      return { page: body, res: await request(a).post('/recommended-services/tailscale/confirm').set('X-Instar-Request', '1').send({ token: body.token, pin: '1', answer: 'no', shutdown: true }) };
+    };
+
+    it('signs out only a machine its own setup signed in, confirmed from the status after', async () => {
+      status = { kind: 'ok', stdout: signedOut };
+      const a = app();
+      await say(a, 'yes');
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      expect(readSetupStates(dir).tailscale?.absentBeforeSetup).toBe(true);
+      status = { kind: 'ok', stdout: signedIn };
+      expect((await verify(a)).body.result).toBe('pass');
+      expect(readSetupStates(dir).tailscale?.signedInBySetup).toBe(true);
+      const { page, res } = await sayNoOff(a);
+      expect(page).toMatchObject({ workingHere: true, switchOffHere: true });
+      expect(res.body).toMatchObject({ choice: 'no', shutdown: 'authorized', switchingOff: true });
+      await vi.waitFor(() => expect(readSetupStates(dir).tailscale?.stopped).toBeTruthy());
+      expect(logouts).toBe(1);
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /signed out of Tailscale/.test(t))).toBe(true);
+    });
+
+    it('leaves a Tailscale the person already had, and the page never offers to switch it off', async () => {
+      status = { kind: 'ok', stdout: signedIn };
+      const a = app();
+      await say(a, 'yes');
+      await vi.waitFor(() => expect(readSetupStates(dir).tailscale?.alreadyHeld).toBe(true));
+      const { page } = await sayNoOff(a);
+      expect(page).toMatchObject({ workingHere: true, switchOffHere: false });
+      await vi.waitFor(() => expect(readSetupStates(dir).tailscale?.stopped).toBeTruthy());
+      expect(logouts).toBe(0);
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /already yours before I set anything up/.test(t))).toBe(true);
+    });
+
+    it('a sign-in the person had, found switched off or offline at the yes, is never counted as setup\'s own', async () => {
+      // Signed in but stopped: something is here, it just isn't working. The session brings it back; it stays theirs.
+      status = { kind: 'ok', stdout: JSON.stringify({ BackendState: 'Stopped', Self: { Online: false, TailscaleIPs: [] } }) };
+      const a = app();
+      await say(a, 'yes');
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      expect(readSetupStates(dir).tailscale?.absentBeforeSetup).toBeUndefined();
+      status = { kind: 'ok', stdout: signedIn };
+      expect((await verify(a)).body.result).toBe('pass');
+      expect(readSetupStates(dir).tailscale?.signedInBySetup).toBeUndefined();
+      const { page } = await sayNoOff(a);
+      expect(page).toMatchObject({ workingHere: true, switchOffHere: false });
+      await vi.waitFor(() => expect(readSetupStates(dir).tailscale?.stopped).toBeTruthy());
+      expect(logouts).toBe(0);
+    });
+
+    it('a switch-off from another machine, on a machine where setup never ran, touches nothing and says nothing', async () => {
+      status = { kind: 'ok', stdout: signedIn };
+      app();
+      ledger.recordNo({ service: 'tailscale', shutdown: 'authorized', reason: 'none', origin: 'owner-surface' });
+      await reconcile();
+      expect(logouts).toBe(0);
+      expect(told).not.toHaveBeenCalled();
+      expect(readSetupStates(dir).tailscale?.stopped).toBeTruthy();
+      expect(status.kind === 'ok' && status.stdout).toBe(signedIn);
+    });
   });
 });

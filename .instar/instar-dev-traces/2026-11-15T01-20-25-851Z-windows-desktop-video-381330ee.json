@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-video",
+  "sessionId": "78230c6e-4975-46d5-b94e-971d7dc5dbfe",
+  "timestamp": "2026-11-15T01:20:25.851Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-video.md",
+  "artifactSha256": "75456a83652fd580d6d4d5fb790ddc6f57441038a0dfe9a13b195df4ae7c09ce",
+  "coveredFiles": [
+    "docs/specs/windows-desktop-video.eli16.md",
+    "docs/specs/windows-desktop-video.md",
+    "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+    "upgrades/side-effects/windows-desktop-video.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "rate-control setting inside the dark-by-default video path",
+  "eli16Path": "docs/specs/windows-desktop-video.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-desktop-video.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

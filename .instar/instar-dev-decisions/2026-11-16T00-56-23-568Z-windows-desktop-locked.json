@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-16T00:56:23.568Z",
+  "slug": "windows-desktop-locked",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopHost.ts",
+      "src/core/DesktopProbeReadiness.ts",
+      "src/core/DesktopSetupGuide.ts",
+      "src/core/WindowsDesktopHost.ts",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

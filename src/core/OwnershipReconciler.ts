@@ -37,6 +37,7 @@
  */
 
 import { isSlackConversationKey } from './SlackForwardBridge.js';
+import { isAppOwnershipKey } from './SessionOwnership.js';
 import type { SessionOwnershipRegistry, CasResult } from './SessionOwnershipRegistry.js';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { TopicPin, TopicPlacementPinStore } from './TopicPlacementPinStore.js';
@@ -447,6 +448,9 @@ export class OwnershipReconciler {
 
     for (const [sessionKey, pin] of Object.entries(this.effectivePins())) {
       if (!pin.pinned || !pin.preferredMachine) continue;
+      // app-conversations-in-the-pool §2.2: an app conversation moves only by a completed drain or the
+      // operator's "bring it back here". A leftover pin on one is never acted on.
+      if (isAppOwnershipKey(sessionKey)) continue;
       // slack-conversations-stay-with-connection §2.1: a pin left on a Slack conversation (from a move
       // tried before this fix, or replicated from an older machine) never moves it. No case below may
       // transfer, claim or adopt it: nothing would close the old session, and two would answer.
@@ -650,6 +654,8 @@ export class OwnershipReconciler {
       try { all = this.d.ownership.all(); } catch { all = []; /* @silent-fallback-ok — an unreadable registry drives nothing this tick; the next tick retries */ }
       for (const rec of all) {
         if (rec.status !== 'transferring' || pinnedSeenThisTick.has(rec.sessionKey)) continue;
+        // app-conversations-in-the-pool §2.5: a `transferring` app record is resolved by its own owner.
+        if (isAppOwnershipKey(rec.sessionKey)) continue;
         // slack-conversations-stay-with-connection §2.1: a Slack conversation caught mid-transfer (an
         // older owner's move, or one in flight at upgrade) is never claimed elsewhere — its owner takes
         // it back at once, whatever the flags, so it is neither split nor left queuing in `transferring`.
@@ -938,6 +944,9 @@ export class OwnershipReconciler {
     if (!pin || !pin.pinned || !pin.preferredMachine) return { pinned: false };
     const pinHlc = pin.hlc ?? this.deriveLocalPinHlc(pin);
     const base = { pinned: true as const, preferredMachine: pin.preferredMachine, pinHeldSince: pinHlc.physical };
+    if (isAppOwnershipKey(sessionKey)) {
+      return { ...base, pinState: 'pending', pendingReason: 'An app conversation moves only by a completed move, so this pin is ignored.' };
+    }
     // slack-conversations-stay-with-connection: a pin on a Slack conversation is never acted on — say so.
     if (isSlackConversationKey(sessionKey)) {
       return { ...base, pinState: 'pending', pendingReason: 'A Slack conversation stays with the machine that holds the Slack connection, so this pin is ignored.' };

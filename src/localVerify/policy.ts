@@ -31,7 +31,9 @@ export const LOCAL_VERIFY_DEADLINES: Readonly<LocalVerifyDeadlines> = Object.fre
   fetchMs: 5 * MIN,
   npmCiMs: 10 * MIN,
   buildLintMs: 15 * MIN,
-  lanes: Object.freeze({ unit: 20 * MIN, integration: 30 * MIN, e2e: 45 * MIN }),
+  // Hang limits, not speed targets: about twice the measured normal (2026-11-12: the unit lane
+  // had grown to ~19 of its 20 min and the limit was killing healthy runs).
+  lanes: Object.freeze({ unit: 40 * MIN, integration: 45 * MIN, e2e: 60 * MIN }),
   totalActiveMs: 120 * MIN,
   gitStepMs: 2 * MIN,
 });
@@ -50,10 +52,14 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   throughputOverflow: 5,
   /**
    * Isolation re-run (Throughput budget, evidence-per-run "known-flaky"): a lane whose ONLY
-   * problem is 1..N failed files re-runs exactly those files once, one at a time. More than N
-   * failed files is a real break (no re-run). N is also the cap across a whole verify.
+   * problem is 1..N failed files re-runs exactly those files, one at a time: once, or
+   * `isolationRerunImportRelatedPasses` times for an import-related file whose failed tests
+   * `main` has shown flaky (spec local-verify-import-related-rerun.md). More than N failed
+   * files is a real break (no re-run). N is also the cap across a whole verify; it counts files.
    */
   isolationRerunMaxFiles: 3,
+  /** Consecutive solo passes, each by name, that clear an import-related file with main evidence. */
+  isolationRerunImportRelatedPasses: 3,
   /**
    * The e2e lane runs as this many vitest shards at once (spec "Parallel lanes"). Each
    * shard has its own TMPDIR and tmux server. Measured on the Studio 2026-10-22: one
@@ -80,6 +86,33 @@ export const LOCAL_VERIFY_LIMITS = Object.freeze({
   auditKeepFiles: 10,
   /** Grace between SIGTERM and SIGKILL of a cancelled run's process group. */
   cancelGraceMs: 10_000,
+});
+
+/**
+ * Bounds of the import-related re-run rule (spec local-verify-import-related-rerun.md, Limits).
+ * Every one is a record, store or wire bound; passing one only ever makes a file ineligible.
+ */
+export const IMPORT_RELATED_RERUN = Object.freeze({
+  /** Failed test names kept on one `flakyRetried` entry; a file with more failed tests is ineligible. */
+  recordNames: 20,
+  /** Main-flaky test names kept per file in the history and offered per file (two runs' worth). */
+  namesPerFile: 40,
+  /** A test name longer than this is left out whole, never shortened (the peer parser's path bound). */
+  nameChars: 300,
+  /** A stored failure line (bounded with its disclosure). */
+  lineChars: 400,
+  /** Files offered on the wire (the peer parser's existing refusal threshold). */
+  wireFiles: 200,
+  /** The serialized isolation input, in UTF-8 bytes (the server's body limit is 12 MB). */
+  wireBytes: 8 * 1024 * 1024,
+  /** One named failure's whole message in the run log. */
+  failureFullChars: 8000,
+  /** A solo run's failure text in the failure detail (the helper's disclosure counts inside it). */
+  rerunMessageChars: 1000,
+  /** Run logs are kept this long: the full-output pointers rest on them (the review reads 14 days). */
+  runLogKeepMs: 30 * 24 * 60 * MIN,
+  /** Refusal entries of one kind on a `run-detail` audit line (the true count rides beside them). */
+  auditRefusals: 10,
 });
 
 export const LOCAL_VERIFY_IDENTITY = Object.freeze({ name: 'local-verify', email: 'noreply@local' });

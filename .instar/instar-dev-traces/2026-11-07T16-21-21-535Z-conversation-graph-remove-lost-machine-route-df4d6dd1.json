@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-remove-lost-machine-route",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T16:21:21.535Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-remove-lost-machine-route.md",
+  "artifactSha256": "f9e993ff629543940be3a3cd31f3a70a999059b6c591331c2f63ef32a2c97e23",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "dashboard/console/conversation-machines.js",
+    "upgrades/side-effects/conversation-graph-remove-lost-machine-route.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

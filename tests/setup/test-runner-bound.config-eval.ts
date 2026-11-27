@@ -120,8 +120,16 @@ export function withTestRunnerBound<T extends MinimalVitestConfig>(
     const holders = readHoldersSnapshot();
     const nested = checkNestedUnderHolder(holders, name === 'unit' ? 'targeted' : 'suite', {
       envMarker: process.env['INSTAR_TEST_SEMAPHORE_HELD'],
+      ownSuiteHolder: process.env['INSTAR_HOST_TEST_OWN_SUITE_HOLDER'],
     });
-    if (nested.anyLaneAncestorHolder) {
+    if (nested.anyLaneAncestorHolder && nested.ownSuiteOnly) {
+      // A Local Verify run's own lane under its own suite slot: not a nested intruder, so the
+      // ≤4 clamp does not apply (the run still holds the slot that keeps other suites out).
+      sem.ledger('own-suite-unclamped', { naturalPoolBound: naturalBound });
+      process.env['__INSTAR_TRB_CLAMPED'] = 'own-suite';
+      // Nor the targeted clamp below: the holder's own suite is sized by the holder.
+      return config;
+    } else if (nested.anyLaneAncestorHolder) {
       if (clampActive) {
         // CLI-proof (§2.5 round 9): neutralize recognized pool-shaping argv
         // (belt) AND hard-set the pool bounds to Math.min(resolved, 4) — a

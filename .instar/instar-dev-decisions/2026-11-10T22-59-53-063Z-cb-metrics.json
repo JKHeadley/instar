@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-10T22:59:53.063Z",
+  "slug": "cb-metrics",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1244,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/TopicIntentCapture.ts",
+      "src/core/TopicIntentExtractor.ts",
+      "src/memory/TopicMemory.ts",
+      "src/monitoring/TokenLedger.ts",
+      "src/monitoring/claudeTranscriptRoots.ts",
+      "src/monitoring/contextBudgetMetrics.ts",
+      "src/monitoring/contextLayers/contextLayersBoot.ts",
+      "src/monitoring/contextLayers/layerCaptureWiring.ts",
+      "src/monitoring/contextLayers/layerSpendLog.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1211,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Not an agent-authored artifact or self-action loop: an observability defect fix (TokenLedger read one config home) plus a read-only, dev-gated measurement route; nothing here decides or acts on its own output."
+  },
+  "verdict": "pass"
+}

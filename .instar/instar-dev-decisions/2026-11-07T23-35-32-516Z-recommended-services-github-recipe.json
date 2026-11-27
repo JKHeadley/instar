@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T23:35:32.516Z",
+  "slug": "recommended-services-github-recipe",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 296,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/recommended/githubBackup.ts",
+      "src/recommended/recipes.ts",
+      "src/recommended/setupState.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 291,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The attention raise is one notice per failing check id, held by attentionRaised until a pass clears it; the daily push rides the existing bounded refresh (one try per 24 h, six hours after a failure, a single re-check after three) under hasGrant; a one-shot per state change, not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

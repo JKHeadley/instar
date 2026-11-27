@@ -100,7 +100,8 @@ describe('owner health reading — production wiring', () => {
     const r1 = await phone.send('GET', '/mobile/health-issues');
     expect(r1.status).toBe(200);
     expect(r1.body.schemaVersion).toBe(1);
-    expect(['healthy', 'running', 'unsure', 'attention']).toContain(r1.body.verdict);
+    // An agent that read its own health never answers "unsure" (that is only a failed reading, a 500): Justin, 2026-11-07.
+    expect(['healthy', 'running', 'attention']).toContain(r1.body.verdict);
 
     // Wiring: an event through the real reporter reaches the phone, sorted by the table.
     reporter.report({ feature: 'GitSync.gitHygiene', primary: 'p', fallback: 'Using the last copy', reason: 'r', impact: 'A sync was late.' });

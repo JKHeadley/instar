@@ -146,6 +146,24 @@ export interface DecisionRowInput {
   mintedBy?: string;
   /** Stable identity for an automated message template; body never stored here. */
   templateFingerprint?: string;
+  /**
+   * A shadow row's link to the router-minted correlation id of the producer
+   * call it shadows (CMT-1677). Top-level, not inside context, because the
+   * served-context credential scrub masks id-shaped values. Only a well-formed
+   * seam id (`d-`/`b-` prefix) is stored; anything else is dropped. Does NOT
+   * make the row a seam row.
+   */
+  producerCorrelationId?: string;
+}
+
+/**
+ * A well-formed router/breaker correlation id, or undefined. Accepts every id
+ * mintRouterCorrelationId / mintBreakerCorrelationId can produce: the machine
+ * segment is a pool machine id prefix such as `m_03b30f`, so `_` is allowed
+ * (CMT-1677: the old pattern rejected every real multi-machine id).
+ */
+export function validProducerCorrelationId(v: unknown): string | undefined {
+  return typeof v === 'string' && /^[db]-[A-Za-z0-9_-]{1,100}$/.test(v) ? v : undefined;
 }
 
 export interface ProvenanceRow {
@@ -180,6 +198,8 @@ export interface ProvenanceRow {
   contentClass?: string;
   mintedBy?: string;
   templateFingerprint?: string;
+  /** Decision rows only: the producer call a shadow row joins (CMT-1677). */
+  producerCorrelationId?: string;
   /** Outcome rows only (§5.4): FD3 grade, validated at write (invalid → omitted + counted). */
   grade?: string;
   /** Outcome rows only: the grading component (the ruleId's registered owner). */
@@ -357,6 +377,7 @@ export class JudgmentProvenanceLog {
       tokensOut: input.tokensOut,
       latencyMs: input.latencyMs,
       templateFingerprint: input.templateFingerprint,
+      ...(validProducerCorrelationId(input.producerCorrelationId) ? { producerCorrelationId: input.producerCorrelationId } : {}),
       ...(seamRow
         ? {
             correlationId: input.correlationId,
@@ -370,6 +391,17 @@ export class JudgmentProvenanceLog {
     this.enqueue(row);
     this.counters.decisionsWritten++;
     return id;
+  }
+
+  /** A Jev settlement must wait for its audit row to reach disk before it can
+   * skip the incumbent. Other callers may keep using buffered recordDecision().
+   * A concurrent append failure conservatively returns null too. */
+  async recordDecisionFlushed(input: DecisionRowInput): Promise<string | null> {
+    const errorsBefore = this.counters.writeErrors;
+    const id = this.recordDecision(input);
+    if (!id) return null;
+    await this.flush();
+    return this.counters.writeErrors === errorsBefore ? id : null;
   }
 
   /**

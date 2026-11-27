@@ -124,9 +124,9 @@ export interface OverloadShedDeps {
 }
 
 /** The working-set kick for a landed move: the same one POST /pool/transfer uses, owned by the server. */
-let moveAftercare: ((target: string, topic: number) => void) | null = null;
-export function setMoveAftercare(fn: ((target: string, topic: number) => void) | null): void { moveAftercare = fn; }
-export function getMoveAftercare(): ((target: string, topic: number) => void) | null { return moveAftercare; }
+let moveAftercare: ((target: string, topic: number | string) => void) | null = null;
+export function setMoveAftercare(fn: ((target: string, topic: number | string) => void) | null): void { moveAftercare = fn; }
+export function getMoveAftercare(): ((target: string, topic: number | string) => void) | null { return moveAftercare; }
 
 export interface OverloadMove {
   sessionKey: string;

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "inbound-control-bytes",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T04:06:23.425Z",
+  "artifactPath": "upgrades/side-effects/inbound-control-bytes.md",
+  "artifactSha256": "12dc42142c19ce8f1f9752bf2060114031a16d20be8ff26bd0d146b76def6e5a",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T04-05-16-359Z-inbound-control-bytes.json",
+    "docs/specs/inbound-control-bytes.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/terminalControlBytes.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/session-manager-pending-inject-wiring.test.ts",
+    "tests/unit/terminal-control-bytes.test.ts",
+    "upgrades/next/inbound-control-bytes.md",
+    "upgrades/side-effects/inbound-control-bytes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace: input normalisation at the typing boundary; refuses nothing, grants nothing; revert-only rollback",
+  "eli16Path": "docs/specs/inbound-control-bytes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/inbound-control-bytes.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

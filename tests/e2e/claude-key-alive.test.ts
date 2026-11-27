@@ -34,13 +34,14 @@ describe('claude key wiring', () => {
 
   it('recovery is wired to answer held messages and to reach a person (2026-11-04 drill)', () => {
     const source = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
-    const start = source.indexOf('new ClaudeKeyHealth({');
+    const start = source.indexOf('const noticeToOperator = (text: string) => {');
     const block = source.slice(start, source.indexOf('setActiveClaudeKeyHealth(claudeKeyHealth)', start));
+    expect(block).toContain('notifyOperator: noticeToOperator,');
     // Each restarted conversation gets its held messages and reply command, and is checked for a real answer.
     expect(block).toMatch(/recoveryPrompt: async \(sessionName\) => \{[\s\S]*const held = heldMessages\(convo\.lines, keyNoticeTexts\);\s*return \{ prompt: buildKeyRecoveryPrompt\(convo\.channel, held\), held: held\.length \};/);
     expect(block).toMatch(/answeredSince: async \(sessionName, sinceMs\) => \{[\s\S]*answeredSince\(convo\.lines, sinceMs/);
     // The operator notice counts only when a person can read it.
-    expect(block).toMatch(/notifyOperator: \(text\) => \{[\s\S]*deliverOperatorNotice\(/);
+    expect(block).toMatch(/const noticeToOperator = \(text: string\) => \{[\s\S]*deliverOperatorNotice\(/);
     expect(block).toMatch(/readersOf: async \(channelId\) => \{[\s\S]*slack\.authorizedMembersOf\(channelId\)/);
     expect(block).toContain('people: () => keyOperators(slack)');
     // Server posts (standby notes) are told apart from session replies by the origin ledger.

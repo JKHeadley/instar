@@ -13,15 +13,17 @@
  * forces a compile error if a case is missed.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { CODEX_TOOL_TIMEOUT_SEC } from './threadlineMcpSpawn.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import type { LaunchFeature, LaunchDrop } from './types.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
 import { GROK_ONESHOT_DENIED_TOOLS } from '../providers/adapters/grok-build/transport/grokSpawn.js';
 import { resolveGrokBinaryPath } from '../providers/adapters/grok-build/config.js';
-import { EFFORT_LEVELS, type EffortLevel, type ThinkingMode } from './topicProfileValidation.js';
+import { EFFORT_LEVELS, THINKING_MODES, type EffortLevel, type ThinkingMode } from './topicProfileValidation.js';
 
 /**
  * Cross-framework generic model tiers. Higher-level code (UpgradeNotify,
@@ -74,9 +76,12 @@ export function resolveModelForFramework(
     // full rationale + the live-probe record).
     // 2026-09-23: light → gpt-6-luna, medium → gpt-6-sol (live-probed on codex
     // CLI 0.156.1; older CLIs refuse both — see models.ts header).
+    // 2026-11-17: medium → gpt-6.2-sol, heavy → gpt-6.2-astra (CLI >= 0.166.0;
+    // SessionManager.resolveCodexLaunchModel swaps in gpt-6-sol / gpt-6-astra on
+    // an older CLI). No gpt-6.2-luna exists, so light stays gpt-6-luna.
     if (key === 'fast' || key === 'haiku') return 'gpt-6-luna';      // light tier
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-6-sol';  // medium
-    if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-6.2-sol';  // medium
+    if (key === 'capable' || key === 'opus') return 'gpt-6.2-astra';  // heavy — frontier
     return modelOrTier;
   }
   if (framework === 'gemini-cli') {
@@ -139,7 +144,7 @@ export function resolveInteractiveLaunchModel(
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
     // No configured model → the `balanced` tier, looked up rather than
     // hardcoded so the default can never drift from the tier map.
-    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6-sol';
+    return resolveModelForFramework(framework, configuredModel ?? 'balanced') ?? 'gpt-6.2-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -284,13 +289,17 @@ export interface InteractiveLaunchOptions {
    */
   grokInteractiveOptIn?: boolean;
   /**
-   * Subscription & Auth Standard P1.3 (claude-code only): the per-account config
-   * home for this session. When set, the builder injects
-   * `CLAUDE_CONFIG_DIR=<configHome>` into envOverrides so the launched Claude
-   * session authenticates under THAT account's login instead of inheriting the
-   * parent agent's. This is the swap mechanism — selecting/swapping an account =
-   * launching (or `--resume`-ing) with that account's configHome. No effect on
-   * non-claude frameworks. NEVER a token — just the login location.
+   * Subscription & Auth Standard P1.3: the per-account config home for this
+   * session. When set, the builder injects the framework's home variable —
+   * `CLAUDE_CONFIG_DIR` for claude-code, `CODEX_HOME` for codex-cli — so the
+   * launched session authenticates under THAT account's login instead of
+   * inheriting the parent agent's. This is the swap mechanism — selecting/swapping
+   * an account = launching (or resuming) with that account's home. No effect on
+   * other frameworks. NEVER a token — just the login location.
+   *
+   * codex-cli was missing until 2026-11-18: a swap or pin onto a Codex account
+   * tagged the session with that account while Codex ran on the server's default
+   * login, so the wrong account's quota was spent under the right account's name.
    */
   configHome?: string;
   /**
@@ -338,7 +347,85 @@ export interface InteractiveLaunchSpec {
   envOverrides: Record<string, string>;
 }
 
-type Builder = (options: InteractiveLaunchOptions) => InteractiveLaunchSpec;
+/** Launch intent record entries (job-launch-intent-record §2, D5); the shapes live in core/types.ts. */
+export type { LaunchFeature, LaunchDrop } from './types.js';
+/** What a launch builder applied and dropped (always present on the public builders' result). */
+export interface LaunchIntentOutcome {
+  applied: LaunchFeature[];
+  dropped: LaunchDrop[];
+}
+
+/**
+ * Clamp an untrusted `thinkingMode` to the closed enum (spec §2, mirroring
+ * `validateEffortLevel`). Absent → `{}`; a member → `{ mode }`; anything else → `{ invalid: true }`.
+ * `null` counts as absent on purpose: topic profiles store a cleared setting as `thinkingMode: null`
+ * and share this clamp, so treating it as invalid would record a false `invalid` drop on every
+ * interactive launch of a topic with no pin. Job definitions never carry `null` (loaders drop it).
+ */
+export function clampThinkingMode(value: unknown): { mode?: ThinkingMode; invalid?: true } {
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'string' && (THINKING_MODES as readonly string[]).includes(value)) {
+    return { mode: value as ThinkingMode };
+  }
+  return { invalid: true };
+}
+
+/** One engine's translation of a valid thinking mode: the flags/env to add and the record. */
+interface ThinkingTranslation extends LaunchIntentOutcome {
+  argv: string[];
+  env: Record<string, string>;
+}
+type ThinkingTranslator = (mode: ThinkingMode, directEffortPin: EffortLevel | null) => ThinkingTranslation;
+
+/**
+ * Claude Code: `--effort <level>` (argv), or for `off` `MAX_THINKING_TOKENS=0` (env, D1).
+ * A valid direct `--effort` pin wins and the mode is recorded as overridden (D3), including the
+ * `off` env channel — the interactive builder's established precedence.
+ */
+const claudeThinkingTranslator: ThinkingTranslator = (mode, directEffortPin): ThinkingTranslation => {
+  if (directEffortPin) {
+    return { argv: [], env: {}, applied: [], dropped: [{ feature: 'thinkingMode', requestedValue: mode, reason: 'overridden-by-effort-pin' }] };
+  }
+  const level = claudeEffortForThinkingMode(mode);
+  if (level) {
+    return { argv: ['--effort', level], env: {}, applied: [{ feature: 'thinkingMode', requestedValue: mode, value: level, channel: 'argv' }], dropped: [] };
+  }
+  return {
+    argv: [],
+    env: { MAX_THINKING_TOKENS: '0' },
+    applied: [{ feature: 'thinkingMode', requestedValue: mode, value: 'MAX_THINKING_TOKENS=0', channel: 'env' }],
+    dropped: [],
+  };
+};
+
+/** Codex: `-c model_reasoning_effort="<level>"`, with the existing `off`→low / `max`→xhigh remap (D2).
+ *  The direct effort pin is a Claude flag and has no effect here. */
+const codexThinkingTranslator: ThinkingTranslator = (mode): ThinkingTranslation => {
+  const level = codexReasoningEffortForThinkingMode(mode) ?? 'low';
+  return {
+    argv: ['-c', `model_reasoning_effort=${JSON.stringify(level)}`],
+    env: {},
+    applied: [{ feature: 'thinkingMode', requestedValue: mode, value: level, channel: 'argv' }],
+    dropped: [],
+  };
+};
+
+/**
+ * Finish a builder's result with the launch record. A builder that handled the mode returns its
+ * own `applied`/`dropped`; one that did not (an engine with no native setting) gets
+ * `not-supported`. An out-of-enum value was never passed to the builder and is recorded `invalid`.
+ */
+function withLaunchIntent<S extends { argv: string[]; envOverrides: Record<string, string> }>(
+  spec: S & Partial<LaunchIntentOutcome>,
+  clamp: { mode?: ThinkingMode; invalid?: true },
+): S & LaunchIntentOutcome {
+  if (clamp.invalid) return { ...spec, applied: [], dropped: [{ feature: 'thinkingMode', reason: 'invalid' }] };
+  if (!clamp.mode) return { ...spec, applied: [], dropped: [] };
+  if (spec.applied && spec.dropped) return spec as S & LaunchIntentOutcome;
+  return { ...spec, applied: [], dropped: [{ feature: 'thinkingMode', requestedValue: clamp.mode, reason: 'not-supported' }] };
+}
+
+type Builder = (options: InteractiveLaunchOptions) => InteractiveLaunchSpec & Partial<LaunchIntentOutcome>;
 
 const claudeCodeBuilder: Builder = (options) => {
   const argv: string[] = [options.binaryPath, '--dangerously-skip-permissions'];
@@ -352,7 +439,9 @@ const claudeCodeBuilder: Builder = (options) => {
   if (directEffort) {
     argv.push('--effort', directEffort);
   }
-  if (options.resumeSessionId) {
+  if (options.resumeSessionId && !isSafeSessionRef(options.resumeSessionId)) {
+    console.warn('[session-launch] ignored a resume id that is not a plain session id');
+  } else if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
   } else if (options.sessionId) {
     // Warm-session A2A: pin a deterministic conversation id (claude-only) so an
@@ -384,11 +473,11 @@ const claudeCodeBuilder: Builder = (options) => {
   // low/medium/high/max; `off` has no flag level, so it rides the
   // MAX_THINKING_TOKENS=0 env channel (thinking disabled). Skipped when a
   // direct effort pin already emitted `--effort` (the pin wins; no duplicate).
-  const claudeEffort = directEffort ? null : claudeEffortForThinkingMode(options.thinkingMode);
-  if (claudeEffort) {
-    argv.push('--effort', claudeEffort);
-  } else if (!directEffort && options.thinkingMode === 'off') {
-    envOverrides.MAX_THINKING_TOKENS = '0';
+  // The mode reaching here was already clamped to the enum by buildInteractiveLaunch.
+  const thinking = options.thinkingMode ? claudeThinkingTranslator(options.thinkingMode, directEffort) : null;
+  if (thinking) {
+    argv.push(...thinking.argv);
+    Object.assign(envOverrides, thinking.env);
   }
   // Subscription & Auth Standard P1.3: when a per-account config home is given,
   // launch this Claude session under THAT account's login (the swap mechanism).
@@ -403,7 +492,7 @@ const claudeCodeBuilder: Builder = (options) => {
   if (Array.isArray(options.mcpFlags) && options.mcpFlags.length > 0) {
     argv.push(...options.mcpFlags);
   }
-  return { argv, envOverrides };
+  return thinking ? { argv, envOverrides, applied: thinking.applied, dropped: thinking.dropped } : { argv, envOverrides };
 };
 
 const codexCliBuilder: Builder = (options) => {
@@ -459,7 +548,7 @@ const codexCliBuilder: Builder = (options) => {
   // the stale resume id (per existing PR #248 framework-swap pattern).
   // We don't pre-validate filesystem presence here to avoid coupling the
   // launch helper to Codex's on-disk session layout.
-  const resumePrefix: string[] = options.resumeSessionId
+  const resumePrefix: string[] = options.resumeSessionId && isSafeSessionRef(options.resumeSessionId)
     ? ['resume', options.resumeSessionId]
     : [];
 
@@ -488,9 +577,9 @@ const codexCliBuilder: Builder = (options) => {
   // Topic Profile §6 — thinking mode → codex reasoning effort. `max` → xhigh;
   // `off` → low (codex reasoning models have no off level; the profile write
   // path disclosed the remap once, §4).
-  const codexEffort = codexReasoningEffortForThinkingMode(options.thinkingMode);
-  if (codexEffort) {
-    argv.push('-c', `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
+  const thinking = options.thinkingMode ? codexThinkingTranslator(options.thinkingMode, null) : null;
+  if (thinking) {
+    argv.push(...thinking.argv);
   }
   return {
     argv,
@@ -499,7 +588,11 @@ const codexCliBuilder: Builder = (options) => {
       // defense-in-depth so a Codex session can't be mis-detected as
       // a Claude one by downstream tooling that grep's env vars.
       CLAUDECODE: '',
+      // The account the session is tagged with is the account it runs on: the
+      // login location only, never a token. Unset = the inherited default login.
+      ...(options.configHome ? { CODEX_HOME: options.configHome } : {}),
     },
+    ...(thinking ? { applied: thinking.applied, dropped: thinking.dropped } : {}),
   };
 };
 
@@ -520,7 +613,7 @@ const geminiCliBuilder: Builder = (options) => {
   // the analog of `codex exec --sandbox read-only`), never here.
   const resolvedModel = resolveInteractiveLaunchModel('gemini-cli', options.defaultModel)!;
   const argv: string[] = [options.binaryPath, '-m', resolvedModel, '--yolo'];
-  if (options.resumeSessionId) {
+  if (options.resumeSessionId && isSafeSessionRef(options.resumeSessionId)) {
     // Gemini resumes by `latest` or a numeric index. The tracked resume id is
     // passed through verbatim (callers store whatever --list-sessions surfaced).
     argv.push('--resume', options.resumeSessionId);
@@ -662,12 +755,14 @@ const BUILDERS: Record<IntelligenceFramework, Builder> = {
 export function buildInteractiveLaunch(
   framework: IntelligenceFramework,
   options: InteractiveLaunchOptions,
-): InteractiveLaunchSpec {
+): InteractiveLaunchSpec & LaunchIntentOutcome {
   const builder = BUILDERS[framework];
   if (!builder) {
     throw new Error(`No interactive launch builder registered for framework "${framework}"`);
   }
-  return builder(options);
+  // Clamp first (spec §2): an out-of-enum value never reaches a builder or the record.
+  const clamp = clampThinkingMode(options.thinkingMode);
+  return withLaunchIntent(builder({ ...options, thinkingMode: clamp.mode }), clamp);
 }
 
 /**
@@ -989,6 +1084,14 @@ export interface HeadlessLaunchOptions {
    * ultracode as a `--effort` value; the supported programmatic surface is the
    * `ultracode` prompt keyword. Strict no-op on non-Claude frameworks. */
   ultracode?: boolean;
+  /**
+   * Per-job thinking mode (docs/specs/job-launch-intent-record.md §2). Clamped to the enum by
+   * `buildHeadlessLaunch` (anything else is dropped as `invalid`), then mapped exactly as the
+   * interactive builder maps it: claude-code `--effort <level>` or, for `off`,
+   * MAX_THINKING_TOKENS=0; codex-cli `-c model_reasoning_effort=...` before `-m`; engines with
+   * no reasoning knob record `not-supported`. A direct `effort` pin wins (D3).
+   */
+  thinkingMode?: ThinkingMode;
 }
 
 export interface HeadlessLaunchSpec {
@@ -1002,7 +1105,7 @@ export interface HeadlessLaunchSpec {
   envOverrides: Record<string, string>;
 }
 
-type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec;
+type HeadlessBuilder = (options: HeadlessLaunchOptions) => HeadlessLaunchSpec & Partial<LaunchIntentOutcome>;
 
 export function withClaudeUltracodePrompt(prompt: string, enabled?: boolean): string {
   return enabled ? `ultracode\n\n${prompt}` : prompt;
@@ -1021,14 +1124,17 @@ const claudeCodeHeadlessBuilder: HeadlessBuilder = (options) => {
   if (headlessEffort) {
     argv.push('--effort', headlessEffort);
   }
+  // Per-job thinking mode, already clamped by buildHeadlessLaunch; same translation and pin
+  // precedence as the interactive builder, placed with the pin before the `-p` positional.
+  const thinking = options.thinkingMode ? claudeThinkingTranslator(options.thinkingMode, headlessEffort) : null;
+  if (thinking) argv.push(...thinking.argv);
   argv.push('-p', withClaudeUltracodePrompt(options.prompt, options.ultracode));
-  return {
-    argv,
-    envOverrides: {
-      // Same nested-detection prevention as interactive launches.
-      CLAUDECODE: '',
-    },
+  const envOverrides: Record<string, string> = {
+    // Same nested-detection prevention as interactive launches.
+    CLAUDECODE: '',
+    ...(thinking?.env ?? {}),
   };
+  return thinking ? { argv, envOverrides, applied: thinking.applied, dropped: thinking.dropped } : { argv, envOverrides };
 };
 
 const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
@@ -1045,7 +1151,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6-sol');
+    : (resolveModelForFramework('codex-cli', options.model ?? 'balanced') ?? 'gpt-6.2-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',
@@ -1090,8 +1196,13 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   }
   // -c overrides must precede the positional prompt in `codex exec`.
   argv.push(...codexThreadlineWiringFlags(options));
+  // Per-job thinking mode (spec §2): the `-c model_reasoning_effort` pair, like every -c
+  // override, goes before `-m <model> <prompt>` — with or without the --oss local provider.
+  const thinking = options.thinkingMode ? codexThinkingTranslator(options.thinkingMode, null) : null;
+  if (thinking) argv.push(...thinking.argv);
   argv.push('-m', model, options.prompt);
   return {
+    ...(thinking ? { applied: thinking.applied, dropped: thinking.dropped } : {}),
     argv,
     envOverrides: {
       // Spec 12 Rule 1a is enforced inside Codex CLI's process tree via
@@ -1292,12 +1403,33 @@ const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
 export function buildHeadlessLaunch(
   framework: IntelligenceFramework,
   options: HeadlessLaunchOptions,
-): HeadlessLaunchSpec {
+): HeadlessLaunchSpec & LaunchIntentOutcome {
   const builder = HEADLESS_BUILDERS[framework];
   if (!builder) {
     throw new Error(`No headless launch builder registered for framework "${framework}"`);
   }
-  return builder(options);
+  // Clamp first (spec §2): an out-of-enum value never reaches a builder or the record.
+  const clamp = clampThinkingMode(options.thinkingMode);
+  return withLaunchIntent(builder({ ...options, thinkingMode: clamp.mode }), clamp);
+}
+
+/** Per-engine thinking-mode translators, keyed by the engine's headless builder (so this table
+ *  names no framework id: the builders are already keyed by engine). */
+const THINKING_TRANSLATORS = new Map<HeadlessBuilder, ThinkingTranslator>([
+  [claudeCodeHeadlessBuilder, claudeThinkingTranslator],
+  [codexCliHeadlessBuilder, codexThinkingTranslator],
+]);
+
+/**
+ * The `applied` entry a launch on `framework` would record for `mode` with no effort pin, or
+ * null when the engine has no native setting (or the framework is unknown). Pure: it runs only
+ * the translation, never a builder. Used by the dev-rung graduation counter to check that a
+ * recorded native value is the launched engine's real mapping.
+ */
+export function expectedThinkingModeApplied(framework: string, mode: ThinkingMode): LaunchFeature | null {
+  const builder = (HEADLESS_BUILDERS as Record<string, HeadlessBuilder | undefined>)[framework];
+  const translate = builder ? THINKING_TRANSLATORS.get(builder) : undefined;
+  return translate ? translate(mode, null).applied[0] ?? null : null;
 }
 
 /**

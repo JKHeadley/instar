@@ -144,19 +144,17 @@ describe('Autonomy API Routes (integration)', () => {
   // ── POST /autonomy/profile ────────────────────────────────────
 
   describe('POST /autonomy/profile', () => {
-    it('sets profile and returns resolved state', async () => {
+    it('refuses a wider profile from the token (trust-journey decision 4)', async () => {
       const res = await fetch(`${baseUrl}/autonomy/profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile: 'autonomous', reason: 'Integration test' }),
       });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(403);
       const body = await res.json();
-      expect(body.profile).toBe('autonomous');
-      expect(body.resolved.profile).toBe('autonomous');
-      expect(body.resolved.evolutionApprovalMode).toBe('autonomous');
-      expect(body.summary).toContain('autonomous');
+      expect(body.error).toBe('operator-approval-required');
+      expect(autonomyManager.getProfile()).toBe('collaborative');
     });
 
     it('rejects invalid profile', async () => {

@@ -6,6 +6,7 @@
  * rate limiting, size caps, and automatic cleanup.
  */
 
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -142,7 +143,7 @@ export class PasteManager {
     if (dirSize + contentBytes > this.maxDirSizeBytes) {
       throw new PasteError(
         'storage_full',
-        `Paste storage directory exceeds ${Math.round(this.maxDirSizeBytes / 1024 / 1024)}MB limit`,
+        `Paste storage on ${storageMachineName(this.stateDir)} exceeds ${Math.round(this.maxDirSizeBytes / 1024 / 1024)}MB limit`,
         507,
       );
     }

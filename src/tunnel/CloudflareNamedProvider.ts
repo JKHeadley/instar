@@ -23,7 +23,8 @@
  */
 
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { spawn, execFileSync } from 'node:child_process';
 import { bin, install, Tunnel } from 'cloudflared';
 import type {
   TunnelProvider,
@@ -41,6 +42,39 @@ export interface CloudflareNamedProviderOptions {
   hostname?: string;
   /** Start timeout in milliseconds (default: 30_000 for token; 15_000 for config-file). */
   startTimeoutMs?: number;
+  /**
+   * Agent state directory. When set, the token is handed to cloudflared through a 0600 file
+   * (`--token-file`) instead of `--token <value>` on the command line, where every process on the
+   * machine could read it (`ps`).
+   */
+  stateDir?: string;
+}
+
+/** Whether this cloudflared binary accepts `--token-file` (added in 2024; checked once per binary). */
+const tokenFileSupport = new Map<string, boolean>();
+export function cloudflaredSupportsTokenFile(binary: string): boolean {
+  const known = tokenFileSupport.get(binary);
+  if (known !== undefined) return known;
+  let ok = false;
+  try {
+    ok = execFileSync(binary, ['tunnel', 'run', '--help'], { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).includes('--token-file');
+  } catch { ok = false; } // @silent-fallback-ok — an unreadable help falls back to the old --token path, which still works
+  tokenFileSupport.set(binary, ok);
+  return ok;
+}
+
+/** Write the token where only this user can read it; returns the path, or null when that fails. */
+export function writeTunnelTokenFile(stateDir: string, token: string): string | null {
+  try {
+    const dir = path.join(stateDir, 'secrets'); // git-ignored, like every agent secret
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'cloudflared-token');
+    fs.writeFileSync(file, token, { mode: 0o600 });
+    fs.chmodSync(file, 0o600); // an existing file keeps its old mode on write
+    return file;
+  } catch {
+    return null; // @silent-fallback-ok — falls back to the old --token path rather than leave the tunnel down
+  }
 }
 
 export class CloudflareNamedProvider implements TunnelProvider {
@@ -51,12 +85,14 @@ export class CloudflareNamedProvider implements TunnelProvider {
   private readonly configFile?: string;
   private readonly hostname?: string;
   private readonly startTimeoutMs?: number;
+  private readonly stateDir?: string;
 
   constructor(opts: CloudflareNamedProviderOptions) {
     this.token = opts.token;
     this.configFile = opts.configFile;
     this.hostname = opts.hostname;
     this.startTimeoutMs = opts.startTimeoutMs;
+    this.stateDir = opts.stateDir;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -89,7 +125,9 @@ export class CloudflareNamedProvider implements TunnelProvider {
     return new Promise<TunnelProviderHandle>((resolve, reject) => {
       let tunnel: Tunnel;
       try {
-        tunnel = Tunnel.withToken(this.token!);
+        // Keep the token off the command line (visible to every process via ps) when we can.
+        const tokenFile = this.stateDir && cloudflaredSupportsTokenFile(bin) ? writeTunnelTokenFile(this.stateDir, this.token!) : null;
+        tunnel = tokenFile ? new Tunnel(['tunnel', 'run', '--token-file', tokenFile]) : Tunnel.withToken(this.token!);
       } catch (err) {
         reject(new Error(`process-exit: failed to spawn cloudflared (token): ${(err as Error).message}`));
         return;

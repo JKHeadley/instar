@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-17T09:48:15.290Z",
+  "slug": "project-apps-custom",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 115,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/workBoardViews.ts",
+      "src/server/ProjectAppCustomSource.ts"
+    ],
+    "addedLines": 105,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The card closer writes at most once per phone approval key, only on the lease holder, only after the approval is folded; a refusal is logged, never retried; coalesced to one run per commit."
+  },
+  "verdict": "pass"
+}

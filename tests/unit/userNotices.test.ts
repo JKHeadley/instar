@@ -15,6 +15,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   USER_NOTICE_CATALOG,
   movedMachinesMidStepNotice,
+  movedMachinesResumingNotice,
   plainMachineName,
   SESSION_RESTARTING_NOTICE,
   SESSION_BACK_NOTICE,
@@ -81,6 +82,15 @@ describe('USER_NOTICE_CATALOG — every fixed server notice is plain', () => {
     expect(t.match(/incomplete|partial/g)).toHaveLength(1);
   });
 
+  it('the resuming notice says the step was cut off and is being picked back up — no "ask me" chore', () => {
+    const t = movedMachinesResumingNotice('Mac Studio');
+    expect(t).toContain('the Mac Studio');
+    expect(t).toMatch(/before I'd finished my last step/);
+    expect(t).toMatch(/picking that step back up/);
+    expect(t).not.toMatch(/ask me/);
+    expect(movedMachinesResumingNotice('m_03b30f5b32c6ef3eb0afd3ca7054e252')).not.toContain('m_03b3');
+  });
+
   it('never shows a machine id; an unresolved name is said plainly (Rule 7)', () => {
     expect(plainMachineName('m_03b30f5b32c6ef3eb0afd3ca7054e252')).toBe('another machine');
     expect(plainMachineName('3f9a2c71e0b4')).toBe('another machine');
@@ -95,6 +105,7 @@ describe('reworded lifecycle notices are still recognised as non-replies', () =>
   it.each([
     SESSION_RESTARTING_NOTICE, SESSION_BACK_NOTICE,
     movedMachinesMidStepNotice('Mac Studio'), movedMachinesMidStepNotice(null),
+    movedMachinesResumingNotice('Mac Studio'), movedMachinesResumingNotice(null),
     // legacy wordings still in message history
     'Session respawned.', '🔄 Session restarting — message queued.', BEFORE.movedMachines,
   ])('%s', (text) => {

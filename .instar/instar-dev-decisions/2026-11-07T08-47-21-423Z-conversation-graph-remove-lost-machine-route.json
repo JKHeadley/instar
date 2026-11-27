@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-07T08:47:21.423Z",
+  "slug": "conversation-graph-remove-lost-machine-route",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphNativeMemberLossStore.ts",
+      "src/server/GraphOwnerMemberLossPlanning.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

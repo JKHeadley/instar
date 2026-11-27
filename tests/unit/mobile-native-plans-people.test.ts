@@ -54,6 +54,7 @@ describe('plans', () => {
   it('needs-you words: an unacknowledged advance, a first launch, needsUser with and without a reason; a finished plan never needs you', () => {
     expect(needsWords({ kind: 'project', status: 'active', unacknowledgedAdvanceCount: 1, firstLaunchAckAt: 'x', rounds: [{ status: 'complete' }, { status: 'pending' }] })).toBe('Waiting for your OK on round 2');
     expect(needsWords({ kind: 'project', status: 'active', rounds: [{ status: 'pending' }] })).toBe('Waiting for your OK on round 1');
+    expect(needsWords({ kind: 'project', status: 'active', rounds: [{ status: 'pending', name: 'Tier 1 - stop silent loss of local fixes' }] })).toBe('Waiting for your OK on round 1: Tier 1 - stop silent loss of local fixes');
     expect(needsWords({ kind: 'project', status: 'active', firstLaunchAckAt: 'x', rounds: [{ status: 'pending' }] })).toBeNull();
     expect(needsWords({ status: 'active', needsUser: true, needsUserReason: 'pick one' })).toBe('Waiting on you: pick one');
     expect(needsWords({ status: 'active', needsUser: true })).toBe('Waiting on you');
@@ -228,6 +229,13 @@ describe('agents', () => {
     expect(unknown.delivery).toEqual({ state: 'unavailable', reason: 'Couldn’t read delivery tracking just now.' });
     const none = summarizeAgents({ state: 'off' }, { state: 'off' }, { channels: [] }, cov) as any;
     expect(none.headline).toBe('Can’t tell which agents I work with.');
+  });
+
+  it('names the public recovery channel without exposing its operational evidence or credentials',()=>{
+    const result=summarizeChannels({channels:[{id:'server-down-recovery',audience:'peer',state:'unknown',direction:'none',detail:'private host 10.42.7.3',purpose:'owner-device-secret',cost:'relay-credential-secret'}]}) as any;
+    expect(result.channels).toEqual([{key:'server-down-recovery',name:'Machine recovery',audience:'agents',state:'unknown',stateWords:'Can’t tell',directionWords:'carries nothing',tone:'unknown'}]);
+    expect(result.channelSummary.working).toBe(0);
+    for(const secret of ['10.42.7.3','owner-device-secret','relay-credential-secret'])expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it('channels: fixed names and verdict words, never the registry evidence text; unknown is never working', () => {

@@ -8,6 +8,8 @@ describe('anything that fails links to the problem: machines that did not answer
     expect(machineIssue('Laptop did not answer; its jobs are not shown.')).toBe(true);
     expect(machineIssue('Mac Mini: not answering (last seen 3 min ago)')).toBe(true);
     expect(machineIssue("Couldn't read other machines’ jobs: timeout. Showing this machine only.")).toBe(true);
+    // CMT-1541 wording: says how long and whether anything is fixing it.
+    expect(machineIssue("Couldn't reach Laptop for 12 min; reconnecting by itself. Its jobs are not shown.")).toBe(true);
     expect(machineIssue('Nothing is running on this machine.')).toBe(false);
   });
   it('such a note carries a link to the Machines page; any other note stays plain', () => {

@@ -356,6 +356,34 @@ describe('restoring', () => {
   });
 });
 
+describe('two people held at once (B2Lead condition 3)', () => {
+  it('each conversation gets its own prompt, one failing does not stop the other, and only the silent one is asked to resend', async () => {
+    const answers: Record<string, boolean> = { dawn: true, echo: false };
+    const prompts: Array<[string, string]> = [];
+    const failOnce = new Set(['dawn']);
+    const t = rig({
+      recoveryPrompt: async (s) => ({ prompt: `held for ${s}`, held: 1 }),
+      refresh: async (s, p) => {
+        prompts.push([s, p]);
+        if (failOnce.delete(s)) return { ok: false, reason: 'busy' };
+        return { ok: true };
+      },
+      answeredSince: async (s) => answers[s],
+    });
+    const h = t.make();
+    t.r.stuck = ['dawn', 'echo'];
+    await kill(h, t.r);
+    t.r.disk = KEY_B;
+    t.r.probeResults.push('ok');
+    await h.tick();
+    await h.tick(); // dawn's retry, after its refusal
+    expect(prompts).toEqual([['dawn', 'held for dawn'], ['echo', 'held for echo'], ['dawn', 'held for dawn']]);
+    t.r.clock += ANSWER_WAIT_MS;
+    await h.tick();
+    expect(t.r.people.filter(([, m]) => m === PERSON_RESEND_TEXT).map(([s]) => s)).toEqual(['echo']);
+  });
+});
+
 describe('second-pass review defects', () => {
   it('tests a key already on disk instead of paging about the replaced one', async () => {
     const t = rig();

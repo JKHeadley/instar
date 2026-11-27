@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-04T04:01:08.428Z",
+  "slug": "jev-first-decision-path",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/JevFirstCommitment.ts",
+      "src/core/JevFirstDecision.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

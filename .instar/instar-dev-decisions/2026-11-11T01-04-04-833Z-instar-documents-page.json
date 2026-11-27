@@ -1,0 +1,48 @@
+{
+  "ts": "2026-11-11T01:04:04.833Z",
+  "slug": "instar-documents-page",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 22,
+  "loc": 1444,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/core/AppConversationService.ts",
+      "src/core/MobilePush.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/appConversationPool.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/feature-ladders.json",
+      "src/documents/docpageAuth.ts",
+      "src/documents/originCheck.ts",
+      "src/documents/render.ts",
+      "src/documents/rows.ts",
+      "src/documents/service.ts",
+      "src/documents/store.ts",
+      "src/documents/sync.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/documentRoutes.ts",
+      "src/server/middleware.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/templates/hooks/session-start.sh"
+    ],
+    "addedLines": 1397,
+    "deletedLines": 47
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

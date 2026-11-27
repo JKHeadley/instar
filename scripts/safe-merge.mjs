@@ -58,6 +58,7 @@ import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
 import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles, codeOwnerApprovedAtHead } from './local-verify-floor.mjs';
 import { isTracePath } from './lib/instar-dev-trace.mjs';
 import { pairingRefusal } from './check-constitution-pairing.mjs';
+import { resolveReviewerLogins, confirmedRequested } from './pr-reviewer-request.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -572,6 +573,43 @@ export async function selectSafeMergeFloor({ repo, view, agent, override, server
 }
 
 /**
+ * Does `--auto` take the Actions-floor path? Only when the caller asked for
+ * `--auto` AND the selected floor is `actions`. Under the `local` floor the
+ * Actions matrix is not the gate (ci.yml skips the heavy jobs on pull requests
+ * since 2026-11-21), so `--auto` falls through to the local path. Pure.
+ */
+export function autoTakesActionsFloor(args, sel) {
+  return Boolean(args?.auto) && sel?.floor !== 'local';
+}
+
+/**
+ * Read the agent's config and server once and select the floor for this merge.
+ * An unreadable config without the `actions` override is the local floor with
+ * an unmeasurable refusal (never a silent fall-back to Actions).
+ */
+export async function resolveFloorSelection({ repo, view }) {
+  const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
+  let agent = null;
+  let configError = null;
+  try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
+  const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
+  let token = agent?.inlineToken ?? null;
+  let tokenTried = false;
+  const serverGet = async (p) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerGet({ port: agent?.port ?? null, token })(p);
+  };
+  const serverPost = async (p, body) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerPost({ port: agent?.port ?? null, token })(p, body);
+  };
+  const sel = configError && !override
+    ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
+    : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+  return { sel, agent, serverGet, serverPost };
+}
+
+/**
  * The §3 predicate's inputs, gathered fresh (server index + GitHub), then
  * judged by `evaluateLocalPredicate`. Any read failure is unmeasurable.
  *
@@ -637,8 +675,18 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
 // gh invocation layer (sync is fine — this is a standalone CLI, not server code)
 // ---------------------------------------------------------------------------
 
+/**
+ * Output cap for one gh call. Node's default (1 MiB) is smaller than GitHub's answer for a
+ * large PR (the files list of a 150-file PR with patches; a long review history), and
+ * spawnSync then fails with ENOBUFS: the precheck could not read its own answer and the
+ * merge was refused `contexts-unverifiable` three times running (PR 2900 on 2026-11-08,
+ * PR 3053 on 2026-11-15, each green and authorized). 64 MiB is far above any real answer
+ * and still bounded.
+ */
+export const GH_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 function gh(args, { allowFail = false } = {}) {
-  const r = spawnSync('gh', args, { encoding: 'utf-8' });
+  const r = spawnSync('gh', args, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   if (r.error) throw new Error(`gh spawn failed: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.slice(0, 3).join(' ')} exited ${r.status}: ${(r.stderr || '').slice(0, 400)}`);
@@ -653,6 +701,38 @@ function ghJson(args) {
   } catch {
     throw new Error(`gh ${args.slice(0, 3).join(' ')} returned unparseable JSON`);
   }
+}
+
+const VERCEL_FORK_DESCRIPTION = 'Authorization required to deploy.';
+const VERCEL_FORK_TARGET_PREFIX = 'https://vercel.com/git/authorize?';
+
+/**
+ * Vercel refuses to build a preview for a fork's commit until a team member grants it, and reports that
+ * as a failed status. Nothing was built or tested, so it says nothing about the change, and every fork
+ * PR (all feedback executor PRs) would otherwise be refused forever. Drop that one row only when the PR
+ * is a verified fork and every Vercel status on the head is exactly that refusal; anything else about
+ * a Vercel row, such as a real build failure, still refuses.
+ */
+export function dropForkVercelAuthorizationRefusal(rows, { isCrossRepository, statuses }) {
+  if (isCrossRepository !== true) return rows;
+  const vercel = (statuses ?? []).filter((st) => st?.context === 'Vercel');
+  const onlyRefusal = vercel.length > 0 && vercel.every((st) => st.state === 'failure'
+    && st.description === VERCEL_FORK_DESCRIPTION
+    && typeof st.target_url === 'string' && st.target_url.startsWith(VERCEL_FORK_TARGET_PREFIX));
+  if (!onlyRefusal) return rows;
+  // A commit status has no workflow. A GitHub Actions job that happens to be named Vercel does, and stays red.
+  return rows.filter((row) => !(String(row?.name ?? '') === 'Vercel' && !row?.workflow && String(row?.bucket ?? '').toLowerCase() === 'fail'));
+}
+
+function fetchHeadStatusDetails(repo, headSha) {
+  return ghJson(['api', `repos/${repo}/commits/${headSha}/status?per_page=100`])?.statuses ?? [];
+}
+
+function checksWithoutForkVercelRefusal(rows, view, repo, headSha) {
+  if (view?.isCrossRepository !== true || !rows.some((row) => String(row?.name ?? '') === 'Vercel')) return rows;
+  const kept = dropForkVercelAuthorizationRefusal(rows, { isCrossRepository: true, statuses: fetchHeadStatusDetails(repo, headSha) });
+  if (kept.length !== rows.length) console.error('safe-merge: ignoring Vercel "Authorization required to deploy" on this fork PR; nothing was built.');
+  return kept;
 }
 
 function fetchChecksRows(pr, repo) {
@@ -809,8 +889,7 @@ function resolveReviewers(repo, args, view) {
       if (owner) logins = [owner];
     } catch { /* fall through — no default reviewer resolvable */ }
   }
-  const author = view?.author?.login;
-  return logins.filter(l => l && l !== author);
+  return resolveReviewerLogins({ explicit: logins, author: view?.author?.login });
 }
 
 /** Request review from `logins` on the PR. Idempotent at GitHub (re-requesting is a no-op). Never throws. */
@@ -820,13 +899,7 @@ function requestReviewers(repo, pr, logins) {
   for (const l of logins) args.push('-f', `reviewers[]=${l}`);
   const r = gh(args, { allowFail: true });
   if (r.status !== 0) return { requested: [], error: (r.stderr || '').slice(0, 200) };
-  try {
-    const body = JSON.parse(r.stdout);
-    const now = (body?.requested_reviewers ?? []).map(u => u?.login).filter(Boolean);
-    return { requested: logins.filter(l => now.includes(l)), error: null };
-  } catch {
-    return { requested: logins, error: null };
-  }
+  return { requested: confirmedRequested(r.stdout, logins), error: null };
 }
 
 /**
@@ -1092,7 +1165,7 @@ function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
   const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
   if (admin) mergeArgs.push('--admin');
   if (args.deleteBranch) mergeArgs.push('--delete-branch');
-  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
+  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   process.stdout.write(m.stdout ?? '');
   process.stderr.write(m.stderr ?? '');
 
@@ -1193,12 +1266,22 @@ async function main() {
     process.exit(1);
   }
 
+  // --- Floor selection (local-verify-merge-authority §3), read once ----------
+  // Under the `local` floor the §3 predicate (a Local Verify record in the
+  // server index) is the merge gate and the Actions matrix is not: since
+  // 2026-11-21 ci.yml skips the heavy jobs on pull requests, so a caller that
+  // asked for `--auto` (the feedback executor does) would otherwise wait on
+  // checks that never run. So `--auto` takes the Actions path only when the
+  // selected floor is `actions`; under `local` it falls through to the local
+  // path below, exactly like the synchronous call.
+  const floorSel = await resolveFloorSelection({ repo, view });
+
   // --- CI-floor merge path (--auto): defer until green, then merge now ------
   // GitHub enforces only the contexts configured in branch rules. On this repo
   // that can be just instar/local-verify, so --auto would merge while the CI
   // matrix is still queued. Check the full code-pinned Actions floor before
   // merging. A pending check is a deferral: the caller retries on its next tick.
-  if (args.auto) {
+  if (autoTakesActionsFloor(args, floorSel.sel)) {
     // Zero Actions checks is never green. A queued run may not yet appear,
     // so classify pending first and refuse only once the rows have settled.
     let headRuns;
@@ -1212,7 +1295,7 @@ async function main() {
     let checksState;
     let evaluation;
     try {
-      checksState = classifyChecks(fetchChecksRows(pr, repo));
+      checksState = classifyChecks(checksWithoutForkVercelRefusal(fetchChecksRows(pr, repo), view, repo, pinnedHead));
       if (!checksState.settled) {
         result({ result: 'deferred:checks-pending', pr: Number(pr), pending: checksState.pending.slice(0, 20), noChecks: checksState.noChecks });
         console.error('safe-merge: CI checks are still pending; merge deferred.');
@@ -1263,29 +1346,12 @@ async function main() {
     mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin: false });
   }
 
-  // --- Floor selection (local-verify-merge-authority §3) --------------------
-  // On the synchronous path without `--auto`, the
-  // `local` floor replaces the three Actions waits and the contexts floor with
-  // the §3 predicate; it never falls back to the Actions floor on its own.
+  // --- Local floor (local-verify-merge-authority §3) -------------------------
+  // The `local` floor replaces the three Actions waits and the contexts floor
+  // with the §3 predicate; it never falls back to the Actions floor on its own.
+  // Reached by the synchronous call, and by `--auto` when the floor is `local`.
   {
-    const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
-    let agent = null;
-    let configError = null;
-    try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
-    const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
-    let token = agent?.inlineToken ?? null;
-    let tokenTried = false;
-    const serverGet = async (p) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerGet({ port: agent?.port ?? null, token })(p);
-    };
-    const serverPost = async (p, body) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerPost({ port: agent?.port ?? null, token })(p, body);
-    };
-    const sel = configError && !override
-      ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
-      : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+    const { sel, agent, serverGet, serverPost } = floorSel;
     if (sel.floor === 'local') {
       const refuseLocal = (r) => {
         result({ result: r.result, pr: Number(pr), floor: 'local', problems: (r.problems ?? []).slice(0, 20) });
@@ -1319,7 +1385,7 @@ async function main() {
       console.error(`safe-merge: REFUSING — ${e.message}`);
       process.exit(1);
     }
-    checksState = classifyChecks(rows);
+    checksState = classifyChecks(checksWithoutForkVercelRefusal(rows, view, repo, pinnedHead));
     if (checksState.settled) break;
     if (Date.now() > deadline) {
       result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });

@@ -33,7 +33,12 @@ Active (real implementations):
 - **WarmSessionInbox** — primary primitive. A handle reserves one pool
   session; messages run on it in order; retire frees it.
 - **OneShotCompletion** — allocates a pool session, runs the prompt,
-  releases. Recycles sessions after `maxMessagesPerSession`.
+  then retires it and spawns a clean replacement: one prompt per REPL, so
+  no judgment ever sees another judgment's text (SEC-172). Every pool REPL
+  runs locked down: no built-in tools (`--tools ''`), no MCP servers, user
+  settings only (no project CLAUDE.md or hooks), slash commands off.
+  A WarmSessionInbox handle keeps its own session for its own messages by
+  design; it has the same lockdown.
 - **HardKill / InputInjection / Interrupt** — tmux operations on the
   underlying pool session.
 - **AuthCredentialInjection** — same validation rules as 3a, OAuth
@@ -69,7 +74,6 @@ import { createAnthropicInteractivePoolAdapter } from
 
 const adapter = createAnthropicInteractivePoolAdapter({
   poolSize: 2,
-  maxMessagesPerSession: 50,
   maxIdleMinutes: 30,
   claudePath: '/opt/homebrew/bin/claude',
 });

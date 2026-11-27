@@ -364,6 +364,80 @@ describe('InboundMessageGate — credential ingestion + pair-verify (§3.5/FD10)
     expect(gate.getMetrics().credentialBlocked).toBe(0);
   });
 
+  // The self-declared credential kind never grants a pass the sender's trust level would
+  // refuse: when it is not authorized as a credential (dryRun / not yet armed), the
+  // message is judged exactly as an ordinary message from that sender.
+  function gateWithLimits(vp: VerifiedPairingGateConfig, perHour: number): InboundMessageGate {
+    const lim = { probesPerHour: 5, messagesPerHour: perHour, messagesPerDay: 50 };
+    return new InboundMessageGate(tm, null, {
+      ownFingerprint: self.fp,
+      getVerifiedPairingConfig: () => vp,
+      rateLimits: { untrusted: { ...lim, messagesPerHour: 0, messagesPerDay: 0 }, verified: lim, trusted: lim, autonomous: lim },
+    });
+  }
+
+  it('dryRun + UNTRUSTED sender: a credential-typed message is refused like any message from them', async () => {
+    tm.setTrustLevelByFingerprint(peer.fp, 'untrusted', 'user-granted', 'test: owner lowered the peer');
+    const gate = gateWith(vpConfig({ dryRun: true }));
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'hello', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('insufficient_trust');
+    expect(gate.getMetrics().credentialDryRunWouldBlock).toBe(1); // the observe-only verdict is still recorded
+  });
+
+  it('not-yet-armed (dryRun off, enforcement off) + UNTRUSTED sender: refused as an ordinary message', async () => {
+    tm.setTrustLevelByFingerprint(peer.fp, 'untrusted', 'user-granted', 'test');
+    const gate = gateWith(vpConfig({ dryRun: false, credentialShareEnforced: false }));
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'hello', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('insufficient_trust');
+  });
+
+  it('dryRun + verified (non-mutual) sender: credential-typed messages count against the hourly budget', async () => {
+    const gate = gateWithLimits(vpConfig({ dryRun: true }), 1);
+    expect((await gate.evaluate(makeMessage(peer.fp, { content: 'a', type: 'message' }))).action).toBe('pass');
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'b', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('rate_limited_hourly');
+  });
+
+  it('mutual-verified sender: the credential pass stays inside the per-peer rate budget', async () => {
+    setUpPairing(tm, self, peer, { verify: true });
+    const gate = gateWithLimits(vpConfig(), 1);
+    expect((await gate.evaluate(makeMessage(peer.fp, { content: 'a', type: 'credential-share' }))).action).toBe('pass');
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'b', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('rate_limited_hourly');
+  });
+
+  it('dryRun fall-through: a credential-typed replay with a terminal ledger row is dropped as a duplicate', async () => {
+    const gate = gateWith(vpConfig({ dryRun: true }));
+    const dups: string[] = [];
+    gate.setLedgerLookup(() => 'terminal', (_fp, id) => { dups.push(id); });
+    const msg = makeMessage(peer.fp, { content: 'again', type: 'credential-share' });
+    const d = await gate.evaluate(msg);
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('duplicate_id');
+    expect(dups).toEqual([msg.messageId]);
+  });
+
+  it('dryRun wins over enforcement for the credential verdict, but the ordinary-message checks still apply', async () => {
+    tm.setTrustLevelByFingerprint(peer.fp, 'untrusted', 'user-granted', 'test');
+    const gate = gateWith(vpConfig({ dryRun: true, credentialShareEnforced: true }));
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'hello', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('insufficient_trust');
+  });
+
+  it('dryRun fall-through: a verified peer whose operations exclude ordinary messages is refused', async () => {
+    const profile = tm.getOrCreateProfileByFingerprint(peer.fp, 'Peer');
+    profile.allowedOperations = ['ping', 'health'];
+    const gate = gateWith(vpConfig({ dryRun: true }));
+    const d = await gate.evaluate(makeMessage(peer.fp, { content: 'hello', type: 'credential-share' }));
+    expect(d.action).toBe('block');
+    expect(d.reason).toBe('insufficient_trust');
+  });
+
   it('non-credential message unaffected whether flag on or off', async () => {
     const onGate = gateWith(vpConfig());
     const offGate = gateWith({ enabled: false, dryRun: true, credentialShareEnforced: false });

@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-16T23:41:56.756Z",
+  "slug": "org-pack-and-join",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 1393,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/commands/server.ts",
+      "src/commands/setup-wizard/state-machine.ts",
+      "src/core/AutonomyProfileManager.ts",
+      "src/core/MeshRpc.ts",
+      "src/core/OrgIntentManager.ts",
+      "src/core/OrgPack.ts",
+      "src/core/OrgPackStore.ts",
+      "src/core/OrgPackUpdater.ts",
+      "src/core/TrustRaiseGuard.ts",
+      "src/data/awareness/org-pack.md",
+      "src/server/AgentServer.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/orgPackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1383,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the update check runs at most once a day per agent on the lease holder, backs off 1/2/4/7 days on failure and stops after 30 days; the mesh fan-out runs once per publish or accept, a user-driven act"
+  },
+  "verdict": "blocked"
+}

@@ -89,14 +89,14 @@ describe('askForSecret', () => {
     const f = fake();
     const r = askForSecret(f.drop, 'OpenAI key', 'For the bot', 12, NOW);
     expect(r.status).toBe(201);
-    expect(f.made).toEqual([{ label: 'OpenAI key', description: 'For the bot', topicId: 12, ttlMs: PHONE_REQUEST_TTL_MS }]);
+    expect(f.made).toEqual([{ label: 'OpenAI key', description: 'For the bot', topicId: 12, ttlMs: PHONE_REQUEST_TTL_MS, mintAuth: 'owner-phone' }]);
     expect(r.body).toEqual({ ok: true, key: rowKey('secret-request', TOKEN), expiresAt: new Date(NOW + PHONE_REQUEST_TTL_MS).toISOString() });
     expect(JSON.stringify(r.body)).not.toContain(TOKEN);
   });
   it('leaves out an empty note and no conversation', () => {
     const f = fake();
     askForSecret(f.drop, 'k', '', null, NOW);
-    expect(f.made).toEqual([{ label: 'k', ttlMs: PHONE_REQUEST_TTL_MS }]);
+    expect(f.made).toEqual([{ label: 'k', ttlMs: PHONE_REQUEST_TTL_MS, mintAuth: 'owner-phone' }]);
   });
   it('refuses a second live request with the same name, ignoring case', () => {
     const f = fake([{ token: 't', label: 'OpenAI Key', expiresAt: NOW + 1000, expired: false }]);

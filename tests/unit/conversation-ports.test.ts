@@ -18,7 +18,7 @@ function world(over: { owner?: boolean; noApp?: boolean; noSlack?: boolean; kill
     inFlight,
     app: () => over.noApp ? null : {
       sessionFor: (k) => (k === KEY ? 'app-s' : null),
-      isOwner: () => over.owner !== false,
+      mayReply: () => over.owner !== false,
       conversationOfSession: (t) => (t === 'app-s' ? KEY : null),
       start: async (k, want) => { log.push(`app-start ${k} ${want.framework} inflight=${inFlight.has(APP)}`); wants.push(want); running.add('app-s2'); return { framework: want.framework, model: want.model }; },
       disclose: async (k, text) => { log.push(`app-say ${k} ${text}`); },

@@ -126,6 +126,12 @@ describe('maturation board — production wiring', () => {
       const d7=(server as unknown as {blockerLifecycleService:BlockerLifecycleService}).blockerLifecycleService;expect(d7).not.toBeNull();expect(d7.evaluateMaturation(initiatives.list())).toMatchObject({measurementEligible:1});
       expect((d7.localSummary(24).maturation as {measurements:{subjects:Array<{id:string;status:string}>}}).measurements.subjects.find(i=>i.id==='whole-quality')!.status).toBe('ready');
       const response=await request(server.getApp()).get('/maturation/board?part=measurement&subject=whole-quality&machine=mb-e2e');expect(response.status).toBe(200);expect(validMeasurementRead(response.body,'mb-e2e','whole-quality',90,Date.now())).toBe(true);expect(response.body.detail.evidence).toMatchObject({state:'verified',metrics:[{id:'right-rate',current:{value:.81,samples:100}},{id:'unmatched',current:{value:10/110,samples:110}}]});
+      // Quality history at a glance: the same owner's series through the production route, baseline proof intact.
+      const glance=await request(server.getApp()).get('/maturation/board?part=quality');expect(glance.status).toBe(200);
+      expect(glance.body).toMatchObject({schema:'measurement-quality-glance/1',advisory:true,authority:'none',origin:'mb-e2e'});
+      expect(typeof glance.body.noMeasurement).toBe('number');expect(glance.body.notReadable['missing-contract']).toBeUndefined();expect(glance.body.subjectsOmitted).toBe(0);
+      const right=glance.body.items.find((i:{subjectId:string;metric:{id:string}})=>i.subjectId==='whole-quality'&&i.metric.id==='right-rate');
+      expect(right).toMatchObject({proof:{comparisonAvailable:true,baseline:{state:'verified',value:.8}},metric:{threshold:.8,direction:'at-least'}});expect(right.series.points.length).toBeGreaterThan(0);
       const invalid=await request(server.getApp()).patch('/initiatives/whole-quality').send({rollout:{flagPath:'one.enabled',stage:'live'}});expect(invalid.status).toBe(400);expect(initiatives.get('whole-quality')!.measurement).toBeDefined();
       const cleared=await request(server.getApp()).patch('/initiatives/whole-quality').send({measurement:null});expect(cleared.status).toBe(200);expect(initiatives.get('whole-quality')!.measurement).toBeUndefined();
     }finally{observations.close();grades.close();}
@@ -160,6 +166,7 @@ describe('maturation board — production wiring', () => {
     const { server } = await boot(false);
     const res = await request(server.getApp()).get('/maturation/board');
     expect(res.status).toBe(503);
+    expect((await request(server.getApp()).get('/maturation/board?part=quality')).status).toBe(503);
   });
 
   it('serves the standalone page shell', async () => {

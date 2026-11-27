@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "studio-boot-holds",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T03:46:49.282Z",
+  "artifactPath": "upgrades/side-effects/studio-boot-holds.md",
+  "artifactSha256": "3f4695295853afc389c3a4d71c483ddc549bbc0cf2f85c310c2890eaeb42b3b5",
+  "coveredFiles": [
+    "docs/specs/studio-boot-holds.eli16.md",
+    "tests/integration/native-update-preflight.test.ts",
+    "upgrades/side-effects/studio-boot-holds.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: real probes kept",
+  "eli16Path": "docs/specs/studio-boot-holds.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/studio-boot-holds.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

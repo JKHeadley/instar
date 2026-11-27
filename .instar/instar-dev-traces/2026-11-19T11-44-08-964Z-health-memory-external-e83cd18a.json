@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "health-memory-external",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T11:44:08.964Z",
+  "artifactPath": "upgrades/side-effects/health-memory-external.md",
+  "artifactSha256": "74253fab4916873e70fca2945a40892718ce123bc5be60a06e648c3e2bf1a1ef",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/unit/server.test.ts",
+    "upgrades/next/health-memory-external.md",
+    "upgrades/side-effects/health-memory-external.eli16.md",
+    "upgrades/side-effects/health-memory-external.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "two read-only numeric fields added to an existing health response; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/health-memory-external.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/health-memory-external.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

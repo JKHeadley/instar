@@ -125,6 +125,72 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // ContextBudgetSentinel quarantine reconciliation (context-budget-layered-summaries
+    // §9.3): SelfHealGate consumer, pool-shared (only the topic's owner acts). Governor
+    // admission is capacity telemetry; the durable episode store owns the 12-attempt /
+    // 45-minute ladder and the 24 h retention of exhausted folds. Relief: a stuck fold
+    // keeps a conversation paused, so a governor failure must not block its release.
+    controllerId: 'context-budget-quarantine-reconcile',
+    actionVerb: 'converge-quarantined-fold',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 12,
+    totalCountCeiling: 48,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 48, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // ContextBudgetSentinel hold health (context-budget-layered-summaries §10, §17): clears a
+    // fold hold or marker that outlived its fold record. SelfHealGate consumer, pool-shared
+    // (only the topic's owner acts); the durable episode store owns the 3-attempt ladder per
+    // (kind, topic, fold) and the week-long retention of an exhausted one. Relief: an orphan
+    // hold mutes a conversation, so a governor failure must not block its release.
+    controllerId: 'context-budget-orphan-carrier-clear',
+    actionVerb: 'converge-orphan-carrier',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 48,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 48, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // The compaction canary's heal ladder by cause (context-budget-layered-summaries §9.1):
+    // SelfHealGate consumer, pool-shared (only the session's owner acts). One episode per
+    // machine.session.epoch, <=3 attempts (10 min, 1 h) inside 30 min; <=3 runs per session
+    // per day; a same-cause breaker (3 heals / 24 h). Relief: it restores a session's lost
+    // context, so a governor failure must not block it.
+    controllerId: 'context-budget-canary-heal',
+    actionVerb: 'retry-compaction-reseed',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 24,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 24, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // The canary's synthetic press on a throwaway session (context-budget-layered-summaries
+    // §9.1, the positive control): <=3 presses per machine per day, >=1 h apart, only while the
+    // epoch lacks a synthetic positive. Amplifying (it causes a compaction): fail closed.
+    controllerId: 'context-budget-synthetic-press',
+    actionVerb: 'retry-synthetic-compaction',
+    direction: 'amplifying',
+    resource: 'hardware-bound',
+    failDirection: 'closed-queue',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 3,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 3, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Swap-thrash bound (~72/day incident). 8 / 45 min dwell; staleTtl 60s.
     controllerId: 'proactive-swap-monitor',
     actionVerb: 'account-swap',
@@ -192,6 +258,66 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     totalCountCeiling: 6,
     windowMs: 60 * 60_000,
     rateBucket: { ratePerWindow: 6, windowMs: 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 1: the bounded revert before "retired for harm" notifies). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-heal-revert-first',
+    actionVerb: 'converge-skill-heal',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 2: the reviewer's retire-lowest-unused proposal before "index too costly" notifies). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-heal-index-retire',
+    actionVerb: 'converge-skill-heal',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 3: one drafter-family swap per episode after 5 consecutive refusals). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-drafter-family-swap',
+    actionVerb: 'swap-drafter-family',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 4: the bounded classifier failure swap once per episode). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-classifier-failure-swap',
+    actionVerb: 'swap-classifier-family',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
     ...COMMON,
   },
   {

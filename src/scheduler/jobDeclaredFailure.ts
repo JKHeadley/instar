@@ -61,6 +61,37 @@ export function readJobDeclaredFailure(stateDir: string, tmuxSession: string): s
   return reason;
 }
 
+/**
+ * The sibling of a declared failure: a run that could not do its work for a reason
+ * outside the job (its own server too busy to answer) writes a reason to
+ * `$INSTAR_JOB_SKIP_FILE` and is recorded `skipped` — neither a success nor a
+ * failure. A declared failure wins when a run wrote both.
+ */
+export const JOB_SKIP_FILE_ENV = 'INSTAR_JOB_SKIP_FILE';
+
+export function jobDeclaredSkipPath(stateDir: string, tmuxSession: string): string {
+  return path.join(jobDeclaredFailureDir(stateDir), `${tmuxSession.replace(/[^A-Za-z0-9._-]/g, '_')}.skip.txt`);
+}
+
+/** Read and remove this run's declared-skip file. Null when the job declared none. Never throws. */
+export function readJobDeclaredSkip(stateDir: string, tmuxSession: string): string | null {
+  const file = jobDeclaredSkipPath(stateDir, tmuxSession);
+  if (!fs.existsSync(file)) return null;
+  let reason: string;
+  try {
+    reason = sanitizeDeclaredFailureReason(fs.readFileSync(file, 'utf8'));
+  } catch {
+    // @silent-fallback-ok — the file exists, so the job declared a skip.
+    reason = '(unreadable)';
+  }
+  try {
+    SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/scheduler/jobDeclaredFailure.ts:readJobDeclaredSkip' });
+  } catch {
+    // @silent-fallback-ok — the name is unique to this finished run.
+  }
+  return reason;
+}
+
 /** Job Scheduler awareness bullet (CLAUDE.md template + migration). */
 export const JOB_DECLARED_FAILURE_AWARENESS =
   '- **A job marks its own run failed by writing a reason to `$INSTAR_JOB_FAILURE_FILE`** — ' +

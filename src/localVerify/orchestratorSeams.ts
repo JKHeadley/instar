@@ -14,16 +14,20 @@
  *   process AND its descendants, and the wait for its pipes is bounded once it has exited.
  */
 
+import { loopbackProxy } from './borrowedLaneFlow.js';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { BoundedUnitProcessOutput } from './unitProcessOutput.js';
 import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerStormCeilingError } from '../core/hostTestRunnerSemaphore.js';
 import { fileURLToPath } from 'node:url';
-import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams } from './orchestrator.js';
+import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams, RunDegradation } from './orchestrator.js';
 import { localImportGraph } from './verifierVersion.js';
+import { reapLeftovers, realReapDeps } from './leftoverReaper.js';
 
 /** The trusted unhandled-errors reporter installed next to this module (dist), or null. */
 export function installedUnhandledErrorsReporter(): string | null {
@@ -145,7 +149,7 @@ const CLOSE_AFTER_EXIT_MS = 5_000;
 export function realExec(
   command: string,
   args: string[],
-  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
+  opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean; captureUnitOutput?: boolean },
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     if (opts.signal?.aborted) { resolve({ status: null, signal: null, stdout: '', stderr: '', deadlineKilled: false, aborted: true, pid: null }); return; }
@@ -160,8 +164,10 @@ export function realExec(
     let settled = false;
     let exited = false;
     let quiescent = !opts.isolatedGroup;
-    child.stdout?.on('data', (d) => { stdout = tail(stdout + d.toString()); });
-    child.stderr?.on('data', (d) => { stderr = tail(stderr + d.toString()); });
+    const unitStdout = opts.captureUnitOutput ? new BoundedUnitProcessOutput() : null;
+    const unitStderr = opts.captureUnitOutput ? new BoundedUnitProcessOutput() : null;
+    child.stdout?.on('data', (d: Buffer) => { stdout = tail(stdout + d.toString()); unitStdout?.append(d); });
+    child.stderr?.on('data', (d: Buffer) => { stderr = tail(stderr + d.toString()); unitStderr?.append(d); });
     let hard: NodeJS.Timeout | undefined;
     let closeWait: NodeJS.Timeout | undefined;
     const signalTree = (pids: number[], sig: NodeJS.Signals) => {
@@ -243,7 +249,10 @@ export function realExec(
       clearTimeout(timer);
       if (closeWait) clearTimeout(closeWait);
       opts.signal?.removeEventListener('abort', onAbort);
-      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null, ...(opts.isolatedGroup ? { quiescent } : {}) });
+      const unitOutput = unitStdout && unitStderr && (status !== 0 || signal)
+        ? { stdout: unitStdout.snapshot(), stderr: unitStderr.snapshot() }
+        : undefined;
+      resolve({ status, signal, stdout, stderr, deadlineKilled, ...(unitOutput ? { unitOutput } : {}), ...(aborted ? { aborted: true } : {}), pid: child.pid ?? null, ...(opts.isolatedGroup ? { quiescent } : {}) });
     };
     child.on('close', (status, signal) => {
       if (!opts.isolatedGroup) { done(status ?? null, signal ?? null); return; }
@@ -273,19 +282,60 @@ export function realExec(
 }
 
 /** `verifyRoot` is `<agentHome>/.worktrees/.verify` of the agent running the verify. */
-export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string): OrchestratorSeams {
+export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string, opts?: { onDegrade?: (event: RunDegradation) => void }): OrchestratorSeams {
   return {
     git: (args, opts) => realGit(args, opts, verifyRoot),
     exec: realExec,
+    keepUnitTranscripts: async (input) => {
+      const directory = path.join(verifyRoot, 'unit-failure-diagnostics');
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const state = fs.lstatSync(directory);
+      if (!state.isDirectory() || (process.platform !== 'win32' && (state.mode & 0o077) !== 0)) {
+        throw new Error('Unit diagnostic directory is not private');
+      }
+      const name = `${String(input.startedAtMs).padStart(13, '0')}-${randomUUID()}.json`;
+      const target = path.join(directory, name);
+      fs.writeFileSync(target, JSON.stringify({ version: 1, ...input }) + '\n', { mode: 0o600, flag: 'wx' });
+      try {
+        const prior = fs.readdirSync(directory, { withFileTypes: true })
+          .filter((entry) => entry.name !== name && entry.isFile() && /^\d{13}-[a-f0-9-]{36}\.json$/.test(entry.name))
+          .map((entry) => entry.name).sort();
+        for (const expired of prior.slice(0, -7)) {
+          await removeScopedTree(path.join(directory, expired), verifyRoot);
+        }
+      } catch {
+        log({ event: 'unit-transcript-retention-failed' });
+      }
+      return target;
+    },
     fs: {
       exists: (p) => fs.existsSync(p),
       mkdirp: (p) => { fs.mkdirSync(p, { recursive: true }); },
-      writeFile: (p, data) => { fs.writeFileSync(p, data); },
+      writeFile: (p, data, options) => { fs.writeFileSync(p, data, options); },
       readFile: (p) => { try { return fs.readFileSync(p, 'utf-8'); } catch { return null; } },
       size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
       removeTree: (p) => removeScopedTree(p, verifyRoot),
+      // Directories only: a stray file in runs/ (a .DS_Store) is not a checkout to keep and list.
+      list: (p) => { try { return fs.readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return null; } }, // @silent-fallback-ok: unreadable ⇒ nothing to sweep
+      realpath: (p) => { try { return fs.realpathSync(p); } catch { return null; } }, // @silent-fallback-ok: unresolvable ⇒ compare the literal path
+      // One process view for the whole sweep: the scans (lsof, ps) are taken once and reused
+      // for every candidate within the next 10 s, not once per candidate.
+      inUse: (dir) => runCheckoutInUse(dir, processView()),
+      treeSize: (dir) => {
+        try {
+          const out = execFileSync('du', ['-sk', dir], { encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] });
+          const kib = parseInt(out.split(/\s/)[0], 10);
+          return Number.isFinite(kib) ? kib * 1024 : null;
+        } catch { return null; } // @silent-fallback-ok: unreadable ⇒ listed without a size
+      },
     },
+    // The run child owns no DegradationReporter (a second process writing the server's
+    // degradations.json would race it, and the server never reads that file): the event
+    // goes to the run log here and, through onDegrade, into the result the server reads.
+    degrade: (event) => { log({ event: 'degradation', ...event }); opts?.onDegrade?.(event); },
+    // The borrowed helper's loopback proxy on this machine's own server (spec local-verify-borrowed-slices-count.md, F).
+    borrowedProxy: (b) => loopbackProxy(b.port, b.token),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
     foreignSuiteHolders: (ours) => {
@@ -302,6 +352,7 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
     log,
     importGraph: (files) => localImportGraph(files),
     unhandledErrorsReporter: installedUnhandledErrorsReporter,
+    reapLeftovers: (prefixes, o) => reapLeftovers(realReapDeps(), prefixes, o),
   };
 }
 
@@ -365,4 +416,50 @@ async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Pro
       log({ event: 'suite-priority-error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
     }
   }
+}
+
+/**
+ * Whether a running process uses a run checkout: its working folder is inside
+ * it (lsof) or its command line names it (ps). null when either cannot be read,
+ * which the orphan sweep treats as in use (disk-steward §5).
+ */
+export interface ProcessView {
+  /** `lsof -w -d cwd -Fn` output: one `n<path>` line per process working folder. */
+  cwds: string;
+  /** `ps -axww -o command=` output: one command line per process. */
+  cmds: string;
+}
+
+/** The running processes' working folders and command lines; null when either cannot be read. */
+export function readProcessView(): ProcessView | null {
+  try {
+    const cwds = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
+    const cmds = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    return { cwds, cmds };
+  } catch {
+    return null; // @silent-fallback-ok — no process view ⇒ the sweep keeps every checkout
+  }
+}
+
+const PROCESS_VIEW_TTL_MS = 10_000;
+let cachedProcessView: { at: number; view: ProcessView | null } | null = null;
+/** The process view, read at most once per 10 s so one sweep scans once for all its candidates. */
+function processView(): ProcessView | null {
+  if (!cachedProcessView || Date.now() - cachedProcessView.at > PROCESS_VIEW_TTL_MS) cachedProcessView = { at: Date.now(), view: readProcessView() };
+  return cachedProcessView.view;
+}
+
+export function runCheckoutInUse(dir: string, view: ProcessView | null = readProcessView()): boolean | null {
+  if (view === null) return null;
+  let real = dir;
+  try { real = fs.realpathSync(dir); } catch { /* @silent-fallback-ok: compare the literal path */ }
+  for (const line of view.cwds.split('\n')) {
+    if (line.charCodeAt(0) !== 110) continue;
+    const p = line.slice(1);
+    if (p === real || p.startsWith(real + path.sep) || p === dir || p.startsWith(dir + path.sep)) return true;
+  }
+  for (const c of view.cmds.split('\n')) {
+    if (c.includes(real + path.sep) || c.includes(dir + path.sep) || c.endsWith(real) || c.endsWith(dir)) return true;
+  }
+  return false;
 }

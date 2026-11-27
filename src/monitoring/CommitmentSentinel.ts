@@ -20,6 +20,7 @@ import { DegradationReporter } from './DegradationReporter.js';
 import { readJsonlTailLines } from '../utils/jsonl-tail.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_COMMITMENT_DETECT } from '../data/provenanceCoverage.js';
+import type { JevFirstDecision, JevPoint } from '../core/JevFirstDecision.js';
 
 export const COMMITMENT_SENTINEL_PROMPT_ID = 'commitment-detect-v1';
 
@@ -52,6 +53,9 @@ export interface CommitmentSentinelConfig {
   scanIntervalMs?: number;
   /** Maximum messages to scan per topic per cycle. Default: 20 */
   maxMessagesPerScan?: number;
+  /** Optional Jev first pass; omitted means the incumbent path is byte-compatible. */
+  jevFirst?: JevFirstDecision;
+  getJevPoint?: () => JevPoint;
 }
 
 interface ScanState {
@@ -358,10 +362,18 @@ For one-time-action, omit configPath.
 IMPORTANT: Only return genuine commitments where the user asked for something durable AND the agent explicitly agreed. Do NOT flag: questions, status updates, informational responses, or bare approvals / continuations ("yes", "please proceed", "go ahead", "sounds good") — those request nothing durable and are never commitments. Return ONLY the JSON array, nothing else.`;
 
     try {
-      const response = await this.config.intelligence.evaluate(prompt, {
+      let response: string | undefined;
+      const callIncumbent = async () => {
+        let model = 'unknown-incumbent';
+        let tokensIn: number | undefined;
+        let tokensOut: number | undefined;
+        const started = Date.now();
+        response = await this.config.intelligence.evaluate(prompt, {
         model: 'fast',
         maxTokens: 500,
         temperature: 0,
+        onModel: (info) => { model = info.model; },
+        onUsage: (usage) => { tokensIn = usage.inputTokens; tokensOut = usage.outputTokens; },
         attribution: { component: 'CommitmentSentinel' }, // attribution for /metrics/features
         provenance: {
           decisionPoint: DP_COMMITMENT_DETECT,
@@ -389,7 +401,31 @@ IMPORTANT: Only return genuine commitments where the user asked for something du
             return { acted: false };
           }
         },
-      });
+        });
+        let any = false;
+        try {
+          const trimmed = response.trim();
+          const jsonStr = trimmed.startsWith('```') ? trimmed.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '') : trimmed;
+          const parsed = JSON.parse(jsonStr);
+          any = Array.isArray(parsed) && parsed.some((c: any) =>
+            c?.type && c.userRequest && c.agentResponse &&
+            ['config-change', 'behavioral', 'one-time-action'].includes(c.type));
+        } catch { /* the existing parse below turns this into an empty result */ }
+        return { answer: any, model, ms: Date.now() - started, tokensIn, tokensOut };
+      };
+      if (this.config.jevFirst && this.config.getJevPoint) {
+        const point = this.config.getJevPoint();
+        if (point.stage === 'off') await callIncumbent();
+        else {
+          const decision = await this.config.jevFirst.decide({
+            point, state: conversationText, fallback: callIncumbent,
+          });
+          if (decision.source === 'jev' && decision.answer === false) return [];
+        }
+      } else {
+        await callIncumbent();
+      }
+      if (response === undefined) return [];
 
       // Parse JSON from response
       const trimmed = response.trim();

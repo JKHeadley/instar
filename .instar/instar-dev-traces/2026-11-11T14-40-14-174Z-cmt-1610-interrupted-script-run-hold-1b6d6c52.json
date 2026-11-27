@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "cmt-1610-interrupted-script-run-hold",
+  "sessionId": "b026d8f4-27ce-4691-b495-030c4038adea",
+  "timestamp": "2026-11-11T14:40:14.174Z",
+  "artifactPath": "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md",
+  "artifactSha256": "19968e11a6a19bd312a7ece699f4c0290fc975b8ac6fcfa8bb9fd64dfcb6e600",
+  "coveredFiles": [
+    "docs/specs/cmt-1610-interrupted-script-run-hold.eli16.md",
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Local Verify convention follow-up for CMT-1610: declare the new release route's write domain and qualify its error responses; no behavior change.",
+  "eli16Path": "docs/specs/cmt-1610-interrupted-script-run-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -214,6 +214,87 @@ describe('installBuiltinJobs', () => {
     expect(newBody).toContain('body v2');
   });
 
+  // CMT-1586 (fb-d075a5c4-c4c): an update reverted health-check */10 → */5.
+  describe('operator schedule edits survive updates', () => {
+    const manifestPath = () => path.join(agentStateDir, 'jobs', 'schedule', 'sched.json');
+    const read = () => JSON.parse(fs.readFileSync(manifestPath(), 'utf-8'));
+    const edit = (schedule: string) => {
+      const m = read();
+      m.schedule = schedule;
+      fs.writeFileSync(manifestPath(), JSON.stringify(m, null, 2));
+    };
+
+    it('records the shipped schedule on every write', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read()).toMatchObject({ schedule: '*/5 * * * *', shippedSchedule: '*/5 * * * *' });
+      expect(() => validateManifest(read(), 'sched')).not.toThrow();
+    });
+
+    it('keeps an edited schedule through an update, even when the shipped default also changes', () => {
+      writeTemplate('sched', 'body v1\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      edit('*/10 * * * *');
+      const same = installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(same.errors).toEqual([]);
+      expect(read()).toMatchObject({ schedule: '*/10 * * * *', shippedSchedule: '*/5 * * * *' });
+      writeTemplate('sched', 'body v2\n', { schedule: '*/7 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read()).toMatchObject({ schedule: '*/10 * * * *', shippedSchedule: '*/7 * * * *' });
+    });
+
+    it('an unedited schedule follows a new shipped default', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      writeTemplate('sched', 'body\n', { schedule: '*/15 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read()).toMatchObject({ schedule: '*/15 * * * *', shippedSchedule: '*/15 * * * *' });
+    });
+
+    it('an edit back to the shipped value rejoins the default', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      edit('*/10 * * * *');
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      edit('*/5 * * * *');
+      writeTemplate('sched', 'body\n', { schedule: '*/15 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read().schedule).toBe('*/15 * * * *');
+    });
+
+    it('a manifest from before the field existed takes the shipped value once, then keeps later edits', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      const legacy = read();
+      delete legacy.shippedSchedule;
+      legacy.schedule = '*/10 * * * *';
+      fs.writeFileSync(manifestPath(), JSON.stringify(legacy, null, 2));
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read()).toMatchObject({ schedule: '*/5 * * * *', shippedSchedule: '*/5 * * * *' });
+      edit('*/10 * * * *');
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read().schedule).toBe('*/10 * * * *');
+    });
+
+    it('an invalid saved schedule is reset to the shipped one and reported', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      edit('not a cron');
+      const report = installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      expect(read().schedule).toBe('*/5 * * * *');
+      expect(report.errors).toEqual([expect.objectContaining({ slug: 'sched', reason: expect.stringContaining('not a valid cron') })]);
+    });
+
+    it('the loader schedules the edited value', () => {
+      writeTemplate('sched', 'body\n', { schedule: '*/5 * * * *' });
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      edit('*/10 * * * *');
+      installBuiltinJobs({ agentStateDir, packageRoot, port: 4042 });
+      const loaded = loadAgentMdJobs(path.join(agentStateDir, 'jobs', 'schedule'), path.join(agentStateDir, 'jobs'));
+      expect(loaded.jobs.find(j => j.slug === 'sched')?.schedule).toBe('*/10 * * * *');
+    });
+  });
+
   it('retires a default that is removed from the shipped templates', () => {
     writeTemplate('alpha', 'a\n');
     writeTemplate('to-be-retired', 'r\n');

@@ -43,7 +43,7 @@ describe('SpawnAdmission callsite pins (src/commands/server.ts)', () => {
     const slackCapture = '_slackAdmissionVerdict = { messageId: String(message.id), action: outcome.action, acked: outcome.acked };';
     expect(src).toContain(slackCapture);
     // The captured Slack verdict is actually threaded into the dispatch.
-    expect(src).toContain('await slackInboundDispatch(message, _slackAdmissionVerdict);');
+    expect(src).toContain('return dispatch(message, _slackAdmissionVerdict);');
   });
 
   it('(b2) the seam CONSUMES the captured verdict (routerVerdict: _admissionVerdict)', () => {

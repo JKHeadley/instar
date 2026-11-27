@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
 import { useHermeticHome } from '../../setup/hermetic-home.js';
@@ -27,14 +28,13 @@ import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import { CONNECT_ENABLE_REQUESTED_BY } from '../../../src/threadline/connectEnable.js';
 import { startFakeLifeline, type FakeLifeline } from '../../helpers/fakeLifeline.js';
-import { useHermeticHome } from '../../setup/hermetic-home.js';
+
 
 // HOME → temp for every test here: bootstrapThreadline() writes the user-scope
 // ~/.claude.json, and this file must never touch the operator's real one.
 useHermeticHome();
 
-// bootstrapThreadline writes ~/.claude.json — keep it off the real HOME.
-useHermeticHome();
+
 
 const AUTH = 'pp-auth';
 
@@ -128,7 +128,7 @@ describe('pairing switched on without a person-performed restart (production pat
     relayData?.cleanup();
   });
 
-  it('the agent switches pairing on itself; the server restarts itself; the agent makes an invite', async () => {
+  it('enables through a proved supervisor, or preserves the server when the OS hides its identity', async () => {
     // Before: pairing is off, so the invite route refuses.
     expect((await call('GET', '/threadline/pairing')).status).toBe(503);
     expect((await call('POST', '/threadline/pairing/invites', {})).status).toBe(503);
@@ -139,6 +139,26 @@ describe('pairing switched on without a person-performed restart (production pat
     // The agent's one call, at its person's request.
     const firstPid = process.pid;
     const en = await call('POST', '/threadline/pairing/enable', { sessionId: 'pp-topic-session' });
+    // This is an independent OS capability probe, not the production helper
+    // under test. A restricted host must exercise the real fail-closed branch;
+    // unrestricted CI still requires the complete supervised-restart story.
+    const osIdentity = (() => {
+      try {
+        const start=execFileSync('/bin/ps',['-p',String(lifeline!.pid),'-o','lstart='],{encoding:'utf8',timeout:3000,env:{...process.env,LC_ALL:'C'}});
+        const command=execFileSync('/bin/ps',['-p',String(lifeline!.pid),'-o','command='],{encoding:'utf8',timeout:3000,env:{...process.env,LC_ALL:'C'}});
+        return start.trim()&&command.trim()?{start:start.trim(),command:command.trim()}:null;
+      } catch { return null; }
+    })();
+    if(!osIdentity){
+      expect(en.status).toBe(503);expect(en.body.state).toBe('restart-unavailable');
+      expect(fs.existsSync(path.join(project.stateDir,'state','restart-requested.json'))).toBe(false);
+      expect((await call('GET','/health')).status).toBe(200);
+      const disk=JSON.parse(fs.readFileSync(path.join(project.stateDir,'config.json'),'utf8'));
+      expect(disk.threadline).toEqual({relayEnabled:true,visibility:'unlisted',verifiedPairing:{enabled:true}});
+      expect(process.pid).toBe(firstPid);return;
+    }
+    expect(Number.isFinite(Date.parse(osIdentity.start))).toBe(true);
+    expect(osIdentity.command).toContain('lifeline start');
     expect(en.status).toBe(202);
     expect(en.body).toMatchObject({ state: 'restarting', backInSeconds: 60 });
     expect(String(en.body.sayToPerson)).not.toMatch(/restart|lifeline|setting/i);

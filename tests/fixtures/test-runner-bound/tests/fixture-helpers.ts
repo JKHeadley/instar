@@ -42,15 +42,26 @@ export function stampWorker(): void {
  * so the harness's max-overlap computation over the recorded intervals is a
  * MEASUREMENT of actual concurrent workers, not a flag assertion.
  */
+/** How long a probe stays open after its barrier opens (see runProbe). */
+export const PROBE_DWELL_MS = 150;
+
 export async function runProbe(name: string): Promise<void> {
   const dir = process.env['FIXTURE_PROBE_DIR'];
   if (!dir) return; // probe not active for this scenario — trivial pass
   const expected = Number(process.env['FIXTURE_PROBE_EXPECT'] ?? '5');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `start-${name}.json`),
-    JSON.stringify({ name, t: Date.now(), pid: process.pid }),
-  );
+  // First stamp wins ('wx'): if a probe file is ever run a second time in the same scenario,
+  // the second pass finds all the start files already there and would overwrite a real window
+  // with a zero-length one, turning the measurement into 0 (seen once, 2026-11-12, on a
+  // saturated machine; not reproduced in five further runs).
+  const stamp = (file: string): void => {
+    try {
+      fs.writeFileSync(path.join(dir, file), JSON.stringify({ name, t: Date.now(), pid: process.pid }), { flag: 'wx' });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+  };
+  stamp(`start-${name}.json`);
   const deadline = Date.now() + 4000;
   for (;;) {
     let starts = 0;
@@ -62,8 +73,14 @@ export async function runProbe(name: string): Promise<void> {
     if (starts >= expected || Date.now() >= deadline) break;
     await new Promise((r) => setTimeout(r, 50));
   }
-  fs.writeFileSync(
-    path.join(dir, `end-${name}.json`),
-    JSON.stringify({ name, t: Date.now(), pid: process.pid }),
-  );
+  // Stay open for a moment after the barrier opens. The LAST probe to start sees every start
+  // file at once; without this it stamped its end in the same millisecond as its start, a
+  // zero-length window that the harness (ends before starts at equal timestamps) never counts
+  // as open. Five workers that really ran together then measured as 4 (2026-11-13, PR 3053:
+  // windows 52, 59, 59, 52 and 0 ms). The other probes poll every 50 ms, so their ends follow
+  // within 50 ms of the last start: holding 150 ms keeps all of them open together. It does not
+  // let a capped run look uncapped: a start that only appears after another probe ended still
+  // begins after that end.
+  await new Promise((r) => setTimeout(r, PROBE_DWELL_MS));
+  stamp(`end-${name}.json`);
 }

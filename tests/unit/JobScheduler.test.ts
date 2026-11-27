@@ -6,7 +6,7 @@ import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js'
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildSyntheticAgent, mkAgentMd, mkManifest } from './scheduler/agentmd-helpers.js';
-import { jobDeclaredFailurePath } from '../../src/scheduler/jobDeclaredFailure.js';
+import { jobDeclaredFailurePath, jobDeclaredSkipPath } from '../../src/scheduler/jobDeclaredFailure.js';
 
 describe('JobScheduler', () => {
   let project: TempProject;
@@ -683,6 +683,59 @@ describe('JobScheduler', () => {
       expect(state?.lastError).toContain('Session killed');
       expect(state?.lastError).toContain('declared failure: drain status unreadable: HTTP 401');
       expect(fs.existsSync(file)).toBe(false);
+    });
+
+    // CMT-1613: a run that could not start its work because its own server was too busy is
+    // recorded skipped — neither a success nor a failure — and leaves the failure streak alone.
+    async function completeWithDeclaredSkipKeepingError(skip: string, lastError: string, beforeNotify: () => void) {
+      return completeWithDeclaredSkip(skip, null, lastError, beforeNotify);
+    }
+    async function completeWithDeclaredSkip(skip: string, failure: string | null = null, lastError?: string, beforeNotify?: () => void) {
+      createScheduler();
+      scheduler.start();
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+      const session = mockSM._sessions[mockSM._sessions.length - 1];
+      session.status = 'completed';
+      project.state.saveSession(session);
+      project.state.saveJobState({ ...project.state.getJobState('health-check')!, slug: 'health-check', lastResult: 'failure', consecutiveFailures: 2, ...(lastError ? { lastError } : {}) });
+      const skipFile = jobDeclaredSkipPath(project.stateDir, session.tmuxSession);
+      fs.mkdirSync(path.dirname(skipFile), { recursive: true });
+      fs.writeFileSync(skipFile, skip);
+      if (failure !== null) fs.writeFileSync(jobDeclaredFailurePath(project.stateDir, session.tmuxSession), failure);
+      beforeNotify?.();
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+      const runs = scheduler.getRunHistory().query({ slug: 'health-check' }).runs;
+      return { skipFile, state: project.state.getJobState('health-check'), run: runs[0] };
+    }
+
+    it('a declared-skip file records the run skipped, keeps the failure streak, and is removed', async () => {
+      const { skipFile, state, run } = await completeWithDeclaredSkip('server too busy to answer its drain status (3 tries)');
+      expect(state?.lastResult).toBe('skipped');
+      expect(state?.lastError).toBeUndefined();
+      expect(state?.consecutiveFailures).toBe(2);
+      expect(run?.result).toBe('skipped');
+      expect(run?.error).toBe('Declared skip: server too busy to answer its drain status (3 tries)');
+      expect(fs.existsSync(skipFile)).toBe(false);
+    });
+
+    it('a declared skip keeps the last error and never clears failure alerts or feeds the silence watch', async () => {
+      const clear = vi.spyOn(JobScheduler.prototype as any, 'clearFailureAlertState');
+      const cont = vi.spyOn(JobScheduler.prototype as any, 'noteContinuitySuccess');
+      try {
+        const { state } = await completeWithDeclaredSkipKeepingError('server too busy', 'Declared failure: earlier', () => { clear.mockClear(); cont.mockClear(); });
+        expect(state?.lastError).toBe('Declared failure: earlier');
+        expect(clear).not.toHaveBeenCalledWith('health-check');
+        expect(cont).not.toHaveBeenCalledWith('health-check');
+      } finally { clear.mockRestore(); cont.mockRestore(); }
+    });
+
+    it('a declared failure wins over a declared skip, and both files are consumed', async () => {
+      const { skipFile, state, run } = await completeWithDeclaredSkip('busy', 'drain run degraded: x');
+      expect(state?.lastResult).toBe('failure');
+      expect(state?.consecutiveFailures).toBe(3);
+      expect(run?.result).toBe('failure');
+      expect(fs.existsSync(skipFile)).toBe(false);
     });
 
     it('saves the job state before recording terminal completion', async () => {
