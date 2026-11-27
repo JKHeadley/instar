@@ -95,9 +95,9 @@ describe('Pre-push gate script', () => {
     // so the three-dot diff is the PR's true diff. Source-presence (like #23):
     // the git-diff path is not executed in unit tests.
     const content = fs.readFileSync(gatePath, 'utf-8');
-    expect(content).toContain('pickRef');
-    expect(content).toContain("'JKHeadley/main'");
-    expect(content).toContain('never UNDER-reports');
+    expect(content).toContain('show-ref');
+    expect(content).toContain("'JKHeadley'");
+    expect(content).toContain("refs/remotes/");
     // still falls back to @{u} when no main ref resolves in the clone
     expect(content).toContain('@{u}');
   });
@@ -118,6 +118,7 @@ describe('Pre-push gate script', () => {
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 
 describe('Pre-push gate integration — malformed NEXT.md', () => {
   let scratch: string;
@@ -163,6 +164,100 @@ describe('Pre-push gate integration — malformed NEXT.md', () => {
     });
     return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   }
+
+  function git(...args: string[]): void {
+    SafeGitExecutor.execSync(['-c', 'commit.gpgsign=false', ...args], {
+      cwd: scratch,
+      operation: 'pre-push-gate-test:fixture-git',
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
+        GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test' },
+    });
+  }
+
+  function writeFragment(file: string, internal: boolean): void {
+    const note = [
+      '# Upgrade Guide — vNEXT', '', '<!-- bump: patch -->',
+      ...(internal ? ['<!-- internal-only -->'] : []),
+      '', '## What Changed', '', 'The fixture uses a private workspace.',
+      ...(internal
+        ? ['', '## Evidence', '', 'The fixture ran.']
+        : ['', '## What to Tell Your User', '', 'The workspace is private.',
+          '', '## Summary of New Capabilities', '', 'The workspace is private.']),
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(scratch, 'upgrades', 'next', file), note);
+  }
+
+  function mergeMainWithStaleAlias(): void {
+    git('init', '-b', 'main');
+    const url = 'https://github.com/example/instar.git';
+    git('remote', 'add', 'JKHeadley', url);
+    git('remote', 'add', 'origin', url);
+    git('add', '.');
+    git('commit', '-m', 'baseline');
+    git('update-ref', 'refs/remotes/JKHeadley/main', 'HEAD');
+    git('branch', 'work');
+
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'next'));
+    writeFragment('from-main.md', true);
+    git('add', 'upgrades');
+    git('commit', '-m', 'main fixture');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+
+    git('checkout', 'work');
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'next'), { recursive: true });
+    fs.writeFileSync(path.join(scratch, 'src', 'runtime.ts'), 'export const enabled = true;\n');
+    writeFragment('branch-release.md', false);
+    git('add', 'src', 'upgrades');
+    git('commit', '-m', 'feature branch');
+    git('merge', '--no-edit', 'origin/main');
+  }
+
+  it('ignores an inherited internal fragment when a fresh alias tracks the same main', () => {
+    mergeMainWithStaleAlias();
+    const { status, stdout, stderr } = runGate();
+    expect(stdout + stderr).not.toContain('Internal-only release fragment(s) accompany');
+    expect(status).toBe(0);
+  });
+
+  it('still rejects an internal fragment authored on a runtime branch', () => {
+    mergeMainWithStaleAlias();
+    writeFragment('branch-internal.md', true);
+    git('add', 'upgrades');
+    git('commit', '-m', 'branch internal fragment');
+    const { status, stdout, stderr } = runGate();
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain('Internal-only release fragment(s) accompany');
+    expect(stdout + stderr).toContain('upgrades/next/branch-internal.md (marked');
+    expect(stdout + stderr).not.toContain('upgrades/next/from-main.md (marked');
+  });
+
+  it('keeps checking a runtime branch when a local branch shadows origin/main', () => {
+    mergeMainWithStaleAlias();
+    writeFragment('branch-internal.md', true);
+    git('add', 'upgrades');
+    git('commit', '-m', 'branch internal fragment');
+    git('branch', 'origin/main');
+    const { status, stdout, stderr } = runGate();
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain('upgrades/next/branch-internal.md (marked');
+  });
+
+  it('ignores a local origin/main stand-in when no main or upstream ref exists', () => {
+    git('init', '-b', 'work');
+    git('add', '.');
+    git('commit', '-m', 'baseline');
+    fs.mkdirSync(path.join(scratch, 'upgrades', 'next'));
+    fs.writeFileSync(path.join(scratch, 'src', 'runtime.ts'), 'export const enabled = true;\n');
+    writeFragment('branch-internal.md', true);
+    git('add', 'src', 'upgrades');
+    git('commit', '-m', 'branch internal fragment');
+    git('branch', 'origin/main');
+    git('branch', 'refs/remotes/origin/main');
+    const { status, stdout, stderr } = runGate();
+    expect(status).toBe(1);
+    expect(stdout + stderr).toContain('upgrades/next/branch-internal.md (marked');
+  });
 
   it('REJECTS malformed NEXT.md with inline code in "What to Tell Your User"', () => {
     fs.writeFileSync(

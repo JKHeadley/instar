@@ -148,25 +148,41 @@ if (latestPublished) {
 // This prevents shipping code changes without regression tests.
 
 try {
-  const { execSync } = await import('node:child_process');
-  // Compute "what this PR changes" against its MERGE TARGET (main), not the
-  // branch's own upstream (@{u}). Using @{u} breaks when a PR is updated by
-  // MERGING main in (the no-force-push path): `@{u}...HEAD` then includes all of
-  // main's already-shipped changes, producing false "src changed without a
-  // release-note fragment" errors (which forced INSTAR_PRE_PUSH_SKIP=1 on merge-
-  // updated PRs). A three-dot diff against main is the PR's TRUE diff in both the
-  // normal-incremental and merge-from-main cases, and never UNDER-reports the
-  // PR's own changes (merge-base of main and HEAD is the branch point).
-  const pickRef = (cands) => {
-    for (const r of cands) {
-      try { execSync(`git rev-parse --verify --quiet ${r}`, { stdio: 'pipe', encoding: 'utf-8' }); return r; }
-      catch { /* ref not present in this clone */ }
-    }
-    return null;
+  const { execFileSync, execSync } = await import('node:child_process');
+  // An update that merges main must examine only the branch's changes. Using
+  // its own @{u} would include the main commits just brought into the branch.
+  const gitArgs = args => execFileSync('git', args, { cwd: ROOT, encoding: 'utf-8', stdio: 'pipe' }).trim();
+  const refSha = ref => {
+    try { return gitArgs(['show-ref', '--verify', '--hash', ref]); }
+    catch { return null; }
   };
-  const remoteBranch = pickRef(['JKHeadley/main', 'origin/main', 'upstream/main', 'main'])
-    || execSync('git rev-parse --abbrev-ref @{u} 2>/dev/null || echo origin/main', { encoding: 'utf-8' }).trim();
-  const changedFiles = execSync(`git diff --name-only ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null`, { encoding: 'utf-8' })
+  const mainAliases = ['JKHeadley', 'origin', 'upstream']
+    .map(remote => ({ remote, sha: refSha(`refs/remotes/${remote}/main`) }))
+    .filter(alias => alias.sha);
+  const preferred = mainAliases[0];
+  let mainBase = preferred?.sha ?? refSha('refs/heads/main');
+  if (preferred) {
+    // Multiple aliases can track the same remote at different commits. Use
+    // exact ref lookup and pinned object IDs for both ancestry and the diff.
+    const readUrl = remote => {
+      try { return gitArgs(['remote', 'get-url', remote]); }
+      catch { return ''; }
+    };
+    const selectedUrl = readUrl(preferred.remote);
+    for (const { remote, sha } of mainAliases.slice(1)) {
+      if (!selectedUrl || readUrl(remote) !== selectedUrl) continue;
+      try {
+        gitArgs(['merge-base', '--is-ancestor', mainBase, sha]);
+        mainBase = sha;
+      } catch { /* An older or divergent alias cannot supersede the preferred ref. */ }
+    }
+  }
+  if (!mainBase) {
+    try { mainBase = refSha(gitArgs(['rev-parse', '--symbolic-full-name', '@{u}'])); }
+    catch { /* No upstream. The existing parent diff is the last fallback. */ }
+  }
+  const diffRange = mainBase ? `${mainBase}...HEAD` : 'HEAD~1';
+  const changedFiles = execSync(`git diff --name-only ${diffRange} 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null`, { encoding: 'utf-8' })
     .trim()
     .split('\n')
     .filter(Boolean);
@@ -206,7 +222,7 @@ try {
   // list. A release cut deletes fragments and adds none, so it passes ONLY via
   // the release-cut exemption below.
   const fragmentChanges = execSync(
-    `git diff --name-only --no-renames --diff-filter=AM ${remoteBranch}...HEAD 2>/dev/null || git diff --name-only --no-renames --diff-filter=AM HEAD~1 2>/dev/null`,
+    `git diff --name-only --no-renames --diff-filter=AM ${diffRange} 2>/dev/null || git diff --name-only --no-renames --diff-filter=AM HEAD~1 2>/dev/null`,
     { encoding: 'utf-8' },
   )
     .trim()
@@ -220,7 +236,7 @@ try {
   // (all of which ship behavior but previously slipped this local gate).
   const releaseRelevantChanges = changedFiles.filter(isReleaseRelevant);
   const releaseCut = (releaseRelevantChanges.length > 0 && fragmentChanges.length === 0)
-    ? detectReleaseCut({ cwd: ROOT, baseRef: remoteBranch })
+    ? detectReleaseCut({ cwd: ROOT, baseRef: mainBase ?? 'HEAD~1' })
     : null;
   if (releaseCut && releaseCut.isCut) {
     console.log(`  ✅ Release cut v${releaseCut.version} recognised (only version fields + the versioned guide + consumed fragments) — release-fragment check not applicable.`);

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "prepush-main-reference-alias",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-27T06:34:08.113Z",
+  "artifactPath": "upgrades/side-effects/prepush-main-reference-alias.md",
+  "artifactSha256": "396dc3ac15989561d879deced64f2d3a687626463cb9c7b85a8a9dde46712417",
+  "coveredFiles": [
+    "scripts/pre-push-gate.js",
+    "tests/unit/pre-push-gate.test.ts",
+    "upgrades/next/prepush-main-reference-alias.md",
+    "upgrades/prepush-main-reference-alias.eli16.md",
+    "upgrades/side-effects/prepush-main-reference-alias.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only Git comparison starts from a pinned canonical reference; the release checks and their authority stay in the same gate.",
+  "eli16Path": "upgrades/prepush-main-reference-alias.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/prepush-main-reference-alias.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
