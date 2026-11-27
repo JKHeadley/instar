@@ -67,6 +67,7 @@ interface MainFailureConfirmation {
   head: string;
   attempts: number;
   files: string[];
+  sawUnnamed?: boolean;
 }
 
 // A run reports at most 30 files; retain the union of the two prior runs.
@@ -439,7 +440,8 @@ export class MainHealth {
       const confirmation = w.failureConfirmation;
       if (w.state === 'main-suspect' && confirmation && confirmation.head === w.redHead
         && Number.isInteger(confirmation.attempts) && confirmation.attempts > 0
-        && confirmation.attempts <= MAX_CONFIRMATION_ATTEMPTS && Array.isArray(confirmation.files)
+        && confirmation.attempts < MAX_CONFIRMATION_ATTEMPTS && Array.isArray(confirmation.files)
+        && (confirmation.sawUnnamed === undefined || typeof confirmation.sawUnnamed === 'boolean')
         && confirmation.files.length <= MAX_CONFIRMATION_FILES
         && confirmation.files.every(file => typeof file === 'string' && file.length > 0)) {
         this.failureConfirmation = confirmation;
@@ -503,25 +505,31 @@ export class MainHealth {
       return wasRed || red !== null ? 'cleared' : 'none';
     }
     // failure
+    let reason = 'rerun-failed';
     if (this.snap.state !== 'main-red') {
       const previous = this.failureConfirmation?.head === head ? this.failureConfirmation : null;
       const files = [...new Set(failingFiles)].slice(0, MAX_CONFIRMATION_FILES);
-      if (!previous || !files.some(file => previous.files.includes(file))) {
-        const attempts = Math.min((previous?.attempts ?? 0) + 1, MAX_CONFIRMATION_ATTEMPTS);
-        this.failureConfirmation = {
-          head,
-          attempts,
-          files: [...new Set([...(previous?.files ?? []), ...files])].slice(0, MAX_CONFIRMATION_FILES),
-        };
-        const reason = attempts === 1 ? 'first-failure' : 'failure-unconfirmed';
-        this.set({ ...this.snap, state: 'main-suspect', redHead: head, reason });
-        return attempts < MAX_CONFIRMATION_ATTEMPTS ? 'rerun' : 'none';
+      const unnamed = files.length === 0;
+      const confirmed = previous && (files.some(file => previous.files.includes(file))
+        || (unnamed && (previous.sawUnnamed ?? previous.files.length === 0)));
+      if (!confirmed) {
+        const attempts = (previous?.attempts ?? 0) + 1;
+        if (attempts < MAX_CONFIRMATION_ATTEMPTS) {
+          this.failureConfirmation = {
+            head,
+            attempts,
+            files: [...new Set([...(previous?.files ?? []), ...files])].slice(0, MAX_CONFIRMATION_FILES),
+            sawUnnamed: unnamed || (previous ? previous.sawUnnamed ?? previous.files.length === 0 : false),
+          };
+          this.set({ ...this.snap, state: 'main-suspect', redHead: head, reason: attempts === 1 ? 'first-failure' : 'failure-unconfirmed' });
+          return 'rerun';
+        }
+        reason = 'failure-confirmation-exhausted';
       }
     }
     this.failureConfirmation = null;
-    // The same file failed again (or main was already red).
-    this.set({ ...this.snap, state: 'main-red', redHead: head, reason: 'rerun-failed' });
-    this.raise('local-verify:main-red', { redHead: head, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental", ...(detail ? { runDetail: detail } : {}) });
+    this.set({ ...this.snap, state: 'main-red', redHead: head, reason });
+    this.raise('local-verify:main-red', { redHead: head, reason, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental", ...(detail ? { runDetail: detail } : {}) });
     return 'none';
   }
 

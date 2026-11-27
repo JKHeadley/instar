@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T18:50:37.264Z",
+  "slug": "local-verify-main-confirmation-cadence",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 36,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/mainHealth.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

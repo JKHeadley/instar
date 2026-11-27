@@ -148,18 +148,18 @@ describe('MainHealth — transitions', () => {
     expect(h.snapshot().state).toBe('main-red');
   });
 
-  it('keeps three disjoint failures suspect, without spending a fourth run', async () => {
+  it('signals red after three disjoint failures without spending a fourth run', async () => {
     const d = tmp(); watermark(d, {});
     const { h, signals } = health(d);
     h.load();
     expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
     expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['b.test.ts'])).toBe('rerun');
     expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['c.test.ts'])).toBe('none');
-    expect(h.snapshot()).toMatchObject({ state: 'main-suspect', reason: 'failure-unconfirmed' });
-    expect(signals).toEqual([]);
+    expect(h.snapshot()).toMatchObject({ state: 'main-red', reason: 'failure-confirmation-exhausted' });
+    expect(signals).toEqual(['local-verify:main-red']);
   });
 
-  it('does not use unnamed failures or a failure from another head as confirmation', async () => {
+  it('does not match a named failure with an unnamed failure or carry evidence across heads', async () => {
     const d = tmp(); watermark(d, {});
     const { h, signals } = health(d);
     h.load();
@@ -168,6 +168,18 @@ describe('MainHealth — transitions', () => {
     expect(await h.onVerify(sha('2'), 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
     expect(h.snapshot()).toMatchObject({ state: 'main-suspect', redHead: sha('2') });
     expect(signals).toEqual([]);
+  });
+
+  it('confirms two unnamed failures on the same head across a restart', async () => {
+    const d = tmp(); watermark(d, {});
+    const first = health(d).h;
+    first.load();
+    expect(await first.onVerify(sha('1'), 'failure')).toBe('rerun');
+    const { h, signals } = health(d);
+    h.load();
+    expect(await h.onVerify(sha('1'), 'failure')).toBe('none');
+    expect(h.snapshot()).toMatchObject({ state: 'main-red', reason: 'rerun-failed' });
+    expect(signals).toEqual(['local-verify:main-red']);
   });
 
   it('persists a covered timestamp and keeps the healthy interval out of recovery', async () => {
