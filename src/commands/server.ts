@@ -34122,9 +34122,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               sessionRunning: (name) => sessionManager.isSessionAliveNonBlocking(name),
               // A close of a conversation this machine no longer serves (§2.1). Not the lease holder, so the
               // runtime-private exception and a reason beginning "topic moved". A KEEP refusal comes back here.
-              closeLostSession: async (key, tmux) => {
+              closeLostSession: async (key, tmux, mayCommit) => {
                 const rec = state.findSessionByTmux(tmux);
                 if (!rec) return { closed: true };
+                if (!mayCommit()) return { closed: false, detail: 'close authority changed or expired' };
                 const res = await terminateWithAuthority(rec.id, `topic moved: this machine no longer serves app conversation ${key}`, { via: 'app-conversation-lost', localPostTransferCloseout: true });
                 return res.terminated ? { closed: true } : { closed: false, detail: res.skipped };
               },

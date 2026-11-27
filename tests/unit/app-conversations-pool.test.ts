@@ -151,6 +151,81 @@ describe('the binding reconcile and close-on-loss (§2.1)', () => {
     expect(closed).toEqual(['s1']);
   });
 
+  it('keeps a session when a local ownership record appears during liveness', async () => {
+    const { svc, v, registry, closed, handle } = makeService({ holds: false });
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    let resolveLiveness!: (alive: boolean) => void;
+    vi.spyOn(handle, 'sessionRunning').mockReturnValue(
+      new Promise<boolean>((resolve) => { resolveLiveness = resolve; }),
+    );
+    svc.leaseTick();
+    v.record = rec({ ownerMachineId: SELF });
+    resolveLiveness(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toEqual([]);
+  });
+
+  it('continues past a hung close and revokes that operation’s ability to commit', async () => {
+    let resolveFirst!: () => void;
+    const close = vi.fn<AppPoolHandle['closeLostSession']>()
+      .mockImplementationOnce((_key, _session, mayCommit) => new Promise((resolve) => {
+        resolveFirst = () => resolve({ closed: mayCommit() });
+      }))
+      .mockImplementation(async (_key, _session, mayCommit) => ({ closed: mayCommit() }));
+    const { svc, registry } = makeService({ holds: false, running: ['s1', 's2'], close });
+    const other = '0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e30';
+    svc.store.append({ eventId: 'cr-2', kind: 'created', conversationKey: other, title: 'Other', at: new Date().toISOString(), machineId: SELF });
+    registry.mintAppAlias(other);
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    svc.channels.register(String(registry.appAliasFor(other)), 's2', 'Other');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      svc.leaseTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0][2]()).toBe(true);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(close).toHaveBeenCalledTimes(2);
+      expect(close.mock.calls[1][1]).not.toBe(close.mock.calls[0][1]);
+      await expect(close.mock.results[1].value).resolves.toEqual({ closed: true });
+      expect(close.mock.calls[0][2]()).toBe(false);
+      svc.leaseTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close.mock.calls.filter(([, session]) => session === close.mock.calls[0][1])).toHaveLength(1);
+      resolveFirst();
+      await expect(close.mock.results[0].value).resolves.toEqual({ closed: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a close when its final authority check crosses the deadline', async () => {
+    let commitAllowed: boolean | undefined;
+    const mono = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const close = vi.fn<AppPoolHandle['closeLostSession']>();
+    const { svc, registry, handle } = makeService({ holds: false, running: ['s1'], close });
+    svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
+    close.mockImplementation(async (_key, _session, mayCommit) => {
+      const read = vi.spyOn(handle, 'read').mockImplementationOnce(() => {
+        mono.mockReturnValue(10_001);
+        return null;
+      });
+      try {
+        commitAllowed = mayCommit();
+      } finally {
+        read.mockRestore();
+      }
+      return { closed: commitAllowed };
+    });
+    try {
+      svc.leaseTick();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(commitAllowed).toBe(false);
+    } finally {
+      mono.mockRestore();
+    }
+  });
+
   it('does not close an indeterminate, replaced, or stopped session probe', async () => {
     const { svc, registry, closed, handle } = makeService({ holds: false });
     svc.channels.register(String(registry.appAliasFor(KEY)), 's1', 'T');
