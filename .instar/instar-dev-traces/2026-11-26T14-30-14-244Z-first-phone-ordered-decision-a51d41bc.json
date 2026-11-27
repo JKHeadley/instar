@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-ordered-decision",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T14:30:14.244Z",
+  "artifactPath": "upgrades/side-effects/first-phone-ordered-decision.md",
+  "artifactSha256": "19341b77fccd96ff90da39c7b2b41d3f037911ecc4c9f22389d030a20a91c868",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneOrderedDecision.ts",
+    "tests/unit/first-phone-ordered-decision.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant exact v2 decision policy; no production caller or write",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-ordered-decision.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

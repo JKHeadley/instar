@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-ordered-challenge",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T13:25:33.700Z",
+  "artifactPath": "upgrades/side-effects/first-phone-ordered-challenge.md",
+  "artifactSha256": "b5408113fa40fd063f4fed8dd192075dfe8769deb0105ba865fb3df3b5306423",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneOrderedChallenge.ts",
+    "tests/unit/first-phone-ordered-challenge.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant pure ordered v2 challenge encoder; no production caller",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-ordered-challenge.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

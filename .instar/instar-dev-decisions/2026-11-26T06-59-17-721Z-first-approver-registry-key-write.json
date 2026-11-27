@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T06:59:17.721Z",
+  "slug": "first-approver-registry-key-write",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobileDeviceKeys.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

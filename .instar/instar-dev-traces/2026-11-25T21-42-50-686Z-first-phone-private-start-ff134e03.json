@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-private-start",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T21:42:50.686Z",
+  "artifactPath": "upgrades/side-effects/first-phone-private-start.md",
+  "artifactSha256": "9347ed808a5cf11f40b8262e051472db9f3f5c2176792e2e8214ef6edb2ab3de",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhonePrivateStart.ts",
+    "tests/unit/first-phone-private-start.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Synthetic locator matcher without a production caller or authority.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-private-start.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

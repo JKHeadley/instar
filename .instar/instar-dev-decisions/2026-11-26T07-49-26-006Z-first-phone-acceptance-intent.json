@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T07:49:26.006Z",
+  "slug": "first-phone-acceptance-intent",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/FirstApproverWriteReservationStore.ts"
+    ],
+    "addedLines": 56,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

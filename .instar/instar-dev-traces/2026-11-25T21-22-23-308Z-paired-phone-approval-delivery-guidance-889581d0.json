@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "paired-phone-approval-delivery-guidance",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T21:22:23.308Z",
+  "artifactPath": "upgrades/side-effects/paired-phone-approval-delivery-guidance.md",
+  "artifactSha256": "94bf8dae8cd1c30fd29a15d29b83b17576cc6658b8a2ab64087b7d5be200ad6a",
+  "coveredFiles": [
+    "src/core/trustJourney/AccountPathService.ts",
+    "tests/unit/trust-journey-device-approval.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Copy-only guidance in an existing branch. No changes to eligibility or write paths.",
+  "eli16Path": "docs/specs/app-trust-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/paired-phone-approval-delivery-guidance.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

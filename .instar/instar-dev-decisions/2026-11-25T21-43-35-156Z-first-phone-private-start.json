@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T21:43:35.156Z",
+  "slug": "first-phone-private-start",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhonePrivateStart.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

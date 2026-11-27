@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "first-approver-write-reservation",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T07:35:01.478Z",
+  "artifactPath": "upgrades/side-effects/first-approver-write-reservation.md",
+  "artifactSha256": "d3a19375ec4693799ee19a359408d19ebf7645bccfa6c56f82e08fa36dbf2f15",
+  "coveredFiles": [
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/trustJourney/FirstApproverWriteReservationStore.ts",
+    "src/core/trustJourney/firstPhonePrivateAccept.ts",
+    "src/core/trustJourney/firstPhoneProposal.ts",
+    "tests/unit/first-approver-write-reservation.test.ts",
+    "tests/unit/mobile-device-keys.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant durable local reservation connects to exact registry replacement; no live route mounts",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-approver-write-reservation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

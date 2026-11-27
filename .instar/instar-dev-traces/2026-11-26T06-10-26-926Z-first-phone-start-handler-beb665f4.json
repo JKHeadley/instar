@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-start-handler",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T06:10:26.926Z",
+  "artifactPath": "upgrades/side-effects/first-phone-start-handler.md",
+  "artifactSha256": "0221224625d16da1e5b5cd88346e285b0b3b263d0e41d61c1e79c16fc8cf8dea",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneStartHandler.ts",
+    "tests/unit/first-phone-private-accept.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant composition with no production caller",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-start-handler.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

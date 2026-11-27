@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-enrollment-presence-vector",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T00:25:24.289Z",
+  "artifactPath": "upgrades/side-effects/first-phone-enrollment-presence-vector.md",
+  "artifactSha256": "7c37dc3b0e5c841f3272a3bb67e0147f1b2802ca687d3b9b3320d6f34b250523",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneProposal.ts",
+    "tests/unit/first-phone-enrollment-presence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Pure enrollment signing format with disposable tests and no registered route.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-enrollment-presence-vector.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

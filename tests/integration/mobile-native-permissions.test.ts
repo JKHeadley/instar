@@ -9,16 +9,20 @@
  * proven action reaches the injected console path (the e2e drives the real one).
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
+import { createHash, createECDH } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { mountMobilePermissionsRoutes, permissionPresenceMessage, actionLine, consentDisclosure, type MobilePermissionsDeps, type ActionResult } from '../../src/server/mobilePermissionsRoutes.js';
 import { presenceMessage } from '../../src/server/mobileConsoleTicket.js';
-import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
+import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
+import { canonicalString, keyHashOf } from '../../src/core/MobileDeviceKeys.js';
+import { firstPhoneEnrollmentReceipt } from '../helpers/firstPhoneEnrollmentReceipt.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeatureEvidenceLog, setFeatureEvidenceLog } from '../../src/monitoring/FeatureEvidenceLog.js';
@@ -36,7 +40,9 @@ afterAll(() => {
 const relay = { id: 'threadline-relay', name: 'Agent network', consentTier: 'network', switchable: true, fullDescription: 'Joins the agent network.', dataImplications: [{ dataType: 'messages', description: 'Messages to other agents', destination: 'relay.example' }], reversibilityNote: 'Turn it off any time.' };
 const backup = { id: 'git-backup', name: 'Git backup', consentTier: 'local', switchable: true, oneLiner: 'Back up to git.' };
 
-function setup(cfg: Record<string, unknown> = {}) {
+function setup(cfg: Record<string, unknown> = {}, firstPhoneEnrollmentPrecheck?: MobilePermissionsDeps['firstPhoneEnrollmentPrecheck'],
+  firstPhoneEnrollmentSubmit?: MobilePermissionsDeps['firstPhoneEnrollmentSubmit'],
+  firstPhoneEnrollmentRead?: MobilePermissionsDeps['firstPhoneEnrollmentRead']) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnperm-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'justin', name: 'Justin', channels: [], permissions: ['user'] }]));
@@ -48,6 +54,9 @@ function setup(cfg: Record<string, unknown> = {}) {
   const hold: { wait: Promise<void> | null } = { wait: null };
   const deps: MobilePermissionsDeps = {
     pairing: () => svc,
+    firstPhoneEnrollmentPrecheck,
+    firstPhoneEnrollmentSubmit,
+    firstPhoneEnrollmentRead,
     config: () => config,
     stateDir: dir,
     bearerOk: (req) => req.headers.authorization === 'Bearer tok-1',
@@ -80,10 +89,10 @@ function setup(cfg: Record<string, unknown> = {}) {
   const router = express.Router();
   mountMobilePermissionsRoutes(router, deps);
   app.use(router);
-  const pair = (person?: { userId: string; role: 'msp' }, withPresence = true) => {
+  const pair = (person?: { userId: string; role: 'msp' }, withPresence = true, deviceKind?: 'computer') => {
     const dev = makeDevice();
     const presence = makeDevice();
-    const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
+    const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, deviceKind, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
     if (withPresence) svc.devices.setPresenceKey(created.device.id, presence.publicKey);
@@ -437,3 +446,262 @@ describe('asking for a key and cancelling a request (docs/specs/mobile-native-se
     expect(r.body.error).toBe('device-not-allowed');
   });
 });
+
+describe('disposable first-phone enrollment challenge', () => {
+  const issue = {
+    action: 'first-phone-enrollment-v1',
+    target: '01234567-89ab-4cde-8fab-012345678901',
+    proposalHash: HASH,
+    disclosureHash: 'c'.repeat(64),
+  };
+
+  it('refuses when the dedicated authority is not mounted', async () => {
+    const fixture = setup();
+    const response = await send(fixture.app, fixture.pair(), 'POST', '/mobile/permissions/challenge', issue);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'first-phone-enrollment-unavailable' });
+  });
+
+  it('checks the signed caller and exact binding before issuing a challenge without a console PIN', async () => {
+    const precheck = vi.fn<NonNullable<MobilePermissionsDeps['firstPhoneEnrollmentPrecheck']>>();
+    precheck.mockReturnValue({ status: 409, error: 'nomination-changed' });
+    const fixture = setup({ dashboardPin: undefined }, precheck);
+    const phone = fixture.pair();
+    const path = '/mobile/permissions/challenge';
+    const computer = fixture.pair(undefined, true, 'computer');
+    const wrongDevice = await send(fixture.app, computer, 'POST', path, issue);
+    expect(wrongDevice.status).toBe(403);
+    expect(wrongDevice.body).toEqual({ error: 'first-phone-required' });
+    const invalid = await send(fixture.app, phone, 'POST', path, { ...issue, proposalHash: 'bad' });
+    expect(invalid.status).toBe(400);
+    expect(precheck).not.toHaveBeenCalled();
+
+    const refused = await send(fixture.app, phone, 'POST', path, issue);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: 'nomination-changed' });
+    expect(precheck).toHaveBeenCalledWith(
+      { kind: issue.action, target: issue.target, proposalHash: issue.proposalHash, disclosureHash: issue.disclosureHash },
+      { deviceId: phone.id, host: HOST },
+    );
+
+    precheck.mockReturnValue(null);
+    const accepted = await send(fixture.app, phone, 'POST', path, issue);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+});
+
+describe('disposable first-phone signed enrollment submission', () => {
+  it('records a private nomination and returns the same receipt on signed retry after reopening the database', async () => {
+    const disclosure = 'Allow the disposable iPhone to approve changes for the test agent.';
+    const action = {
+      action: 'first-phone-enrollment-v1',
+      target: '',
+      proposalHash: HASH,
+      disclosureHash: createHash('sha256').update(disclosure).digest('hex'),
+    };
+    const fixtures = new Map<string, { deviceKeyHash: string; presenceKeyHash: string }>();
+    let db: Database.Database;
+    let current = true;
+    const slot = 'tj:device-acceptance:first:0';
+    const fixture = setup({ dashboardPin: undefined }, (candidate, caller) =>
+      candidate.target === action.target && candidate.proposalHash === action.proposalHash
+        && candidate.disclosureHash === action.disclosureHash && caller.host === HOST && fixtures.has(caller.deviceId)
+        ? null : { status: 409, error: 'nomination-changed' },
+    async (signed, proof) => {
+      const expected = fixtures.get(proof.deviceId);
+      const binding = new FirstPhonePrivateNominationStore(db).binding(signed.target);
+      if (binding?.proposalHash !== signed.proposalHash || binding.firstAcceptanceKey !== slot
+        || signed.target !== action.target || signed.proposalHash !== action.proposalHash
+        || signed.disclosureHash !== action.disclosureHash || expected?.deviceKeyHash !== proof.deviceKeyHash
+        || expected.presenceKeyHash !== proof.presenceKeyHash || proof.host !== HOST
+        || proof.challengeExpiresAt <= Date.now()) return { status: 409, body: { error: 'nomination-changed' } };
+      const receipt = firstPhoneEnrollmentReceipt(db).claim(slot, signed.target, signed.proposalHash, proof.deviceId);
+      return receipt ? { status: 200, body: receipt } : { status: 409, body: { error: 'slot-occupied' } };
+    }, async (id, caller) => {
+      const expected = fixtures.get(caller.deviceId);
+      if (id !== action.target || caller.host !== HOST || expected?.deviceKeyHash !== caller.deviceKeyHash
+        || expected.presenceKeyHash !== caller.presenceKeyHash) return { status: 404, body: { error: 'nomination-unavailable' } };
+      const receipt = firstPhoneEnrollmentReceipt(db).receipt(id, action.proposalHash, caller.deviceId, slot);
+      return { status: 200, body: receipt
+        ? { status: 'recorded', receipt, current }
+        : { status: 'eligible', nominationId: id, proposalHash: action.proposalHash, disclosureVersion: 1, disclosure, disclosureHash: action.disclosureHash, expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+    });
+    const phone = fixture.pair();
+    fixtures.set(phone.id, { deviceKeyHash: keyHashOf(phone.dev.publicKey), presenceKeyHash: keyHashOf(phone.presence.publicKey) });
+    const file = path.join(fixture.dir, 'first-phone-receipt.sqlite');
+    db = new Database(file);
+    try {
+      const offer = {
+        callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '777', disclosureMessageId: 15,
+        proposalHash: action.proposalHash, accountAcceptanceId: 'fixture-account', holderEpoch: 'fixture-holder',
+        firstAcceptanceKey: slot, issuedAt: 100, expiresAt: 300,
+      };
+      const nomination = new FirstPhonePrivateNominationStore(db).record('receipt-1', offer, {
+        callbackData: offer.callbackData, senderId: '777', senderIsBot: false,
+        chatId: '777', chatType: 'private', messageId: 15, receivedAt: 200,
+      }, {
+        ownerId: '777', accountAcceptanceId: offer.accountAcceptanceId, holderEpoch: offer.holderEpoch,
+        proposalHash: offer.proposalHash, firstAcceptanceKey: slot,
+      }, 210);
+      if (nomination.status !== 'recorded') throw new Error('Expected synthetic private acceptance to record a nomination');
+      action.target = nomination.nominationId;
+      const readPath = `/mobile/trust/first-phone-enrollment/${action.target}`;
+      const waiting = await send(fixture.app, phone, 'GET', readPath);
+      expect(waiting.status).toBe(200);
+      expect(waiting.headers['cache-control']).toBe('no-store');
+      const percentAlias = encodeURIComponent(action.target[0]).replace(/./, char => '%' + char.charCodeAt(0).toString(16)) + action.target.slice(1);
+      expect((await send(fixture.app, phone, 'GET', `/mobile/trust/first-phone-enrollment/${percentAlias}`)).status).toBe(403);
+      expect((await send(fixture.app, phone, 'GET', readPath + '?extra=1')).status).toBe(400);
+      expect(waiting.body).toMatchObject({ status: 'eligible', nominationId: action.target, proposalHash: action.proposalHash, disclosureVersion: 1, disclosure, disclosureHash: action.disclosureHash });
+      const otherPhone = fixture.pair();
+      expect((await send(fixture.app, otherPhone, 'GET', readPath)).status).toBe(404);
+      const challengeID = await challenge(fixture.app, phone, action);
+      const line = `${action.action} ${action.target} ${action.proposalHash} ${action.disclosureHash}`;
+      const submitted = await send(fixture.app, phone, 'POST', '/mobile/trust/first-phone-enrollment', {
+        ...action, challenge: challengeID, presenceSig: sig(phone, challengeID, line),
+      });
+      expect(submitted.status).toBe(200);
+      db.close();
+      db = new Database(file);
+
+      const reopened = firstPhoneEnrollmentReceipt(db);
+      const recovered = reopened.receipt(action.target, action.proposalHash, phone.id, slot);
+      expect(recovered).toEqual(submitted.body);
+      expect(recovered?.acceptanceId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(reopened.receipt(action.target, action.proposalHash, 'other-device', slot)).toBeNull();
+      expect(reopened.claim(slot, 'other-nomination', action.proposalHash, phone.id)).toBeNull();
+      expect(reopened.claim('tj:device-acceptance:first:1', action.target, action.proposalHash, phone.id)).toBeNull();
+      const freshChallenge = await challenge(fixture.app, phone, action);
+      const retry = await send(fixture.app, phone, 'POST', '/mobile/trust/first-phone-enrollment', {
+        ...action, challenge: freshChallenge, presenceSig: sig(phone, freshChallenge, line),
+      });
+      expect(retry.status).toBe(200);
+      expect(retry.body).toEqual(recovered);
+      current = false;
+      const readAfterWithdrawal = await send(fixture.app, phone, 'GET', readPath);
+      expect(readAfterWithdrawal.status).toBe(200);
+      expect(readAfterWithdrawal.body).toEqual({ status: 'recorded', receipt: recovered, current: false });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('passes only a valid one-use enrollment proof and the verified keys to the test authority', async () => {
+    const submit = vi.fn<NonNullable<MobilePermissionsDeps['firstPhoneEnrollmentSubmit']>>();
+    submit.mockResolvedValue({ status: 409, body: { error: 'nomination-changed' } });
+    const fixture = setup({ dashboardPin: undefined }, () => null, submit);
+    const phone = fixture.pair();
+    const action = {
+      action: 'first-phone-enrollment-v1',
+      target: '01234567-89ab-4cde-8fab-012345678901',
+      proposalHash: HASH,
+      disclosureHash: 'c'.repeat(64),
+    };
+    const path = '/mobile/trust/first-phone-enrollment';
+    const line = `${action.action} ${action.target} ${action.proposalHash} ${action.disclosureHash}`;
+    const bad = await challenge(fixture.app, phone, action);
+    const invalid = await send(fixture.app, phone, 'POST', path, {
+      ...action, challenge: bad, presenceSig: sig(phone, bad, line + ' changed'),
+    });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body).toEqual({ error: 'presence-invalid' });
+    expect(submit).not.toHaveBeenCalled();
+
+    const good = await challenge(fixture.app, phone, action);
+    const body = { ...action, challenge: good, presenceSig: sig(phone, good, line) };
+    const changed = await send(fixture.app, phone, 'POST', path, body);
+    expect(changed.status).toBe(409);
+    expect(changed.body).toEqual({ error: 'nomination-changed' });
+    expect(submit).toHaveBeenCalledWith(
+      { kind: action.action, target: action.target, proposalHash: action.proposalHash, disclosureHash: action.disclosureHash },
+      {
+        deviceId: phone.id, host: HOST, deviceKeyHash: keyHashOf(phone.dev.publicKey),
+        presenceKeyHash: keyHashOf(phone.presence.publicKey), challengeExpiresAt: expect.any(Number),
+      },
+    );
+
+    const replay = await send(fixture.app, phone, 'POST', path, body);
+    expect(replay.status).toBe(401);
+    expect(replay.body).toEqual({ error: 'challenge-invalid' });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Explicitly invoked by the disposable iPhone simulator runner. Never binds outside loopback.
+const simulatorDescriptor = process.env.FIRST_PHONE_SIM_TEST_DESCRIPTOR;
+it.skipIf(!simulatorDescriptor)('serves a disposable enrollment to the native simulator', async () => {
+  const disclosure = 'Allow the simulator iPhone to approve changes for the disposable agent.';
+  const disclosureHash = createHash('sha256').update(disclosure).digest('hex');
+  const slot = 'tj:device-acceptance:first:0';
+  const fixedPublicKey = (byte: number) => {
+    const key = createECDH('prime256v1');
+    key.setPrivateKey(Buffer.alloc(32, byte));
+    return key.getPublicKey().toString('base64url');
+  };
+  const deviceKey = fixedPublicKey(1);
+  const presenceKey = fixedPublicKey(2);
+  let deviceId: string;
+  let nominationId: string;
+  let db: Database.Database;
+  let recovered = false;
+  const fixture = setup({ dashboardPin: undefined }, (action, caller) =>
+    action.target === nominationId && action.proposalHash === HASH && action.disclosureHash === disclosureHash
+      && caller.deviceId === deviceId && caller.host === HOST ? null : { status: 409, error: 'nomination-changed' },
+    async (action, proof) => {
+      const binding = new FirstPhonePrivateNominationStore(db).binding(action.target);
+      if (proof.deviceId !== deviceId || proof.host !== HOST || proof.deviceKeyHash !== keyHashOf(deviceKey)
+        || proof.presenceKeyHash !== keyHashOf(presenceKey) || proof.challengeExpiresAt <= Date.now()
+        || action.target !== nominationId || action.proposalHash !== HASH || action.disclosureHash !== disclosureHash
+        || binding?.proposalHash !== HASH || binding.firstAcceptanceKey !== slot) {
+        return { status: 409, body: { error: 'nomination-changed' } };
+      }
+      const receipt = firstPhoneEnrollmentReceipt(db).claim(slot, nominationId, HASH, deviceId);
+      return receipt ? { status: 200, body: receipt } : { status: 409, body: { error: 'slot-occupied' } };
+    }, async (id, caller) => {
+      if (id !== nominationId || caller.deviceId !== deviceId || caller.host !== HOST
+        || caller.deviceKeyHash !== keyHashOf(deviceKey) || caller.presenceKeyHash !== keyHashOf(presenceKey)) {
+        return { status: 404, body: { error: 'nomination-unavailable' } };
+      }
+      const receipt = firstPhoneEnrollmentReceipt(db).receipt(id, HASH, deviceId, slot);
+      if (receipt) recovered = true;
+      return { status: 200, body: receipt
+        ? { status: 'recorded', receipt, current: true }
+        : { status: 'eligible', nominationId, proposalHash: HASH, disclosureVersion: 1, disclosure, disclosureHash,
+          expiresAt: new Date(Date.now() + 60_000).toISOString() } };
+    });
+  const created = fixture.svc.devices.createPending({ deviceName: 'Simulator iPhone', label: null, publicKey: deviceKey, host: HOST });
+  if (!created.ok) throw new Error('Could not register fixture phone');
+  deviceId = created.device.id;
+  fixture.svc.devices.applyConfirm(deviceId, { ok: true });
+  fixture.svc.devices.setPresenceKey(deviceId, presenceKey);
+  db = new Database(path.join(fixture.dir, 'simulator-receipt.sqlite'));
+  const server = fixture.app.listen(0, '127.0.0.1');
+  try {
+    const offer = {
+      callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '777', disclosureMessageId: 15,
+      proposalHash: HASH, accountAcceptanceId: 'fixture-account', holderEpoch: 'fixture-holder',
+      firstAcceptanceKey: slot, issuedAt: 100, expiresAt: 300,
+    };
+    const nomination = new FirstPhonePrivateNominationStore(db).record('simulator-private-tap', offer, {
+      callbackData: offer.callbackData, senderId: '777', senderIsBot: false,
+      chatId: '777', chatType: 'private', messageId: 15, receivedAt: 200,
+    }, {
+      ownerId: '777', accountAcceptanceId: offer.accountAcceptanceId, holderEpoch: offer.holderEpoch,
+      proposalHash: HASH, firstAcceptanceKey: slot,
+    }, 210);
+    if (nomination.status !== 'recorded') throw new Error('Could not record fixture nomination');
+    nominationId = nomination.nominationId;
+    if (!server.listening) await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No fixture address');
+    fs.writeFileSync(simulatorDescriptor!, JSON.stringify({ port: address.port, deviceId, host: HOST, nominationId }));
+    await expect.poll(() => recovered, { timeout: 300_000, interval: 100 }).toBe(true);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    db.close();
+  }
+}, 310_000);

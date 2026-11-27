@@ -1,3 +1,6 @@
+import type { Receipt } from '../core/trustJourney/accountPath.js';
+import { FIRST_PHONE_PRIVATE_START } from '../core/trustJourney/firstPhonePrivateStart.js';
+import { FIRST_PHONE_PRIVATE_CALLBACK, type AuthenticatedPrivateTap } from '../core/trustJourney/firstPhonePrivateAccept.js';
 import { categoryForAttention } from './notificationCategories.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
@@ -8,6 +11,13 @@ import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '..
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 /** cos-owner-decision-delivery: trusted owner offers; profile proposals use their own registered producer. */
+const firstPhoneReceipt = Symbol('first-phone-private-receipt');
+type PrivateOwnerMessageReceipt = {
+  chat?: { id?: number; type?: string };
+  message_id?: number;
+  text?: string;
+  reply_markup?: { inline_keyboard?: Array<Array<{ text?: string; callback_data?: string }>> };
+};
 const OWNER_DECISION_ENVELOPE: OutboundEnvelope = Object.freeze({ origin: 'automated', category: 'owner-decision', sourceContext: 'owner-decision-offer' });
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, relayNothingPrepared, type HubNoticeClass } from './telegram-origin/types.js';
 import { hubRepostDecision, type HubRepostState } from './telegram-origin/TokenlessNoticeBrakes.js';
@@ -321,10 +331,14 @@ interface TelegramUpdate {
   };
   callback_query?: {
     id: string;
-    from: { id: number; first_name: string; username?: string };
+    from: { id: number; first_name: string; username?: string; is_bot?: boolean };
     message?: {
       message_id: number;
-      chat: { id: number };
+      date?: number;
+      chat: { id: number; type?: string };
+      forward_origin?: unknown;
+      forward_date?: number;
+      is_automatic_forward?: boolean;
       message_thread_id?: number;
     };
     data?: string;
@@ -703,6 +717,30 @@ export class TelegramAdapter implements MessagingAdapter {
    *  (voice/photo/document) cannot carry the [a2a:…] marker and bypass the hook.
    *  See installAgentMessageHook for the production binding. */
   private agentMessageHook?: AgentMessageHook;
+  /** Send the exact enrollment disclosure and verify its private-chat receipt. */
+  async sendFirstPhonePrivateOffer(chatId: string, disclosure: string, callbackData: string):
+      Promise<{ chatId: string; messageId: number } | null> {
+    const owner = this.getVerifiedOwner();
+    if (owner === undefined || !Number.isSafeInteger(owner) || owner <= 0 || String(owner) !== chatId ||
+        !FIRST_PHONE_PRIVATE_CALLBACK.test(callbackData)) return null;
+
+    try {
+      const result = await this.sendOwnerDMWithButton(disclosure, { text: 'Accept', data: callbackData }, {
+        [firstPhoneReceipt]: owner,
+      });
+      const messageId = result?.message_id;
+      const keyboard = result?.reply_markup?.inline_keyboard;
+      const button = keyboard?.[0]?.[0];
+      if (result?.chat?.id !== owner || result.chat.type !== 'private' ||
+          result.text !== disclosure || keyboard?.length !== 1 || keyboard[0].length !== 1 ||
+          button?.text !== 'Accept' || button.callback_data !== callbackData || typeof messageId !== 'number' ||
+          !Number.isSafeInteger(messageId) || messageId <= 0 || this.getVerifiedOwner() !== owner) return null;
+      return { chatId, messageId };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Pairing by invite on the DIRECT-POLLING path (no lifeline). Updates this adapter reads with
    * getUpdates come from Telegram itself, so a forwarded invite or a pairing tap read here is as
@@ -1383,6 +1421,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * refused message is never reported as delivered (Echo Bugs 10000002533). senderId 0 = unverified.
    */
   isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
+
+  /** Private first-phone nomination ingress. No service composition installs it yet. */
+  onFirstPhonePrivateAccept: ((receiptId: string, tap: AuthenticatedPrivateTap) => Promise<boolean>) | null = null;
 
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
   onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string; chatId?: string; messageId?: number }) => Promise<'ok' | 'ignored' | 'paused' | 'resumed' | 'recheck-failed' | 'write-failed'>) | null = null;
@@ -2691,9 +2732,15 @@ export class TelegramAdapter implements MessagingAdapter {
     return null;
   }
 
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string },
+    opts: { [firstPhoneReceipt]: number }): Promise<PrivateOwnerMessageReceipt | null>;
   async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
-    opts?: { reportHeld?: boolean }): Promise<number | null> {
-    const owner = this.getOwnerUserId();
+    opts?: { reportHeld?: boolean }): Promise<number | null>;
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null,
+    opts?: { reportHeld?: boolean; [firstPhoneReceipt]?: number }): Promise<PrivateOwnerMessageReceipt | number | null> {
+    const firstPhoneOwner = opts?.[firstPhoneReceipt];
+    const owner = firstPhoneOwner === undefined ? this.getOwnerUserId() : this.getVerifiedOwner();
+    if (firstPhoneOwner !== undefined && owner !== firstPhoneOwner) return null;
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
@@ -2703,15 +2750,19 @@ export class TelegramAdapter implements MessagingAdapter {
       // Sent as escaped HTML, never through the markdown converter: the text carries a caller-chosen device
       // name, which must not become a link or bold text inside the bot's own approval message.
       const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
+      const envelope = firstPhoneOwner === undefined
+        ? verifiedReplyEnvelope('verified-mobile-approval')
+        : OWNER_DECISION_ENVELOPE;
+      const result = await withNotificationEnvelope(envelope, () => this.apiCall('sendMessage', {
         chat_id: owner,
-        text: escaped,
-        parse_mode: 'HTML',
-        _formatMode: 'html',
+        ...(firstPhoneOwner === undefined
+          ? { text: escaped, parse_mode: 'HTML', _formatMode: 'html' }
+          : { text, _formatMode: 'legacy-passthrough' }),
         // A yes/no pair shares one row; three or more (one per project in a Chief of Staff note) get a row each,
         // so every button keeps its full name on a phone instead of being squeezed into one line.
         ...(buttons.length ? { reply_markup: { inline_keyboard: buttons.length > 2 ? buttons.map((b) => [{ text: b.text, callback_data: b.data }]) : [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
-      })) as { message_id: number };
+      })) as PrivateOwnerMessageReceipt | null;
+      if (firstPhoneOwner !== undefined) return result;
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
@@ -6667,7 +6718,36 @@ export class TelegramAdapter implements MessagingAdapter {
     return { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId };
   }
 
+  /** Private, direct-poll Start evidence. The receiver resolves and checks the current holder. */
+  onFirstPhonePrivateStart: ((receipt: Omit<Receipt, 'receivedBy'>) => Promise<void>) | null = null;
+
+  private async processFirstPhonePrivateStart(update: TelegramUpdate): Promise<boolean> {
+    const msg = update.message;
+    if (!msg || typeof msg.text !== 'string' || !msg.text.startsWith('/start fp1_')) return false;
+    if (!FIRST_PHONE_PRIVATE_START.test(msg.text)) return true;
+    const owner = this.getVerifiedOwner();
+    const handle = this.onFirstPhonePrivateStart;
+    if (!handle || !owner || msg.from?.id !== owner || msg.from.is_bot !== false ||
+        msg.chat?.type !== 'private' || msg.chat.id !== owner ||
+        ['forward_origin', 'forward_from', 'forward_date', 'is_automatic_forward', 'sender_chat', 'via_bot'].some(field => field in msg) ||
+        !Number.isSafeInteger(msg.message_id) || msg.message_id <= 0 ||
+        !Number.isSafeInteger(update.update_id) || update.update_id < 0 ||
+        !Number.isSafeInteger(msg.date) || msg.date <= 0) return true;
+    try {
+      await handle({
+        receiptId: `tg-${update.update_id}`, adapter: 'telegram', senderId: String(owner), chatId: String(owner),
+        chatType: 'private', messageId: String(msg.message_id), text: msg.text, senderIsBot: false,
+        forwarded: false, uniqueKey: `tg-update:${update.update_id}`, receivedAt: new Date().toISOString(),
+      });
+    } catch {
+      // The Start token stays out of the ordinary message path, including on failure.
+      console.warn('[trust-journey] first-phone private Start could not be processed');
+    }
+    return true;
+  }
+
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    if (update.message && await this.processFirstPhonePrivateStart(update)) return;
     const msg = update.message;
     if (msg?.from && !msg.from.is_bot && this.isAuthorized(msg.from.id) && this.selectivity) {
       const topicId = inboundTopicId(String(msg.chat.id), msg.message_thread_id ?? 1, this.topicSpace()) ?? 1;
@@ -6680,7 +6760,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private async processUpdateDelivered(update: TelegramUpdate): Promise<void> {
     // Handle callback queries from inline keyboard buttons (Prompt Gate)
     if (update.callback_query) {
-      await this.processCallbackQuery(update.callback_query);
+      await this.processCallbackQuery(update.callback_query, 'direct-poll');
       return;
     }
 
@@ -7453,10 +7533,39 @@ export class TelegramAdapter implements MessagingAdapter {
     await this.processCallbackQuery(query);
   }
 
-  /**
-   * Handle a Telegram callback query from an inline keyboard button press.
-   */
-  private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+  /** Pass only direct, private callback evidence to the nomination authority. */
+  private async processFirstPhonePrivateAccept(query: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
+    const owner = this.getVerifiedOwner();
+    const message = query.message;
+    const callbackData = query.data;
+    const handle = this.onFirstPhonePrivateAccept;
+    if (!handle || !owner || query.from.id !== owner || query.from.is_bot !== false
+      || !message || message.chat.type !== 'private' || message.chat.id !== owner || message.forward_origin !== undefined
+      || message.forward_date !== undefined || message.is_automatic_forward === true
+      || !Number.isSafeInteger(message.message_id) || message.message_id <= 0 || typeof message.date !== 'number'
+      || !Number.isSafeInteger(message.date) || message.date <= 0
+      || !callbackData || !FIRST_PHONE_PRIVATE_CALLBACK.test(callbackData)) {
+      await this.answerCallback(query.id, 'This enrollment is unavailable.');
+      return;
+    }
+    let accepted = false;
+    try {
+      accepted = await handle(query.id, {
+        callbackData, senderId: String(owner), senderIsBot: false, chatId: String(message.chat.id),
+        chatType: 'private', messageId: message.message_id, receivedAt: Date.now(),
+      });
+    } catch {
+      console.warn('[telegram] first-phone nomination handler failed');
+    }
+    await this.answerCallback(query.id, accepted ? 'Continue in Instar on the nominated iPhone.' : 'This enrollment is unavailable.');
+  }
+
+  private async processCallbackQuery(query: NonNullable<TelegramUpdate['callback_query']>, source?: 'direct-poll'): Promise<void> {
+    if (query.data?.startsWith('first-phone:')) {
+      if (source === 'direct-poll') await this.processFirstPhonePrivateAccept(query);
+      else await this.answerCallback(query.id, 'This enrollment is unavailable.');
+      return;
+    }
     normalizeInboundThread(query.message as { chat?: { id?: number }; message_thread_id?: number } | undefined, this.topicSpace());
     if (!query.data) {
       await this.apiCall('answerCallbackQuery', {

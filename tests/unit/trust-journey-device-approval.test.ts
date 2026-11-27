@@ -6,6 +6,7 @@
  * consumption and outcome, the first-device and accept-device rules, and the local override.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { AccountPathService, proofSubject, type DeviceDirectory, type DeviceSnap
 import { LocalFileTrustSink, TrustJourneyStore, type TrustChange, type TrustRecord, type TrustRecordSink } from '../../src/core/trustJourney/TrustJourneyStore.js';
 import { acceptanceStatement, UNKNOWN_OUTCOME_TEXT, type Receipt } from '../../src/core/trustJourney/accountPath.js';
 import { issueOperatorProofFromConsumedReceipt, proofCovers, proposalHashOf, type OperatorProof } from '../../src/core/TrustRaiseGuard.js';
+import { FirstPhonePrivateNominationStore } from '../../src/core/trustJourney/FirstPhonePrivateNominationStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const H = (c: string) => c.repeat(64);
@@ -86,6 +88,15 @@ async function acceptMac(svc: AccountPathService) {
   return mac;
 }
 const auth = (requestId: string, over: Record<string, string> = {}) => ({ deviceId: 'mac', keyFingerprint: devices.get('mac')!.keyFingerprint!, host: 'localhost:4040', requestId, proposalHash: HASH, challengeId: `ch${Math.random().toString(16).slice(2, 10)}`, ...over });
+
+it('distinguishes a paired phone with a presence key from an accepted approver', async () => {
+  devices.add('phone');
+  const service = mkService(mkStore());
+  expect(await service.approvalDelivery()).toEqual({
+    state: 'setup',
+    message: 'A device is paired, but none can approve changes yet. Pair your iPhone using the Instar app on the agent’s own computer, then turn on approvals in Changes to approve on the iPhone. A locally paired Mac with Touch ID can also be set up to approve changes.',
+  });
+});
 
 describe('app-first publication', () => {
   it('reserves capacity across the durability await against an independent acceptance flush', async () => {
@@ -581,6 +592,66 @@ describe('the switch off (mobilePairing.trustApproval)', () => {
 });
 
 describe('two eligible devices taking the first acceptance at the same moment', () => {
+  it('shares one fixed key and recovers the next generation from durable history', async () => {
+    const store = mkStore();
+    const key = store.firstDeviceAcceptanceKey();
+    expect(key).toBe('tj:device-acceptance:first:0');
+    expect(store.firstDeviceAcceptanceKey()).toBe(key);
+    await acceptMac(mkService(store));
+    expect(store.firstDeviceAcceptanceKey()).toBe('tj:device-acceptance:first:1');
+    expect(mkStore().firstDeviceAcceptanceKey()).toBe('tj:device-acceptance:first:1');
+  });
+
+  it('refuses a stale first-acceptance generation even after the winner is withdrawn', async () => {
+    const store = mkStore();
+    const service = mkService(store);
+    const preparedKey = store.firstDeviceAcceptanceKey();
+    await acceptMac(service);
+    const current = store.deviceAcceptance('mac')!;
+    await store.write('device-acceptance-withdrawn', { acceptanceId: current.acceptanceId });
+    expect(store.currentDeviceAcceptances()).toEqual([]);
+    expect(await store.writeFirstDeviceAcceptance({ ...current, acceptanceId: 'stale-candidate' }, preparedKey))
+      .toEqual({ ok: false, recordKey: preparedKey });
+    expect(store.currentDeviceAcceptances()).toEqual([]);
+  });
+
+  it('refuses the saved slot of a private nomination after local acceptance and withdrawal', async () => {
+    const store = mkStore();
+    const db = new Database(path.join(dir, 'nomination.sqlite'));
+    try {
+      const nominations = new FirstPhonePrivateNominationStore(db);
+      const offer = {
+        callbackData: 'first-phone:synthetic_fixture_token_123', chatId: '777', disclosureMessageId: 15,
+        proposalHash: HASH, accountAcceptanceId: 'accepted-fixture', holderEpoch: 'holder-1',
+        firstAcceptanceKey: store.firstDeviceAcceptanceKey(), issuedAt: 100, expiresAt: 300,
+      };
+      const tap = {
+        callbackData: offer.callbackData, senderId: '777', senderIsBot: false,
+        chatId: '777', chatType: 'private', messageId: 15, receivedAt: 200,
+      };
+      const result = nominations.record('receipt-1', offer, tap, {
+        ownerId: '777', accountAcceptanceId: offer.accountAcceptanceId, holderEpoch: offer.holderEpoch,
+        proposalHash: offer.proposalHash, firstAcceptanceKey: offer.firstAcceptanceKey,
+      }, 210);
+      if (result.status !== 'recorded') throw new Error('Expected a private nomination');
+
+      await acceptMac(mkService(store));
+      const local = store.deviceAcceptance('mac')!;
+      expect((await store.write('device-acceptance-withdrawn', { acceptanceId: local.acceptanceId })).ok).toBe(true);
+
+      const reopened = mkStore();
+      const binding = new FirstPhonePrivateNominationStore(db).binding(result.nominationId);
+      expect(binding).toEqual({ proposalHash: HASH, firstAcceptanceKey: offer.firstAcceptanceKey });
+      expect(reopened.currentDeviceAcceptances()).toEqual([]);
+      expect(await reopened.writeFirstDeviceAcceptance({
+        ...local, acceptanceId: 'nominated-phone', deviceId: 'phone',
+      }, binding!.firstAcceptanceKey)).toEqual({ ok: false, recordKey: offer.firstAcceptanceKey });
+      expect(reopened.currentDeviceAcceptances()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('exactly one wins; the other is told to get an approval', async () => {
     const svc = mkService(mkStore());
     const mac = devices.add('mac', { deviceKind: 'computer', localInstall: true });

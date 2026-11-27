@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "first-phone-enrollment-lookup",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T01:18:47.901Z",
+  "artifactPath": "upgrades/side-effects/first-phone-enrollment-lookup.md",
+  "artifactSha256": "f79703f9fdb06873266f08bd65ac0f037b657efe7fd95655725cc20813954d6c",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneProposal.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "tests/e2e/trust-app-approval-alive.test.ts",
+    "tests/integration/mobile-native-permissions.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only signed lookup unavailable without a disposable resolver, no production authority.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-enrollment-lookup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

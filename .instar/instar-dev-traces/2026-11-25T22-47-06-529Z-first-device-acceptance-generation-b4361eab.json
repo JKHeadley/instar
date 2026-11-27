@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "first-device-acceptance-generation",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T22:47:06.529Z",
+  "artifactPath": "upgrades/side-effects/first-device-acceptance-generation.md",
+  "artifactSha256": "e93bedceb749fe558bec227b254bc26e8c7c2f564f2beb466eb28620d67c1feb",
+  "coveredFiles": [
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "tests/unit/trust-journey-device-approval.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing local key selection refactor. No remote eligibility, route or new record type.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-device-acceptance-generation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

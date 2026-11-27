@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "first-phone-acknowledged-offer-store",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T02:23:27.518Z",
+  "artifactPath": "upgrades/side-effects/first-phone-acknowledged-offer-store.md",
+  "artifactSha256": "0cc765c5a804752113a27cf8310385fad602f69c98ccc22cf665cfaa283494fc",
+  "coveredFiles": [
+    "src/core/trustJourney/FirstPhonePrivateOfferStore.ts",
+    "src/core/trustJourney/firstPhoneOfferResolver.ts",
+    "tests/unit/first-phone-private-accept.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant private-offer storage only, with no issuance or production composition.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-acknowledged-offer-store.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

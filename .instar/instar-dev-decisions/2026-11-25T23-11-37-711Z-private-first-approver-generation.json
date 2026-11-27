@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T23:11:37.711Z",
+  "slug": "private-first-approver-generation",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhonePrivateAccept.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

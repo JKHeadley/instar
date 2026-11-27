@@ -173,6 +173,9 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000'],
       ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000/cursor'],
       ['POST', '/desktop/requests/00000000-0000-4000-8000-000000000000/ticket'],
+      // First-phone enrollment remains restricted to the active owner.
+      ['GET', '/mobile/trust/first-phone-enrollment/00000000-0000-4000-8000-000000000000'],
+      ['POST', '/mobile/trust/first-phone-enrollment'],
       // Start an account sign-in with Face ID instead of the PIN (account-sign-in-face-id).
       ['POST', '/mobile/accounts/sign-in/start'],
       // Add a Claude or Codex account with Face ID (account-add-face-id).

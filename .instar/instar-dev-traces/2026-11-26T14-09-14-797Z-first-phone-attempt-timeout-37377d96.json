@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-attempt-timeout",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T14:09:14.797Z",
+  "artifactPath": "upgrades/side-effects/first-phone-attempt-timeout.md",
+  "artifactSha256": "55466c85a3daa99f589f590ba3d7264a28fe3a1b6addd79c32fb3969772bfcdb",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneAttemptTimeout.ts",
+    "tests/unit/first-phone-attempt-timeout.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dormant local timer and exact cancellation request helper; no production caller",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-attempt-timeout.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

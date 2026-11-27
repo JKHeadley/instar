@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T01:19:22.525Z",
+  "slug": "first-phone-enrollment-lookup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 43,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneProposal.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

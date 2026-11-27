@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T00:26:00.334Z",
+  "slug": "first-phone-enrollment-presence-vector",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneProposal.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

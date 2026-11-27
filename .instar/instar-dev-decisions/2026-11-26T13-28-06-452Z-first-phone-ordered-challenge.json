@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T13:28:06.452Z",
+  "slug": "first-phone-ordered-challenge",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 65,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/firstPhoneOrderedChallenge.ts"
+    ],
+    "addedLines": 65,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

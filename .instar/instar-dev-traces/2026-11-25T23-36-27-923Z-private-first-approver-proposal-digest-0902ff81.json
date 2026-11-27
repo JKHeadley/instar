@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "private-first-approver-proposal-digest",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T23:36:27.923Z",
+  "artifactPath": "upgrades/side-effects/private-first-approver-proposal-digest.md",
+  "artifactSha256": "969e8a209ca62f03a697bc2eb403feebde5353bc52066c498a915fe4d7488789",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneProposal.ts",
+    "tests/unit/first-phone-private-accept.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Pure proposal digest used by disposable fixture only.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/private-first-approver-proposal-digest.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -7,6 +7,7 @@
  * allowlisted requests with a low-S ECDSA signature over a canonical string bound to its id
  * and the host it paired with. Revoked is a terminal tombstone that wins every merge.
  */
+import { FIRST_APPROVER_SLOT_KEY } from './trustJourney/firstPhoneProposal.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -228,6 +229,8 @@ export interface DeviceRecord {
    * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
    */
   presenceKey?: string;
+  /** Exact local mutation retained for first-approver recovery. */
+  firstApproverKeyWrite?: FirstApproverKeyWrite;
   /**
    * Browser devices (docs/specs/dashboard-conversations-browser-device.md §4.1). `client: 'browser'`
    * marks a browser; absent means a phone. A browser's key is `browserPublicKey` and `publicKey` is
@@ -373,6 +376,16 @@ function samePush(d: DeviceRecord, r: PushRegistration): boolean {
     && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
 }
 
+export interface FirstApproverKeyWrite {
+  operationId: string;
+  slotKey: string;
+  holderEpoch: string;
+  holderMachineId: string;
+  deviceKeyHash: string;
+  priorPresenceKeyHash: string | null;
+  newPresenceKeyHash: string;
+}
+
 interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[]; browserSetups?: BrowserSetupEntry[] }
 
 export class DeviceRegistry {
@@ -405,11 +418,18 @@ export class DeviceRegistry {
     }
   }
 
-  private write(f: RegistryFile): void {
+  private write(f: RegistryFile, durable = false): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(f, null, 2) + '\n', { mode: 0o600 });
+    if (durable) this.syncRegistryPath(tmp);
     fs.renameSync(tmp, this.file);
+    if (durable) this.syncRegistryPath(path.dirname(this.file));
+  }
+
+  private syncRegistryPath(file: string): void {
+    const fd = fs.openSync(file, 'r');
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   }
 
   /** Expire stale pending rows and prune old terminal rows; never removes an active device. */
@@ -580,7 +600,43 @@ export class DeviceRegistry {
     if (d.presenceKey === publicKey) return 'same';
     if (deviceKeyOf(d) === publicKey || f.devices.some((x) => x.id !== id && keysOf(x).includes(publicKey))) return 'conflict';
     d.presenceKey = publicKey;
+    delete d.firstApproverKeyWrite;
     this.write(f);
+    return 'replaced';
+  }
+
+  /** Conditional write for a caller holding a durable first-slot reservation and exclusive registry custody. */
+  replaceFirstApproverPresenceKey(id: string, publicKey: string, intent: Readonly<FirstApproverKeyWrite>):
+      'replaced' | 'already-replaced' | 'stale' | 'conflict' | 'not-active' {
+    const expected = Object.freeze({ ...intent });
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(expected.operationId)
+        || !FIRST_APPROVER_SLOT_KEY.test(expected.slotKey) || !expected.holderEpoch
+        || !expected.holderMachineId || !parseDevicePublicKey(publicKey) || keyHashOf(publicKey) !== expected.newPresenceKeyHash
+        || expected.newPresenceKeyHash === expected.priorPresenceKeyHash) return 'conflict';
+
+    const f = this.normalize(this.readStrict());
+    const d = f.devices.find(row => row.id === id);
+    if (!d || d.status !== 'active' || d.client === 'browser' || !d.publicKey
+        || d.approvedVia !== 'local-install' || d.localBinding?.machineId !== expected.holderMachineId
+        || (d.role !== undefined && d.role !== 'owner')) return 'not-active';
+    if (keyHashOf(d.publicKey) !== expected.deviceKeyHash) return 'stale';
+    const currentHash = d.presenceKey ? keyHashOf(d.presenceKey) : null;
+    const prior = d.firstApproverKeyWrite;
+    if (prior?.operationId === expected.operationId) {
+      if (prior.slotKey !== expected.slotKey || prior.holderEpoch !== expected.holderEpoch
+          || prior.holderMachineId !== expected.holderMachineId || prior.deviceKeyHash !== expected.deviceKeyHash || prior.priorPresenceKeyHash !== expected.priorPresenceKeyHash
+          || prior.newPresenceKeyHash !== expected.newPresenceKeyHash || currentHash !== expected.newPresenceKeyHash) return 'stale';
+      this.syncRegistryPath(this.file);
+      this.syncRegistryPath(path.dirname(this.file));
+      return 'already-replaced';
+    }
+
+    if (currentHash !== expected.priorPresenceKeyHash) return 'stale';
+    if (expected.deviceKeyHash === expected.newPresenceKeyHash || f.devices.some(row =>
+      row.id !== id && keysOf(row).some(key => keyHashOf(key) === expected.newPresenceKeyHash))) return 'conflict';
+    d.presenceKey = publicKey;
+    d.firstApproverKeyWrite = expected;
+    this.write(f, true);
     return 'replaced';
   }
 

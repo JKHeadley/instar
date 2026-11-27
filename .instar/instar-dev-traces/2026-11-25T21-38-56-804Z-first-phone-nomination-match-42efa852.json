@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "first-phone-nomination-match",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T21:38:56.804Z",
+  "artifactPath": "upgrades/side-effects/first-phone-nomination-match.md",
+  "artifactSha256": "d90478d342b47d03fcb75162331fbab11e321a91b5a8ee519854bece3d2bc6b5",
+  "coveredFiles": [
+    "src/core/trustJourney/firstPhoneNomination.ts",
+    "tests/unit/first-phone-nomination.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Synthetic comparator only. No live credential, ingress, enrollment or state.",
+  "eli16Path": "docs/specs/phone-only-first-approver.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/first-phone-nomination-match.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,3 +1,4 @@
+import { FIRST_PHONE_ENROLLMENT_LOOKUP_PATH } from '../core/trustJourney/firstPhoneProposal.js';
 import { recordMobileChatServingRefusal } from './mobileChatServingAudit.js';
 import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import { maskInbound } from '../messaging/inboundCredentialMask.js';
@@ -3056,6 +3057,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Face ID-confirmed path and bucket. Not in BROWSER_ROUTES, so a browser (key not hardware-held) is refused.
     { method: 'GET', re: /^\/mobile\/trust\/requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/trust\/requests\/tr-[0-9a-f]{12}-[0-9a-z]{6}\/approve$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'GET', re: FIRST_PHONE_ENROLLMENT_LOOKUP_PATH, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
+    { method: 'POST', re: /^\/mobile\/trust\/first-phone-enrollment$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/trust\/device-acceptance(\/withdraw)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same
     // Face ID-confirmed path and bucket. Neither answers a token or a Secret Drop link.
