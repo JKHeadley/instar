@@ -487,6 +487,8 @@ export interface DeliverStoredInput {
   event: MessageEvent | MediaMessageEvent;
   ownerName: string;
   memoryPersonId: string | null;
+  /** SEC-164 §4.5: a one-line note for the session only (never stored), e.g. that a key was removed. */
+  sessionNote?: string;
 }
 
 /**
@@ -507,7 +509,7 @@ export async function dispatchStoredAppMessage(s: AppConversationService, input:
   // This conversation's documents, when their list changed since it was last sent (§3.7).
   let docNotes: string[] = [];
   try { docNotes = s.deps.documentNotes?.(key) ?? []; } catch { docNotes = []; } // @silent-fallback-ok — a missed documents note never blocks a message
-  const notes = [...docNotes, ...pending.lines];
+  const notes = [...docNotes, ...pending.lines, ...(input.sessionNote ? [input.sessionNote] : [])];
   const originVerdict = s.verify(event);
   // 💻 for a browser key, from the signed ledger activation row (dashboard-conversations-browser-device §4.3, §4.7).
   const originClient = s.originClient(event, originVerdict);

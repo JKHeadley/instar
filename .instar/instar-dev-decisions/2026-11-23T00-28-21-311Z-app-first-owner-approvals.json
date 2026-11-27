@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-23T00:28:21.311Z",
+  "slug": "app-first-owner-approvals",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 230,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/TrustJourneyStore.ts",
+      "src/data/awareness/app-first-owner-approvals.md",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileTrustApproval.ts",
+      "src/server/needsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 170,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

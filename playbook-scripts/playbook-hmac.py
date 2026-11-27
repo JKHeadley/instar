@@ -88,14 +88,37 @@ def get_key(version=None):
     return bytes.fromhex(stdout)
 
 
+# `security -i` reads at most 4096 bytes per line. A longer line is not refused: it is split, the first part
+# runs as its own command and stores a truncated item, and only the rest fails (measured on macOS, SEC-155).
+KEYCHAIN_STDIN_MAX_LINE = 4096
+
+
+def _keychain_add_line(service, account, secret):
+    """The one `security -i` input line that adds the key, never trusting any app (-T "").
+
+    SEC-171: the key goes on standard input, hex-encoded behind -X (the same bytes -w stored), never in the
+    process arguments, which `ps` shows to every account on the Mac.
+    """
+    for name in (service, account):
+        if not name or any(c in name for c in '"\\$`') or any(ord(c) < 32 or ord(c) == 127 for c in name):
+            raise ValueError("keychain name cannot be passed safely")
+    line = f'add-generic-password -s "{service}" -a "{account}" -X "{secret.encode("utf-8").hex()}" -T ""\n'
+    if len(line.encode("utf-8")) > KEYCHAIN_STDIN_MAX_LINE:
+        raise ValueError("key too long for a safe stdin write")
+    return line
+
+
 def store_key(key_hex, version):
     account = f"{KEYCHAIN_ACCOUNT_PREFIX}{version}"
     _run_security_cmd(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account])
-    rc, stdout, stderr = _run_security_cmd([
-        "add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w", key_hex, "-T", "",
-    ])
-    if rc != 0:
-        print(f"Error storing key: {stderr}", file=sys.stderr)
+    try:
+        line = _keychain_add_line(KEYCHAIN_SERVICE, account, key_hex)
+    except ValueError as e:
+        print(f"Error storing key: {e}", file=sys.stderr)
+        sys.exit(1)
+    proc = subprocess.run(["/usr/bin/security", "-i"], input=line, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"Error storing key: {proc.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
 
 

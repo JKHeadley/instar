@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-consumer-promote-console",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T07:57:41.672Z",
+  "artifactPath": "upgrades/side-effects/feedback-consumer-promote-console.md",
+  "artifactSha256": "d2efd4068423fe9d50561135f4dd26141a736416f44a0a9f925e8aa19d7cdad9",
+  "coveredFiles": [
+    "dashboard/console/development-model.js",
+    "dashboard/console/development.js",
+    "docs/specs/feedback-consumer-promote-console.eli16.md",
+    "tests/unit/console-development.test.ts",
+    "upgrades/next/feedback-consumer-promote-console.md",
+    "upgrades/side-effects/feedback-consumer-promote-console.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Console presentation for an existing PIN action. Server remains the authority for the exact set and local eligibility.",
+  "eli16Path": "docs/specs/feedback-consumer-promote-console.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-consumer-promote-console.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

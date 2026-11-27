@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-stage2-mobile-hierarchy",
+  "sessionId": "5c9f2279-f637-41e4-8655-2e705082de13",
+  "timestamp": "2026-11-20T21:20:32.362Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-stage2-mobile-hierarchy.md",
+  "artifactSha256": "d1144984d7173d289f373fd6d05e58c893ba7364a032265270d5f26133e044fc",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/conversationGraphRead.ts",
+    "src/core/workFrontDoorsGraph.ts",
+    "src/data/awareness/phone-conversation-tree.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/ConversationGraphSurface.ts",
+    "src/server/conversationGraphRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/conversation-graph-tree-alive.test.ts",
+    "tests/integration/conversation-graph-tree-device.test.ts",
+    "tests/unit/conversation-graph-tree.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/next/work-front-doors-stage2-mobile-hierarchy.md",
+    "upgrades/side-effects/work-front-doors-stage2-mobile-hierarchy.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New device-signed read route exposing owner conversation hierarchy to phones (privacy-sensitive published interface); read-only, no stored data, revert fully undoes it",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

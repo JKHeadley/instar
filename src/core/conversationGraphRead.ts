@@ -16,7 +16,7 @@
  */
 import crypto from 'node:crypto';
 import {
-  reduceGraph, GraphProjection, nodeKey, validateNodeRef, moveEligibility,
+  reduceGraph, GraphProjection, nodeKey, validateNodeRef, moveEligibility, encodeRouteRef,
   type GraphEvent, type ConversationSource, type ConversationRef, type EffortRef, type NodeRef, type ProjectionItem, type PartialReason,
 } from './conversationGraph.js';
 
@@ -57,6 +57,43 @@ export interface GraphReadSource {
 
 /** At most this many proposed card conversations on one effort's page. */
 export const MAX_PROPOSED_CARDS = 50;
+
+/** The phone's tree read (work-front-doors stage 2; hierarchy v3 §7.1, §7.4). */
+export const TREE_MAX_DEPTH = 4;
+export const TREE_CHILD_LIMIT = 20;
+export const TREE_NODE_BUDGET = 400;
+
+/**
+ * A tracked project the tree may label an effort with: its conversation, the project's title and the
+ * conversation key the Work page and `GET /mobile/work/projects` use for it.
+ */
+export interface TreeProject { ref: ConversationRef; title: string; conversationKey: string }
+
+/** One node of the phone tree: the projection item, flattened for a phone, with its children nested. */
+export interface TreeNode {
+  ref: NodeRef;
+  /** The route form of `ref` (base64url canonical JSON), ready for `/mobile/conversation-graph/nodes/:ref`. */
+  routeRef: string;
+  title: string;
+  kind: ProjectionItem['kind'];
+  role: ProjectionItem['role'];
+  placedBy?: ProjectionItem['placedBy'];
+  state?: 'unavailable';
+  source?: ProjectionItem['source'];
+  sourceFreshness: string | null;
+  visibleChildCount: number;
+  /** Efforts only, and only when the viewer may see that conversation. */
+  frontDoor?: ConversationRef;
+  /** Efforts only, when the projects could be read and this effort holds a tracked project's conversation. */
+  project?: { title: string; conversationKey: string };
+  children?: TreeNode[];
+  /** False when the children shown are not all of them (depth, per-node or response limit): open the node for the rest. */
+  childrenComplete?: boolean;
+  /** Card conversations proposed here from the card record (work-front-doors §3.2), as on the node read. */
+  proposed?: TreeNode[];
+  /** Present (false) only when the response limit cut this effort's proposals: open the node for all of them. */
+  proposedComplete?: false;
+}
 
 export interface GraphViewer {
   principalKey: string;
@@ -188,27 +225,7 @@ export class ConversationGraphReadModel {
       ? { eligible: false, reason: 'chief-of-staff-is-root' }
       : moveEligibility(this.source.certifiedEvents(), {verify:event=>this.source.verify(event)}, valid, null, this.source.now().toISOString());
     const header = valid.kind === 'effort' ? this.source.headerMetadata?.(valid) : null;
-    // A card's conversation, unplaced, whose project's conversation sits directly in this effort: proposed here.
-    // Visibility is the projection's (the viewer filter already ran); an owner placement anywhere wins.
-    const proposed: ProjectionItem[] = [];
-    if (valid.kind === 'effort' && this.source.cardPlacements) {
-      const here = nodeKey(valid);
-      const seen = new Set<string>();
-      for (const cp of this.source.cardPlacements()) {
-        if (proposed.length >= MAX_PROPOSED_CARDS) break;
-        const cardKey = nodeKey(cp.card);
-        if (seen.has(cardKey) || graph.parentOf.get(cardKey)) continue;
-        // Both ends of the link are checked (spec §4.4): a project conversation the viewer may not see is never
-        // revealed through a card that points at it.
-        if (!projection.has(cp.project)) continue;
-        const projectParent = graph.parentOf.get(nodeKey(cp.project));
-        if (!projectParent || nodeKey(projectParent) !== here) continue;
-        const item = projection.item(cp.card);
-        if (!item) continue;
-        seen.add(cardKey);
-        proposed.push(item);
-      }
-    }
+    const proposed = valid.kind === 'effort' ? this.proposedFor(valid, graph, projection) : [];
     return {
       status: 200,
       body: {
@@ -230,6 +247,120 @@ export class ConversationGraphReadModel {
         }} : {}),
       },
     };
+  }
+
+  /**
+   * The phone's tree (work-front-doors stage 2, "Mobile hierarchy routes"; hierarchy v3 §7.4): the viewer's root
+   * efforts, paged like the Overview but without its five-row cut, each with its visible children nested down to
+   * TREE_MAX_DEPTH, at most TREE_CHILD_LIMIT children a node and TREE_NODE_BUDGET nodes a response. Everything comes
+   * from the same viewer-filtered projection as roots() and node(), built once: a hidden node is never counted,
+   * nested, proposed or used to label a project. A node whose children are cut says so (`childrenComplete: false`);
+   * the phone opens it with node(), which pages the rest.
+   *
+   * `projects` labels an effort as a project: its front door first, then any conversation directly in it, being a
+   * tracked project's conversation (the console's rule). null means the projects could not be read; the response
+   * then says `projects: 'unknown'` and labels nothing, rather than calling a project a plain group.
+   */
+  tree(viewer: GraphViewer, q: { cursor?: string | null; projects?: TreeProject[] | null }): ReadResult {
+    return this.scoped(() => this.treeUnscoped(viewer, q));
+  }
+
+  private treeUnscoped(viewer: GraphViewer, q: { cursor?: string | null; projects?: TreeProject[] | null }): ReadResult {
+    const ready = this.source.readiness();
+    if (!ready.ready) return this.unavailable(ready.reason);
+    const { projection, graph, revision, partialReasons } = this.project(viewer);
+    const page = this.page(viewer, 'tree', q.cursor ?? null, () => projection.list('overview', null));
+    if ('status' in page) return page;
+    const tracked = new Map<string, { title: string; conversationKey: string }>();
+    for (const p of q.projects ?? []) {
+      const ref = p && validateNodeRef(p.ref);
+      if (ref && ref.kind === 'conversation' && typeof p.title === 'string' && typeof p.conversationKey === 'string') {
+        tracked.set(nodeKey(ref), { title: p.title, conversationKey: p.conversationKey });
+      }
+    }
+    let budget = TREE_NODE_BUDGET;
+    // The card record is read once per tree, not once per effort.
+    const placements = this.source.cardPlacements ? this.source.cardPlacements() : null;
+    const flat = (item: ProjectionItem): TreeNode => {
+      budget -= 1;
+      const out: TreeNode = { ref: item.ref, routeRef: encodeRouteRef(item.ref), title: item.title, kind: item.kind, role: item.role,
+        sourceFreshness: item.sourceFreshness, visibleChildCount: item.visibleChildCount };
+      if (item.placedBy) out.placedBy = item.placedBy;
+      if (item.state) out.state = item.state;
+      if (item.source) out.source = item.source;
+      if (item.metadata?.frontDoor) out.frontDoor = item.metadata.frontDoor;
+      return out;
+    };
+    const build = (item: ProjectionItem, depth: number): TreeNode => {
+      const out = flat(item);
+      if (item.kind !== 'effort' || item.ref.kind !== 'effort') return out;
+      const effortRef = item.ref;
+      const childRefs = projection.childrenOf(effortRef);
+      if (q.projects) {
+        const candidates = [item.metadata?.frontDoor, ...childRefs.filter((r) => r.kind === 'conversation')];
+        for (const r of candidates) {
+          const hit = r && projection.has(r) ? tracked.get(nodeKey(r)) : undefined;
+          if (hit) { out.project = { title: hit.title, conversationKey: hit.conversationKey }; break; }
+        }
+      }
+      const children: TreeNode[] = [];
+      let complete = true;
+      if (depth >= TREE_MAX_DEPTH) complete = childRefs.length === 0;
+      else {
+        for (const r of childRefs) {
+          if (children.length >= TREE_CHILD_LIMIT || budget <= 0) { complete = false; break; }
+          const child = projection.item(r);
+          if (child) children.push(build(child, depth + 1));
+        }
+      }
+      out.children = children;
+      out.childrenComplete = complete;
+      const proposed: TreeNode[] = [];
+      for (const p of this.proposedFor(effortRef, graph, projection, placements)) {
+        if (budget <= 0) { out.proposedComplete = false; break; }
+        proposed.push(flat(p));
+      }
+      if (proposed.length) out.proposed = proposed;
+      return out;
+    };
+    const items: TreeNode[] = [];
+    for (const r of page.refs) {
+      const item = projection.item(r);
+      if (item) items.push(build(item, 1));
+    }
+    // The Chief of Staff conversation heads the tree, as it heads the Overview (first page only).
+    const rootRef = (q.cursor ?? '') === '' ? this.rootRef() : null;
+    const rootItem = rootRef ? projection.item(rootRef) : null;
+    return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(rootItem ? { root: flat(rootItem) } : {}),
+      items, nextCursor: page.nextCursor, projects: q.projects ? 'known' : 'unknown',
+      limits: { depth: TREE_MAX_DEPTH, childrenPerNode: TREE_CHILD_LIMIT, nodes: TREE_NODE_BUDGET } } };
+  }
+
+  /**
+   * A card's conversation, unplaced, whose project's conversation sits directly in this effort: proposed here.
+   * Visibility is the projection's (the viewer filter already ran); an owner placement anywhere wins.
+   */
+  private proposedFor(effortRef: EffortRef, graph: ReturnType<typeof reduceGraph>, projection: GraphProjection,
+    placements: Array<{ card: ConversationRef; project: ConversationRef }> | null = this.source.cardPlacements ? this.source.cardPlacements() : null): ProjectionItem[] {
+    const proposed: ProjectionItem[] = [];
+    if (!placements) return proposed;
+    const here = nodeKey(effortRef);
+    const seen = new Set<string>();
+    for (const cp of placements) {
+      if (proposed.length >= MAX_PROPOSED_CARDS) break;
+      const cardKey = nodeKey(cp.card);
+      if (seen.has(cardKey) || graph.parentOf.get(cardKey)) continue;
+      // Both ends of the link are checked (spec §4.4): a project conversation the viewer may not see is never
+      // revealed through a card that points at it.
+      if (!projection.has(cp.project)) continue;
+      const projectParent = graph.parentOf.get(nodeKey(cp.project));
+      if (!projectParent || nodeKey(projectParent) !== here) continue;
+      const item = projection.item(cp.card);
+      if (!item) continue;
+      seen.add(cardKey);
+      proposed.push(item);
+    }
+    return proposed;
   }
 
   /** Authorized candidate destinations, not a promise that a future move will
