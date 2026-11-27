@@ -139,6 +139,20 @@ describe('GET /subscription-pool?scope=pool — pool-wide aggregation (real peer
     expect(self.machineId).toBe('m_a');
   });
 
+  it('identifies machines that answered with no accounts', async () => {
+    const peerUrl = await listenPeer({ accounts: [] });
+    const app = mount(tmpDir, {
+      accounts: [acct('self-acct')], meshSelfId: 'm_a',
+      nicknames: { m_a: 'Laptop', m_b: 'Mac Mini' },
+      peers: [{ machineId: 'm_b', url: peerUrl }],
+    });
+    const res = await request(app).get('/subscription-pool').query({ scope: 'pool' }).set(auth()).expect(200);
+    expect(res.body.pool.answeredMachines).toEqual([
+      { machineId: 'm_a', nickname: 'Laptop' }, { machineId: 'm_b', nickname: 'Mac Mini' },
+    ]);
+    expect(res.body.accounts).toHaveLength(1);
+  });
+
   it('a 401 peer + a dead peer are BOTH accounted for in pool.failed — never a 500', async () => {
     // A peer that accepts a DIFFERENT token → our Bearer is rejected → 401.
     const unauthPeer = await listen401Peer('a-different-token');

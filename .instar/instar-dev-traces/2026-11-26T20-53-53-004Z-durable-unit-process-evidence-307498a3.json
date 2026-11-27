@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "durable-unit-process-evidence",
+  "sessionId": "9df0b517-c50a-4bb3-b377-e33fc5e831b3",
+  "timestamp": "2026-11-26T20:53:53.004Z",
+  "artifactPath": "upgrades/side-effects/durable-unit-process-evidence.md",
+  "artifactSha256": "450256f37f8b0680a815f6a5f78e35b0972d2704a96090f7b48dc80c5584a8d8",
+  "coveredFiles": [
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/unitProcessOutput.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/unitProcessOutput.test.ts",
+    "upgrades/side-effects/durable-unit-process-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded private diagnostics for an existing failure path, with unchanged verdict authority. Independent second-pass review of the harness-changing files at head 90341431a.",
+  "eli16Path": "docs/specs/durable-unit-process-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/durable-unit-process-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
