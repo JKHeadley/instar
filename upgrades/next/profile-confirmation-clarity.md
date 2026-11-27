@@ -1,0 +1,18 @@
+<!-- bump: patch -->
+# Clearer Conversation Change Questions
+
+## What Changed
+
+Conversation change questions name the conversation and explain the effect in plain language. Several requests can stay pending without replacing each other. Explicit reminders retain the same change, and agent messages no longer cancel requests. Confirmation still requires the verified owner to reply to the specific question with exactly yes. Other wording reaches the agent for clarification and does not change settings. Failed acknowledgment delivery no longer discards a saved result or repeats a restart.
+
+## What to Tell Your User
+
+When I ask to change how a conversation runs, the question will explain what changes. Use Reply on that question and send yes. If you answer another way, I can remind you how to confirm. You can keep more than one question open.
+
+## Summary of New Capabilities
+
+Agents can explicitly remind an identified pending request or ask the server for an audience-safe clarification. Neither operation grants permission or changes the stored proposal. Existing installations receive the awareness entry during their normal update.
+
+## Evidence
+
+Targeted unit, HTTP and production-composition lifecycle tests cover receipt binding, private clarification, ownership changes, atomic settings and failed acknowledgment replay. Review closure is explicitly bounded under the operator's direction, not full convergence. Full Local Verify runs through the normal queue. Simulated Telegram transport and a throwaway startup check are not live-owner delivery proof.
