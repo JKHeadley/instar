@@ -186,6 +186,7 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'GET /mobile/conversations/search',
     'GET /mobile/conversations/message-link',
     'GET /mobile/chat/app/<uuid>/message-context',
+    'POST /mobile/chat/app/<uuid>/reply',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
@@ -393,6 +394,7 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     ['GET', '/mobile/machines', 'owner'],
     ['GET', '/mobile/conversations/message-link', 'guest'],
     ['GET', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/message-context', 'guest'],
+    ['POST', '/mobile/chat/app/11111111-1111-4111-8111-111111111111/reply', 'member'],
   ])('%s %s needs %s', (method, p, tier) => {
     expect(tierFor(method, p)).toBe(tier);
   });
@@ -415,7 +417,7 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     //     public id and key and a proof bound to that phone, so every paired person's app can open links.
     // 46: document-decisions §3.2 opened GET /mobile/docs/<id>/decision to guests (the ask is checked against the conversation's audience, like the summary).
     // 48: exact App message links and anchored history are reader operations.
-    expect(open).toBe(48);
+    expect(open).toBe(49);
   });
 
   it.each([
@@ -433,5 +435,7 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
     expect(teamConversationTarget('DELETE', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'delete' });
     expect(teamConversationTarget('PATCH', `/mobile/conversations/${uuid}`)).toEqual({ ref: uuid, op: 'rename' });
     expect(teamConversationTarget('GET', '/mobile/conversations')).toBeNull();
+    expect(teamConversationTarget('GET', `/mobile/chat/app/${uuid}/message-context`)).toEqual({ ref: uuid, op: 'read' });
+    expect(teamConversationTarget('POST', `/mobile/chat/app/${uuid}/reply`)).toEqual({ ref: uuid, op: 'send' });
   });
 });

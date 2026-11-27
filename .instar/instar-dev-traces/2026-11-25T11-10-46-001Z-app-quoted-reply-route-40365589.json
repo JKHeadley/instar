@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "app-quoted-reply-route",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T11:10:46.001Z",
+  "artifactPath": "upgrades/side-effects/app-quoted-reply-route.md",
+  "artifactSha256": "2810944e3112fb9970825eb57a9c8cfcb5d51ea5a578c0f631e6fec6706230fa",
+  "specPath": "docs/specs/conversation-replies-message-links.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-25T11-02-06-210Z-app-quoted-reply-route.json",
+    ".instar/instar-dev-traces/2026-11-25T11-01-24-390Z-app-quoted-reply-route-a21c901a.json",
+    "docs/specs/conversation-replies-message-links.eli16.md",
+    "docs/specs/conversation-replies-message-links.md",
+    "docs/specs/reports/conversation-replies-message-links-convergence.md",
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/AppRecordSignatures.ts",
+    "src/core/MobileChatRequests.ts",
+    "src/core/QueueDrainLoop.ts",
+    "src/core/types.ts",
+    "src/data/awareness/app-quoted-reply.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "tests/unit/app-record-signatures.test.ts",
+    "tests/unit/queue-drain-loop.test.ts",
+    "upgrades/side-effects/app-quoted-reply-route.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed Reply route changes persisted message facts and admits a Stop effect",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/conversation-replies-message-links-convergence.md",
+      "iterations": null,
+      "verified": true
+    }
+  }
+}

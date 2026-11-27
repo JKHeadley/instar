@@ -131,7 +131,7 @@ export class MobileChatRequestStore {
   /** The send that carried this message, for finishing it after the fact (app-conversations-in-the-pool §2.2). */
   findSendByMessage(messageId: string): { deviceId: string; requestId: string } | null {
     for (const r of this.records.values()) {
-      if (r.extra?.op === 'send' && r.extra.messageId === messageId) return { deviceId: r.deviceId, requestId: r.requestId };
+      if ((r.extra?.op === 'send' || r.extra?.op === 'app-reply') && r.extra.messageId === messageId) return { deviceId: r.deviceId, requestId: r.requestId };
     }
     return null;
   }
@@ -139,7 +139,7 @@ export class MobileChatRequestStore {
   /** The words recorded on the send that carried this message, for the app's history. Null when none. */
   detailForMessage(messageId: string): string | null {
     for (const r of this.records.values()) {
-      if (r.extra?.op !== 'send' || r.extra.messageId !== messageId) continue;
+      if ((r.extra?.op !== 'send' && r.extra?.op !== 'app-reply') || r.extra.messageId !== messageId) continue;
       const d = r.result?.body?.detail;
       return typeof d === 'string' && d ? d : null;
     }
@@ -152,7 +152,7 @@ export class MobileChatRequestStore {
     const out: Array<{ deviceId: string; requestId: string; conversationKey: string; messageId: string }> = [];
     for (const r of this.records.values()) {
       if (r.state !== 'done' || r.result?.body?.outcome !== 'waiting' || Date.parse(r.at) > cutoff) continue;
-      if (r.extra?.op === 'send' && r.extra.conversationKey && r.extra.messageId) out.push({ deviceId: r.deviceId, requestId: r.requestId, conversationKey: r.extra.conversationKey, messageId: r.extra.messageId });
+      if ((r.extra?.op === 'send' || r.extra?.op === 'app-reply') && r.extra.conversationKey && r.extra.messageId) out.push({ deviceId: r.deviceId, requestId: r.requestId, conversationKey: r.extra.conversationKey, messageId: r.extra.messageId });
     }
     return out;
   }

@@ -11,8 +11,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  verifyRecordedOrigin, signReceipt, signRedaction, signerKeyHashOf, deviceKeyHashOf, identityKeyLookup, loadMachineSigner,
-  type LedgerKey, type MachineKeyLookup, type MachineSigner, type StoredDeviceOrigin, type VerifiableRecord,
+  verifyRecordedOrigin, signReceipt, signRedaction, receiptPayloadV3, signReplyReceipt, verifyReplyReceipt, signerKeyHashOf, deviceKeyHashOf, identityKeyLookup, loadMachineSigner,
+  type ReplyReceiptBinding, type LedgerKey, type MachineKeyLookup, type MachineSigner, type StoredDeviceOrigin, type VerifiableRecord,
 } from '../../src/core/AppRecordSignatures.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { generateSigningKeyPair, pemToBase64, sign as edSign, MachineIdentityManager } from '../../src/core/MachineIdentity.js';
@@ -212,5 +212,69 @@ describe('the attributable signing-key history (IdentityStore)', () => {
   it('signerKeyHashOf agrees for PEM and base64 forms of the same key', () => {
     const kp = generateSigningKeyPair();
     expect(signerKeyHashOf(kp.publicKey)).toBe(signerKeyHashOf(pemToBase64(kp.publicKey)));
+  });
+});
+
+
+describe('App quoted reply receipt', () => {
+  it('matches canonical bytes for each published fixture, including different reference key order', () => {
+    type Vector = { tuple: [string, string, string, string, string, string, string, ReplyReceiptBinding['replyTo']]; expectedUtf8: string };
+    const fixture = JSON.parse(fs.readFileSync(new URL('../fixtures/app-quoted-reply-contract.json', import.meta.url), 'utf8')) as {
+      receiptDelimiterCollisionFixture: Vector[]; receiptCanonicalKeyOrderFixture: Vector;
+    };
+    const vectors = [...fixture.receiptDelimiterCollisionFixture, fixture.receiptCanonicalKeyOrderFixture];
+    const encoded = vectors.map(({ tuple: [, digest, at, machineId, conversationKey, eventId, messageId, replyTo], expectedUtf8 }) => {
+      const actual = receiptPayloadV3(digest, at, machineId, { conversationKey, eventId, messageId, replyTo });
+      expect(Buffer.from(actual)).toEqual(Buffer.from(expectedUtf8));
+      return actual;
+    });
+    expect(encoded[0]).not.toBe(encoded[1]);
+    expect(encoded[0]).toBe(encoded[2]);
+  });
+
+  it('rejects a valid machine receipt naming a different original than the signed device body', () => {
+    const { machine, dev, record, ledger } = build();
+    const receivedAt = record.receivedAt!;
+    const host = record.origin!.host;
+    const timeMs = record.origin!.timeMs;
+    const action = `/mobile/chat/app/${KEY}/reply`;
+    const raw = Buffer.from(JSON.stringify({ text: record.text, replyTo: { eventId: 'signed-original' } }));
+    const origin: StoredDeviceOrigin = {
+      ...record.origin!, pathWithQuery: action, bodyB64: raw.toString('base64'),
+      bodySha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      sig: dev.sign(canonicalString(DEVICE_ID, host, 'POST', action, timeMs, raw)),
+    };
+    const quoted = (eventId: string): VerifiableRecord => {
+      const key = `app:${KEY}`;
+      const binding = { conversationKey: key, eventId: 'reply-event', messageId: 'reply-message',
+        replyTo: { conversationKey: key, eventId, messageId: 'source-message' } };
+      return { ...record, ...binding, conversationKey: KEY, origin, receipt: signReplyReceipt(machine.signer, origin, receivedAt, binding) };
+    };
+    expect(verifyRecordedOrigin(quoted('signed-original'), ledger, machine.lookup)).toBe('verified');
+    expect(verifyRecordedOrigin(quoted('different-original'), ledger, machine.lookup)).toBe('failed');
+  });
+
+  it('verifies a reloaded receipt and rejects mutations of either message or the stored timestamp', () => {
+    const { signer, lookup } = fakeMachine();
+    const receivedAt = new Date(T0).toISOString();
+    const base = {
+      conversationKey: `app:${KEY}`, eventId: 'reply-event', messageId: 'reply-message',
+      replyTo: { conversationKey: `app:${KEY}`, eventId: 'original-event', messageId: 'original-message' },
+    };
+    const origin = { deviceId: DEVICE_ID, host: HOST, method: 'POST', pathWithQuery: `/mobile/chat/app/${KEY}/reply`,
+      timeMs: String(T0), bodySha256: '0'.repeat(64) };
+    const receipt = JSON.parse(JSON.stringify(signReplyReceipt(signer, origin, receivedAt, base)));
+    expect(verifyReplyReceipt(lookup, receipt, origin, receivedAt, base)).toBe('ok');
+    expect(verifyReplyReceipt(() => ({ status: 'unknown' }), receipt, origin, receivedAt, base)).toBe('unknown');
+    for (const changed of [
+      { ...base, conversationKey: `app:${OTHER}` }, { ...base, eventId: 'another-event' }, { ...base, messageId: 'another-message' },
+      { ...base, replyTo: null }, { ...base, replyTo: { ...base.replyTo, eventId: 'another-original' } },
+    ]) expect(verifyReplyReceipt(lookup, receipt, origin, receivedAt, changed)).toBe('bad');
+    const changedOriginal = { ...base.replyTo, messageId: 'another-original-message' };
+    expect(verifyReplyReceipt(lookup, { ...receipt, replyTo: changedOriginal }, origin, receivedAt,
+      { ...base, replyTo: changedOriginal })).toBe('bad');
+    expect(verifyReplyReceipt(lookup, { ...receipt, v: 4 }, origin, receivedAt, base)).toBe('bad');
+    expect(verifyReplyReceipt(lookup, receipt, origin, new Date(T0 + 1).toISOString(), base)).toBe('bad');
+    expect(verifyReplyReceipt(lookup, receipt, { ...origin, bodySha256: 'f'.repeat(64) }, receivedAt, base)).toBe('bad');
   });
 });

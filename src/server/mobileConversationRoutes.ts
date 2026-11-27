@@ -44,7 +44,7 @@ import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
+import { deviceAdmissionIdentity, deviceAdmittedAt, deviceAdmittedHost, deviceMayUse, devicePersonOf, isMobileChatEnabled, personOfReaderKey } from './mobilePairingRoutes.js';
 import { conversationOwnerFor, validConversationOwner, type ConversationOwner } from '../core/MobilePeople.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { transcriptForDelivery } from '../core/AppConversationService.js';
@@ -54,7 +54,7 @@ import {
 } from '../core/appConversationText.js';
 import { isOwnerPerson } from '../core/MobilePeople.js';
 import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
-import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
+import { signReceipt, signReplyReceipt, type StoredReplyReference, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
 } from '../core/appMediaTypes.js';
@@ -984,8 +984,15 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Send ──
-  router.post('/mobile/chat/app/:key', async (req: Request, res: Response) => {
+  const replyClaims = new Map<string, string>();
+  const sendApp = async (req: Request, res: Response, quoted: boolean, claim: { key?: string }) => {
     const deviceId = gate(req, res); if (!deviceId) return;
+    if (quoted && req.originalUrl.includes('?')) {
+      res.status(400).json({ error: 'invalid-reply-request' }); return;
+    }
+    if (quoted && deps.config.mobilePairing?.native?.quotedReplies?.enabled !== true) {
+      res.status(503).json({ error: 'quoted-replies-unavailable' }); return;
+    }
     const s = svc!;
     const requests = s.deps.requests;
     const key = String(req.params.key);
@@ -993,6 +1000,21 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const sender = devicePersonOf(req);
     const senderPerson = sender ? conversationOwnerFor(sender, deps.pairing.machineId()) : null;
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const inputReference = body.replyTo as { eventId?: unknown } | null | undefined;
+    const validReplyReference = Boolean(inputReference && exactScalar(inputReference.eventId, 128)
+      && Object.keys(inputReference).length === 1
+      && Object.keys(body).every((field) => ['requestId', 'text', 'attachments', 'replyTo'].includes(field)));
+    if (!quoted && Object.hasOwn(body, 'replyTo')) {
+      res.status(400).json({ error: 'invalid-reply-reference' }); return;
+    }
+    const selected = quoted && validReplyReference ? inputReference!.eventId as string : null;
+    const readActor = quoted ? exactMessageReader(deps.pairing, req) : null;
+    const admitted = quoted ? deviceAdmissionIdentity(req) : null;
+    const actorCurrent = () => {
+      const person = readActor?.();
+      return person && deps.pairing.mayUse(person, key, 'send') ? person : null;
+    };
+    if (quoted && (!admitted || !actorCurrent())) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return; }
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     if (!validRequestId(res, body.requestId)) return;
     const requestId = body.requestId;
@@ -1008,12 +1030,33 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     if ((text.length < 1 && !wantsMedia) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     // The idempotency hash covers the text and each file's signed fields (§4.3).
-    const hash = signedFiles ? hashOf('app-send', key, text, ...signedFileHashParts(signedFiles)) : hashOf('app-send', key, text);
+    const hash = quoted ? sha256Hex(JSON.stringify(['app-reply', key, text, validReplyReference ? selected : { malformed: body.replyTo ?? null, fields: Object.keys(body).sort() }, admitted, signedFiles ? signedFileHashParts(signedFiles) : []]))
+      : signedFiles ? hashOf('app-send', key, text, ...signedFileHashParts(signedFiles)) : hashOf('app-send', key, text);
     const seed = `${deviceId}\u0000${requestId}`;
     const messageId = derivedEventId('msg', seed);
     const eventId = derivedEventId('op', seed);
 
     // Step 2 — look up. Step 7 — a done/unknown request answers from the CURRENT delivery state.
+    // The durable request store is local. Only the conversation's immutable creation
+    // machine may accept this operation, even when another machine takes the serving lease.
+    const ownsReplyCustody = () => {
+      const machineId = deps.machineId();
+      if (machineId === 'local') return false;
+      const creator = s.store.getCreationRecord(key)?.machineId;
+      if (!creator) return false;
+      // A conversation this machine created under its earlier id (the hostname, before records used
+      // the machine identity id) is still this machine's; 'local' is never a custody id.
+      return creator === machineId || (creator !== 'local' && (s.deps.legacyMachineIds?.() ?? []).includes(creator));
+    };
+    if (quoted && !ownsReplyCustody()) {
+      res.status(503).json({ error: 'reply-custody-unavailable' }); return;
+    }
+    const activeKey = JSON.stringify([deviceId, requestId]);
+    const active = replyClaims.get(activeKey);
+    if (active !== undefined) {
+      answerLookup(res, active === hash ? { kind: 'in-progress' } : { kind: 'request-id-reused' });
+      return;
+    }
     const prior = requests.lookup(deviceId, requestId, hash);
     if (prior.kind === 'done' || prior.kind === 'outcome-unknown') {
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `duplicate send answered from record: ${prior.kind}`, context: { messageId, deviceId, priorKind: prior.kind } });
@@ -1072,16 +1115,61 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
     const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
 
+    let replyTo: StoredReplyReference | undefined;
+    let quoteDisposition: string | undefined;
+    const source = (): BrowsedMessage | null => {
+      const person = actorCurrent();
+      if (!person || !selected || !s.liveConversation(key)) return null;
+      try {
+        return s.store.exactMessageCandidates(key, selected, 'event')
+          .find((row) => deps.pairing.mayReadStored(person, key, row)) ?? null;
+      } catch {
+        return null; // @silent-fallback-ok — unreadable and denied originals share the same response
+      }
+    };
+    const sourceUnavailable = () => res.status(409).json({ error: 'reply-source-unavailable', retryable: true });
+    if (quoted) {
+      if (!s.deps.holdsLease() || !s.currentOwner(key)) { res.status(503).json({ error: 'owner-unavailable' }); return; }
+      claim.key = activeKey;
+      replyClaims.set(activeKey, hash);
+      if (!exactStop && deps.sentinel && classifiedText) {
+        const alias = s.deps.registry.appAliasFor(key) ?? undefined;
+        try { quoteDisposition = (await deps.sentinel.decideInboundDisposition(classifiedText, alias, `app:${key}:${messageId}`)).disposition; }
+        catch { /* @silent-fallback-ok — keep the existing classifier failure behavior, then require a valid source */ }
+      }
+      if (!actorCurrent() || !s.liveConversation(key)) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return; }
+      if (!ownsReplyCustody() || !s.deps.holdsLease() || !s.currentOwner(key)) {
+        res.status(503).json({ error: 'owner-unavailable' }); return;
+      }
+      if (!exactStop && quoteDisposition !== 'kill') {
+        if (!validReplyReference) { res.status(400).json({ error: 'invalid-reply-reference' }); return; }
+        const original = source();
+        if (!original) { sourceUnavailable(); return; }
+        replyTo = { conversationKey: `app:${key}`, eventId: original.eventId, messageId: original.messageId };
+      }
+    }
+    const quotedStop = quoted && (exactStop || quoteDisposition === 'kill');
+
     // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
     // the edge of the 60 s window is judged by the same clock that admitted it.
     const t = deviceAdmittedAt(req) ?? now();
     const receivedAt = new Date(t).toISOString();
     const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, [...removedKinds], s.deps.signer ?? null, receivedAt,
       (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail), signedFiles ? stored : undefined);
+    if (replyTo) {
+      if (!signed.origin || !s.deps.signer) { res.status(503).json({ error: 'quoted-replies-unavailable' }); return; }
+      try {
+        signed.receipt = signReplyReceipt(s.deps.signer, signed.origin, receivedAt,
+          { conversationKey: `app:${key}`, eventId, messageId, replyTo });
+      } catch {
+        res.status(503).json({ error: 'quoted-replies-unavailable' }); return; // @silent-fallback-ok — no receipt means no quoted send
+      }
+    }
     const base = {
       eventId, conversationKey: key, messageId, role: 'operator' as const, text: delivered,
       at: receivedAt, machineId: deps.machineId(), receivedAt,
       ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+      ...(replyTo ? { replyTo } : {}),
       // People and roles §3.3: who sent it, recorded at accept time.
       ...(sender ? { senderName: sender.name, senderRole: sender.role } : {}), ...(senderPerson ? { senderPerson } : {}),
     };
@@ -1094,7 +1182,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 
     // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
-    try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
+    const { bodyB64: _rawOriginBody, ...originEvidence } = signed.origin ?? {};
+    try { r = requests.reserve(deviceId, requestId, hash, 0, {
+      op: quotedStop ? 'app-reply-stop' : quoted ? 'app-reply' : 'send', conversationKey: key, messageId,
+      ...(quoted ? { actor: JSON.stringify(admitted), originEvidence: JSON.stringify(originEvidence), receivedAt, eventId } : {}),
+      ...(replyTo ? { replyTo: JSON.stringify(replyTo), receipt: JSON.stringify(signed.receipt) } : {}),
+    }); } catch {
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
       res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc!.deps.stateDir));
       return;
@@ -1103,18 +1196,31 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (r.kind !== 'reserved') { answerLookup(res, r); return; }
 
     // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
-    if (msg.kind === 'media-message') {
+    if (msg.kind === 'media-message' && !quotedStop) {
       const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
       if (refused) {
         featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files could not be claimed for the message', context: { messageId, files: uploadIds.length, status: refused.status } });
         requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return;
       }
     }
+    if (replyTo) {
+      const holds = ownsReplyCustody() && s.deps.holdsLease() && s.currentOwner(key);
+      const current = holds ? source() : null;
+      if (!current || current.messageId !== replyTo.messageId) {
+        if (msg.kind === 'media-message') s.media.releaseClaim(uploadIds, messageId);
+        requests.release(deviceId, requestId);
+        if (!holds) res.status(503).json({ error: 'owner-unavailable' });
+        else sourceUnavailable();
+        return;
+      }
+    }
     // Publish and append with no await between them (media review finding 1): nothing can remove
     // a blob after it is published and before the event that references it is stored.
     try {
-      if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
-      else s.store.append(msg);
+      if (!quotedStop) {
+        if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
+        else s.store.append(msg);
+      }
     } catch (err) {
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
@@ -1128,6 +1234,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     }
     const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
     const extras = {
+      ...(quoted ? { replyMirror: { state: 'not-applicable', reason: quotedStop ? 'emergency-stop' : 'app-only' } } : {}),
       ...(removedKinds.size > 0 ? { redacted: true, removed: [...removedKinds] } : {}),
       ...(credentialShaped ? { credentialShaped: true } : {}),
       ...(reclassified.length > 0 ? { reclassified } : {}),
@@ -1174,13 +1281,29 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return false;
     };
 
-    if (exactStop) {
-      if (!(await urgentRoute('stop', 'sentinel-kill'))) return;
+    if (exactStop || quotedStop) {
+      let heldConfirmed = true;
+      if (quotedStop) {
+        if (!actorCurrent() || !ownsReplyCustody() || !s.deps.holdsLease() || !s.currentOwner(key)) {
+          finish(403, { error: 'reader-no-longer-authorized' }); return;
+        }
+        try {
+          heldConfirmed = s.deps.stopHeldConfirmed?.(recordKey) === true;
+        } catch (err) {
+          heldConfirmed = false;
+          s.deps.reportDegradation?.('AppConversations.stop', err instanceof Error ? err.message : String(err)); // @silent-fallback-ok — still stop live work
+        }
+      } else if (!(await urgentRoute('stop', 'sentinel-kill'))) return;
       s.noteEmergency(key);
       const stop = s.emergencyStop(key, stopScope);
-      s.appendDelivery(key, messageId, 'intercepted', seed);
-      featureEvidence.record('mobilePairing.native', { kind: 'held', reason: 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
-      finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
+      if (!heldConfirmed) {
+        finish(503, { error: 'stop-not-confirmed', detail: STOP_NOT_CONFIRMED, ...extras });
+        return;
+      }
+      if (!quotedStop) s.appendDelivery(key, messageId, 'intercepted', seed);
+      featureEvidence.record('mobilePairing.native', { kind: 'held', reason: quotedStop && !exactStop ? 'intercepted: semantic emergency stop' : 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
+      finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key,
+        ...(!quotedStop ? { eventId, messageId, deliveryState: 'intercepted' } : {}), ...extras });
       return;
     }
 
@@ -1191,11 +1314,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       finish(503, { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.', conversationKey: key, eventId, messageId, ...extras });
       return;
     }
-    if (deps.sentinel && classifiedText) {
+    if ((deps.sentinel && classifiedText && !quoted) || quoteDisposition === 'pause') {
       try {
-        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias, `app:${key}:${messageId}`);
+        const d = quoted ? { disposition: quoteDisposition } : await deps.sentinel!.decideInboundDisposition(classifiedText, alias, `app:${key}:${messageId}`);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
+          if (quoted && (!actorCurrent() || !s.deps.holdsLease() || !s.currentOwner(key))) {
+            finish(403, { error: 'reader-no-longer-authorized' }); return;
+          }
           if (!(await urgentRoute(d.disposition === 'kill' ? 'stop' : 'pause', d.disposition === 'kill' ? 'sentinel-kill' : 'sentinel-pause'))) return;
+          if (quoted && (!actorCurrent() || !s.deps.holdsLease() || !s.currentOwner(key))) {
+            finish(403, { error: 'reader-no-longer-authorized' }); return;
+          }
           s.noteEmergency(key);
           const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key, stopScope).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
           s.appendDelivery(key, messageId, 'intercepted', seed);
@@ -1265,6 +1394,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     s.appendDelivery(key, messageId, outcome, seed);
     featureEvidence.record('mobilePairing.native', { kind: outcome === 'delivered' && originVerdict !== 'failed' ? 'fired' : 'error', reason: originVerdict === 'failed' ? `failed verdict on a message: ${outcome}` : `message ${outcome}`, context: { messageId, deviceId, outcome, originVerdict, files: stored.length, redacted: removedKinds.size > 0, senderRole: sender?.role ?? null } });
     finish(200, { ok: true, outcome, conversationKey: key, eventId, messageId, deliveryState: outcome, ...extras });
+  };
+
+  router.post('/mobile/chat/app/:key', (req, res) => sendApp(req, res, false, {}));
+  router.post('/mobile/chat/app/:key/reply', async (req, res) => {
+    const claim: { key?: string } = {};
+    try { await sendApp(req, res, true, claim); }
+    finally { if (claim.key !== undefined) replyClaims.delete(claim.key); }
   });
 
   // Where a conversation runs and whether it can be brought back (app-conversations-in-the-pool §2.2). A
@@ -1510,7 +1646,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         if (e.kind === 'pin' && !svc!.store.getMessageEvent(key, about)) return false;
         return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
-        const { origin: _origin, receipt: _receipt, ingestSeq: _seq, creationContext: _creationContext, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt; creationContext?: AppCreationContext };
+        const { origin: _origin, receipt: _receipt, replyTo: _replyTo, ingestSeq: _seq, creationContext: _creationContext, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt; replyTo?: unknown; creationContext?: AppCreationContext };
         return {
           ...rest,
           ...(e.kind === 'message' || e.kind === 'media-message' ? (() => {

@@ -41,6 +41,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
+import type { ReceiptSignature, StoredReplyReference } from './AppRecordSignatures.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
 import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
@@ -71,7 +72,7 @@ export interface DeviceSignedOrigin {
 }
 
 /** The accepting machine's receipt (§4.6): its signature over (sha256(canonical request), receivedAt, machineId). */
-export interface MachineReceipt { machineId: string; signerKeyHash: string; sig: string; v?: 2; conversationKey?: string }
+export type MachineReceipt = ReceiptSignature;
 
 export interface AppEventBase {
   eventId: string;
@@ -96,6 +97,7 @@ export interface MessageEvent extends AppEventBase {
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
   receipt?: MachineReceipt;
+  replyTo?: StoredReplyReference;
   /**
    * People and roles §3.3: who sent an operator message, recorded at accept time. Absent on older
    * events, which were necessarily sent by an owner phone (no other kind existed).
@@ -221,6 +223,7 @@ export interface BrowsedMessage {
   origin?: DeviceSignedOrigin;
   receivedAt?: string;
   receipt?: MachineReceipt;
+  replyTo?: StoredReplyReference;
   attachments?: AppAttachment[];
   senderName?: string;
   senderRole?: 'owner' | 'msp' | 'team';
@@ -333,6 +336,8 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receivedAt) out.receivedAt = receivedAt;
       const receipt = validateReceipt(r.receipt);
       if (receipt) out.receipt = receipt;
+      const replyTo = validateReplyReference(r.replyTo);
+      if (replyTo) out.replyTo = replyTo;
       const accessStamp = validateAccessStamp(r.accessStamp);
       if (accessStamp) out.accessStamp = accessStamp;
       const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
@@ -431,6 +436,15 @@ function validateOrigin(raw: unknown): DeviceSignedOrigin | undefined {
   return out;
 }
 
+function validateReplyReference(raw: unknown): StoredReplyReference | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const { conversationKey, eventId, messageId } = raw as Record<string, unknown>;
+  if (typeof conversationKey !== 'string' || !conversationKey || conversationKey.length > 256
+    || (eventId !== null && (typeof eventId !== 'string' || !eventId || eventId.length > 128))
+    || typeof messageId !== 'string' || !messageId || messageId.length > 128) return undefined;
+  return { conversationKey, eventId, messageId };
+}
+
 function validateReceipt(raw: unknown): MachineReceipt | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const o = raw as Record<string, unknown>;
@@ -444,7 +458,15 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
     const conversationKey = s(o.conversationKey, 256);
     return conversationKey ? { machineId, signerKeyHash, sig, v: 2, conversationKey } : undefined;
   }
-  return { machineId, signerKeyHash, sig };
+  if (o.v === 3) {
+    const conversationKey = s(o.conversationKey, 256);
+    const eventId = s(o.eventId, 128);
+    const messageId = s(o.messageId, 128);
+    const replyTo = o.replyTo === null ? null : validateReplyReference(o.replyTo);
+    return conversationKey && eventId && messageId && replyTo !== undefined
+      ? { machineId, signerKeyHash, sig, v: 3, conversationKey, eventId, messageId, replyTo } : undefined;
+  }
+  return o.v === undefined || o.v === 1 ? { machineId, signerKeyHash, sig } : undefined;
 }
 
 /** The line a conversation list shows for a message. */
@@ -1425,6 +1447,7 @@ export class AppConversationStore {
         deliveryState: this.deliveryState(ev.messageId) ?? 'pending',
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
+        ...(ev.replyTo ? { replyTo: ev.replyTo } : {}),
         ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
         ...(ev.senderPerson ? { senderPerson: ev.senderPerson } : {}),

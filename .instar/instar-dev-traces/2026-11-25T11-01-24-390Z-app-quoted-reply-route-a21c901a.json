@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "app-quoted-reply-route",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T11:01:24.390Z",
+  "artifactPath": "upgrades/side-effects/app-quoted-reply-route.md",
+  "artifactSha256": "8916063fe833254e3ae33f7aa9a33c776d5d036e6f6afb0414c64371a545131c",
+  "specPath": "docs/specs/conversation-replies-message-links.md",
+  "coveredFiles": [
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/AppRecordSignatures.ts",
+    "src/core/types.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "tests/unit/app-record-signatures.test.ts",
+    "upgrades/side-effects/app-quoted-reply-route.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed Reply route changes persisted message facts and admits a Stop effect",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

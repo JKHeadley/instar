@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import { MachineIdentityManager, pemToBase64, sign as edSign, verify as edVerify } from './MachineIdentity.js';
 import { IdentityStore } from './IdentityStore.js';
 import { DEVICE_SIG_VERSION, DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
-import { isAppConversationKey } from './appConversationText.js';
+import { canonicalConversationKey, isAppConversationKey } from './appConversationText.js';
 import { attachmentProjection, canonicalJson, type AttachmentProjection } from './appMediaTypes.js';
 
 export type OriginVerdict = 'none' | 'unknown' | 'failed' | 'verified' | 'redacted';
@@ -35,7 +35,25 @@ export interface SignedMachinePayload extends MachineSignature {}
  * conversation key: a Slack send path names a machine-local negative alias, so the receipt is
  * what binds the signed request to the conversation it was stored under.
  */
-export interface ReceiptSignature extends MachineSignature { v?: 2; conversationKey?: string }
+export type ReceiptSignature = LegacyReceiptSignature | ReplyReceiptSignature;
+interface LegacyReceiptSignature extends MachineSignature { v?: 2; conversationKey?: string }
+
+export interface StoredReplyReference {
+  conversationKey: string;
+  eventId: string | null;
+  messageId: string;
+}
+
+export interface ReplyReceiptBinding {
+  conversationKey: string;
+  eventId: string;
+  messageId: string;
+  replyTo: StoredReplyReference | null;
+}
+
+export interface ReplyReceiptSignature extends MachineSignature, ReplyReceiptBinding {
+  v: 3;
+}
 
 /** This machine's identity signer. `sign` reads the identity fresh, so a key rotation is picked up. */
 export interface MachineSigner {
@@ -81,6 +99,14 @@ export function receiptPayload(canonicalSha256: string, receivedAt: string, mach
 /** The v2 receipt (§4.9): v1's fields plus the canonical conversation key the message was stored under. */
 export function receiptPayloadV2(canonicalSha256: string, receivedAt: string, machineId: string, conversationKey: string): string {
   return `instar-app-receipt-v2\n${canonicalSha256}\n${receivedAt}\n${machineId}\n${conversationKey}`;
+}
+
+/** Quote receipts bind both the replying base and the server-resolved original. */
+export function receiptPayloadV3(canonicalSha256: string, receivedAt: string, machineId: string, binding: ReplyReceiptBinding): string {
+  return canonicalJson([
+    'instar-app-receipt-v3', canonicalSha256, receivedAt, machineId,
+    binding.conversationKey, binding.eventId, binding.messageId, binding.replyTo,
+  ]);
 }
 
 export function redactionPayload(bodySha256: string, storedTextSha256: string, kinds: ReadonlyArray<string>): string {
@@ -180,6 +206,9 @@ export interface VerifiableRecord {
   origin?: StoredDeviceOrigin;
   receivedAt?: string;
   receipt?: ReceiptSignature;
+  eventId?: string;
+  messageId?: string;
+  replyTo?: StoredReplyReference;
   /** A `media-message`: the stored attachments (absent on a plain message). */
   attachments?: ReadonlyArray<AttachmentProjection>;
 }
@@ -230,6 +259,36 @@ export function signReceipt(
   const machineId = signer.machineId();
   if (conversationKey === undefined) return signer.sign(receiptPayload(sha256Hex(canonical), receivedAt, machineId));
   return { v: 2, conversationKey, ...signer.sign(receiptPayloadV2(sha256Hex(canonical), receivedAt, machineId, conversationKey)) };
+}
+
+type ReceiptOrigin = Pick<StoredDeviceOrigin, 'deviceId' | 'host' | 'method' | 'pathWithQuery' | 'timeMs' | 'bodySha256'>;
+
+function replyRequestHash(origin: ReceiptOrigin): string {
+  return sha256Hex(canonicalStringFromHash(origin.deviceId, origin.host, origin.method, origin.pathWithQuery, origin.timeMs, origin.bodySha256));
+}
+
+export function signReplyReceipt(
+  signer: MachineSigner, origin: ReceiptOrigin, receivedAt: string, base: ReplyReceiptBinding,
+): ReplyReceiptSignature {
+  const machineId = signer.machineId();
+  const signature = signer.sign(receiptPayloadV3(replyRequestHash(origin), receivedAt, machineId, base));
+  if (signature.machineId !== machineId) throw new Error('reply receipt signer changed');
+  return {
+    v: 3, ...signature, conversationKey: base.conversationKey, eventId: base.eventId,
+    messageId: base.messageId, replyTo: base.replyTo ? { ...base.replyTo } : null,
+  };
+}
+
+/** Validate the machine proof against the decoded base. Device admission is verified separately. */
+export function verifyReplyReceipt(
+  lookup: MachineKeyLookup, receipt: ReplyReceiptSignature, origin: ReceiptOrigin,
+  receivedAt: string, base: ReplyReceiptBinding,
+): 'ok' | 'bad' | 'unknown' {
+  const time = Date.parse(receivedAt);
+  if (!Number.isFinite(time) || receipt.v !== 3 || receipt.conversationKey !== base.conversationKey
+    || receipt.eventId !== base.eventId || receipt.messageId !== base.messageId
+    || canonicalJson(receipt.replyTo) !== canonicalJson(base.replyTo)) return 'bad';
+  return verifyMachineSignature(lookup, receipt, receiptPayloadV3(replyRequestHash(origin), receivedAt, receipt.machineId, base), time);
 }
 
 /** Build the redaction attestation (signed by this machine) over what was kept. */
@@ -284,7 +343,12 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   if (!sigOk) return 'failed';
   // A Slack record's path names a machine-local alias; its receipt (v2) binds the stored key below.
   const slack = isSlackStoreKey(record.conversationKey);
-  const expectedPath = slack ? null : sendPathFor(record.conversationKey);
+  const basePath = slack ? null : sendPathFor(record.conversationKey);
+  const quote = record.receipt?.v === 3;
+  if (record.replyTo && !quote) return 'unknown';
+  if (quote && (!isAppConversationKey(record.conversationKey) || !record.replyTo || !record.eventId || !record.messageId
+    || record.replyTo.conversationKey !== canonicalConversationKey(record.conversationKey) || !record.replyTo.eventId)) return 'failed';
+  const expectedPath = quote && basePath ? basePath + '/reply' : basePath;
   if (o.method.toUpperCase() !== 'POST') return 'failed';
   if (slack ? !SLACK_SEND_PATH_RE.test(o.pathWithQuery) : (!expectedPath || o.pathWithQuery !== expectedPath)) return 'failed';
   const receivedMs = record.receivedAt ? Date.parse(record.receivedAt) : NaN;
@@ -299,8 +363,9 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   if (typeof o.bodyB64 === 'string') {
     const body = Buffer.from(o.bodyB64, 'base64');
     if (sha256Hex(body) !== o.bodySha256) return 'failed';
-    let parsed: { text?: unknown; attachments?: unknown };
+    let parsed: { text?: unknown; attachments?: unknown; replyTo?: { eventId?: unknown } };
     try { parsed = JSON.parse(body.toString('utf8')) as typeof parsed; } catch { return 'failed'; } // @silent-fallback-ok — an unparseable signed body is a failed check
+    if (quote && parsed?.replyTo?.eventId !== record.replyTo?.eventId) return 'failed';
     // A media message's caption may be absent; a plain message always has text.
     const text = parsed.text === undefined && record.attachments ? '' : parsed.text;
     // The send routes trim the signed text before storing it (1-4000 characters after trimming).
@@ -325,7 +390,12 @@ export function verifyRecordedOrigin(record: VerifiableRecord, ledger: LedgerVie
   const receiptBytes = rc.v === 2
     ? receiptPayloadV2(sha256Hex(canonical), record.receivedAt!, rc.machineId, record.conversationKey)
     : receiptPayload(sha256Hex(canonical), record.receivedAt!, rc.machineId);
-  const receipt = verifyMachineSignature(machineKey, rc, receiptBytes, receivedMs);
+  const receipt = rc.v === 3
+    ? verifyReplyReceipt(machineKey, rc, o, record.receivedAt!, {
+      conversationKey: canonicalConversationKey(record.conversationKey),
+      eventId: record.eventId!, messageId: record.messageId!, replyTo: record.replyTo!,
+    })
+    : verifyMachineSignature(machineKey, rc, receiptBytes, receivedMs);
   if (receipt === 'bad') return 'failed';
   // Another route is only as good as the receipt that vouches for it.
   if (otherRoute && receipt !== 'ok') return receipt === 'unknown' ? 'unknown' : 'failed';
