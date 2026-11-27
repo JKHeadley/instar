@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "boot-path-sync-work",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:27:54.554Z",
+  "artifactPath": "upgrades/side-effects/boot-path-sync-work.md",
+  "artifactSha256": "393ec6c58bf171896d722a31c5846e2d5fca38a28b9cd7bd417970d973bd00bc",
+  "coveredFiles": [
+    "docs/specs/boot-path-sync-work.eli16.md",
+    "src/commands/server.ts",
+    "src/commands/setup.ts",
+    "src/core/CartographerTree.ts",
+    "tests/unit/cartographer-scaffold-incremental.test.ts",
+    "tests/unit/node-symlink-async-probe.test.ts",
+    "upgrades/next/boot-path-sync-work.md",
+    "upgrades/side-effects/boot-path-sync-work.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Boot-path performance change with no decision, state or config; a revert restores prior behavior.",
+  "eli16Path": "docs/specs/boot-path-sync-work.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/boot-path-sync-work.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot boot node probe over a bounded candidate list; not a self-triggered loop"
+  }
+}

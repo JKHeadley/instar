@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-21T11:28:24.813Z",
+  "slug": "boot-path-sync-work",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 171,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/commands/setup.ts",
+      "src/core/CartographerTree.ts"
+    ],
+    "addedLines": 144,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot boot node probe over a bounded candidate list; not a self-triggered loop"
+  },
+  "verdict": "pass"
+}
