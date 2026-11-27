@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "topic-profile-fixture-write-quiescence",
+  "sessionId": "c5b511b2-82e4-443c-bd2e-9d105e0b44a2",
+  "timestamp": "2026-11-23T16:35:46.887Z",
+  "artifactPath": "upgrades/side-effects/topic-profile-fixture-write-quiescence.md",
+  "artifactSha256": "50c71fb124d19e60f2545edf334ffdd3b6b956a85227daca43c4ad35305dd4e8",
+  "coveredFiles": [
+    "docs/specs/lifecycle-fixture-resource-isolation.eli16.md",
+    "tests/unit/TopicProfileOrchestrator.test.ts",
+    "upgrades/next/topic-profile-fixture-write-quiescence.md",
+    "upgrades/side-effects/topic-profile-fixture-write-quiescence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two test-only durable-completion waits prevent fixture cleanup racing a detached write; no production behavior changes and revert fully undoes the correction.",
+  "eli16Path": "docs/specs/lifecycle-fixture-resource-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-profile-fixture-write-quiescence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

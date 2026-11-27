@@ -246,6 +246,7 @@ async function fetchPeers<T>(
 }
 
 export interface MobileConversationRouteDeps {
+  historyAcquisition?: import('./historyAcquisitionRoutes.js').HistoryAcquisitionChat;
   config: InstarConfig;
   /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
   credentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
@@ -1182,6 +1183,18 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
           return;
         }
       } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
+    }
+    if (deps.historyAcquisition && msg.kind === 'message') {
+      let answer: 'ignored'|'refused'|'handled';
+      try { answer = await deps.historyAcquisition.handle(req, key, messageId, msg.text); }
+      catch { answer = 'refused'; } // Sensitive commands never fall through to ordinary agent dispatch.
+      if (answer !== 'ignored') {
+        const state = answer === 'handled' ? 'intercepted' : 'refused';
+        s.appendDelivery(key, messageId, state, seed);
+        finish(answer === 'handled' ? 200 : 403, {ok:answer === 'handled', outcome:state, conversationKey:key, eventId, messageId,
+          deliveryState:state, ...(answer === 'refused' ? {error:'private-owner-chat-required'} : {}), ...extras});
+        return;
+      }
     }
     // Routed (§2.4): a record naming another machine forwards the stored, signed event; a record mid-move
     // or a closed lease gate holds it; anything else is delivered here. Nothing in this path places.

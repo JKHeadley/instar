@@ -45,7 +45,8 @@ esac
 function run() {
   const r = spawnSync(process.execPath, [SCRIPT, '2302', '--auto', '--squash', '--repo', 'JKHeadley/instar'], {
     encoding: 'utf-8',
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    // Exercise the Actions contract even when the hosting agent uses the local floor.
+    env: { ...process.env, INSTAR_MERGE_FLOOR: 'actions', PATH: `${dir}:${process.env.PATH}` },
   });
   const line = (r.stdout.split('\n').find((l) => l.startsWith('safe-merge-result: ')) ?? '').replace('safe-merge-result: ', '');
   return { status: r.status, result: line ? JSON.parse(line) : null, stderr: r.stderr, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf-8') : '' };

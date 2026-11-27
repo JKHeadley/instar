@@ -2851,7 +2851,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
     // Imported Claude/ChatGPT history (import-from-claude-chatgpt §B.3, §D): the owner's app only, never a
     // browser device or a team member. Kept on this machine; the routes read raw for the owner.
-    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
+    { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects|capabilities)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
     { method: 'GET', re: /^\/mobile\/imported-history\/conversations\/imported(:|%3a)(claude|chatgpt)(:|%3a)[a-z0-9_.:%-]{1,240}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
     { method: 'GET', re: /^\/mobile\/imported-history\/search$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'imported-reads' },
     { method: 'POST', re: /^\/mobile\/imported-history\/(preview|apply|facts)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 6, bucket: 'imported-import' },

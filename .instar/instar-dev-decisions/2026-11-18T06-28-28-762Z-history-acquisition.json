@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T06:28:28.762Z",
+  "slug": "history-acquisition",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/import/archiveStaging.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The retry limits and persisted deadline remain in force; terminal cancellation ends the writer and removes its partial. A competing directory operation never starts a new attempt."
+    }
+  },
+  "verdict": "pass"
+}
