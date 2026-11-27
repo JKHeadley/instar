@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "safe-merge-protect-stacked-prs",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T15:21:53.168Z",
+  "artifactPath": "upgrades/side-effects/safe-merge-protect-stacked-prs.md",
+  "artifactSha256": "51f98900cd3d7102fa4e10d2a19801a0778c43f2bf0299197961efae0e299c25",
+  "coveredFiles": [
+    "docs/specs/safe-merge-protect-stacked-prs.eli16.md",
+    "scripts/safe-merge.mjs",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "tests/unit/safe-merge-hardening.test.ts",
+    "upgrades/next/safe-merge-protect-stacked-prs.md",
+    "upgrades/side-effects/safe-merge-protect-stacked-prs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow branch lifecycle protection before the existing head-pinned merge.",
+  "eli16Path": "docs/specs/safe-merge-protect-stacked-prs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-merge-protect-stacked-prs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

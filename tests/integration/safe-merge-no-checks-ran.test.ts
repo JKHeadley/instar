@@ -19,6 +19,7 @@ let log: string;
 
 function writeFakeGh(checkRuns: unknown[], checksRows: unknown[] = [], workflowRuns: unknown[] = []) {
   const view = JSON.stringify({ state: 'OPEN', mergedAt: null, headRefOid: HEAD, baseRefName: 'main', reviewDecision: '', isDraft: false, author: { login: 'EchoOfDawn' }, isCrossRepository: false });
+  const parent = JSON.stringify({ state: 'open', head: { sha: HEAD, ref: 'feature', repo: { full_name: 'JKHeadley/instar' } }, base: { ref: 'main', repo: { full_name: 'JKHeadley/instar' } } });
   const mergedView = JSON.stringify({ ...JSON.parse(view), state: 'MERGED', mergedAt: '2026-11-03T00:00:00Z' });
   const runs = JSON.stringify([{ check_runs: checkRuns }]);
   const wf = JSON.stringify([{ workflow_runs: workflowRuns }]);
@@ -31,6 +32,8 @@ case "$*" in
   "pr view"*) if [ -f "${dir}/merged" ]; then echo '${mergedView}'; else echo '${view}'; fi ;;
   "pr checks"*) echo '${checks}' ;;
   "api --paginate --slurp repos/"*"/files"*) echo '[[]]' ;;
+  "api repos/JKHeadley/instar/pulls/2302") echo '${parent}' ;;
+  "api repos/JKHeadley/instar/pulls?state=open&base=feature&per_page=100 --paginate --slurp") echo '[[]]' ;;
   "api repos/"*"/check-runs"*) echo '${runs}' ;;
   "api repos/"*"/actions/runs"*) echo '${wf}' ;;
   "api repos/"*"/rules/branches/main"*) echo '${rules}' ;;
@@ -45,7 +48,7 @@ esac
 function run() {
   const r = spawnSync(process.execPath, [SCRIPT, '2302', '--auto', '--squash', '--repo', 'JKHeadley/instar'], {
     encoding: 'utf-8',
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    env: { ...process.env, INSTAR_MERGE_FLOOR: 'actions', PATH: `${dir}:${process.env.PATH}` },
   });
   const line = (r.stdout.split('\n').find((l) => l.startsWith('safe-merge-result: ')) ?? '').replace('safe-merge-result: ', '');
   return { status: r.status, result: line ? JSON.parse(line) : null, stderr: r.stderr, calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf-8') : '' };
