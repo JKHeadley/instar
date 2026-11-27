@@ -79,8 +79,11 @@ export interface LadderEntry {
    * `dryRunDefault`: the code treats an absent dry-run as on, with no shipped key to read.
    * `runsEverywhere`: the code starts it on every machine and it has no enabled key, so
    * only its dry-run says the rung.
+   * `requires`: the path of a parent switch the code also checks before this one runs
+   * (for example the growth analyst around its dark-flag inventory). Its `enabled`, read
+   * with the same development-agent gate, must be on too, or the rung is dark.
    */
-  flag: { path: string; on?: string | boolean; dryRunPath?: string; dryRunDefault?: boolean; runsEverywhere?: boolean } | null;
+  flag: { path: string; on?: string | boolean; dryRunPath?: string; dryRunDefault?: boolean; runsEverywhere?: boolean; requires?: string } | null;
   disposition: 'ladder' | 'composed' | 'retire' | 'finished';
   composedInto?: string;
   retire?: { reason: string; ref: string };
@@ -278,6 +281,7 @@ export function parseLadderRegistry(text: string): LadderParseResult {
       if (f.dryRunPath !== undefined && (typeof f.dryRunPath !== 'string' || !/^[A-Za-z][A-Za-z0-9.]{0,200}$/.test(f.dryRunPath))) return { ok: false, reason: `${at}.flag.dryRunPath` };
       if (f.dryRunDefault !== undefined && typeof f.dryRunDefault !== 'boolean') return { ok: false, reason: `${at}.flag.dryRunDefault` };
       if (f.runsEverywhere !== undefined && typeof f.runsEverywhere !== 'boolean') return { ok: false, reason: `${at}.flag.runsEverywhere` };
+      if (f.requires !== undefined && (typeof f.requires !== 'string' || !/^[A-Za-z][A-Za-z0-9.]{0,200}$/.test(f.requires) || f.requires === f.path)) return { ok: false, reason: `${at}.flag.requires` };
     }
     if (e.risk !== 'standard' && e.risk !== 'sensitive') return { ok: false, reason: `${at}.risk` };
     const t = e.tracking as Record<string, unknown> | undefined;
@@ -373,8 +377,20 @@ function dryRunOf(flag: NonNullable<LadderEntry['flag']>, root: unknown, obj: Re
   return typeof raw === 'boolean' ? raw : flag.dryRunDefault === true;
 }
 
+/** A parent switch's own `enabled` (object or bare boolean), through the same dev-agent gate. */
+function requiredOn(path: string, root: unknown, gateConfig: { developmentAgent?: boolean } | null): boolean {
+  const raw = readPath(root, path);
+  const explicit = raw && typeof raw === 'object'
+    ? ((raw as Record<string, unknown>).enabled as boolean | undefined)
+    : typeof raw === 'boolean' ? raw : undefined;
+  const value = typeof explicit === 'boolean' ? explicit : undefined;
+  return gateConfig ? resolveDevAgentGate(value, gateConfig) : value === true;
+}
+
 function readFlag(entry: LadderEntry, root: unknown, gateConfig: { developmentAgent?: boolean } | null): FlagRead {
   const flag = entry.flag!;
+  // The code will not run this one while the switch above it is off, whatever its own setting says.
+  if (flag.requires && !requiredOn(flag.requires, root, gateConfig)) return { fullyOn: false, dryRun: dryRunOf(flag, root, null) };
   const raw = readPath(root, flag.path);
   if (flag.runsEverywhere) {
     return { fullyOn: true, dryRun: dryRunOf(flag, root, raw && typeof raw === 'object' ? raw as Record<string, unknown> : null) };

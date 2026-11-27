@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "ladder-evidence-cut-only-when-dropped",
+  "sessionId": "d9bba07a-a5b8-498e-a706-e804fcbf8d05",
+  "timestamp": "2026-11-27T19:55:57.228Z",
+  "artifactPath": "upgrades/side-effects/ladder-evidence-cut-only-when-dropped.md",
+  "artifactSha256": "aa88e3b74700fbf37e1076e1990a8a355dbcbc121b50eb3436f3306eb3f62e5a",
+  "coveredFiles": [
+    "docs/specs/feature-maturation-ladder-evidence-cut.eli16.md",
+    "docs/specs/feature-maturation-ladder.md",
+    "src/data/feature-ladders.json",
+    "src/monitoring/LadderEvidenceReader.ts",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/LadderEvidenceReader.test.ts",
+    "tests/unit/MaturationLadder.test.ts",
+    "upgrades/next/ladder-evidence-cut-only-when-dropped.md",
+    "upgrades/side-effects/ladder-evidence-cut-only-when-dropped.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only observability fix in the maturation ladder reader and rung derivation; ~150 LOC; no state, migration or authority; a revert fully restores the old behavior",
+  "eli16Path": "docs/specs/feature-maturation-ladder-evidence-cut.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ladder-evidence-cut-only-when-dropped.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { FEATURE_EVIDENCE_FILE } from './FeatureEvidenceLog.js';
 import { isEvidenceFileAllowed, type JsonlLogRef } from './MaturationLadder.js';
 
 export const MAX_FILE_BYTES = 512 * 1024 * 1024;
@@ -78,7 +79,16 @@ export function resolveEvidenceFile(projectDir: string, file: string): string | 
   }
 }
 
-function segmentsOf(full: string): { paths: string[]; compressed: boolean; rotated: boolean } {
+/**
+ * Logs whose writer is `maybeRotateJsonlSegment`: it numbers segments from 1, monotonically,
+ * and drops the oldest past its keep limit. For these alone a still-present segment 1 proves
+ * nothing was dropped, so a young log that rotated is complete, not cut. Other writers shift
+ * (`.1` is always the newest, older ones deleted), so any segment there still means rows may
+ * be gone. Add a file only after checking its writer; a ratchet test pins the shared log's.
+ */
+export const SEGMENT_NUMBERED_FILES: ReadonlySet<string> = new Set([FEATURE_EVIDENCE_FILE]);
+
+function segmentsOf(full: string, numbered: boolean): { paths: string[]; dropped: boolean } {
   const dir = path.dirname(full);
   const base = path.basename(full);
   const paths: Array<{ seq: number; p: string }> = [];
@@ -92,7 +102,9 @@ function segmentsOf(full: string): { paths: string[]; compressed: boolean; rotat
     }
   } catch { /* @silent-fallback-ok — no directory yet means no rows, which reads as no evidence */ }
   paths.sort((a, b) => a.seq - b.seq);
-  return { paths: [...paths.map(x => x.p), full], compressed, rotated: paths.length > 0 || compressed };
+  // A compressed segment is never read, so its rows are missing whatever the writer.
+  const dropped = compressed || (numbered ? paths.length > 0 && paths[0].seq > 1 : paths.length > 0);
+  return { paths: [...paths.map(x => x.p), full], dropped };
 }
 
 async function readOneFile(p: string, tallies: Tally[]): Promise<void> {
@@ -132,7 +144,7 @@ async function readOneFile(p: string, tallies: Tally[]): Promise<void> {
   }
 }
 
-function finish(t: Tally, rotated: boolean, compressed: boolean, now: number): JsonlReading {
+function finish(t: Tally, dropped: boolean, now: number): JsonlReading {
   if (t.seen) {
     for (const v of t.seen.values()) {
       if (v.where) t.where++;
@@ -145,8 +157,11 @@ function finish(t: Tally, rotated: boolean, compressed: boolean, now: number): J
     return { value: 0, samples: 0, newestAt };
   }
   const covered = t.oldest === null ? 0 : (now - t.oldest) / DAY_MS;
-  const cut = (rotated || compressed) && t.oldest !== null && t.oldest > t.q.sinceMs;
-  const coverage = cut ? { coverageDays: Math.floor(covered * 10) / 10 } : {};
+  // Cut only when rows were really dropped and the window reaches past what is kept.
+  const cut = dropped && t.oldest !== null && t.oldest > t.q.sinceMs;
+  // A young log (nothing dropped) is complete, but still says how much history it holds.
+  const short = t.oldest !== null && t.oldest > t.q.sinceMs;
+  const coverage = cut || short ? { coverageDays: Math.floor(covered * 10) / 10 } : {};
   const isCount = ref.value === 'count';
   // A cut read can only be trusted when missing rows cannot flip the answer: an at-least count.
   if (cut && !(isCount && direction === 'at-least')) {
@@ -176,7 +191,7 @@ export async function readJsonlQueries(
       for (const q of group) out.set(q.key, { value: null, samples: 0, newestAt: null, reason: 'file-refused' });
       continue;
     }
-    const { paths, compressed, rotated } = segmentsOf(full);
+    const { paths, dropped } = segmentsOf(full, SEGMENT_NUMBERED_FILES.has(file));
     let total = 0;
     for (const p of paths) {
       try { total += (await fs.promises.stat(p)).size; } catch { /* @silent-fallback-ok — a segment that vanished between list and stat has no rows to count */ }
@@ -191,7 +206,7 @@ export async function readJsonlQueries(
         await readOneFile(p, tallies);
         await new Promise(resolve => setImmediate(resolve));
       }
-      for (const t of tallies) out.set(t.q.key, finish(t, rotated, compressed, now));
+      for (const t of tallies) out.set(t.q.key, finish(t, dropped, now));
     } catch {
       for (const q of group) out.set(q.key, { value: null, samples: 0, newestAt: null, reason: 'read-failed' });
     }

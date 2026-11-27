@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readJsonlQueries, type JsonlQuery } from '../../src/monitoring/LadderEvidenceReader.js';
+import { readJsonlQueries, SEGMENT_NUMBERED_FILES, type JsonlQuery } from '../../src/monitoring/LadderEvidenceReader.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const DAY = 86_400_000;
@@ -61,7 +61,8 @@ describe('readJsonlQueries', () => {
   });
 
   it('a cut log withholds anything missing rows could flip, but keeps an at-least count', async () => {
-    const root = home({ 'logs/a.jsonl': [{ at: at(2), kind: 'error' }, { at: at(1), kind: 'fired' }], 'logs/a.jsonl.1': [{ at: at(3), kind: 'fired' }] });
+    // Segment 1 is gone: the writer dropped it past its keep limit.
+    const root = home({ 'logs/a.jsonl': [{ at: at(2), kind: 'error' }, { at: at(1), kind: 'fired' }], 'logs/a.jsonl.2': [{ at: at(3), kind: 'fired' }] });
     const cut = { file: 'logs/a.jsonl', where: { kind: 'error' }, value: 'count' as const };
     const harm = await one(root, q({ direction: 'at-most', ref: cut }));
     expect(harm).toMatchObject({ value: null, reason: 'evidence-cut' });
@@ -71,6 +72,61 @@ describe('readJsonlQueries', () => {
     const atLeast = await one(root, q({ ref: { ...cut, where: { kind: 'fired' } } }));
     expect(atLeast.value).toBe(2);
     expect(atLeast.reason).toBeUndefined();
+  });
+
+  it('a log that rotated once and dropped nothing returns its numbers, with its coverage', async () => {
+    // The Studio case: the log began 4 days ago, rotated once into segment 1, window is 14 days.
+    const root = home({
+      'logs/feature-evidence.jsonl': [{ at: at(1), kind: 'fired' }, { at: at(1), kind: 'error' }],
+      'logs/feature-evidence.jsonl.1': [{ at: at(4), kind: 'fired' }, { at: at(3), kind: 'fired' }],
+    });
+    const ref = { file: 'logs/feature-evidence.jsonl', where: { kind: 'error' }, value: 'count' as const };
+    const harm = await one(root, q({ direction: 'at-most', ref }));
+    expect(harm).toMatchObject({ value: 1, samples: 4 });
+    expect(harm.reason).toBeUndefined();
+    expect(harm.coverageDays).toBe(4);
+    const ratio = await one(root, q({ direction: 'at-most', ref: { ...ref, value: 'ratio' } }));
+    expect(ratio).toMatchObject({ value: 0.25, samples: 4 });
+    expect(ratio.reason).toBeUndefined();
+  });
+
+  it('a log whose writer reached its keep limit is cut', async () => {
+    // keepSegments 8: after the ninth rotation segment 1 is dropped and 2..9 remain.
+    const files: Record<string, unknown[]> = { 'logs/feature-evidence.jsonl': [{ at: at(1), kind: 'fired' }] };
+    for (let seq = 2; seq <= 9; seq++) files[`logs/feature-evidence.jsonl.${seq}`] = [{ at: at(12 - seq), kind: 'fired' }];
+    const root = home(files);
+    const r = await one(root, q({ direction: 'at-most', ref: { file: 'logs/feature-evidence.jsonl', where: { kind: 'error' }, of: { kind: 'fired' }, value: 'ratio' } }));
+    expect(r).toMatchObject({ value: null, samples: 0, reason: 'evidence-cut' });
+    expect(r.coverageDays).toBe(10);
+  });
+
+  it('a compressed segment marks the read cut, even when segment 1 is still there', async () => {
+    const root = home({ 'logs/feature-evidence.jsonl': [{ at: at(1), kind: 'fired' }], 'logs/feature-evidence.jsonl.1': [{ at: at(3), kind: 'fired' }] });
+    fs.writeFileSync(path.join(root, 'logs/feature-evidence.jsonl.2.gz'), 'not-read');
+    const r = await one(root, q({ direction: 'at-most', ref: { file: 'logs/feature-evidence.jsonl', where: { kind: 'error' }, value: 'count' } }));
+    expect(r).toMatchObject({ value: null, reason: 'evidence-cut' });
+  });
+
+  it('a dropped segment does not cut a window that the kept rows already cover', async () => {
+    const root = home({ 'logs/feature-evidence.jsonl': [{ at: at(1), kind: 'fired' }], 'logs/feature-evidence.jsonl.5': [{ at: at(20), kind: 'fired' }] });
+    const r = await one(root, q({ direction: 'at-most', ref: { file: 'logs/feature-evidence.jsonl', where: { kind: 'error' }, value: 'count' } }));
+    expect(r).toMatchObject({ value: 0, samples: 1 });
+    expect(r.reason).toBeUndefined();
+  });
+
+  it('a shift-rotated log (any other writer) with only a .1 is still cut — its .1 is the newest, older ones may be gone', async () => {
+    const root = home({ 'logs/a.jsonl': [{ at: at(1), kind: 'fired' }], 'logs/a.jsonl.1': [{ at: at(3), kind: 'fired' }] });
+    expect(SEGMENT_NUMBERED_FILES.has('logs/a.jsonl')).toBe(false);
+    const r = await one(root, q({ direction: 'at-most', ref: { file: 'logs/a.jsonl', where: { kind: 'error' }, value: 'count' } }));
+    expect(r).toMatchObject({ value: null, reason: 'evidence-cut' });
+  });
+
+  it('every numbered file really is written by the numbering segment rotator', () => {
+    // Ratchet: the young-log rule is exact only for maybeRotateJsonlSegment.
+    expect([...SEGMENT_NUMBERED_FILES]).toEqual(['logs/feature-evidence.jsonl']);
+    const src = fs.readFileSync(new URL('../../src/monitoring/FeatureEvidenceLog.ts', import.meta.url), 'utf-8');
+    expect(src).toMatch(/maybeRotateJsonlSegment\(/);
+    expect(src).toMatch(/FEATURE_EVIDENCE_FILE = 'logs\/feature-evidence\.jsonl'/);
   });
 
   it('a young log that never rotated is not treated as cut', async () => {

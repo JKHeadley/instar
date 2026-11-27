@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import {
   computeLadderState, contractForRung, crossedRung, deriveLadderRung, isEvidenceFileAllowed, nextRung,
   parseLadderRegistry, projectionRef, soakDays, subjectFromId,
@@ -142,6 +143,41 @@ describe('deriveLadderRung', () => {
     expect(deriveLadderRung(s, { multiMachine: { sessionPool: { stage: 'live-transfer' } } }, {}).rung).toBe('dev-agent-live');
     expect(deriveLadderRung(s, { multiMachine: { sessionPool: { stage: 'shadow' } } }, {}).rung).toBe('dark');
     expect(deriveLadderRung(s, {}, { multiMachine: { sessionPool: { stage: 'live-transfer' } } }).rung).toBe('fleet');
+  });
+});
+
+describe('deriveLadderRung with a parent switch (requires)', () => {
+  // The dark-flag inventory runs only inside the growth analyst: its own setting is not enough.
+  const child = entry({ id: 'monitoring.growthAnalyst.darkFlagInventory', flag: { path: 'monitoring.growthAnalyst.darkFlagInventory', requires: 'monitoring.growthAnalyst' } });
+  it('a child switched on, with its parent switched off, is dark — not ready to advance', () => {
+    const live = { developmentAgent: true, monitoring: { growthAnalyst: { enabled: false, darkFlagInventory: { enabled: true, dryRun: true } } } };
+    expect(deriveLadderRung(child, live, {}).rung).toBe('dark');
+    const liveNoDry = { developmentAgent: true, monitoring: { growthAnalyst: { enabled: false, darkFlagInventory: { enabled: true, dryRun: false } } } };
+    expect(deriveLadderRung(child, liveNoDry, {}).rung).toBe('dark');
+  });
+  it('the parent reads through the same development-agent gate', () => {
+    expect(deriveLadderRung(child, { developmentAgent: true, monitoring: { growthAnalyst: { darkFlagInventory: { dryRun: true } } } }, {}).rung).toBe('dry-run');
+    expect(deriveLadderRung(child, { developmentAgent: false, monitoring: { growthAnalyst: { darkFlagInventory: { enabled: true } } } }, {}).rung).toBe('dark');
+    expect(deriveLadderRung(child, { developmentAgent: false, monitoring: { growthAnalyst: { enabled: true, darkFlagInventory: { enabled: true } } } }, {}).rung).toBe('dev-agent-live');
+  });
+  it('the child\'s own enabled still counts when the parent is on', () => {
+    expect(deriveLadderRung(child, { developmentAgent: true, monitoring: { growthAnalyst: { enabled: true, darkFlagInventory: { enabled: false } } } }, {}).rung).toBe('dark');
+  });
+  it('fleet needs the parent shipped on as well', () => {
+    expect(deriveLadderRung(child, {}, { monitoring: { growthAnalyst: { darkFlagInventory: { enabled: true, dryRun: false } } } }).rung).toBe('dark');
+    expect(deriveLadderRung(child, {}, { monitoring: { growthAnalyst: { enabled: true, darkFlagInventory: { enabled: true, dryRun: false } } } }).rung).toBe('fleet');
+  });
+  it('the shipped registry marks both growth-analyst children as needing the analyst', () => {
+    const reg = JSON.parse(fs.readFileSync(new URL('../../src/data/feature-ladders.json', import.meta.url), 'utf-8'));
+    const list = (Array.isArray(reg) ? reg : reg.entries) as Array<{ id: string; flag: { requires?: string } | null }>;
+    for (const id of ['monitoring.growthAnalyst.darkFlagInventory', 'monitoring.growthAnalyst.blockedDigestEscalation']) {
+      expect(list.find(x => x.id === id)?.flag?.requires).toBe('monitoring.growthAnalyst');
+    }
+  });
+  it('the parser refuses a malformed or self-referencing requires', () => {
+    expect(parse(raw({ flag: { path: 'monitoring.x', requires: 'monitoring.x' } })).ok).toBe(false);
+    expect(parse(raw({ flag: { path: 'monitoring.x', requires: '../etc' } })).ok).toBe(false);
+    expect(parse(raw({ flag: { path: 'monitoring.x', requires: 'monitoring' } })).ok).toBe(true);
   });
 });
 
