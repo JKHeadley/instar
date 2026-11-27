@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T18:52:38.535Z",
+  "slug": "token-ledger-async-head-read",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/TokenLedger.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

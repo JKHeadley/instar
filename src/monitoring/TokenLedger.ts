@@ -1045,40 +1045,6 @@ export class TokenLedger {
     return this.ingestFileSnapshot(filePath, stat, computeHeadHash(filePath, stat.size));
   }
 
-  /** Scheduled scans fingerprint the same descriptor they use to ingest a changed file. */
-  private async ingestFileAsync(filePath: string, ageCutoff: number): Promise<IngestFileResult | null> {
-    let handle: FileHandle;
-    try {
-      handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-    } catch {
-      // @silent-fallback-ok: a discovered transcript may disappear before open; leave its cursor for the next scan.
-      return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
-    }
-    try {
-      let stat: fs.Stats;
-      let headHash = 'empty';
-      try {
-        stat = await handle.stat();
-        if (this.closed || (ageCutoff > 0 && stat.mtimeMs < ageCutoff)) return null;
-        if (!stat.isFile()) return { inserted: 0, skipped: 0 };
-        const head = Buffer.alloc(Math.min(stat.size, 256));
-        if (head.length > 0) {
-          const { bytesRead } = await handle.read(head, 0, head.length, 0);
-          // The file changed during the read. Retain the previous checkpoint.
-          if (bytesRead !== head.length) return { inserted: 0, skipped: 0 };
-          headHash = fingerprintHead(head);
-        }
-      } catch {
-        // @silent-fallback-ok: an unavailable fingerprint leaves the existing cursor intact for a later scan.
-        return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
-      }
-      if (this.closed) return null;
-      return this.ingestFileSnapshot(filePath, stat, headHash, handle.fd);
-    } finally {
-      await handle.close().catch(() => undefined);
-    }
-  }
-
   private ingestFileSnapshot(filePath: string, stat: fs.Stats, headHash: string, borrowedFd?: number): IngestFileResult {
     const prev = this.stmts.getOffset.get(filePath) as
       | { offset: number; inode: number | null; size: number | null; head_hash: string | null }
@@ -1204,6 +1170,40 @@ export class TokenLedger {
       return await scan;
     } finally {
       this.claudeScanInFlight = null;
+    }
+  }
+
+  /** Scheduled scans fingerprint the same descriptor they use to ingest a changed file. */
+  private async ingestFileAsync(filePath: string, ageCutoff: number): Promise<IngestFileResult | null> {
+    let handle: FileHandle;
+    try {
+      handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    } catch {
+      // @silent-fallback-ok: a discovered transcript may disappear before open; leave its cursor for the next scan.
+      return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
+    }
+    try {
+      let stat: fs.Stats;
+      let headHash = 'empty';
+      try {
+        stat = await handle.stat();
+        if (this.closed || (ageCutoff > 0 && stat.mtimeMs < ageCutoff)) return null;
+        if (!stat.isFile()) return { inserted: 0, skipped: 0 };
+        const head = Buffer.alloc(Math.min(stat.size, 256));
+        if (head.length > 0) {
+          const { bytesRead } = await handle.read(head, 0, head.length, 0);
+          // The file changed during the read. Retain the previous checkpoint.
+          if (bytesRead !== head.length) return { inserted: 0, skipped: 0 };
+          headHash = fingerprintHead(head);
+        }
+      } catch {
+        // @silent-fallback-ok: an unavailable fingerprint leaves the existing cursor intact for a later scan.
+        return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
+      }
+      if (this.closed) return null;
+      return this.ingestFileSnapshot(filePath, stat, headHash, handle.fd);
+    } finally {
+      await handle.close().catch(() => undefined);
     }
   }
 

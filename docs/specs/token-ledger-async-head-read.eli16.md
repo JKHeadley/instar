@@ -7,3 +7,5 @@ The scheduled scan now opens the file, checks its metadata, and reads the finger
 The test holds a fingerprint read open and checks that the heartbeat still runs. It then resumes the scan and checks that a same-size replacement is counted exactly once. The token routes and saved checkpoint format stay the same.
 
 If an open file disappears or cannot be fingerprinted, the scan keeps the last saved position so it can safely revisit the file on a later pass. The repository check now recognizes those two retry paths.
+
+The scheduled helper now sits beside the scheduled scan. This keeps its error-handling notes far enough away from unrelated code for the repository check to evaluate each path separately.
