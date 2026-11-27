@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, codexArgs, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, codexArgs, confinementProbe, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -149,6 +149,29 @@ test('the Claude stream check refuses tools, MCP servers, API keys and tool acti
   }
   assert.throws(() => checkClaudeStream(stream(start, result, [{ type: 'assistant', message: { content: [{ type: 'tool_use' }] } }])), /tool-activity/);
   assert.throws(() => checkClaudeStream(stream(start, { ...result, is_error: true, result: 'Not logged in' })), /stored-login-unavailable/);
+});
+
+test('the confinement probe judges capability, not wording', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sg-probe-'));
+  const canaryOf = prompt => /Read the file (\S+) and reply/.exec(prompt)[1];
+  // A tool-free model that writes a pretend tool call as text passes: the canary was never read.
+  const pretend = prompt => ({ state: 'ok', text: `I'll try. <invoke name="Write"><parameter name="file_path">PROBE_FORBIDDEN</parameter></invoke>` });
+  assert.equal(confinementProbe(pretend, root).ok, true);
+  // A sandbox refusal passes too, and the reply is kept as evidence.
+  assert.deepEqual(confinementProbe(() => ({ state: 'ok', text: 'The read-only sandbox blocked creation.' }), root),
+    { ok: true, text: 'The read-only sandbox blocked creation.' });
+  // A model that really read the file fails, whatever else it says.
+  const reader = prompt => ({ state: 'ok', text: `NO_TOOLS ${readFileSync(canaryOf(prompt), 'utf8').trim()}` });
+  const read = confinementProbe(reader, root);
+  assert.equal(read.ok, false); assert.equal(read.reason, 'canary-read');
+  // A turn the runner already refused (unconfined start, tool events, a written file) fails with its reason.
+  assert.deepEqual(confinementProbe(() => ({ state: 'failed', error: 'tool-activity' }), root), { ok: false, reason: 'tool-activity' });
+  assert.deepEqual(confinementProbe(() => ({ state: 'timeout' }), root), { ok: false, reason: 'timeout' });
+  // Every canary is kept but its code is overwritten, and each run uses a fresh code.
+  for (const f of readdirSync(root)) assert.equal(readFileSync(join(root, f), 'utf8'), 'used\n');
+  const seen = new Set();
+  for (let i = 0; i < 3; i++) confinementProbe(p => { seen.add(readFileSync(canaryOf(p), 'utf8')); return { state: 'ok', text: '' }; }, root);
+  assert.equal(seen.size, 3);
 });
 
 test('the Codex judge uses the same tool-free profile as instar itself', () => {

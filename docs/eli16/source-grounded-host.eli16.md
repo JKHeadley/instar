@@ -6,4 +6,6 @@ The summary is written by a model that sees only the conversation, never the que
 
 An answer that declines to decide, because it was given no background, does not reach the reference decision, so it does not get that point. It is not counted as a serious mistake, though. Only an answer that states the wrong decision on a high-stakes question counts as one.
 
+Before any answer or judging, the tool checks that each model really has no tools. It leaves a small file with a random code next to the model's empty folder and asks the model to read it back and to create a file. The model passes only if nothing was written and the code is missing from its reply. What the model says about itself doesn't count, because a model with no tools can still write out pretend tool calls as text.
+
 The totals show how often each version got every point right, how often a judge found a serious mistake, how much the repeats varied, and how each version compared with the others on the same question. They are a development result. They do not approve any change to how the agent shortens its context.

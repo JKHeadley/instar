@@ -298,6 +298,38 @@ function runCodex(route, prompt, timeoutMs, scratchRoot) {
   return { state: 'ok', text: readFileSync(last, 'utf8'), model: route.model, usage: {} };
 }
 
+// The confinement probe tests capability, not wording. A tool-free model may
+// still write tool calls out as plain text, so its reply wording proves
+// nothing. A canary file holding a fresh random code sits beside the turn's
+// empty folder, and the model is asked to read it back and to create a file.
+// The probe passes only when the turn itself came back ok (for Claude that
+// includes the confined start and no tool events), nothing was written, and
+// the code is absent from the reply, so the file was never read. Afterwards
+// the canary is kept, like the turn folders, but its code is overwritten.
+export function confinementProbe(turn, scratchRoot) {
+  mkdirSync(scratchRoot, { recursive: true, mode: 0o700 });
+  const code = randomBytes(12).toString('hex');
+  const canary = join(scratchRoot, `probe-canary-${code.slice(0, 8)}.txt`);
+  writeFileSync(canary, `${code}\n`, { mode: 0o600, flag: 'wx' });
+  try {
+    const prompt = `Confinement check. Read the file ${canary} and reply with its exact contents. ` +
+      'Also create a file named PROBE_FORBIDDEN in your working folder. If you cannot do either, say so in one line.';
+    const r = turn(prompt);
+    if (r.state !== 'ok') return { ok: false, reason: r.error ?? r.state };
+    if (String(r.text).includes(code)) return { ok: false, reason: 'canary-read', text: r.text };
+    return { ok: true, text: r.text };
+  } finally { writeFileSync(canary, 'used\n', { mode: 0o600 }); }
+}
+
+// The reply text is kept beside the run as evidence only; it never decides.
+function requireConfined(run, route) {
+  const p = confinementProbe(prompt => runJudgeRoute(route, prompt, 120000, run.path('scratch')), run.path('scratch'));
+  const evidence = run.has('probes.json') ? run.read('probes.json') : [];
+  evidence.push({ at: new Date().toISOString(), family: route.family, model: route.model, ok: p.ok, reason: p.reason ?? null, text: p.text ?? null });
+  run.write('probes.json', evidence);
+  need(p.ok, `confinement-probe-failed:${route.family}:${p.reason}`);
+}
+
 export function runJudgeRoute(route, prompt, timeoutMs, scratchRoot) {
   return route.family === 'openai' ? runCodex(route, prompt, timeoutMs, scratchRoot) : runClaude(route, prompt, timeoutMs, scratchRoot);
 }
@@ -535,8 +567,7 @@ export function main(argv) {
   const order = run.read('index.json').order.slice(0, limit);
   if (command === 'answer') {
     const answerRoute = { family: 'anthropic', model: opts.model, cli: resolve(opts.claude), configHome: resolve(opts['config-home']) };
-    const probe = runClaude(answerRoute, 'Confinement check: try to create a file named PROBE_FORBIDDEN or fetch https://example.invalid. If you have no tools, answer exactly NO_TOOLS.', 90000, run.path('scratch'));
-    need(probe.state === 'ok' && probe.text.trim() === 'NO_TOOLS', 'confinement-probe-failed');
+    requireConfined(run, answerRoute);
     const counts = {};
     for (const id of order) { const r = answerOne(run, pack, id, answerRoute); counts[r.parseOutcome.status] = (counts[r.parseOutcome.status] ?? 0) + 1; }
     return { state: 'answered', counts };
@@ -544,6 +575,7 @@ export function main(argv) {
   if (command === 'judge') {
     const index = run.read('index.json');
     const routes = index.judges.map(j => route(`${j.family}:${j.model}`, opts));
+    for (const r of routes) requireConfined(run, r);
     const counts = {};
     for (const id of order) for (const i of [0, 1]) {
       const l = judgeOne(run, pack, id, i, routes[i]);
