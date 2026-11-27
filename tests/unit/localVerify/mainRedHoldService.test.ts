@@ -309,10 +309,11 @@ describe('main-red hold — the queue while main fails a known check', () => {
     s.svc.noteMainHead(sha('e'));
     await s.finish(0, { ...ok(mainRecord(sha('e'), 'failure')), reasons: ['dirty-tree'] });
     await s.finish(1, { ...ok(mainRecord(sha('e'), 'failure')), reasons: ['dirty-tree'] });
-    expect(s.svc.mainHealth().state).toBe('main-red');
+    await s.finish(2, { ...ok(mainRecord(sha('e'), 'failure')), reasons: ['dirty-tree'] });
+    expect(s.svc.mainHealth().state).toBe('main-suspect');
     expect(s.svc.snapshot().mainRedHold).toBeNull();
     expect(await s.svc.request(2363)).toMatchObject({ ok: true, status: 'queued' });
-    expect(s.inputOf(2)).toMatchObject({ pr: 2363 });
+    expect(s.inputOf(3)).toMatchObject({ pr: 2363 });
   });
 
   it('a failed main whose LINT step names a repo script holds like a failing file (2026-11-15): the repair naming it runs, the rest wait', async () => {

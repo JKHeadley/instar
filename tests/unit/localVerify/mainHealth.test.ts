@@ -115,14 +115,15 @@ describe('MainHealth — watermark epoch and unwritable stricter state', () => {
 });
 
 describe('MainHealth — transitions', () => {
-  it('first failure → main-suspect (no signal) and a re-run; re-run fails → main-red, ONE signal', async () => {
+  it('repeating the same failing file confirms red and signals once for a real break', async () => {
     const d = tmp(); watermark(d, {});
     const { h, signals, changes } = health(d);
     h.load();
-    expect(await h.onVerify(sha('1'), 'failure')).toBe('rerun');
+    const files = ['tests/unit/repeated.test.ts'];
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, files)).toBe('rerun');
     expect(h.snapshot()).toMatchObject({ state: 'main-suspect', redHead: sha('1') });
     expect(signals).toEqual([]);
-    expect(await h.onVerify(sha('1'), 'failure')).toBe('none');
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, files)).toBe('none');
     expect(h.snapshot().state).toBe('main-red');
     expect(await h.onVerify(sha('2'), 'failure')).toBe('none');
     expect(h.snapshot().redHead).toBe(sha('2'));
@@ -130,6 +131,58 @@ describe('MainHealth — transitions', () => {
     expect(changes.map((c) => c.to)).toEqual(['main-suspect', 'main-red', 'main-red']);
     // The watermark was written before the hook ran and holds the newest red head.
     expect(JSON.parse(fs.readFileSync(h.watermarkPath, 'utf-8'))).toMatchObject({ state: 'main-red', redHead: sha('2'), machineId: 'm1' });
+  });
+
+  it('uses one further check for two different failures and persists the evidence across restart', async () => {
+    const d = tmp(); watermark(d, {});
+    const head = sha('1');
+    const first = health(d).h;
+    first.load();
+    expect(await first.onVerify(head, 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
+    const { h, signals } = health(d);
+    h.load();
+    expect(await h.onVerify(head, 'failure', undefined, undefined, ['b.test.ts'])).toBe('rerun');
+    expect(h.snapshot().state).toBe('main-suspect');
+    expect(signals).toEqual([]);
+    expect(await h.onVerify(head, 'failure', undefined, undefined, ['a.test.ts'])).toBe('none');
+    expect(h.snapshot().state).toBe('main-red');
+  });
+
+  it('keeps three disjoint failures suspect, without spending a fourth run', async () => {
+    const d = tmp(); watermark(d, {});
+    const { h, signals } = health(d);
+    h.load();
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['b.test.ts'])).toBe('rerun');
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['c.test.ts'])).toBe('none');
+    expect(h.snapshot()).toMatchObject({ state: 'main-suspect', reason: 'failure-unconfirmed' });
+    expect(signals).toEqual([]);
+  });
+
+  it('does not use unnamed failures or a failure from another head as confirmation', async () => {
+    const d = tmp(); watermark(d, {});
+    const { h, signals } = health(d);
+    h.load();
+    expect(await h.onVerify(sha('1'), 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
+    expect(await h.onVerify(sha('1'), 'failure')).toBe('rerun');
+    expect(await h.onVerify(sha('2'), 'failure', undefined, undefined, ['a.test.ts'])).toBe('rerun');
+    expect(h.snapshot()).toMatchObject({ state: 'main-suspect', redHead: sha('2') });
+    expect(signals).toEqual([]);
+  });
+
+  it('persists a covered timestamp and keeps the healthy interval out of recovery', async () => {
+    const d = tmp(); watermark(d, {});
+    const clock = { now: 120_000 };
+    const seams = { now: () => clock.now, isAncestor: async () => true, audit: () => {} };
+    const original = new MainHealth(d, 'm1', seams);
+    original.load();
+    await original.onVerify(sha('1'), 'success', undefined, { oldestUnverifiedAt: null, coveredAt: clock.now });
+    const h = new MainHealth(d, 'm1', seams);
+    h.load();
+    expect(h.mainCadenceReady(clock.now + 60 * 60_000 - 1)).toBe(false);
+    expect(h.mainCadenceReady(clock.now + 60 * 60_000)).toBe(true);
+    await h.onVerify(sha('2'), 'failure', undefined, undefined, ['a.test.ts']);
+    expect(h.mainCadenceReady(clock.now)).toBe(true);
   });
 
   it('a passing re-run clears the suspect as a flake (no signal)', async () => {
@@ -242,6 +295,11 @@ function svcSetup(opts: { healthy?: boolean; views?: Record<number, PrView>; anc
   return { svc, stateDir, spawned, signals, signalDetails, healthChanges, finish, inputOf, auditLines, advance: (ms: number) => { t += ms; }, now: () => t };
 }
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
+const mainFailure = (head: string): VerifyRunResult => ({
+  kind: 'record', record: mainRecord(head, 'failure'), reasons: [], overlaps: [], keptWorktree: null,
+  failures: [{ file: 'tests/unit/broken.test.ts', lane: 'unit', failed: 1, message: 'fixture failure' }],
+});
+
 const view = (pr: number, head: string): PrView => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: head, baseRefName: 'main', baseRefOid: sha('b') });
 
 describe('record validation for a main verify', () => {
@@ -309,12 +367,12 @@ describe('LocalVerifyService — the main verify', () => {
   it('red: re-run once in main-suspect, then main-red with ONE signal; the watcher requests no PR verifies while unhealthy, POSTs still run', async () => {
     const s = svcSetup({ views: { 5: view(5, sha('a')) } });
     s.svc.noteMainHead(sha('1'));
-    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(0, mainFailure(sha('1')));
     expect(s.svc.mainHealth().state).toBe('main-suspect');
     expect(s.signals).toEqual([]);
     expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1') }); // the one re-run
     expect(await s.svc.request(5, { explicit: false })).toEqual({ ok: false, code: 'main-unhealthy' });
-    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(1, mainFailure(sha('1')));
     expect(s.svc.mainHealth().state).toBe('main-red');
     expect(s.signals).toEqual(['local-verify:main-red']);
     expect(s.healthChanges).toEqual(['main-suspect', 'main-red']);
@@ -325,9 +383,10 @@ describe('LocalVerifyService — the main verify', () => {
     const views: Record<number, PrView> = {};
     for (let i = 1; i <= 12; i++) views[i] = view(i, (i.toString(16).padStart(2, '0')).repeat(20));
     const s = svcSetup({ views, ancestor: () => true });
+    s.svc.setMainRedHoldEnabled(() => false); // This test exercises previously failing PR records, not repair admission.
     s.svc.noteMainHead(sha('1'));
-    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
-    await s.finish(1, ok(mainRecord(sha('1'), 'failure'))); // main-red; nothing else queued
+    await s.finish(0, mainFailure(sha('1')));
+    await s.finish(1, mainFailure(sha('1'))); // main-red; nothing else queued
     // 12 failed PR records (POSTed while red), finished in reverse PR order.
     for (let i = 12; i >= 1; i--) {
       const r = await s.svc.request(i);
@@ -403,12 +462,12 @@ describe('LocalVerifyService — the main verify', () => {
       adv(30 * MIN); await s.svc.tick();
       expect(s.inputOf(i)).toMatchObject({ kind: 'main', headSha: heads[i] });
       await s.finish(i, ok({ ...mainRecord(heads[i], 'success'), startedAt: new Date(startedAt).toISOString(), finishedAt: new Date(now).toISOString() }));
-      s.svc.noteMainHead(heads[i + 1]); // unchanged for 30 minutes: its verify is queued
+      adv(60 * MIN); s.svc.noteMainHead(heads[i + 1]); // the healthy interval has elapsed
       await s.svc.tick();
       expect(s.spawned).toHaveLength(i + 2);
       expect(s.svc.mainHealth().state).toBe('healthy');
     }
-    // 8 runs of 35 minutes = 4 h 40 min of merging with a green verify every 35 minutes.
+    // Eight runs with the healthy interval between them, long past the three-hour alarm.
     expect(s.signals).not.toContain('local-verify:main-unverified');
   });
 
@@ -422,13 +481,13 @@ describe('LocalVerifyService — the main verify', () => {
     adv(5 * MIN); s.svc.noteMainHead(sha('2'));       // merge during run 0
     adv(30 * MIN);
     await s.finish(0, ok({ ...mainRecord(sha('1'), 'success'), startedAt: iso(t0), finishedAt: iso(now) }));
-    s.svc.noteMainHead(sha('2')); await s.svc.tick(); // run 1: head 2 (current), starts at t0+35
+    adv(60 * MIN); s.svc.noteMainHead(sha('2')); await s.svc.tick(); // run 1: head 2 (current)
     expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('2') });
     const run1Start = now;
     adv(5 * MIN); s.svc.noteMainHead(sha('3'));       // merge during run 1: nothing will ever cover it
     adv(30 * MIN);
     await s.finish(1, ok({ ...mainRecord(sha('2'), 'success'), startedAt: iso(run1Start), finishedAt: iso(now) }));
-    // 3 h after t0 (the old, never-moved clock) main is still healthy: runs 0 and 1 covered everything up to t0+35.
+    // 3 h after t0 (the old, never-moved clock) main is still healthy: runs 0 and 1 covered everything up to the second run's start.
     adv(t0 + 3 * 60 * MIN + 10 * MIN - now); await s.svc.tick();
     expect(s.svc.mainHealth().state).toBe('healthy');
     expect(s.signals).not.toContain('local-verify:main-unverified');
@@ -483,7 +542,7 @@ describe('LocalVerifyService — the main verify', () => {
       adv(5 * MIN); s.svc.noteMainHead(h(next + 1));    // the next merge replaces it before it can start
       adv(15 * MIN);
       await s.finish(run, ok({ ...mainRecord(h(runHead), 'success'), startedAt: iso(runStart), finishedAt: iso(now) }));
-      await s.svc.tick();
+      adv(60 * MIN); await s.svc.tick();
       run = s.spawned.length - 1;
       // The queued verify starts now, on main's head as observed now (not the queued head main already left).
       expect(s.inputOf(run), `round ${round}`).toMatchObject({ kind: 'main', headSha: h(next + 1), baseSha: h(next + 1) });
@@ -614,7 +673,7 @@ describe('a pending main verify starts on the head current at its start (2026-11
     const s = svcSetup();
     s.svc.noteMainHead(sha('1'));
     s.advance(5 * MIN); s.svc.noteMainHead(B);
-    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(0, mainFailure(sha('1')));
     expect(s.svc.mainHealth().state).toBe('main-suspect');
     expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1'), baseSha: sha('1') });
     expect(staleAtStart(s)).toEqual([]);
@@ -623,12 +682,12 @@ describe('a pending main verify starts on the head current at its start (2026-11
   it('main red: a pending entry for A is not retargeted to the newer head B', async () => {
     const s = svcSetup();
     s.svc.noteMainHead(sha('1'));
-    await s.finish(0, ok(mainRecord(sha('1'), 'failure'))); // suspect; the re-run of head 1 is in flight
+    await s.finish(0, mainFailure(sha('1'))); // suspect; the re-run of head 1 is in flight
     s.svc.noteMainHead(A); s.advance(10 * MIN); s.svc.noteMainHead(A);
     expect(mainQueue(s)).toEqual([A]);
     s.svc.noteMainHead(B);
     expect(mainQueue(s)).toEqual([A]);
-    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(1, mainFailure(sha('1')));
     expect(s.svc.mainHealth().state).toBe('main-red');
     expect(s.inputOf(2)).toMatchObject({ kind: 'main', headSha: A, baseSha: A });
     expect(staleAtStart(s)).toEqual([]);
@@ -916,7 +975,7 @@ describe('main evidence for the import-related re-run (spec local-verify-import-
     await s.finish(0, greenMain(sha('1'), NOW, flaky()));
     s.advance(2 * 24 * 60 * MIN);
     const later = new Date(s.now()).toISOString();
-    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    s.svc.noteMainHead(sha('2')); s.advance(60 * MIN); s.svc.noteMainHead(sha('2'));
     await s.svc.settle();
     await s.finish(1, greenMain(sha('2'), later, flaky({ soloPassedByName: ['s flaky', 's other'] })));
     const seen = hist(s.stateDir).files[X].mainSeen!;
@@ -963,7 +1022,7 @@ describe('main evidence for the import-related re-run (spec local-verify-import-
     expect(inp.flakyOnMain).toEqual([]);
     expect(hist(s.stateDir).files[X].seen).toHaveLength(1);
     // A record without name fields at all (older shape) is no evidence either.
-    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    s.svc.noteMainHead(sha('2')); s.advance(60 * MIN); s.svc.noteMainHead(sha('2'));
     await s.svc.settle();
     await s.finish(1, greenMain(sha('2'), new Date(s.now()).toISOString(), [{ file: X, lane: 'unit', firstMessage: 'boom' }]));
     expect(s.svc.isolationInput().flakyOnMain).toEqual([]);
@@ -1026,7 +1085,7 @@ describe('main evidence for the import-related re-run (spec local-verify-import-
     // A green main WITH a re-run pass writes a run-detail line (that is where main events are read from).
     expect(s.auditLines().filter((l) => l.event === 'run-detail' && l.kind === 'main')).toEqual([expect.objectContaining({ headSha: sha('1'), finishedAt: NOW, runLog: `${tokenOf(s, 0)}.log`, flakyRetried: flaky() })]);
     // A clean green main writes a main-record line and NO run-detail line.
-    s.svc.noteMainHead(sha('2')); s.advance(10 * MIN); s.svc.noteMainHead(sha('2'));
+    s.svc.noteMainHead(sha('2')); s.advance(60 * MIN); s.svc.noteMainHead(sha('2'));
     await s.svc.settle();
     await s.finish(1, ok(mainRecord(sha('2'), 'success')));
     expect(s.auditLines().filter((l) => l.event === 'main-record')).toHaveLength(2);
@@ -1084,6 +1143,18 @@ describe('main evidence for the import-related re-run (spec local-verify-import-
 
 describe('a main that is not healthy is re-verified after a short wait (2026-11-15: 111 minutes closed after the repair merged)', () => {
   const obs = (over: Partial<Parameters<typeof decideMainHeadEnqueue>[0]> = {}) => ({ head: sha('1'), since: 0, firstUnverifiedAt: null, handled: sha('1'), immediate: false, ...over });
+
+  it('coalesces healthy heads during the minimum interval and retains the debounce clock', () => {
+    const waiting = { healthy: true, cadenceReady: false };
+    const first = decideMainHeadEnqueue(obs(), sha('2'), 10 * MIN, MAIN_VERIFY_LIMITS, waiting);
+    const newest = decideMainHeadEnqueue(first.next, sha('3'), 50 * MIN, MAIN_VERIFY_LIMITS, waiting);
+    expect(newest.enqueue).toBe(false);
+    expect(newest.next.firstUnverifiedAt).toBe(10 * MIN);
+    expect(newest.next.handled).toBe(sha('1'));
+    const due = decideMainHeadEnqueue(newest.next, sha('3'), 60 * MIN, MAIN_VERIFY_LIMITS, { healthy: true, cadenceReady: true });
+    expect(due.enqueue).toBe(true);
+    expect(due.next.handled).toBe(sha('3'));
+  });
   const UNHEALTHY = { healthy: false };
 
   it('pure: a new head is ready after 2 unchanged minutes when unhealthy; 10 when healthy or unstated', () => {
@@ -1127,9 +1198,9 @@ describe('a main that is not healthy is re-verified after a short wait (2026-11-
   it('service: after main goes red, the repair head is verified once it has read the same for 2 minutes (a stale read of the red head in between restarts the count), not 10', async () => {
     const s = svcSetup();
     s.svc.noteMainHead(sha('1')); // boot: immediate
-    await s.finish(0, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(0, mainFailure(sha('1')));
     expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1') }); // the one re-run
-    await s.finish(1, ok(mainRecord(sha('1'), 'failure')));
+    await s.finish(1, mainFailure(sha('1')));
     expect(s.svc.mainHealth().state).toBe('main-red');
     s.svc.noteMainHead(sha('2')); // the repair landed
     s.advance(1 * MIN); s.svc.noteMainHead(sha('1')); // one stale read of the red head
@@ -1149,6 +1220,25 @@ describe('a main that is not healthy is re-verified after a short wait (2026-11-
     s.svc.noteMainHead(sha('2'));
     s.advance(2 * MIN); s.svc.noteMainHead(sha('2'));
     expect(s.spawned).toHaveLength(1);
+  });
+
+  it('service: an already queued healthy check waits after a covered green and starts on the newest head', async () => {
+    const s = svcSetup();
+    s.svc.noteMainHead(sha('1'));
+    s.svc.noteMainHead(sha('2'));
+    s.advance(10 * MIN);
+    s.svc.noteMainHead(sha('2'));
+    expect(s.svc.snapshot().queue.some(entry => entry.kind === 'main')).toBe(true);
+    await s.finish(0, ok({ ...mainRecord(sha('1'), 'success'), finishedAt: new Date(s.now()).toISOString() }));
+    s.svc.noteMainHead(sha('3'));
+    s.advance(60 * MIN - 1);
+    s.svc.noteMainHead(sha('3'));
+    await s.svc.tick();
+    expect(s.spawned).toHaveLength(1);
+    s.advance(1);
+    s.svc.noteMainHead(sha('3'));
+    await s.svc.tick();
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('3') });
   });
 });
 
