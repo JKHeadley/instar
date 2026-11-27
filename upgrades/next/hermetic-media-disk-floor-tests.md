@@ -16,4 +16,4 @@ None — internal change (no user-facing surface).
 
 ## Evidence
 
-On 2026-11-27 PR 3985, which cannot reach media code, failed those four files on the M5 with 41 GiB free against a 46.3 GiB floor (507 media-disk-floor plus downstream 403 and 400 sends); the previous M5 run, with more free space, passed them. Every media floor check reads AppMediaStore.diskSpace, which the helper now fixes for test agents.
+On 2026-11-27 PR 3985, which cannot reach media code, failed those four files on the M5 with 41 GiB free against a 46.3 GiB floor (507 media-disk-floor plus downstream 403 and 400 sends); the previous M5 run, with more free space, passed them. Every media floor check reads AppMediaStore.diskSpace, which the helper now fixes for test agents. With the fix, all four files pass whole on the M5 while it is below its floor (18 of 18 tests).

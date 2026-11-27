@@ -82,7 +82,9 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
   const conversationRegistry = slack ? new ConversationRegistry({ stateDir, machineId: () => 'e2e', isRecordingEnabled: () => true }) : undefined;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}), ...(slack ? { slack, conversationRegistry } : {}) });
   servers.push(server);
-  useHermeticMediaDisk(server); // the host's free space must not decide the result
+  // A development agent has a media store, and the host's free space must not decide the result.
+  // A fleet agent deliberately has none (the tests below assert that), so the helper is skipped there.
+  if (developmentAgent) useHermeticMediaDisk(server);
   return { server, stateDir, dir, spawned, telegram, slack, conversationRegistry };
 }
 
