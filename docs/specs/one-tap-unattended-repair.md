@@ -536,3 +536,16 @@ confirmed" with the "Finish restarting" action.
 Revert the PR. Machines already switched keep the config the operator chose, reversible through
 each machine's configure route. Stored configure mandates are ignored by the reverted code
 (`readFollowMeBounds` returns null for them).
+
+## Unattended recovery-code restriction
+
+A standing approval for automatic sign-in repair never authorizes spending a
+single-use Google backup code. The runtime strips the backup-code binding and
+vault writer from unattended browser drives, including drives resumed after
+restart or after an operator approves resuming that same episode. The browser stops on a backup-code page before asking either
+navigation strategy what to do. An agent helper with broader vault access keeps
+the existing approval gate for an account with a backup-code binding.
+
+Consent covers exact current accounts on the selected machines. A manual
+repair retry remains a separate action and does not inherit the standing
+configuration mandate.

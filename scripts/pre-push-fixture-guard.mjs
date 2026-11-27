@@ -53,18 +53,15 @@ function git(args) {
 }
 
 let baseRef;
-try {
-  // Prefer upstream tracking branch if one is configured.
-  baseRef = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).trim();
-} catch {
-  // No upstream — fall back to whichever remote main we can resolve.
-  for (const candidate of ['upstream/main', 'origin/main']) {
-    try {
-      git(['rev-parse', '--verify', '--quiet', candidate]);
-      baseRef = candidate;
-      break;
-    } catch { /* try next */ }
-  }
+// A tracking feature branch can lag behind main. Exclude commits already
+// reachable from remote main even when this branch just merged them.
+// Match the release gate's order when several main refs are configured.
+for (const candidate of ['refs/remotes/JKHeadley/main', 'refs/remotes/origin/main', 'refs/remotes/upstream/main', '@{upstream}']) {
+  try {
+    git(['rev-parse', '--verify', '--quiet', candidate]);
+    baseRef = candidate;
+    break;
+  } catch { /* try next */ }
 }
 
 if (!baseRef) {

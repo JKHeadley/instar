@@ -65,17 +65,61 @@ export function parseElapsed(s: string): number {
   return (Number(m[1] ?? 0) * 86400) + (Number(m[2] ?? 0) * 3600) + (Number(m[3]) * 60) + Number(m[4]);
 }
 
-/** §3.6: an npm-family install or fetch that started in the last 30 min. */
-const NPM_BUSY = [
-  /\b(npm|pnpm|yarn)(\.cmd)?\s+(install|i|ci|add|update|exec|x)\b/,
-  /\bnpx\b/,
-  /npm-cli\.js\s+(install|i|ci|exec|x)\b/,
+/**
+ * §3.6: npm is busy when something is writing its cache.
+ * - An install-family command that started in the last 30 min (install, ci,
+ *   add, update): these write the cache for their whole run.
+ * - An `npx` / `npm exec` only in its first 2 minutes: it fetches while it
+ *   starts, then runs from the cache. Every agent session starts a long-lived
+ *   `npm exec @playwright/mcp@latest`; with sessions starting every few
+ *   minutes, a 30-minute window kept npm "busy" around the clock and the cache
+ *   was never cleaned (fb-eb8372d8-043).
+ * A fetch that runs longer is still caught by {@link npmCacheWriting}.
+ */
+const NPM_INSTALL_BUSY = [
+  /\b(npm|pnpm|yarn)(\.cmd)?\s+(install|i|ci|add|update)\b/,
+  /npm-cli\.js\s+(install|i|ci)\b/,
 ];
+const NPM_EXEC_BUSY = [
+  /\b(npm|pnpm|yarn)(\.cmd)?\s+(exec|x)\b/,
+  /\bnpx\b/,
+  /npm-cli\.js\s+(exec|x)\b/,
+];
+export const NPM_EXEC_START_WINDOW_SEC = 120;
 export function npmBusy(rows: readonly ProcessRow[]): boolean {
-  return rows.some((r) => r.elapsedSec <= 30 * 60 && NPM_BUSY.some((re) => re.test(r.command)));
+  return rows.some((r) =>
+    (r.elapsedSec <= 30 * 60 && NPM_INSTALL_BUSY.some((re) => re.test(r.command)))
+    || (r.elapsedSec <= NPM_EXEC_START_WINDOW_SEC && NPM_EXEC_BUSY.some((re) => re.test(r.command))));
 }
 
-const XCODE_BUSY = ['xcodebuild', 'XCBBuildService', 'swift-build', 'Xcode', 'SourceKitService'];
+/**
+ * The cache's own state: npm writes each fetched blob to `_cacache/tmp/` and
+ * moves it into place when done. An entry there changed in the last 2 minutes
+ * means a write is in progress, whatever process is doing it. Older entries are
+ * leftovers from interrupted fetches and are not a writer. Unreadable ⇒ busy.
+ */
+export const NPM_CACHE_WRITE_WINDOW_MS = 120_000;
+export function npmCacheWriting(seams: Pick<PruneSeams, 'readdir' | 'lstat' | 'now'>, cacache: string): boolean {
+  const tmp = path.join(cacache, 'tmp');
+  if (!seams.lstat(tmp)) return false;
+  const names = seams.readdir(tmp);
+  if (names === null) return true;
+  const cutoff = seams.now() - NPM_CACHE_WRITE_WINDOW_MS;
+  for (const n of names) {
+    const st = seams.lstat(path.join(tmp, n));
+    if (!st) continue; // @silent-fallback-ok — vanished between readdir and lstat: a write that just finished
+    if (st.mtimeMs >= cutoff) return true;
+  }
+  return false;
+}
+
+/**
+ * Xcode build tools and the Xcode app. SourceKitService is not here: it is the
+ * toolchain's indexing/editor XPC service, stays up for hours with no build
+ * (20 h on the Studio, 2026-11-18), and kept DerivedData "busy" forever
+ * (fb-eb8372d8-043). An open Xcode still counts, because it may build at any time.
+ */
+const XCODE_BUSY = ['xcodebuild', 'XCBBuildService', 'swift-build', 'Xcode'];
 export function xcodeBusy(rows: readonly ProcessRow[]): boolean {
   return rows.some((r) => {
     const exe = r.command.split(/\s+/)[0] ?? '';
@@ -109,14 +153,24 @@ export async function pruneNpmCache(seams: PruneSeams, opts: { dryRun: boolean; 
   for (let read = 0; read < 2; read++) {
     const rows = await seams.processes();
     if (rows === null) return result('npm-cache', { ...planned, skipped: 'process-list-unreadable' });
-    if (npmBusy(rows)) return result('npm-cache', { ...planned, skipped: 'npm-busy' });
+    if (npmBusy(rows) || npmCacheWriting(seams, cacache)) return result('npm-cache', { ...planned, skipped: 'npm-busy' });
   }
+  let error: string | undefined;
   try {
     await seams.run('npm', ['cache', 'clean', '--force', '--cache', root], opts.budgetMs);
   } catch (e) {
-    return result('npm-cache', { ...planned, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) });
+    error = (e instanceof Error ? e.message : String(e)).slice(0, 200);
   }
-  return result('npm-cache', { ...planned, removedItems: 1, bytesFreed: size });
+  // What was freed is measured, not inferred from npm's exit status: `npm cache
+  // clean` can delete nearly everything and still exit non-zero (fb-eecd4dde-608,
+  // 13.7 GB -> 0.34 GB recorded as 0). The breaker and the audit read this number.
+  const after = seams.lstat(cacache) ? await seams.sizeOf(cacache, Math.min(opts.budgetMs, 300_000)) : 0;
+  if (after === null) {
+    // Unmeasurable after: a clean exit keeps the old answer (all of it); an error claims nothing.
+    return result('npm-cache', error ? { ...planned, error } : { ...planned, removedItems: 1, bytesFreed: size });
+  }
+  const bytesFreed = Math.max(0, size - after);
+  return result('npm-cache', { ...planned, removedItems: bytesFreed > 0 ? 1 : 0, bytesFreed, ...(error ? { error } : {}) });
 }
 
 /** Xcode DerivedData: entries older than 24 h, contained, never while an Xcode build tool runs. */

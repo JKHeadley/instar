@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "work-board-my-board",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-18T18:04:10.166Z",
+  "artifactPath": "upgrades/side-effects/work-board-my-board.md",
+  "artifactSha256": "3220527d6dfce277d8098c5c9b8462d47eaae1232b44eaefd3a54e6aa15ae892",
+  "coveredFiles": [
+    "docs/specs/reports/work-board-my-board-convergence.md",
+    "docs/specs/work-board-my-board.eli16.md",
+    "docs/specs/work-board-my-board.md",
+    "src/core/workBoardViews.ts",
+    "src/data/awareness/work-board-my-board.md",
+    "src/server/CapabilityIndex.ts",
+    "tests/e2e/work-board-alive.test.ts",
+    "tests/integration/work-board-routes.test.ts",
+    "tests/unit/work-board-my-board.test.ts",
+    "upgrades/eli16/work-board-my-board.md",
+    "upgrades/next/work-board-my-board.md",
+    "upgrades/side-effects/work-board-my-board.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only additive field on an existing read; no gate, no stored data, no migration; a revert fully undoes it.",
+  "eli16Path": "docs/specs/work-board-my-board.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-board-my-board.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

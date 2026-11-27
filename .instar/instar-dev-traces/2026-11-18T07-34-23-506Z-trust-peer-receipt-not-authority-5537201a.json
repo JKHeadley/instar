@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "trust-peer-receipt-not-authority",
+  "sessionId": "19c7b64a-3509-4c6c-bcf3-d23ec20615c4",
+  "timestamp": "2026-11-18T07:34:23.506Z",
+  "artifactPath": "upgrades/side-effects/trust-peer-receipt-not-authority.md",
+  "artifactSha256": "c154a314443522edae33832dcdf84d21205a463d4720e07b8ed219f9217e1b4f",
+  "coveredFiles": [
+    "docs/specs/trust-peer-receipt-not-authority.eli16.md",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "tests/integration/trust-account-path-routes.test.ts",
+    "upgrades/next/trust-peer-receipt-not-authority.md",
+    "upgrades/side-effects/trust-peer-receipt-not-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes one forged-authority path (peer-written receipts) at one decision point, fail closed with a resend notice; reversible by revert, no stored-data change; reviewer objected that the fix is partial, which the artifact names in full.",
+  "eli16Path": "docs/specs/trust-peer-receipt-not-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-peer-receipt-not-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -25,6 +25,8 @@ export async function renderMachines(main, ctx) {
   const carePool = machineCarePool(care, { pool });
   const careFor = (m) => (carePool ? (carePool.byMachine[m.id] || (m.isSelf ? carePool.selfLine : null)) : null);
   const cards = el('div', { class: 'machine-cards' }, page.machines.map((m) => {
+    // A legacy answer measures only the serving machine, regardless of its display name.
+    const reading = usage.pooled ? usage.byName[m.name] : m.isSelf ? usage.self : null;
     const card = el('button', { class: 'machine-card', type: 'button', 'data-state': m.state, 'data-focus-key': `m:${m.id}` },
       el('span', { class: 'mc-top' },
         el('span', { class: STATE_DOT[m.state] || 'dot' }),
@@ -33,10 +35,10 @@ export async function renderMachines(main, ctx) {
         el('span', { class: 'mc-state', text: m.label })),
       el('span', { class: 'mc-line', text: [m.verdict ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : 'no load reading', typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
       el('span', { class: 'mc-evidence', text: m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since the agent last started' }),
-      usage.ok && usage.byName[m.name] ? el('span', { class: 'mc-evidence', text: `Using ${usage.byName[m.name].line}` }) : null,
+      reading ? el('span', { class: 'mc-evidence', text: `Using ${reading.line}` }) : null,
       careFor(m) ? el('span', { class: 'mc-evidence', text: `Restart care: ${careFor(m)}` }) : null,
     );
-    card.addEventListener('click', () => openMachine(m, { get, health, guards, names, usage }));
+    card.addEventListener('click', () => openMachine(m, { get, health, guards, names, usage, reading }));
     return card;
   }));
   // A machine whose remote desktop lost its Mac permission: the problem and its one fix, first.
@@ -82,7 +84,7 @@ function rowsList(rows) {
     el('span', { class: 'row-end', text: r.end || '' }))));
 }
 
-async function openMachine(m, { get, health, guards, usage }) {
+async function openMachine(m, { get, health, guards, usage, reading }) {
   const hw = m.hardware || {};
   const lines = [
     { label: 'State', text: `${m.label}${m.estimated ? ' (estimated from heartbeat age and load)' : ''}` },
@@ -96,12 +98,11 @@ async function openMachine(m, { get, health, guards, usage }) {
     const ropes = ropesFor(m.id, health);
     body.push(block('Connections', ropes && ropes.some((r) => r.state === 'bad') ? askLink(`The connections to ${m.name} are failing`) : null, ropes === null ? note('Can’t tell: the connection checks did not answer.') : ropes.length ? rowsList(ropes.map((r) => ({ main: r.kind, sub: r.label, tone: r.state === 'ok' ? null : r.state }))) : note(`No connection checks recorded to ${m.name} yet.`)));
   }
-  // What's using it: the pooled read covers every machine, whichever one served this page.
-  const u = usage && usage.ok ? usage.byName[m.name] : null;
+  // What's using it: a pooled read covers every machine; an older server's read covers only the serving machine.
   body.push(block('What’s using it',
-    u ? el('p', { class: 'card-line', text: u.state === 'answering' ? u.line : `${u.line}.` }) : note(usage && !usage.ok ? `Can’t tell: ${usage.reason}.` : `Can’t tell: ${m.name} has no resource reading here.`),
-    u && u.state !== 'answering' ? askLink(`${m.name}'s resource use: ${u.line}`) : null,
-    u && u.rows.length ? rowsList(u.rows) : null));
+    reading ? el('p', { class: 'card-line', text: reading.state === 'answering' ? reading.line : `${reading.line}.` }) : note(usage && !usage.ok ? `Can’t tell: ${usage.reason}.` : `Can’t tell: ${m.name} has no resource reading here.`),
+    reading && reading.state !== 'answering' ? askLink(`${m.name}'s resource use: ${reading.line}`) : null,
+    reading && reading.rows.length ? rowsList(reading.rows) : null));
   // Remote desktop for every machine; the desktop page explains a machine that isn't ready and shows its setup steps.
   if (m.id !== 'self') {
     body.push(block('Remote desktop',

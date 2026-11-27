@@ -227,6 +227,18 @@ describe('AnthropicReloginBrowserDriver — bot-check interstitial', () => {
     expect(JSON.stringify(f.supervise.mock.calls)).not.toContain('12345678');
   });
 
+  it('refuses an unattended backup-code page even if a vault binding and taker are supplied', async () => {
+    const f = fixture([state('google-backup-code-entry' as never)]);
+    const takeBackupCode = vi.fn(async () => '12345678');
+    const driver = new AnthropicReloginBrowserDriver({ browser: f.browser, resolveSecret: f.resolveSecret,
+      takeBackupCode, seatLease: f.seatLease, supervise: f.supervise, now: () => NOW });
+    const result = await driver.drive({ ...f.request, unattended: true, loginMethod: 'password',
+      secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });
+    expect(result).toMatchObject({ outcome: 'operator-only', reason: 'unattended-backup-code-forbidden' });
+    expect(takeBackupCode).not.toHaveBeenCalled();
+    expect(f.browser.fillSecret).not.toHaveBeenCalled();
+  });
+
   it('without a backup-code taker, or without a codes entry, a repair never offers the backup-code fill', async () => {
     const f = fixture([state('google-backup-code-entry' as never)]);
     const result = await f.driver.drive({ ...f.request, loginMethod: 'password', secretRefs: { password: 'password-ref', backupCode: 'codes-ref' } });

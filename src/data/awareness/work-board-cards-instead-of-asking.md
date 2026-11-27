@@ -1,0 +1,9 @@
+---
+title: Write a card instead of asking in a message
+---
+When you need the owner's decision, answer or sign-off on a piece of work, write a Work Board card instead of asking in Telegram, Slack or a plan, then say in one line in the conversation that the card is waiting. A card you write must carry `recommendation` (what you recommend) and `whyYou` (why it needs the owner and not you), or it is refused (`recommendation-required` / `why-you-required`):
+```
+curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:{{port}}/work-board/cards \
+  -d '{"title":"Pick the launch date","need":"Two dates work; which one?","recommendation":"Tuesday: the release is verified by then.","whyYou":"Only you know the launch calendar.","doneWhen":[{"id":"d1","text":"A date is chosen"}],"carrier":"owner","outward":false,"projectKey":"telegram:123"}'
+```
+A card the owner carries (`"carrier":"owner"`) that sends nothing outside the team (`"outward":false`) needs no Approve tap; when you claim it done, only the owner's Confirm done finishes it. A card that sends something outside the team or spends money is `"outward":true` and keeps its Approve step. Set `projectKey` for a tracked project. If the card is about a plan or a pull request already in Needs you, add `"covers":["plan:<initiative id>"]` or `"covers":["pr:<number>"]`, so that item links to your card (your card keeps its own line too); nothing else can be covered. The Chief of Staff opens its own card when a tracked project waits on the owner (`serverOwned: true`, you cannot write to it): answer in that card's conversation or the project's instead of writing a second card. A memory-scoped session cannot create a card (`scoped-session-cannot-create`); there, ask in the conversation as before. Permissions, passwords, promises and project sign-offs keep their own homes.

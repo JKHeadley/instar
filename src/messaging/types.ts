@@ -24,7 +24,8 @@ export type MessageType =
   | 'response'  // Answer to a query
   | 'handoff'   // Session/machine handoff context
   | 'wellness'  // Health check ping
-  | 'system';   // Infrastructure message from the Instar server
+  | 'system'    // Infrastructure message from the Instar server
+  | 'delivery-notice'; // messages-reach-renamed-sessions §C: created only by the router
 
 /** Priority level — affects delivery urgency, retry behavior, and throttling */
 export type MessagePriority = 'critical' | 'high' | 'medium' | 'low';
@@ -42,6 +43,11 @@ export interface AgentMessage {
     session: string;
     /** Machine ID (from machine identity) */
     machine: string;
+    /**
+     * messages-reach-renamed-sessions §C: what an HTTP caller wrote, when the server
+     * forced `agent`/`machine` to its own values.
+     */
+    requested?: { agent?: string; machine?: string };
   };
 
   /** Recipient targeting */
@@ -50,6 +56,10 @@ export interface AgentMessage {
     agent: string;
     /** Target session ID, "best" for intelligent routing, "*" for broadcast */
     session: string;
+    /** N73: receiver generation observed before message creation; covered by the message signature. */
+    sessionId?: string;
+    /** New senders require a proved generation; legacy senders omit this field. */
+    sessionGenerationRequired?: true;
     /** Target machine ID, "local" for same machine, "*" for all machines */
     machine: string;
   };
@@ -94,6 +104,7 @@ export interface AgentMessage {
 export type DeliveryPhase =
   | 'created'        // Message constructed, not yet sent
   | 'sent'           // Written to sender's store
+  | 'relaying'       // messages-reach-renamed-sessions §D: queued for its one cross-machine pass
   | 'received'       // Target server acknowledged receipt
   | 'queued'         // Received but awaiting delivery (editor active, session unavailable)
   | 'undelivered'    // SpawnRequestManager queued but process is disposing; hand off to DeliveryRetryManager
@@ -123,6 +134,39 @@ export interface DeliveryState {
   failureReason?: string;
   /** For broadcasts: aggregate delivery state (separate from per-message phase) */
   broadcastState?: BroadcastState;
+  /**
+   * messages-reach-renamed-sessions §B: the session this message was pinned to.
+   * Written BEFORE typing; retries and recovery are held to this exact session id.
+   */
+  resolvedSession?: string;
+  resolvedSessionId?: string;
+  resolvedVia?: 'exact' | 'topic' | 'name' | 'prefix';
+  /** Written just before the text is typed; a crash after this is never retyped. */
+  typingStartedAt?: string;
+  /** §D.2: a relayed message stored here and not yet at a terminal delivery outcome. */
+  deliveryPending?: boolean;
+  /** §D.2: when this machine stored the relayed message (its own clock). */
+  arrivedAt?: string;
+  /** Receiver-local expiry from authenticated sender age; independent of clock offset. */
+  expiresAt?: number;
+  /**
+   * §D.3 / relay-asof-holder-skew: the message's reference time (ms) when it differs from
+   * createdAt: for a relayed message, arrival on this clock minus the sender-measured age.
+   */
+  asOf?: number;
+  /**
+   * relay-asof-holder-skew: queued because the role is known but has no accepted holder
+   * yet (not running, or started too late). Each retry pass re-resolves the role instead
+   * of typing into `to.session` by name; cleared at the terminal outcome.
+   */
+  holderPending?: boolean;
+  /** Durable holder-lane budget: a receiver restart never grants extra attempts. */
+  holderRetryState?: { attempts: number; lastAttemptAt: number; firstAttemptAt?: number };
+  /** relay-asof-holder-skew: the last refusal in plain words, for the sender's notice. */
+  refusalDetail?: string;
+  /** §C: a sender notice is waiting in its 60s group / has been sent. */
+  noticePending?: boolean;
+  noticeSentAt?: string;
 }
 
 /** Per-recipient broadcast tracking */
@@ -153,6 +197,10 @@ export interface BroadcastState {
 export const VALID_TRANSITIONS: ReadonlyArray<[DeliveryPhase, DeliveryPhase]> = [
   ['created', 'sent'],
   ['sent', 'received'],
+  // messages-reach-renamed-sessions §D: one cross-machine pass per envelope.
+  ['sent', 'relaying'],
+  ['relaying', 'received'],
+  ['relaying', 'failed'],
   ['received', 'queued'],
   ['received', 'delivered'],
   ['queued', 'delivered'],
@@ -189,7 +237,21 @@ export interface SignedPayload {
   originServer: string;
   nonce: string;
   timestamp: string;
+  /**
+   * messages-reach-renamed-sessions §D.3: how old the message was (ms, sender's clock)
+   * when this attempt was signed. Included ONLY when present, so older envelopes
+   * keep verifying byte-for-byte.
+   */
+  age?: number;
 }
+
+/** messages-reach-renamed-sessions §D.1: the one cross-machine relay path (sender and route). */
+export const GENERATION_RELAY_MACHINE_PATH = '/api/messages/relay-machine-generation-v1';
+export const RELAY_MACHINE_PATH = '/api/messages/relay-machine';
+/** N73: signed generation preflight, on the existing machine-auth surface. */
+export const MESSAGE_GENERATION_PATH = '/api/messages/session-generation';
+/** The pre-August path older senders still post to; kept as a machine-auth alias. */
+export const RELAY_MACHINE_LEGACY_PATH = '/messages/relay-machine';
 
 /** Transport metadata — carried by every message envelope */
 export interface TransportMetadata {
@@ -207,6 +269,8 @@ export interface TransportMetadata {
   hmacBy?: string;
   /** Nonce for replay prevention (format: `{UUIDv4}:{ISO timestamp}`) */
   nonce: string;
+  /** §D.3: message age at signing (ms, sender's clock); covered by the signature. */
+  age?: number;
   /** ISO timestamp — validated per transport type (see Clock Skew Tolerance) */
   timestamp: string;
   /**
@@ -309,6 +373,7 @@ export const DEFAULT_TTL: Record<MessageType, number> = {
   handoff: 480,
   wellness: 5,
   system: 60,
+  'delivery-notice': 480,
 };
 
 /** Default data retention per message type (in days) */
@@ -322,6 +387,7 @@ export const DEFAULT_RETENTION_DAYS: Record<MessageType, number> = {
   handoff: 90,
   wellness: 1,
   system: 30,
+  'delivery-notice': 7,
 };
 
 /** Rate limit configuration */
@@ -381,6 +447,16 @@ export interface SendResult {
   threadId?: string;
   /** Current delivery phase */
   phase: DeliveryPhase;
+  /**
+   * Cross-machine outcome honesty (messages-send-cross-machine-honest): true
+   * once the target machine accepted the envelope (phase received or later),
+   * false otherwise. Absent on same-machine sends.
+   */
+  delivered?: boolean;
+  /** Why delivery failed (phase 'failed'), in the router's own words. */
+  failureReason?: string;
+  /** One plain-language sentence a session can relay as-is when delivery failed. */
+  notice?: string;
 }
 
 /** Filter options for inbox/outbox queries */
@@ -505,6 +581,8 @@ export interface IMessageStore {
 
 /** Result of a delivery attempt */
 export interface DeliveryResult {
+  /** Physical injection may have occurred; never automatically retry this result. */
+  outcomeUnknown?: boolean;
   /** Whether the delivery attempt succeeded */
   success: boolean;
   /** The phase the message is now in */
@@ -585,3 +663,12 @@ export interface IMessageRouter {
   /** Get messaging statistics */
   getStats(): Promise<MessagingStats>;
 }
+
+/** Domain-tagged body: old endpoints cannot accept it even if a path is rewritten. */
+export function machineRelayBody(envelope: MessageEnvelope): unknown {
+  return envelope.message.to.sessionGenerationRequired
+    ? { protocol: 'session-generation-v1', generationEnvelope: envelope } : envelope;
+}
+
+/** Existing finite recipient retry admission budget, shared with final injection. */
+export const HOLDER_RETRY_WINDOW_MS = 30_000 * 10;

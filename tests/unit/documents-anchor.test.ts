@@ -77,6 +77,29 @@ describe('reanchor', () => {
     expect(next.slice(r.start!, r.end!)).toBe(r.exact);
   });
 
+  it('the same words left only in an unrelated section are not the passage → orphaned', () => {
+    const filler = 'Unrelated material about vendors and timelines. '.repeat(40);
+    const old = `Section A. The budget is tight this quarter so we must cut travel now.\n${filler}\nSection B. Hiring notes.`;
+    const a = anchorOf(old, 'cut travel');
+    // Section A is rewritten without the words; a far-off unrelated section happens to use them.
+    const next = `Section A. Spending is fine this quarter.\n${filler}\nSection B. Hiring notes. Teams should not cut travel budgets for recruiting.`;
+    expect(reanchor(old, next, a)).toEqual({ state: 'orphaned' });
+  });
+
+  it('in a short document, the same words in a nearby unrelated section are not the passage → orphaned', () => {
+    const old = '# Plan\n\nWe ship the viewer in three steps, starting with the core library.\n\nThe budget covers two engineers.';
+    const a = anchorOf(old, 'three steps');
+    const next = '# Plan\n\nWe ship the viewer soon, starting with the core library.\n\nThe budget covers two engineers.\n\nThe fire drill has three steps for every floor.';
+    expect(reanchor(old, next, a)).toEqual({ state: 'orphaned' });
+  });
+
+  it('the same words still in place with changed surroundings → ok', () => {
+    const old = 'Intro. We must cut travel this quarter. End.';
+    const a = anchorOf(old, 'cut travel');
+    const next = 'Intro. Everyone should cut travel from now on. End.';
+    expect(reanchor(old, next, a).state).toBe('ok');
+  });
+
   it('a deleted passage → orphaned', () => {
     const a = anchorOf(DOC, 'The budget is tight this quarter and we must cut travel.');
     const next = DOC.replace('The budget is tight this quarter and we must cut travel.\n', '');
@@ -124,5 +147,42 @@ describe('reanchor', () => {
   it('never throws on garbage input', () => {
     expect(reanchor('', '', { quote: { long: false, exact: '', prefix: '', suffix: '' }, start: 5, end: 1 }).state).toBe('orphaned');
     expect(reanchor('abc', 'abc', { quote: null as never, start: 0, end: 1 }).state).toBe('orphaned');
+  });
+});
+
+describe('reanchor: a reworded passage is shown in whole words', () => {
+  const at = (text: string, phrase: string): Anchor => {
+    const s = text.indexOf(phrase);
+    return { quote: makeQuote(text, s, s + phrase.length), start: s, end: s + phrase.length };
+  };
+  const oldText = 'Intro line.\n\nInvoices go out on the first business day of each month.\n\nMore.';
+  const newText = 'Intro line.\n\nInvoices go out on the second business day of each month.\n\nMore.';
+
+  it('a selection that started on a word edge keeps the whole first word ("second", not "econd")', () => {
+    const r = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    expect(r.state).toBe('edited');
+    expect(r.exact).toBe('second business day of each month');
+    expect(newText.slice(r.start!, r.end!)).toBe(r.exact);
+  });
+
+  it('a selection that ended on a word edge keeps the whole last word', () => {
+    const o = 'Support is open from nine to five on weekdays and closed on holidays.';
+    const n = 'Support is open from nine to five on weekends and closed on holidays.';
+    const r = reanchor(o, n, at(o, 'Support is open from nine to five on weekdays'));
+    expect(r.state).toBe('edited');
+    expect(r.exact).toBe('Support is open from nine to five on weekends');
+  });
+
+  it('a selection that began mid-word is not widened to the whole word', () => {
+    const phrase = 'irst business day of each month';
+    const r = reanchor(oldText, newText, at(oldText, phrase));
+    expect(r.state).not.toBe('orphaned');
+    expect(r.exact!.startsWith('second')).toBe(false);
+  });
+
+  it('is deterministic: the same inputs place the same range', () => {
+    const a = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    const b = reanchor(oldText, newText, at(oldText, 'first business day of each month'));
+    expect(b).toEqual(a);
   });
 });

@@ -6,10 +6,13 @@
  * verification (deterministic vs judgment items), the note (sections, caps, silent day, the
  * pre-pause line), immediate-message budget, owner taps, and lease renewal + derivation.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
-import { chiefOfStaffRecordStoreSchema, buildBindingPut, buildRenewal, foldIntentState, type UnionEntry, buildLastTick, buildIntent, buildOutcome } from '../../src/core/ChiefOfStaffStore.js';
+import { chiefOfStaffRecordStoreSchema, buildBindingPut, buildCheckEvent, buildOwnerNeedsCompletion, ownerNeedsCompletionRecordKey, buildOwnerNeedsWithdrawal, buildRenewal, foldIntentState, type UnionEntry, buildLastTick, buildIntent, buildOutcome } from '../../src/core/ChiefOfStaffStore.js';
 import { ChiefOfStaffLoop, CHIEF_OF_STAFF_LOOP_DEFAULTS, clampLoopConfig, applyVerdictFloors, detectProgress, planDue, composeNote, boundProjects, evidenceHash, type ChiefOfStaffLoopDeps, type EvidenceBundle, type JudgeOutput, type NoteItem, outcomeStarted, rejectionReason } from '../../src/core/ChiefOfStaffLoop.js';
+
+import { resolveOwnerNeedsWaitIdentity } from '../../src/core/ChiefOfStaffWaitCards.js';
+import { ownerNeedsAskKey } from '../../src/core/OwnerNeedsWithdrawal.js';
 
 const CK = 'telegram:141014';
 const T0 = Date.parse('2026-11-10T08:05:00Z'); // 08:xx so the note clock is "due" when localHour says 8
@@ -74,6 +77,126 @@ function renew(w: World, atMs: number, ok = true) {
   w.j.emit('m_a')(`renewal:${atMs}`, buildRenewal({ renewedAt: new Date(atMs).toISOString(), renewedVia: 'telegram', principal: 'owner:1', machine: 'm_a', machineSignature: ok ? 'sig:good' : 'bad' }));
 }
 const checks = (w: World) => w.j.entries.filter((e) => e.data.recordType === 'check-event').map((e) => e.data.verdict);
+
+describe('owner request withdrawal reads', () => {
+  it('finds an archived withdrawal and distinguishes an incomplete read from an absent record', () => {
+    const w = world();
+    const ask = { project: CK, bindingVersion: 'v1', episode: 'e1', requestVersion: 'r1' };
+    const key = ownerNeedsAskKey(ask);
+    const withdrawal = { kind: 'owner-ask-withdrawal' as const, key, ask, coordinator: 'm_a', leaseEpoch: 1 };
+    const emit = w.j.emit('m_a');
+    emit('owner-ask-withdrawal:' + key, buildOwnerNeedsWithdrawal(withdrawal));
+    const journal = { emit, loadUnion: () => [] };
+    const complete = loop(w, {}, { journal: { ...journal, loadUnionCompleteReadOnly: () => w.j.entries } });
+    expect(complete.ownerNeedsWithdrawal(ask)).toEqual({ available: true, record: withdrawal });
+    expect(complete.ownerNeedsWithdrawal({ ...ask, requestVersion: 'r2' })).toEqual({ available: true, record: null });
+
+    const incomplete = loop(w, {}, { journal: { ...journal, loadUnionCompleteReadOnly: () => null } });
+    expect(incomplete.ownerNeedsWithdrawal(ask)).toEqual({ available: false });
+  });
+});
+
+describe('owner request completion receipt recovery', () => {
+  it('recovers an exact archived receipt after restart and refuses conflicting records', () => {
+    const w = world();
+    const binding = { physical: 1, logical: 0, node: 'm_a' };
+    const ask = { project: CK, bindingVersion: '1.0.m_a', episode: 'e1', requestVersion: 'r1' };
+    const recordKey = ownerNeedsCompletionRecordKey(ask);
+    const recordedAt = new Date(T0).toISOString();
+    const evidenceHash = 'a'.repeat(64);
+    const emit = w.j.emit('m_a');
+    emit(recordKey, buildOwnerNeedsCompletion(ask, binding, 4, { evidenceHash, evidenceIds: ['pr'], machine: 'm_a', at: recordedAt }));
+    const archived: UnionEntry[] = JSON.parse(JSON.stringify(w.j.entries));
+    const journal = { emit, loadUnion: () => [], loadUnionCompleteReadOnly: () => archived };
+    const restarted = loop(w, {}, { journal });
+
+    archived.push(archived[0]);
+    expect(restarted.ownerNeedsCompletion(ask)).toEqual({
+      available: true, record: { recordKey, recordedAt, evidenceHash, leaseEpoch: 4 },
+    });
+    expect(restarted.ownerNeedsCompletion({ ...ask, requestVersion: 'r2' })).toEqual({ available: true, record: null });
+
+    const [original] = archived;
+    archived.push({ ...original, data: { ...original.data, evidenceHash: 'b'.repeat(64) } });
+    expect(restarted.ownerNeedsCompletion(ask)).toEqual({ available: false });
+    expect(loop(w, {}, { journal: { ...journal, loadUnionCompleteReadOnly: () => null } }).ownerNeedsCompletion(ask))
+      .toEqual({ available: false });
+  });
+});
+
+describe('owner request decision snapshot', () => {
+  it('distinguishes pending, stale and resolved requests and refuses contradictory outcomes', () => {
+    const w = world();
+    bind(w);
+    const binding = w.j.entries[0].data.hlc as HlcTimestamp;
+    const disclosure = { revision: 'd1', action: 'approve' };
+    const emit = w.j.emit('m_a');
+    const at = new Date(T0).toISOString();
+    const evidenceHash = 'a'.repeat(64);
+    emit('waiting-check', buildCheckEvent({
+      conversationKey: CK, verdict: 'waiting-on-user', evidenceHash, evidenceIds: [], progressSeen: false, machine: 'm_a', at,
+    }));
+    const ask = resolveOwnerNeedsWaitIdentity(w.j.entries, CK, disclosure)!;
+    let reads = 0;
+    const l = loop(w, {}, { journal: { emit, loadUnion: () => [], loadUnionCompleteReadOnly: () => { reads++; return w.j.entries; } } });
+    expect(l.ownerNeedsDecision(ask, disclosure)).toEqual({ available: true, record: { status: 'pending', ask } });
+    expect(reads).toBe(1);
+    expect(l.ownerNeedsDecision(ask, { ...disclosure, revision: 'd2' })).toEqual({ available: true, record: { status: 'stale' } });
+
+    emit(ownerNeedsCompletionRecordKey(ask), buildOwnerNeedsCompletion(ask, binding, 4, { evidenceHash, evidenceIds: [], machine: 'm_a', at }));
+    expect(l.ownerNeedsDecision(ask, disclosure)).toMatchObject({ available: true, record: { status: 'completed' } });
+    const completion = w.j.entries.pop()!;
+    const key = ownerNeedsAskKey(ask);
+    emit('owner-ask-withdrawal:' + key, buildOwnerNeedsWithdrawal({ kind: 'owner-ask-withdrawal', key, ask, coordinator: 'm_a', leaseEpoch: 4 }));
+    expect(l.ownerNeedsDecision(ask, disclosure)).toMatchObject({ available: true, record: { status: 'withdrawn' } });
+    w.j.entries.push(completion);
+    expect(l.ownerNeedsDecision(ask, disclosure)).toEqual({ available: false });
+  });
+});
+
+describe('owner request journal write preparation', () => {
+  it('prepares one completion entry only after the fenced writer accepts the epoch and rereads the request', async () => {
+    const w = world();
+    bind(w);
+    const bindingHlc = w.j.entries[0].data.hlc as HlcTimestamp;
+    const initial = { revision: 'd1', action: 'approve' };
+    let current = initial;
+    const emit = w.j.emit('m_a');
+    const check = { evidenceHash: 'a'.repeat(64), evidenceIds: [], machine: 'm_a', at: new Date(T0).toISOString() };
+    emit('waiting-check', buildCheckEvent({ ...check, conversationKey: CK, verdict: 'waiting-on-user', progressSeen: false }));
+    const ask = resolveOwnerNeedsWaitIdentity(w.j.entries, CK, initial)!;
+    let epoch = 4;
+    const appendOwnerNeedsDecision: NonNullable<ChiefOfStaffLoopDeps['journal']['appendOwnerNeedsDecision']> =
+      async (expected, prepare) => {
+        await Promise.resolve();
+        if (epoch !== expected) return false;
+        const plan = prepare();
+        return plan ? emit(plan.key, plan.build).outcome === 'emitted' : false;
+      };
+    const l = loop(w, {}, { journal: { emit, loadUnion: () => [], loadUnionCompleteReadOnly: () => w.j.entries, appendOwnerNeedsDecision } });
+    const disclosure = vi.fn(() => current);
+    const approve = () => l.appendOwnerNeedsDecision(ask, 4, disclosure, { kind: 'completion', bindingHlc, check });
+    const revisionRace = approve();
+    current = { ...initial, revision: 'd2' };
+    await expect(revisionRace).resolves.toBe(false);
+
+    current = initial;
+    const leaseRace = approve();
+    epoch = 5;
+    await expect(leaseRace).resolves.toBe(false);
+    expect(disclosure).toHaveBeenCalledTimes(1);
+    expect(w.j.entries).toHaveLength(2);
+
+    epoch = 4;
+    w.holds = false;
+    await expect(approve()).resolves.toBe(false);
+    w.holds = true;
+    await expect(approve()).resolves.toBe(true);
+    await expect(approve()).resolves.toBe(false);
+    expect(w.j.entries).toHaveLength(3);
+    expect(l.ownerNeedsDecision(ask, initial)).toMatchObject({ available: true, record: { status: 'completed' } });
+  });
+});
 
 describe('clampLoopConfig', () => {
   it('applies the floors and the breaker upper bound', () => {

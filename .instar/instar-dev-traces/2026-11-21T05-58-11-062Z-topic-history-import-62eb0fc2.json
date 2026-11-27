@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "topic-history-import",
+  "sessionId": "b51f0ed9-88d4-4fb4-b466-cb297e392a3c",
+  "timestamp": "2026-11-21T05:58:11.062Z",
+  "artifactPath": "upgrades/side-effects/topic-history-import.md",
+  "artifactSha256": "71377fcfac6fd48df5ff97ef56520c8ef3ae92728578230f71c78812f8332157",
+  "specPath": "docs/specs/topic-history-import.md",
+  "coveredFiles": [
+    "docs/specs/topic-history-import.md",
+    "src/core/WriteDomainRegistry.ts",
+    "src/memory/topicHistoryImport.ts",
+    "src/server/routes.ts",
+    "tests/unit/topic-history-import.test.ts",
+    "upgrades/side-effects/topic-history-import.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Amendment to an already-converged Tier 2 spec: moves batch storage under the gitignored state folder, classifies the route machine-local, and qualifies error reasons; no new decision point",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

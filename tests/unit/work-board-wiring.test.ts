@@ -67,11 +67,18 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     expect(src).toContain('registerWorkBoardRoutes(router, workBoardRouteDeps);');
     expect(src).toContain('ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey;');
     expect(src).toContain('workCardTap: async (cardId, tap) => {');
+    // Work cards from the owner phone (docs/specs/phone-work-cards.md): the create's checks and write are the real ones.
+    expect(src).toContain('precheck: (requestId, draft, req) => phoneCardPrecheck(workBoardRouteDeps, requestId, draft, () => {');
+    expect(src).toContain('create: (requestId, draft, draftHash) => answerPhoneCardCreate(workBoardRouteDeps, requestId, draft, draftHash),');
+    expect(src).toMatch(/telegramTopicKnown\(ctx\.telegram, /);
+    expect(src).toContain("ctx.appConversations?.liveConversation(key.slice('app:'.length))");
     expect(read('src/server/AgentServer.ts')).toContain('workBoard: options.workBoard ?? null,');
   });
-  it('the session guard names exactly the two card routes a scoped session may reach', () => {
+  it('the session guard names exactly the three card routes a scoped session may reach', () => {
     const rows = MEMORY_SESSION_ROUTES.filter((r) => String(r.pattern).includes('work-board'));
-    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST']);
+    expect(rows.map((r) => r.method).sort()).toEqual(['GET', 'POST', 'POST']);
+    // agent-work-cards-default §2: progress notes from the session doing the work.
+    expect(rows.some((r) => r.method === 'POST' && r.pattern.test('/work-board/cards/wc_0123456789abcdef/notes'))).toBe(true);
     expect(rows.some((r) => r.pattern.test('/work-board'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards'))).toBe(false);
     expect(rows.some((r) => r.pattern.test('/work-board/cards/wc_0123456789abcdef/tap'))).toBe(false);
@@ -82,6 +89,8 @@ describe('Work Board wiring — 1. SOURCE assertions', () => {
     const src = read('src/server/mobilePairingRoutes.ts');
     expect(src).toMatch(/method: 'GET', re: \/\^\\\/mobile\\\/work-board\$\//);
     expect(src).toMatch(/work-board\\\/cards\\\/wc_\[0-9a-f\]\{16\}\\\/tap\$\/, statuses: active, body: 'json', ownerOnly: true/);
+    expect(src).toMatch(/work-board\\\/cards\\\/wc_\[0-9a-f\]\{16\}\$\/, statuses: active, body: 'none', ownerOnly: true/);
+    expect(src).toMatch(/re: \/\^\\\/mobile\\\/work-board\\\/cards\$\/, statuses: active, body: 'json', ownerOnly: true/);
   });
   it('the console page, its nav tile and the Home source are registered', () => {
     expect(read('dashboard/console/console.js')).toContain("'work/board': renderWork");
@@ -185,7 +194,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
     expect(validateAppEvent({ ...base, role: 'agent' })).not.toBeNull();
   });
 
-  it('archived-card conversations leave the list before paging, and everything shows when the card store cannot be read', () => {
+  it('archived-card conversations leave the list before paging, and an unreadable classification is an honest failed read', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-list-'));
     try {
       const store = new AppConversationStore({ stateDir: dir, machineId: () => 'm1' } as never);
@@ -199,7 +208,7 @@ describe('Work Board wiring — 2. FUNCTIONAL', () => {
       expect(page2.conversations.map((c) => c.canonicalKey)).toEqual([`app:${keys[0]}`]);
       expect(page2.nextCursor).toBeNull();
       store.hiddenConversationKeys = () => { throw new Error('card store unreadable'); };
-      expect(store.listConversations({ limit: 10 }).conversations).toHaveLength(5);
+      expect(() => store.listConversations({ limit: 10 })).toThrow('work-card-visibility-unavailable');
     } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/work-board-wiring.test.ts' }); }
   });
 

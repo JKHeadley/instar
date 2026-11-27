@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "reaper-generated-files-regenerable",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T03:52:40.909Z",
+  "artifactPath": "upgrades/side-effects/reaper-generated-files-regenerable.md",
+  "artifactSha256": "e3913fcc1929ac00c654fb3ec3f63f41d49c555fa8f1660f7dd2c1477a4c6dd0",
+  "specPath": "docs/specs/reaper-generated-files-regenerable.md",
+  "coveredFiles": [
+    "src/monitoring/AgentWorktreeReaper.ts",
+    "src/monitoring/agentWorktreeEvaluationJob.ts",
+    "src/monitoring/agentWorktreeGit.ts",
+    "tests/integration/agent-worktree-reaper-generated-files.test.ts",
+    "tests/unit/agent-worktree-reaper-generated-files.test.ts",
+    "tests/unit/agent-worktree-reaper.test.ts",
+    "upgrades/next/reaper-generated-files-regenerable.md",
+    "upgrades/side-effects/reaper-generated-files-regenerable.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes what an irreversible worktree-removal gate treats as clean and adds an archive step; dry-run default unchanged",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

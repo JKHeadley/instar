@@ -54,6 +54,7 @@
  * + the pinning test fail the build if an upstream rename silently empties a kind.
  */
 
+import { createHmac, randomBytes } from 'node:crypto';
 import { DURABLE_SECRET_PATTERNS, type DurableSecretKind } from '../core/durableSecretScrub.js';
 
 /**
@@ -144,6 +145,127 @@ export const MAX_SCAN_BYTES = 1_000_000;
  * returns only a boolean + kind, so it is free to normalise.
  */
 const INVISIBLE_INTERLEAVE = /[\p{Cf}\u034F\uFE00-\uFE0F]/gu;
+
+/** A credential span in ORIGINAL-text coordinates (SEC-164). Never carries the matched value. */
+export interface WallCredentialSpan {
+  kind: DurableSecretKind | 'own-credential';
+  start: number;
+  end: number;
+}
+
+/**
+ * Exact-value matcher for the agent's own configured credentials (SEC-164 §2). It never holds a
+ * value: only a short prefix, the length, and a keyed hash, confirmed by hashing exactly that length.
+ */
+export class OwnCredentialMatcher {
+  private readonly key = randomBytes(32);
+  private readonly entries: Array<{ prefix: string; length: number; hash: string }> = [];
+  constructor(values: ReadonlyArray<string | undefined | null>) {
+    for (const v of values) {
+      if (typeof v !== 'string' || v.length < 12 || /^[-+]?\d+$/.test(v)) continue; // chat ids and other numbers are never matched
+      // Keep only a short prefix (6 characters, or 4 for values under 24) to find candidates.
+      this.entries.push({ prefix: v.slice(0, v.length >= 24 ? 6 : 4), length: v.length, hash: this.digest(v) });
+    }
+  }
+  get size(): number { return this.entries.length; }
+  private digest(v: string): string { return createHmac('sha256', this.key).update(v).digest('hex'); }
+  find(text: string): WallCredentialSpan[] {
+    const out: WallCredentialSpan[] = [];
+    for (const e of this.entries) {
+      let at = text.indexOf(e.prefix);
+      while (at !== -1) {
+        if (at + e.length <= text.length && this.digest(text.slice(at, at + e.length)) === e.hash) {
+          out.push({ kind: 'own-credential', start: at, end: at + e.length });
+        }
+        at = text.indexOf(e.prefix, at + 1);
+      }
+    }
+    return out;
+  }
+}
+
+export interface WallSpanOptions {
+  /** SEC-164: also match the agent's own configured credentials by exact value. Never used by the wall. */
+  ownCredentials?: OwnCredentialMatcher | null;
+}
+
+/**
+ * Strip invisible interleave characters, keeping a map from stripped index to original index.
+ * Walks by CODE POINT, so astral invisibles (Unicode tag characters, two UTF-16 units each) are
+ * stripped exactly as `text.replace(INVISIBLE_INTERLEAVE, '')` strips them. Returns null when the
+ * text holds no invisible character, so clean text costs one regex test.
+ */
+function stripWithMap(text: string): { stripped: string; map: number[] } | null {
+  INVISIBLE_INTERLEAVE.lastIndex = 0;
+  const any = INVISIBLE_INTERLEAVE.test(text);
+  INVISIBLE_INTERLEAVE.lastIndex = 0;
+  if (!any) return null;
+  const parts: string[] = [];
+  const map: number[] = [];
+  for (let i = 0; i < text.length;) {
+    const cp = text.codePointAt(i)!;
+    const width = cp > 0xffff ? 2 : 1;
+    const ch = text.slice(i, i + width);
+    INVISIBLE_INTERLEAVE.lastIndex = 0;
+    if (!INVISIBLE_INTERLEAVE.test(ch)) {
+      parts.push(ch);
+      for (let k = 0; k < width; k++) map.push(i + k);
+    }
+    i += width;
+  }
+  INVISIBLE_INTERLEAVE.lastIndex = 0;
+  map.push(text.length);
+  return { stripped: parts.join(''), map };
+}
+
+/**
+ * SEC-164: every credential span of the wall's kinds (and, opt-in, the agent's own credentials) in
+ * ORIGINAL-text coordinates, overlaps resolved longest-first. The one shared detection behind the
+ * outbound wall, the log wrapper, the inbound mask, the copy scrub and the sweeper.
+ * Throws only on an internal fault; callers decide their own fail direction.
+ */
+export function findWallCredentialSpans(text: string, options: WallSpanOptions = {}): WallCredentialSpan[] {
+  if (!text) return [];
+  const raw: WallCredentialSpan[] = [];
+  const scan = (scanned: string, toOriginal: (i: number) => number) => {
+    for (const pattern of DURABLE_SECRET_PATTERNS) {
+      if (!HARD_WALL_CREDENTIAL_KINDS.has(pattern.kind)) continue;
+      pattern.regex.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = pattern.regex.exec(scanned)) !== null) {
+        if (m[0].length === 0) { pattern.regex.lastIndex++; continue; }
+        raw.push({ kind: pattern.kind, start: toOriginal(m.index), end: toOriginal(m.index + m[0].length) });
+      }
+      pattern.regex.lastIndex = 0;
+    }
+  };
+  scan(text, (i) => i);
+  const strip = stripWithMap(text);
+  if (strip && strip.stripped !== text) scan(strip.stripped, (i) => strip.map[i]!);
+  if (options.ownCredentials) raw.push(...options.ownCredentials.find(text));
+  raw.sort((a, b) => (a.start - b.start) || (b.end - a.end));
+  const out: WallCredentialSpan[] = [];
+  let cursor = -1;
+  for (const s of raw) {
+    if (s.start >= cursor) { out.push(s); cursor = s.end; }
+    else if (s.end > cursor && out.length) { out[out.length - 1]!.end = s.end; cursor = s.end; }
+  }
+  return out;
+}
+
+/** The marker every inbound and log mask writes (SEC-164 §3.2). */
+export const CREDENTIAL_REMOVED_MARKER = '[credential removed]';
+
+/** Replace every credential span in `text` with the marker. Returns the text and the kinds found. */
+export function maskCredentials(text: string, options: WallSpanOptions = {}): { text: string; kinds: string[] } {
+  const spans = findWallCredentialSpans(text, options);
+  if (spans.length === 0) return { text, kinds: [] };
+  let out = '';
+  let last = 0;
+  for (const s of spans) { out += text.slice(last, s.start) + CREDENTIAL_REMOVED_MARKER; last = s.end; }
+  out += text.slice(last);
+  return { text: out, kinds: [...new Set(spans.map((s) => s.kind))] };
+}
 
 export function detectOutboundCredential(text: string): OutboundCredentialDetection {
   if (!text) return { detected: false };

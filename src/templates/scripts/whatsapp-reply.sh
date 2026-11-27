@@ -123,6 +123,14 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — verify in conversation before retrying"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
+  # Organization policy refusal (org-never-actions §C): the rule, who to ask, and the allow-once id.
+  if echo "$BODY" | grep -q '"error"[[:space:]]*:[[:space:]]*"org-policy"'; then
+    ORG_REASON=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null || echo "")
+    ORG_CHECK=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("checkId") or "")' 2>/dev/null || echo "")
+    echo "BLOCKED by your organization's policy (not sent): ${ORG_REASON}" >&2
+    if [ -n "$ORG_CHECK" ]; then echo "If your person allows it once in the Instar app (check ${ORG_CHECK}), send the same message again." >&2; fi
+    exit 1
+  fi
   TONE_NUDGE=$(printf '%s' "$BODY" | python3 -c '
 import json, sys
 try:

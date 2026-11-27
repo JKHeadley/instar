@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "copies-names-after-pin",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T02:10:43.227Z",
+  "artifactPath": "upgrades/side-effects/copies-names-after-pin.md",
+  "artifactSha256": "679c9016a26b529ad3f374b3fdae0849af91e363525419d99f570a86ba0093cb",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T02-10-35-417Z-copies-names-after-pin.json",
+    ".instar/instar-dev-traces/2026-11-21T02-10-01-950Z-copies-names-after-pin-d4045236.json",
+    "dashboard-pair/service-yes.js",
+    "docs/specs/copies-names-after-pin.eli16.md",
+    "src/server/recommendedServiceRoutes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-bitwarden.test.ts",
+    "tests/unit/recommended-services-copies-pin.test.ts",
+    "tests/unit/service-yes-copies-page.test.ts",
+    "upgrades/next/copies-names-after-pin.md",
+    "upgrades/side-effects/copies-names-after-pin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-129 disclosure fix; whole-PR trace.",
+  "eli16Path": "docs/specs/copies-names-after-pin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/copies-names-after-pin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

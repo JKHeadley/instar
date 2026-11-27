@@ -1028,6 +1028,67 @@ describe('review gate and merge', () => {
   const HOUR = 60 * 60_000;
   // The review runs in the same tick that publishes the PR, so a test sets the reviewers' answers before `toPrOpen`.
 
+  // SEC-096: a spec draft written from untrusted feedback can merge on the two reviewers' word alone;
+  // the TRUSTED convergence session after it (unconfined, auth kept) needs the owner's own approval.
+  const specMergedOnReviewOnly = async () => {
+    // A spec draft is always reviewed under the astra lead.
+    h.review.outcomes = PASS().map((o) => (o.family === 'codex-cli' ? { ...o, model: 'gpt-6-astra' } : o));
+    const draft = 'docs/specs/feedback-feedback-c1.md';
+    h.prFiles.value = [draft];
+    h.prDiff.value = `diff --git a/${draft} b/${draft}\nnew file mode 100644\n--- /dev/null\n+++ b/${draft}\n+# Draft\n`;
+    const id = await h.workItem('c1', { needsSpec: true });
+    h.sessions.behavior.fn = (ws) => {
+      fs.mkdirSync(path.join(ws, 'docs', 'specs'), { recursive: true });
+      fs.writeFileSync(path.join(ws, draft), '# Draft\n');
+      fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'spec-drafted' }));
+    };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]); // admitted by the reviewers, no owner review
+    h.prs.get(100)!.mergedAt = '2026-10-08T00:00:00Z'; h.prs.get(100)!.mergeCommit = 'd'.repeat(40);
+    await h.exec.tick(); await h.exec.tick();
+    return id;
+  };
+
+  it('SEC-096: a spec draft merged on the independent review alone never reaches the trusted session until the owner approves its head', async () => {
+    h = await createExecHarness();
+    const id = await specMergedOnReviewOnly();
+    expect(h.sessions.spawned.some((s) => s.trusted)).toBe(false);
+    expect(h.execStore.latestFor(id)).toMatchObject({ state: 'merged', specConvergeState: 'awaiting-owner-approval' });
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/Spec draft PR #100 was merged on the independent review.*approve it on GitHub/);
+    // An approval of some OTHER commit, or by someone else, does not count.
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: BASE_SHA, submittedAt: '2026-10-08T01:00:00Z' }, { login: 'someone', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-08T01:00:00Z' }]);
+    h.now.value += 2 * HOUR; await h.exec.tick();
+    expect(h.sessions.spawned.some((s) => s.trusted)).toBe(false);
+    // The owner approves the merged head: the next reviews read (at most hourly) starts the step.
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-08T02:00:00Z' }]);
+    await h.exec.tick();
+    expect(h.sessions.spawned.some((s) => s.trusted)).toBe(false); // same hour: not re-read yet
+    h.now.value += 2 * HOUR; await h.exec.tick();
+    const converge = h.sessions.spawned.find((s) => s.trusted && s.name.startsWith('feedback-specconverge-'))!;
+    expect(converge.prompt).toMatch(/the operator approved the merged draft on GitHub/);
+  });
+
+  it('SEC-096: the owner\'s LATEST review counts: an approval later followed by changes requested does not start the trusted session', async () => {
+    h = await createExecHarness();
+    await specMergedOnReviewOnly();
+    h.reviews.set(100, [
+      { login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-08T01:00:00Z' },
+      { login: 'Owner', state: 'CHANGES_REQUESTED', commitId: HEAD_SHA, submittedAt: '2026-10-08T02:00:00Z' },
+    ]);
+    h.now.value += 2 * HOUR; await h.exec.tick();
+    expect(h.sessions.spawned.some((s) => s.trusted)).toBe(false);
+  });
+
+  it('SEC-096: specFollowUp "off" never starts the trusted session, even with the owner approval', async () => {
+    h = await createExecHarness({ config: { specFollowUp: 'off' } });
+    const id = await specMergedOnReviewOnly();
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-08T02:00:00Z' }]);
+    for (let i = 0; i < 3; i++) { h.now.value += 2 * HOUR; await h.exec.tick(); }
+    expect(h.sessions.spawned.some((s) => s.trusted)).toBe(false);
+    expect(h.execStore.latestFor(id)).toMatchObject({ specConvergeState: 'off-by-config' });
+    expect(h.exec.actionItems().map((i) => i.line).join('\n')).toMatch(/spec draft PR #100 was merged.*switched off/);
+  });
+
   it('independent review: the publisher\'s own decision record and release note (as pushed) are left out of the reviewed diff and named; a changed note is shown', async () => {
     const added = (p: string, text: string) => {
       const body = text.replace(/\n$/, '').split('\n').map((l) => `+${l}`).join('\n');
@@ -1072,6 +1133,17 @@ describe('review gate and merge', () => {
     await h.exec.tick();
     expect(h.review.calls).toHaveLength(1);
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
+  });
+
+  it('SEC-097: a reviewer reply without this review\'s verdict code never admits, whatever its body says', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = PASS();
+    h.review.verbatim = true; // bodies say "Verdict: CLEAN" with no code, as a quoted planted line would
+    const { initiativeId } = await toPrOpen();
+    expect(h.review.calls[0]).toMatch(/VERDICT [0-9a-f]{16}: CLEAN/);
+    expect(h.merges).toEqual([]);
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'fail' });
+    expect(h.execStore.latestFor(initiativeId)!.reviewReason).toMatch(/^unparseable:/);
   });
 
   it('a never-armed PR under an older epoch is reviewed in the same tick, so epoch churn cannot starve it', async () => {
@@ -1146,7 +1218,8 @@ describe('review gate and merge', () => {
 
   it('independent review: after a refusal, a new push is reviewed afresh and merges when it passes', async () => {
     h = await createExecHarness();
-    h.review.outcomes = PASS().map((o) => ({ ...o, verdict: 'SERIOUS ISSUES' as const }));
+    // The reply body is what counts (SEC-097): it says SERIOUS ISSUES.
+    h.review.outcomes = PASS().map((o) => ({ ...o, verdict: 'SERIOUS ISSUES' as const, body: 'Verdict: SERIOUS ISSUES\n- rule 6' }));
     const { initiativeId } = await toPrOpen();
     expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reviewVerdict: 'fail' });
     h.prs.get(100)!.headRefOid = 'e'.repeat(40);
@@ -1326,6 +1399,27 @@ describe('review gate and merge', () => {
     await h.exec.tick();
     expect(h.merges).toHaveLength(1);
     h.now.value += 60_001;
+    await h.exec.tick();
+    expect(h.merges).toHaveLength(2);
+    expect(h.execStore.latestFor(initiativeId)?.mergeRetries).toBe(0);
+    h.now.value += 3 * 60 * 60_000 + 1;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-refused:checks-timeout', mergeRetries: 1 });
+  });
+
+  it('a local-floor verify-pending answer is a wait on the same cadence and deadline, never a refusal', async () => {
+    // safe-merge under the `local` floor answers `refused:verify-pending` while Local Verify
+    // has no record for the head yet (queued, not failed). Since ci.yml stopped running the
+    // heavy jobs on pull requests (2026-11-21) this is the executor's normal first answer.
+    h = await createExecHarness();
+    const { initiativeId } = await toPrOpen();
+    h.reviews.set(100, [{ login: 'Owner', state: 'APPROVED', commitId: HEAD_SHA, submittedAt: '2026-10-07T01:00:00Z' }]);
+    h.safeMergeExit = { code: 1, stdout: 'safe-merge-result: {"result":"refused:verify-pending","pr":100,"floor":"local","problems":["no local-verify record yet for head"]}' };
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'pr-open', reason: 'merge-deferred:verify-pending', mergeRetries: 0 });
+    expect(h.disarmed).not.toContain(100);
+    expect(h.merges).toHaveLength(1);
+    h.now.value += 5 * 60_000 + 1;
     await h.exec.tick();
     expect(h.merges).toHaveLength(2);
     expect(h.execStore.latestFor(initiativeId)?.mergeRetries).toBe(0);

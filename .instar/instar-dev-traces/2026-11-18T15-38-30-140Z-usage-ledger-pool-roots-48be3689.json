@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "usage-ledger-pool-roots",
+  "sessionId": "fb42ecfa-a5e0-4f8e-97a5-92034385d6e9",
+  "timestamp": "2026-11-18T15:38:30.140Z",
+  "artifactPath": "upgrades/side-effects/usage-ledger-pool-roots.md",
+  "artifactSha256": "fd1b681445d712691cd6531480408e0bc95e3b7dc536152cde6432d1ee7f0b48",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T06-06-59-321Z-usage-ledger-pool-roots.json",
+    ".instar/instar-dev-decisions/2026-11-18T06-08-24-046Z-usage-ledger-pool-roots.json",
+    "docs/specs/unified-usage-ledger.eli16.md",
+    "src/core/SubscriptionPool.ts",
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/usageReadModel.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/unified-usage-ledger-alive.test.ts",
+    "tests/integration/usage-ledger-pool-roots.test.ts",
+    "tests/unit/UsageLedger.asyncScan.test.ts",
+    "tests/unit/UsageLedger.poolRoots.test.ts",
+    "upgrades/next/usage-ledger-pool-roots.md",
+    "upgrades/side-effects/usage-ledger-pool-roots.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes an approved cross-framework source inventory with transactional counting and coverage changes; the follow-on edit only restores in-place silent-fallback markers naming where each failure is reported.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

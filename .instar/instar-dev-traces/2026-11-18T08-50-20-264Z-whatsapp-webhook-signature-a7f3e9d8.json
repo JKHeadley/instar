@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "whatsapp-webhook-signature",
+  "sessionId": "d6cfb2c6-e547-4efc-8a51-332115305932",
+  "timestamp": "2026-11-18T08:50:20.264Z",
+  "artifactPath": "upgrades/side-effects/whatsapp-webhook-signature.md",
+  "artifactSha256": "a16d81e274eaf8f45a9f3628bb37bef27a530041ed29634011df19d4b65756f7",
+  "coveredFiles": [
+    "docs/specs/whatsapp-webhook-signature.eli16.md",
+    "src/cli.ts",
+    "src/commands/server.ts",
+    "src/commands/setup.ts",
+    "src/commands/whatsapp.ts",
+    "src/data/awareness/whatsapp-business-signature.md",
+    "src/messaging/WhatsAppAdapter.ts",
+    "src/messaging/backends/BusinessApiBackend.ts",
+    "src/messaging/backends/WhatsAppWebhookRoutes.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/business-api-e2e.test.ts",
+    "tests/e2e/whatsapp-server-e2e.test.ts",
+    "tests/unit/BusinessApiBackend.test.ts",
+    "tests/unit/WhatsAppWebhookRoutes.test.ts",
+    "upgrades/next/whatsapp-webhook-signature.md",
+    "upgrades/side-effects/whatsapp-webhook-signature.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One authority check at one unauthenticated route (Meta's documented signature), fail closed, reversible by revert; follow-on signs the e2e test's deliveries, test-only.",
+  "eli16Path": "docs/specs/whatsapp-webhook-signature.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/whatsapp-webhook-signature.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

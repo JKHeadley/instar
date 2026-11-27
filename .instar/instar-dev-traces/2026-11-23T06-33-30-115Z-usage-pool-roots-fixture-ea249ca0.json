@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "usage-pool-roots-fixture",
+  "sessionId": "fa6f6527-b01e-426b-a83e-6c75395ee134",
+  "timestamp": "2026-11-23T06:33:30.115Z",
+  "artifactPath": "upgrades/side-effects/usage-pool-roots-fixture.md",
+  "artifactSha256": "73fdb26c557e13851447709a2f862d44a76b0259a0b75f66cc3dccd931bdc3f0",
+  "coveredFiles": [
+    "docs/specs/usage-pool-roots-fixture.eli16.md",
+    "tests/unit/UsageLedger.poolRoots.test.ts",
+    "upgrades/side-effects/usage-pool-roots-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Preserve the unchanged fixture-only ledger correction while incorporating current-main shared console fixture; no production or assertion changes.",
+  "eli16Path": "docs/specs/usage-pool-roots-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-pool-roots-fixture.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

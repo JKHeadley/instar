@@ -397,6 +397,8 @@ export function authorityCard(kind, p) {
     envelope: { maxBatch: env.maxBatch, maxTokens: env.maxTokens, maxDailySpendUsd: env.maxDailySpendUsd },
     boundTo: p && p.proposal ? `agent ${p.proposal.agentId} · machine ${p.proposal.ownerMachineId} (epoch ${p.proposal.ownerEpoch}) · model ${p.proposal.modelFamily} via ${p.proposal.provider}` : '',
     approveAction: (p && p.approveAction) || null,
+    // Sent back with the approval so the server binds exactly the model shown here.
+    shownModelFamily: (p && p.proposal && p.proposal.modelFamily) || null,
     approveLabel: p && p.approveAction === 'restore' ? 'Approve (restore)' : 'Approve',
     restoreNote: p && p.approveAction === 'restore' ? 'Restore brings back the last approved limits. To change them, restore first, then save new limits.' : null,
     canSaveLimits: Boolean(p && p.status === 'active' && !p.approveAction && (p.blockers || []).length === 0),
@@ -404,13 +406,54 @@ export function authorityCard(kind, p) {
   };
 }
 
+function consumerPromotionState(proposal) {
+  // A follower can show the owner’s status, but the owner’s PIN may only be sent locally.
+  return proposal?.state === 'pending' && proposal.localAction === false ? 'non-owner' : proposal?.state;
+}
+
+/** The console only surfaces an actionable proposal from the serving drain. */
+function pendingConsumerPromotion(response) {
+  const proposal = sourceState(response) === 'ok' ? response.data : null;
+  if (proposal?.state !== 'pending' || proposal.localAction !== true) return null;
+  const { proposalSetHash, approvedBatchBound, items } = proposal;
+  if (typeof proposalSetHash !== 'string' || !/^[a-f0-9]{64}$/.test(proposalSetHash) ||
+      !Number.isSafeInteger(approvedBatchBound) || approvedBatchBound < 1 || approvedBatchBound > 50 ||
+      !Array.isArray(items) || items.length !== approvedBatchBound) return null;
+  if (!items.every((item) => item && typeof item.workId === 'string' && item.workId.length > 0 &&
+    typeof item.title === 'string' && item.title.length > 0 &&
+    typeof item.priority === 'string' && item.priority.length > 0 &&
+    Number.isSafeInteger(item.reportCount) && item.reportCount > 0) ||
+    new Set(items.map((item) => item.workId)).size !== items.length) return null;
+  return { evidenceHash: proposalSetHash, approvedBatchBound, items };
+}
+
+export function consumerPromotionSummary(batch) {
+  return `Turn on feedback processing. It starts with this batch and can create up to ${plural(batch, 'work item')} per run.`;
+}
+
+const PROMOTION_NOTES = {
+  'configured-simulation': 'Feedback processing is set to practice mode. The agent needs to prepare it for promotion.',
+  'no-work': 'There are no approved feedback items ready for promotion yet.',
+  'non-owner': 'Feedback promotion is available from the machine that runs feedback processing.',
+  restore: 'Feedback promotion will be available once restoration is complete.',
+  unavailable: 'Feedback promotion is currently unavailable.',
+};
+
 /** Everything on this page that is the operator's to do, most important first. */
-export function operatorTodos({ readiness, triageProposal, execute, queue } = {}) {
+export function operatorTodos({ readiness, triageProposal, execute, queue, consumerPromotion } = {}) {
   const todos = [];
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
   if (pending(r)) todos.push({ kind: 'readiness-authority', action: r.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: `Approve which model sorts incoming reports.${r.status === 'proposal-only' ? ` It was paused: ${r.pausedBecause || 'a safety brake fired.'}` : r.status === 'revoked' ? ' You turned it off earlier.' : ''}`, button: r.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: r });
   const t = sourceState(triageProposal) === 'ok' ? triageProposal.data : null;
   if (pending(t)) todos.push({ kind: 'triage-authority', action: t.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: 'Approve which model decides which reports get fixed.', button: t.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: t });
+  const promotion = pendingConsumerPromotion(consumerPromotion);
+  if (promotion) todos.push({
+    kind: 'consumer-promotion', sentence: 'Feedback needs your approval to create work items.',
+    detail: consumerPromotion.data.promotionRecord?.requiresReapproval === true
+      ? 'The previous approval needs to be renewed before feedback processing can create work items.'
+      : 'Feedback processing is currently in practice mode.',
+    proposal: promotion,
+  });
   const x = sourceState(execute) === 'ok' ? execute.data : null;
   if (x && x.reason === 'approver-not-independent') todos.push({ kind: 'plan', action: 'accept-approver-dependence', sentence: 'The fix worker needs your one-time OK to run.', detail: 'This agent could approve its own fixes on GitHub, so it waits for you. Every fix still needs your GitHub approval to merge.', button: 'Let it run anyway…' });
   const held = ((x && x.attempts) || []).filter((a) => a.state === 'held' && a.reason === 'needs-review-secret-shape');
@@ -459,6 +502,18 @@ export function buildFeedback(res = {}, now = Date.now()) {
   const todoFeeds = ['readiness', 'triageSummary', 'triageProposal', 'execute', 'queue'];
   const allOff = todoFeeds.every((k) => states[k] === 'off');
   const drainOff = states.drain === 'off' || (states.drain === 'ok' && res.drain.data && res.drain.data.posture && res.drain.data.posture.state === 'unavailable');
+  const promotionRead = res.consumerPromotion;
+  const promotionState = consumerPromotionState(promotionRead?.data);
+  const promotionBadRead = promotionRead && ![404, 503].includes(promotionRead.status) && (
+    !promotionRead.ok || (promotionState === 'pending' && !pendingConsumerPromotion(promotionRead)) ||
+    (promotionState !== 'pending' && promotionState !== 'already-live' && !Object.hasOwn(PROMOTION_NOTES, promotionState))
+  );
+  if (promotionBadRead) {
+    states.consumerPromotion = 'failed';
+    names.consumerPromotion = 'the feedback promotion proposal';
+    failed.push('consumerPromotion');
+    todoFeeds.push('consumerPromotion');
+  }
   const todos = operatorTodos(res);
   const progress = progressLine(res.drain, res.readiness, now);
   const summary = states.triageSummary === 'ok' ? (res.triageSummary.data || {}) : null;
@@ -497,6 +552,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
   }
 
   const notes = [];
+  if (promotionRead?.ok && Object.hasOwn(PROMOTION_NOTES, promotionState)) notes.push(PROMOTION_NOTES[promotionState]);
   if (summary && summary.quotaPause && summary.quotaPause.at) notes.push('Triage is paused for now: the account serving it is near its usage limit.');
   if (summary && summary.ignoreBrake && summary.ignoreBrake.engaged) notes.push('Ignores are braked: the ignore rate rose sharply, so new ignores are being held.');
   if (states.drain === 'ok' && res.drain.data && res.drain.data.restorePending) notes.push('A failover restore is pending; writes are refused until it is finalized.');
@@ -537,10 +593,11 @@ export function newDecisionRef(prefix = 'console', now = new Date(), rand = Math
 }
 
 /** POST /feedback-factory/readiness-authorities body (create/replace/restore/revoke). An emptied limit means "use the default", never 0. */
-export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function readinessAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
@@ -549,10 +606,11 @@ export function readinessAuthorityRequest(action, envelope, pin, operatorDecisio
   return body;
 }
 /** POST /feedback-factory/triage/authority body: the server fills every binding field from its proposal. */
-export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef) {
+export function triageAuthorityRequest(action, envelope, pin, operatorDecisionRef, shownModelFamily) {
   const body = { action, pin, operatorDecisionRef };
   if (action === 'create' || action === 'replace') {
     body.useProposal = true;
+    if (shownModelFamily) body.shownModelFamily = shownModelFamily;
     for (const k of ['maxBatch', 'maxTokens', 'maxDailySpendUsd']) {
       const v = String((envelope || {})[k] ?? '').trim();
       if (v !== '') body[k] = Number(v);
@@ -609,4 +667,42 @@ export function developmentHeadline({ shipping, feedback, pace } = {}) {
   const allOff = (!shipping || shipping.state === 'off') && (!feedback || feedback.state === 'off');
   if (allOff) return { text: 'Development tools aren’t set up on this machine.', tone: 'muted', sub: 'Shipping and the feedback factory run on a machine with the Instar source checkout.' };
   return { text: 'Nothing here needs you.', tone: 'ok', sub: lines.join(' · ') };
+}
+
+// ── Borrowed machines on the run machine (docs/specs/local-verify-borrowed-slices-count.md, G) ──
+const BORROWED_LANE_WORDS = Object.freeze({ unit: 'quick tests', integration: 'integration tests', e2e: 'end-to-end tests' });
+
+/** One lane's state in plain words. */
+export function borrowedLaneWords(x) {
+  const l = x && typeof x === 'object' ? x : {};
+  if (l.proven === false || !l.evidence) return 'not tried yet (no dry run)';
+  if (l.state === 'counting') return 'its passing results count';
+  if (l.state === 'suspended') return 'paused after many disagreements in one run';
+  if (typeof l.state === 'string' && l.state.startsWith('lapsed')) return 'back to practice after a problem';
+  const ev = l.evidence;
+  const done = ['coverage', 'spread', 'failingDirection', 'checkSlice', 'wrongPassWindow'].filter((k) => ev[k] && ev[k].complete).length;
+  return `practising (${done} of 5 checks met)`;
+}
+
+/**
+ * The run machine's borrowed helpers in plain words: a title, then per helper its lanes, what the
+ * last run sent and it finished, and a dry run in progress. Null when no helper is set up here.
+ */
+export function borrowedSummary(b) {
+  if (!b || typeof b !== 'object' || !b.mode || b.mode === 'off' || !Array.isArray(b.helpers) || b.helpers.length === 0) return null;
+  const rows = b.helpers.filter((h) => h && typeof h.machineId === 'string').map((h) => {
+    const lanes = h.lanes && typeof h.lanes === 'object' ? h.lanes : {};
+    const laneLines = ['unit', 'integration', 'e2e'].map((k) => `${BORROWED_LANE_WORDS[k]}: ${borrowedLaneWords(lanes[k])}`);
+    const lasts = ['unit', 'integration', 'e2e'].map((k) => lanes[k] && lanes[k].lastVerify).filter((x) => x && typeof x.sent === 'number');
+    lasts.sort((a, c) => String(c.at).localeCompare(String(a.at)));
+    const last = lasts[0] ? `Last run: it was given ${plural(lasts[0].sent, 'file')} and finished ${lasts[0].finished}.` : 'It has not been given any work yet.';
+    const intent = h.dryRunIntent && h.dryRunIntent.state;
+    const dry = h.dryRunRunning ? 'A dry run is going on.' : intent === 'requested' ? 'A dry run is waiting to start.' : null;
+    return { machine: h.machineId, lanes: laneLines, last, dry };
+  });
+  return {
+    title: b.mode === 'count' ? 'Borrowed machines help the test line' : 'Borrowed machines practise for the test line',
+    sub: 'Their answers are compared with this machine’s own; a lane counts only after it has proven itself and the line’s session records that decision.',
+    rows,
+  };
 }

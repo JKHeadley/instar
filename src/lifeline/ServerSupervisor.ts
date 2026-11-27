@@ -547,6 +547,17 @@ export class ServerSupervisor extends EventEmitter {
     this.isRunning = false;
   }
 
+  /** A completed stop() can swallow tmux errors; only an independent read proves absence. */
+  observeServerStopped(): boolean | null {
+    if (!this.tmuxPath) return null;
+    try {
+      const sessions = execFileSync(this.tmuxPath, ['list-sessions', '-F', '#{session_name}'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000,
+      }).trim().split('\n');
+      return !sessions.includes(this.serverSessionName);
+    } catch { return null; } // @silent-fallback-ok: no measurable session list means unknown, never proof of a stop
+  }
+
   /**
    * Check if the server is currently healthy.
    */
@@ -1407,7 +1418,18 @@ export class ServerSupervisor extends EventEmitter {
       // real wall-clock. A server whose session is alive but has NEVER answered
       // /health after 3× the grace window is hung, not booting — past the ceiling
       // we fall through to act on failures normally.
-      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0) {
+      //
+      // Anchor ONLY when the current spawn has not yet answered healthy
+      // (lastHealthy < spawnedAt). A healthy tick clears the anchor; without this
+      // guard the next tick re-anchored it to the long-past spawnedAt of the
+      // running server, so a server healthy for more than 3× grace met its first
+      // outage with the ceiling already exceeded, and every respawn in that outage
+      // (which resets spawnedAt, not firstSpawnedAt) got only the ~60s
+      // alive-but-unresponsive allowance instead of the startup grace (Echo
+      // Laptop, 2026-11-21 03:00 PST, fb-6b354765-24a). With the guard, the
+      // episode anchors at its first respawn and keeps that anchor across later
+      // respawns until the server answers healthy again.
+      if (this.spawnedAt > 0 && this.firstSpawnedAt === 0 && this.lastHealthy < this.spawnedAt) {
         this.firstSpawnedAt = this.spawnedAt;
       }
       const graceCeilingExceeded =

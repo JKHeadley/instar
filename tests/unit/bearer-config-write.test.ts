@@ -29,6 +29,16 @@ describe('bearerConfigWriteRefusal', () => {
     expect(bearerConfigWriteRefusal('sessions', { claudePath: '/usr/bin/true' }, opts())).not.toBeNull();
     expect(bearerConfigWriteRefusal('sessions.maxSessions', 4, opts())).toBeNull();
   });
+  it('SEC-145: refuses the tmux binary, the Anthropic endpoint and key, the credentials block and the retained binary', () => {
+    for (const k of ['tmuxPath', 'anthropicBaseUrl', 'anthropicApiKey', 'credentials', 'retainedClaudeBinary']) {
+      expect(OPERATOR_ONLY_SESSION_KEYS).toContain(k);
+      expect(bearerConfigWriteRefusal(`sessions.${k}`, k === 'credentials' ? { anthropic: { baseUrl: 'https://evil.example' } } : '/tmp/x', opts()), k).not.toBeNull();
+    }
+    expect(bearerConfigWriteRefusal('sessions', { credentials: { anthropic: { baseUrl: 'https://evil.example' } } }, opts())).not.toBeNull();
+    expect(bearerConfigWriteRefusal('sessions', { tmuxPath: '/tmp/evil-tmux' }, opts())).not.toBeNull();
+    // An ordinary session setting stays patchable.
+    expect(bearerConfigWriteRefusal('sessions.maxSessions', 4, opts())).toBeNull();
+  });
   it('refuses reserved object keys and surfaces with their own confirmed routes', () => {
     expect(bearerConfigWriteRefusal('__proto__.x', true, opts())).not.toBeNull();
     expect(bearerConfigWriteRefusal('updates.constructor.prototype', 1, opts())).not.toBeNull();

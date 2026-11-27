@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "no-data-loss-on-machine-death-census-amendment",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T13:05:44.549Z",
+  "artifactPath": "upgrades/side-effects/no-data-loss-on-machine-death-census-amendment.md",
+  "artifactSha256": "d7db2aad055cdb2d0918197670f301d1d4d22d7579ce3aa097a3880e49ede61d",
+  "coveredFiles": [
+    "docs/specs/no-data-loss-on-machine-death.md",
+    "upgrades/side-effects/no-data-loss-on-machine-death-census-amendment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: one census row amended and one marked post-convergence census row added in an approved, converged spec; a revert fully undoes it; no runtime surface.",
+  "eli16Path": "docs/specs/no-data-loss-on-machine-death.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/no-data-loss-on-machine-death-census-amendment.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

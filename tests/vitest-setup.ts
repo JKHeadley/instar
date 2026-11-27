@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProcessDefault } from '../src/messaging/telegram-origin/OriginStageDeadlines.js';
+import { setMacDesktopHelperBudgetScale } from '../src/core/MacDesktopHelperBudget.js';
 
 // Telegram-origin recording budgets: lifted for every test file.
 //
@@ -25,6 +26,19 @@ import { setOriginStageDeadlineProcessDefaults, setOriginStoreRequestTimeoutProc
 // setOriginStageDeadlineProcessDefaults(null) (see origin-stage-deadlines.test.ts).
 setOriginStageDeadlineProcessDefaults({ storeEvidenceMs: 20_000, spoolEvidenceMs: 20_000, peerEvidenceMs: 20_000, verifiedEvidenceMs: 20_000, admitMs: 20_000 });
 setOriginStoreRequestTimeoutProcessDefault(20_000);
+
+// macOS desktop helper waits: ten times longer for every test file.
+//
+// MacDesktopHost gives its native helper 2 s for an ordinary command (4 s for a frame, 3 s
+// for the indicator). The desktop unit tests stand a Node script in for that helper, and
+// beside a full suite a Node process can take longer than 2 s to start: the test fails with
+// mac-desktop-host-timeout on a change that never touched the desktop (two changes in the
+// merge line on 2026-11-18, on desktop-displays; MacDesktopHostIdentity and
+// MacDesktopHostCapture retried all week). A stand-in that answers is unaffected; one that
+// really hangs still fails, ten times later. A test that asserts a timeout itself sets the
+// scale back to 1 for its own run (see MacDesktopHostCapture.test.ts). The module imports
+// nothing, so loading it here caches no src/core dependency ahead of a test's vi.mock.
+setMacDesktopHelperBudgetScale(10);
 
 //
 // Strip git environment overrides inherited from the parent process FIRST.

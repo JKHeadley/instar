@@ -246,6 +246,30 @@ export function bubbles(kind, rows, opts = {}) {
 export function sortBubbles(list) {
   return list.sort((a, b) => String(a.at || '').localeCompare(String(b.at || '')) || a.id.localeCompare(b.id));
 }
+/**
+ * Rebuild a full newest page from its server-issued row hashes and changed rows. The cache
+ * contains the actual rows represented by the hashes sent on THAT request. Never keep hashes
+ * alone: a new tab/leader must be able to receive the complete reconstructed page.
+ * Returns no data on an incomplete answer, so the next read can request a fresh full page.
+ */
+export function rebuildQuickPage(previous, data) {
+  if (!data || !Array.isArray(data.messages)) return { data: null, cache: null };
+  if (data.changeFeed === undefined) return { data, cache: null }; // older agents return a full page
+  const hashes = data.changeFeed && data.changeFeed.rowHashes;
+  if (!Array.isArray(hashes) || hashes.length > 100 || hashes.some((h) => typeof h !== 'string' || !/^[a-f0-9]{64}$/.test(h))) return { data: null, cache: null };
+  const rows = new Map();
+  const full = [];
+  let i = 0;
+  for (const h of hashes) {
+    const row = previous && previous.rows instanceof Map && previous.rows.has(h) ? previous.rows.get(h) : data.messages[i++];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return { data: null, cache: null };
+    rows.set(h, row);
+    full.push(row);
+  }
+  if (i !== data.messages.length) return { data: null, cache: null };
+  return { data: { ...data, messages: full }, cache: { hashes: [...hashes], rows } };
+}
+
 /** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
 export function mergeBubbles(prev, next) {
   const m = new Map(prev.map((b) => [b.id, b]));
@@ -770,6 +794,45 @@ export function groupRows(rows, index, leadKey) {
     if (r.unread > 0) g.unread += r.unread;
   }
   return { lead: lead ? { ...lead, depth: 0 } : null, groups: [...groups.values()].map((g) => ({ ...g, count: g.rows.length })), ungrouped: orderWithTree(ungrouped, null) };
+}
+/**
+ * "Project: Instar topic management" → "Instar topic management" (also "Project – …", "Project - …", "project:").
+ * Only a "Project" followed by a separator is stripped, so "Projector setup" stays whole; a title that would
+ * be left empty stays as it was. Same rule as the iPhone app (EffortSummary.strippingProjectPrefix).
+ */
+export function stripProjectPrefix(title) {
+  const t = String(title == null ? '' : title).trim();
+  const m = /^project\s*[:\-\u2013\u2014]\s*/i.exec(t);
+  if (!m) return t;
+  const rest = t.slice(m[0].length).trim();
+  return rest || t;
+}
+/**
+ * The name a group row shows. A project group shows the tracked project's own title when it has one (and it is
+ * not just the project's key), else the group's own title; either way without a leading "Project:" (the
+ * Projects section and the project mark already say it). A plain group shows its title as it is.
+ */
+export function groupDisplayTitle(group, project) {
+  const own = group && typeof group.title === 'string' ? group.title : '';
+  if (!project) return own;
+  const t = typeof project.title === 'string' ? project.title.trim() : '';
+  if (t && t !== project.key) return stripProjectPrefix(t);
+  return stripProjectPrefix(own) || own;
+}
+/**
+ * groupRows' groups → the two sections the Grouped view shows: "Projects" (groups linked to a tracked project,
+ * each carrying its project and display title) and "Groups" (plain groups). A group with no conversations
+ * (counting its sub-groups) is never shown. Each section keeps the incoming order. Pure.
+ */
+export function groupSections(groups, projectsByGroup) {
+  const projects = [], plain = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g || !(g.count > 0)) continue;
+    const project = (projectsByGroup && projectsByGroup.get(g.key)) || null;
+    const shown = { ...g, project, displayTitle: groupDisplayTitle(g, project) };
+    (project ? projects : plain).push(shown);
+  }
+  return { projects, groups: plain };
 }
 /** "3 conversations" / "1 conversation". */
 export function groupCountWords(n) { return `${n} conversation${n === 1 ? '' : 's'}`; }
