@@ -11,9 +11,12 @@ import path from 'node:path';
 import { INSTALL_DOOR_LABELS, type InstallDoor, type WizardAnswers } from '../commands/setup-wizard/state-machine.js';
 import { DOOR_NPM_PACKAGE, doorSignInArgs, redetectDoorPath, type SignedInVerdict } from './doors.js';
 
+/** One account card the app shows at the account choice (create-agent-accounts-and-always-on §A.2). Identity only. */
+export interface AccountCard { id: string; label: string; plan: string | null; borrowedFrom: string | null; isDefault: boolean }
+
 export type StepResult =
   | { kind: 'done'; updates?: Partial<WizardAnswers>; note?: string }
-  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string }
+  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string; accounts?: AccountCard[] }
   | { kind: 'failed'; message: string; nextStep: string };
 
 const PACKAGE_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -145,6 +148,8 @@ export function doorInstallStep(
 
 export interface SignInOptions {
   words: ResumeWords;
+  /** App setup must confirm a sign-in before it creates the agent. */
+  requireVerifiedSignIn?: boolean;
   /** The sign-in this setup left waiting, if any. */
   awaiting?: { loginPid?: number; loginStamp?: string };
   /** Claude already has a token to use, so nothing needs signing in. */
@@ -164,22 +169,31 @@ export async function doorSignInStep(env: DoorStepEnv, door: InstallDoor, option
   if (door === 'claude-code' && verdict === 'signed-out' && obtainClaudeToken && (await obtainClaudeToken())) {
     return { kind: 'done', note: 'Claude will use the token you pasted.' };
   }
-  if (verdict === 'unknown') {
-    return { kind: 'done', note: `I can't tell whether ${label} is signed in, so I'm leaving it as it is. If it asks you to sign in later, do that then.` };
-  }
-  const command = env.doorPath(door);
-  if (!command) return { kind: 'failed', message: `${label} isn't installed.`, nextStep: `${sentence(words.resume)}.` };
-
   const previous = awaiting?.loginPid;
   const previousStamp = awaiting?.loginStamp;
   const stillRunning = previous !== undefined && previousStamp !== undefined && env.processStamp(previous) === previousStamp;
+  if (verdict === 'unknown') {
+    if (!options.requireVerifiedSignIn) {
+      return { kind: 'done', note: `I can't tell whether ${label} is signed in, so I'm leaving it as it is. If it asks you to sign in later, do that then.` };
+    }
+    if (!stillRunning) {
+      return {
+        kind: 'failed',
+        message: `Couldn't verify your ${label} sign-in. Check that the account you chose is signed in, then try again.`,
+        nextStep: `${sentence(words.resume)} to check again.`,
+      };
+    }
+  }
+  const command = env.doorPath(door);
+  if (!command) return { kind: 'failed', message: `${label} isn't installed.`, nextStep: `${sentence(words.resume)}.` };
 
   if (env.interactive) {
     // A sign-in left waiting in the background would compete with this one.
     if (stillRunning) env.stopProcess(previous);
     env.print(`  Sign in to ${label} now. This uses your own account, and Instar never sees the password.`);
     env.runAttached(command, doorSignInArgs(door, env.browser));
-    if ((await env.proveSignedIn(door)) === 'signed-out') {
+    const afterSignIn = await env.proveSignedIn(door);
+    if (afterSignIn === 'signed-out' || (options.requireVerifiedSignIn && afterSignIn !== 'signed-in')) {
       return { kind: 'failed', message: `${label} still isn't signed in.`, nextStep: `${sentence(words.resume)} to try again.` };
     }
     return { kind: 'done' };

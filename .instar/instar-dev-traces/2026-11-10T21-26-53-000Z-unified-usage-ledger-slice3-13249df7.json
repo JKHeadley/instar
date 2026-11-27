@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-slice3",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T21:26:53.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-slice3.md",
+  "artifactSha256": "6c0a5b7fb5a32205ae5cf5824b2d0a09cf5c6ac7e208a6a88e20a0401da8d085",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "scripts/routing-prices.manifest.json",
+    "src/core/routingPriceAuthority.ts",
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/usagePricing.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/usagePricing.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-slice3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Reporting-only pricing over the Tier-2 usage store; no gate reads list doors",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

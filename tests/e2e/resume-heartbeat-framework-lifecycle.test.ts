@@ -100,7 +100,8 @@ describe('resume lookups follow the session framework — production lifecycle',
     writeRollout(home, codexId, localPartitionOf(codexWhen), '2026-10-11T10-00-00');
     resetRolloutLookupState();
     project = createTempProject();
-    tmuxPath = writeTmuxStub(home);
+    // The heartbeat reads every session's pane with one list-sessions call: name the live ones.
+    tmuxPath = writeTmuxStub(home, ['echo-codex-topic', 'echo-instar-agent-management', 'echo-thread-claude', 'echo-thread-codex', 'echo-threadline-dev']);
     project.state.saveSession(sessionRecord('echo-instar-agent-management', 'claude-code', STALE_A));
     project.state.saveSession(sessionRecord('echo-threadline-dev', 'claude-code', STALE_B));
     project.state.saveSession(sessionRecord('echo-codex-topic', 'codex-cli', codexId));

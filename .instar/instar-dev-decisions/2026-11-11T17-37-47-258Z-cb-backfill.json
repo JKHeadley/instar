@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-11T17:37:47.258Z",
+  "slug": "cb-backfill",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 907,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicIntent.ts",
+      "src/core/TopicIntentBriefing.ts",
+      "src/core/TopicIntentPendingConfirm.ts",
+      "src/data/feature-ladders.json",
+      "src/memory/TopicMemory.ts",
+      "src/monitoring/contextBudgetMetrics.ts",
+      "src/monitoring/contextLayers/anchorLedger.ts",
+      "src/monitoring/contextLayers/backfillLane.ts",
+      "src/monitoring/contextLayers/contextLayersBoot.ts",
+      "src/monitoring/contextLayers/layerCaptureWiring.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 853,
+    "deletedLines": 54
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "re-landing of an already-reviewed slice onto current main; merge resolution only"
+  },
+  "verdict": "blocked"
+}

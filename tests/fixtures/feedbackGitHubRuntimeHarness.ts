@@ -53,8 +53,9 @@ else console.log(JSON.stringify({owner:{login:'fixture-owner',type:'User'},allow
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
     feedbackFactory: { processing: {}, drain: {}, consumer: { dryRun: true }, triage: {}, execute: { sourceRepoPath: source, dryRun: true, publishRepo: 'fixture-agent/repo' } },
   } as unknown as InstarConfig;
-  function createServer() {
+  function createServer(extra: Record<string, unknown> = {}) {
     return new AgentServer({
+      ...extra,
       config, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir),
       intelligence: { evaluate: async () => '{}' },
       sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never,

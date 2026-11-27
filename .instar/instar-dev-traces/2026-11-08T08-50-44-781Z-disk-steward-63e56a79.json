@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "slug": "disk-steward",
+  "sessionId": "68e1d841-2260-4f6b-bada-3ef6f6d4bc1b",
+  "timestamp": "2026-11-08T08:50:44.781Z",
+  "artifactPath": "upgrades/side-effects/disk-steward.md",
+  "artifactSha256": "86c6a9cb5214b0c5a5c044eedb9401c375ad2ce25763324f745caf1e8842a39d",
+  "specPath": "docs/specs/disk-steward.md",
+  "coveredFiles": [
+    "site/astro.config.mjs",
+    "site/src/content/docs/features/disk-steward.md",
+    "site/src/content/docs/features/observability.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/runVerifyMain.ts",
+    "src/monitoring/DiskSteward.ts",
+    "src/monitoring/agentWorktreeGit.ts",
+    "src/monitoring/diskStewardMain.ts",
+    "tests/unit/agent-worktree-reaper.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/orphanSweep.test.ts",
+    "upgrades/side-effects/disk-steward.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the Tier-2 disk steward PR: test-gate registrations, fail-safe catch annotations plus two DegradationReporter reports at boot, and the orphan sweep now recording its degradation through the run result and listing kept entries with sizes; the reviewer's cold re-read of the Local Verify deletion path concurred on the third pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "disk-steward stays registered as an eternal sentinel: post send attempts never closer than 15 min (rate floor asserted by the ratchet), retries back off 15m to 6h, an unsent post is dropped after 24 h and the next waits a full repeat window; cleanup runs once per 6 h and stops after three runs freeing under 1% (breaker); brakes persist across restart. This follow-up adds no new self-triggered loop: the orphan sweep runs once per verify run, driven by the queue, and the boot degradation reports fire once per boot."
+    }
+  }
+}

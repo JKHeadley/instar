@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "native-owner-approval-disposable-route",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T19:34:16.242Z",
+  "artifactPath": "upgrades/side-effects/native-owner-approval-disposable-route.md",
+  "artifactSha256": "48f63455db449163c839dac1d84dcf4720e6f8af99d4c5f7a9a1980c885cacb3",
+  "coveredFiles": [
+    "docs/specs/native-owner-approval-signin-repair.eli16.md",
+    "docs/specs/native-owner-approval-signin-repair.md",
+    "src/core/SubscriptionReloginOperatorConfig.ts",
+    "src/core/trustJourney/biometricCurrentSetProof.ts",
+    "src/server/nativeOwnerApprovalRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/subscription-relogin-one-tap-lifecycle.test.ts",
+    "tests/fixtures/owner-approvals/signin-repair-v1.json",
+    "tests/integration/native-owner-approval-routes.test.ts",
+    "tests/unit/native-owner-approval-signin-repair-vector.test.ts",
+    "upgrades/next/native-owner-signin-repair-writer.md",
+    "upgrades/side-effects/native-owner-approval-disposable-route.md",
+    "upgrades/side-effects/native-owner-signin-repair-writer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Move the PIN-preserving preparation and already reviewed disposable routes to a standalone main-based branch, without enabling new authority",
+  "eli16Path": "docs/specs/native-owner-approval-signin-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-owner-approval-disposable-route.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

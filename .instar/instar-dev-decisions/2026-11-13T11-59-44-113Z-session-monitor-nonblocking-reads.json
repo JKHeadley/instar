@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-13T11:59:44.113Z",
+  "slug": "session-monitor-nonblocking-reads",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/monitoring/SessionMonitor.ts"
+    ],
+    "addedLines": 92,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

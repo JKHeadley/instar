@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "webk-686-enroll",
+  "sessionId": "29ba1b62-0758-4cb3-8fd8-bec238937a16",
+  "timestamp": "2026-11-08T17:40:35.006Z",
+  "artifactPath": "upgrades/side-effects/webk-686-enroll.md",
+  "artifactSha256": "6d497dd502c87deabfc50cbb23c420c626fff43cebe03578f1d7492e239ceea1",
+  "coveredFiles": [
+    "docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-686-review.md",
+    "docs/specs/webk-686-enroll.eli16.md",
+    "src/messaging/telegram-origin/ReviewedWebKBuilds.ts",
+    "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+    "src/server/telegramOriginRoutes.ts",
+    "tests/e2e/telegram-origin-webk-drift-reenroll.test.ts",
+    "tests/integration/telegram-origin-browser-drift.test.ts",
+    "tests/unit/telegram-origin/browser-reenrollment.test.ts",
+    "tests/unit/telegram-origin/web-k-driver.test.ts",
+    "upgrades/next/webk-686-enroll.md",
+    "upgrades/side-effects/webk-686-enroll.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reviewed-build list entry plus a narrow driver error mapping toward holding and a log line; a revert fully undoes it",
+  "eli16Path": "docs/specs/webk-686-enroll.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/webk-686-enroll.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

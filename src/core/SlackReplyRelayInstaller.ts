@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
+  // Org-policy 422 branch version (#3275), before the success line printed the
+  // message timestamp and link (waiting-on-you-links).
+  'f27c22a5c3cac05104c36548b8d9b5fe1c2ec67cc554bd54a4faf3930f24fa20',
+  // B23 attribution version (#2862), before the org-policy 422 branch (org-never-actions).
+  '9f784fc5fef12f407a2a18a89227378383874fb0250aa1c153ab07663a70defb',
   // Before JSON encoding avoided Bash here-string temporary files (owner live proof).
   'f16111eb9d39140c59199608fb040e9638033675e7029abf35cba559a9723dde',
   // Every historical repository-shipped template before the session-bound
@@ -47,6 +52,7 @@ export function slackReplyRelayReadiness(stateDir: string, expectedTemplate: str
     if (sha(fs.readFileSync(destination, 'utf8')) !== sha(expectedTemplate)) return { ready: false, reason: 'canonical relay bytes do not match the packaged template' };
     return { ready: true };
   } catch (err) {
+    // @silent-fallback-ok: not silent, the caller logs this reason and refuses the spawn
     return { ready: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -139,4 +145,23 @@ export function ensureSlackReplyRelay(params: {
     reconcile(path.join(params.projectDir, '.claude', 'scripts', 'slack-reply.sh'), params.template, result);
   }
   return result;
+}
+
+/**
+ * Readiness for a spawn, repairing first: a relay left behind by an update is rewritten the way the
+ * post-update migration would (known shipped versions only, with a backup; hand-edited content is
+ * never overwritten and stays not ready). fb-73ad5b9e-f14.
+ */
+export function repairSlackReplyRelayIfStale(params: {
+  projectDir: string;
+  stateDir: string;
+  config: unknown;
+  template: string;
+  warn?: (message: string) => void;
+}): { ready: true } | { ready: false; reason: string } {
+  const first = slackReplyRelayReadiness(params.stateDir, params.template);
+  if (first.ready) return first;
+  const repaired = ensureSlackReplyRelay(params);
+  for (const line of [...repaired.degraded, ...repaired.errors]) params.warn?.(line);
+  return slackReplyRelayReadiness(params.stateDir, params.template);
 }

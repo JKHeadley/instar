@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "cb-delta-hook",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T23:12:46.446Z",
+  "artifactPath": "upgrades/side-effects/cb-delta-hook.md",
+  "artifactSha256": "ec1f217df76a55f0f36516e53dede5371d95b442e5b84229965b32fa8fb27961",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/BackupManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/contextLayers/promptContext.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/promptContextRoutes.ts",
+    "src/server/topicIntentRoutes.ts",
+    "tests/e2e/context-budget-delta-hook-alive.test.ts",
+    "tests/integration/context-budget-delta-hook.test.ts",
+    "tests/unit/context-budget-delta-hook.test.ts",
+    "upgrades/next/cb-delta-hook.md",
+    "upgrades/side-effects/cb-delta-hook.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the UserPromptSubmit hook that runs on every prompt of every Claude Code and Codex session, plus two new routes",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "No self-triggered action: the route acts only when a prompt calls it, and its writes are one bounded cursor per session plus one bounded, rotated log"
+  }
+}

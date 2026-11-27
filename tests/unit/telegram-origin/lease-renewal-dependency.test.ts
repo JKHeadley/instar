@@ -17,10 +17,15 @@ describe('origin writer lease renewal dependency', () => {
     await h.advance(30_000); await h.advance(30_000); await h.advance(10_000);
     expect(renew).toHaveBeenCalledTimes(2); expect(h.coordinator.holdsLease()).toBe(true); expect(h.lc.currentEpoch()).toBe(epoch);
   });
-  it.each([{ enroll: false }, { enabled: false }])('keeps the omitted standalone gate and explicit opt-out intact: %j', async options => {
+  it.each([{ enroll: false, sharedStore: true }, { enabled: false }])('keeps the omitted standalone gate and explicit opt-out intact: %j', async options => {
     const h = await fixture(options), renew = vi.spyOn(h.lc, 'renew');
     await h.advance(30_000); await h.advance(30_000); await h.advance(1000);
     expect(renew).not.toHaveBeenCalled(); expect(h.coordinator.holdsLease()).toBe(false);
+  });
+  it('a store holding only its own copy renews with no owner at all', async () => {
+    const h = await fixture({ enroll: false }), renew = vi.spyOn(h.lc, 'renew'), epoch = h.lc.currentEpoch();
+    await h.advance(30_000); await h.advance(30_000); await h.advance(10_000);
+    expect(renew).toHaveBeenCalledTimes(2); expect(h.coordinator.holdsLease()).toBe(true); expect(h.lc.currentEpoch()).toBe(epoch);
   });
   it('preserves explicit true without an origin owner and rechecks a live explicit false', async () => {
     const h = await fixture({ enabled: true, enroll: false }), renew = vi.spyOn(h.lc, 'renew');
@@ -48,7 +53,7 @@ describe('origin writer lease renewal dependency', () => {
     expect(renew).not.toHaveBeenCalled(); expect(h.coordinator.holdsLease()).toBe(false);
   });
   it('releases dependency timing idempotently and cannot rearm a stopped coordinator', async () => {
-    const h = await fixture(), renew = vi.spyOn(h.lc, 'renew');
+    const h = await fixture({ sharedStore: true }), renew = vi.spyOn(h.lc, 'renew');
     h.release(); h.release(); await h.advance(30_000); expect(renew).not.toHaveBeenCalled();
     const release = h.coordinator.enrollOriginWriterLeaseRenewal();
     h.coordinator.stop(); release(); await h.advance(30_000); expect(renew).not.toHaveBeenCalled();

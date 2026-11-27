@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-13T03:59:20.670Z",
+  "slug": "machine-name-and-footer-model",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/messaging/telegram-origin/RuntimeOriginObserver.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 80,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action added: the send-time native id lookup runs once per unbound reply, discovery stays throttled at 5 s with the same 5,000-entry budget, and the cwd field is a one-time write at spawn"
+  },
+  "verdict": "pass"
+}

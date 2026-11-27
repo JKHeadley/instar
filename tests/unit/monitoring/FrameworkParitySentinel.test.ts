@@ -447,9 +447,11 @@ describe('FrameworkParitySentinel', () => {
   });
 
   describe('mirror-trust via AdaptiveTrust integration', () => {
-    function makeFakeTrust(level: string) {
+    // A narrowing (approve-*/blocked) is what a person sets, recorded 'user-explicit'; a 'default'
+    // entry is what a new agent has (trust-journey decision 9: parity-sentinel is a system service).
+    function makeFakeTrust(level: string, source = (level === 'approve-always' || level === 'approve-first' || level === 'blocked') ? 'user-explicit' : 'default') {
       return {
-        getTrustLevel: () => ({ level, source: 'default', changedAt: '2026-05-19T00:00:00Z' }),
+        getTrustLevel: () => ({ level, source, changedAt: '2026-05-19T00:00:00Z' }),
         trustToAutonomy: (lvl: string) => {
           switch (lvl) {
             case 'autonomous': return 'proceed';
@@ -581,6 +583,22 @@ describe('FrameworkParitySentinel', () => {
       const report = await sentinel.scan();
       expect(remediateCalls).toEqual([]);
       expect(report.remediated).toBe(0);
+    });
+
+    it('a default (unseeded) approve-always entry still remediates: a system service needs no person grant', async () => {
+      const remediateCalls: string[] = [];
+      restoreRule = isolateToOneRule(makeStubRule({
+        instances: ['foo'],
+        remediationPolicy: 'mirror-trust',
+        verifyResults: { foo: { ok: false, mismatches: [{ primitive: 'skill', instanceName: 'foo', framework: 'claude-code', reasonCode: 'missing-rendered-file', detail: 'missing' }] } },
+        remediateImpl: async (instance) => { remediateCalls.push(instance); },
+      }));
+      const sentinel = new FrameworkParitySentinel({
+        projectRoot, stateDir: projectRoot, enabledFrameworks: ['claude-code'],
+        adaptiveTrust: makeFakeTrust('approve-always', 'default'),
+      });
+      await sentinel.scan();
+      expect(remediateCalls).toEqual(['foo']);
     });
 
     it('no adaptiveTrust → backward-compatible (remediate when policy is mirror-trust)', async () => {

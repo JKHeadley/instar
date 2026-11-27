@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-16T04:45:10.000Z",
+  "slug": "dashboard-scoped-session-token",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "auth/credentials surface (dashboard session token + step-up)",
+    "new refusal authority (credential-route step-up gate)",
+    "fleet rollout"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 403,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/types.ts",
+      "src/data/awareness/dashboard-scoped-session-token.md",
+      "src/server/AgentServer.ts",
+      "src/server/DashboardSessionStore.ts",
+      "src/server/WebSocketManager.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 387,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "note": "Reconstructed after a hooks-free rebase dropped the gate-written record; the change was reviewed via converged spec docs/specs/dashboard-scoped-session-token.md + the whole-PR trace + independent 2nd-pass."
+}

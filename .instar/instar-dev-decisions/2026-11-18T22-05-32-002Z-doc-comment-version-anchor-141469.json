@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-18T22:05:32.002Z",
+  "slug": "doc-comment-version-anchor-141469",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/instar-documents.md",
+      "src/documents/anchor.ts",
+      "src/documents/service.ts",
+      "src/server/documentPageRoutes.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

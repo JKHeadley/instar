@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
-import { computePolicyHash } from '../../src/localVerify/policy.js';
+import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { buildStatusReconciler } from '../../src/localVerify/localVerifyWiring.js';
@@ -139,6 +139,19 @@ describe('local-verify routes (integration)', () => {
     expect(s.svc.getRecord(7, sha('a'), 'main')?.outcome).toBe('failure');
     s.svc.shutdown();
   });
+  it('a POST refused for a full queue answers 429 and the PR appears on the waiting list in GET (fb-7fde7f49-8ee)', async () => {
+    const views: Record<number, PrView> = {};
+    const cap = LOCAL_VERIFY_LIMITS.queueCap;
+    for (let pr = 1; pr <= cap + 3; pr++) views[pr] = view({ headRefOid: `${'e'.repeat(36)}${pr.toString(16).padStart(4, '0')}` });
+    const s = setup(views);
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    for (let pr = 1; pr <= cap + 1; pr++) expect((await request(a).post('/local-verify').send({ pr })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: cap + 2 })).status).toBe(429);
+    expect((await request(a).post('/local-verify').send({ pr: cap + 3 })).status).toBe(429);
+    const body = (await request(a).get('/local-verify')).body;
+    expect(body.waiting.map((w: { pr: number; live: boolean }) => [w.pr, w.live])).toEqual([[cap + 2, true], [cap + 3, true]]);
+    s.svc.shutdown();
+  });
   it('reports focused preflight mode and keeps an observed red diagnostic subordinate to a full green record', async () => {
     const s = setup({ 7: view() });
     s.svc.setPreflightMode(() => 'observe');
@@ -253,6 +266,39 @@ describe('local-verify routes (integration)', () => {
     expect(again.status).toBe(200);
     expect(again.body.status).toBe('recorded');
     expect(s.children).toHaveLength(1);
+  });
+
+  it('a record with an import-related clear appears whole over HTTP: the record route, the status line and the run detail (spec local-verify-import-related-rerun.md)', async () => {
+    const s = setup({ 7: view() });
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    expect((await request(a).post('/local-verify').send({ pr: 7 })).status).toBe(202);
+    const clear = {
+      file: 'tests/unit/desktop-displays.test.ts', lane: 'unit', firstMessage: 'reports the main display: Error: mac-desktop-host-timeout',
+      failedTests: ['reports the main display as current until another is chosen'], failedTestsTotal: 1,
+      soloPassedByName: ['reports the main display as current until another is chosen'], testSetHash: 'ab'.repeat(32),
+      importRelated: true as const, soloPasses: 3 as const, soloSeconds: [4, 4, 5],
+      evidence: [{ test: 'reports the main display as current until another is chosen', mainAt: '2026-10-20T09:00:00.000Z', mainLine: 'Error: mac-desktop-host-timeout', prLine: 'Error: mac-desktop-host-timeout', mainRunLog: 'cd'.repeat(16) + '.log' }],
+    };
+    fs.writeFileSync(s.children[0].resultPath, JSON.stringify({ kind: 'record', record: { ...record(), flakyRetried: [clear] }, reasons: [], overlaps: [], keptWorktree: null, flakyRetried: [clear] }));
+    s.children[0].resolve({ status: 0, signal: null });
+    await s.svc.whenIdle();
+    const got = await request(a).get(`/local-verify/record?pr=7&head=${sha('a')}&base=main`);
+    expect(got.status).toBe(200);
+    expect(got.body.record.flakyRetried).toEqual([clear]);
+    // A clear is a flaky file like any other: the existing tracking counts it.
+    expect((await request(a).get('/local-verify')).body.flakyFiles).toHaveProperty(['tests/unit/desktop-displays.test.ts']);
+    // The run detail (the audit line the review reads) carries the clear, the verify's identity and the pointer to its run log.
+    const detail = fs.readFileSync(path.join(s.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>).find((l) => l.event === 'run-detail')!;
+    expect(detail).toMatchObject({ pr: 7, outcome: 'success', finishedAt: '2026-10-21T10:40:00.000Z', importRelatedClear: true, flakyRetried: [clear] });
+    expect(detail.runLog).toMatch(/^[0-9a-f]{32}\.log$/);
+    // A record whose clearance fields are not the whole truth never becomes a record at all.
+    const s2 = setup({ 7: view() });
+    const a2 = app(baseCtx(s2.stateDir, { localVerify: s2.svc }));
+    await request(a2).post('/local-verify').send({ pr: 7 });
+    fs.writeFileSync(s2.children[0].resultPath, JSON.stringify({ kind: 'record', record: { ...record(), flakyRetried: [{ ...clear, soloPasses: 2 }] }, reasons: [], overlaps: [], keptWorktree: null }));
+    s2.children[0].resolve({ status: 0, signal: null });
+    await s2.svc.whenIdle();
+    expect((await request(a2).get(`/local-verify/record?pr=7&head=${sha('a')}&base=main`)).body.record?.flakyRetried).toBeUndefined();
   });
 
   it('merge line over HTTP: a green record opens a merge hold (GET shows it, the next PR waits); the watcher answer releases it', async () => {
@@ -377,7 +423,8 @@ describe('local-verify routes (integration)', () => {
     const gh: GhRunner = async (args) => {
       calls.push(args);
       const a = args.join(' ');
-      if (a.startsWith('pr list')) return { ok: true, stdout: JSON.stringify([{ number: 7, headRefOid: sha('a'), baseRefName: 'main', headRefName: 'echo/x', author: { login: 'EchoOfDawn' }, isCrossRepository: false, statusCheckRollup: [] }]) };
+      // The open-PR listing is a paged GraphQL read (`gh api graphql --paginate --slurp`).
+      if (a.startsWith('api graphql')) return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [{ number: 7, headRefOid: sha('a'), baseRefName: 'main', headRefName: 'echo/x', author: { __typename: 'User', login: 'EchoOfDawn' }, isCrossRepository: false, commits: { nodes: [{ commit: { statusCheckRollup: null } }] } }] } } } }]) };
       if (a.includes('rules/branches/main')) return { ok: true, stdout: JSON.stringify([[{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'Build' }], strict_required_status_checks_policy: false } }]]) };
       if (a.includes('branches/main')) return { ok: true, stdout: JSON.stringify({ name: 'main', protection: { required_status_checks: { contexts: ['Build'] } } }) };
       if (a.includes('rulesets/')) return { ok: true, stdout: JSON.stringify({ current_user_can_bypass: 'never' }) };
@@ -422,7 +469,7 @@ describe('local-verify routes (integration)', () => {
     const settings = { requireCheck: true };
     const gh: GhRunner = async (args) => {
       const a = args.join(' ');
-      if (a.startsWith('pr list')) return { ok: true, stdout: '[]' };
+      if (a.startsWith('api graphql')) return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [] } } } }]) };
       if (a.includes('rules/branches/main')) return { ok: true, stdout: JSON.stringify([[{ type: 'required_status_checks', parameters: { required_status_checks: settings.requireCheck ? [{ context: 'instar/local-verify' }] : [{ context: 'Build' }], strict_required_status_checks_policy: false } }]]) };
       if (a.includes('branches/main')) return { ok: true, stdout: JSON.stringify({ name: 'main', protection: { required_status_checks: { contexts: [] } } }) };
       if (a.includes('rulesets/')) return { ok: true, stdout: JSON.stringify({ current_user_can_bypass: 'never' }) };

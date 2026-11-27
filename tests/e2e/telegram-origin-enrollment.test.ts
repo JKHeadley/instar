@@ -10,7 +10,7 @@ import { createRoutes } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { originCertificationFixture } from '../helpers/originCertification.js';
-import { compileOriginWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { waitForOriginDisplayReady } from '../helpers/telegramOriginReady.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -46,6 +46,7 @@ describe('production origin enrollment factory', () => {
       workerUrl: worker, enrollmentPackageRoot: packageRoot, noticeOwner: true, holdsLease: () => true,
       listLiveSessions: () => [], diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
     let boot = await start(f.root); cleanups.push(() => boot.close());
+    allowSlowOriginRecording(boot.runtime.service);
     // Completion is attainable after the independently refreshed destination
     // observer becomes ready. Boot's inventory can precede that observation.
     // Only this exact startup gap is retryable; other missing obligations
@@ -63,6 +64,7 @@ describe('production origin enrollment factory', () => {
     expect(first.activation.observations.filter(item => !['ready', 'not-applicable'].includes(item.state))).toEqual([]);
     expect(first.activation.complete).toBe(true);
     await boot.close(); boot = await start(path.join(f.root, 'missing-release'));
+    allowSlowOriginRecording(boot.runtime.service);
     const telegram = new TelegramAdapter(telegramConfig, stateDir, { suppressLifelineAutoCreate: true });
     const app = express(); app.use(express.json()); app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram,
       verifyDashboardOperatorSession: (proof: string) => proof === 'fixture-operator' } as never));
@@ -98,6 +100,7 @@ describe('production origin enrollment factory', () => {
     const boot = await bootTelegramOrigin({ config: config as never, token, workerUrl: worker, enrollmentPackageRoot: f.root,
       noticeOwner: false, holdsLease: () => false, listLiveSessions: () => [], diagnoseUnknown: async () => undefined, onNoticeState: () => undefined });
     cleanups.push(() => boot.close());
+    allowSlowOriginRecording(boot.runtime.service);
     expect(boot.runtime.options.bot.accountId).toBe(token === undefined ? 'unresolved-tokenless-source' : '');
     const transport = vi.fn(async (machineId: string) => ({ ok: true, result: { ok: true, protocol: 'instar-telegram-origin-v1',
       executionOwnerMachineId: machineId, credentialOwner: true, accountId: '123' } }));

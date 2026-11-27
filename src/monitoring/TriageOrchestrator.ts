@@ -338,10 +338,13 @@ export class TriageOrchestrator extends EventEmitter {
             };
           }
 
+          // A suggestion stays internal, so it changes nothing. Report it as
+          // unresolved and the caller's live-stall check-in still reaches the person.
+          const acted = heuristic.action !== 'suggest_interrupt' && heuristic.action !== 'suggest_restart';
           this.resolveTriageForTopic(topicId, 'heuristic_resolved');
-          this.logDecision(topicId, trigger, 'heuristic', true, heuristic.classification, heuristic.action, heuristic.confidence);
+          this.logDecision(topicId, trigger, 'heuristic', acted, heuristic.classification, heuristic.action, heuristic.confidence);
           return {
-            resolved: true,
+            resolved: acted,
             classification: heuristic.classification,
             action: heuristic.action,
             checkCount: triageState.checkCount,
@@ -1004,11 +1007,11 @@ export class TriageOrchestrator extends EventEmitter {
       }
 
       case 'suggest_interrupt':
-        await send().catch(() => {});
+        // A stalled session is an internal recovery concern, not a command
+        // for the person to operate.
         break;
 
       case 'suggest_restart':
-        await send().catch(() => {});
         break;
 
       case 'auto_interrupt':
@@ -1023,7 +1026,6 @@ export class TriageOrchestrator extends EventEmitter {
         break;
 
       case 'auto_restart':
-        await send().catch(() => {});
         await this.deps.respawnSession(sessionName, topicId, { silent: true });
         break;
     }

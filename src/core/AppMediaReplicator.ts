@@ -345,9 +345,9 @@ export class AppMediaReplicator {
 
   /** Whether an on-demand copy can start now; otherwise the plain reason (the download route's 202 vs 404). */
   canFetch(sha: string): { ok: true } | { ok: false; reason: string } {
-    if (!this.transport) return { ok: false, reason: 'this machine is not connected to the agent\'s other machines' };
+    if (!this.transport) return { ok: false, reason: 'the agent\'s machines are not connected to each other' };
     if (this.isUnrecoverable(sha)) return { ok: false, reason: 'no machine of this agent has been able to provide it for 7 days' };
-    if (this.d.media.belowDiskFloor()) return { ok: false, reason: 'this machine is nearly out of disk space, so nothing is copied here until space is freed' };
+    if (this.d.media.belowDiskFloor()) return { ok: false, reason: `${this.d.media.machineWords()} is nearly out of disk space, so nothing is copied there until space is freed` };
     if (this.candidatePeers(sha).length === 0) return { ok: false, reason: this.noPeerReason() };
     return { ok: true };
   }
@@ -676,7 +676,7 @@ export class AppMediaReplicator {
    * when that cannot be measured: no mesh transport, or a peer whose inventory is old or missing.
    */
   singleCopy(): { count: number | null; hashes: string[]; reason: string | null } {
-    if (!this.transport) return { count: null, hashes: [], reason: 'this machine is not connected to the agent\'s other machines' };
+    if (!this.transport) return { count: null, hashes: [], reason: 'the agent\'s machines are not connected to each other' };
     const peers = this.transport.peers();
     const t = this.now();
     const stale = peers.filter((p) => { const inv = this.peerInventories.get(p.machineId); return !inv || t - inv.at > INVENTORY_FRESH_MS; });

@@ -204,12 +204,21 @@ describe('SafeGitExecutor.readStream — read-only funnel', () => {
     const fakeGit = path.join(bin, 'git');
     fs.writeFileSync(fakeGit, '#!/bin/sh\nexec sleep 60\n');
     fs.chmodSync(fakeGit, 0o755);
-    const child = SafeGitExecutor.readStream(['ls-tree', '-z', 'HEAD'], {
-      cwd: sandbox,
-      operation: 'test-read-stream-timeout',
-      timeout: 25,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
-    });
+    // The fake git comes in through the INHERITED environment: a read surface
+    // refuses a caller-changed PATH in opts.env (EVO-029), so the test sets
+    // process.env.PATH for the spawn and restores it at once.
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath ?? ''}`;
+    let child;
+    try {
+      child = SafeGitExecutor.readStream(['ls-tree', '-z', 'HEAD'], {
+        cwd: sandbox,
+        operation: 'test-read-stream-timeout',
+        timeout: 25,
+      });
+    } finally {
+      process.env.PATH = savedPath;
+    }
     const signal = await new Promise<NodeJS.Signals | null>((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (_code, sig) => resolve(sig));
@@ -447,7 +456,11 @@ describe('verb classification sets', () => {
     const overlap = [...DESTRUCTIVE_GIT_VERBS].filter((v) => READONLY_GIT_VERBS.has(v));
     // Allowed overlap: ambiguous verbs that are shape-checked at runtime.
     expect(overlap.sort()).toEqual(
-      ['branch', 'config', 'format-patch', 'reflog', 'remote', 'stash', 'worktree'].sort(),
+      [
+        'branch', 'config', 'format-patch', 'reflog', 'remote', 'stash', 'worktree',
+        // EVO-029: read verbs with a write or program-running form became shape.
+        'fsck', 'grep', 'hash-object', 'help', 'interpret-trailers', 'ls-remote', 'symbolic-ref',
+      ].sort(),
     );
   });
 

@@ -1,0 +1,171 @@
+{
+  "renameInterval": {
+    "from": "/private/tmp/recovery-1106-mini-build",
+    "to": "/private/tmp/recovery-1106-mini-build.offline-proof",
+    "startedAt": "10:07:30.200 PST",
+    "endedAt": "10:08:50.671 PST",
+    "milliseconds": 80471,
+    "bound": "90 s",
+    "originalPathExistedDuring": false,
+    "restoration": {
+      "ok": true,
+      "sameDirectory": "inode 7715786937 before and after, same device",
+      "offlinePathAfter": "absent"
+    }
+  },
+  "coldSidecar": {
+    "pidBefore": 991,
+    "pid": 48066,
+    "changed": true,
+    "firstSeenAt": "10:07:31.330 PST",
+    "msAfterSigterm": 1130,
+    "processStarted": "Fri Nov  6 10:07:30 2026",
+    "executable": "/Users/justin_instar_1/echo-compute/recovery-10000001794/test-a4-mini-1106/runtime-slots/a96b7644c03cdb6a329e510d6e05eead7bf74acc122d0a2a27bdeec7a2011c25/bin/node --max-old-space-size=64 /Users/justin_instar_1/echo-compute/recovery-10000001794/test-a4-mini-1106/runtime-slots/a96b7644c03cdb6a329e510d6e05eead7bf74acc122d0a2a27bdeec7a2011c25/scripts/recovery-entrypoint.mjs sidecar /Users/justin_instar_1/echo-compute/recovery-10000001794/test-a4-mini-1106/config.json",
+    "executableIsUnderTheRuntimeSlot": true,
+    "openFilesUnderTheRenamedBuild": 0,
+    "originalBuildPathExistedWhileItRan": false,
+    "samePidAtWindowEnd": true,
+    "checkpointsAcceptedInWindow": [
+      88,
+      89
+    ]
+  },
+  "sshListener": {
+    "before": [
+      "sshd pid 33183 100.64.165.27:22797"
+    ],
+    "everySample": [
+      "sshd pid 33183 100.64.165.27:22797"
+    ],
+    "after": [
+      "sshd pid 33183 100.64.165.27:22797"
+    ],
+    "note": "the test sshd (pid 33183) was not signalled and kept listening on the Tailscale address only; its forced command runs the runtime slot's node"
+  },
+  "m5StatusOperationsInsideTheWindow": {
+    "total": 17,
+    "overRelay": 9,
+    "overSsh": 8,
+    "allComplete": true,
+    "routeEvidence": "relay ones are owned by the cold sidecar's pid 48066; ssh ones are each owned by a separate short-lived wrapper process, and the test sshd logged an accepted key from 100.108.56.41 for them",
+    "operations": [
+      {
+        "operation": "7044d411",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:07:38.721 PST"
+      },
+      {
+        "operation": "6e2cb174",
+        "route": "ssh",
+        "ownerPid": 50092,
+        "admittedAt": "10:07:45.208 PST"
+      },
+      {
+        "operation": "be8309b5",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:07:46.956 PST"
+      },
+      {
+        "operation": "44b9b205",
+        "route": "ssh",
+        "ownerPid": 51479,
+        "admittedAt": "10:07:53.524 PST"
+      },
+      {
+        "operation": "e05b4f5e",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:07:55.325 PST"
+      },
+      {
+        "operation": "8ea2f3cf",
+        "route": "ssh",
+        "ownerPid": 52613,
+        "admittedAt": "10:08:01.836 PST"
+      },
+      {
+        "operation": "ed98b6fa",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:03.798 PST"
+      },
+      {
+        "operation": "70cfe09d",
+        "route": "ssh",
+        "ownerPid": 53941,
+        "admittedAt": "10:08:10.059 PST"
+      },
+      {
+        "operation": "db43ea81",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:12.838 PST"
+      },
+      {
+        "operation": "924a408f",
+        "route": "ssh",
+        "ownerPid": 56245,
+        "admittedAt": "10:08:19.329 PST"
+      },
+      {
+        "operation": "8e543ca5",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:23.667 PST"
+      },
+      {
+        "operation": "26db5310",
+        "route": "ssh",
+        "ownerPid": 58293,
+        "admittedAt": "10:08:30.109 PST"
+      },
+      {
+        "operation": "2be0a18c",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:31.763 PST"
+      },
+      {
+        "operation": "0337374d",
+        "route": "ssh",
+        "ownerPid": 59152,
+        "admittedAt": "10:08:38.307 PST"
+      },
+      {
+        "operation": "1bad76bf",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:39.865 PST"
+      },
+      {
+        "operation": "54e89715",
+        "route": "ssh",
+        "ownerPid": 59847,
+        "admittedAt": "10:08:46.178 PST"
+      },
+      {
+        "operation": "33ce5a0e",
+        "route": "relay",
+        "ownerPid": 48066,
+        "admittedAt": "10:08:48.778 PST"
+      }
+    ]
+  },
+  "unchanged": {
+    "keys": "ssh.json, relay.json, host, client byte-identical",
+    "agentConfigAndExpiry": "byte-identical",
+    "testDeadline": "byte-identical",
+    "supervisorBudget": "not reset by this session; it admitted the one cold start (cooldownUntil 0, exhausted false). Its record now carries a different cause digest than before the runtime refresh and lists that one start.",
+    "productionHelperPids": "all identical before and after: cora 52984, bob 55011, echo 56371, the two proof-user helpers, and the test main's own 3705",
+    "otherLaunchdJobs": "none added or removed",
+    "authorizedKeys": "unchanged",
+    "launchAgentsFolder": "24 files",
+    "sharedNode": "not renamed or modified",
+    "ownEchoServer": "200",
+    "lockedProofLane": "untouched"
+  },
+  "scope": "listener and runtime independence only: the test main stayed healthy in memory. This is not a physical reboot and not a main-package repair qualification.",
+  "evidenceNote": "Actual two-host test; not physical reboot. Test fixture scope only. Recovery runtime source evolved after this qualification; final build checks and refresh are recorded separately."
+}

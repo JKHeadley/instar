@@ -74,7 +74,7 @@ describe('instar channel definitions resolve honestly', () => {
 
   it('scopes to PEER channels only — the upstream poller and the trust input are excluded', async () => {
     const ids = buildChannelDefinitions(baseCtx()).map(d => d.id);
-    expect(ids).toEqual(['threadline-relay', 'a2a-telegram', 'mutual-ssh', 'peer-http']);
+    expect(ids).toEqual(['threadline-relay', 'a2a-telegram', 'mutual-ssh', 'server-down-recovery', 'peer-http']);
     expect(ids).not.toContain('auto-dispatch');
     expect(ids).not.toContain('moltbridge');
   });
@@ -92,7 +92,7 @@ describe('instar channel definitions resolve honestly', () => {
     expect(by['mutual-ssh'].state).toBe('broken');
     expect(by['peer-http'].state).toBe('reachable-no-credential');
     // The honest headline for that night: nothing usable, and it says so instead of showing four rows of green.
-    expect(report.summary).toEqual({ total: 4, working: 0, unusable: 4, unknown: 0 });
+    expect(report.summary).toEqual({ total: 5, working: 0, unusable: 4, unknown: 1 });
   });
 
   it('threadline-relay working detail scopes the verdict to the server-process relay client', async () => {
@@ -116,11 +116,11 @@ describe('instar channel definitions resolve honestly', () => {
     // The scope limit that bit me: loading is not functioning. The detail must say so.
     const report = await resolveChannels(buildChannelDefinitions(baseCtx()));
     const ssh = report.channels.find(c => c.id === 'mutual-ssh')!;
-    expect(ssh.state).toBe('working');
+    expect(ssh.state).toBe('unknown');
     // Pins the MEANING, not the wording. An exact-string assertion here would fail on a benign
     // rephrase while catching nothing extra — the claim that must not rot is "this is not a
     // round-trip", and that is what is asserted.
-    expect(ssh.detail.toLowerCase()).toContain('not a completed round-trip');
+    expect(ssh.detail.toLowerCase()).toContain('no source-verified server-down recovery proof');
   });
 
   it('distinguishes never-constructed from switched-off', async () => {
@@ -135,7 +135,7 @@ describe('instar channel definitions resolve honestly', () => {
     const report = await resolveChannels(buildChannelDefinitions(baseCtx({
       peerHttp: async () => { throw new Error('connect ECONNREFUSED'); },
     })));
-    expect(report.channels).toHaveLength(4);
+    expect(report.channels).toHaveLength(5);
     const peer = report.channels.find(c => c.id === 'peer-http')!;
     expect(peer.state).toBe('unknown');
     expect(peer.detail).toContain('ECONNREFUSED');

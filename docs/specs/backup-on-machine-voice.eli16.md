@@ -1,16 +1,16 @@
 # Reading voice notes on the agent's own machine, in plain English
 
-When you send your agent a voice note, it sends the audio to Groq or OpenAI to get the words back. Without an account with one of them, your agent can't read the note and can only tell you so.
+When you send your agent a voice note, it sends the audio to Groq or OpenAI to get the words back. Without an account with one of them, your agent couldn't read the note. On 14 November that happened to Justin: his voice note from the Android app came through as "transcription unavailable", even though the computer already had a free transcription program installed that could read it in two seconds.
 
-This plan is for a transcription program that runs on the agent's own computer, so voice notes work with no account and no internet. It also means your audio doesn't have to leave the machine, which some people will want for privacy.
+This change teaches every agent to use that free program, whisper.cpp, which runs on the agent's own computer with no account and no internet.
 
-Nothing is built yet. This is a placeholder that keeps the work on the list, with Echo as its owner.
+- If you've set up Groq or OpenAI, the agent uses it first, as before. If that service fails, the agent reads the note on its own computer instead.
+- If you haven't set either up, the agent reads the note on its own computer.
+- If you want your audio to never leave the computer, the agent can be set to use only the on-machine program.
+- If nothing is installed, the agent tells you in one sentence what's missing and offers to install it. Installing is free; your only step is saying yes.
 
-The plan still has to decide:
+It works the same for Telegram, the app, Slack and WhatsApp, because they all now go through one shared piece of code. The agent can also answer "which transcriber are you using?" from a status page instead of guessing. Every agent, new or already running, learns about all of this through a short note added to its instructions on its next update.
 
-- which program to use, and what to do on computers too small to run it
-- how to fit it in behind the code every channel already uses, so nothing else has to change
-- which one wins when a provider is also set up
-- how the agent installs it without asking you to do anything
+To keep the computer responsive, only one voice note is transcribed on the machine at a time, and each one has a time limit.
 
-It's finished when a real voice note is read with no provider key and no network, and the catalog stops listing this as a gap.
+It's finished when a real voice note sent to a test agent with no Groq or OpenAI key comes back as text, read by the on-machine program.

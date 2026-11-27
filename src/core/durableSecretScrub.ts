@@ -136,8 +136,12 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   { kind: 'slack-token', regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}/gd },
   // AWS access key IDs (AKIA/ASIA + 16 uppercase alphanumerics).
   { kind: 'aws-access-key', regex: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gd },
-  // Telegram bot tokens: <digits>:<35-char base64url-ish secret>.
-  { kind: 'telegram-bot-token', regex: /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/gd },
+  // Telegram bot tokens: <digits>:<35-char base64url-ish secret>. SEC-164: an optional `bot`
+  // prefix, so the `bot<id>:<secret>` form inside a Telegram API address matches too (a word
+  // boundary never sits between "bot" and the digits). No lookbehind: the dashboard's browser copy
+  // must parse on older Safari, and the parity test pins the two sources equal. The secret part stays unbounded at the end,
+  // so padding after a key cannot hide it from the outbound wall.
+  { kind: 'telegram-bot-token', regex: /(?:\bbot|\b)\d{6,12}:[A-Za-z0-9_-]{30,}/gd },
   // PEM private-key blocks. Lazy body over a RESTRICTED char class terminated by
   // a literal `-----END…` — single quantifier, no nesting, linear.
   {
@@ -153,6 +157,8 @@ export const DURABLE_SECRET_PATTERNS: readonly ScrubPattern[] = [
   { kind: 'jwt', regex: /\b[A-Za-z0-9_-]{16,1024}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{16,}\b/gd },
   // Bearer tokens.
   { kind: 'bearer-token', regex: /Bearer\s+[A-Za-z0-9_\-.]{20,}/gd },
+  // Project app narrow keys (project-apps-sandbox §3.7), redacted like bearer tokens.
+  { kind: 'bearer-token', regex: /\bpak_[A-Za-z0-9_-]{20,4096}\.[A-Za-z0-9_-]{43}/gd },
   // URLs with embedded credentials (scheme://user:pass@host) — redact the
   // credential group (group 1), keep the scheme/host structure readable.
   {
@@ -192,6 +198,25 @@ interface RawSpan {
   start: number;
   end: number;
   kind: DurableSecretKind;
+}
+
+/**
+ * Every value any pattern matches, BEFORE overlap resolution: a span the scrub would drop as
+ * overlapping another still counts here. For comparing two texts in memory; never store the result.
+ * A pattern failure throws, so the caller can refuse to vouch for the text.
+ */
+export function rawSecretMatches(input: string): string[] {
+  const found: string[] = [];
+  for (const { regex, group } of DURABLE_SECRET_PATTERNS) {
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(input)) !== null) {
+      const value = m[group ?? 0];
+      if (value) found.push(value);
+      if (m[0].length === 0) regex.lastIndex++;
+    }
+  }
+  return found;
 }
 
 /**

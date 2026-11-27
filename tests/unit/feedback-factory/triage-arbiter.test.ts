@@ -70,6 +70,14 @@ describe('FeedbackTriageArbiter contract', () => {
     await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, promptVersion: 'feedback-triage-v0' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
     expect(called).toBe(false);
     await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, modelFamily: 'gpt-6-sol' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
+    await expect(new FeedbackTriageArbiter(p).decideBatch({ ...authority, modelFamily: 'gpt-6.2-sol' }, [packet('c1')])).rejects.toMatchObject({ check: 'canary-mismatch' });
+  });
+  it('an authority bound to gpt-6.2-astra runs pinned to that exact id', async () => {
+    const answer = (prompt: string) => JSON.stringify({ decisions: [] , _p: prompt.length });
+    const a62 = { ...authority, modelFamily: 'gpt-6.2-astra' };
+    expect(() => new FeedbackTriageArbiter(provider(answer, 'gpt-6.2-astra')).checkAuthority(a62)).not.toThrow();
+    // A gpt-6.2-astra authority answered by gpt-6-astra is a resolved-model mismatch.
+    await expect(new FeedbackTriageArbiter(provider(answer, 'gpt-6-astra')).decideBatch(a62, [packet('c1')])).rejects.toMatchObject({ check: 'resolved-model-mismatch' });
   });
   it('a batch outside the registered envelope is refused', async () => {
     const p = provider(() => '');
@@ -141,6 +149,40 @@ describe('transactional triage call reservations', () => {
     expect(new Set(projections.map((event) => event.attemptId)).size).toBe(1);
     expect(projections[2]).toMatchObject({ ownerHost: 'm1', ownerEpoch: 1,
       observerHost: 'm2', observerEpoch: 2, handoffObserved: true, reservationId: token });
+  });
+
+  it('the same owner re-acquiring its lease carries the durable epoch forward instead of refusing the call', () => {
+    const { approved, accountEvidence } = setup();
+    expect(drain.ownerAuthorityEpoch()).toBe(1);
+    const token = drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 2, ...accountEvidence, maxCallsPerDay: 1 });
+    expect(token).toBeTruthy();
+    expect(drain.ownerAuthorityEpoch()).toBe(2);
+    expect(drain.launchTriageCall(token!, approved, 'm1', 2)).toBe(true);
+  });
+
+  it('a stale epoch, a foreign owner and a spent cap are still refused without moving the durable epoch', () => {
+    const { approved, firstRun, accountEvidence } = setup();
+    drain.transitionRun(firstRun.runId, 'accepted', 'running');
+    drain.transitionRun(firstRun.runId, 'running', 'succeeded');
+    drain.startRun({ ownerHost: 'm1', ownerEpoch: 5, leaseMs: 10_000 });
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 4, ...accountEvidence, maxCallsPerDay: 1 })).toBeNull();
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm2', ownerEpoch: 6, ...accountEvidence, maxCallsPerDay: 1 })).toBeNull();
+    expect(drain.ownerAuthorityEpoch()).toBe(5);
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 5, ...accountEvidence, maxCallsPerDay: 1 })).toBeTruthy();
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: 6, ...accountEvidence, maxCallsPerDay: 1 })).toBeNull();
+    expect(drain.ownerAuthorityEpoch()).toBe(5);
+  });
+
+  it('a restored store stays refused and keeps its epoch until a new run and a fresh approval', () => {
+    const { approved, firstRun, accountEvidence } = setup();
+    drain.transitionRun(firstRun.runId, 'accepted', 'failed');
+    const restored = drain.finalizeRestore({ restoredOwnerAuthorityEpoch: 1, operatorDecisionRef: 'op-decision-1', oldOwnerQuiesced: true });
+    const liveEpoch = restored.ownerAuthorityEpoch + 1;
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: liveEpoch, ...accountEvidence, maxCallsPerDay: 1 })).toBeNull();
+    expect(drain.ownerAuthorityEpoch()).toBe(restored.ownerAuthorityEpoch);
+    drain.startRun({ ownerHost: 'm1', ownerEpoch: liveEpoch, leaseMs: 10_000 });
+    expect(drain.reserveTriageCall({ authority: approved, ownerHost: 'm1', ownerEpoch: liveEpoch + 1, ...accountEvidence, maxCallsPerDay: 1 })).toBeNull();
+    expect(drain.ownerAuthorityEpoch()).toBe(liveEpoch);
   });
 
   it('an owner handoff blocks launch but permits the new owner to refund the old unstarted token', () => {

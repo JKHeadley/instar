@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-17T16:24:06.265Z",
+  "slug": "graph-owner-reads-not-held",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphDefaultSurface.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

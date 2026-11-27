@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "commitment-config-write-authority",
+  "sessionId": "490121e8-ac02-4bab-975b-0d6070e0df16",
+  "timestamp": "2026-11-17T04:30:52.965Z",
+  "artifactPath": "upgrades/side-effects/commitment-config-write-authority.md",
+  "artifactSha256": "5929be8c8577ab8234555718886ff7dc267180a15dc35c6b35b13d50ae95d223",
+  "coveredFiles": [
+    "docs/specs/commitment-config-write-authority.eli16.md",
+    "src/commands/server.ts",
+    "src/config/LiveConfig.ts",
+    "src/config/bearerConfigWrite.ts",
+    "src/monitoring/CommitmentTracker.ts",
+    "tests/unit/CommitmentTracker-config-watch-conflicts.test.ts",
+    "tests/unit/CommitmentTracker.test.ts",
+    "tests/unit/bearer-config-write.test.ts",
+    "tests/unit/reserved-object-keys.test.ts",
+    "upgrades/next/commitment-config-write-authority.md",
+    "upgrades/side-effects/commitment-config-write-authority.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow authority check at one write point (commitment auto-correction) reusing PATCH /config's own key sets; fully reversible by revert, no stored-data change; reproduced on a throwaway; independent second pass's findings addressed.",
+  "eli16Path": "docs/specs/commitment-config-write-authority.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/commitment-config-write-authority.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

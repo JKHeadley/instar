@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "one-tap-unattended-repair",
+  "sessionId": "efbccbf3-0c69-4c7e-b4a6-7f41a8e5dce2",
+  "timestamp": "2026-11-08T12:39:08.748Z",
+  "artifactPath": "upgrades/side-effects/one-tap-unattended-repair.md",
+  "artifactSha256": "fa085ea364795f04b4d22366a9695482edb8aafdc01d3d89a113214778839935",
+  "specPath": "docs/specs/one-tap-unattended-repair.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/one-tap-unattended-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the Tier-2 one-tap repair change: two ratchet fixes in its new routes.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

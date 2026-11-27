@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-agent-places",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T00:35:42.728Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-agent-places.md",
+  "artifactSha256": "ff1508527890266be0189bc5780bbe716e43cb69467890c8112cc86c42b80f4f",
+  "specPath": "docs/specs/memory-privacy-agent-places.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "src/server/teamRoutes.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "upgrades/side-effects/memory-privacy-agent-places.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Part of the approved memory-privacy-agent-places spec: read-only field on the owner-phone team context so the app shows the approved turn-on line; optional dep, null when absent, no authority change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

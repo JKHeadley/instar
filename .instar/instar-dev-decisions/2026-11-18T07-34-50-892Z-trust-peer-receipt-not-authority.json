@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-18T07:34:50.892Z",
+  "slug": "trust-peer-receipt-not-authority",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/core/trustJourney/TrustJourneyRuntime.ts"
+    ],
+    "addedLines": 27,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

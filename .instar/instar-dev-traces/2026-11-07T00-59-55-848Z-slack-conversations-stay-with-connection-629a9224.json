@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "slack-conversations-stay-with-connection",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T00:59:55.848Z",
+  "artifactPath": "upgrades/side-effects/slack-conversations-stay-with-connection.md",
+  "artifactSha256": "d0cd87de96087a39644fafde0d40db5fbeede43dce06e0e1b4d0796a2e75f0ad",
+  "specPath": "docs/specs/slack-conversations-stay-with-connection.md",
+  "coveredFiles": [
+    "docs/specs/reports/slack-conversations-stay-with-connection-convergence.md",
+    "docs/specs/slack-conversations-stay-with-connection.eli16.md",
+    "docs/specs/slack-conversations-stay-with-connection.md",
+    "src/commands/server.ts",
+    "src/core/OwnershipReconciler.ts",
+    "src/core/SessionDrainRunner.ts",
+    "src/core/SlackForwardBridge.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileSessionControlsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/slack-conversations-stay-alive.test.ts",
+    "tests/integration/slack-conversations-stay.test.ts",
+    "tests/unit/mobile-session-controls.test.ts",
+    "tests/unit/slack-conversations-stay.test.ts",
+    "tests/unit/u41-reconciler-pin-gates.test.ts",
+    "upgrades/next/slack-conversations-stay-with-connection.md",
+    "upgrades/side-effects/slack-conversations-stay-with-connection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the drain runner and pin reconciler that every move path uses: a Slack conversation is refused before any ownership change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

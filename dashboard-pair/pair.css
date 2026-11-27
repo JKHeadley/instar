@@ -24,7 +24,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 -app
 .pair-fp { color: var(--muted); font-size: .85rem; word-break: break-all; }
 .pair-paired { margin-top: 32px; }
 .pair-paired h2, section h2 { font-size: 1.05rem; }
-.pair-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.pair-paired h2 { margin: 28px 0 4px; }
+.pair-paired h2:first-child { margin-top: 0; }
+.pair-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.pair-device-words { display: flex; flex-direction: column; min-width: 0; }
+.pair-device-name { font-weight: 600; overflow-wrap: anywhere; }
+.pair-device-detail { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.pair-remove { font: inherit; font-size: .95rem; white-space: nowrap; min-height: 44px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
+.pair-remove:disabled { opacity: .6; }
 .pair-status { min-height: 1.5em; color: var(--muted); }
 .pair-foot { margin-top: 32px; font-size: .9rem; }
 .pair-foot a, section a { color: var(--accent); }

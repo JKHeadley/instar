@@ -549,7 +549,18 @@ if [ "$HTTP_CODE" = "200" ]; then
     echo "NOT SENT — suppressed duplicate for topic $TOPIC_ID${DELIVERY_ID_DETAIL}; an identical message was already delivered to that topic recently"
     exit 1
   fi
-  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
+  # The message id and its link (when this chat has message links), so a later reminder can
+  # link this message. The line still starts "Sent N chars to topic T" for existing parsers.
+  SENT_DETAIL=$(printf '%s' "$BODY" | python3 -c 'import sys,json,re
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    d={}
+mid=d.get("messageId"); link=d.get("messageLink"); out=""
+if isinstance(mid,(int,str)) and str(mid).isdigit(): out+=" (message %s)" % mid
+if isinstance(link,str) and re.match(r"^https://[!-~]+$", link): out+=" link: "+link
+print(out)' 2>/dev/null || echo "")
+  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID${SENT_DETAIL}"
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Telegram API)
   # exceeded the route's budget. The actual send may have completed anyway, because
@@ -566,6 +577,14 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — hold pending authoritative receipt/outbox resolution"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
+  # Organization policy refusal (org-never-actions §C): the rule, who to ask, and the allow-once id.
+  if echo "$BODY" | grep -q '"error"[[:space:]]*:[[:space:]]*"org-policy"'; then
+    ORG_REASON=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null || echo "")
+    ORG_CHECK=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("checkId") or "")' 2>/dev/null || echo "")
+    echo "BLOCKED by your organization's policy (not sent): ${ORG_REASON}" >&2
+    if [ -n "$ORG_CHECK" ]; then echo "If your person allows it once in the Instar app (check ${ORG_CHECK}), send the same message again." >&2; fi
+    exit 1
+  fi
   # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
   # a nudge and the unoverridable wall reads as a wall — before the advisory
   # migration this branch printed "BLOCKED" for every 422, which would have made
@@ -626,8 +645,10 @@ d=json.load(sys.stdin)
 print(d.get("operationId") or "")
 print(d.get("outcome") or "")
 print(d.get("reason") or "")
-print(d.get("messageId") or "")' 2>/dev/null)
+print(d.get("messageId") or "")
+print(d.get("custody") or "")' 2>/dev/null)
   HELD_OP=$(printf '%s\n' "$HELD_FIELDS" | sed -n '1p')
+  HELD_CUSTODY=$(printf '%s\n' "$HELD_FIELDS" | sed -n '5p')
   HELD_OUTCOME=$(printf '%s\n' "$HELD_FIELDS" | sed -n '2p')
   HELD_REASON=$(printf '%s\n' "$HELD_FIELDS" | sed -n '3p')
   HELD_MSG_ID=$(printf '%s\n' "$HELD_FIELDS" | sed -n '4p')
@@ -644,10 +665,15 @@ d=json.load(sys.stdin)
 print(d.get("outcome") or "")
 print(d.get("detail") or "")
 ids=d.get("messageIds") or []
-print(",".join(str(i) for i in ids))' 2>/dev/null)
+print(",".join(str(i) for i in ids))
+print("yes" if d.get("safeToResend") is True else "no")' 2>/dev/null)
     VERDICT=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '1p')
     VERDICT_DETAIL=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '2p')
     VERDICT_IDS=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '3p')
+    VERDICT_SAFE=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '4p')
+    # Only `safeToResend: true` permits a resend. A not-delivered reply that
+    # was ended on purpose (safeToResend false) must never be sent again.
+    [ "$VERDICT" = "not-delivered" ] && [ "$VERDICT_SAFE" != "yes" ] && VERDICT="ended-on-purpose"
     [ -z "$HELD_MSG_ID" ] && HELD_MSG_ID="$VERDICT_IDS"
   fi
   [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "accepted-unrecorded" ] && VERDICT="delivered"
@@ -671,6 +697,11 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       echo "  It is safe to send it again." >&2
       exit 1
       ;;
+    ended-on-purpose)
+      echo "NOT SENT — this message was ended on purpose and will not be sent (operation ${HELD_OP:-unknown}). Do NOT resend it." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      exit 1
+      ;;
     refused-attempt)
       echo "NOT DELIVERED — Telegram refused this attempt (${HELD_REASON:-unknown}, operation ${HELD_OP:-unknown})." >&2
       echo "  The server may still retry it, so check before sending it again." >&2
@@ -679,6 +710,7 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       ;;
     pending)
       echo "HELD — not delivered yet. The server kept the original message and will deliver it itself. Do NOT resend it." >&2
+      [ "$HELD_CUSTODY" = "this-machine-only" ] && echo "  Kept on this machine only until the sending machine is reachable; if this machine goes down first, the reply is lost." >&2
       [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
       echo "  Reason: ${HELD_REASON:-unknown} (operation ${HELD_OP:-unknown})" >&2
       echo "$CHECK_LINE" >&2
@@ -690,7 +722,7 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
       echo "  Absence from the conversation is not proof of non-delivery." >&2
       echo "$CHECK_LINE" >&2
-      echo "  Resend only if that check answers \"not-delivered\"." >&2
+      echo "  Resend only if that check answers \"safeToResend\": true." >&2
       echo "AMBIGUOUS (HTTP 409 held): outcome unknown — do not resend; check the operation outcome"
       exit 0
       ;;

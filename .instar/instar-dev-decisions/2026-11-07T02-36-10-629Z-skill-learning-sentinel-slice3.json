@@ -1,0 +1,47 @@
+{
+  "ts": "2026-11-07T02:36:10.629Z",
+  "slug": "skill-learning-sentinel-slice3",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 4551,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/LearnedSkillReconciler.ts",
+      "src/monitoring/SkillLearningSentinel.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/monitoring/skillLearning/CommitProtocol.ts",
+      "src/monitoring/skillLearning/Retirer.ts",
+      "src/monitoring/skillLearning/Reverter.ts",
+      "src/monitoring/skillLearning/Reviewer.ts",
+      "src/monitoring/skillLearning/SkillLearningAttention.ts",
+      "src/monitoring/skillLearning/VersionStore.ts",
+      "src/monitoring/skillLearning/types.ts",
+      "src/monitoring/skillLearning/wire.ts",
+      "src/scaffold/templates.ts",
+      "src/server/skillLearningRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 4462,
+    "deletedLines": 89
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "controllers skill-learning-revert (perTarget = revertBreakerPer30d per key per 30 days, then the lock holds), skill-learning-review-retry (one review per corrected run by runId), learned-skill-retire-reconcile (one archive+remove per skill x target x machine; the moved directory is the brake), skill-learning-retire-judgment (one retire per skill per version), skill-learning-heal-revert-first / heal-index-retire / drafter-family-swap / classifier-failure-swap (one per episode, 3 attempts, flap window) and skill-learning-attention-notify (one notice per episode) are registered; the convergence ratchet fails if their emits do not settle"
+    }
+  },
+  "verdict": "pass"
+}

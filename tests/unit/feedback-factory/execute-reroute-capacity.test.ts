@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createExecHarness, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { RerouteRefusedError } from '../../../src/core/rerouteRefusedError.js';
-import { prepareFailureStep } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
+import { boundedFailureDetail, prepareFailureStep } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
 
 let h: ExecHarness;
 afterEach(() => h?.cleanup());
@@ -120,6 +120,14 @@ describe('a failed preparation stops the tick (2026-10-23 live: one machine faul
     // The audit keeps only id-shaped values; the step survives there, the sentence does not.
     const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     expect(audit.find((r) => r.event === 'execute:prepare-failed')).toMatchObject({ step: 'checkout-base' });
+  });
+
+  it('a failure message keeps its start and its end when it is long', () => {
+    expect(boundedFailureDetail('short')).toBe('short');
+    const bounded = boundedFailureDetail(`Command failed: git ${'-c flag=x '.repeat(100)}clone a b\nfatal: destination exists`);
+    expect(bounded.length).toBeLessThanOrEqual(503);
+    expect(bounded.startsWith('Command failed: git')).toBe(true);
+    expect(bounded.endsWith('fatal: destination exists')).toBe(true);
   });
 
   it('prepareFailureStep names the step from the message', () => {

@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Autonomous Throughput Floor*
+
 /**
  * AutonomousThroughputFloor — PULL/AUDIT-ONLY v1.
  *

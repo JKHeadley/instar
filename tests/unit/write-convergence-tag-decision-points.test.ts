@@ -63,10 +63,71 @@ describe('findDecisionPointGaps', () => {
     },
   );
 
+  it.each(['deterministic counts', 'fixed cap', 'invariant', 'enumerable domain'])(
+    'rejects an invariant label with only %s instead of a basis and evidence', (reason) => {
+      const row = `- newPerDay=1, newPerWeek=4, libraryMax=40 — invariant (${reason})`;
+      expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({
+        ok: false, reason: 'missing-invariant-evidence', rows: [row],
+      });
+    },
+  );
+
+  it.each([
+    'basis: enumerable-domain; evidence:',
+    'basis: ; evidence: deterministic counts',
+    'basis: convenience; evidence: easier to count',
+  ])('refuses incomplete or undeclared invariant basis: %s', (declaration) => {
+    expect(findDecisionPointGaps(`## Decision points touched\n- cap — invariant; ${declaration}\n`).ok).toBe(false);
+  });
+
+  it.each([
+    '| invariant enforcement | judgment-candidate | floor: read-only; arbiter: reviewer |',
+    '- invariant enforcement — judgment-candidate (floor: read-only; arbiter: reviewer)',
+  ])('classifies the field rather than a word in the decision name: %s', (row) => {
+    expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({ ok: true });
+  });
+
+  it.each([
+    '| judgment-candidate admission | invariant | deterministic counts |',
+    '- judgment-candidate admission — invariant (deterministic counts)',
+  ])('cannot hide a bare invariant behind a word in the decision name: %s', (row) => {
+    expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({
+      ok: false, reason: 'missing-invariant-evidence', rows: [row],
+    });
+  });
+
+  it('reads an explicit classification-first bullet before labels mentioned in its evidence', () => {
+    const row = '- invariant; evidence: judgment-candidate was considered';
+    expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({
+      ok: false, reason: 'missing-invariant-evidence', rows: [row],
+    });
+  });
+
+  it('does not mistake a rejected invariant label in the rationale for the classification', () => {
+    const row = '- growth — judgment-candidate; rejects the old invariant label; floor: read-only; arbiter: learning reviewer';
+    expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({ ok: true });
+  });
+
+  it.each(['reviewer-decision-completeness.md', 'reviewer-lessons-aware.md'])(
+    'ships an explicit evidence contest in the mandatory reviewer %s', (name) => {
+      const prompt = fs.readFileSync(path.resolve(__dirname, '../../skills/spec-converge/templates', name), 'utf8');
+      expect(prompt).toContain('FIXED_LIMIT_CONTEST');
+      expect(prompt).toContain('judgment-candidate by default');
+      expect(prompt).toContain('this exact boundary');
+      expect(prompt).toContain('MATERIAL / DESIGN');
+      expect(prompt).toContain('counterexample');
+    },
+  );
+
+  it('accepts an independently evidenced external boundary', () => {
+    const row = '- request size — invariant; basis: external-constraint; evidence: upstream API rejects payloads over its documented 4096-byte ceiling';
+    expect(findDecisionPointGaps(`## Decision points touched\n${row}\n`)).toEqual({ ok: true });
+  });
+
   it('every row classified (bullets) → ok', () => {
     const body = [
       '## Decision points touched',
-      '- `SpawnAdmission.admit()` — **invariant** (one owner per conversation; enumerable domain)',
+      '- `SpawnAdmission.admit()` — **invariant**; basis: enumerable-domain; evidence: a conversation has exactly one lease owner in the ownership protocol',
       '- `DuplicateSessionReconciler.intendedOwner()` — **judgment-candidate** (floor: evidence ladder; arbiter: J2 Increment 3)',
       '',
       '## Next',
@@ -79,7 +140,7 @@ describe('findDecisionPointGaps', () => {
       '## Decision points touched',
       '| Decision point | Classification |',
       '|---|---|',
-      '| admit() | invariant |',
+      '| admit() | invariant | basis: enumerable-domain; evidence: ownership protocol permits one lease owner |',
       '| intendedOwner() | judgment-candidate |',
       '',
       '## Next',
@@ -90,7 +151,7 @@ describe('findDecisionPointGaps', () => {
   it('one unclassified row → { ok: false, reason: unclassified } naming the row', () => {
     const body = [
       '## Decision points touched',
-      '- `admit()` — invariant (enumerable domain)',
+      '- `admit()` — invariant; basis: enumerable-domain; evidence: ownership protocol permits one lease owner',
       '- `someNewGate()` — we will figure this out later',
       '',
       '## Next',
@@ -107,7 +168,7 @@ describe('findDecisionPointGaps', () => {
       '## Decision points touched',
       '> Classify each row per Judgment Within Floors.',
       '---',
-      '- `admit()` — invariant',
+      '- `admit()` — invariant; basis: irreversible-consequence; evidence: duplicate owners can send conflicting external writes',
       '',
       '## Next',
     ].join('\n');
@@ -218,8 +279,18 @@ describe('write-convergence-tag.mjs — decision-point gate (end-to-end)', () =>
     expect(fs.readFileSync(spec, 'utf-8')).not.toContain('review-convergence');
   });
 
+  it('REFUSES the original growth-cap row and leaves convergence unstamped', () => {
+    const { spec, report } = writeFixture('- newPerDay=1, newPerWeek=4, libraryMax=40 — invariant (deterministic counts)');
+    const r = runTag(spec, report);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('basis:');
+    expect(r.out).toContain('evidence:');
+    expect(r.out).toContain('newPerDay');
+    expect(fs.readFileSync(spec, 'utf-8')).not.toContain('review-convergence');
+  });
+
   it('STAMPS the tag when every row is classified', () => {
-    const { spec, report } = writeFixture('- `admit()` — invariant (enumerable domain)\n- `pickSurvivor()` — judgment-candidate (floor declared)');
+    const { spec, report } = writeFixture('- `admit()` — invariant; basis: enumerable-domain; evidence: ownership protocol permits one lease owner\n- `pickSurvivor()` — judgment-candidate (floor declared)');
     const r = runTag(spec, report);
     expect(r.code).toBe(0);
     expect(fs.readFileSync(spec, 'utf-8')).toContain('review-convergence');

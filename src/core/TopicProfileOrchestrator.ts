@@ -1658,6 +1658,18 @@ export class TopicProfileOrchestrator {
     return { allowed: true };
   }
 
+  /**
+   * session-swap-any-conversation §3.1: the gate for a writer that knows the session's engine (the
+   * Slack resume writers). claude-code and codex-cli use their gates; any other engine keeps no
+   * resume id across a switch, so only the mid-switch marker applies.
+   */
+  resumeWriteGateFor(topicKey: number | string, framework: string | null): { allowed: boolean; reason?: string } {
+    if (framework === 'claude-code') return this.claudeResumeWriteGate(topicKey);
+    if (framework === 'codex-cli') return this.codexResumeWriteGate(topicKey);
+    if (this.suppressionActive(String(topicKey))) return { allowed: false, reason: 'mid-framework-switch' };
+    return { allowed: true };
+  }
+
   /** Introspection (readout / tests). */
   pendingFor(topicKey: number | string): { deferred: boolean; changeCount: number } | null {
     const slot = this.pendingSlots.get(String(topicKey));

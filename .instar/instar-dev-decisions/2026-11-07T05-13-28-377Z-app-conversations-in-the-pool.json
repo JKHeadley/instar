@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-07T05:13:28.377Z",
+  "slug": "app-conversations-in-the-pool",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/SessionRouter.ts",
+      "src/core/appConversationPool.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, each refused drain home waits five minutes. The close-on-loss retry is a local refusable close that starts nothing."
+    }
+  },
+  "verdict": "pass"
+}

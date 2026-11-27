@@ -24,6 +24,9 @@ export const SUBSCRIPTION_LOGIN_CAUSE_CLASSES = [
   // credential was unreadable AND two separate sessions showed it within an hour, or (CMT-1008)
   // the credential reads and one session showed it past the monitor's dwell.
   'cli-login-expired-observed',
+  // The stored credential is gone (no readable credential at all), and the engine's own login check
+  // said signed out on two polls in a row while its credential store was open (never-silent §3.6).
+  'cli-auth-status-signed-out',
   // A Codex account's live reads were refused twice, 5-60 minutes apart, with what Jev judged to be
   // OpenAI's per-device limit (spec codex-device-limit-tripwire). Deliberately NOT actionable: a
   // sign-in cannot free a device slot, so repair admission refuses it.

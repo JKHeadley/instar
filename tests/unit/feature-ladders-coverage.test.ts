@@ -61,4 +61,15 @@ describe('the shipped ladder registry', () => {
     const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8')) as { files: string[] };
     expect(pkg.files).toContain('src/data');
   });
+
+  it('keeps remote recovery dark until reviewed two-host qualification and a development proof soak',()=>{
+    const recovery=list.find(entry=>entry.id==='multiMachine.serverDownRecovery')!;
+    expect(recovery.risk).toBe('sensitive');expect(recovery.disposition).toBe('ladder');
+    expect(recovery.subject).toBe('server-down-remote-recovery');
+    expect(recovery.rungs['dev-agent-live']!.metrics.some(metric=>metric.id==='two-host-matrix'&&metric.threshold>=1)).toBe(true);
+    expect(recovery.rungs.fleet!.soakDays).toBeGreaterThanOrEqual(2);
+    expect(recovery.rungs.fleet!.metrics.some(metric=>metric.id==='development-soak-reviewed'&&metric.role==='quality')).toBe(true);
+    expect(recovery.rungs.fleet!.advance.kind).toBe('code');
+    expect(recovery.tracking.plan).toContain('Historical disposable receipts are not production enrollment or soak');
+  });
 });

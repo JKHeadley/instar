@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-work-headline",
+  "sessionId": "9ff214e1-274c-4f8e-a770-7b331015831c",
+  "timestamp": "2026-11-16T14:05:03.388Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-work-headline.md",
+  "artifactSha256": "d7639332b811cef6da728f35b65316043d7564e29d6891f6470d56f21a9f11bb",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/work-model.js",
+    "tests/unit/console-front-doors.test.ts",
+    "tests/unit/console-work-model.test.ts",
+    "upgrades/side-effects/work-front-doors-work-headline.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

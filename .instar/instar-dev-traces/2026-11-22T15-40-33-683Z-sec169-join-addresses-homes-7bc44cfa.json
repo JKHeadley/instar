@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "sec169-join-addresses-homes",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T15:40:33.683Z",
+  "artifactPath": "upgrades/side-effects/sec169-join-addresses-homes.md",
+  "artifactSha256": "45da4e67acd88e5c614762cc921fef874e509dcda74c8dc7aa5a20b7979ddb34",
+  "coveredFiles": [
+    "docs/specs/member-browser-any-computer.md",
+    "docs/specs/sec169-join-addresses-homes.eli16.md",
+    "src/core/TeamComputers.ts",
+    "src/server/documentJoinRoutes.ts",
+    "tests/e2e/documents-join.test.ts",
+    "tests/integration/documents-join.test.ts",
+    "tests/unit/sec169-join-addresses-homes.test.ts",
+    "upgrades/next/sec169-join-addresses-homes.md",
+    "upgrades/side-effects/sec169-join-addresses-homes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-169: the public way-back address list names only addresses where a computer is set up; two source files, display-only data, read-only filter, reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/sec169-join-addresses-homes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec169-join-addresses-homes.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a read-only filter on one public GET; nothing is retried, scheduled or looped"
+  }
+}

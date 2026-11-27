@@ -592,3 +592,11 @@ describe('working-set-pull-queued-and-resume-proceeds (§2.4)', () => {
     expect(disclosed).toEqual([{ topic: 700, owner: OWNER }]);
   });
 });
+
+describe('an app conversation is never taken automatically (app-conversations-in-the-pool §2.2)', () => {
+  it('a dark owner with only app records is not even a candidate; the same owner with a topic is', () => {
+    const src = fs.readFileSync('src/core/StaleOwnerReleaseEngine.ts', 'utf-8');
+    const at = src.indexOf('const records = this.d.listOwnershipRecords().filter(');
+    expect(src.slice(at, at + 420)).toContain("!r.sessionKey.startsWith('app:')");
+  });
+});

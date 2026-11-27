@@ -3,19 +3,22 @@
 // session full-screen on a phone (list beside it on a desktop): the live terminal (the
 // same xterm library and WebSocket protocol the legacy tab uses, streamed from another
 // machine through the relay), a multi-line composer, a Keys tray with Stop (Ctrl+C)
-// last, red and confirmed, and a "⋯" menu with the door switch, Details and Close.
+// last, red and confirmed, and a "⋯" menu with the door switch, Paste long text, Details
+// and Close. "Paste to a session" under the list opens the paste sheet (paste.js).
 // Every route here is adapter (a): the bearer token is enough, so there is no PIN.
 // Every value goes through textContent; no alert(), no confirm().
 
 import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
-  platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  platformAllowsDoor, platformAllowsMachine, newRequestId, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
+  canSwitchDoor, profileKeyOf, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
+import { createInputTracker } from './input-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
+import { openPasteSheet, pasteOnMessage } from './paste.js';
 
 const XTERM_JS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js';
 const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
@@ -59,6 +62,9 @@ const st = {
   wsList: null, ws: null, wsUp: false, wsTries: 0, wsTimer: null,
   view: null, // { key, s, term, fit, pre, following, pending, loaded, exhausted, loading, statusLine }
   switching: new Map(), // tmuxSession → 'switching…' while a door switch lands
+  // Composer drafts per open-session key (§3e of native-conversation-any-machine-access):
+  // kept for the life of the page, so leaving a session never drops a draft.
+  inputs: new Map(), // key → { tracker, s }
 };
 
 export async function renderSessions(main, ctx) {
@@ -145,6 +151,7 @@ function paintList(box, m, openKey) {
       text: on ? `Hide ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)` : `Show ${m.internalCount} internal session${m.internalCount === 1 ? '' : 's'} (jobs and helpers)`,
       onclick: () => { setShowInternal(!on); paint(); } }));
   }
+  parts.push(el('div', { class: 'page-primary sess-paste' }, el('button', { class: 'btn-quiet', type: 'button', text: 'Paste to a session', 'data-paste': '1', onclick: () => pasteSheet(null) })));
   parts.push(el('p', { class: 'foot-note' }, el('a', { href: legacyHref('sessions'), text: 'Open sessions in the legacy dashboard' })));
   setKids(box, parts);
   if (focused) {
@@ -181,6 +188,8 @@ function connectWs() {
   };
   ws.onclose = () => {
     const was = st.wsUp; st.wsUp = false; st.ws = null;
+    // This page's socket is gone: every composer waits for the machine to say what it can do again.
+    for (const x of st.inputs.values()) x.tracker.linkDown();
     if (was) { paint(); setStatus('Live output paused, reconnecting.'); }
     // Reconnect with backoff while the page is on screen.
     if (onPage() && st.wsTries < 10) {
@@ -198,15 +207,46 @@ function wsSend(msg) { if (st.ws && st.ws.readyState === 1) { st.ws.send(JSON.st
 
 function onMessage(msg) {
   if (!onPage()) { leaveView(); closeWs(); return; }
+  pasteOnMessage(msg);
   const v = st.view;
   switch (msg.type) {
     case 'sessions': st.wsList = Array.isArray(msg.sessions) ? msg.sessions : []; paint(); break;
     case 'output': if (v && msg.session === v.s.tmuxSession) writeOutput(msg.data || ''); break;
     case 'history': if (v && msg.session === v.s.tmuxSession) writeHistory(msg); break;
     case 'session_ended': if (v && msg.session === v.s.tmuxSession) markEnded(); break;
-    case 'error': { const w = streamErrorWords(msg); if (w && v && (!msg.session || msg.session === v.s.tmuxSession)) setStatus(w); break; }
+    case 'input_caps': case 'input_ack': inputFrame(msg); break;
+    case 'error': {
+      if (inputFrame(msg)) break; // an answer about a typed message, shown with that message
+      const w = streamErrorWords(msg); if (w && v && (!msg.session || msg.session === v.s.tmuxSession)) setStatus(w); break;
+    }
     default: break;
   }
+}
+
+/** Hand an input frame to the composer of the session it is about. True when one took it. */
+function inputFrame(msg) {
+  let took = false;
+  for (const x of st.inputs.values()) {
+    if (x.s.tmuxSession !== msg.session) continue;
+    // A frame relayed from another machine carries its machineId: it belongs only to the
+    // composer for that machine's session; a frame without one only to a local session.
+    if (msg.machineId ? !(x.s.remote && x.s.machineId === msg.machineId) : x.s.remote) continue;
+    if (x.tracker.onFrame(msg)) took = true;
+  }
+  return took;
+}
+
+/** The composer's draft tracker for one session, made once per page. */
+function inputFor(key, s) {
+  let x = st.inputs.get(key);
+  if (x) { x.s = s; return x; }
+  x = { s, tracker: null };
+  x.tracker = createInputTracker({
+    send: (extra) => wsSend(frame('key' in extra ? 'key' : 'input', x.s, extra)),
+    onChange: () => { if (st.view && st.view.key === key && st.view.paintInput) st.view.paintInput(); },
+  });
+  st.inputs.set(key, x);
+  return x;
 }
 
 // ── The open session ──────────────────────────────────────────────────────
@@ -232,6 +272,7 @@ const stripAnsi = (s) => String(s).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').rep
 function updateViewTitle(row) {
   const v = st.view;
   v.s = { ...v.s, ...row.session };
+  const x = st.inputs.get(v.key); if (x) x.s = v.s;
   const sw = st.switching.get(v.s.tmuxSession);
   v.titleSub.textContent = sw ? `${v.s.machineNickname} · ${sw}` : titleLine(v.s);
 }
@@ -257,6 +298,8 @@ function openView(box, row) {
     title: s.remote ? `Attaching works for sessions on this machine; open ${s.machineNickname}’s own console to attach there.` : 'Attach a screenshot or file' });
   if (s.remote) attachBtn.disabled = true;
   const chips = el('div', { class: 'sess-attachments', hidden: true });
+  // Unresolved messages sit above the composer, which stays free for a new one.
+  const draftsBox = el('div', { class: 'sess-drafts', hidden: true, 'aria-live': 'polite' });
   const files = [];
   const paintChips = () => {
     chips.hidden = !files.length;
@@ -282,6 +325,33 @@ function openView(box, row) {
   const tabs = el('div', { class: 'sess-tabs', role: 'group', 'aria-label': 'View' }, liveTab, historyTab);
   const view = { key: row.key, s, titleSub, statusLine, termBox, historyBox, history: null, resume, following: true, pending: null, loaded: HISTORY_FIRST, exhausted: false, loading: false, term: null, fit: null, pre: null };
   st.view = view;
+  const input$ = inputFor(row.key, s);
+  let wasSending = false;
+  // The composer follows the draft model: it clears a message only on that message's own answer.
+  view.paintInput = () => {
+    if (st.view !== view) return;
+    const m = input$.tracker.view();
+    if (m.sending) { input.value = m.sending.text; input.rows = composerRows(m.sending.text); }
+    else if (m.returned) { input.value = m.returned.text; input.rows = composerRows(m.returned.text); }
+    else if (wasSending) { input.value = ''; input.rows = 1; }
+    wasSending = Boolean(m.sending);
+    input.readOnly = m.composer.readOnly;
+    input.classList.toggle('sending', Boolean(m.sending));
+    sendBtn.disabled = m.composer.disabled;
+    input.placeholder = m.composer.words || 'Message…';
+    const n = input$.tracker.takeNotice();
+    if (n) setStatus(n);
+    else if (m.composer.words && m.composer.readOnly) setStatus(m.composer.words);
+    draftsBox.hidden = !m.drafts.length;
+    setKids(draftsBox, m.drafts.map((dr) => el('div', { class: 'sess-draft', 'data-draft': dr.id },
+      el('p', { class: 'sess-draft-text', text: dr.text }),
+      el('p', { class: 'sess-draft-words', role: 'status', text: dr.words }),
+      el('div', { class: 'confirm-row' }, dr.controls.map((c) => c === 'send-again'
+        ? el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send again', 'data-send-again': dr.id, onclick: () => input$.tracker.retry(dr.id) })
+        : c === 'copy'
+          ? el('button', { class: 'btn-quiet', type: 'button', text: 'Copy', 'data-copy': dr.id, onclick: () => { try { navigator.clipboard.writeText(dr.text); } catch { /* the text stays on screen */ } } })
+          : el('button', { class: 'btn-quiet', type: 'button', text: 'Discard', 'data-discard': dr.id, onclick: () => input$.tracker.discard(dr.id) }))))));
+  };
 
   // Keys: the ordinary ones, then Stop separated, red, and asked once.
   const keyRow = el('div', { class: 'keys-row' }, KEYS.map((k) => el('button', { class: 'chip key-chip', type: 'button', text: k.label, 'aria-label': k.aria || null, 'data-key': k.key, onclick: () => sendKey(k.key) })));
@@ -311,9 +381,17 @@ function openView(box, row) {
       sendBtn.disabled = false; setStatus('');
       text = attachmentMessage(text, paths);
     }
-    if (!wsSend(frame('input', view.s, { text }))) { setStatus('Not sent: live updates are paused. Your text is still here.'); return; }
+    const r = input$.tracker.sendText(text);
+    if (!r.ok) {
+      // Nothing was sent. Uploaded attachments are already named in the text, so they leave the tray.
+      if (files.length) { input.value = text; input.rows = composerRows(text); files.length = 0; paintChips(); }
+      setStatus(r.words); return;
+    }
     files.length = 0; paintChips();
-    input.value = ''; input.rows = 1; input.focus();
+    // The text stays in the box, marked as sending, until its own answer arrives.
+    if (r.unresolved) { input.value = ''; input.rows = 1; }
+    view.paintInput();
+    input.focus();
   };
   input.addEventListener('paste', (e) => {
     const pasted = [...((e.clipboardData && e.clipboardData.files) || [])];
@@ -349,10 +427,12 @@ function openView(box, row) {
     statusLine,
     el('div', { class: 'sess-term-wrap' }, termBox, historyBox, resume),
     chips,
+    draftsBox,
     composer,
     tray));
 
   if (s.remote) setStatus(`Streaming from ${s.machineNickname}…`);
+  view.paintInput();
   startTerminal(view);
 }
 
@@ -437,7 +517,9 @@ function writeHistory(msg) {
 
 function sendKey(key) {
   if (!st.view) return;
-  if (!wsSend(frame('key', st.view.s, { key }))) setStatus('Not sent: live updates are paused.');
+  if (!st.wsUp) { setStatus('Not sent: live updates are paused.'); return; }
+  const r = inputFor(st.view.key, st.view.s).tracker.sendKey(key);
+  if (!r.ok) setStatus(r.words);
 }
 
 // ── History: the conversation record, newest at the bottom, older on scroll-up ──
@@ -464,7 +546,7 @@ async function loadHistory(view) {
   const marker = el('p', { class: 'sess-history-note', text: h.count ? 'Loading earlier messages…' : 'Loading the conversation…' });
   box.prepend(marker);
   const topicPhase = h.phase === 'topic';
-  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before));
+  const res = await send('GET', topicPhase ? topicHistoryUrl(topicOf(view.s), h.topicBefore) : historyUrl(view.s, h.before, h.beforeIndex));
   marker.remove();
   h.loading = false;
   if (st.view !== view) return;
@@ -497,6 +579,7 @@ async function loadHistory(view) {
     if (list.length < TOPIC_HISTORY_PAGE || entries.length === 0 || h.topicBefore == null) { h.done = true; frag.prepend(el('p', { class: 'sess-history-note', text: 'The start of this conversation.' })); }
   } else {
     h.before = res.data.nextBefore;
+    h.beforeIndex = res.data.nextBeforeIndex || null;
     if (h.before == null) {
       // This session's own record ends here. A conversation keeps going back
       // through its earlier sessions: continue with the topic's messages.
@@ -535,10 +618,12 @@ function moreSheet(view) {
     { label: 'Machine', text: s.machineNickname || 'This machine' },
     { label: 'Model', text: modelWords(s.model) || 'not recorded' },
     { label: 'Kind', text: s.type === 'job' ? 'a scheduled job' : 'a conversation' },
-    { label: 'Chat', text: s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
+    { label: 'Chat', text: String(s.conversationRef || '').startsWith('app:') ? 'an Instar app conversation' : s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
   if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: `Switch ${DOOR.word} and model`, 'data-door': '1', onclick: () => doorSheet(view) }));
+  // A stored paste only reaches this machine's sessions; another machine's session takes long text in its own message box.
+  if (!s.remote && s.type !== 'job') actions.append(el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Paste long text', 'data-paste-here': '1', onclick: () => pasteSheet(view.key) }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({
@@ -548,6 +633,13 @@ function moreSheet(view) {
     eventCount: t.eventCount ?? null, lastActivity: t.lastActivity || null,
   }, ['tmuxSession', 'id', 'machineId', 'model', 'startedAt', 'lastActivity', 'toolsUsed', 'backgroundTasks', 'eventCount']));
   sheet({ title: view.titleSub.closest('.sess-open').querySelector('.sess-title').textContent }, ...blocks);
+}
+
+/** The paste sheet (paste.js): the target asked (most recent preselected), or fixed to one session. */
+function pasteSheet(fixedKey) {
+  const m = st.model && st.model.ok ? st.model : null;
+  const rows = m ? (fixedKey ? m.allRows : m.rows) : [];
+  openPasteSheet({ ctx: st.ctx, rows, fixedKey, openHref });
 }
 
 function closeBlock(view) {
@@ -590,14 +682,14 @@ const WRITE = { 'X-Instar-Request': '1' };
 
 async function doorSheet(view) {
   const s = view.s;
-  const now = el('p', { class: 'card-line', text: `Reading this topic’s ${DOOR.word}…` });
+  const now = el('p', { class: 'card-line', text: `Reading this conversation’s ${DOOR.word}…` });
   const door = el('select', { class: 'reason-input', 'aria-label': DOOR.Word });
   const model = el('select', { class: 'reason-input', 'aria-label': 'Model' });
   const regime = el('p', { class: 'card-note', hidden: true });
   const status = el('p', { class: 'action-status', role: 'status' });
   const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch', 'data-switch': '1', disabled: true });
   sheet({ title: `${DOOR.Word} and model` }, now, field(DOOR.Word, door), field('Model', model), regime, go, status);
-  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(String(s.platformId))}`)]);
+  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(profileKeyOf(s))}`)]);
   if (!opt.ok || !prof.ok) { now.textContent = `Can’t tell what it is on now: ${(!opt.ok ? opt : prof).reason}.`; return; }
   const options = opt.data; const p = prof.data;
   now.textContent = `Now: ${doorModelWords(options, p.resolved.framework, p.resolved.model)} (${profileSourceWords(p)}).`;
@@ -609,11 +701,11 @@ async function doorSheet(view) {
   go.addEventListener('click', async () => {
     go.disabled = true; status.textContent = 'Working…';
     const pick = { framework: door.value, model: model.value || null };
-    const x = await send('POST', `/topic-profile/${encodeURIComponent(String(s.platformId))}`, pick, WRITE);
+    const x = await send('POST', `/topic-profile/${encodeURIComponent(profileKeyOf(s))}`, pick, WRITE);
     const d = x.data || {};
     status.textContent = d.message || d.error || (x.ok ? 'Done.' : 'Refused.');
     go.disabled = false;
-    if (x.ok && !d.noop) watchSwitch({ topicId: String(s.platformId), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
+    if (x.ok && !d.noop) watchSwitch({ topicId: profileKeyOf(s), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
   });
 }
 
@@ -703,8 +795,8 @@ async function newSessionSheet() {
   const sync = () => {
     const allow = platformAllowsDoor(platform.value) && options;
     door.disabled = !allow; model.disabled = !allow || !door.value;
-    doorHint.textContent = !allow && options ? `${DOOR.Word} and model apply to Telegram topics only.` : 'You can change this again after the topic’s first message.';
-    machineField.hidden = !(machines && platformAllowsDoor(platform.value));
+    doorHint.textContent = !allow && options ? `${DOOR.Word} and model apply to a Telegram topic or an Instar app conversation.` : 'You can change this again later, from the session.';
+    machineField.hidden = !(machines && platformAllowsMachine(platform.value));
     if (machineField.hidden && machine.value) { machine.value = ''; onMachine(); }
     defLine.textContent = defaultWords(options);
   };
@@ -737,11 +829,15 @@ async function newSessionSheet() {
     });
   });
 
+  // One id per intended create: a retry after a timeout reuses it, so it never makes a second conversation.
+  let requestId = newRequestId();
   go.addEventListener('click', async () => {
-    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value }, options);
+    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value, requestId }, options);
     if (!req.ok) { status.textContent = req.problems.join(' '); name.focus(); return; }
     go.disabled = true; status.textContent = 'Starting…';
     const x = await send('POST', '/sessions/create', req.body, WRITE);
+    // A definite answer ends this create; a timeout or a server fault keeps the id for the retry.
+    if (x.status >= 200 && x.status < 500) requestId = newRequestId();
     const w = createResultWords(x.status, x.data, req.body.name);
     status.textContent = w.text;
     go.disabled = false;

@@ -11,7 +11,7 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import type { OutagePolicyProjection } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { RECORDING_OUTAGE_TEXT } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../helpers/telegramOriginStore.js';
 import { captureOriginAttachments } from '../../src/messaging/telegram-origin/OriginMultipart.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { originDeliveryConfirmed } from '../../src/messaging/telegram-origin/OriginDeliveryResolution.js';
@@ -21,6 +21,7 @@ let worker: URL;
 const runtimes: TelegramOriginRuntime[] = [];
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 function allowFixtureSends(runtime: TelegramOriginRuntime): void {
+  allowSlowOriginRecording(runtime.service);
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(runtime.options.storage.stateDir, runtime.options.bot.chatId) });
 }
 beforeAll(async () => { worker = await compileOriginWorker(); });
@@ -41,7 +42,7 @@ async function boot(onSessionDeliveryHeld?: import('../../src/messaging/telegram
       chat: { id: Number(params.chat_id) }, message_thread_id: Number(params.message_thread_id) } }));
   });
   vi.stubGlobal('fetch', network);
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo' },
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS },
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token, accountId: 'bot-1' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
@@ -76,16 +77,38 @@ describe('Telegram origin initialization and outage lifecycle', () => {
         ? { outcome: 'outcome-unknown' } : { reason: 'execution-admission-unavailable' });
       await vi.waitFor(() => expect(sendNotice).toHaveBeenCalledOnce());
       expect(events).toEqual(['live']);
+      // The first hold raises exactly one alert at the operator hub. Asserted here, before any
+      // recovery pass, where the count is fixed.
+      if (failure === 'admission-unavailable') await vi.waitFor(() => expect(h.network).toHaveBeenCalledOnce());
       hubSend.mockClear(); sendNotice.mockClear();
       await h.runtime.recoverHeld();
       await vi.waitFor(() => expect(events).toContain('scan'));
       expect(sendNotice).not.toHaveBeenCalled(); expect(hubSend).not.toHaveBeenCalled();
-      expect(h.network).toHaveBeenCalledOnce();
-      const attempted = JSON.parse(h.network.mock.calls[0][1].body as string);
-      // Admission failure retains the existing once-per-outage recording
-      // alert at the operator hub; it must not become a topic reply.
-      expect(Number(attempted.message_thread_id)).toBe(failure === 'unknown-outcome' ? 42 : 7848);
-      if (failure === 'admission-unavailable') expect(attempted.text).toContain(RECORDING_OUTAGE_TEXT);
+      const attempts = h.network.mock.calls.map(call => JSON.parse(call[1].body as string));
+      if (failure === 'unknown-outcome') {
+        expect(attempts).toHaveLength(1);
+        expect(Number(attempts[0].message_thread_id)).toBe(42);
+      } else {
+        // Admission failure raises the recording alert at the operator hub; it must not become
+        // a topic reply. Every attempt is checked for WHERE it went and WHAT it said.
+        //
+        // After the recovery pass the count is one or two, and both are what the code does
+        // today. Recording is healthy here and only `store.admit` fails, so `recoverHeld`
+        // confirms recording; if the first alert has finished by then the notifier re-arms a
+        // fresh one, and the re-admission that fails again requests it (a second hub alert for
+        // the same outage, spaced 100 ms after the first). If the first alert is still in flight
+        // the re-arm is skipped and there is one. `toHaveBeenCalledOnce` here therefore passed
+        // or failed on timing, and failed unrelated PRs on a loaded machine (3124, 3106).
+        // Whether a second alert per recovery pass is wanted is an open product question
+        // (feedback fb-de7ee113-bc8). One recovery pass can add at most one, so more than two is
+        // a regression either way.
+        expect(attempts.length).toBeGreaterThanOrEqual(1);
+        expect(attempts.length).toBeLessThanOrEqual(2);
+        for (const attempted of attempts) {
+          expect(Number(attempted.message_thread_id)).toBe(7848);
+          expect(attempted.text).toContain(RECORDING_OUTAGE_TEXT);
+        }
+      }
     } finally { await telegram.stop(); }
   });
 

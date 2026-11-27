@@ -106,6 +106,16 @@ export class ChannelManager {
     return messages.reverse();
   }
 
+  /** Cold-start history for one thread; channel history omits its replies. */
+  async getThreadHistory(channelId: string, threadTs: string, limit = 50): Promise<SlackMessage[]> {
+    const result = await this.api.call('conversations.replies', {
+      channel: channelId,
+      ts: threadTs,
+      limit: Math.min(limit, 200),
+    });
+    return ((result.messages as SlackMessage[]) ?? []).map(m => ({ ...m, channel: channelId }));
+  }
+
   /** Find a channel by name (returns first match or null). */
   private async findChannelByName(name: string): Promise<SlackChannel | null> {
     const channels = await this.listChannels();

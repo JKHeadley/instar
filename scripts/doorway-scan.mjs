@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Keep the Doorway/Model Map Current*
+
 /**
  * doorway-scan.mjs — the deterministic doorway prober (the SECURITY SPINE).
  *

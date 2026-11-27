@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-ticket-scoped-token-sec046",
+  "sessionId": "c010ec34-33a2-476c-a6af-4b438bdaa22b",
+  "timestamp": "2026-11-16T10:31:17.062Z",
+  "artifactPath": "upgrades/side-effects/console-ticket-scoped-token-sec046.md",
+  "artifactSha256": "fc5f091cc5cad50615179d2e41802aab768cb9ccf27cf4bb4055a0cae83d42fe",
+  "coveredFiles": [
+    "docs/specs/console-ticket-scoped-token-sec046.eli16.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConsoleTicket.ts",
+    "tests/integration/mobile-console-ticket-routes.test.ts",
+    "upgrades/next/console-ticket-scoped-token-sec046.md",
+    "upgrades/side-effects/console-ticket-scoped-token-sec046.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small dark reversible completeness fix mirroring the unlock scoped-token logic in the console-ticket redeem; no new auth gate.",
+  "eli16Path": "docs/specs/console-ticket-scoped-token-sec046.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-ticket-scoped-token-sec046.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

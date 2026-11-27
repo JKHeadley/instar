@@ -26,6 +26,7 @@ import { LiveConfig } from '../../src/config/LiveConfig.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DP_COMMITMENT_DETECT } from '../../src/data/provenanceCoverage.js';
+import { JevFirstDecision, type JevPoint } from '../../src/core/JevFirstDecision.js';
 
 // ── Mock IntelligenceProvider ────────────────────────────────────
 
@@ -82,6 +83,7 @@ function makeSentinel(
   stateDir: string,
   intelligence: IntelligenceProvider,
   trackerOverrides?: Partial<import('../../src/monitoring/CommitmentTracker.js').CommitmentTrackerConfig>,
+  jevConfig?: Pick<CommitmentSentinelConfig, 'jevFirst' | 'getJevPoint'>,
 ): { sentinel: CommitmentSentinel; tracker: CommitmentTracker } {
   const liveConfig = new LiveConfig(stateDir);
   const tracker = new CommitmentTracker({ stateDir, liveConfig, ...trackerOverrides });
@@ -89,6 +91,7 @@ function makeSentinel(
     stateDir,
     intelligence,
     commitmentTracker: tracker,
+    ...jevConfig,
   });
   return { sentinel, tracker };
 }
@@ -106,6 +109,56 @@ describe('CommitmentSentinel', () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+  });
+
+  describe('Jev first pass', () => {
+    const jevPoint: JevPoint = {
+      id: 'commitment-detect', promptId: 'commitment-batch-v1', question: 'Does any exchange contain a promise?',
+      stage: 'live', band: { noMax: 0.2, yesMin: 0.8 }, settleOnly: 'no', model: 'jev-1.13.0',
+      timeoutMs: 1000, maxStateBytes: 8000, auditRate: 0, fallbackSelection: 'incumbent-no-benchmark',
+    };
+    it('skips the incumbent only for a recorded confident negative', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'How are things going?', fromUser: true },
+        { messageId: 2, topicId: 100, text: 'Everything is running.', fromUser: false },
+      ]);
+      const intelligence = createMockIntelligence('[]');
+      const recorded = vi.fn(() => 'jp-1');
+      const jevFirst = new JevFirstDecision({ readKey: () => 'test-key',
+        askJev: async () => ({ model: 'jev-1.13.0', probability: 0.03, ms: 50 }), recordDecision: recorded });
+      const { sentinel } = makeSentinel(stateDir, intelligence, undefined, { jevFirst, getJevPoint: () => jevPoint });
+      expect(await sentinel.scan()).toBe(0);
+      expect(intelligence.evaluate).not.toHaveBeenCalled();
+      expect(recorded).toHaveBeenCalledOnce();
+    });
+
+    it('preserves detailed incumbent extraction when Jev is positive or unavailable', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Please turn off auto updates.', fromUser: true },
+        { messageId: 2, topicId: 100, text: 'I will turn off auto updates.', fromUser: false },
+      ]);
+      const answer = '[{"type":"one-time-action","userRequest":"turn off auto updates","agentResponse":"I will turn off auto updates"}]';
+      const intelligence = createMockIntelligence(answer);
+      const jevFirst = new JevFirstDecision({ readKey: () => 'test-key',
+        askJev: async () => ({ model: 'jev-1.13.0', probability: 0.98, ms: 50 }), recordDecision: () => 'jp-2' });
+      const { sentinel } = makeSentinel(stateDir, intelligence, undefined, { jevFirst, getJevPoint: () => jevPoint });
+      expect(await sentinel.scan()).toBe(1);
+      expect(intelligence.evaluate).toHaveBeenCalledOnce();
+    });
+
+    it('keeps commitment detection functional with only the incumbent provider', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Please turn off auto updates.', fromUser: true },
+        { messageId: 2, topicId: 100, text: 'I will turn off auto updates.', fromUser: false },
+      ]);
+      const intelligence = createMockIntelligence('[{"type":"one-time-action","userRequest":"turn off auto updates","agentResponse":"I will turn off auto updates"}]');
+      const askJev = vi.fn();
+      const jevFirst = new JevFirstDecision({ readKey: () => null, askJev, recordDecision: () => 'jp-3' });
+      const { sentinel } = makeSentinel(stateDir, intelligence, undefined, { jevFirst, getJevPoint: () => jevPoint });
+      expect(await sentinel.scan()).toBe(1);
+      expect(askJev).not.toHaveBeenCalled();
+      expect(intelligence.evaluate).toHaveBeenCalledOnce();
+    });
   });
 
   // ── Message Reading ────────────────────────────────────

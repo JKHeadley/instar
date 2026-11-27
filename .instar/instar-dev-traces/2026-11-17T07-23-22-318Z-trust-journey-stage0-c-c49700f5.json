@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "trust-journey-stage0-c",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T07:23:22.318Z",
+  "artifactPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "artifactSha256": "a1d2244cb5dd923e1a7a1cdd0cb41d6e37b53f69b79a4253fe11075c7b1fdeb8",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "upgrades/side-effects/trust-journey-stage0-c-rebase.eli16.md",
+    "upgrades/side-effects/trust-journey-stage0-c.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rule-test fixes after rebase: two annotations and one log line on a swallowed receipt error.",
+  "eli16Path": "upgrades/side-effects/trust-journey-stage0-c-rebase.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-journey-stage0-c.md",
+  "secondPass": "false",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "annotations and a log line"
+  }
+}

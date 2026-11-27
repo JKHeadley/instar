@@ -454,6 +454,9 @@ export class ScopeVerifier {
   private detectGitRemote(): string | null {
     try {
       return SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: this.config.projectDir,
+        // Inspecting a protected Instar checkout is evidence acquisition. The
+        // fixed read shape and the expected-remote comparison remain enforced.
+        sourceTreeReadOk: true,
         encoding: 'utf-8',
         stdio: 'pipe', operation: 'src/core/ScopeVerifier.ts:450' }).trim() || null;
     } catch {

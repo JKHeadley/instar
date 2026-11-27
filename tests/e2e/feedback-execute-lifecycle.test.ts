@@ -10,15 +10,17 @@
  * days → Initiative completed. The routes answer 200 when the feature is live and 503 when dark.
  * Only the model and the executor's external boundaries (git, GitHub, sandbox runtime, sessions) are scripted.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { createHmac } from 'node:crypto';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { HostSpawnSemaphore, getHostSpawnSemaphore } from '../../src/core/hostSpawnSemaphore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig, IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
 import { handleFeedbackSubmit } from '../../src/feedback-factory/receiver/handlers.js';
@@ -30,6 +32,7 @@ import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRI
 import { decisionRow, packetsFrom } from '../fixtures/feedbackTriageHarness.js';
 import { defaultCanaryTranscript } from '../fixtures/feedbackExecuteHarness.js';
 import { SESSION_CANARY_STEPS } from '../../src/feedback-factory/execute/confinementCanary.js';
+import { labelAlreadyAbsent } from '../../src/feedback-factory/execute/executorPorts.js';
 
 const AUTH = 'feedback-execute-e2e-auth';
 const PIN = '161803';
@@ -63,7 +66,7 @@ function executorEdge(root: string, clock: { now: number }) {
   const state = {
     pr: null as null | { number: number; headRefOid: string; mergedAt: string | null; mergeCommit: string | null; labels: string[] },
     reviews: [] as Array<{ login: string; state: string; commitId: string; submittedAt: string }>,
-    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
+    merges: [] as Array<{ pr: number; sha: string }>, pushes: 0, pushedTo: [] as string[], pushedFiles: [] as string[], labelRemovals: [] as boolean[], prHeads: [] as string[], spawned: [] as string[], alive: new Set<string>(),
     confinedGuardChecks: 0,
     mergeChecksPending: false,
     release: 'none' as { tag: string; taggedAt: number } | 'none',
@@ -76,7 +79,12 @@ function executorEdge(root: string, clock: { now: number }) {
     git: {
       fetchBase: async () => BASE_SHA,
       createClone: async (src: string, dest: string) => { fs.cpSync(src, dest, { recursive: true }); },
-      commitAndPush: async (_clone: string, input: { remoteUrl: string }) => { state.pushes++; state.pushedTo.push(input.remoteUrl); return HEAD_SHA; },
+      commitAndPush: async (clone: string, input: { remoteUrl: string }) => {
+        state.pushes++; state.pushedTo.push(input.remoteUrl);
+        const walk = (dir: string, rel = ''): void => { for (const n of fs.readdirSync(dir)) { const f = path.join(dir, n); const r = rel ? `${rel}/${n}` : n; if (fs.lstatSync(f).isDirectory()) { if (r !== '.git') walk(f, r); } else state.pushedFiles.push(r); } };
+        walk(clone);
+        return HEAD_SHA;
+      },
       githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
       firstReleaseContaining: async () => state.release,
     },
@@ -87,7 +95,15 @@ function executorEdge(root: string, clock: { now: number }) {
       createPr: async (input: { label: string; head: string }) => { state.prHeads.push(input.head); state.pr = { number: 7, headRefOid: HEAD_SHA, mergedAt: null, mergeCommit: null, labels: [input.label] }; return { number: 7 }; },
       prState: async () => (state.pr ? { state: state.pr.mergedAt ? 'MERGED' : 'OPEN', mergedAt: state.pr.mergedAt, headRefOid: state.pr.headRefOid, mergeCommit: state.pr.mergeCommit, author: 'echo-bot', headRefName: 'feedback/x' } : null),
       reviews: async () => state.reviews,
-      removeLabel: async () => { state.pr!.labels = []; return true; },
+      // As GitHub answers: removing a label that is already gone is a 404 "Label does not exist",
+      // which the real gateway reads as done (labelAlreadyAbsent). It used to stall every merge retry.
+      removeLabel: async (_slug: string, _pr: number, label: string) => {
+        const had = state.pr!.labels.includes(label);
+        state.pr!.labels = state.pr!.labels.filter((l) => l !== label);
+        const ok = had || labelAlreadyAbsent({ stdout: '{"message":"Label does not exist","status":"404"}', stderr: 'gh: Label does not exist (HTTP 404)' });
+        state.labelRemovals.push(had);
+        return ok;
+      },
       disableAuto: async () => true,
       safeMerge: async (_slug: string, pr: number, sha: string) => {
         state.merges.push({ pr, sha });
@@ -99,8 +115,10 @@ function executorEdge(root: string, clock: { now: number }) {
     },
     runner: {
       available: () => ({ ok: true as const, version: '0.0.77' }),
-      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] } } }) => {
+      run: async (cmd: { command: string; cwd: string; settings: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } } }) => {
         expect(cmd.settings.filesystem.denyWrite).toContain(path.join(cmd.cwd, '.instar'));
+        expect(cmd.settings.network.allowedDomains).toEqual([]);
+        expect(cmd.settings.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
         state.confinedGuardChecks++;
         const c = cmd.command;
         // The (a) base-check clone still has the crashing source; every other tree has the fix.
@@ -119,10 +137,12 @@ function executorEdge(root: string, clock: { now: number }) {
     sessions: {
       spawnConfined: async (input: { name: string; prompt: string; cwd: string; settingsPath: string }) => {
         const settings = JSON.parse(fs.readFileSync(input.settingsPath, 'utf8')) as {
-          sandbox: { filesystem: { denyWrite: string[] } };
+          sandbox: { filesystem: { denyWrite: string[] }; network: { allowedDomains: string[]; allowMachLookup?: string[] } };
           permissions: { deny: string[] };
         };
         expect(settings.sandbox.filesystem.denyWrite).toContain(path.join(input.cwd, '.instar'));
+        expect(settings.sandbox.network.allowedDomains).toEqual([]);
+        expect(settings.sandbox.network.allowMachLookup).toEqual(process.platform === 'darwin' ? ['com.apple.SystemConfiguration.DNSConfiguration'] : undefined);
         expect(settings.permissions.deny).toContain(`Edit(/${path.resolve(input.cwd, '.instar')}/**)`);
         state.confinedGuardChecks++;
         state.spawned.push(input.name);
@@ -175,9 +195,15 @@ describe('feedback executor — production lifecycle (live on a development agen
   let blob: FakeBlobServer;
   const clock = { now: Date.now() };
   let edge: ReturnType<typeof executorEdge>;
+  let fixtureSlots: HostSpawnSemaphore;
+  let restoreSlotStatus: () => void;
 
   beforeAll(async () => {
     ({ root, stateDir } = prepare('feedback-execute-e2e-'));
+    // The sessions run inside this fixture, so the executor should observe only its slots.
+    fixtureSlots = new HostSpawnSemaphore({ cap: 1, holdersPath: path.join(root, 'spawn-holders.json') });
+    const slotStatus = vi.spyOn(getHostSpawnSemaphore(), 'status').mockImplementation(() => fixtureSlots.status());
+    restoreSlotStatus = () => slotStatus.mockRestore();
     edge = executorEdge(root, clock);
     blob = new FakeBlobServer();
     await blob.start();
@@ -226,6 +252,7 @@ describe('feedback executor — production lifecycle (live on a development agen
 
   afterAll(async () => {
     await server.stop();
+    restoreSlotStatus();
     await blob.stop();
     delete process.env[TOKEN_ENV];
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback-execute-lifecycle.test.ts' });
@@ -241,8 +268,8 @@ describe('feedback executor — production lifecycle (live on a development agen
       provider: 'claude-code', modelFamily: 'fable-5', promptVersion: 'feedback-readiness-v1', schemaVersion: 'feedback-readiness-decision-v1',
       decisionPointId: 'feedback-cluster-readiness', maxBatch: 50, maxTokens: 900, maxDailySpendUsd: 5,
     })).status).toBe(200);
-    expect((await request(app).post('/feedback-factory/consumer/promote').set(HX)
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote' })).status).toBe(200);
+    const { promote } = await promoteConsumerFromProposal(app, { auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-promote', noncePrefix: 'feedback-execute-sim' });
+    expect(promote.status, JSON.stringify(promote.body)).toBe(200);
     expect((await request(app).post('/feedback-factory/drain/tick').set({ ...HX, 'X-Instar-AgentId': 'e2e', 'X-Instar-Request-Nonce': 'feedback-execute-e2e-0001' })).status).toBe(202);
     for (let attempt = 0; attempt < 200 && tracker.list().filter((i) => i.feedbackWorkKey).length < 1; attempt++) await new Promise((r) => setTimeout(r, 10));
     const initiative = tracker.list().find((i) => i.feedbackWorkKey)!;
@@ -263,8 +290,13 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect((await request(app).get('/feedback-factory/triage/queue').set(H)).body.items[0]).toMatchObject({ initiativeId: initiative.id, executionState: 'queued' });
 
     // Executor: claim → workspaces → canary (both paths) → confined build session.
+    expect(fixtureSlots.acquire('occupied')).toBe(true);
+    const deferred = await executeTick(app, clock);
+    expect(deferred.lastTick).toMatchObject({ started: 0, reason: 'admission:spawn-limiter-saturated' });
+    expect(edge.state.spawned).toHaveLength(0);
+    fixtureSlots.release('occupied');
     let status = await executeTick(app, clock);
-    expect(status.counts).toMatchObject({ running: 1 });
+    expect(status.counts, JSON.stringify(status.lastTick)).toMatchObject({ running: 1 });
     expect(edge.state.spawned[0]).toMatch(/^feedback-canary-/);
     expect(edge.state.spawned[1]).toMatch(/^feedback-.*-a1$/);
     expect(edge.state.confinedGuardChecks).toBeGreaterThan(1);
@@ -291,6 +323,11 @@ describe('feedback executor — production lifecycle (live on a development agen
     clock.now += 5 * 60_000 + 1;
     status = await executeTick(app, clock);
     expect(edge.state.merges).toEqual([{ pr: 7, sha: HEAD_SHA }, { pr: 7, sha: HEAD_SHA }]);
+    // The retry found the hold label already removed and still reached the merge.
+    expect(edge.state.labelRemovals).toEqual([true, false]);
+    // The pushed tree carries the publisher's decision record and release note.
+    expect(edge.state.pushedFiles.some((f) => /^\.instar\/instar-dev-decisions\/.+\.json$/.test(f))).toBe(true);
+    expect(edge.state.pushedFiles.some((f) => /^upgrades\/next\/feedback-.+\.md$/.test(f))).toBe(true);
     expect(status.counts).toMatchObject({ merged: 1 });
     expect(tracker.get(initiative.id)!.phases.find((p) => p.id === 'build')!.status).toBe('done');
     expect(tracker.get(initiative.id)!.status).not.toBe('completed');

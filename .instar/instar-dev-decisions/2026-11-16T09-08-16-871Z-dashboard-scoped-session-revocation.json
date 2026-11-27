@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-16T09:08:16.871Z",
+  "slug": "dashboard-scoped-session-revocation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 253,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/dashboard-scoped-session-revocation.md",
+      "src/server/AgentServer.ts",
+      "src/server/DashboardSessionStore.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 211,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

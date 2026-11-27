@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T22:52:14.046Z",
+  "slug": "feedback-reviewer-model-routing",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/crossModelReviewer.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -22,6 +22,11 @@ import type { IntelligenceProvider, JobDefinition } from '../../src/core/types.j
 
 const MACHINE = 'm-1';
 
+
+// Audit rows carry the harness clock's time (2026-10-26). Read them on that clock too: reading with the
+// real clock made every row older than the 14-day retention from 2026-11-09 10:00Z, and the file went red.
+const AUDIT_READ_NOW = Date.parse('2026-10-27T00:00:00.000Z');
+
 function job(over: Partial<Record<string, unknown>> = {}): JobDefinition {
   return {
     slug: 'health-check', name: 'Health check', description: 'Checks the server', schedule: '*/5 * * * *',
@@ -265,14 +270,14 @@ describe('JobResultTriage', () => {
     for (let i = 0; i < 3; i++) await feed(h, ctx({ p: { result: 'failure', reasonCode: 'script-untrusted' } }));
     expect(h.spawns).toHaveLength(0);
     expect(h.jevBodies).toHaveLength(0);
-    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'))).toHaveLength(0);
+    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW)).toHaveLength(0);
   });
 
   it('bare-ok runs are never sent', async () => {
     const h = makeHarness(dir);
     await feed(h, ctx());
     expect(h.jevBodies).toHaveLength(0);
-    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'));
+    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW);
     expect(rows[0]).toMatchObject({ decider: 'bare', decision: 'routine' });
   });
 
@@ -294,7 +299,7 @@ describe('JobResultTriage', () => {
     h.setJev(() => new Response(JSON.stringify(jevReply(0.95)), { status: 200 }));
     await feed(h, ctx({ p: { summary: 'healthy, 9 zombie sessions' } }));
     expect(h.spawns).toHaveLength(1);
-    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'));
+    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW);
     expect(rows.map((r) => r.decider)).toEqual(['jev', 'jev']);
     expect(h.metrics[0]).toMatchObject({ feature: 'job-result-triage', framework: 'typesafe-api' });
   });
@@ -308,7 +313,7 @@ describe('JobResultTriage', () => {
     await feed(h, ctx({ p: { summary: 'b' } }));
     h.setJev(() => new Response(JSON.stringify(jevReply(0.1, 'routine', 'needs_session')), { status: 200 }));
     await feed(h, ctx({ p: { summary: 'c' } }));
-    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'));
+    const rows = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW);
     expect(rows.slice(-2).map((r) => r.escalation)).toEqual(['cannot_tell', 'order-disagreement']);
     expect(rows.map((r) => r.decision)).toEqual(['needs_session', 'needs_session', 'needs_session']);
     expect(rows.map((r) => r.decider)).toEqual(['jev', 'jev', 'jev']);
@@ -339,7 +344,7 @@ describe('JobResultTriage', () => {
     await feed(cap, ctx({ p: { summary: 'a' } }));
     await feed(cap, ctx({ p: { summary: 'b' } }));
     expect(cap.jevBodies).toHaveLength(1);
-    const rows = readTriageAudit(path.join(cap.state.file, '..', '..', 'logs', 'job-triage.jsonl'));
+    const rows = readTriageAudit(path.join(cap.state.file, '..', '..', 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW);
     expect(rows.at(-1)).toMatchObject({ jev: 'daily-cap', decider: 'floor' });
   });
 
@@ -357,7 +362,7 @@ describe('JobResultTriage', () => {
     expect(h.triage.tryAcquireBackup()).toBe(true);
     await feed(h, ctx({ p: { summary: 'unusual during outage' } }));
     expect(h.jevBodies).toHaveLength(0);
-    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl')).at(-1))
+    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW).at(-1))
       .toMatchObject({ jev: 'backup-owns-outage', decider: 'floor' });
     h.triage.releaseBackup();
     await feed(h, ctx({ p: { summary: 'unusual after outage' } }));
@@ -369,7 +374,7 @@ describe('JobResultTriage', () => {
     h.setJev(() => new Response(JSON.stringify(jevReply(0.05)), { status: 200 }));
     await feed(h, ctx({ p: { summary: 'a' } }));
     expect(h.spawns).toHaveLength(0);
-    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'))[0]).toMatchObject({ decider: 'jev', decision: 'routine' });
+    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW)[0]).toMatchObject({ decider: 'jev', decision: 'routine' });
   });
 
   it('the floor is additive: a confident Jev routine with a critical anomaly or second failure still starts a session (Jev is not even asked)', async () => {
@@ -396,7 +401,7 @@ describe('JobResultTriage', () => {
     await feed(h, ctx({ p: { summary: 'x' }, scrubbedOutput: 'other' }));
     await feed(h, ctx({ p: { summary: 'x' }, scrubbedOutput: 'other' }));
     expect(h.jevBodies).toHaveLength(2);
-    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl')).at(-1)).toMatchObject({ decider: 'fingerprint-reuse' });
+    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW).at(-1)).toMatchObject({ decider: 'fingerprint-reuse' });
     // identical failure output, now second in a row ⇒ the floor still requires a session
     h.runs.push(failedRow(first.runId));
     await feed(h, ctx({ p: { result: 'failure', reasonCode: 'boom' } }));
@@ -467,7 +472,7 @@ describe('JobResultTriage', () => {
     await feed(h, ctx({ p: { anomalies: [{ ...crit, kind: 'third-critical' }] } }));
     expect(h.spawns).toHaveLength(2);
     expect(h.attention.filter((a) => a.conditionKey === `job-triage-cap:${MACHINE}`)).toHaveLength(1);
-    const actions = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl')).map((r) => r.action);
+    const actions = readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW).map((r) => r.action);
     expect(actions).toEqual(expect.arrayContaining(['spawned', 'suppressed-inflight', 'spawned:critical-bypass', 'suppressed-cap']));
 
     // a non-critical reason within its cooldown is suppressed
@@ -477,7 +482,7 @@ describe('JobResultTriage', () => {
     c.end({ slugTag: 'triage:health-check', sessionName: 'triage-health-check-1', trigger: 'triage:x', output: 'ok' });
     await feed(c, ctx({ p: { summary: 's2', anomalies: [recov] } }));
     expect(c.spawns).toHaveLength(1);
-    expect(readTriageAudit(path.join(c.state.file, '..', '..', 'logs', 'job-triage.jsonl')).at(-1)).toMatchObject({ action: 'suppressed-cooldown' });
+    expect(readTriageAudit(path.join(c.state.file, '..', '..', 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW).at(-1)).toMatchObject({ action: 'suppressed-cooldown' });
   });
 
   it('serializes simultaneous floor and backup admission against the machine daily cap', async () => {
@@ -516,11 +521,11 @@ describe('JobResultTriage', () => {
     const h = makeHarness(dir, { apiKey: true });
     await feed(h, ctx({ p: { anomalies: [crit] } }));
     expect(h.spawns).toHaveLength(0);
-    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'))[0]).toMatchObject({ action: 'refused:env-token-auth', floor: true });
+    expect(readTriageAudit(path.join(dir, 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW)[0]).toMatchObject({ action: 'refused:env-token-auth', floor: true });
     const a = makeHarness(fs.mkdtempSync(path.join(dir, 'ad-')), { admission: () => 'quota' });
     await feed(a, ctx({ p: { anomalies: [crit] } }));
     expect(a.spawns).toHaveLength(0);
-    expect(readTriageAudit(path.join(a.state.file, '..', '..', 'logs', 'job-triage.jsonl'))[0]).toMatchObject({ action: 'refused:quota' });
+    expect(readTriageAudit(path.join(a.state.file, '..', '..', 'logs', 'job-triage.jsonl'), AUDIT_READ_NOW)[0]).toMatchObject({ action: 'refused:quota' });
   });
 
   it('a persistent critical episode gets one triage session, not one per run after each session ends', async () => {

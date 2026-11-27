@@ -202,6 +202,43 @@ function loadAllDocs() {
   return docs;
 }
 
+// ── Nested CLI command paths ────────────────────────────────────────
+
+let nestedPathsCache = null;
+/**
+ * Real nested command paths declared in src/cli.ts, keyed by the camelCase
+ * file name a command module would carry (`mobile introducer` -> `mobileIntroducer`,
+ * `mobile add-phone` -> `mobileAddPhone`). Reads commander chains of the form
+ * `const x = parent.command('name')` and `parent.command('name')`, where
+ * `program` is the root. Only paths of two or more words are returned.
+ */
+function parseNestedCommandPaths(cliSource) {
+  const parentPath = new Map([['program', '']]);
+  const out = new Map();
+  const re = /(?:const\s+(\w+)\s*=\s*)?\b(\w+)\s*\.command\(\s*['"`]([^'"`\s]+)/g;
+  let m;
+  while ((m = re.exec(cliSource))) {
+    const [, assigned, parent, name] = m;
+    if (!parentPath.has(parent)) continue;
+    const base = parentPath.get(parent);
+    const full = base ? `${base} ${name}` : name;
+    if (assigned) parentPath.set(assigned, full);
+    const words = full.split(' ');
+    if (words.length < 2) continue;
+    const key = full.split(/[\s:-]+/).filter(Boolean)
+      .map((w, i) => (i === 0 ? w : w[0].toUpperCase() + w.slice(1))).join('');
+    if (!out.has(key)) out.set(key, full);
+  }
+  return out;
+}
+
+function nestedCommandPaths() {
+  if (nestedPathsCache) return nestedPathsCache;
+  const cli = path.join(SRC_DIR, 'cli.ts');
+  nestedPathsCache = fs.existsSync(cli) ? parseNestedCommandPaths(fs.readFileSync(cli, 'utf-8')) : new Map();
+  return nestedPathsCache;
+}
+
 // ── Coverage scoring ────────────────────────────────────────────────
 
 function findMentions(capability, docs) {
@@ -222,9 +259,13 @@ function findMentions(capability, docs) {
       // colon-command documented as `instar dev:profile-node` still counts (it
       // otherwise never matched — every `dev:*` command read as undocumented).
       const kebab = capability.name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+      needles = [`instar ${capability.name}`, `instar ${kebab}`];
       // A nested subcommand (`mobileIntroducer` -> `instar mobile introducer`) is
-      // documented with spaces, so match the spaced form too.
-      needles = [`instar ${capability.name}`, `instar ${kebab}`, `instar ${kebab.replace(/-/g, ' ')}`];
+      // documented with spaces. Accept a spaced spelling ONLY when src/cli.ts
+      // really declares that nested path, so a one-token hyphenated command
+      // (`set-claude-key`) never counts as documented by "instar set claude key".
+      const nested = nestedCommandPaths().get(capability.name);
+      if (nested) needles.push(`instar ${nested}`);
       normalize = (s) => s.replace(/:/g, '-');
       break;
     }

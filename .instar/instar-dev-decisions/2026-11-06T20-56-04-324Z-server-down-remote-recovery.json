@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-06T20:56:04.324Z",
+  "slug": "server-down-remote-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2874
+    ],
+    "notes": "Full CI exposed optional recovery metadata access in an ordinary pool view, omitted new-channel expectations, a two-clock test signing race and an obsolete phone-copy assertion. Missing recovery membership now remains explicitly unready; strict auth limits are unchanged."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The convergence ratchet pressures sustained, doubled-horizon and reconstructed-state execution of serverDownRecoveryRepair; durable target admission independently limits shared mutations and requires owner rearm."
+    },
+    "prNumber": 2874,
+    "component": "RecoveryRepairCoordinator"
+  },
+  "verdict": "pass"
+}

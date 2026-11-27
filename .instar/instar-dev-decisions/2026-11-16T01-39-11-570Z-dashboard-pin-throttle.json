@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-16T01:39:11.570Z",
+  "slug": "dashboard-pin-throttle",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 502,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PinThrottle.ts",
+      "src/core/types.ts",
+      "src/data/awareness/dashboard-pin-throttle.md",
+      "src/server/AgentServer.ts",
+      "src/server/pinUnlockMarker.ts"
+    ],
+    "addedLines": 476,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

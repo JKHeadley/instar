@@ -183,7 +183,9 @@ const TERMINAL_KEEP_MS = 24 * 60 * 60_000;
 const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent';
+/** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
+/** `team-invite`: a member's computer joined from the owner's team invite with the code shown on the owner's phone (member-browser-any-computer §3.3). `at-computer`: the owner typed the phone's number at the agent's own computer (identity A4). */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone' | 'team-invite' | 'local-install' | 'at-computer';
 
 export interface DeviceRecord {
   id: string;
@@ -204,9 +206,11 @@ export interface DeviceRecord {
   revokedAt?: string;
   /** HMACs of distinct wrong codes already tried (per-process key; cleared on activation). */
   wrongCodes?: string[];
-  /** Mobile push (docs/specs/mobile-push.md): APNs token, its environment, the notification
-   *  read token's SHA-256, the highest registration revision applied, and the stored version. */
+  /** Mobile push (docs/specs/mobile-push.md): APNs or FCM token, its provider (absent ⇒ `apns`,
+   *  mobile-android-app §2.3), the APNs environment (APNs only), the notification read token's
+   *  SHA-256, the highest registration revision applied, and the stored version. */
   pushToken?: string;
+  pushProvider?: 'apns' | 'fcm';
   pushEnvironment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   pushRevision?: number;
@@ -218,16 +222,141 @@ export interface DeviceRecord {
    * (every phone paired before people and roles was approved by the owner alone as the owner's).
    */
   userId?: string;
-  role?: 'owner' | 'msp';
+  role?: 'owner' | 'msp' | 'team';
   /**
    * The phone's presence key (docs/specs/mobile-console-device-signin.md §3.1): a second Secure
    * Enclave P-256 public key that signs only after the device owner authenticates. Set once.
    */
   presenceKey?: string;
+  /**
+   * Browser devices (docs/specs/dashboard-conversations-browser-device.md §4.1). `client: 'browser'`
+   * marks a browser; absent means a phone. A browser's key is `browserPublicKey` and `publicKey` is
+   * never set on it, so an older version (which reads only `publicKey`) cannot authenticate it.
+   */
+  client?: 'browser';
+  /** A computer added by scanning its QR code with an owner phone (docs/specs/mac-qr-pairing.md §4); absent ⇒ a phone. Wording only. */
+  deviceKind?: 'computer';
+  /**
+   * The Mac app that created this agent on the same Mac (docs/specs/mac-app-creates-agent.md §A):
+   * this record authenticates only over loopback, with no forwarding header, at its exact host, and
+   * (when both are known) on the machine named here. Written only by `createActiveLocalOwner`.
+   */
+  localBinding?: { machineId: string | null };
+  browserPublicKey?: string;
+  enrollmentId?: string;
+  /** `notifying` while the approval message is being sent, then `awaiting` (§4.2 step 9). */
+  setupState?: 'notifying' | 'awaiting';
+  notifyingSince?: string;
+  /** The activation intent (§4.2 step 10.1), present from approval until the record is active. */
+  activating?: BrowserActivationIntent;
+  /** The record this browser retires once active. */
+  replaces?: { deviceId: string; keyHash: string };
+  /** Activation effects still to complete; never dropped (§4.2 step 10). */
+  effects?: BrowserEffect[];
+  /** Last accepted signed request on this machine, written at most once a minute. */
+  lastSeenAt?: string;
+  /**
+   * A member's linked computer (instar-document-viewer §3.6a): limited to documents (`documents`;
+   * `documents-read` for a guest), linked by that person's phone, and gone after `linkExpiresAt`.
+   */
+  scope?: 'documents' | 'documents-read';
+  linkedByDeviceId?: string;
+  /** The key hash of the phone key that signed the link (stays the signer across a phone key rotation). */
+  linkedByKeyHash?: string;
+  linkExpiresAt?: string;
+  /**
+   * A member's computer that joined from the owner's team invite (member-browser-any-computer §3.3).
+   * The intended binding is fixed at redeem from the limits then in force, so recovery never re-reads
+   * changed limits: `joinIdleDays`, `joinEndsBy` (with `scope` and `host`).
+   */
+  joinedVia?: 'team-invite';
+  joinIdleDays?: number;
+  joinEndsBy?: string;
+  /** The pairing-outcome watch this phone's link carried (docs/specs/mobile-pairing-outcome-notice.md §3.2). */
+  outcomeWatchId?: string;
+  /** The original pending deadline; `expiresAt` is overwritten by boot and lease-loss expiry (§3.3). */
+  pendingDeadline?: string;
+  /**
+   * Paired on the agent's same-network listener (identity A4): `host` is `<name>.local:<port>`, a
+   * signature is accepted only on that listener, and that listener accepts no other device.
+   */
+  addressKind?: 'same-network';
+  /** The certificate public-key hash the phone pinned from the computer's screen (same-network only). */
+  pinnedKeyHash?: string;
+  /**
+   * Set at redeem for a phone whose setup was started at the agent's own computer with no Telegram
+   * owner (identity A4): while pending it is let in ONLY by the number typed at that computer and its
+   * own signed activation, never by a code, a tap, an introduction or the dashboard.
+   */
+  admission?: 'at-computer';
 }
+
+/**
+ * Identity A4: the ONE answer to "was this device let in at the agent's own computer (no approval
+ * power until piece 3b)". Two fields carry it: `admission` (set at redeem, while pending) and
+ * `approvedVia` (set at activation). Every check reads this function, never either field alone
+ * (tests/unit/at-computer-invariant.test.ts fails on a direct comparison elsewhere), and the store
+ * refuses an activation that would make the two disagree (applyConfirm), so a path that sets one
+ * field without the other cannot give such a device approval power.
+ */
+export function admittedAtComputer(d: Pick<DeviceRecord, 'admission' | 'approvedVia'> | null | undefined): boolean {
+  return !!d && (d.admission === 'at-computer' || d.approvedVia === 'at-computer');
+}
+
+export type BrowserEffectKind = 'revokeReplaced' | 'notice';
+export interface BrowserEffect {
+  kind: BrowserEffectKind;
+  attempts: number;
+  nextAt: string;
+  /** Set when the 24-attempt report was made. */
+  reportedAt?: string;
+  /** Set when the notice's one-time local-attention + push fallback was raised. */
+  fallbackRaisedAt?: string;
+}
+export interface BrowserActivationIntent {
+  approvedVia: ApprovedVia;
+  at: string;
+  approvedBy?: string;
+  effects: BrowserEffectKind[];
+}
+
+/** The key a device signs with: a phone's `publicKey`, or a browser's `browserPublicKey`. */
+export function deviceKeyOf(d: Pick<DeviceRecord, 'client' | 'publicKey' | 'browserPublicKey'> | null | undefined): string | undefined {
+  if (!d) return undefined;
+  return d.client === 'browser' ? d.browserPublicKey : d.publicKey;
+}
+
+/** sha256 hex over the raw key bytes — the same as `deviceKeyHashOf` in AppRecordSignatures. */
+export function keyHashOf(publicKeyB64url: string): string {
+  return crypto.createHash('sha256').update(Buffer.from(publicKeyB64url, 'base64url')).digest('hex');
+}
+
+export function isBrowserDevice(d: Pick<DeviceRecord, 'client'> | null | undefined): boolean {
+  return !!d && d.client === 'browser';
+}
+
+/** Every key field a record holds, for duplicate-key checks across phones and browsers. */
+function keysOf(d: DeviceRecord): string[] {
+  return [d.publicKey, d.browserPublicKey, d.presenceKey].filter((k): k is string => typeof k === 'string' && k.length > 0);
+}
+
+export const BROWSER_NOTIFYING_STUCK_MS = 30_000;
+export const BROWSER_SETUP_WINDOW_MS = 60 * 60_000;
+const BROWSER_SETUP_KEEP_MS = 24 * 60 * 60_000;
+
+/** One browser setup that reached record creation (§4.2 step 6): the hourly count and the one-record-per-session rule. */
+export interface BrowserSetupEntry { deviceId: string; at: number; session: string; returned?: boolean }
+
+export type CreatePendingBrowserResult =
+  | { ok: true; device: DeviceRecord }
+  | { ok: false; reason: 'pairing-paused' | 'duplicate-key' | 'session-used' }
+  | { ok: false; reason: 'too-many-browsers'; browsers: DeviceRecord[] }
+  | { ok: false; reason: 'too-many-setups'; nextAt: number };
 
 export interface PushRegistration {
   token: string | null;
+  /** Absent ⇒ `apns` (mobile-android-app §2.3). */
+  provider?: 'apns' | 'fcm';
   environment?: 'sandbox' | 'production';
   notifyTokenHash?: string;
   revision: number;
@@ -239,13 +368,23 @@ export type PushRegisterResult =
 
 function samePush(d: DeviceRecord, r: PushRegistration): boolean {
   if (r.token === null) return !d.pushToken;
-  return d.pushToken === r.token && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
+  // A provider change, even with the same token string, is a change (mobile-android-app §2.3).
+  return d.pushToken === r.token && (d.pushProvider ?? 'apns') === (r.provider ?? 'apns')
+    && d.pushEnvironment === r.environment && d.notifyTokenHash === r.notifyTokenHash;
 }
 
-interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[] }
+interface RegistryFile { devices: DeviceRecord[]; wrongCodeTimes?: number[]; browserSetups?: BrowserSetupEntry[] }
 
 export class DeviceRegistry {
   readonly file: string;
+  /**
+   * Called after a device becomes active (any pairing path). The trust journey uses it to tell every
+   * device that approves changes that a new device was paired (app-trust-approval §C). Never throws out.
+   */
+  onActivated: ((d: DeviceRecord) => void) | null = null;
+  private activated(d: DeviceRecord): void {
+    try { this.onActivated?.(d); } catch { /* @silent-fallback-ok: a notice is a courtesy; the pairing itself is recorded */ }
+  }
   constructor(stateDir: string, private readonly now: () => number = Date.now) {
     this.file = path.join(stateDir, 'state', 'mobile-devices.json');
   }
@@ -256,7 +395,10 @@ export class DeviceRegistry {
       const devices = Array.isArray(raw.devices) ? raw.devices.filter((d): d is DeviceRecord => !!d && typeof d === 'object' && typeof (d as DeviceRecord).id === 'string') : [];
       // Rows written by the token-era pairing log carry no key: they are legacy token pairings.
       for (const d of devices) if (!d.status) d.status = 'legacy-token';
-      return { devices, wrongCodeTimes: Array.isArray(raw.wrongCodeTimes) ? raw.wrongCodeTimes.filter((n) => typeof n === 'number') : [] };
+      const browserSetups = Array.isArray(raw.browserSetups)
+        ? raw.browserSetups.filter((e): e is BrowserSetupEntry => !!e && typeof e === 'object' && typeof (e as BrowserSetupEntry).deviceId === 'string' && typeof (e as BrowserSetupEntry).at === 'number' && typeof (e as BrowserSetupEntry).session === 'string')
+        : [];
+      return { devices, wrongCodeTimes: Array.isArray(raw.wrongCodeTimes) ? raw.wrongCodeTimes.filter((n) => typeof n === 'number') : [], ...(browserSetups.length ? { browserSetups } : {}) };
     } catch {
       // @silent-fallback-ok — a missing registry is an empty one; a corrupt one is reported by the caller's write
       return { devices: [], wrongCodeTimes: [] };
@@ -274,42 +416,118 @@ export class DeviceRegistry {
   private normalize(f: RegistryFile): RegistryFile {
     const t = this.now();
     for (const d of f.devices) {
-      if (d.status === 'pending' && d.expiresAt && Date.parse(d.expiresAt) <= t) d.status = 'expired';
+      // A browser record carrying an activation intent is never expired (§4.1): recovery decides it.
+      if (d.status === 'pending' && !d.activating && d.expiresAt && Date.parse(d.expiresAt) <= t) d.status = 'expired';
     }
     f.devices = f.devices.filter((d) => {
-      if (d.status === 'expired' || d.status === 'declined') {
+      if ((d.status === 'expired' || d.status === 'declined') && !d.activating && !(d.effects && d.effects.length)) {
         const at = Date.parse(d.declinedAt ?? d.expiresAt ?? d.pairedAt);
         return t - at < TERMINAL_KEEP_MS;
       }
       return true;
     });
-    const revoked = f.devices.filter((d) => d.status === 'revoked');
+    // Revoked records with unfinished effects are never pruned (§4.1).
+    const revoked = f.devices.filter((d) => d.status === 'revoked' && !(d.effects && d.effects.length));
     if (revoked.length > MAX_TOMBSTONES) {
       const drop = new Set(revoked.sort((a, b) => String(a.revokedAt).localeCompare(String(b.revokedAt))).slice(0, revoked.length - MAX_TOMBSTONES).map((d) => d.id));
       f.devices = f.devices.filter((d) => !drop.has(d.id));
     }
     f.wrongCodeTimes = (f.wrongCodeTimes ?? []).filter((w) => t - w < WRONG_BUDGET_WINDOW_MS);
+    if (f.browserSetups) {
+      f.browserSetups = f.browserSetups.filter((e) => t - e.at < BROWSER_SETUP_KEEP_MS);
+      if (!f.browserSetups.length) delete f.browserSetups;
+    }
     return f;
   }
 
   list(): DeviceRecord[] { return this.normalize(this.read()).devices; }
+
+  /**
+   * The registry read strictly: a missing file is empty, but a file that exists and cannot be read
+   * or parsed THROWS, so a damaged registry is never read as "no devices" and then overwritten
+   * (docs/specs/mac-app-creates-agent.md §A).
+   */
+  private readStrict(): RegistryFile {
+    let text: string;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { devices: [], wrongCodeTimes: [] };
+      throw err;
+    }
+    const raw = JSON.parse(text) as Partial<RegistryFile>;
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.devices)) throw new Error('mobile-devices.json has no devices list');
+    // The parsed value itself, never a second (lenient) read that could see a changed file.
+    const devices = raw.devices.filter((d): d is DeviceRecord => !!d && typeof d === 'object' && typeof (d as DeviceRecord).id === 'string');
+    for (const d of devices) if (!d.status) d.status = 'legacy-token';
+    return { ...raw, devices, wrongCodeTimes: Array.isArray(raw.wrongCodeTimes) ? raw.wrongCodeTimes.filter((n) => typeof n === 'number') : [] };
+  }
+
+  /** Whether any active record counts as an owner device (absent role means owner). */
+  static hasActiveOwner(devices: DeviceRecord[]): boolean {
+    return devices.some((d) => d.status === 'active' && (d.role === undefined || d.role === 'owner'));
+  }
+
+  /**
+   * The first owner device, created active in ONE registry write (mac-app-creates-agent §A, Enroll
+   * step 3). Refuses inside the same write when the key is held or an active owner exists. Throws
+   * (writing nothing) when the registry file exists but cannot be read.
+   */
+  createActiveLocalOwner(row: { id: string; publicKey: string; host: string; label: string | null; machineId: string | null; approvedAt: string }):
+    { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'owner-exists' } {
+    const f = this.normalize(this.readStrict());
+    if (f.devices.some((d) => keysOf(d).includes(row.publicKey) || d.id === row.id)) return { ok: false, reason: 'duplicate-key' };
+    if (DeviceRegistry.hasActiveOwner(f.devices)) return { ok: false, reason: 'owner-exists' };
+    const device: DeviceRecord = {
+      id: row.id, deviceName: row.label, label: row.label, pairedAt: row.approvedAt,
+      status: 'active', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
+      approvedAt: row.approvedAt, approvedVia: 'local-install', deviceKind: 'computer',
+      localBinding: { machineId: row.machineId },
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    this.activated(device);
+    return { ok: true, device };
+  }
+
+  /** `list()` read strictly (see `readStrict`). */
+  listLocalStrict(): DeviceRecord[] { return this.normalize(this.readStrict()).devices; }
+
+  /**
+   * Like `list()`, but a registry file that exists and cannot be read or parsed THROWS instead of
+   * reading as empty (docs/specs/mobile-pairing-outcome-notice.md §3.3: unknown is not an outcome).
+   */
+  listStrict(): DeviceRecord[] {
+    let text: string;
+    try { text = fs.readFileSync(this.file, 'utf-8'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const raw = JSON.parse(text) as { devices?: unknown };
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.devices)) throw new Error('mobile-devices.json has no devices list');
+    return this.list();
+  }
   get(id: string): DeviceRecord | null { return this.list().find((d) => d.id === id) ?? null; }
 
   pairingPaused(): boolean { return (this.normalize(this.read()).wrongCodeTimes ?? []).length >= WRONG_BUDGET; }
 
   /** Adds a pending device. Refuses a duplicate key, too many pending, or a paused budget. */
-  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' }):
+  createPending(row: { deviceName: string | null; label: string | null; publicKey: string; host: string; userId?: string | null; role?: 'owner' | 'msp' | 'team'; outcomeWatchId?: string; deviceKind?: 'computer'; addressKind?: 'same-network'; pinnedKeyHash?: string; admission?: 'at-computer' }):
     { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'too-many-pending' | 'pairing-paused' } {
     const f = this.normalize(this.read());
     if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
-    if (f.devices.some((d) => d.publicKey === row.publicKey)) return { ok: false, reason: 'duplicate-key' };
-    if (f.devices.filter((d) => d.status === 'pending').length >= MAX_PENDING) return { ok: false, reason: 'too-many-pending' };
+    if (f.devices.some((d) => keysOf(d).includes(row.publicKey))) return { ok: false, reason: 'duplicate-key' };
+    // Pending browsers do not count toward the phones' MAX_PENDING (§4.2 step 6).
+    if (f.devices.filter((d) => d.status === 'pending' && !isBrowserDevice(d)).length >= MAX_PENDING) return { ok: false, reason: 'too-many-pending' };
     const t = this.now();
     const device: DeviceRecord = {
       id: crypto.randomUUID(), deviceName: row.deviceName, label: row.label, pairedAt: new Date(t).toISOString(),
       status: 'pending', publicKey: row.publicKey, fingerprint: deviceFingerprint(row.publicKey), host: row.host,
       expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
       ...(row.userId ? { userId: row.userId } : {}),
+      ...(row.deviceKind ? { deviceKind: row.deviceKind } : {}),
+      ...(row.addressKind ? { addressKind: row.addressKind, ...(row.pinnedKeyHash ? { pinnedKeyHash: row.pinnedKeyHash } : {}) } : {}),
+      ...(row.admission ? { admission: row.admission } : {}),
+      // Pairing outcome notice (§3.2): joined in this same write, so no crash window separates them.
+      ...(row.outcomeWatchId ? { outcomeWatchId: row.outcomeWatchId, pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString() } : {}),
       // Only a non-owner role is written: absent already means owner, so an owner phone's record
       // stays byte-identical to the shape older builds read.
       ...(row.role && row.role !== 'owner' ? { role: row.role } : {}),
@@ -324,7 +542,7 @@ export class DeviceRegistry {
    * (the absent-means-owner shape). Returns null when this machine holds no such device; a revoked
    * device is never reassigned.
    */
-  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' }): DeviceRecord | null {
+  setPerson(id: string, person: { userId: string | null; role: 'owner' | 'msp' | 'team' }): DeviceRecord | null {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status === 'revoked') return null;
@@ -349,6 +567,23 @@ export class DeviceRegistry {
     return 'set';
   }
 
+  /**
+   * Replace an active device's presence key: ONLY for the local override of the device the Instar app
+   * paired on the agent's own computer (docs/specs/app-trust-approval.md §D). The caller has checked
+   * loopback, the local binding and the new key's signature. The old key is gone from the record (no
+   * signature by it verifies again). A key another record holds is refused.
+   */
+  replacePresenceKey(id: string, publicKey: string): 'replaced' | 'same' | 'conflict' | 'not-active' {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return 'not-active';
+    if (d.presenceKey === publicKey) return 'same';
+    if (deviceKeyOf(d) === publicKey || f.devices.some((x) => x.id !== id && keysOf(x).includes(publicKey))) return 'conflict';
+    d.presenceKey = publicKey;
+    this.write(f);
+    return 'replaced';
+  }
+
   remove(id: string): void {
     const f = this.read();
     f.devices = f.devices.filter((d) => d.id !== id);
@@ -360,6 +595,13 @@ export class DeviceRegistry {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d || d.status !== 'pending') return d ?? null;
+    // A browser record that already carries an activation intent was approved: a wrong code is
+    // refused without declining it, and activation goes through activateBrowser (§4.1, §4.2 step 10).
+    if (d.activating) return d;
+    if (outcome.ok && isBrowserDevice(d)) return d;
+    // The two at-computer fields never disagree: a phone let in at the computer is activated only as
+    // 'at-computer', and 'at-computer' activates only a phone admitted that way (admittedAtComputer).
+    if (outcome.ok && (d.admission === 'at-computer') !== (outcome.approvedVia === 'at-computer')) return d;
     if (outcome.ok) {
       d.status = 'active'; d.approvedAt = outcome.approvedAt ?? new Date(this.now()).toISOString(); d.approvedVia = outcome.approvedVia ?? 'telegram-dm';
       if (outcome.approvedBy) d.approvedBy = outcome.approvedBy;
@@ -373,6 +615,7 @@ export class DeviceRegistry {
       if (d.wrongCodes.length >= MAX_WRONG_PER_DEVICE) { d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); }
     }
     this.write(f);
+    if (outcome.ok) this.activated(d);
     return d;
   }
 
@@ -383,14 +626,275 @@ export class DeviceRegistry {
   expireAllPending(except?: ReadonlySet<string>): void {
     const f = this.normalize(this.read());
     let changed = false;
-    for (const d of f.devices) if (d.status === 'pending' && !except?.has(d.id)) { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
+    for (const d of f.devices) if (d.status === 'pending' && !d.activating && !except?.has(d.id)) { d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString(); changed = true; }
     if (changed) this.write(f);
   }
 
-  decline(id: string): void {
+  /**
+   * Decline a pending device. A record that already carries an activation intent has been approved,
+   * so it is left alone and answered 'already-approved' (§4.1: decline never races an approval).
+   */
+  decline(id: string): 'declined' | 'already-approved' | 'not-pending' {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
-    if (d && d.status === 'pending') { d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); this.write(f); }
+    if (!d) return 'not-pending';
+    if (d.activating || (d.status === 'active')) return 'already-approved';
+    if (d.status !== 'pending') return 'not-pending';
+    d.status = 'declined'; d.declinedAt = new Date(this.now()).toISOString(); this.write(f);
+    return 'declined';
+  }
+
+  // ── Browser devices (docs/specs/dashboard-conversations-browser-device.md §4.1, §4.2) ──────
+
+  /** A browser record on this host with this key, for the retry check of §4.2 step 4. */
+  findBrowserByKey(publicKey: string): DeviceRecord | null {
+    return this.list().find((d) => isBrowserDevice(d) && d.browserPublicKey === publicKey) ?? null;
+  }
+
+  /** Whether any record on this machine holds this key in any key field. */
+  holdsKey(publicKey: string): boolean {
+    return this.list().some((d) => keysOf(d).includes(publicKey));
+  }
+
+  /** Setups counted in the last hour, and the time the next one is allowed. */
+  browserSetupWindow(): { count: number; nextAt: number | null } {
+    const f = this.normalize(this.read());
+    const t = this.now();
+    const live = (f.browserSetups ?? []).filter((e) => !e.returned && t - e.at < BROWSER_SETUP_WINDOW_MS).sort((a, b) => a.at - b.at);
+    return { count: live.length, nextAt: live.length ? live[0]!.at + BROWSER_SETUP_WINDOW_MS : null };
+  }
+
+  /**
+   * Create a pending browser record (§4.2 steps 5, 6 and 8 in one synchronous read-modify-write):
+   * the operator session must not have created a record already, this machine's browsers must be
+   * below `maxBrowsers` (not counting the record `replaces` names), and fewer than
+   * `maxSetupsPerHour` setups were created in the last hour. The setup entry is written with the
+   * record, so concurrent setups cannot share the last slot or one session.
+   */
+  createPendingBrowser(row: {
+    browserPublicKey: string; host: string; deviceName: string; enrollmentId: string;
+    replaces?: { deviceId: string; keyHash: string } | null; session: string;
+    maxBrowsers: number; maxSetupsPerHour: number; ledgerRevokedKeyHashes?: ReadonlySet<string>;
+  }): CreatePendingBrowserResult {
+    const f = this.normalize(this.read());
+    const t = this.now();
+    if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
+    if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
+    const setups = f.browserSetups ?? [];
+    if (setups.some((e) => e.session === row.session)) return { ok: false, reason: 'session-used' };
+    const counted = f.devices.filter((d) => isBrowserDevice(d) && (d.status === 'pending' || d.status === 'active') && (d.role ?? 'owner') !== 'team'
+      && d.id !== row.replaces?.deviceId
+      && !(row.ledgerRevokedKeyHashes && d.browserPublicKey && row.ledgerRevokedKeyHashes.has(keyHashOf(d.browserPublicKey))));
+    if (counted.length >= row.maxBrowsers) return { ok: false, reason: 'too-many-browsers', browsers: counted };
+    const live = setups.filter((e) => !e.returned && t - e.at < BROWSER_SETUP_WINDOW_MS).sort((a, b) => a.at - b.at);
+    if (live.length >= row.maxSetupsPerHour) return { ok: false, reason: 'too-many-setups', nextAt: live[live.length - row.maxSetupsPerHour]!.at + BROWSER_SETUP_WINDOW_MS };
+    const id = crypto.randomUUID();
+    const device: DeviceRecord = {
+      id, deviceName: row.deviceName, label: null, pairedAt: new Date(t).toISOString(),
+      status: 'pending', client: 'browser', browserPublicKey: row.browserPublicKey,
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host, enrollmentId: row.enrollmentId,
+      setupState: 'notifying', notifyingSince: new Date(t).toISOString(),
+      expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
+      ...(row.replaces ? { replaces: { deviceId: row.replaces.deviceId, keyHash: row.replaces.keyHash } } : {}),
+    };
+    f.devices.unshift(device);
+    f.browserSetups = [...setups, { deviceId: id, at: t, session: row.session }];
+    this.write(f);
+    return { ok: true, device };
+  }
+
+  /**
+   * A member's computer, linked by their own phone (instar-document-viewer §3.6a): created active,
+   * documents-scoped, for that person. Refuses a key already held. The caller writes the ledger
+   * activation first and the team binding after.
+   */
+  createLinkedBrowser(row: { browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; linkedByDeviceId: string; linkedByKeyHash: string; linkExpiresAt: string; approvedAt: string }): { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' } {
+    const f = this.normalize(this.read());
+    if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
+    const device: DeviceRecord = {
+      id: crypto.randomUUID(), deviceName: 'Linked computer', label: null, pairedAt: row.approvedAt,
+      status: 'active', client: 'browser', browserPublicKey: row.browserPublicKey,
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      approvedAt: row.approvedAt, approvedVia: 'person-phone', approvedBy: row.linkedByDeviceId,
+      userId: row.userId, role: 'team', scope: row.scope, linkedByDeviceId: row.linkedByDeviceId, linkedByKeyHash: row.linkedByKeyHash, linkExpiresAt: row.linkExpiresAt,
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    this.activated(device);
+    return { ok: true, device };
+  }
+
+  /**
+   * A member's computer waiting for the owner's code (member-browser-any-computer §3.3.1): a pending
+   * browser record for that person, documents-scoped, its intended binding fixed now. One synchronous
+   * read-modify-write; refuses a key already held. It never counts toward the phones' pending limit.
+   */
+  createPendingComputer(row: { browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; deviceName: string; idleDays: number; endsBy: string }):
+    { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' | 'pairing-paused' } {
+    const f = this.normalize(this.read());
+    if ((f.wrongCodeTimes ?? []).length >= WRONG_BUDGET) return { ok: false, reason: 'pairing-paused' };
+    if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
+    const t = this.now();
+    const device: DeviceRecord = {
+      id: crypto.randomUUID(), deviceName: row.deviceName, label: null, pairedAt: new Date(t).toISOString(),
+      status: 'pending', client: 'browser', browserPublicKey: row.browserPublicKey, deviceKind: 'computer',
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      expiresAt: new Date(t + PENDING_TTL_MS).toISOString(), pendingDeadline: new Date(t + PENDING_TTL_MS).toISOString(), wrongCodes: [],
+      userId: row.userId, role: 'team', scope: row.scope, joinedVia: 'team-invite', joinIdleDays: row.idleDays, joinEndsBy: row.endsBy,
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    return { ok: true, device };
+  }
+
+  /** Activate a waiting joined computer (§3.3.2 step 4). Only a pending `team-invite` record; idempotent once active. */
+  activateJoinedComputer(id: string, linkExpiresAt: string, approvedAt: string): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.joinedVia !== 'team-invite') return null;
+    if (d.status === 'active') return d;
+    if (d.status !== 'pending') return null;
+    d.status = 'active'; d.approvedAt = approvedAt; d.approvedVia = 'team-invite'; d.linkExpiresAt = linkExpiresAt;
+    delete d.expiresAt; delete d.wrongCodes;
+    this.write(f);
+    this.activated(d);
+    return d;
+  }
+
+  /**
+   * Rebuild a joined computer's local record from its replicated binding (§3.5 adoption): this machine
+   * serves the computer's address and holds no record for it. Refuses a key already held.
+   */
+  adoptJoinedComputer(row: { deviceId: string; browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; linkedAt: string; linkExpiresAt: string; idleDays: number; endsBy: string }): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    if (f.devices.some((d) => d.id === row.deviceId || keysOf(d).includes(row.browserPublicKey))) return null;
+    const device: DeviceRecord = {
+      id: row.deviceId, deviceName: 'Computer', label: null, pairedAt: row.linkedAt,
+      status: 'active', client: 'browser', browserPublicKey: row.browserPublicKey, deviceKind: 'computer',
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      approvedAt: row.linkedAt, approvedVia: 'team-invite', userId: row.userId, role: 'team', scope: row.scope,
+      joinedVia: 'team-invite', joinIdleDays: row.idleDays, joinEndsBy: row.endsBy, linkExpiresAt: row.linkExpiresAt,
+    };
+    f.devices.unshift(device);
+    this.write(f);
+    this.activated(device);
+    return device;
+  }
+
+  /** Move a joined computer's local end to match its replicated renewals (§3.5). */
+  setLinkExpiry(id: string, linkExpiresAt: string): void {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.joinedVia !== 'team-invite' || d.linkExpiresAt === linkExpiresAt) return;
+    d.linkExpiresAt = linkExpiresAt;
+    this.write(f);
+  }
+
+  /** Move a browser's setup state; `onlyIf` is the state it must be in now. */
+  setSetupState(id: string, state: 'notifying' | 'awaiting', onlyIf: 'notifying' | 'awaiting'): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !isBrowserDevice(d) || d.status !== 'pending' || d.setupState !== onlyIf || d.activating) return false;
+    d.setupState = state;
+    if (state === 'awaiting') delete d.notifyingSince; else d.notifyingSince = new Date(this.now()).toISOString();
+    this.write(f);
+    return true;
+  }
+
+  /**
+   * Record the activation intent (§4.2 step 10.1). Writes only to a browser record that is still
+   * pending, not declined, carries no intent yet, and is `awaiting` — or, on the dashboard path,
+   * is the record this same request created (`ownRequest`). Returns false and writes nothing otherwise.
+   */
+  setActivating(id: string, intent: BrowserActivationIntent, opts: { ownRequest?: boolean } = {}): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !isBrowserDevice(d) || d.status !== 'pending' || d.activating || d.declinedAt) return false;
+    if (d.setupState !== 'awaiting' && !opts.ownRequest) return false;
+    d.activating = { approvedVia: intent.approvedVia, at: intent.at, effects: [...intent.effects], ...(intent.approvedBy ? { approvedBy: intent.approvedBy } : {}) };
+    this.write(f);
+    return true;
+  }
+
+  /**
+   * Make a browser active (§4.2 step 10.3) from a record carrying an intent — pending, or expired
+   * (only when an older version expired it in between) — never declined. Clears the intent and the
+   * setup state and writes the effects, in one write.
+   */
+  activateBrowser(id: string): DeviceRecord | null {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !isBrowserDevice(d) || !d.activating) return null;
+    if (d.status !== 'pending' && d.status !== 'expired') return null;
+    const intent = d.activating;
+    const t = this.now();
+    d.status = 'active'; d.approvedAt = intent.at; d.approvedVia = intent.approvedVia;
+    if (intent.approvedBy) d.approvedBy = intent.approvedBy;
+    const effects: BrowserEffect[] = intent.effects.map((kind) => ({ kind, attempts: 0, nextAt: new Date(t).toISOString() }));
+    if (effects.length) d.effects = effects; else delete d.effects;
+    delete d.activating; delete d.setupState; delete d.notifyingSince; delete d.wrongCodes; delete d.expiresAt;
+    this.write(f);
+    this.activated(d);
+    return d;
+  }
+
+  /** An intent whose ledger row was never written: the approval did not complete (§4.2 step 10 recovery). */
+  abandonActivation(id: string): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !d.activating || d.status === 'active' || d.status === 'revoked') return false;
+    delete d.activating; delete d.setupState; delete d.notifyingSince;
+    d.status = 'expired'; d.expiresAt = new Date(this.now()).toISOString();
+    this.write(f);
+    return true;
+  }
+
+  /** Replace a record's effects (an empty list removes the field). */
+  setEffects(id: string, effects: BrowserEffect[]): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d) return false;
+    if (effects.length) d.effects = effects; else delete d.effects;
+    this.write(f);
+    return true;
+  }
+
+  /** Write `lastSeenAt` at most once a minute; decided from the value just read. */
+  touch(id: string, at: number = this.now()): boolean {
+    const f = this.read();
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || d.status !== 'active') return false;
+    if (d.lastSeenAt && at - Date.parse(d.lastSeenAt) < 60_000) return false;
+    d.lastSeenAt = new Date(at).toISOString();
+    this.write(f);
+    return true;
+  }
+
+  /**
+   * Remove a browser setup that never reached approval: only a record still pending, still
+   * `notifying` and with no intent. Its setup entry is marked returned in the same write, so the
+   * hourly slot comes back; the session stays used.
+   */
+  removeIfStillSettingUp(id: string): boolean {
+    const f = this.normalize(this.read());
+    const d = f.devices.find((x) => x.id === id);
+    if (!d || !isBrowserDevice(d) || d.status !== 'pending' || d.setupState !== 'notifying' || d.activating) return false;
+    f.devices = f.devices.filter((x) => x.id !== id);
+    for (const e of f.browserSetups ?? []) if (e.deviceId === id) e.returned = true;
+    this.write(f);
+    return true;
+  }
+
+  /** Browser records stuck in `notifying` longer than `olderThanMs` (all of them at start-up, with 0). */
+  stuckNotifying(olderThanMs: number = BROWSER_NOTIFYING_STUCK_MS): DeviceRecord[] {
+    const t = this.now();
+    return this.list().filter((d) => isBrowserDevice(d) && d.status === 'pending' && d.setupState === 'notifying' && !d.activating
+      && t - Date.parse(d.notifyingSince ?? d.pairedAt) >= olderThanMs);
+  }
+
+  /** Browser records with work left: an intent or unfinished effects (§4.2 step 10 recovery). */
+  browserWork(): DeviceRecord[] {
+    return this.list().filter((d) => isBrowserDevice(d) && (!!d.activating || !!(d.effects && d.effects.length)));
   }
 
   /**
@@ -401,7 +905,8 @@ export class DeviceRegistry {
     const f = this.normalize(this.read());
     const d = f.devices.find((x) => x.id === id);
     if (!d) return false;
-    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); clearPush(d); this.write(f); }
+    // A revoked record can never be activated: its activation intent goes with it (second-pass review).
+    if (d.status !== 'revoked') { d.status = 'revoked'; d.revokedAt = at ?? new Date(this.now()).toISOString(); delete d.activating; clearPush(d); this.write(f); }
     return true;
   }
 
@@ -425,7 +930,10 @@ export class DeviceRegistry {
       if (r.token === null) clearPush(d);
       else {
         for (const other of f.devices) if (other.id !== d.id && other.pushToken === r.token) { clearPush(other); other.pushVersion = (other.pushVersion ?? 0) + 1; }
-        d.pushToken = r.token; d.pushEnvironment = r.environment; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushToken = r.token; d.notifyTokenHash = r.notifyTokenHash;
+        d.pushProvider = r.provider ?? 'apns';
+        // An FCM token carries no environment; one left from an APNs registration goes.
+        if (d.pushProvider === 'fcm') delete d.pushEnvironment; else d.pushEnvironment = r.environment;
         d.pushUpdatedAt = new Date(this.now()).toISOString();
       }
       d.pushVersion = (d.pushVersion ?? 0) + 1;
@@ -447,7 +955,7 @@ export class DeviceRegistry {
 }
 
 function clearPush(d: DeviceRecord): void {
-  delete d.pushToken; delete d.pushEnvironment; delete d.notifyTokenHash;
+  delete d.pushToken; delete d.pushProvider; delete d.pushEnvironment; delete d.notifyTokenHash;
   d.pushUpdatedAt = new Date().toISOString();
 }
 

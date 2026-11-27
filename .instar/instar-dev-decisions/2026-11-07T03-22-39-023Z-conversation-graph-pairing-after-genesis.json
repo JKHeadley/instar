@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-07T03:22:39.023Z",
+  "slug": "conversation-graph-pairing-after-genesis",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphCustodyPeerFrontier.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphDefaultSurface.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

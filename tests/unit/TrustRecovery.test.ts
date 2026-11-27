@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempProject } from '../helpers/setup.js';
 import type { TempProject } from '../helpers/setup.js';
 import { TrustRecovery } from '../../src/core/TrustRecovery.js';
+import { provedRecovery } from '../helpers/operatorProof.js';
 
 describe('TrustRecovery', () => {
   let project: TempProject;
@@ -94,7 +95,7 @@ describe('TrustRecovery', () => {
     it('does not suggest for recovered incidents', () => {
       const tr = new TrustRecovery({ stateDir: project.stateDir, recoveryThreshold: 3 });
       const incident = tr.recordIncident('gmail', 'write', 'log', 'approve-always', 'Error');
-      tr.acceptRecovery(incident.id);
+      provedRecovery(tr).acceptRecovery(incident.id);
 
       for (let i = 0; i < 5; i++) {
         expect(tr.recordSuccess('gmail', 'write')).toBeNull();
@@ -145,7 +146,7 @@ describe('TrustRecovery', () => {
     it('marks incident as recovered', () => {
       const tr = new TrustRecovery({ stateDir: project.stateDir });
       const incident = tr.recordIncident('gmail', 'write', 'log', 'approve-always', 'Error');
-      const result = tr.acceptRecovery(incident.id);
+      const result = provedRecovery(tr).acceptRecovery(incident.id);
 
       expect(result).not.toBeNull();
       expect(result!.recovered).toBe(true);
@@ -154,14 +155,14 @@ describe('TrustRecovery', () => {
 
     it('returns null for non-existent incident', () => {
       const tr = new TrustRecovery({ stateDir: project.stateDir });
-      expect(tr.acceptRecovery('INC-nonexistent')).toBeNull();
+      expect(provedRecovery(tr).acceptRecovery('INC-nonexistent')).toBeNull();
     });
 
     it('returns null for already recovered incident', () => {
       const tr = new TrustRecovery({ stateDir: project.stateDir });
       const incident = tr.recordIncident('gmail', 'write', 'log', 'approve-always', 'Error');
-      tr.acceptRecovery(incident.id);
-      expect(tr.acceptRecovery(incident.id)).toBeNull();
+      provedRecovery(tr).acceptRecovery(incident.id);
+      expect(provedRecovery(tr).acceptRecovery(incident.id)).toBeNull();
     });
   });
 
@@ -191,7 +192,7 @@ describe('TrustRecovery', () => {
       const tr = new TrustRecovery({ stateDir: project.stateDir });
       const i1 = tr.recordIncident('gmail', 'write', 'log', 'approve-always', 'Error 1');
       tr.recordIncident('github', 'delete', 'approve-first', 'approve-always', 'Error 2');
-      tr.acceptRecovery(i1.id);
+      provedRecovery(tr).acceptRecovery(i1.id);
 
       const active = tr.getActiveIncidents();
       expect(active.length).toBe(1);

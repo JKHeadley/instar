@@ -144,6 +144,8 @@ export interface StatusReconcilerConfig {
   /** The agent's own GitHub login (the only expected creator of the status). */
   agentLogin: string;
   operatorGhLogin: string | null;
+  /** `monitoring.localVerify.operatorGhLogin`, read live; wins over `operatorGhLogin` when wired. */
+  liveOperatorGhLogin?: () => string | null;
   machineId: string;
   /** `monitoring.localVerify.postStatuses`, read live (default false = dry-run). */
   postStatuses(): boolean;
@@ -556,7 +558,7 @@ export class StatusReconciler {
   private floorOf(pr: OpenPr, enabled: boolean): { eligible: boolean; floor: FloorMode; hold: string | null } {
     const eligible = checkEligibility(
       { author: pr.author ? { login: pr.author } : null, isCrossRepository: pr.isCrossRepository, headRefName: pr.headRefName, headRefOid: pr.headSha, baseRefName: pr.baseRefName, baseRefOid: '' },
-      { expectedGhLogin: this.cfg.agentLogin, operatorGhLogin: this.cfg.operatorGhLogin },
+      { expectedGhLogin: this.cfg.agentLogin, operatorGhLogin: this.cfg.liveOperatorGhLogin ? this.cfg.liveOperatorGhLogin() : this.cfg.operatorGhLogin },
     ).eligible;
     // The CONFIGURED floor decides which authority may say success. A disabled or
     // not-yet-effective local verifier is a HOLD on the local floor (pending, named),

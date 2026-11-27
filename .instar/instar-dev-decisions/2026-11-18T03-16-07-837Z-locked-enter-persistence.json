@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-18T03:16:07.837Z",
+  "slug": "locked-enter-persistence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift"
+    ],
+    "addedLines": 46,
+    "deletedLines": 7
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The existing pre-Enter transaction ignored missing ownership and failed persistence, permitting dispatch without successfully saved relock state. This fix enforces that existing safety prerequisite; no prior-PR causal attribution."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-originated secretType Enter boundary, not a self-triggered loop. Adds no producer, restart, kill, retry, notification or re-drive edge; existing guard convergence bounds and immediate field-abandonment behavior are unchanged."
+  },
+  "verdict": "pass"
+}

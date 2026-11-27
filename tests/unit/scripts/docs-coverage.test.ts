@@ -127,4 +127,32 @@ describe('docs-coverage script', () => {
     const md = fs.readFileSync(path.join(repo, '.instar/docs-coverage.md'), 'utf-8');
     expect(md).toContain('# Documentation Coverage Report');
   });
+  it('accepts a spaced spelling only for a nested command that src/cli.ts really declares', () => {
+    // Real nested commands (`mobile introducer`, `mobile add-phone`) and a real
+    // one-token hyphenated command (`set-claude-key`).
+    fs.writeFileSync(path.join(repo, 'src/cli.ts'), [
+      "program.command('set-claude-key').action(() => {});",
+      'const mobileCmd = program',
+      "  .command('mobile');",
+      'const introducerCmd = mobileCmd',
+      "  .command('introducer');",
+      "introducerCmd.command('show');",
+      "mobileCmd.command('add-phone');",
+    ].join('\n'));
+    for (const name of ['mobileIntroducer', 'mobileAddPhone', 'setClaudeKey']) {
+      fs.writeFileSync(path.join(repo, `src/commands/${name}.ts`), `// ${name}`);
+    }
+    fs.writeFileSync(path.join(repo, 'site/src/content/docs/features/cli.md'), [
+      'instar mobile introducer show --json',
+      'instar mobile add-phone',
+      // A spaced spelling of a one-token command must not count.
+      'instar set claude key',
+    ].join('\n'));
+    const r = runScript(repo);
+    const items = r.jsonReport.byType.command.items;
+    const coverage = (name: string) => items.find((x: any) => x.name === name).coverage;
+    expect(coverage('mobileIntroducer')).toBe('PARTIAL');
+    expect(coverage('mobileAddPhone')).toBe('PARTIAL');
+    expect(coverage('setClaudeKey')).toBe('UNDOCUMENTED');
+  });
 });

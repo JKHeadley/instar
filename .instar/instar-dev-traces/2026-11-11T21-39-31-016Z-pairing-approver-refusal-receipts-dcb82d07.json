@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "pairing-approver-refusal-receipts",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T21:39:31.016Z",
+  "artifactPath": "upgrades/side-effects/pairing-approver-refusal-receipts.md",
+  "artifactSha256": "4558fe510e0f8b644fa8b9dd177decc78f2ac14bb288a5f6370fdf57298abcf1",
+  "coveredFiles": [
+    "docs/eli16/pairing-approver-refusal-receipts.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "src/threadline/PairingInviteTelegram.ts",
+    "tests/e2e/threadline/pairing-handshake-production-path.test.ts",
+    "tests/integration/pairing-invite-telegram-routes.test.ts",
+    "tests/unit/threadline/PairingInviteTelegram.test.ts",
+    "upgrades/next/pairing-approver-refusal-receipts.md",
+    "upgrades/side-effects/pairing-approver-refusal-receipts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible wording and propagation of the existing pairing decision through an existing receipt field. No admission checks, permissions, configuration, persisted state or crypto changed.",
+  "eli16Path": "docs/eli16/pairing-approver-refusal-receipts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pairing-approver-refusal-receipts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-opus-code-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

@@ -107,6 +107,23 @@ export function requiredAckInstruction(ackRef: string): string {
   return `[server notice: another agent is waiting to hear that this message was received. Before starting work, acknowledge it: call threadline_ack with ackRefs ["${ackRef}"] and a one-line summary, in your own words, of what was asked. If the answer is quick, just reply instead.]`;
 }
 
+/**
+ * A session in another agent's place (tmux marker `PEER_PLACE_SESSION_MARKER`) has no MCP,
+ * so its notices name the reply script instead of `threadline_ack` (memory-privacy-agent-places §5).
+ */
+export { PEER_PLACE_SESSION_MARKER } from '../users/peerPlaceAdmission.js';
+
+/** The acknowledgment notice for a session in another agent's place. Fixed text and server handles only. */
+export function requiredAckInstructionForPlace(ackRef: string): string {
+  return `[server notice: another agent is waiting to hear that this message was received. Before starting work, acknowledge it: run .instar/scripts/threadline-reply.sh --ack ${ackRef} "<a one-line summary, in your own words, of what was asked>". If the answer is quick, just reply instead.]`;
+}
+
+/** The reminder for a session in another agent's place. Fixed text and server handles only. */
+export function requiredAckReminderForPlace(ackRefs: string[]): string {
+  const flags = ackRefs.map((r) => `--ack ${r}`).join(' ');
+  return `[server notice: another agent is still waiting to hear that its message was received. Run .instar/scripts/threadline-reply.sh ${flags} "<a one-line summary, in your own words, of what was asked>", or reply to it. Then carry on with your work.]`;
+}
+
 /** The reminder typed into a session. Fixed text and server handles only. */
 export function requiredAckReminder(ackRefs: string[]): string {
   return `[server notice: another agent is still waiting to hear that its message was received. Call threadline_ack with ackRefs ${JSON.stringify(ackRefs)} and a one-line summary, in your own words, of what was asked, or reply to it. Then carry on with your work.]`;

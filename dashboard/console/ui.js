@@ -51,7 +51,7 @@ export function note(text) { return el('p', { class: 'card-note', text }); }
 export const MACHINES_PAGE = '#/capacity/machines';
 /** A note about a machine that did not answer: anything that fails links to the problem. */
 export function machineIssue(text) {
-  return /did not answer|not answering|didn[’']t answer|Couldn['’]t read other machines/i.test(String(text || ''));
+  return /did not answer|not answering|didn[’']t answer|Couldn['’]t reach |Couldn['’]t read other machines/i.test(String(text || ''));
 }
 export function noteLinked(text) {
   if (!machineIssue(text)) return note(text);
@@ -100,6 +100,7 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
 
 /** 3. Detail sheet: bottom sheet on a phone, side panel on desktop. */
 let openSheet = null;
+let sheetGeneration = 0;
 export function sheet({ title, onClose }, ...content) {
   closeSheet();
   const priorOverflow = document.documentElement.style.overflow;
@@ -115,6 +116,7 @@ export function sheet({ title, onClose }, ...content) {
   const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
   document.addEventListener('keydown', onKey);
   openSheet = { root, onClose, onKey, priorOverflow };
+  sheetGeneration++;
   requestAnimationFrame(() => root.classList.add('open'));
   panel.querySelector('.sheet-close').focus({ preventScroll: true });
   return panel;
@@ -123,6 +125,7 @@ export function closeSheet() {
   if (!openSheet) return;
   const { root, onClose, onKey, priorOverflow } = openSheet;
   openSheet = null;
+  sheetGeneration++;
   document.documentElement.style.overflow = priorOverflow;
   document.removeEventListener('keydown', onKey);
   root.remove();
@@ -288,7 +291,7 @@ function restorePlace(root, place) {
       if (at) { n.scrollLeft = at[0]; n.scrollTop = at[1]; }
       if (place.focus === key && typeof n.focus === 'function') n.focus({ preventScroll: true });
     }
-    if (window.scrollX !== place.x || window.scrollY !== place.y) window.scrollTo(place.x, place.y);
+    restoreWindowScroll(place.x, place.y);
   } finally { restoring = false; }
 }
 
@@ -302,8 +305,19 @@ export function firstPaint(main, ...kids) {
 }
 
 let arrived = new Set();
+function restoreWindowScroll(x, y) {
+  if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+}
 /** A new page or link arrived (console route()): its deep-link scroll may run again. */
 export function newArrival() { arrived = new Set(); }
+/** Restore a Back destination once, never after a refresh or a later route. */
+export function arrivalScrollPosition(y, { key = 'page-position' } = {}) {
+  if (!Number.isFinite(y) || y < 0 || arrived.has(key)) return false;
+  arrived.add(key);
+  const arrival = arrived;
+  requestAnimationFrame(() => { if (arrived === arrival) restoreWindowScroll(0, y); });
+  return true;
+}
 /** The one way to scroll to a deep-linked section: once per arrival, per key, never on a repaint. */
 export function arrivalScroll(node, { key = 'page', open = false, block = 'start' } = {}) {
   if (!node || arrived.has(key)) return false;
@@ -336,7 +350,22 @@ let opSession = null; // { token, expiresAt }
 export function operatorSession() {
   return opSession && Date.parse(opSession.expiresAt) > Date.now() + 5000 ? opSession.token : null;
 }
-export function forgetOperatorSession() { opSession = null; }
+/** How long the PIN unlock in this page has left, in ms (0 when there is none). */
+export function operatorSessionRemainingMs() {
+  return opSession ? Math.max(0, Date.parse(opSession.expiresAt) - Date.now() - 5000) : 0;
+}
+export function forgetOperatorSession() {
+  opSession = null;
+  window.dispatchEvent(new window.Event('instar-owner-locked'));
+}
+/** Keep the server's human-unlock proof in page memory only, never storage. */
+export function rememberOperatorSession(data) {
+  if (typeof data?.operatorSessionToken !== 'string' || !data.operatorSessionToken
+      || typeof data.operatorSessionExpiresAt !== 'string' || !Number.isFinite(Date.parse(data.operatorSessionExpiresAt))
+      || Date.parse(data.operatorSessionExpiresAt) <= Date.now() + 5000) return false;
+  opSession = { token: data.operatorSessionToken, expiresAt: data.operatorSessionExpiresAt };
+  return true;
+}
 
 /**
  * Asks the server whether a PIN typed on this connection can be accepted.
@@ -375,9 +404,15 @@ export function refusedUnlock(check) {
   );
 }
 
-export function askPin({ title, explain, adapter = 'body' }) {
-  if (adapter === 'session' && operatorSession()) return Promise.resolve({ session: operatorSession() });
+let latestPinCheck = 0;
+export function askPin({ title, explain, adapter = 'body', fresh = false, isCurrent = () => true }) {
+  if (!isCurrent()) return Promise.resolve(null);
+  const pinCheck = ++latestPinCheck;
+  const startingSheet = sheetGeneration;
+  // `fresh`: ask even while an unlock is held, for a long action that would outlive the one it has.
+  if (adapter === 'session' && operatorSession() && !fresh) return Promise.resolve({ session: operatorSession() });
   return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!isCurrent() || pinCheck !== latestPinCheck || startingSheet !== sheetGeneration) { resolve(null); return; }
     if (!check.accepted) {
       sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
       return;
@@ -388,8 +423,10 @@ export function askPin({ title, explain, adapter = 'body' }) {
     let settled = false;
     const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
     const form = el('form', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: explain || 'This needs your dashboard PIN.' }), input, go, err);
+    const stillOpen = () => isCurrent() && panel.isConnected;
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
+      if (!stillOpen() || go.disabled) return;
       const pin = input.value;
       if (!pin) { err.textContent = 'Type your PIN.'; return; }
       if (adapter === 'body') { input.value = ''; finish({ pin }); closeSheet(); return; }
@@ -398,15 +435,19 @@ export function askPin({ title, explain, adapter = 'body' }) {
         const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
         input.value = '';
         const d = await r.json().catch(() => ({}));
+        if (!stillOpen()) { finish(null); return; }
         if (!r.ok || typeof d.operatorSessionToken !== 'string' || !d.operatorSessionToken) {
           err.textContent = d.error ? `${d.error}${typeof d.attemptsRemaining === 'number' ? ` · ${d.attemptsRemaining} tries left` : ''}` : 'That did not work.';
           go.disabled = false; input.focus(); return;
         }
         opSession = { token: d.operatorSessionToken, expiresAt: d.operatorSessionExpiresAt || new Date(Date.now() + 10 * 60000).toISOString() };
         finish({ session: opSession.token }); closeSheet();
-      } catch { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+      } catch {
+        if (stillOpen()) { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+        else finish(null);
+      }
     });
-    sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
-    setTimeout(() => input.focus(), 50);
+    const panel = sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
+    setTimeout(() => { if (stillOpen()) input.focus(); }, 50);
   }));
 }

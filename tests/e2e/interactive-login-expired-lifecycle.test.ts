@@ -24,8 +24,8 @@ const SERVER = fs.readFileSync(path.join(__dirname, '../../src/commands/server.t
 
 describe('interactive expired-login recovery — production wiring', () => {
   it('server.ts wires the rerouted sink and the interactive sink to the real authorities', () => {
-    expect(SERVER).toMatch(/setLoginExpiredSink\(\(input\) => \{[\s\S]{0,200}if \(!input\.messageLed\) \{ quotaPoller\.noteCliLoginExpired\(input\); return; \}\s*void quotaPoller\.observeCliLoginExpired\(input\)/);
-    expect(SERVER).toMatch(/new InteractiveLoginExpiredRecovery\(\{\s*observe: \(input\) => quotaPoller\.observeCliLoginExpired\(input\)/);
+    expect(SERVER).toMatch(/setLoginExpiredSink\(\(input\) => \{[\s\S]{0,200}if \(!input\.messageLed\) \{ quotaPoller\.noteCliLoginExpired\(input\); return; \}\s*void quotaPoller\.observeCliLoginExpired\(input, \{ awaitProbeMs: 20_000 \}\)/);
+    expect(SERVER).toMatch(/new InteractiveLoginExpiredRecovery\(\{\s*observe: \(input, opts\) => quotaPoller\.observeCliLoginExpired\(input, opts \?\? \{\}\)/);
     expect(SERVER).toMatch(/return _quotaAwareScheduler\.onQuotaPressure\(args\)/);
     expect(SERVER).toMatch(/sessionManager\.setInteractiveLoginExpiredSink\(\(signal\) => interactiveLoginExpiredRecovery\.handle\(signal\)\)/);
     expect(SERVER).toContain("'subscriptionPool.loginExpiredSwap.enabled'");

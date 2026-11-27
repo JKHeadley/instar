@@ -242,6 +242,14 @@ export class SessionRecovery extends EventEmitter {
     this.loadState();
   }
 
+  /** Last rung for a dead conversation with an unanswered message. The
+   * platform respawner carries recent history and clears a bad resume UUID. */
+  async restartStoppedConversation(topicId: number, sessionName: string): Promise<boolean> {
+    if (!this.deps.respawnSessionFresh) return false;
+    await this.deps.respawnSessionFresh(topicId, sessionName);
+    return true;
+  }
+
   /**
    * Check a session for mechanical failures and attempt recovery.
    * Should be called from SessionMonitor.checkSession() before LLM triage.

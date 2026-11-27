@@ -7,7 +7,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { getInitDefaults } from '../../src/config/ConfigDefaults.js';
+import { LocalLeaseStore } from '../../src/core/LocalLeaseStore.js';
 
 const server = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
@@ -15,6 +17,27 @@ describe('lease takeover wiring in server.ts', () => {
   it('the switch ships dark', () => {
     const d = getInitDefaults('standalone') as { multiMachine?: { leaseSelfHeal?: { soloCaptainHold?: { enabled?: boolean } } } };
     expect(d.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled).toBe(false);
+  });
+  it('the store a pair with no git uses reports that it shares nothing, so a restart asks first', () => {
+    const store = new LocalLeaseStore({ filePath: path.join(process.cwd(), 'unused-lease-wiring.json') });
+    expect(store.hasNoSharedMedium()).toBe(true);
+    expect(server).toMatch(/leaseStore = new LocalLeaseStore\(\{/);
+    // A peer's signed pull reaches the holder through this one route, and has to count there.
+    const agentServer = fs.readFileSync(path.join(process.cwd(), 'src/server/AgentServer.ts'), 'utf-8');
+    expect(agentServer).toMatch(/onLeasePullRequest: \(\) => \{\s*options\.coordinator\?\.noteLeasePeerPull\(\);\s*return options\.onLeasePullRequest\?\.\(\) \?\? null;/);
+    const source = ts.createSourceFile('server.ts', server, ts.ScriptTarget.Latest, true);
+    function bindsLiveCoordinator(node: ts.Node): boolean {
+      if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'AgentServer') {
+        const options = node.arguments?.[0];
+        if (!options || !ts.isObjectLiteralExpression(options)) return false;
+        return options.properties.some(property =>
+          ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+          property.name.text === 'coordinator' &&
+          /^coordinator\.enabled\s*\?\s*coordinator\s*:/.test(property.initializer.getText(source)));
+      }
+      return ts.forEachChild(node, child => bindsLiveCoordinator(child) || undefined) === true;
+    }
+    expect(bindsLiveCoordinator(source)).toBe(true);
   });
   it('the coordinator receives survivorMayHold', () => {
     const start = server.indexOf('new LeaseCoordinator({');

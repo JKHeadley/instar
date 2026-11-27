@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "feedback-attempt-resilience",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-13T10:49:09.988Z",
+  "artifactPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "artifactSha256": "cca2b663e7166388c500b934f8544d47f6b63a558722a530c6bbe49239f8a12f",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-13T08-41-46-932Z-feedback-attempt-resilience.json",
+    ".instar/instar-dev-decisions/2026-11-13T10-35-25-062Z-feedback-attempt-resilience.json",
+    ".instar/instar-dev-decisions/2026-11-13T10-45-57-981Z-feedback-attempt-resilience.json",
+    ".instar/instar-dev-decisions/2026-11-13T10-46-57-941Z-feedback-attempt-resilience.json",
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/executorSession.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-attempt-resilience.md",
+    "upgrades/side-effects/feedback-attempt-resilience.md",
+    "upgrades/side-effects/feedback-attempt-resilience.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow executor fixes that only stop discarding or skipping attempts; no new authority; revert fully undoes. Moved onto main independent of #3119.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

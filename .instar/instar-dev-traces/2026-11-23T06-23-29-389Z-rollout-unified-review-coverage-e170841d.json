@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "rollout-unified-review-coverage",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-23T06:23:29.389Z",
+  "artifactPath": "upgrades/side-effects/rollout-unified-review-coverage.md",
+  "artifactSha256": "0859468cf809075d85db32dfdd614ae3eaa2979abf8adc606ffc0d4c185ee622",
+  "coveredFiles": [
+    "docs/specs/rollout-unified-review-coverage.eli16.md",
+    "tests/e2e/rollout-async-lifecycle.test.ts",
+    "tests/integration/rollout-scan-responsiveness.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/feature-rollout-async.test.ts",
+    "tests/unit/feature-rollout-git-async.test.ts",
+    "tests/unit/featureRolloutScan.test.ts",
+    "upgrades/side-effects/rollout-unified-review-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Metadata-only unified independent-review coverage. All production source and test bytes remain identical to the qualified passing head; the legitimate Windows skip and normal exact-head gate remain intact.",
+  "eli16Path": "docs/specs/rollout-unified-review-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/rollout-unified-review-coverage.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This commit records one completed independent review. It changes no self-triggered controller, runtime, test, retry or authority."
+  }
+}

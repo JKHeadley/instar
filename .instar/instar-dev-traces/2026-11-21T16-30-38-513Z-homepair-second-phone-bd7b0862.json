@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "homepair-second-phone",
+  "sessionId": "3baab194-1525-46e9-b5f9-9a9e8d6465e3",
+  "timestamp": "2026-11-21T16:30:38.513Z",
+  "artifactPath": "upgrades/side-effects/homepair-second-phone.md",
+  "artifactSha256": "5bd3b7f4d1e93fd3bb93efe6d6b0fec5e46efee1c5b1e98622619f6d726ba310",
+  "coveredFiles": [
+    "docs/specs/homepair-second-phone.eli16.md",
+    "src/commands/mobileAddPhone.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/phoneSetupRoutes.ts",
+    "tests/integration/same-network-first-phone.test.ts",
+    "tests/unit/owner-phones-other-machines.test.ts",
+    "tests/unit/phone-setup-store.test.ts",
+    "upgrades/next/homepair-second-phone.md",
+    "upgrades/side-effects/homepair-second-phone.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Security hardening of the existing home-pairing ceremony: ends a setup on a second phone and counts phones on every machine; no new route, config or migration; independent review concurred.",
+  "eli16Path": "docs/specs/homepair-second-phone.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/homepair-second-phone.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

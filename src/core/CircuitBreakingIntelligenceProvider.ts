@@ -39,6 +39,7 @@ import {
   bumpProvenanceStrippedAtBreaker,
   bumpInboundCorrelationIdDiscarded,
 } from './decisionQualityTypes.js';
+import { classifyLlmError } from './llmErrorClass.js';
 
 /**
  * Minimal structural recorder the funnel writes per-call metrics to. Kept as a
@@ -77,6 +78,8 @@ export interface FeatureMetricsRecorder {
     framework?: string;
     /** Correlates a 'fired' verdict to a downstream record (e.g. a commitment id). */
     verdictId?: string;
+    /** CMT-2289: fixed error class on an 'error' row (llmErrorClass.ts). Never message text. */
+    errorClass?: string;
     /** Job-cost attribution (job-cost-reduction §9.1), passed through from options.attribution. */
     jobSlug?: string;
     machineId?: string;
@@ -94,6 +97,33 @@ export function setFeatureMetricsRecorder(recorder: FeatureMetricsRecorder | nul
 }
 export function getFeatureMetricsRecorder(): FeatureMetricsRecorder | null {
   return _featureMetricsRecorder;
+}
+
+// ── unified usage ledger invocation sink (docs/specs/unified-usage-ledger.md, Slice 2) ──
+//
+// One `invocation` record per funnel call that actually ran (never for a shed
+// call). Kept structural so core/ never imports monitoring/. The sink must be a
+// bounded, non-blocking enqueue; a throw here is swallowed and can never change
+// what evaluate() returns.
+export interface UsageInvocationRecord {
+  feature: string;
+  framework: string | null;
+  model: string | null;
+  startedAt: number;
+  endedAt: number;
+  outcome: 'ok' | 'error';
+  usage: import('./types.js').IntelligenceUsageDetail | null;
+  jobSlug: string | null;
+  runId: string | null;
+}
+let _usageInvocationSink: ((rec: UsageInvocationRecord) => void) | null = null;
+export function setUsageInvocationSink(sink: ((rec: UsageInvocationRecord) => void) | null): void {
+  _usageInvocationSink = sink;
+}
+function emitUsageInvocation(rec: UsageInvocationRecord): void {
+  const sink = _usageInvocationSink;
+  if (!sink) return;
+  try { sink(rec); } catch { /* @silent-fallback-ok: usage recording is observational and must never affect the call */ }
 }
 
 // ── unlabeled-call runtime backstop (token-audit-completeness, Slice 3) ─────
@@ -167,6 +197,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
       model?: string;
       framework?: string;
       verdictId?: string;
+      errorClass?: string;
     },
     job?: { jobSlug?: string; machineId?: string; runId?: string },
   ): void {
@@ -183,6 +214,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         tokensCached: extra?.tokensCached,
         model: extra?.model, framework: extra?.framework,
         verdictId: extra?.verdictId,
+        ...(extra?.errorClass ? { errorClass: extra.errorClass } : {}),
         ...(job?.jobSlug ? { jobSlug: job.jobSlug, machineId: job.machineId, runId: job.runId } : {}),
       });
     } catch {
@@ -251,7 +283,7 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
     // Capture token usage the underlying provider surfaces, composing with
     // any caller-supplied onUsage so we don't clobber it. This is the only
     // path token cost reaches the metrics ledger (Iris-audit item 1).
-    let usage: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
+    let usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; detail?: import('./types.js').IntelligenceUsageDetail } | undefined;
     // Observable Intelligence: capture the resolved provider/model the same
     // way, composing with any caller-supplied onModel. Recorded for EVERY
     // provider, including those that report no token usage. Declared outside the
@@ -316,6 +348,12 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         },
         options?.attribution,
       );
+      emitUsageInvocation({
+        feature, framework: resolved?.framework ?? this.inner.frameworkId ?? null, model: resolved?.model ?? null,
+        startedAt, endedAt: Date.now(), outcome: 'ok',
+        usage: usage ? (usage.detail ?? { input: Math.max(0, usage.inputTokens - (usage.cachedTokens ?? 0)), cacheRead: usage.cachedTokens ?? null, cacheWrite: null, output: usage.outputTokens }) : null,
+        jobSlug: options?.attribution?.jobSlug ?? null, runId: options?.attribution?.runId ?? null,
+      });
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -332,7 +370,15 @@ export class CircuitBreakingIntelligenceProvider implements IntelligenceProvider
         model: resolved?.model,
         framework: resolved?.framework,
         verdictId: correlationId,
+        // CMT-2289: WHY it failed, as a fixed label — the message itself is never stored.
+        errorClass: classifyLlmError(err),
       }, options?.attribution);
+      emitUsageInvocation({
+        feature, framework: resolved?.framework ?? this.inner.frameworkId ?? null, model: resolved?.model ?? null,
+        startedAt, endedAt: Date.now(), outcome: 'error',
+        usage: usage ? (usage.detail ?? { input: Math.max(0, usage.inputTokens - (usage.cachedTokens ?? 0)), cacheRead: usage.cachedTokens ?? null, cacheWrite: null, output: usage.outputTokens }) : null,
+        jobSlug: options?.attribution?.jobSlug ?? null, runId: options?.attribution?.runId ?? null,
+      });
       if (err instanceof RateLimitError || parsed.isLimit) {
         // Pass the parsed retry-after hint through so the breaker can shorten
         // the open window when the provider told us when it resets.

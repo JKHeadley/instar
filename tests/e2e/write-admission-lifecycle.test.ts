@@ -5,8 +5,9 @@
  * (docs/specs/standby-write-reconciliation.md §8 Tier 3).
  *
  * Mirrors the PRODUCTION wiring contract in src/commands/server.ts:
- *  - the flag resolves through the REAL resolveDevAgentGate (dev agent → live,
- *    fleet → dark; explicit enabled:false force-darks a dev agent);
+ *  - the flag resolves through the REAL resolveWriteAdmissionGate (dev agent → live;
+ *    fleet → live dry-run while the owned Conversations graph needs it, dark
+ *    when that graph is off; explicit enabled:false force-darks a dev agent);
  *  - LIVE: WriteAdmission is constructed with the REAL registry builder
  *    (buildWriteDomainRegistry — the map the server wires), boot-warmed from a
  *    REAL LocalSessionOwnershipStore on disk, one-way-attached to a REAL
@@ -28,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
-import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
+import { resolveWriteAdmissionGate } from '../../src/core/writeAdmissionGate.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { WriteAdmission, WriteRefusedError } from '../../src/core/WriteAdmission.js';
@@ -90,7 +91,7 @@ function productionInit(
     inventoryComplete?: boolean;
   } = {},
 ): WriteAdmission | null {
-  if (!resolveDevAgentGate(config.multiMachine?.writeAdmission?.enabled, config)) return null;
+  if (!resolveWriteAdmissionGate(config as never).enabled) return null;
   const waCfg = config.multiMachine?.writeAdmission;
   const wa = new WriteAdmission(
     {
@@ -174,10 +175,18 @@ describe('standby-write reconciliation — E2E lifecycle (feature is alive)', ()
     }
   });
 
-  it('FLEET (gate dark): never constructed — route 503s, StateManager keeps the legacy blanket, zero presence', async () => {
+  it('FLEET with Conversations on: constructed dry-run so the shared graph can open', () => {
     const stateDir = path.join(tmp(), '.instar');
     const state = new StateManager(stateDir);
     const wa = productionInit({}, state, stateDir);
+    expect(wa).not.toBeNull();
+    expect(wa!.isLive).toBe(false);
+  });
+
+  it('FLEET (gate dark, Conversations graph off): never constructed — route 503s, StateManager keeps the legacy blanket, zero presence', async () => {
+    const stateDir = path.join(tmp(), '.instar');
+    const state = new StateManager(stateDir);
+    const wa = productionInit({ multiMachine: { conversationGraph: { storage: { enabled: false } } } } as never, state, stateDir);
     expect(wa).toBeNull();
     expect(state.writeAdmission).toBeNull();
 

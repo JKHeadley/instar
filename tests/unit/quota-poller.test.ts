@@ -504,6 +504,59 @@ describe('QuotaPoller', () => {
     expect(pool.get('claude-1')!.status).toBe('active');
   });
 
+  it('restores a rate-limited account after its exhausted window resets and a fresh read has headroom', async () => {
+    const now = Date.parse('2026-11-07T10:00:00Z');
+    pool.addFixture({ ...ACCT, status: 'rate-limited' });
+    pool.update(ACCT.id, { lastQuota: {
+      fiveHour: { utilizationPct: 100, resetsAt: '2026-11-07T09:00:00Z' },
+      sevenDay: { utilizationPct: 4, resetsAt: '2026-11-14T00:00:00Z' },
+    } });
+    const p = new QuotaPoller({
+      pool, now: () => now, tokenResolver: () => 'sk-ant-oat01-x',
+      fetchImpl: okFetch({
+        five_hour: { utilization: 2, resets_at: '2026-11-07T14:00:00Z' },
+        seven_day: { utilization: 4, resets_at: '2026-11-14T00:00:00Z' },
+      }),
+    });
+    await p.pollAll();
+    expect(pool.get(ACCT.id)?.status).toBe('active');
+  });
+
+  it.each([
+    ['still exhausted', { five_hour: { utilization: 100, resets_at: '2026-11-07T14:00:00Z' }, seven_day: { utilization: 4, resets_at: '2026-11-14T00:00:00Z' } }, '2026-11-07T09:00:00Z'],
+    ['reset still pending', { five_hour: { utilization: 2, resets_at: '2026-11-07T14:00:00Z' }, seven_day: { utilization: 4, resets_at: '2026-11-14T00:00:00Z' } }, '2026-11-07T11:00:00Z'],
+    ['short window absent', { seven_day: { utilization: 4, resets_at: '2026-11-14T00:00:00Z' } }, '2026-11-07T09:00:00Z'],
+    ['short utilization absent', { five_hour: { resets_at: '2026-11-07T14:00:00Z' }, seven_day: { utilization: 4, resets_at: '2026-11-14T00:00:00Z' } }, '2026-11-07T09:00:00Z'],
+  ])('keeps a rate-limited account held when %s', async (_case, body, priorReset) => {
+    pool.addFixture({ ...ACCT, status: 'rate-limited' });
+    pool.update(ACCT.id, { lastQuota: { fiveHour: { utilizationPct: 100, resetsAt: priorReset } } });
+    const p = new QuotaPoller({
+      pool, now: () => Date.parse('2026-11-07T10:00:00Z'),
+      fetchImpl: okFetch(body), tokenResolver: () => 'sk-ant-oat01-x',
+    });
+    await p.pollAll();
+    expect(pool.get(ACCT.id)?.status).toBe('rate-limited');
+  });
+
+  it('does not use a rollout fallback without a short window to restore a rate-limited account', async () => {
+    pool.addFixture({ ...ACCT, id: 'codex-limited', provider: 'openai', framework: 'codex-cli', status: 'rate-limited' });
+    const p = new QuotaPoller({ pool, now: () => Date.parse('2026-11-07T10:00:00Z'), codexUsageReader: async () => ({
+      source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+      capturedAt: '2026-11-07T09:59:00Z', model: null, planType: 'pro', rateLimitReachedType: null,
+      primary: { usedPercent: 4, remainingPercent: 96, windowMinutes: 10080, resetsAt: 0, resetsAtIso: '2026-11-14T00:00:00Z', resetsInSeconds: 1 },
+      secondary: null,
+    }) });
+    await p.pollAll();
+    expect(pool.get('codex-limited')?.status).toBe('rate-limited');
+  });
+
+  it.each(['disabled', 'warming'] as const)('does not clear %s on a healthy quota read', async (status) => {
+    pool.addFixture({ ...ACCT, status });
+    const p = new QuotaPoller({ pool, fetchImpl: okFetch(LIVE_USAGE_BODY), tokenResolver: () => 'sk-ant-oat01-x' });
+    await p.pollAll();
+    expect(pool.get(ACCT.id)?.status).toBe(status);
+  });
+
   // ── burn rate ─────────────────────────────────────────────────────
   it('burnRate is null until two distinct reads, then is measured %/hr', async () => {
     // Two reads one hour apart: 7-day 71 -> 73 = +2 pts/hr.

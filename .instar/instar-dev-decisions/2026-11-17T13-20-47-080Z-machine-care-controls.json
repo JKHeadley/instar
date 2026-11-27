@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-17T13:20:47.080Z",
+  "slug": "machine-care-controls",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 158,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/machineMaintenance/DrainRehearsal.ts",
+      "src/monitoring/machineMaintenance/HostMaintenanceStore.ts",
+      "src/monitoring/machineMaintenance/planner.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 150,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Operator controls only withhold or move the scheduled restart; the restart itself stays under the machine-restart Eternal Sentinel in the convergence ratchet"
+    }
+  },
+  "verdict": "pass"
+}

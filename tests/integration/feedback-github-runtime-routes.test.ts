@@ -19,6 +19,47 @@ afterEach(() => {
 });
 
 describe('feedback runtime authentication over HTTP', () => {
+  it('the real executor registers its restart hold with the updater', async () => {
+    const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
+    f.vault.set('github_token', 'fixture-vault-identity');
+    const holds = new Map<string, () => unknown[]>();
+    const server = f.createServer({ autoUpdater: {
+      getStatus: () => null,
+      setRestartHold: (key: string, provider: () => unknown[]) => { holds.set(key, provider); },
+    } });
+    try {
+      await server.start();
+      expect(holds.get('feedback-executor')?.()).toEqual([]);
+    } finally { await server.stop(); }
+  });
+
+  it('the real server passes Local Verify\'s verifier-hold state into the executor\'s restart hold', async () => {
+    const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
+    f.vault.set('github_token', 'fixture-vault-identity');
+    let needs = false;
+    const localVerify = { restartNeededForQueuedWork: () => needs };
+    const holds = new Map<string, () => unknown[]>();
+    const server = f.createServer({ localVerify, autoUpdater: { getStatus: () => null, setRestartHold: (key: string, provider: () => unknown[]) => { holds.set(key, provider); } } });
+    try {
+      await server.start();
+      const executor = (server as unknown as { feedbackExecute: { service: { restartHoldYields(): boolean } } }).feedbackExecute.service;
+      expect(executor.restartHoldYields()).toBe(false);
+      needs = true;
+      expect(executor.restartHoldYields()).toBe(true);
+      expect(holds.get('feedback-executor')?.()).toEqual([]); // nothing in setup or verification: nothing to yield
+    } finally { await server.stop(); }
+  });
+
+  it('a server without Local Verify keeps the attempt hold (the executor never yields to a service that is not there)', async () => {
+    const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
+    const server = f.createServer();
+    try {
+      await server.start();
+      const executor = (server as unknown as { feedbackExecute: { service: { restartHoldYields(): boolean } } }).feedbackExecute.service;
+      expect(executor.restartHoldYields()).toBe(false);
+    } finally { await server.stop(); }
+  });
+
   it.each([true, false])('vault identity present=%s: the real executor reports the matching availability', async (present) => {
     const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
     vi.stubEnv('GH_TOKEN', 'fixture-stale-ambient'); vi.stubEnv('GITHUB_TOKEN', '');

@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   eli16:
@@ -31,6 +32,11 @@ jobs:
           node-version: '22'
       - name: PR description must include an ELI16 overview
         env:
+          # The script re-reads the LIVE PR (title/body/author) from the API so a
+          # re-run of an old run never re-judges a stale body; these payload
+          # values are only the fallback when that read fails (logged source=).
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}

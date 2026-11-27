@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "media-disk-tests",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-08T00:05:01.801Z",
+  "artifactPath": "upgrades/side-effects/media-disk-tests.md",
+  "artifactSha256": "0aa5af0805b9bf0f642c50ff274a1b4c62bd47464ceb10827e6dd6b886664871",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/core/AppConversationService.ts",
+    "tests/unit/app-media-store.test.ts",
+    "tests/unit/app-voice-transcript-event.test.ts",
+    "tests/unit/app-voice-transcription.test.ts",
+    "upgrades/side-effects/media-disk-tests.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

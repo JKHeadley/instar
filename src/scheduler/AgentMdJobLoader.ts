@@ -26,6 +26,7 @@ import type {
   ModelTier,
 } from '../core/types.js';
 import { validJobDependencyPath } from '../core/JobDependency.js';
+import { THINKING_MODES, type ThinkingMode } from '../core/topicProfileValidation.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import {
   readLockFile,
@@ -81,6 +82,10 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
   'description',
   'toolAllowlist',
+  // EVO-008: the author's explicit enrolment — apply this job's toolAllowlist exactly
+  // (even a bare ["Read"]) and refuse the launch rather than run it unapplied. Read
+  // directly by JobScheduler.resolveToolEnforcement.
+  'toolAllowlistEnforce',
   'grounding',
   'notificationMode',
   'viewMetadata',
@@ -93,11 +98,16 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'framework',
   'frameworkModel',
   'leanContext',
+  // Per-job thinking mode (job-launch-intent-record §1) — decorative here; the manifest is authority.
+  'thinkingMode',
   'enabled',
   'tags',
   'unrestrictedTools',
   'gate',
   'telegramNotify',
+  // Where a report goes (docs/specs/backup-email-sending.md). An older instar withholds a job with this key, so
+  // the jobs.json form is documented first and this one needs this version or later.
+  'deliver',
   'topicId',
   'machines',
   'supervision',
@@ -162,6 +172,8 @@ export interface PerSlugManifest {
   framework?: IntelligenceFramework;
   frameworkModel?: string;
   leanContext?: boolean;
+  /** Per-job thinking mode (job-launch-intent-record §1). Validated against the closed enum. */
+  thinkingMode?: ThinkingMode;
   expectedDurationMinutes: number;
   enabled: boolean;
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
@@ -173,6 +185,7 @@ export interface PerSlugManifest {
   tags?: string[];
   topicId?: number;
   telegramNotify?: boolean | 'on-alert';
+  deliver?: Array<'telegram' | 'email'>;
   machines?: string[];
   gate?: string;
   unrestrictedTools?: boolean;
@@ -187,6 +200,9 @@ export interface PerSlugManifest {
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
+  /** Built-in only: the shipped schedule at the last install. A different
+   *  `schedule` is an operator edit kept across updates (InstallBuiltinJobs). */
+  shippedSchedule?: string;
   /** Jev job-completion audit eligibility (spec: jev-job-supervision.md). */
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */
@@ -800,6 +816,9 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
   if ((j.framework === undefined) !== (j.frameworkModel === undefined)) {
     throw new Error(`${prefix}: "framework" and "frameworkModel" must be set together`);
   }
+  if (j.thinkingMode !== undefined && !(THINKING_MODES as readonly unknown[]).includes(j.thinkingMode)) {
+    throw new Error(`${prefix}: "thinkingMode" must be one of ${THINKING_MODES.join(', ')}`);
+  }
   if (j.leanContext !== undefined && typeof j.leanContext !== 'boolean') {
     throw new Error(`${prefix}: "leanContext" must be a boolean`);
   }
@@ -897,6 +916,17 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
       typeof j.telegramNotify !== 'boolean' &&
       j.telegramNotify !== 'on-alert') {
     throw new Error(`${prefix}: "telegramNotify" must be true, false, or "on-alert" if provided`);
+  }
+
+  // deliver (docs/specs/backup-email-sending.md): where a report goes. Script jobs have no report text.
+  if (j.deliver !== undefined) {
+    const d = j.deliver;
+    if (!Array.isArray(d) || d.length === 0 || d.length > 2 || d.some((v) => v !== 'telegram' && v !== 'email') || new Set(d).size !== d.length) {
+      throw new Error(`${prefix}: "deliver" must be a list of "telegram" and/or "email" if provided`);
+    }
+    if ((j.execute as Record<string, unknown> | undefined)?.type === 'script' && d.includes('email')) {
+      throw new Error(`${prefix}: "deliver" with "email" is not available for script jobs (deliver-on-script-job): a script run has no report text to email`);
+    }
   }
 
   // Optional machines
@@ -1347,6 +1377,22 @@ function validateFrontmatterShape(
     }
   }
 
+  // FAILSAFE_SCHEMA hands booleans over as strings; BoolField is the exact coercion.
+  const enforceParsed = fm.toolAllowlistEnforce === undefined ? null : BoolField.safeParse(fm.toolAllowlistEnforce);
+  if (enforceParsed && !enforceParsed.success) {
+    return mkFmProblem(manifest, '"toolAllowlistEnforce" must be true or false if provided');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && !Array.isArray(fm.toolAllowlist)) {
+    // EVO-008 §2a: enrolment binds a DECLARED list. Without one there is nothing to apply
+    // exactly, and running the job would silently do the opposite of what was asked.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" needs a toolAllowlist array (the exact tools to apply)');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && fm.runner === 'script') {
+    // A script runner opens no model session, so an enrolled tool list would be accepted
+    // and never applied on its normal path — refuse the ambiguous combination outright.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" cannot be used on a runner: script job (it opens no session to limit)');
+  }
+
   if (fm.toolAllowlist !== undefined) {
     if (fm.toolAllowlist === '*') {
       // ok — checked against manifest.unrestrictedTools in Phase 1b
@@ -1498,6 +1544,7 @@ function manifestToJobDefinition(
     framework: manifest.framework,
     frameworkModel: manifest.frameworkModel,
     leanContext: manifest.leanContext,
+    ...(manifest.thinkingMode !== undefined ? { thinkingMode: manifest.thinkingMode } : {}),
     enabled: manifest.enabled,
     catchUpPolicy: manifest.catchUpPolicy,
     requiredPaths: manifest.requiredPaths,
@@ -1507,6 +1554,7 @@ function manifestToJobDefinition(
     tags: manifest.tags,
     topicId: manifest.topicId,
     telegramNotify: manifest.telegramNotify,
+    deliver: manifest.deliver,
     machines: manifest.machines,
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,

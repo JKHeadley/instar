@@ -469,9 +469,9 @@ describe('WhatsApp Message Routing E2E', () => {
       const fnStart = src.indexOf('injectWhatsAppMessage(');
       const fnBody = src.substring(fnStart, fnStart + 800);
       expect(fnBody).toContain('FILE_THRESHOLD');
-      expect(fnBody).toContain('/tmp');
-      expect(fnBody).toContain('instar-whatsapp');
-      expect(fnBody).toContain('writeFileSync');
+      // SEC-138: saved in the agent's own owner-only inbound folder, never a shared /tmp folder.
+      expect(fnBody).toContain('writePrivateInboundFile(this.config.projectDir');
+      expect(fnBody).not.toContain('instar-whatsapp');
     });
 
     it('uses generic injectMessage for short messages', () => {
@@ -724,7 +724,7 @@ describe('WhatsApp Message Routing E2E', () => {
       expect(isLidJid('120363187170797617@g.us')).toBe(false);
     });
 
-    it('adapter maps @lid JID to connected phone number', async () => {
+    it('adapter maps an owner self-chat (fromMe) @lid JID to connected phone number', async () => {
       // The adapter was connected with phone '+14155551234' in beforeAll.
       // The authorized numbers include +14155552671 but we need the connected
       // phone to be authorized for the LID mapping to pass auth.
@@ -752,6 +752,8 @@ describe('WhatsApp Message Routing E2E', () => {
         `lid-msg-${Date.now()}`,
         'Self-chat from phone',
         'User',
+        undefined,
+        { fromMe: true }, // self-chat arrives from the connected account
       );
 
       expect(received.length).toBe(1);
@@ -836,12 +838,13 @@ describe('WhatsApp Message Routing E2E', () => {
       expect(baileysBackendSrc).toContain('SENT_IDS_MAX_SIZE');
     });
 
-    it('WhatsAppAdapter maps @lid to connected phone in handleIncomingMessage', () => {
+    it('WhatsAppAdapter resolves @lid senders in handleIncomingMessage', () => {
       const adapterSrc = fs.readFileSync(
         path.resolve(__dirname, '../../src/messaging/WhatsAppAdapter.ts'),
         'utf-8',
       );
-      expect(adapterSrc).toContain("jid.endsWith('@lid')");
+      expect(adapterSrc).toContain('isLidJid(jid)');
+      expect(adapterSrc).toContain('resolveLidSender');
       expect(adapterSrc).toContain('this.phoneNumber');
     });
   });

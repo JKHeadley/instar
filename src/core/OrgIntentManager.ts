@@ -35,6 +35,12 @@ export interface ParsedOrgIntent {
   tradeoffHierarchy: string[];
   /** MTP Protocol layer 3 (EXO 3.0): why high-judgment humans stay + what we're not for. */
   identity?: OrgIdentity;
+  /** `## Purpose` (docs/specs/org-pack-and-join.md §A): the organization's purpose line(s). */
+  purpose?: string;
+  /** `## Ask First`: things the agent asks its person about first. Not constraints: never blocking. */
+  askFirst?: string[];
+  /** `## Also In This Policy`: every other line of the policy, verbatim. */
+  otherText?: string;
   raw: string;
 }
 
@@ -197,16 +203,30 @@ function coresOverlap(core1: string, core2: string): boolean {
  * Deterministic, single-newline-joined text — no LLM involvement — so it is
  * safe to inject directly into agent context at session boot.
  */
-export function formatOrgIntentForSessionStart(intent: ParsedOrgIntent): string {
+export function formatOrgIntentForSessionStart(intent: ParsedOrgIntent, opts: { outboundGateOn?: boolean } = {}): string {
   const lines: string[] = [];
   lines.push('=== ORGANIZATIONAL INTENT ===');
   lines.push(`Organization: ${intent.name}`);
   lines.push('');
   lines.push('This is your operating contract. Constraints are mandatory; goals are organizational defaults; values shape representation; the tradeoff hierarchy resolves ties.');
+  if (intent.purpose) {
+    lines.push('');
+    lines.push('PURPOSE:');
+    for (const l of intent.purpose.split('\n')) lines.push(`  ${l}`);
+  }
   if (intent.constraints.length > 0) {
     lines.push('');
-    lines.push('CONSTRAINTS (mandatory — outbound messages that violate these are blocked at the Coherence Gate):');
+    // Say only what is running (docs/specs/org-pack-and-join.md §D "Honest session text").
+    // Unknown counts as off: never claim enforcement that may not be running.
+    lines.push(opts.outboundGateOn === true
+      ? 'CONSTRAINTS (mandatory — outbound messages that break these are blocked by the message check):'
+      : 'CONSTRAINTS (mandatory — these are rules you follow; nothing blocks them automatically yet):');
     for (const c of intent.constraints) lines.push(`  - ${c.text}`);
+  }
+  if (intent.askFirst && intent.askFirst.length > 0) {
+    lines.push('');
+    lines.push('ASK YOUR PERSON FIRST (ask before doing these, each time):');
+    for (const a of intent.askFirst) lines.push(`  - ${a}`);
   }
   if (intent.goals.length > 0) {
     lines.push('');
@@ -222,6 +242,11 @@ export function formatOrgIntentForSessionStart(intent: ParsedOrgIntent): string 
     lines.push('');
     lines.push('TRADEOFF HIERARCHY (when two values pull in opposite directions, the earlier entry wins):');
     intent.tradeoffHierarchy.forEach((t, i) => lines.push(`  ${i + 1}. ${t}`));
+  }
+  if (intent.otherText) {
+    lines.push('');
+    lines.push('ALSO IN THIS POLICY:');
+    for (const l of intent.otherText.split('\n')) lines.push(`  ${l}`);
   }
   lines.push('');
   lines.push('=== END ORGANIZATIONAL INTENT ===');
@@ -295,13 +320,26 @@ export class OrgIntentManager {
       }
     }
     const identity = parseIdentityLayer(raw) ?? undefined;
+    const plain = (sec: string | null): string | undefined => {
+      const t = sec?.replace(/<!--[\s\S]*?-->/g, '').trim();
+      return t ? t : undefined;
+    };
+    const purpose = plain(extractSection(raw, 'Purpose'));
+    const askFirstSection = extractSection(raw, 'Ask First');
+    const askFirst = askFirstSection ? extractListItems(askFirstSection) : [];
+    const otherText = plain(extractSection(raw, 'Also In This Policy'));
 
     // If all sections are empty after parsing, treat as template-only
-    if (constraints.length === 0 && goals.length === 0 && values.length === 0 && tradeoffHierarchy.length === 0 && !identity) {
+    if (constraints.length === 0 && goals.length === 0 && values.length === 0 && tradeoffHierarchy.length === 0 && !identity
+      && !purpose && askFirst.length === 0 && !otherText) {
       return null;
     }
 
-    return { name, constraints, goals, values, tradeoffHierarchy, identity, raw };
+    return {
+      name, constraints, goals, values, tradeoffHierarchy, identity,
+      ...(purpose ? { purpose } : {}), ...(askFirst.length ? { askFirst } : {}), ...(otherText ? { otherText } : {}),
+      raw,
+    };
   }
 
   /** Validate agent intent against org constraints (structural/heuristic) */

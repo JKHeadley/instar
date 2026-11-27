@@ -29,6 +29,18 @@ describe('health-model', () => {
     expect(healthNeedRows({ ok: true, data: {} })).toBeNull();
   });
 
+  it('an answering agent with only unsorted notes reads running, even from an older server that says unsure', async () => {
+    const { buildHealthPage } = await model();
+    for (const verdict of ['unsure', 'running']) {
+      const p = buildHealthPage(answer(verdict, [issue({ id: 'a', impact: 'unclassified' }), issue({ id: 'b', impact: 'unclassified' })]));
+      expect(p.verdict).toBe('running');
+      expect(p.tone).toBe('ok');
+      expect(p.sub).toContain('2 notes I haven’t sorted yet');
+    }
+    // A problem that affects the person still raises it.
+    expect(buildHealthPage(answer('attention', [issue()])).tone).toBe('attn');
+  });
+
   it('Home gets only what affects the person', async () => {
     const { healthNeedRows } = await model();
     expect(healthNeedRows(answer('running', [issue({ impact: 'internal' })]))).toEqual([]);
@@ -224,4 +236,17 @@ describe('the page', () => {
     await renderHealth(main, { get: vi.fn(async () => ({ ok: false, reason: 'the server answered 500' })) });
     expect(main.textContent).toContain('Couldn’t read my health'.replace('’', "'"));
   });
+});
+
+it('keeps capacity on Health while only explicit non-actionable metadata removes a Needs row', async () => {
+ const {healthNeedRows,buildHealthPage} = await model();
+ const waiting = issue({id:'health:sessions-full',requiresUserAction:false});
+ const legacy = issue({id:'legacy'});
+ const required = issue({id:'required',requiresUserAction:true});
+ const malformed = issue({id:'malformed',requiresUserAction:'false'});
+ const res = answer('attention',[waiting,legacy,required,malformed]);
+ expect(healthNeedRows(res).map(i=>i.key)).toEqual(['legacy','required','malformed']);
+ expect(buildHealthPage(res).problems).toContain(waiting);
+ const {NEED_SOURCES} = await import(path.join(CONSOLE,'needs-model.js'));
+ expect(NEED_SOURCES.find(s=>s.id==='health').rows({issues:answer('attention',[waiting])})).toEqual([]);
 });

@@ -28,7 +28,7 @@ const repoRoot = path.join(__dirname, '..', '..');
 
 const SKILL_REL = ['skills', 'spec-converge', 'SKILL.md'];
 const TEMPLATE_REL = ['skills', 'instar-dev', 'templates', 'side-effects-artifact.md'];
-const SKILL_MARKER = 'Decision-point classification (Judgment Within Floors';
+const SKILL_MARKER = 'FIXED_LIMIT_CONTEST';
 const TEMPLATE_MARKER = '## 4b. Judgment-point check';
 const GITIGNORE_ENTRY = 'state/judgment-provenance/';
 
@@ -163,6 +163,17 @@ describe('migrateJudgmentWithinFloorsReviewQuestions', () => {
     const r2 = runReviewQuestionsMigration(projectDir);
     expect(r2.upgraded).toEqual([]); // marker present → idempotent no-op
     expect(r2.errors).toEqual([]);
+  });
+
+  it('refreshes the old classification-only skill, even though its original marker is present', () => {
+    const projectDir = tmpProject();
+    const skillPath = path.join(projectDir, '.claude', ...SKILL_REL);
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true });
+    fs.writeFileSync(skillPath, '# /spec-converge\nDecision-point classification (Judgment Within Floors — structurally-checked question)\n');
+    const r = runReviewQuestionsMigration(projectDir);
+    expect(r.errors).toEqual([]);
+    expect(r.upgraded).toHaveLength(1);
+    expect(fs.readFileSync(skillPath, 'utf-8')).toContain('FIXED_LIMIT_CONTEST');
   });
 
   it('an installed file WITH the marker is untouched (even if otherwise divergent)', () => {

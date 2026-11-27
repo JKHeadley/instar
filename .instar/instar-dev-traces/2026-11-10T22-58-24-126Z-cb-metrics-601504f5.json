@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "cb-metrics",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T22:58:24.126Z",
+  "artifactPath": "upgrades/side-effects/cb-metrics.md",
+  "artifactSha256": "08cf7fcd10461d7b063359881f52d816c5a014ebc425bfdd202095885724296c",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/TopicIntentCapture.ts",
+    "src/core/TopicIntentExtractor.ts",
+    "src/memory/TopicMemory.ts",
+    "src/monitoring/TokenLedger.ts",
+    "src/monitoring/claudeTranscriptRoots.ts",
+    "src/monitoring/contextBudgetMetrics.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/layerCaptureWiring.ts",
+    "src/monitoring/contextLayers/layerSpendLog.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-budget-metrics-alive.test.ts",
+    "tests/integration/context-budget-metrics-route.test.ts",
+    "tests/unit/context-budget-metrics.test.ts",
+    "upgrades/next/cb-metrics.md",
+    "upgrades/side-effects/cb-metrics.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Additive read-only measurement route and ledger scan widening behind the dev-gated contextBudget switch; no gating authority, additive schema.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Not an agent-authored artifact or self-action loop: an observability defect fix (TokenLedger read one config home) plus a read-only, dev-gated measurement route; nothing here decides or acts on its own output."
+  }
+}

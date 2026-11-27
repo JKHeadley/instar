@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "app-trust-approval",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T18:26:38.256Z",
+  "artifactPath": "upgrades/side-effects/app-trust-approval.md",
+  "artifactSha256": "d219c226a46f365a71307b670cf2ebf3ba868c938dca051cd8eedb6e7856486a",
+  "coveredFiles": [
+    "tests/integration/team-access-status-table.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "upgrades/side-effects/app-trust-approval-local-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-trust-approval.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

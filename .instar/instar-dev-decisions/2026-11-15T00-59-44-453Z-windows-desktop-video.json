@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-15T00:59:44.453Z",
+  "slug": "windows-desktop-video",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 797,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/windows-desktop-local-transport.ps1",
+      "src/core/WindowsDesktopHost.ts",
+      "src/core/WindowsDesktopLocalTransport.ts",
+      "src/core/types.ts",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 786,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -314,4 +314,24 @@ describe('main-red hold — the queue while main fails a known check', () => {
     expect(await s.svc.request(2363)).toMatchObject({ ok: true, status: 'queued' });
     expect(s.inputOf(2)).toMatchObject({ pr: 2363 });
   });
+
+  it('a failed main whose LINT step names a repo script holds like a failing file (2026-11-15): the repair naming it runs, the rest wait', async () => {
+    const LINT = 'scripts/lint-framework-name-ratchet.mjs';
+    const lintRed = (head: string): VerifyRunResult => ({ ...ok(mainRecord(head, 'failure')), reasons: [`lint-failed:node ${LINT}`], failures: [] });
+    const s = setup({ views: {
+      3135: view(sha('1')),
+      3182: view(sha('2'), { title: 'fix(enrollment): name the Claude engine once so main passes the framework-id ratchet', body: 'Main fails `node scripts/lint-framework-name-ratchet.mjs` (1135 -> 1136)', files: [{ path: 'src/core/EnrollmentWizard.ts' }] }),
+    } });
+    s.svc.noteMainHead(sha('e'));
+    await s.finish(0, lintRed(sha('e')));
+    await s.finish(1, lintRed(sha('e')));
+    expect(s.svc.mainHealth().state).toBe('main-red');
+    expect((await s.svc.request(3135)).ok).toBe(true);
+    expect((await s.svc.request(3182)).ok).toBe(true);
+    const snap = s.svc.snapshot();
+    expect(snap.mainRedHold).toMatchObject({ reason: 'main-red', state: 'main-red', redHead: sha('e'), failingFiles: [LINT], repairPrs: [3182], heldPrs: [3135] });
+    expect(snap.mainRedHold?.detail).toContain(LINT);
+    expect(s.inputOf(2)).toMatchObject({ pr: 3182 }); // the repair took the slot, not the PR queued first
+    expect(s.spawned).toHaveLength(3);
+  });
 });

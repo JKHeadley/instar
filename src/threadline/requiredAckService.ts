@@ -22,6 +22,8 @@ import {
   parseKindedAck,
   refusalReason,
   requiredAckInstruction,
+  requiredAckReminderForPlace,
+  PEER_PLACE_SESSION_MARKER,
   requiredAckReminder,
   sanitizeAckSummary,
   summaryProblem,
@@ -357,7 +359,7 @@ export class RequiredAckService {
   // ── D4: the session's acknowledgment ──────────────────────────────
 
   /** POST /threadline/ack. Success means the `read` is durably accepted as a pending row. */
-  async acceptSessionAck(input: { threadId?: unknown; ackRefs?: unknown; summary?: unknown }): Promise<AckToolResult> {
+  async acceptSessionAck(input: { threadId?: unknown; ackRefs?: unknown; summary?: unknown; peerFp?: string }): Promise<AckToolResult> {
     if (!this.d.enabled()) return { status: 200, body: { sent: false, reason: 'disabled' } };
     const problem = summaryProblem(input.summary);
     if (problem) return { status: 400, body: { sent: false, error: problem } };
@@ -371,7 +373,8 @@ export class RequiredAckService {
     for (const ref of refs) {
       const row = this.store.watchForRef(ref);
       // The ack covers only the handles listed: a handle proves receipt of that message and no other.
-      if (!row || (threadId && row.threadId && row.threadId !== threadId)) unknown.push(ref);
+      // A peer place acknowledges only its own peer's messages (memory-privacy-agent-places §5).
+      if (!row || (threadId && row.threadId && row.threadId !== threadId) || (input.peerFp && row.peerFp !== input.peerFp)) unknown.push(ref);
       else rows.push(row);
     }
     if (rows.length === 0) {
@@ -448,7 +451,9 @@ export class RequiredAckService {
       const { sessionName, peerFp } = rows[0];
       if (this.store.remindersSince(peerFp, daySince) >= reminderDailyCap) continue; // past the cap the reminder step is skipped
       let typed = false;
-      try { typed = this.d.injectReminder(sessionName as string, requiredAckReminder(rows.map((r) => r.ackRef).slice(0, 50))); } catch (err) {
+      const reminderRefs = rows.map((r) => r.ackRef).slice(0, 50);
+      const reminder = String(sessionName).includes(PEER_PLACE_SESSION_MARKER) ? requiredAckReminderForPlace(reminderRefs) : requiredAckReminder(reminderRefs);
+      try { typed = this.d.injectReminder(sessionName as string, reminder); } catch (err) {
         this.log(`[required-ack] reminder failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
       if (typed) {

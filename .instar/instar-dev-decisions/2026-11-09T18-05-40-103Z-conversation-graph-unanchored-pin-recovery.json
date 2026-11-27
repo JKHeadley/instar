@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T18:05:40.103Z",
+  "slug": "conversation-graph-unanchored-pin-recovery",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphCustodyBootstrap.ts",
+      "src/server/ConversationGraphDefault.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

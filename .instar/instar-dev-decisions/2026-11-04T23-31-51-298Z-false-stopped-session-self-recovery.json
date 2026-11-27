@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-04T23:31:51.298Z",
+  "slug": "false-stopped-session-self-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/StallTriageNurse.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2601,
+      2672
+    ],
+    "notes": "Prior fixes covered only individual senders and did not preserve the channel registration across resume fallback. Indra logs show a live fallback under a different name while both watchers followed the dead registered name."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/SessionMonitor.test.ts",
+      "howCaught": "A fresh restart is bounded to one attempt per user message within the process; failed recovery sends one persisted failure notice, and the regression test proves the second death does not restart again."
+    }
+  },
+  "verdict": "pass"
+}

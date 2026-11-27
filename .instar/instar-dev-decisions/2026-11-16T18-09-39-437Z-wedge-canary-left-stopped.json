@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-16T18:09:39.437Z",
+  "slug": "wedge-canary-left-stopped",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 175,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+      "src/monitoring/machineMaintenance/readings.ts",
+      "src/monitoring/machineMaintenance/wedgeEvidence.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 168,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as machine-wedge-canary-reap, an Eternal Sentinel: it ends only the canary its own sample launched, one per sample, each pid once, at the sampler's single-flight 2-minute floor; a cleared wedge or a new boot stops it."
+    }
+  },
+  "verdict": "pass"
+}

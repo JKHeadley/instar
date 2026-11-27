@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "org-never-actions",
+  "sessionId": "db01f5ec-7e07-4447-a2bc-3edb1a73d2f5",
+  "timestamp": "2026-11-18T10:37:28.709Z",
+  "artifactPath": "upgrades/side-effects/org-never-actions.md",
+  "artifactSha256": "1676d0d2928085e64416c1259fdab0a555769cbadc3b6e78530d8ca19714b0f7",
+  "coveredFiles": [
+    "src/core/OrgActionCheck.ts",
+    "src/data/state-coherence-registry.json",
+    "tests/unit/org-action-check.test.ts",
+    "upgrades/side-effects/org-never-actions-retention.eli16.md",
+    "upgrades/side-effects/org-never-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "retention cap on one append file plus registry declaration; a revert undoes it",
+  "eli16Path": "upgrades/side-effects/org-never-actions-retention.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/org-never-actions.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

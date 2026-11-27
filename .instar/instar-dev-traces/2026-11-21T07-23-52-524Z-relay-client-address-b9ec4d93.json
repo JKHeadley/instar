@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "relay-client-address",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T07:23:52.524Z",
+  "artifactPath": "upgrades/side-effects/relay-client-address.md",
+  "artifactSha256": "945a6d3c60e4df76f284fce0f6bf35b97f2ce4d6e7823e8088aaa1f9d21bf662",
+  "coveredFiles": [
+    "docs/specs/relay-client-address.eli16.md",
+    "src/threadline/relay/A2ABridge.ts",
+    "tests/unit/threadline/relay/A2ABridge.test.ts",
+    "upgrades/next/relay-client-address.md",
+    "upgrades/side-effects/relay-client-address.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One waiting A2A task per thread so a reply has one recipient; disconnect frees the thread; revert-and-redeploy rollback",
+  "eli16Path": "docs/specs/relay-client-address.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relay-client-address.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

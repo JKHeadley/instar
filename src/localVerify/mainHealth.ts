@@ -48,6 +48,37 @@ interface Watermark {
   leaseEpoch?: number | null;
   /** The machine that held the lease at that epoch (this machine — the watermark is machine-local). */
   holderMachineId?: string;
+  /**
+   * When the oldest `main` merge with no green verify after it was first seen (ms). Absent = none
+   * known. Kept across restarts so the 90-minute and 3-hour clocks do not start again at each boot
+   * (spec docs/specs/local-verify-main-age-survives-restart.md).
+   */
+  oldestUnverifiedAt?: number;
+  /**
+   * Present = that age is UNKNOWN (the one encoding of unknown, in memory and here): the time
+   * unknown was first seen, a lower bound for the 3-hour signal. Never beside `oldestUnverifiedAt`.
+   */
+  unknownSince?: number;
+}
+
+/** Why the age of the oldest unverified merge is unknown (the `main-age-unknown` audit line). */
+export type MainAgeUnknownReason = 'field-absent' | 'file-unreadable' | 'future' | 'non-finite' | 'other-machine' | 'carried';
+
+/** The age of the oldest unverified `main` merge. `unknownSince !== null` means unknown (then `oldestUnverifiedAt` is null). */
+export interface MainUnverifiedAge {
+  oldestUnverifiedAt: number | null;
+  unknownSince: number | null;
+}
+
+/**
+ * A stored time, judged: usable (a finite number not in the future), absent, or why not.
+ * Pure. A time in the future is what a backward wall-clock jump leaves behind.
+ */
+export function judgeStoredTime(v: unknown, now: number): { ok: true; at: number } | { ok: false; reason: 'absent' | 'future' | 'non-finite' } {
+  if (v === undefined || v === null) return { ok: false, reason: 'absent' };
+  if (typeof v !== 'number' || !Number.isFinite(v)) return { ok: false, reason: 'non-finite' };
+  if (v > now) return { ok: false, reason: 'future' };
+  return { ok: true, at: v };
 }
 
 export interface MainHealthSeams {
@@ -73,6 +104,17 @@ export const MAIN_VERIFY_LIMITS = Object.freeze({
   debounceMs: 10 * MIN,
   /** …but no later than this after the first unverified head. */
   debounceCapMs: 30 * MIN,
+  /**
+   * While `main` is suspect or red the wait is short: merging is closed until a green
+   * `main` verify, so waiting only keeps it closed. Two minutes = the head read the same
+   * on its first sight and two further reconcile passes (reads spanning 2 minutes), which absorbs one stale read of the previous
+   * (failed) head. So while unhealthy the floor between head-changed verifies is 2 minutes
+   * (a head that settles, then moves), not the healthy 10; a head that changes on every
+   * read is paced by the 10-minute cap. Each verify still needs the one slot, one entry is
+   * pending at most, and merging is closed for the whole time.
+   */
+  unhealthyDebounceMs: 2 * MIN,
+  unhealthyDebounceCapMs: 10 * MIN,
   /** An `error` (not a failure) re-queues with backoff at most this many times per head. */
   errorRetries: 3,
   errorBackoffMs: 5 * MIN,
@@ -92,24 +134,106 @@ export interface MainHeadObservation {
 }
 
 /**
+ * The "oldest merge with no green `main` verify after it" clock, after a GREEN `main`
+ * verify. A verify of the current head (or of the head a release commit collapses into)
+ * covers everything: the clock clears. A verify of an OLDER head that was main's head
+ * when its run started still covers every merge made before that start, so the clock
+ * moves forward to the run's start and never backwards. The caller passes
+ * `runStartedAtMs` only for such a run; for a run that started on a head main had
+ * already moved past (it waited in the queue, an error retry, the re-run after a first
+ * failure) it passes null and the clock stays where it is. Leaving the clock untouched
+ * in every older-head case (the behaviour until 2026-11-14) meant that once merges
+ * landed more often than a verify takes, no verify was ever of the current head, the
+ * clock never cleared, and main went `unverified-too-long` three hours after the last
+ * restart however many green verifies had run.
+ */
+export function oldestUnverifiedAfterGreen(
+  prev: number | null,
+  verifiedHeadIsCurrent: boolean,
+  runStartedAtMs: number | null,
+  /**
+   * When a head newer than the verified one was first observed (null = not known). A green
+   * verify of head A covers every merge up to A, so the oldest merge it does not cover is the
+   * one that replaced A, and that was observed at this time. This holds wherever the run
+   * started and whatever `main` did meanwhile. Without it (2026-11-15) a merge or release
+   * commit every 20 to 30 minutes meant no verified head was ever still current when its
+   * run finished, the clock stayed at the first merge after boot, and `main` went
+   * `unverified-too-long` three hours later with three green verifies on record.
+   */
+  supersededAtMs: number | null = null,
+): number | null {
+  if (verifiedHeadIsCurrent || prev === null) return null;
+  let next = prev;
+  if (runStartedAtMs !== null && Number.isFinite(runStartedAtMs)) next = Math.max(next, runStartedAtMs);
+  if (supersededAtMs !== null && Number.isFinite(supersededAtMs)) next = Math.max(next, supersededAtMs);
+  return next;
+}
+
+/** How many replaced heads the service remembers a replacement time for (bounded; oldest dropped). */
+export const SUPERSEDED_HEADS_KEPT = 50;
+
+/**
+ * Record that `prevHead` stopped being `main`'s head at `now` (a different head was observed).
+ * The FIRST such time is kept: a stale read that shows an old head again and then moves on
+ * must not move its replacement time later (later would be the lenient direction), and the
+ * head such a read leaves is not recorded at all. Pure apart from the map it is given.
+ */
+export function noteHeadSuperseded(map: Map<string, number>, prevHead: string | null, newHead: string, now: number): void {
+  if (prevHead === null || prevHead === newHead || map.has(prevHead)) return;
+  // A flip back to a head already known to have been replaced is a stale read (or a reset to old
+  // history): the head being left was not replaced by something newer, so nothing is recorded.
+  if (map.has(newHead)) return;
+  map.set(prevHead, now);
+  while (map.size > SUPERSEDED_HEADS_KEPT) map.delete(map.keys().next().value as string);
+}
+
+/**
+ * The replacement time that a green verify of `head` covers up to: `head`'s own, or, when a
+ * release commit of `head` took its place (a release commit changes no code, `releaseAlias`
+ * maps it to its parent), the time that release commit was replaced in turn. The latest of
+ * them, since each is covered. Null when `head` was never seen replaced. Pure.
+ */
+export function supersededAtFor(head: string, map: ReadonlyMap<string, number>, releaseAlias: ReadonlyMap<string, string>): number | null {
+  let best: number | null = map.get(head) ?? null;
+  for (const [release, parent] of releaseAlias) {
+    if (parent !== head) continue;
+    const t = map.get(release);
+    // The release commit is still the head (never replaced): the caller's `verifiedHeadIsCurrent` covers that case.
+    if (t !== undefined && (best === null || t > best)) best = t;
+  }
+  return best;
+}
+
+/**
  * A valid `main` head was observed at `now`: the next debounce state, and whether a
  * `main` verify is enqueued for it now. Enqueued once per head (`handled`), after 10
  * minutes of an unchanged head, or 30 minutes after the first unverified head, or at
  * once after boot / lease acquisition (`immediate`).
+ *
+ * `opts.healthy === false` (main is suspect or red) shortens the wait to
+ * `unhealthyDebounceMs` unchanged, capped at `unhealthyDebounceCapMs` (never longer than
+ * the limits passed in): merging is closed until a green `main` verify, so the long wait
+ * only keeps it closed. On 2026-11-15 a repair merged at 01:13Z and `main` was not
+ * re-verified until a restart at 02:24Z; two green PRs sat at `main-red · repair-only`
+ * meanwhile. Not zero: the head is read from GitHub once a minute and one stale read of
+ * the previous (failed) head must not start a verify of it. Still once per head (`handled`).
  */
 export function decideMainHeadEnqueue(
   prev: MainHeadObservation,
   sha: string,
   now: number,
   limits: { debounceMs: number; debounceCapMs: number } = MAIN_VERIFY_LIMITS,
+  opts: { healthy?: boolean } = {},
 ): { next: MainHeadObservation; enqueue: boolean } {
   const next: MainHeadObservation = { ...prev };
   if (sha !== next.head) { next.head = sha; next.since = now; }
   if (sha === next.handled) return { next, enqueue: false };
   if (next.firstUnverifiedAt === null) next.firstUnverifiedAt = now;
+  const debounceMs = opts.healthy === false ? Math.min(limits.debounceMs, MAIN_VERIFY_LIMITS.unhealthyDebounceMs) : limits.debounceMs;
+  const debounceCapMs = opts.healthy === false ? Math.min(limits.debounceCapMs, MAIN_VERIFY_LIMITS.unhealthyDebounceCapMs) : limits.debounceCapMs;
   const ready = next.immediate
-    || now - next.since >= limits.debounceMs
-    || now - next.firstUnverifiedAt >= limits.debounceCapMs;
+    || now - next.since >= debounceMs
+    || now - next.firstUnverifiedAt >= debounceCapMs;
   if (!ready) return { next, enqueue: false };
   next.immediate = false;
   next.handled = sha;
@@ -202,6 +326,26 @@ export function decideMainErrorRetry(
   return { retries, requeue: retries <= limits.errorRetries && !i.mainPending, notBefore: i.now + limits.errorBackoffMs * retries };
 }
 
+/**
+ * A green PR verify on this machine after `main`'s own error retries ran out: re-arm one
+ * `main` verify (throughput brainstorm 2026-11-12; the waiting-line wedge). Without this,
+ * four deadline errors on one `main` head left `main` unverified with nothing queued, so
+ * main health stayed suspect and the merge watcher offered no PR at all (2026-11-12
+ * 12:34Z onward). "Something changed" is this machine just completing a full green run.
+ * Bounded by green PR runs (each re-arms at most once), never by the clock, so the
+ * always-erroring worst case of the main-schedule model is unchanged.
+ */
+export function decideMainRearmAfterGreen(i: {
+  priorRetries: number;
+  mainPending: boolean;
+  mainInFlight: boolean;
+  healthState: MainHealthSnapshot['state'];
+}, limits: { errorRetries: number } = MAIN_VERIFY_LIMITS): boolean {
+  if (i.healthState === 'healthy' || i.healthState === 'main-red') return false;
+  if (i.mainPending || i.mainInFlight) return false;
+  return i.priorRetries > limits.errorRetries;
+}
+
 export class MainHealth {
   private snap: MainHealthSnapshot;
   private readonly file: string;
@@ -212,6 +356,19 @@ export class MainHealth {
   private readonly raised = new Set<string>();
   /** The lease epoch recorded in the watermark (kept across boots until an acquisition supplies a new one). */
   private leaseEpoch: number | null = null;
+  /** The oldest unverified merge's first-seen time (null = none known, or unknown). Written with every watermark. */
+  private oldestUnverifiedAt: number | null = null;
+  /** Non-null = the age is unknown, since this time. */
+  private unknownSince: number | null = null;
+  /** The stored age is read once per process start, at the first load(). */
+  private ageRestored = false;
+  /**
+   * Boot found no usable stored age: the first head observed that is not the last green one
+   * makes the age unknown (never `now`), for this reason.
+   */
+  private bootUnknownReason: MainAgeUnknownReason | null = null;
+  /** `main-age-unknown` is audited once per process start. */
+  private unknownAudited = false;
 
   constructor(stateDir: string, machineId: string, seams: MainHealthSeams) {
     this.file = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
@@ -233,6 +390,7 @@ export class MainHealth {
    */
   load(opts: { foreignHolder?: boolean; epoch?: number | null } = {}): MainHealthSnapshot {
     const w = this.readWatermark();
+    if (!this.ageRestored) { this.ageRestored = true; this.restoreAge(w); }
     // A gap from the stored epoch means another holder came in between (a
     // same-machine re-acquisition is the next epoch): treated as a different machine.
     const stored = typeof w?.leaseEpoch === 'number' ? w.leaseEpoch : null;
@@ -240,6 +398,14 @@ export class MainHealth {
     this.leaseEpoch = opts.epoch !== undefined ? opts.epoch : stored;
     if (opts.foreignHolder || epochGap) {
       if (epochGap) this.seams.audit({ event: 'main-health-epoch-gap', storedEpoch: stored, epoch: opts.epoch });
+      // Another machine held the lease in between: what merged meanwhile is not known here, so the
+      // age is unknown. The bound is this machine's own earlier age when it has one (never later than
+      // now), and an unknown already running keeps its start: a lease flap cannot push the signal back.
+      const now = this.seams.now();
+      if (this.unknownSince === null) this.unknownSince = this.oldestUnverifiedAt !== null ? Math.min(this.oldestUnverifiedAt, now) : now;
+      this.oldestUnverifiedAt = null;
+      this.bootUnknownReason = null;
+      this.auditUnknown('other-machine');
       this.set({ state: 'main-suspect', redHead: w?.redHead ?? null, reason: epochGap ? 'lease-epoch-gap' : 'lease-foreign', lastGreenHead: w?.lastGreenHead ?? null });
     } else if (!w || w.machineId !== this.machineId) {
       this.set({ state: 'main-suspect', redHead: w?.redHead ?? null, reason: w ? 'watermark-other-machine' : 'boot-unknown', lastGreenHead: w?.lastGreenHead ?? null });
@@ -257,9 +423,21 @@ export class MainHealth {
    *   'none'
    */
   /** `detail` (bounded run-detail: reasons, failures, flaky re-runs) travels with the main-red signal. */
-  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>): Promise<'rerun' | 'cleared' | 'none'> {
+  /**
+   * `age` (a green verify only): the age after this verify, as the service computed it. It is
+   * written in the same watermark write as `lastGreenHead`, and it ends an unknown age.
+   */
+  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>, age?: { oldestUnverifiedAt: number | null }): Promise<'rerun' | 'cleared' | 'none'> {
     if (outcome === 'error') return 'none'; // only `failure` counts as red
     if (outcome === 'success') {
+      let ageChanged = false;
+      if (age) {
+        const at = age.oldestUnverifiedAt !== null && Number.isFinite(age.oldestUnverifiedAt) ? age.oldestUnverifiedAt : null;
+        ageChanged = at !== this.oldestUnverifiedAt || this.unknownSince !== null;
+        this.oldestUnverifiedAt = at;
+        this.unknownSince = null;
+        this.bootUnknownReason = null;
+      }
       if (this.snap.state === 'healthy') {
         this.set({ ...this.snap, lastGreenHead: head, reason: 'green' });
         return 'none';
@@ -273,6 +451,7 @@ export class MainHealth {
       }
       if (!clears) {
         this.seams.audit({ event: 'main-health-green-not-descendant', redHead: red, head });
+        if (ageChanged) this.writeWatermark(); // the state is unchanged; the age still has to be recorded
         return 'none';
       }
       const wasRed = this.snap.state === 'main-red';
@@ -295,13 +474,69 @@ export class MainHealth {
     return 'none';
   }
 
-  /** `main` has gone unverified (no green verify after a merge) for too long. */
-  noteUnverifiedAge(oldestUnverifiedAt: number | null): void {
+  /**
+   * `main` has gone unverified (no green verify after a merge) for too long. `atLeast`: the time
+   * given is a lower bound (the age is unknown), so `ageMs` reads "at least", never an exact age.
+   */
+  noteUnverifiedAge(oldestUnverifiedAt: number | null, opts: { atLeast?: boolean } = {}): void {
     if (oldestUnverifiedAt === null) return;
     const age = this.seams.now() - oldestUnverifiedAt;
     if (age <= MAIN_HEALTH_LIMITS.unverifiedSuspectMs) return;
     if (this.snap.state === 'healthy') this.set({ ...this.snap, state: 'main-suspect', reason: 'unverified-too-long' });
-    this.raise('local-verify:main-unverified', { ageMs: age });
+    this.raise('local-verify:main-unverified', { ageMs: age, ...(opts.atLeast ? { atLeast: true } : {}) });
+  }
+
+  /** The age of the oldest unverified merge as this machine holds it. */
+  unverifiedAge(): MainUnverifiedAge {
+    return { oldestUnverifiedAt: this.oldestUnverifiedAt, unknownSince: this.unknownSince };
+  }
+
+  /**
+   * A valid `main` head was observed. A head that is not the last green one starts the age
+   * when there is none: at `now` when this process saw the head leave green, and as UNKNOWN
+   * when it is the first such head after a boot that found no usable stored age.
+   */
+  noteHeadObserved(sha: string): void {
+    if (sha === this.snap.lastGreenHead) { this.bootUnknownReason = null; return; } // nothing unverified was found at boot
+    if (this.unknownSince !== null || this.oldestUnverifiedAt !== null) return;
+    const now = this.seams.now();
+    if (this.bootUnknownReason !== null) {
+      const reason = this.bootUnknownReason;
+      this.bootUnknownReason = null;
+      this.unknownSince = now;
+      this.auditUnknown(reason);
+    } else {
+      this.oldestUnverifiedAt = now;
+    }
+    this.writeWatermark();
+  }
+
+  /** The current head is a release commit of the last green head: nothing is unverified. Clears the age and an unknown one. */
+  clearUnverifiedAge(): void {
+    this.bootUnknownReason = null;
+    if (this.oldestUnverifiedAt === null && this.unknownSince === null) return;
+    this.oldestUnverifiedAt = null;
+    this.unknownSince = null;
+    this.writeWatermark();
+  }
+
+  /** Once per process start: read the stored age from this machine's own watermark. */
+  private restoreAge(w: Watermark | null): void {
+    const now = this.seams.now();
+    if (!w) { this.bootUnknownReason = fs.existsSync(this.file) ? 'file-unreadable' : 'field-absent'; return; }
+    if (w.machineId !== this.machineId) { this.bootUnknownReason = 'other-machine'; return; }
+    const since = judgeStoredTime(w.unknownSince, now);
+    if (since.ok) { this.unknownSince = since.at; this.auditUnknown('carried'); return; }
+    if (since.reason !== 'absent') { this.unknownSince = now; this.auditUnknown(since.reason); return; } // still unknown; a fresh bound
+    const at = judgeStoredTime(w.oldestUnverifiedAt, now);
+    if (at.ok) this.oldestUnverifiedAt = at.at;
+    else this.bootUnknownReason = at.reason === 'absent' ? 'field-absent' : at.reason;
+  }
+
+  private auditUnknown(reason: MainAgeUnknownReason): void {
+    if (this.unknownAudited) return;
+    this.unknownAudited = true;
+    this.seams.audit({ event: 'main-age-unknown', reason, unknownSince: this.unknownSince });
   }
 
   private raise(key: string, detail: Record<string, unknown>): void {
@@ -339,6 +574,7 @@ export class MainHealth {
         v: 1, machineId: this.machineId, state: this.snap.state, redHead: this.snap.redHead,
         lastGreenHead: this.snap.lastGreenHead, reason: this.snap.reason, updatedAt: new Date(this.seams.now()).toISOString(),
         leaseEpoch: this.leaseEpoch, holderMachineId: this.machineId,
+        ...(this.unknownSince !== null ? { unknownSince: this.unknownSince } : this.oldestUnverifiedAt !== null ? { oldestUnverifiedAt: this.oldestUnverifiedAt } : {}),
       };
       const tmp = `${this.file}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(w)); /* state-registry: local-verify-main-health */

@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { actionLine, buildAction, type PermissionAction, type SessionAction } from '../../src/server/mobilePermissionsRoutes.js';
 import {
   closeAnswer, createBody, doorRows, machineRows, modelOptionWords, modelWords, moveAnswer, newSessionAnswer, regimeWords, runSessionAction,
-  summarizeControls, summarizeNewOptions, type RouteAnswer, DOOR,
+  summarizeControls, summarizeNewOptions, selfNameOf, type RouteAnswer, DOOR,
 } from '../../src/server/mobileSessionControlsRoutes.js';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { AttachmentWindow, DEVICE_KEYS, peerTooOldReason, redactDeep } from '../../src/server/mobileSessionTerminalRoutes.js';
@@ -162,7 +162,9 @@ describe('the words', () => {
   it('machines: fewer than two is none; a machine that can not be picked says why', () => {
     expect(machineRows({ machines: [{ machineId: 'a', nickname: 'A', online: true }] })).toBeNull();
     const rows = machineRows(POOL)!.rows;
-    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio (this machine)' });
+    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio' });
+    expect(selfNameOf(POOL)).toBe('Studio');
+    expect(selfNameOf({ machines: [] })).toBeNull();
     expect(rows.find((m) => m.machineId === 'm_peer')).toMatchObject({ selectable: true, label: 'Mac Mini (at usage limit)' });
     expect(rows.find((m) => m.machineId === 'm_down')).toMatchObject({ selectable: false, reason: 'not answering' });
     expect(rows.find((m) => m.machineId === 'm_clock')).toMatchObject({ selectable: false, reason: 'clock out of step' });
@@ -173,7 +175,8 @@ describe('the words', () => {
   });
   it('a peer too old names the way forward', () => {
     expect(peerTooOldReason('Mac Mini')).toContain('Mac Mini needs the latest Instar update');
-    expect(peerTooOldReason('Mac Mini')).toContain('move it to this machine');
+    expect(peerTooOldReason('Mac Mini')).toContain('move it to an updated machine');
+    expect(peerTooOldReason('Mac Mini')).not.toMatch(/this machine/i);
   });
 });
 
@@ -190,8 +193,27 @@ describe('the menu', () => {
     const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined }, options: null, profile: null }), {}, 0);
     expect(c.door).toMatchObject({ state: 'not-this-chat' });
     expect(c.move).toMatchObject({ state: 'not-this-chat' });
-    expect((c.door as { reason: string }).reason).toContain('Telegram');
+    expect((c.door as { reason: string }).reason).toContain('has none');
+    expect((c.door as { reason: string }).reason).not.toContain('Telegram');
     expect(c.typing).toEqual({ can: true, reason: null });
+  });
+  it('an app or Slack conversation gets the engine switch; an app conversation says moving is off where it is off, Slack stays with its connection, said plainly', () => {
+    const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+    const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: app } }), {}, 0);
+    expect(c.door).toMatchObject({ state: 'ok', topic: app });
+    expect(c.move).toMatchObject({ state: 'not-yet' });
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
+    const slack = summarizeControls(parts({ row: { ...ROW, platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC' } }), {}, 0);
+    expect(slack.door).toMatchObject({ state: 'ok', topic: 'slack:T0XYZ:C0ABC' });
+    // slack-conversations-stay-with-connection §2.4: a Slack conversation stays with its connection.
+    expect(slack.move).toMatchObject({ state: 'stays' });
+    expect((slack.move as { reason: string }).reason).toBe('This Slack conversation stays on the machine that holds your Slack connection.');
+    // A Telegram door keeps the bare topic id, so an older app signs the same line.
+    expect(summarizeControls(parts(), {}, 0).door).toMatchObject({ topic: '7' });
+    // Topic 1 (the General topic) stays as before: no switch.
+    expect(summarizeControls(parts({ row: { ...ROW, platformId: 1, conversationRef: 'telegram:1' } }), {}, 0).door).toMatchObject({ state: 'not-this-chat' });
+    // A reference that doesn't parse is no conversation at all.
+    expect(summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: 'app:nope' } }), {}, 0).door).toMatchObject({ state: 'not-this-chat' });
   });
   it('a failed read says it cannot read, never that there are none', () => {
     const c = summarizeControls(parts({ options: { status: 503, body: null }, pool: { status: 0, body: null } }), {}, 0);
@@ -217,7 +239,7 @@ describe('the menu', () => {
   });
   it('new session options: the default in words, and a failed read still lets it start', () => {
     const o = summarizeNewOptions(ok(OPTIONS), ok(POOL), {}, 0);
-    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (this machine only).');
+    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (on Studio only).');
     expect(o.doorsState).toBe('ok');
     const bad = summarizeNewOptions({ status: 503, body: null }, ok(POOL), {}, 0);
     expect(bad.doorsState).toBe('unavailable');
@@ -266,6 +288,17 @@ describe('what a route answered, in plain words', () => {
     expect(newSessionAnswer(ok({ started: 'unknown' }), 'Bug', null).body).toMatchObject({ ok: true, warn: true });
     expect(newSessionAnswer({ status: 429, body: { error: 'Too many' } }, 'Bug', null).body).toMatchObject({ ok: false, message: 'Too many' });
   });
+  it('new session with an app conversation: started, or created and waiting, in the server\'s words', () => {
+    // session-conversation-for-every-session §2.5
+    expect((newSessionAnswer(ok({ platform: 'app', started: true, session: 's' }), 'Plans', null).body as { message: string }).message).toBe('Started "Plans". Open it in Conversations to talk to it.');
+    const waiting = newSessionAnswer(ok({ platform: 'app', started: false, message: 'Another of your machines runs your app conversations; its first message starts the session there.' }), 'Plans', null).body;
+    expect(waiting).toMatchObject({ ok: true, warn: true });
+    expect((waiting as { message: string }).message).toContain('Another of your machines');
+  });
+  it('the create body for an app conversation carries engine and model, never a machine', () => {
+    const body = createBody({ kind: 'session-new', target: 'new', name: 'Plans', platform: 'app', framework: 'codex-cli', model: null, machine: 'm_b' } as Extract<SessionAction, { kind: 'session-new' }>, null);
+    expect(body).toEqual({ name: 'Plans', headless: false, platform: 'app', framework: 'codex-cli', model: null });
+  });
   it('the create body: an unchanged pick sends nothing, and Slack carries no door', () => {
     const a = (over: Partial<Extract<SessionAction, { kind: 'session-new' }>>): Extract<SessionAction, { kind: 'session-new' }> => ({ kind: 'session-new', target: 'new', name: 'x', platform: 'auto', framework: null, model: null, machine: null, ...over });
     const def = { framework: 'codex', model: 'gpt-6' };
@@ -287,6 +320,15 @@ describe('running an action', () => {
     },
   });
   const door = (over = {}) => ({ kind: 'session-door', target: '7', framework: 'codex', model: 'gpt-6', machine: null, ...over }) as SessionAction;
+
+  it('a door switch posts to the conversation\'s profile key, never the reference itself', async () => {
+    calls.length = 0;
+    const answers = { 'GET /topic-profile/options': ok(OPTIONS), 'POST /topic-profile/slack%3AC0ABC%3A1730000000.000100': ok({ ok: true }), 'POST /topic-profile/app%3A0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f': ok({ ok: true }), 'POST /topic-profile/7': ok({ ok: true }) };
+    await runSessionAction({ kind: 'session-door', target: 'slack:T0XYZ:C0ABC:1730000000.000100', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    await runSessionAction({ kind: 'session-door', target: 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    await runSessionAction({ kind: 'session-door', target: 'telegram:7', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/topic-profile/slack%3AC0ABC%3A1730000000.000100', '/topic-profile/app%3A0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', '/topic-profile/7']);
+  });
 
   it('a door runs the dashboard route, and the route refusal reaches the phone in its own words', async () => {
     const yes = await runSessionAction(door(), deps({ 'GET /topic-profile/options': ok(OPTIONS), 'POST /topic-profile/7': ok({ ok: true, message: 'Switching to Codex.' }) }));

@@ -5,7 +5,7 @@
 // test isolates via __resetSyncOpMarker(). TTL cases inject a deterministic clock via
 // __setSyncOpClock; the cross-process round-trip uses a real mktemp dir.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,8 @@ import {
   readSyncOpMarker,
   configureSyncOpMarker,
   defaultInflightMarkerReader,
+  flushSyncOpMirror,
+  MIRROR_RESTAMP_TTL_FRACTION,
   __setSyncOpClock,
   __resetSyncOpMarker,
   DEFAULT_SYNC_OP_TIMEOUT_MS,
@@ -317,7 +319,9 @@ describe('InFlightSyncOpMarker', () => {
         expect(duringRead!.inFlight).toBe(true);
         expect(duringRead!.stale).toBe(false);
 
-        // AFTER: leave() mirrored depth=0/setAtMs=null => reader sees not-in-flight
+        // AFTER: the idle state reaches the file once the loop is free (here: flushed by hand)
+        expect(reader()!.inFlight).toBe(true); // not yet: leave() no longer writes per op
+        flushSyncOpMirror();
         const afterRead = reader();
         expect(afterRead).not.toBeNull();
         expect(afterRead!.inFlight).toBe(false);
@@ -372,6 +376,120 @@ describe('InFlightSyncOpMarker', () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+
+  describe('the mirror file is written per burst, not per op (2026-11-13 server freeze)', () => {
+    const withDir = (fn: (dir: string, file: string, writes: () => number) => void | Promise<void>) => async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'syncop-burst-'));
+      const spy = vi.spyOn(fs, 'renameSync');
+      try {
+        configureSyncOpMarker({ stateDir: dir });
+        await fn(dir, path.join(dir, 'state', MARKER_FILENAME), () => spy.mock.calls.length);
+      } finally {
+        spy.mockRestore();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    it('fifty back-to-back ops in one tick cost ONE in-flight write and ONE idle write', withDir(async (dir, file, writes) => {
+      const reader = defaultInflightMarkerReader(dir);
+      for (let i = 0; i < 50; i++) withSyncOp(() => { expect(reader()!.inFlight).toBe(true); });
+      expect(writes()).toBe(1);
+      expect(JSON.parse(fs.readFileSync(file, 'utf-8')).depth).toBe(1);
+      await new Promise((r) => setImmediate(r)); // the loop is free: the queued idle flush runs
+      expect(writes()).toBe(2);
+      expect(reader()).toEqual({ inFlight: false, ageMs: 0, stale: false });
+      // The next burst writes again: an idle file never hides an op in flight.
+      withSyncOp(() => { expect(reader()!.inFlight).toBe(true); });
+      expect(writes()).toBe(3);
+    }));
+
+    it('a nested op writes nothing; the file keeps the earliest stamp', withDir((_dir, file, writes) => {
+      let t = 1_000_000;
+      __setSyncOpClock(() => t);
+      withSyncOp(() => {
+        t += 500;
+        withSyncOp(() => { /* nested */ });
+        expect(writes()).toBe(1);
+        expect(JSON.parse(fs.readFileSync(file, 'utf-8')).setAtMs).toBe(1_000_000);
+      });
+    }));
+
+    it('a long burst re-stamps the file once the stamp is a quarter of the TTL old, so it never reads stale while ops keep starting', withDir((_dir, file, writes) => {
+      let t = 2_000_000;
+      __setSyncOpClock(() => t);
+      const ttl = DEFAULT_SYNC_OP_TIMEOUT_MS * STALE_TTL_FACTOR;
+      const quarter = ttl / MIRROR_RESTAMP_TTL_FRACTION;
+      withSyncOp(() => {});
+      t += quarter; // exactly a quarter: still fresh
+      withSyncOp(() => {});
+      expect(writes()).toBe(1);
+      t += 1; // past a quarter: re-stamped at the new op's start
+      withSyncOp(() => { expect(JSON.parse(fs.readFileSync(file, 'utf-8')).setAtMs).toBe(t); });
+      expect(writes()).toBe(2);
+    }));
+
+    it('if the loop never gets free after an op, the file stays in-flight only until its stamp passes the TTL', withDir((dir) => {
+      const realNow = Date.now;
+      try {
+        withSyncOp(() => {});
+        const reader = defaultInflightMarkerReader(dir); // the reader uses the wall clock
+        expect(reader()!.inFlight).toBe(true); // no idle flush yet (no tick has run)
+        const ttl = DEFAULT_SYNC_OP_TIMEOUT_MS * STALE_TTL_FACTOR;
+        Date.now = () => realNow() + ttl + 1_000;
+        expect(reader()).toMatchObject({ inFlight: false, stale: true }); // bounded: the supervisor may restart
+      } finally {
+        Date.now = realNow;
+        flushSyncOpMirror();
+      }
+    }));
+
+    it('STATED CONSEQUENCE: a turn that never yields but keeps starting ops reads in-flight throughout (the supervisor then defers to its own hard cap)', withDir((dir, _file, writes) => {
+      const realNow = Date.now;
+      let t = realNow();
+      __setSyncOpClock(() => t);
+      Date.now = () => t; // the cross-process reader's clock, moved with the writer's
+      try {
+        const reader = defaultInflightMarkerReader(dir);
+        const ttl = DEFAULT_SYNC_OP_TIMEOUT_MS * STALE_TTL_FACTOR;
+        // 60 s of back-to-back ops in ONE turn (no setImmediate can run), one op every 3 s.
+        for (let i = 0; i < 20; i++) {
+          withSyncOp(() => {});
+          t += 3_000;
+          expect(reader()).toMatchObject({ inFlight: true, stale: false }); // between ops too
+        }
+        expect(writes()).toBeLessThanOrEqual(1 + Math.ceil(60_000 / (ttl / MIRROR_RESTAMP_TTL_FRACTION)));
+        // Once the ops stop and the loop still does not yield, the TTL bounds it.
+        t += ttl + 1;
+        expect(reader()).toMatchObject({ inFlight: false, stale: true });
+      } finally {
+        Date.now = realNow;
+        flushSyncOpMirror();
+      }
+    }));
+
+    it('a clock that steps backwards never leaves a future-dated stamp on disk', withDir((_dir, file, writes) => {
+      let t = 5_000_000;
+      __setSyncOpClock(() => t);
+      withSyncOp(() => {});
+      t -= 60_000; // the clock stepped back a minute; the file's stamp is now in the future
+      withSyncOp(() => { expect(JSON.parse(fs.readFileSync(file, 'utf-8')).setAtMs).toBe(t); });
+      expect(writes()).toBe(2);
+    }));
+
+    it('a flush that fires while an op is open writes nothing; the idle write waits for the op to end', withDir(async (dir, _file, writes) => {
+      const reader = defaultInflightMarkerReader(dir);
+      withSyncOp(() => {}); // queues the idle flush
+      withSyncOp(() => {
+        flushSyncOpMirror(); // the queued flush, arriving while this op is open
+        expect(reader()!.inFlight).toBe(true);
+      });
+      expect(writes()).toBe(1);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(reader()!.inFlight).toBe(false);
+      expect(writes()).toBe(2);
+    }));
   });
 
   describe('mirror is best-effort (never throws out of withSyncOp)', () => {

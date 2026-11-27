@@ -83,6 +83,14 @@ export type EpisodeEffect =
  */
 const NEVER_AUTO_PROPOSE_KEYS = new Set(['developmentAgent', 'monitoring.machineCoherence']);
 
+/** Default-model rows (`defaultModel.<framework>`) never auto-propose a direction:
+ *  a majority or lease-holder tie-break can pick "not set" and propose removing the
+ *  intended model, and the advertised value is a clamped id, not a writable one.
+ *  The operator names the model instead. */
+function isDefaultModelKey(key: string): boolean {
+  return key.startsWith('defaultModel.');
+}
+
 /** The result of an operator approval attempt (§4.2.1-i). */
 export interface FixApprovalResult {
   ok: boolean;
@@ -584,7 +592,8 @@ export class MachineCoherenceEpisodeManager {
   /** Only FLAG rows carry a config override to equalize; the two §4.2.1-iii root
    *  classes are excluded (manual decision block instead). */
   private isAutoProposable(rowIdentity: string): boolean {
-    return dimensionOf(rowIdentity) === 'flag' && !NEVER_AUTO_PROPOSE_KEYS.has(keyOf(rowIdentity));
+    const key = keyOf(rowIdentity);
+    return dimensionOf(rowIdentity) === 'flag' && !NEVER_AUTO_PROPOSE_KEYS.has(key) && !isDefaultModelKey(key);
   }
 
   /**
@@ -924,7 +933,9 @@ export class MachineCoherenceEpisodeManager {
     //    graduation/blast-radius action the agent never auto-proposes).
     const first = rows[0];
     let fixLine: string;
-    if (!this.isAutoProposable(first)) {
+    if (isDefaultModelKey(keyOf(first))) {
+      fixLine = `They are set to different default models (${renderValueClasses(first, input.nicknameOf)}; account-default means nothing is set, so the login's own default runs). Tell me which model you want on all of them and I'll set it on each machine — I'll do nothing until you say.`;
+    } else if (!this.isAutoProposable(first)) {
       const divergentNick = input.nicknameOf(divergentMachineFor(first, input));
       fixLine = `This one I won't touch on my own — ${keyOf(first)} is a root switch (flipping it changes far more than this setting). It differs on ${divergentNick} vs ${restOfPoolExcluding(this.episodeParticipants(ep), divergentMachineFor(first, input), input.nicknameOf)}. Tell me which way you want it and I'll set it — I'll do nothing until you say.`;
     } else {

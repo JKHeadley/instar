@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-21T05:34:28.090Z",
+  "slug": "gemini-payg-live-test",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/templates/scripts/secret-set.mjs matches SecretDrop / never-on-disk invariant",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 1422,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "scripts/gemini-payg-fake-google-preload.mjs",
+      "scripts/gemini-payg-live-test-lib.mjs",
+      "scripts/gemini-payg-live-test.mjs",
+      "src/commands/init.ts",
+      "src/core/MeteredSpendGate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/server/geminiPaygGoLiveWiring.ts",
+      "src/server/middleware.ts",
+      "src/templates/scripts/secret-set.mjs"
+    ],
+    "addedLines": 1419,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

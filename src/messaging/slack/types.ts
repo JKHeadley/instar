@@ -66,7 +66,7 @@ export interface SlackConfig {
    */
   formatMode?: 'mrkdwn' | 'legacy-passthrough';
   /** Audio file transcription provider */
-  audioTranscriptionProvider?: 'groq' | 'openai';
+  audioTranscriptionProvider?: 'groq' | 'openai' | 'local';
   /** Stall detection timeout in minutes (default: 5) */
   stallTimeoutMinutes?: number;
   /** Promise follow-through timeout in minutes (default: 10) */
@@ -207,12 +207,16 @@ export interface SlackUser {
   is_bot?: boolean;
 }
 
+/** How Slack itself labels a conversation: a channel (public or private) shows '#', a DM or group DM does not. */
+export type SlackChannelKind = 'channel' | 'dm' | 'group-dm';
+
 export interface SlackChannel {
   id: string;
   name: string;
   is_archived: boolean;
   is_private: boolean;
   is_im?: boolean;
+  is_mpim?: boolean;
   num_members?: number;
   topic?: { value: string };
   purpose?: { value: string };

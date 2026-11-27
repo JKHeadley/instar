@@ -84,7 +84,7 @@ describe('requests', () => {
 
 describe('keys', () => {
   it('nothing waiting with keys read is the all-clear', () => {
-    expect(summarizeSecrets(src())).toMatchObject({ tone: 'ok', headline: 'Nothing is waiting. This machine holds 2 keys.', state: 'ok' });
+    expect(summarizeSecrets(src())).toMatchObject({ tone: 'ok', headline: 'Nothing is waiting. The agent holds 2 keys.', state: 'ok' });
   });
 
   it('a path carrying a token becomes a count, not a name', () => {
@@ -96,7 +96,7 @@ describe('keys', () => {
 
   it('a vault of saved submissions only does not read as empty', () => {
     const r = summarizeSecrets(src({ keys: { state: 'ok', names: [`secretDrops.${TOKEN}`] } }));
-    expect(r.headline).toBe('Nothing is waiting. This machine holds 0 keys and 1 saved submission.');
+    expect(r.headline).toBe('Nothing is waiting. The agent holds 0 keys and 1 saved submission.');
   });
 
   it('names that shorten alike still count as separate keys', () => {
@@ -145,7 +145,7 @@ describe('keys', () => {
 
   it('a vault that will not open leads, and shows no names', () => {
     const r = summarizeSecrets(src({ keys: { state: 'decrypt-failed' }, requests: { state: 'ok', pending: [req()] } }));
-    expect(r).toMatchObject({ tone: 'bad', headline: "The saved keys on this machine can't be opened." });
+    expect(r).toMatchObject({ tone: 'bad', headline: "The saved keys can't be opened." });
     expect(r.keys).toMatchObject({ state: 'decrypt-failed', count: null, names: [] });
   });
 
@@ -153,7 +153,7 @@ describe('keys', () => {
     for (const keys of [{ state: 'unavailable' as const }, { state: 'ok' as const, names: 'x' }, { state: 'ok' as const, names: [5] }]) {
       const r = summarizeSecrets(src({ keys }));
       expect((r.keys as { count: unknown }).count).toBeNull();
-      expect(r).toMatchObject({ tone: 'unknown', headline: "Nothing is waiting, but I can't tell which keys this machine holds." });
+      expect(r).toMatchObject({ tone: 'unknown', headline: "Nothing is waiting, but I can't tell which keys the agent holds." });
     }
   });
 
@@ -215,7 +215,7 @@ describe('other machines', () => {
 
   it('the all-clear is scoped when a machine did not answer or is offline', () => {
     const a = mergeSecrets(summarizeSecrets(src()), [{ machineId: 'm_a', state: 'unreached' }], opts);
-    expect(a).toMatchObject({ tone: 'unknown', headline: 'Nothing is waiting on the machines that answered. This machine holds 2 keys.', unread: { count: 1, names: ['Mac Mini'] } });
+    expect(a).toMatchObject({ tone: 'unknown', headline: 'Nothing is waiting on the machines that answered. The agent holds 2 keys.', unread: { count: 1, names: ['Mac Mini'] } });
     const b = mergeSecrets(summarizeSecrets(src()), [], { ...opts, offlineMachineIds: ['m_b'] });
     expect(b).toMatchObject({ tone: 'unknown', offline: { count: 1, names: ['Laptop'] } });
     const c = mergeSecrets(summarizeSecrets(src()), [], { ...opts, peersRead: false });
@@ -224,7 +224,7 @@ describe('other machines', () => {
 
   it('all machines answering and clear is the plain all-clear', () => {
     const r = mergeSecrets(summarizeSecrets(src()), [{ machineId: 'm_a', state: 'ok', data: local() }], opts);
-    expect(r).toMatchObject({ tone: 'ok', headline: 'Nothing is waiting. This machine holds 2 keys.' });
+    expect(r).toMatchObject({ tone: 'ok', headline: 'Nothing is waiting. The agent holds 2 keys.' });
   });
 
   it('a peer whose vault will not open leads', () => {
