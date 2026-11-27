@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "planned-restart-admission-enablement",
+  "sessionId": "a1b42eb8-a116-44f0-88db-7fb10f903f2e",
+  "timestamp": "2026-11-27T09:23:36.933Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-admission-enablement.md",
+  "artifactSha256": "cae34215590687f80e8e4430eae08486c8b9075c44b0c8cf6028083a8d574398",
+  "coveredFiles": [
+    "src/core/plannedRestartAdmissionTimeout.ts",
+    "src/core/restartRequestFile.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible correction of local request publication timing. Lease authority and rollout settings are untouched.",
+  "eli16Path": "upgrades/eli16/planned-restart-admission-enablement.md",
+  "sideEffectsPath": "upgrades/side-effects/planned-restart-admission-enablement.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

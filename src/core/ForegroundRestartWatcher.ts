@@ -17,13 +17,13 @@
  * it handles restarts and this watcher should not be started.
  */
 
+import { removeActiveRestartRequestFile } from './restartRequestFile.js';
 import { describeRestartRequester, recordRestartRequest } from './restartRequestAttribution.js';
-import { markRestartAdmissionTimeout, restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
+import { markRestartAdmissionTimeout, restartAdmissionTimedOut, retireTimedOutRestartRequest } from './plannedRestartAdmissionTimeout.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { markPlannedRestartDeferred, plannedRestartVerifyState } from './PlannedRestartVerifyGuard.js';
 
 export interface RestartRequest {
@@ -120,9 +120,21 @@ export class ForegroundRestartWatcher extends EventEmitter {
       const raw = fs.readFileSync(this.flagPath, 'utf-8');
       if (restartAdmissionTimedOut(this.flagPath, raw)) {
         this.reportTimeout(raw);
+        retireTimedOutRestartRequest(this.flagPath, raw);
         return;
       }
-      const data: RestartRequest = JSON.parse(raw);
+      let data: RestartRequest;
+      try {
+        data = JSON.parse(raw) as RestartRequest;
+      } catch {
+        removeActiveRestartRequestFile(this.flagPath, raw);
+        return;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        removeActiveRestartRequestFile(this.flagPath, raw);
+        return;
+      }
+
 
       // planned-restart-keeps-lead §1 step 3 — one bounded wait per request for the holder's
       // window renewal, with the guard held so a second tick cannot consume meanwhile. Afterwards
@@ -143,6 +155,7 @@ export class ForegroundRestartWatcher extends EventEmitter {
 
       if (restartAdmissionTimedOut(this.flagPath, raw)) {
         this.reportTimeout(raw);
+        retireTimedOutRestartRequest(this.flagPath, raw);
         return;
       }
 
@@ -174,8 +187,9 @@ export class ForegroundRestartWatcher extends EventEmitter {
           ? this.config.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt })
           : 'wait';
         if (admission !== 'ready' && admission !== 'not-applicable') {
-          if (markRestartAdmissionTimeout(this.flagPath, raw, data.requestedAt)) {
+          if (markRestartAdmissionTimeout(this.flagPath, raw)) {
             this.reportTimeout(raw);
+            retireTimedOutRestartRequest(this.flagPath, raw);
             return;
           }
           if (this.deferredLeaseRequest !== key) {
@@ -186,13 +200,11 @@ export class ForegroundRestartWatcher extends EventEmitter {
         }
       }
       this.deferredLeaseRequest = null;
+      if (!removeActiveRestartRequestFile(this.flagPath, raw)) return;
       recordRestartRequest(path.dirname(path.dirname(this.flagPath)), data, 'foreground-watcher');
       console.log(data.targetVersion
         ? `[ForegroundRestartWatcher] Restart requested by ${requester.label} for v${data.targetVersion} (from v${data.previousVersion})`
         : `[ForegroundRestartWatcher] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${data.reason.slice(0, 200)}` : ''})`);
-
-      // Clear the flag to prevent re-triggering on next startup
-      try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:102' }); } catch { /* ignore */ }
 
       // Write a planned-exit marker so the supervisor (if running) knows this
       // was a planned restart, not a crash. Solves the race condition where we
@@ -232,8 +244,7 @@ export class ForegroundRestartWatcher extends EventEmitter {
         }, delayMs);
       }
     } catch {
-      // Malformed flag — clean up
-      try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:144' }); } catch { /* ignore */ }
+      // The request may have been replaced after the read. Leave it for the next poll.
     }
   }
 }

@@ -58,6 +58,7 @@ These rules can be measured without a person. They are the ones to build automat
 | `DS-LAYOUT-6` | Every registered screen has a reachable navigation control at every standard size. |
 | `DS-LAYOUT-7` | Protected text (buttons, statuses, numbers, dates) is one line tall and not cut. |
 | `DS-LAYOUT-9` | A second paint leaves scroll position, focus and open sections unchanged. |
+| `DS-LAYOUT-13` | Generated conversations retain authenticated origin, authorized parentage or a readable unplaced state through creation, restart and replication. |
 | `DS-DATA-1` | Every value in a number column is one line tall. |
 | `DS-DATA-2` | Right edges of the numbers in a column line up to within 1 unit. |
 | `DS-DATA-3` | The sequence of row labels is identical in every item of a list. |
@@ -182,6 +183,24 @@ These rules can be measured without a person. They are the ones to build automat
 - **Surfaces**: All.
 - **Check**: review. Lay the captures side by side: is the header in the same place and are section headings the same size, weight and case?
 - **Source**: Mac review finding 10 and consistency rule 6; dashboard floors F1 and F7.
+
+### DS-LAYOUT-12 · The main conversation has a fixed primary place
+- **Rule**: When a product has one canonical go-to conversation, it has a distinct, fixed place before Projects and ordinary chats in every list mode. It uses the authoritative conversation reference, never its title or an ordinary user pin, and does not appear a second time among ordinary rows. Search, refresh and a fallback server response preserve that primary place. Unknown identity is shown as unavailable or recoverable, never guessed.
+- **Why**: The person should immediately know where to ask for general help, even when many project and helper conversations exist.
+- **Bad**: The Chief of Staff looks like an ordinary pinned row below Projects and disappears while searching.
+- **Good**: One clearly identified Chief of Staff entry stays above the project list on Mac and iPhone, with its own accessible identity and readable status.
+- **Surfaces**: All.
+- **Check**: review. Check grouped, flat, search and fallback states at normal, narrow and maximum-text sizes. Structural regressions also verify canonical identity, no duplicate row, stable selection and primary-before-project geometry; a look-alike title must not acquire the role.
+- **Earned from**: DF-0002.
+
+### DS-LAYOUT-13 · Generated work records its origin and real parent
+- **Rule**: Every conversation records authenticated creation provenance. Generated work also records an authorized parent, an explicit owner-approved root, or a recoverable unplaced state. A title, project grouping key or absent legacy field never establishes parentage. Read and write projections use the same policy. Missing or failed linkage stays visible and recoverable without inventing a root or silently deleting or hiding the conversation.
+- **Why**: Helper work should be understandable in its real context, without cluttering the main list or disappearing when metadata is incomplete.
+- **Bad**: Every work-card backing conversation appears as a top-level App chat, or the client guesses a parent from its title.
+- **Good**: Generated work appears under its verified parent. Unplaced work has a readable recovery location; any reconciliation of existing chats is previewed and no history is deleted as cleanup.
+- **Surfaces**: All.
+- **Check**: machine. Exercise work-card, session and person-created roots; denied, foreign and cyclic parents; partial linkage failure; retries; restart and replication; old-server responses; and readable unplaced recovery. Verify that existing records are unchanged until authorized reconciliation.
+- **Earned from**: DF-0004.
 
 ## 2. Data display: tables, numbers, bars and alignment
 
@@ -442,6 +461,15 @@ These rules can be measured without a person. They are the ones to build automat
 - **Surfaces**: All.
 - **Check**: review. For each disabled control: is the reason visible, and can it ever become enabled here?
 - **Source**: Mac review finding 11.
+
+### DS-ACTION-8 · Native context actions work on the thing being clicked
+- **Rule**: Pointer-based conversation surfaces expose native context actions on the actual row and message text hit targets, including keyboard invocation. Each action retains its conversation, message, window and permission scope. Local close is distinct from stopping or deleting; reply and message-link actions retain message identity. Unsupported operations never appear as working actions.
+- **Why**: People expect right-click and the keyboard context key to act on the item they selected, not a nearby container or another window's last selection.
+- **Bad**: Right-clicking a message's words opens only a generic text menu, or Copy message link copies the conversation link instead.
+- **Good**: The native menu opens over words and background, preserves selection and links, and applies the chosen action to that exact authorized message with honest success, cancellation and error states.
+- **Surfaces**: All.
+- **Check**: review. Open the actual native menu over both words and background, by keyboard and pointer, at ordinary and large text. Exercise two windows, stale identifiers, wrong-machine and permission failures, destructive cancellation and platform mirror failures against the real action contracts.
+- **Earned from**: DF-0003.
 
 ## 6. Words and status vocabulary
 
@@ -724,3 +752,4 @@ The earlier documents stay in force for the details they hold (for example the d
 | 2026-11-21 | First version: 65 rules in 10 sections, standard screenshot sizes, and the growth process. | Owner request, 2026-11-21 |
 | 2026-11-21 | Added DS-LAYOUT-3, DS-DATA-1, DS-DATA-2, DS-DATA-3, DS-DATA-6, DS-DATA-7, DS-DATA-8, DS-TYPE-3, DS-COLOUR-3, DS-COLOUR-4, DS-COLOUR-7, DS-PARITY-1 to DS-PARITY-5 and DS-DELIGHT-1. Sharpened DS-DATA-4, DS-DATA-5, DS-DATA-9, DS-WORDS-4 and DS-DELIGHT-6. | DF-0001 |
 
+| 2026-11-22 | Added the fixed main conversation rule DS-LAYOUT-12, native context actions rule DS-ACTION-8 and generated-work provenance rule DS-LAYOUT-13. Implementation and release evidence remain open in their records. | DF-0002, DF-0003, DF-0004 |

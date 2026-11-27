@@ -7,6 +7,8 @@
  * hand-wrote state/restart-requested.json with no requester; the restart showed as
  * "requested by undefined". The route refuses a nameless request.
  */
+import { onRestartRequested } from '../../src/core/restartRequestSignal.js';
+import { publishRestartRequestFile } from '../../src/core/restartRequestFile.js';
 import { markRestartAdmissionTimeout } from '../../src/core/plannedRestartAdmissionTimeout.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
@@ -116,12 +118,32 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
       plannedRestart: true, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     });
     fs.writeFileSync(flagPath(), raw);
-    expect(markRestartAdmissionTimeout(flagPath(), raw, requestedAt)).toBe(true);
+    const now = Date.now();
+    expect(markRestartAdmissionTimeout(flagPath(), raw, now - 15 * 60_000)).toBe(false);
+    expect(markRestartAdmissionTimeout(flagPath(), raw, now)).toBe(true);
     const res = await post({ requestedBy: 'tester', reason: 'retry the restart' });
     expect(res.status).toBe(202);
     expect(res.body.alreadyPending).toBeUndefined();
     expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'tester' });
     SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+  });
+
+  it('preserves an update published while an attributed restart is announcing', async () => {
+    const update = JSON.stringify({ requestedAt: new Date().toISOString(), requestedBy: 'auto-updater',
+      targetVersion: '9.9.9', plannedRestart: true, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const unsubscribe = onRestartRequested(() => {
+      publishRestartRequestFile(flagPath(), update);
+      return null;
+    });
+    try {
+      const res = await post({ requestedBy: 'tester', reason: 'apply a setting' });
+      expect(res.status).toBe(202);
+      expect(res.body.alreadyPending).toEqual({ kind: 'update', targetVersion: '9.9.9' });
+      expect(fs.readFileSync(flagPath(), 'utf8')).toBe(update);
+    } finally {
+      unsubscribe();
+      SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+    }
   });
 
   it('refuses (429 + Retry-After) when a restart was consumed under 2 minutes ago; allows it again after', async () => {

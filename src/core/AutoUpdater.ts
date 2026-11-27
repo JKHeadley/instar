@@ -1,3 +1,4 @@
+import { publishRestartRequestFileAsync } from './restartRequestFile.js';
 import { sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * Auto Updater — built-in periodic update mechanism.
@@ -1404,9 +1405,7 @@ export class AutoUpdater {
     try {
       const dir = path.dirname(flagPath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-      fs.renameSync(tmpPath, flagPath);
+      await publishRestartRequestFileAsync(flagPath, JSON.stringify(data, null, 2));
       written = true;
       console.log(`[AutoUpdater] Restart requested — supervisor or ForegroundRestartWatcher will handle (target: v${newVersion})`);
     } catch (err) {

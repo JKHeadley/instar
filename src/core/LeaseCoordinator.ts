@@ -1819,13 +1819,14 @@ export class LeaseCoordinator {
         })
         .catch(() => false); // @silent-fallback-ok: a throw is an UNCONFIRMED renewal (fail-closed; hold/grace/suspend below)
       // A relinquish or a different restart request supersedes the in-flight renewal.
-      if (generation !== this.relinquishGeneration || this.episode !== episodeAtSign) return false;
+      if (generation !== this.relinquishGeneration) return false;
+      if (this.episode !== episodeAtSign) return this.holdsLease();
     } else {
       confirmed = this.d.store.refresh(renewed);
     }
 
     if (confirmed) {
-      if (!this.installRenewal(renewed)) return false;
+      if (!this.installRenewal(renewed)) return this.holdsLease();
       this.markRenewOk(renewed.nonce);
       if (pendingWindow !== null) this.persistPending(renewed, true);
       if (this.soloHoldEvidenceEpoch !== null) {
@@ -1980,17 +1981,24 @@ export class LeaseCoordinator {
     const renewInterval = this.d.renewIntervalMs?.() ?? Math.max(5_000, Math.min(60_000, Math.round(this.fl.ttlMs * 0.5)));
     const minimumRemainingMs = requestedBy !== 'role-change' && this.d.plannedRestartAdmissionEnabled?.()
       ? this.d.plannedRestartMinimumRemainingMs?.() ?? null : null;
+    const admissionMinimumMs = minimumRemainingMs === null ? null : minimumRemainingMs + 20_000;
     const v = resolveWindowMs({
       ttlMs: this.fl.ttlMs,
       pendingRenewIntervalMs: pendingCadenceMs(renewInterval, !!this.d.tunnel),
       broadcastDeadlineMs: this.d.broadcastDeadlineMs?.() ?? 8_000,
       bootSamplesMs: this.d.continuity?.bootSamplesMs() ?? [],
       windowMsOverride: settings.windowMs,
-      admissionMinimumMs: minimumRemainingMs === null ? null : minimumRemainingMs + 20_000,
+      admissionMinimumMs,
       ownNonRenewalMissedObservations: this.d.staleHolderTakeover?.()?.nonRenewalMissedObservations ?? null,
       failoverThresholdMs: this.fl.failoverThreshold,
       unsignedCeilingMs: UNSIGNED_WINDOW_CEILING_MS,
     });
+    if (admissionMinimumMs !== null && v.ceilingMs < admissionMinimumMs) {
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'error', reason: 'The peer-enforced restart lease ceiling cannot fit the measured boot allowance.',
+        context: { requiredWindowMs: admissionMinimumMs, ceilingMs: v.ceilingMs, ceilingSource: v.ceilingSource },
+      });
+    }
     const note = v.clamped
       ? `the window was clamped to its ${v.clamped} (${v.windowMs} ms; ${v.clamped === 'ceiling' ? `the ${v.ceilingSource} cap` : 'the lease TTL plus the margin'}) from a base of ${v.baseMs} ms`
       : null;
