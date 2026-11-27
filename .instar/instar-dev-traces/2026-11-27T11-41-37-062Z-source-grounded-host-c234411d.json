@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T11:41:37.062Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "4b572127288ef0f8a6c4e6073f31c929159a08ba142b72682080da506c27d928",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual evaluation tool with no runtime callers; applies the reviewer's re-check nits: a limits field in totals, notRun instead of failed criteria, and Codex notice and plan items no longer halt; the frozen scoring modules are unchanged.",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

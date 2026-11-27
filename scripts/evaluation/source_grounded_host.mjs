@@ -278,12 +278,16 @@ export function checkClaudeStream(raw) {
 // whose items are only the model's own messages and reasoning. Any other item
 // (a command, a file change, an MCP call, a web search) is tool activity.
 // This is a fixed list of allowed kinds, so a new tool kind is refused.
-export const CODEX_ALLOWED_ITEMS = ['agent_message', 'reasoning'];
+// todo_list is Codex's plan display (no input or output beyond the model's own
+// text) and error items are notices; neither touches files, commands or the web.
+export const CODEX_ALLOWED_ITEMS = ['agent_message', 'reasoning', 'todo_list', 'error'];
 export function checkCodexStream(raw) {
   let events;
   try { events = raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l)); } catch { fail('unparseable-stream'); }
   for (const e of events) {
-    if (e.type === 'turn.failed' || e.type === 'error') fail('model-call-failed');
+    // A top-level error event can be a retry or reconnect notice; only a failed
+    // turn, or no completed turn at all, makes the call fail.
+    if (e.type === 'turn.failed') fail('model-call-failed');
     if (e.item !== undefined) need(CODEX_ALLOWED_ITEMS.includes(e.item?.type), 'tool-activity');
   }
   const done = events.filter(e => e.type === 'turn.completed');
@@ -483,7 +487,8 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
     const turn = runJudgeRoute(route, judgePrompt(ctx.trial, ctx.records, ctx.rubricBytes, answer.answerRaw), timeoutMs, run.path('scratch'));
     const base = { trialId, arm: ctx.trial.arm, repeat: ctx.trial.repeat, slotId: slot.id, family: slot.family,
       attemptId, ordinal, planHash: ctx.planHash, answerHash: sha(answer.answerRaw), completedOrdinal: run.tick(), usage: turn.usage ?? {} };
-    // A route failure is not a judgment: halt and save nothing, so a rerun retries this slot.
+    // A route failure is not a judgment: halt and save nothing, so a rerun retries
+    // this slot from a fresh ledger (an earlier timeout in it is dropped too).
     need(turn.state !== 'failed', `judge-route-failed-${slot.family}-${turn.error}`);
     if (turn.state !== 'ok') { ledger.attempts.push({ ...base, state: turn.state, error: turn.error ?? null }); continue; }
     let raw;
@@ -504,7 +509,7 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
 function armSummary() {
   return { trials: 0, answered: 0, structurallyValid: 0, parseOutcomes: {}, judgedComplete: 0,
     criteria: { pass: 0, fail: 0, disputed: 0, incomplete: 0 }, allCriteriaPass: 0, criticalFailureTrials: 0,
-    criticalSignals: 0, independence: {}, notJudged: 0, outputTokens: 0, byRepeat: {} };
+    criticalSignals: 0, independence: {}, notJudged: 0, notRun: 0, outputTokens: 0, byRepeat: {} };
 }
 
 export function totalRun(run, pack) {
@@ -546,6 +551,8 @@ export function totalRun(run, pack) {
       }
     } else if (outcome === 'valid') {
       s.notJudged += 1; // a valid answer still waiting for one or both judges
+    } else if (outcome === 'not-run') {
+      s.notRun += 1; // no answer recorded yet (for example a timeout not saved): not a wrong answer
     } else {
       // An invalid or missing answer fails every criterion it cannot show.
       s.criteria.fail += ctx.trial.criteria.length;
@@ -572,7 +579,9 @@ export function totalRun(run, pack) {
     paired[`${x}-minus-${y}`] = { pairs: diffs.length, mean: diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : null,
       better: diffs.filter(d => d > 0).length, worse: diffs.filter(d => d < 0).length, same: diffs.filter(d => d === 0).length };
   }
-  const totals = { version: 1, status: 'exploratory-not-qualification', packManifestHash: index.packManifestHash,
+  // Known limits travel with the numbers, so no reader of totals.json misses them.
+  const limits = ['arm-inferable-from-citations', 'answer-model-and-judge-a-same-family'];
+  const totals = { version: 1, status: 'exploratory-not-qualification', limits, packManifestHash: index.packManifestHash,
     planHashes: sha(JSON.stringify(index.planHashes)), judges: index.judges, arms, paired,
     trials: perTrial.map(({ passFraction, ...t }) => ({ ...t, passFraction: Math.round(passFraction * 1000) / 1000 })) };
   run.write('totals.json', totals);

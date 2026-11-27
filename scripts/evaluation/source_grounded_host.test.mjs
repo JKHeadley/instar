@@ -195,13 +195,18 @@ test('the Codex stream check allows only model messages and reasoning', () => {
     line({ type: 'item.completed', item: { type: 'agent_message', text: '{}' } }),
     line({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } })].join('\n');
   assert.deepEqual(checkCodexStream(ok), { usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } });
-  assert.deepEqual(CODEX_ALLOWED_ITEMS, ['agent_message', 'reasoning']);
+  assert.deepEqual(CODEX_ALLOWED_ITEMS, ['agent_message', 'reasoning', 'todo_list', 'error']);
+  // A plan list, an error notice item and a top-level reconnect notice do not fail a completed turn.
+  const notices = [line({ type: 'error', message: 'Reconnecting... 1/5' }), line({ type: 'item.completed', item: { type: 'todo_list', items: [] } }),
+    line({ type: 'item.completed', item: { type: 'error', message: 'notice' } }), line({ type: 'turn.completed', usage: {} })].join('\n');
+  assert.deepEqual(checkCodexStream(notices), { usage: {} });
   for (const kind of ['command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'some_new_tool']) {
     const bad = [line({ type: 'item.started', item: { type: kind } }), line({ type: 'turn.completed', usage: {} })].join('\n');
     assert.throws(() => checkCodexStream(bad), /tool-activity/);
   }
   assert.throws(() => checkCodexStream(line({ type: 'item.completed', item: { type: 'agent_message' } })), /incomplete-stream/);
   assert.throws(() => checkCodexStream([line({ type: 'turn.failed' })].join('\n')), /model-call-failed/);
+  assert.throws(() => checkCodexStream(line({ type: 'error', message: 'fatal' })), /incomplete-stream/);
   assert.throws(() => checkCodexStream('not json'), /unparseable-stream/);
   assert.ok(codexArgs('m', '/s', '/s.last').includes('--json'));
 });
@@ -270,11 +275,18 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   const text = JSON.stringify(totals);
   for (const secret of ['café', 'Friday', 'rotate', 'Summary']) assert.ok(!text.includes(secret));
   assert.ok(records.length === 3);
-  for (const arm of ARMS) assert.equal(totals.arms[arm].notJudged, 0);
+  for (const arm of ARMS) { assert.equal(totals.arms[arm].notJudged, 0); assert.equal(totals.arms[arm].notRun, 0); }
+  assert.deepEqual(totals.limits, ['arm-inferable-from-citations', 'answer-model-and-judge-a-same-family']);
   // A valid answer still missing a judge ledger is counted, not silently dropped.
   const full = plan.trials.find(x => x.arm === 'full');
   writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json.bak`), readFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`)));
   writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`), '');
   run.has = rel => { try { return readFileSync(join(runDir, rel), 'utf8').length > 0; } catch { return false; } };
   assert.equal(totalRun(run, pack).arms.full.notJudged, 1);
+  // A trial with no answer recorded is counted as not run, not as failed criteria.
+  const before = totalRun(run, pack).arms.full.criteria.fail;
+  writeFileSync(join(runDir, `answers/${full.trialId}.json`), '');
+  const after = totalRun(run, pack).arms.full;
+  assert.equal(after.notRun, 1);
+  assert.equal(after.criteria.fail, before);
 });
