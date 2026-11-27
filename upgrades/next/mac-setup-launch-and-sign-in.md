@@ -1,0 +1,13 @@
+# Reliable Mac Setup Startup and Sign-In
+
+## What Changed
+
+Mac setup pauses before creating an agent when it cannot verify the selected account. A sign-in already in progress can finish and be checked again. A detached server starts with the same Node executable and project directory as its launcher.
+
+## What to Tell Your User
+
+If the app cannot verify your account during setup, it asks you to check the account and retry. When setup starts the agent, the server uses the Node version setup installed.
+
+## Summary of New Capabilities
+
+The app checks sign-in before creating a local agent. The server keeps the selected runtime and directory during detached startup.
