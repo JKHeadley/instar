@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseVitestJson, evaluateRun, LaneReportParseError, FAILURE_MESSAGE_MAX, type LaneRunInput } from '../../../src/localVerify/laneReport.js';
+import { parseVitestJson, evaluateRun, outcomeDigest, testOutcome, OUTCOME_DIGEST_DOMAIN, LaneReportParseError, FAILURE_MESSAGE_MAX, type LaneRunInput } from '../../../src/localVerify/laneReport.js';
 import { computeInventory, LANES, type LaneDefinition } from '../../../src/localVerify/inventory.js';
 
 const ROOT = '/Users/x/.instar/agents/echo/.worktrees/.verify/runs/abcdef012345';
@@ -308,5 +308,92 @@ describe('decideIsolationRerun', () => {
     expect(decideIsolationRerun({ ...base, budgetLeft: 1, report: rep({ a: 1 }), laneFiles: ['a'], importRelated: new Set(['a']) }).rerun).toEqual(['a']);
     expect(decideIsolationRerun({ ...base, budgetLeft: 1, report: rep({ a: 1, b: 1 }), laneFiles: ['a', 'b'], importRelated: new Set(['a', 'b']) })).toEqual({ rerun: [], reason: 'rerun-budget-spent' });
     expect(decideIsolationRerun({ ...base, report: rep({ a: 1, b: 1, c: 1, d: 1 }), laneFiles: ['a', 'b', 'c', 'd'], importRelated: new Set(['a']) })).toEqual({ rerun: [], reason: 'too-many-failures' });
+  });
+});
+
+describe('parseVitestJson — the names-and-outcomes digest (borrowed helpers)', () => {
+  const F = 'tests/integration/a.test.ts';
+  const named = (path: string, tests: Array<{ name: string; status: string }>, fileStatus?: string, message?: string) => ({
+    name: `${ROOT}/${path}`, status: fileStatus ?? (tests.some((t) => t.status === 'failed') ? 'failed' : 'passed'), message: message ?? '',
+    assertionResults: tests.map((t) => ({ fullName: t.name, title: t.name, status: t.status, failureMessages: t.status === 'failed' ? ['AssertionError: nope'] : [] })),
+  });
+  const rep = (files: unknown[]) => JSON.stringify({ testResults: files });
+  const digestOf = (tests: Array<{ name: string; status: string }>, file = F) => parseVitestJson(rep([named(file, tests)]), ROOT, { outcomeDigest: true }).files.get(file)!.outcomeDigest!;
+  const real = [{ name: 'server starts', status: 'passed' }, { name: 'server restarts after a crash', status: 'passed' }, { name: 'server talks to launchd', status: 'skipped' }, { name: 'server drains', status: 'todo' }];
+
+  it('without the option the output is exactly what it was: no digest field on any file, passing or failing', () => {
+    const text = rep([named(F, real), named('tests/integration/b.test.ts', [{ name: 'x', status: 'failed' }, { name: 'y', status: 'passed' }])]);
+    const plain = parseVitestJson(text, ROOT);
+    const solo = parseVitestJson(text, ROOT, { solo: true });
+    for (const r of [plain, solo]) for (const c of r.files.values()) expect('outcomeDigest' in c).toBe(false);
+    // The option adds the one field and changes nothing else, key order included.
+    const withDigest = parseVitestJson(text, ROOT, { outcomeDigest: true });
+    for (const [path, c] of withDigest.files) {
+      const { outcomeDigest: d, ...restOfFile } = c;
+      expect(d).toMatch(/^[0-9a-f]{64}$/);
+      expect(JSON.stringify(restOfFile)).toBe(JSON.stringify(plain.files.get(path)));
+    }
+    expect(JSON.stringify([...plain.files])).toBe(JSON.stringify([...parseVitestJson(text, ROOT, {}).files]));
+  });
+
+  it('the canonical form: the domain line, then one sorted JSON [name, outcome] line per test, SHA-256', () => {
+    const lines = [
+      JSON.stringify(['server drains', 'todo']), JSON.stringify(['server restarts after a crash', 'passed']),
+      JSON.stringify(['server starts', 'passed']), JSON.stringify(['server talks to launchd', 'skipped']),
+    ];
+    const expected = crypto.createHash('sha256').update(`${OUTCOME_DIGEST_DOMAIN}\n${lines.map((l) => `${l}\n`).join('')}`, 'utf8').digest('hex');
+    expect(OUTCOME_DIGEST_DOMAIN).toBe('instar-lv-outcome-digest-v1');
+    expect(digestOf(real)).toBe(expected);
+    expect(outcomeDigest([])).toBe(crypto.createHash('sha256').update(`${OUTCOME_DIGEST_DOMAIN}\n`, 'utf8').digest('hex'));
+  });
+
+  it('does not depend on report order, nor on how a file\'s entries are split', () => {
+    expect(digestOf([...real].reverse())).toBe(digestOf(real));
+    const split = parseVitestJson(rep([named(F, real.slice(0, 1)), named(F, real.slice(1))]), ROOT, { outcomeDigest: true }).files.get(F)!;
+    expect(split.outcomeDigest).toBe(digestOf(real));
+    expect([split.passed, split.skipped, split.todo]).toEqual([2, 1, 1]);
+  });
+
+  it('equal counts, different tests: a skip swapped for another, or a test replaced, changes the digest', () => {
+    const swapped = [{ name: 'server starts', status: 'passed' }, { name: 'server restarts after a crash', status: 'skipped' }, { name: 'server talks to launchd', status: 'passed' }, { name: 'server drains', status: 'todo' }];
+    const a = parseVitestJson(rep([named(F, real)]), ROOT, { outcomeDigest: true }).files.get(F)!;
+    const b = parseVitestJson(rep([named(F, swapped)]), ROOT, { outcomeDigest: true }).files.get(F)!;
+    expect([a.passed, a.failed, a.skipped, a.todo]).toEqual([b.passed, b.failed, b.skipped, b.todo]);
+    expect(a.outcomeDigest).not.toBe(b.outcomeDigest);
+    const renamed = real.map((t) => (t.name === 'server starts' ? { ...t, name: 'server starts on Linux' } : t));
+    expect(digestOf(renamed)).not.toBe(digestOf(real));
+    // A skip and a to-do are different outcomes, though both mean "did not run".
+    expect(digestOf([{ name: 'x', status: 'skipped' }])).not.toBe(digestOf([{ name: 'x', status: 'todo' }]));
+  });
+
+  it('duplicates are kept: a test registered twice differs from once, and two outcomes of one name differ from two equal ones', () => {
+    expect(digestOf([{ name: 'x', status: 'passed' }, { name: 'x', status: 'passed' }])).not.toBe(digestOf([{ name: 'x', status: 'passed' }]));
+    expect(digestOf([{ name: 'x', status: 'passed' }, { name: 'x', status: 'skipped' }])).not.toBe(digestOf([{ name: 'x', status: 'passed' }, { name: 'x', status: 'passed' }]));
+    expect(digestOf([{ name: 'x', status: 'skipped' }, { name: 'x', status: 'passed' }])).toBe(digestOf([{ name: 'x', status: 'passed' }, { name: 'x', status: 'skipped' }]));
+  });
+
+  it('uses the outcome classes of the counting rules, not vitest\'s status words', () => {
+    expect(['passed', 'skipped', 'disabled', 'todo', 'failed', 'pending', 'weird', undefined, 7].map(testOutcome))
+      .toEqual(['passed', 'skipped', 'skipped', 'todo', 'failed', 'failed', 'failed', 'failed', 'failed']);
+    expect(digestOf([{ name: 'x', status: 'disabled' }])).toBe(digestOf([{ name: 'x', status: 'skipped' }]));
+    expect(digestOf([{ name: 'x', status: 'pending' }])).toBe(digestOf([{ name: 'x', status: 'failed' }]));
+    expect(digestOf([{ name: 'x', status: 'passed' }])).not.toBe(digestOf([{ name: 'x', status: 'failed' }]));
+  });
+
+  it('a name cannot imitate another line: quotes, commas and newlines in a name are escaped', () => {
+    expect(digestOf([{ name: 'a","passed"]\n["b', status: 'passed' }])).not.toBe(digestOf([{ name: 'a', status: 'passed' }, { name: 'b', status: 'passed' }]));
+    expect(digestOf([{ name: 'a b', status: 'passed' }])).not.toBe(digestOf([{ name: 'a', status: 'passed' }, { name: 'b', status: 'passed' }]));
+  });
+
+  it('every file of the report gets a digest, a failing one included; a file-level failure adds no line and shows in the count', () => {
+    const r = parseVitestJson(rep([
+      named(F, real),
+      named('tests/integration/red.test.ts', [{ name: 'x', status: 'failed' }, { name: 'y', status: 'passed' }]),
+      named('tests/integration/broken.test.ts', [], 'failed', 'Cannot find module'),
+    ]), ROOT, { outcomeDigest: true });
+    expect(r.files.get('tests/integration/red.test.ts')!.outcomeDigest).toBe(outcomeDigest([{ name: 'x', outcome: 'failed' }, { name: 'y', outcome: 'passed' }]));
+    const broken = r.files.get('tests/integration/broken.test.ts')!;
+    expect(broken.outcomeDigest).toBe(outcomeDigest([]));
+    expect(broken.failed).toBe(1);
   });
 });

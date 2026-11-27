@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "design-feedback-followups",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-23T10:45:32.632Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-followups.md",
+  "artifactSha256": "6928151770307b14a376ef65f586949142b5c5ba00d8ca5e30e8c7673b64e2c3",
+  "coveredFiles": [
+    "docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md",
+    "docs/design-feedback/DF-0002-fixed-chief-of-staff.md",
+    "docs/design-feedback/DF-0003-native-context-menus.md",
+    "docs/design-feedback/DF-0004-generated-chat-parentage.md",
+    "upgrades/side-effects/design-feedback-followups.eli16.md",
+    "upgrades/side-effects/design-feedback-followups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible documentation-only status correction with actual merged-head readbacks and clearly attributed scoped app evidence; no runtime, rule, authority, approval or private capture changes.",
+  "eli16Path": "upgrades/side-effects/design-feedback-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/design-feedback-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "verify-claim",
+        "outcome": "scoped-status-concurrence",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

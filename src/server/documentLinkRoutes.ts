@@ -338,6 +338,10 @@ export function createDocumentLinkRoutes(deps: DocumentLinkDeps): Router {
     const phone = svc && phoneId ? svc.devices.get(phoneId) : null;
     if (!svc || !phone) { res.status(503).json({ error: 'pairing-unavailable' }); return; }
     if (!svc.browserOn()) { res.status(503).json({ error: 'browser-devices-off', detail: 'Linking a computer is turned off on this agent.' }); return; }
+    if (phone.role === undefined || phone.role === 'owner') {
+      res.status(403).json({ error: 'member-phone-required', detail: 'To link a computer as the owner, open the agent dashboard on this computer and follow its browser approval steps.' });
+      return;
+    }
     const person = svc.personOfDevice(phone);
     if (!person.ok || person.role !== 'team' || !person.userId || !person.tier) { res.status(403).json({ error: 'member-phone-required' }); return; }
     const b = (req.body ?? {}) as { nonce?: unknown; browserPublicKey?: unknown };
@@ -352,9 +356,14 @@ export function createDocumentLinkRoutes(deps: DocumentLinkDeps): Router {
     const svc = deps.pairing();
     const phoneId = phoneOf(req);
     const phone = svc && phoneId ? svc.devices.get(phoneId) : null;
-    const log = svc?.teamLog() ?? null;
-    if (!svc || !phone || !log || !svc.keyLedger) { res.status(503).json({ error: 'pairing-unavailable' }); return; }
+    if (!svc || !phone) { res.status(503).json({ error: 'pairing-unavailable' }); return; }
     if (!svc.browserOn()) { res.status(503).json({ error: 'browser-devices-off', detail: 'Linking a computer is turned off on this agent.' }); return; }
+    if (phone.role === undefined || phone.role === 'owner') {
+      res.status(403).json({ error: 'member-phone-required', detail: 'To link a computer as the owner, open the agent dashboard on this computer and follow its browser approval steps.' });
+      return;
+    }
+    const log = svc.teamLog();
+    if (!log || !svc.keyLedger) { res.status(503).json({ error: 'pairing-unavailable' }); return; }
     if (log.healthState() !== 'ok') { res.status(503).json({ error: 'team-log-unavailable', detail: 'Try again in a minute.' }); return; }
     const person = svc.personOfDevice(phone);
     // The owner links computers through the console's own approved-browser flow (§3.6).

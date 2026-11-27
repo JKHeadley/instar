@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "message-retry-envelope-scan",
+  "sessionId": "a1b42eb8-a116-44f0-88db-7fb10f903f2e",
+  "timestamp": "2026-11-27T09:31:27.311Z",
+  "artifactPath": "upgrades/side-effects/message-retry-envelope-scan.md",
+  "artifactSha256": "2c749b83df132fc8978b893fe175de3032dd9b286598d6e01c38bea4daa19a30",
+  "coveredFiles": [
+    "src/messaging/DeliveryRetryManager.ts",
+    "src/messaging/MessageStore.ts",
+    "src/messaging/types.ts",
+    "tests/unit/DeliveryRetryManager-runRecoveryCycle.test.ts",
+    "tests/unit/delivery-retry-manager.test.ts",
+    "tests/unit/message-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible retry candidate scan improvement. Files and the existing per-message claim still govern dispatch.",
+  "eli16Path": "upgrades/eli16/message-retry-envelope-scan.md",
+  "sideEffectsPath": "upgrades/side-effects/message-retry-envelope-scan.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

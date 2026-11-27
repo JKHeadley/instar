@@ -52,10 +52,17 @@ describe('FoldCoordinator lock window and renew', () => {
     const c = coordinator(dir);
     const b = c.begin(T, 'prepare');
     if (!b.ok) throw new Error(b.reason);
-    for (let i = 0; i < 3_000; i++) expect(c.setLockWindow(T, b.record.foldId, { fromEntry: `e-${i}`, toEntry: `x-${'p'.repeat(60)}-${i}` })).toBe(true);
+    expect(c.setLockWindow(T, b.record.foldId, { fromEntry: 'e-0', toEntry: 'x-0' })).toBe(true);
     const file = path.join(dir, 'state', 'context-layers', T, 'fold-records', 'lock-windows.jsonl');
-    expect(fs.statSync(file).size).toBeLessThan(300 * 1024);
-    expect(readLockWindows(dir, T)).toEqual([expect.objectContaining({ foldId: b.record.foldId, fromEntry: 'e-2999' })]);
+    // Seed the actual on-disk row up to the byte boundary, then cross it through the coordinator.
+    const row = fs.readFileSync(file, 'utf-8');
+    const compactBytes = 256 * 1024;
+    const fixture = row.repeat(Math.floor(compactBytes / Buffer.byteLength(row)));
+    fs.writeFileSync(file, fixture);
+    expect(fs.statSync(file).size).toBeLessThanOrEqual(compactBytes);
+    expect(c.setLockWindow(T, b.record.foldId, { fromEntry: 'e-latest', toEntry: 'x-latest' })).toBe(true);
+    expect(fs.statSync(file).size).toBeLessThan(Buffer.byteLength(fixture));
+    expect(readLockWindows(dir, T)).toEqual([expect.objectContaining({ foldId: b.record.foldId, fromEntry: 'e-latest' })]);
   });
 
   it('renew refuses a quarantined fold (its lock is the sentinel\'s)', () => {

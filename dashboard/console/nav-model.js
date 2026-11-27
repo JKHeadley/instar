@@ -58,6 +58,7 @@ export const GROUPS = [
     tabs: [
       { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
       { id: 'machine-care', label: 'Machine care', icon: 'heart', desc: 'Weekly clean restarts: sign a machine up, skip one, change the hours, or restart it now.' },
+      { id: 'repos', label: 'Repositories', icon: 'folder', desc: 'Every repository I work in, on every machine, and whether its work has a copy anywhere else.' },
       { id: 'systems', label: 'Health', icon: 'heart', desc: 'Whether each of my subsystems is working.' },
       { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
       { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
@@ -107,7 +108,7 @@ export function allTabIds() {
 
 /** Features rebuilt natively in the console, by legacy tab id. */
 /** Tiles with no legacy dashboard tab: new pages are built in the console only. */
-export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'context', 'work-board', 'documents', 'machine-care'];
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'context', 'work-board', 'documents', 'machine-care', 'repos'];
 
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
@@ -123,6 +124,7 @@ export const NATIVE_PAGES = {
   blockers: '#/work/plans?s=in-the-way',
   machines: '#/capacity/machines',
   'machine-care': '#/capacity/machine-care',
+  repos: '#/capacity/repos',
   systems: '#/capacity/health',
   subscriptions: '#/capacity/accounts',
   spend: '#/capacity/costs',
@@ -187,6 +189,7 @@ export const PHONE_PAGE_ALIASES = {
   pace: 'work/pace',
   machines: 'capacity/machines',
   'machine-care': 'capacity/machine-care',
+  repos: 'capacity/repos',
   health: 'capacity/health',
   accounts: 'capacity/accounts',
   costs: 'capacity/costs',
@@ -239,12 +242,14 @@ export const DOORS = [
 ];
 
 /** Where each door opens. `chats` / `board`: whether that page's own probe answered 200 on this agent. */
-export function doorHref(id, { chats = false, board = false } = {}) {
+export function doorHref(id, { chats = false, board = false, graph = null, preferChats = false } = {}) {
   // The Conversations door opens the conversations hierarchy (Chief of Staff first, then All), on every agent
   // (spec §7 stage 1: "conversations-model.js keeps its hierarchy"). The browser-device chat page stays one tap
   // away inside it; opening the door on it showed "No conversations yet" on a real agent (2026-11-16).
-  void chats;
-  if (id === 'conversations') return '#/work/conversations';
+  // But where the hierarchy is switched off (graph === false: it has never been released on the owner's machines),
+  // the door opened on "Conversations is not switched on here yet". There it opens Chats, the working view
+  // (2026-11-21, topic 127504). Unknown (null) keeps the hierarchy unless the person opened Chats directly; then the door keeps that working destination without another hierarchy read.
+  if (id === 'conversations') return (graph === false || preferChats) && chats ? '#/work/chats' : '#/work/conversations';
   // Feature off (spec §7 stage 1): with the board off, Work opens the Work section (Promises, Plans, …).
   if (id === 'work') return board ? '#/work/board' : '#/work';
   return '#/agent';
@@ -262,7 +267,7 @@ export function doorOf(path) {
 export const NATIVE_PATHS = [
   'work/conversations', 'work/promises', 'work/plans', 'work/plans/in-the-way', 'work/schedule', 'work/development',
   'work/maturation', 'work/ideas', 'work/board', 'work/sessions', 'work/chats', 'work/documents',
-  'capacity/machines', 'capacity/machine-care', 'capacity/health', 'capacity/accounts', 'capacity/costs',
+  'capacity/machines', 'capacity/machine-care', 'capacity/repos', 'capacity/health', 'capacity/accounts', 'capacity/costs',
   'people/messages', 'people/notifications', 'people/agents', 'people/reach', 'people/mandates', 'people/secrets',
   'settings/allowed', 'settings/learned', 'settings/inside', 'settings/files', 'settings/context',
 ];
