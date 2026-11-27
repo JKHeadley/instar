@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-22T08:24:22.922Z",
+  "slug": "disk-steward-peer-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 94,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/awareness/disk-pool-read-fallback.md",
+      "src/monitoring/diskSteward/peerRead.ts",
+      "src/monitoring/diskSteward/wiring.ts",
+      "src/server/diskStewardRoutes.ts"
+    ],
+    "addedLines": 70,
+    "deletedLines": 24
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -51,10 +52,16 @@ describe('standing packet — real AgentServer', () => {
       projectName: 'sp-it', projectDir: root, stateDir, port: 0, authToken: TOKEN, requestTimeoutMs: 10000, version: '0.0.0',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
-      messaging: [], monitoring: {}, updates: {}, secrets: { forceFileKey: true },
+      messaging: [], monitoring: { deliveryFailureSentinel: { enabled: false } }, updates: {}, secrets: { forceFileKey: true },
     } as unknown as InstarConfig;
     const sessions = [{ id: 'inst-1', telegramTopicId: T, framework: 'claude-code' }];
-    const sessionManager = { listRunningSessions: () => sessions, getCachedRunningSessions: () => ({ count: 0, sessions: [] }), getSession: () => null, getSessionById: () => undefined, setClaudeSessionId: () => undefined };
+    const sessionManager = Object.assign(new EventEmitter(), {
+      listRunningSessions: () => sessions,
+      getCachedRunningSessions: () => ({ count: 0, sessions: [] }),
+      getSession: () => null,
+      getSessionById: () => undefined,
+      setClaudeSessionId: () => undefined,
+    });
     const topicMemory = new TopicMemory(stateDir); await topicMemory.open(); mems.push(topicMemory);
     topicMemory.insertMessage({ messageId: 1, topicId: T, text: WORDS, fromUser: true, timestamp: new Date(Date.UTC(2026, 10, 10, 10)).toISOString(), sessionName: null });
     topicMemory.insertMessage({ messageId: 2, topicId: T, text: 'second operator turn', fromUser: true, timestamp: new Date(Date.UTC(2026, 10, 10, 10, 2)).toISOString(), sessionName: null });

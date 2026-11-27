@@ -3144,6 +3144,8 @@ export interface MultiMachineConfig {
      */
     plannedRestartLeaseContinuity?: {
       enabled?: boolean;
+      /** Require a fresh authenticated holder confirmation before a planned supervised restart. Off by default. */
+      admissionEnabled?: boolean;
       /** Replaces the measured base of the window (still under the peer-enforced caps). */
       windowMs?: number;
     };

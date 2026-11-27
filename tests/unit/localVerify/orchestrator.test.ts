@@ -1048,6 +1048,110 @@ describe('runVerify — retention of failed worktrees', () => {
   });
 });
 
+describe('runVerify — task-update RPC timeout in the complete unit lane', () => {
+  const timeout = '[vitest-worker]: Timeout calling "onTaskUpdate"';
+  const retryFile = 'unit-task-update-retry.json';
+  const artifact = path.join(P.runDir, '.local-verify-failures.json');
+
+  const completedReport = (file: string, statuses: string[]): string => {
+    const failed = statuses.filter(status => status === 'failed').length;
+    return JSON.stringify({
+      ...JSON.parse(vitestReport(file, statuses)),
+      success: failed === 0, numFailedTests: failed, numFailedTestSuites: failed ? 1 : 0, numPendingTestSuites: 0,
+      numPassedTests: statuses.filter(status => status === 'passed').length, numPendingTests: 0, numTodoTests: 0,
+      numTotalTests: statuses.length,
+    });
+  };
+
+  const scenario = (options: {
+    repeat?: boolean; initialMessages?: string[]; initialErrorCount?: number;
+    initialStatuses?: string[]; initialFile?: string; incompleteSummary?: boolean;
+    retryStatuses?: string[]; omitRetryErrors?: boolean;
+  } = {}) => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, env) => {
+      const result = await exec(command, args, env);
+      const reportPath = args.find(a => a.startsWith('--outputFile='))?.slice('--outputFile='.length);
+      if (!reportPath) return result;
+      const errorPath = env.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!;
+      if (reportPath.endsWith('/unit.json')) {
+        const messages = options.initialMessages ?? Array(5).fill(timeout);
+        const report = completedReport(options.initialFile ?? TEST_FILES[0], options.initialStatuses ?? ['passed']);
+        f.files.set(reportPath, options.incompleteSummary ? JSON.stringify({ ...JSON.parse(report), numTotalTests: 2 }) : report);
+        f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: options.initialErrorCount ?? messages.length, messages }));
+        return { ...result, status: 1 };
+      }
+      if (reportPath.endsWith('/' + retryFile)) {
+        f.files.set(reportPath, completedReport(TEST_FILES[0], options.retryStatuses ?? ['passed']));
+        if (options.omitRetryErrors) f.files.delete(errorPath);
+        if (options.repeat) {
+          f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: 1, messages: [timeout] }));
+          return { ...result, status: 1 };
+        }
+      }
+      return result;
+    };
+    return f;
+  };
+
+  it('retries once within the original unit deadline and records a clean comparable retry', async () => {
+    const f = scenario();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const init = f.execCalls.find(call => call.args.some(a => a.endsWith('/unit.json')))!;
+    const retries = f.execCalls.filter(call => call.args.some(a => a.endsWith('/' + retryFile)));
+    expect(retries).toHaveLength(1);
+    expect(retries[0].deadlineMs).toBeLessThan(init.deadlineMs);
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry', timeouts: 5 }));
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: true }));
+  });
+
+  it('keeps both process receipts when the retry has the same fault', async () => {
+    const f = scenario({ repeat: true });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(JSON.parse(f.files.get(artifact)!)).toMatchObject({
+      failures: [],
+      processFailures: [
+        { step: 'unit', unhandled: { count: 5, messages: Array(5).fill(timeout) } },
+        { step: 'unit-task-update-retry', unhandled: { count: 1, messages: [timeout] } },
+      ],
+    });
+  });
+
+  it('does not replace failed assertions from a full retry with an isolation pass', async () => {
+    const f = scenario({ retryStatuses: ['failed'] });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.record.lanes.find(lane => lane.name === 'unit')?.failed).toBe(1);
+    expect(f.logs.some(row => row.event === 'isolation-rerun' && row.lane === 'unit')).toBe(false);
+  });
+
+  it.each([
+    { initialMessages: [timeout, 'unexpected worker exit'] },
+    { initialMessages: Array(5).fill(timeout), initialErrorCount: 6 },
+    { initialStatuses: ['failed'] },
+    { initialStatuses: ['pending'] },
+    { incompleteSummary: true },
+    { initialFile: 'tests/unit/other.test.ts' },
+  ])('does not retry incomplete or mixed evidence (%j)', async options => {
+    const f = scenario(options);
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some(row => row.event === 'unit-task-update-retry')).toBe(false);
+  });
+
+  it.each([{ omitRetryErrors: true }, { retryStatuses: ['passed', 'passed'] }])(
+    'does not accept a retry with missing or changed evidence (%j)', async options => {
+      const f = scenario(options);
+      const r = await runVerify(input(), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+      expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: false }));
+    },
+  );
+});
+
 describe('runVerify — repository pinning and the init-skip check', () => {
   it('every git call pins its repository: the bare clone, or the run worktree admin dir + work tree', async () => {
     const f = fake();

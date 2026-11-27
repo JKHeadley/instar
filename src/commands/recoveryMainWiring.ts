@@ -136,7 +136,9 @@ export async function startRecoveryMainWiring(deps: RecoveryMainWiringDeps): Pro
     },
     peerAdvert: async peer => {
       const url = peerUrl(peer); if (!url) throw new Error('recovery-peer-unreachable');
-      const result = await meshClient.send({ machineId: peer, url }, { type: 'recovery-enrollment-advert' }, 0, { timeoutMs: 15_000 });
+      // A cold advert prepares the runtime slot before replying, including the
+      // 10-second library scan, the 15-second Node smoke test, and file I/O.
+      const result = await meshClient.send({ machineId: peer, url }, { type: 'recovery-enrollment-advert' }, 0, { timeoutMs: 35_000 });
       if (!result.ok) throw new Error('recovery-peer-unreachable');
       return result.result as Signed<RecoveryEnrollmentAdvert>;
     },
