@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "threadline-send-undici-dispatcher-fallback",
+  "sessionId": "db4cf7c6-5a3b-4408-952e-719a8fc2bb02",
+  "timestamp": "2026-11-26T16:00:15.258Z",
+  "artifactPath": "upgrades/side-effects/threadline-send-undici-dispatcher-fallback.md",
+  "artifactSha256": "9d5eb6fce758e5f8234ab4e920c797346583fed4a24d672a4c44b1995ec860eb",
+  "coveredFiles": [
+    "src/threadline/mcp-http-client.ts",
+    "tests/unit/mcp-http-client-dispatcher-rejection.test.ts",
+    "upgrades/eli16/threadline-send-undici-dispatcher-fallback.md",
+    "upgrades/next/threadline-send-undici-dispatcher-fallback.md",
+    "upgrades/side-effects/threadline-send-undici-dispatcher-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One call site gets a retry that fires only on Node's fetch rejecting the undici package dispatcher before any I/O, through the package's own fetch with the same 325s Agent; no authority, persistence or API change.",
+  "eli16Path": "upgrades/eli16/threadline-send-undici-dispatcher-fallback.md",
+  "sideEffectsPath": "upgrades/side-effects/threadline-send-undici-dispatcher-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
