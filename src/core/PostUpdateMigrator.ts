@@ -103,6 +103,7 @@ import {
   AGENT_CONNECT_STEP1_RESTART_ASK_MARKER,
   agentConnectSection,
   agentConnectStep1,
+  AGENT_CONNECT_STEP1_APPROVAL_MARKER,
   directJobSupervisionQualityAwareness,
   JEV_CORRECTION_CARD_V1_MARKER,
   jevCirclesShadowAwareness,
@@ -13925,6 +13926,12 @@ Before I send another agent a credential, that peer must be **mutually verified*
         content = content.slice(0, stepAt + 1) + agentConnectStep1(port) + (lineEnd < 0 ? '' : content.slice(lineEnd));
         patched = true;
         result.upgraded.push('CLAUDE.md: "Connecting to another agent" step 1 no longer asks the person for a restart');
+      } else if (inSection && line.includes(AGENT_CONNECT_LIVE_ENABLE_MARKER) && !line.includes(AGENT_CONNECT_STEP1_APPROVAL_MARKER)) {
+        // SEC-163: the enable call now answers 403 with an approval card when the relay is off; the
+        // step learns to say so and call again after the person's yes instead of polling for five minutes.
+        content = content.slice(0, stepAt + 1) + agentConnectStep1(port) + (lineEnd < 0 ? '' : content.slice(lineEnd));
+        patched = true;
+        result.upgraded.push('CLAUDE.md: "Connecting to another agent" step 1 handles the owner approval card');
       } else {
         result.skipped.push('CLAUDE.md: "Connecting to another agent" step 1 already current');
       }

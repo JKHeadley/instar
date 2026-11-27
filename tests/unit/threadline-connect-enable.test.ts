@@ -26,6 +26,7 @@ import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import {
   agentConnectSection, agentConnectStep1, generateClaudeMd, AGENT_CONNECT_HEADING,
   AGENT_CONNECT_STEP1_RESTART_ASK_MARKER,
+  AGENT_CONNECT_STEP1_APPROVAL_MARKER,
 } from '../../src/scaffold/templates.js';
 import { TreeGenerator } from '../../src/knowledge/TreeGenerator.js';
 import { TreeTraversal } from '../../src/knowledge/TreeTraversal.js';
@@ -446,6 +447,21 @@ describe('agent knowledge — the agent never asks its person for a restart', ()
     expect(after.split(AGENT_CONNECT_HEADING).length - 1).toBe(1);
     const r2 = migrate(dir);
     expect(r2.skipped).toContain('CLAUDE.md: "Connecting to another agent" step 1 already current');
+    expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(after);
+  });
+
+  it('SEC-163: a step 1 from before the approval card learns the 403, once', () => {
+    const dir = project();
+    const current = agentConnectStep1(4042);
+    // The step as it shipped before SEC-163: the same line without the approval-card sentences.
+    const pre163 = current.replace(` ${AGENT_CONNECT_STEP1_APPROVAL_MARKER} I tell my person its \`sayToPerson\` sentence. When its \`approvalRequest.status\` is \`sent\` or \`awaiting-acceptance\`, I wait for them and, once they have approved, make the same call again; otherwise the card could not be sent and I stop there. Otherwise I tell`, ' I tell');
+    expect(pre163).not.toContain(AGENT_CONNECT_STEP1_APPROVAL_MARKER);
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), `# CLAUDE.md\n\n${agentConnectSection(4042).replace(current, pre163)}`);
+    const r1 = migrate(dir);
+    expect(r1.upgraded).toContain('CLAUDE.md: "Connecting to another agent" step 1 handles the owner approval card');
+    const after = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+    expect(after).toContain(agentConnectSection(4042));
+    migrate(dir);
     expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(after);
   });
 

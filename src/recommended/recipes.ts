@@ -386,6 +386,16 @@ ${RULES('cloudflare-domain', port)}`,
       const stored = parseCloudflareSecret(readSecret(CLOUDFLARE_SECRET));
       if (!stored) return { ok: false, copied: [], detail: 'No Cloudflare token and host name are stored yet.' };
       const { token, hostname } = stored;
+      // SEC-163: a refresh (setup ran before) never switches a tunnel back on that was switched off since,
+      // and touches nothing at Cloudflare; switching exposure on is the owner's decision. The first setup
+      // still writes it on, as the owner confirmed.
+      {
+        const priorRun = cloudflareWork?.recall() ?? null;
+        const now = cloudflare.tunnelConfigured();
+        if (priorRun && now && now.enabled === false) {
+          return { ok: true, copied: [], detail: 'The tunnel is switched off on this agent, so the daily refresh left it off.' };
+        }
+      }
       const tokenState = await cloudflare.api.verifyToken(token);
       if (tokenState !== 'ok') return { ok: false, copied: [], detail: tokenState === 'refused' ? 'Cloudflare refused the token.' : 'Cloudflare did not answer.' };
       const zone = await cloudflare.api.zoneFor(token, hostname);
@@ -412,6 +422,7 @@ ${RULES('cloudflare-domain', port)}`,
       // The daily refresh re-runs this; an unchanged block is left alone, so no restart is asked for nothing.
       const current = cloudflare.tunnelConfigured();
       const unchanged = current?.enabled && current.type === 'named' && current.token === runToken && current.hostname === hostname;
+
       const previous = unchanged ? (prior?.previousTunnel ?? null) : cloudflare.writeNamedTunnel({ token: runToken, hostname });
       cloudflareWork?.remember({
         zoneId: zone.id, accountId: zone.accountId, tunnelId: tunnel.id, dnsRecordId: dns.id, hostname,
