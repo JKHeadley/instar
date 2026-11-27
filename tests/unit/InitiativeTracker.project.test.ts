@@ -1,3 +1,4 @@
+import { createProjectAnchorLookup, readRegistryApprovedProjectAnchor, type ApprovedProjectAnchor } from '../../src/core/ProjectAnchorRegistry.js';
 /**
  * InitiativeTracker project-scope unit tests (Phase 1.1).
  *
@@ -424,5 +425,42 @@ describe('InitiativeTracker — rollout field persistence', () => {
     // clearing via null
     tracker.update('feat-x', { rollout: null });
     expect(tracker.get('feat-x')!.rollout).toBeUndefined();
+  });
+});
+
+
+describe('approved project anchor persistence', () => {
+  it('loads the exact approved revision from disk and removes it when membership changes', async () => {
+    const changes: unknown[] = [];
+    tracker.onProjectAnchorChanged((change) => changes.push(change));
+    const initial = await tracker.create({
+      ...baseInput('context-budget'), kind: 'project', telegramTopicId: '141133',
+    });
+    const anchor: ApprovedProjectAnchor = {
+      revision: 1, purpose: 'Fixture purpose',
+      sourceMessages: [{ conversationKey: 'telegram:141133', messageId: '11', at: '2026-11-26T22:00:00Z' }],
+      done: [{ id: 'fold', text: 'Fold one long conversation', state: 'open' }],
+      outOfScope: [{ text: 'Benchmark expansion' }],
+    };
+    const saved = await tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', anchor);
+    expect(changes).toEqual([
+      { projectId: initial.id, revision: null, conversationKeys: ['telegram:141133'] },
+      { projectId: initial.id, revision: 1, conversationKeys: ['telegram:141133'] },
+    ]);
+    await expect(tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', { ...anchor, revision: 2 }))
+      .rejects.toThrow(/version mismatch/);
+    const restarted = new InitiativeTracker(tmpDir);
+    const read = createProjectAnchorLookup({
+      listProjects: () => restarted.list({ kind: 'project' }), readApproved: readRegistryApprovedProjectAnchor,
+    });
+    expect(read('telegram:141133')).toEqual({ status: 'resolved', projectId: initial.id, anchor });
+    await restarted.update(initial.id, { ifMatch: saved.version, telegramTopicId: '141135' });
+    expect(read('telegram:141133')).toEqual({ status: 'missing' });
+    expect(read('telegram:141135')).toEqual({ status: 'missing' });
+    const movedBack = await restarted.update(initial.id, { telegramTopicId: '141133' });
+    await expect(restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', anchor)).rejects.toThrow();
+    const replacement = { ...anchor, revision: 2, purpose: 'Updated and approved fixture purpose' };
+    await restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', replacement);
+    expect(read('telegram:141133')).toEqual({ status: 'resolved', projectId: initial.id, anchor: replacement });
   });
 });

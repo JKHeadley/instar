@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+import { isValidProjectAnchor, type ApprovedProjectAnchor, type ApprovedProjectAnchorRecord, type ProjectAnchorChange } from './ProjectAnchorRegistry.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
@@ -274,6 +276,9 @@ export interface Initiative {
   autoAdvance?: boolean;
   /** For round-complete and halt notifications. */
   telegramTopicId?: string;
+  approvedProjectAnchor?: ApprovedProjectAnchorRecord;
+  /** Monotone across conversation moves, including after the approved content is cleared. */
+  approvedProjectAnchorRevision?: number;
   /** Current round owner (Phase 1.5). */
   ownerMachineId?: string;
   /** Absolute path to the target source repo; required for projects. */
@@ -701,6 +706,26 @@ export class InitiativeTracker {
    * shape. Returns the Initiative as projected from TaskFlow after
    * transitions settle.
    */
+  private async persistProjectAnchorThroughTaskFlow(initiative: Initiative, expectedVersion: number): Promise<Initiative> {
+    const registry = this.taskFlowRegistry;
+    const principal = this.taskFlowPrincipal();
+    const flowId = this.findFlowIdForInitiative(initiative.id);
+    const flow = flowId ? registry?.getFlow(flowId, { bypassCache: true }) : undefined;
+    if (!registry || !principal || !flow || this.initiativeFromFlow(flow)?.version !== expectedVersion) {
+      throw new Error('Project anchor approval is stale');
+    }
+    const result = await registry.replaceControllerState({
+      flowId: flow.flowId,
+      expectedRevision: flow.revision,
+      principal,
+      stateJson: { initiative },
+    });
+    const stored = this.initiativeFromFlow(result.flow);
+    if (!stored) throw new Error('Project anchor approval was not stored');
+    this.initiatives.set(stored.id, stored);
+    return stored;
+  }
+
   private async persistThroughTaskFlow(init: Initiative): Promise<Initiative> {
     const registry = this.taskFlowRegistry;
     const principal = this.taskFlowPrincipal();
@@ -1108,11 +1133,51 @@ export class InitiativeTracker {
       this.saveToDisk();
       result = initiative;
     }
+    this.notifyProjectAnchorChange(undefined, result);
     this.digestCacheInvalidator();
     return result;
   }
 
-  async update(id: string, input: InitiativeUpdateInput): Promise<Initiative> {
+  private readonly projectAnchorListeners = new Set<(change: ProjectAnchorChange) => void>();
+
+  onProjectAnchorChanged(listener: (change: ProjectAnchorChange) => void): () => void {
+    this.projectAnchorListeners.add(listener);
+    return () => { this.projectAnchorListeners.delete(listener); };
+  }
+
+  private notifyProjectAnchorChange(previous?: Initiative, current?: Initiative): void {
+    const project = current ?? previous;
+    if (project?.kind !== 'project' || (previous?.telegramTopicId === current?.telegramTopicId &&
+      previous?.status === current?.status &&
+      isDeepStrictEqual(previous?.approvedProjectAnchor, current?.approvedProjectAnchor))) return;
+    const topics = new Set([previous?.telegramTopicId, current?.telegramTopicId].filter((id): id is string => !!id));
+    if (topics.size === 0) return;
+    const change = {
+      projectId: project.id,
+      revision: current?.approvedProjectAnchor?.anchor.revision ?? null,
+      conversationKeys: [...topics].map((id) => `telegram:${id}`),
+    };
+    for (const listener of this.projectAnchorListeners) {
+      try { listener(change); } catch { /* Notification is advisory. Recovery also checks the registry revision. */ }
+    }
+  }
+
+  /** Only the authenticated owner-review route calls this entry point. */
+  async approveProjectAnchor(id: string, expectedVersion: number, conversationKey: string, anchor: ApprovedProjectAnchor): Promise<Initiative> {
+    const current = this.get(id);
+    const lastRevision = current?.approvedProjectAnchorRevision ?? current?.approvedProjectAnchor?.anchor.revision ?? 0;
+    if (!current || current.kind !== 'project' || current.status !== 'active' ||
+      conversationKey !== `telegram:${current.telegramTopicId}` || !isValidProjectAnchor(anchor) ||
+      anchor.revision !== lastRevision + 1) {
+      throw new Error('Project anchor or membership changed');
+    }
+    const stored = await this.update(id, { ifMatch: expectedVersion }, { conversationKey, approvedAt: new Date().toISOString(), anchor });
+    if (stored.approvedProjectAnchor?.conversationKey !== conversationKey ||
+      !isDeepStrictEqual(stored.approvedProjectAnchor?.anchor, anchor)) throw new Error('Project anchor approval was not stored');
+    return stored;
+  }
+
+  async update(id: string, input: InitiativeUpdateInput, approvedAnchor?: ApprovedProjectAnchorRecord): Promise<Initiative> {
     const existing = this.get(id);
     if (!existing) throw new Error(`Initiative "${id}" not found`);
 
@@ -1203,6 +1268,10 @@ export class InitiativeTracker {
     if (input.autoAdvance !== undefined) next.autoAdvance = input.autoAdvance;
     if (input.telegramTopicId !== undefined) {
       next.telegramTopicId = input.telegramTopicId === null ? undefined : input.telegramTopicId;
+      if (next.telegramTopicId !== existing.telegramTopicId) {
+        next.approvedProjectAnchorRevision = existing.approvedProjectAnchorRevision ?? existing.approvedProjectAnchor?.anchor.revision;
+        delete next.approvedProjectAnchor;
+      }
     }
     if (input.ownerMachineId !== undefined) {
       next.ownerMachineId = input.ownerMachineId === null ? undefined : input.ownerMachineId;
@@ -1228,17 +1297,31 @@ export class InitiativeTracker {
     if (input.measurement !== undefined) next.measurement = input.measurement === null ? undefined : input.measurement;
     this.validateMeasurementOwner(next);
 
+    if (approvedAnchor) {
+      next.approvedProjectAnchor = approvedAnchor;
+      next.approvedProjectAnchorRevision = approvedAnchor.anchor.revision;
+    }
+
     // Bump version on every successful write.
     next.version = currentVersion + 1;
 
-    this.initiatives.set(id, next);
     let result: Initiative;
-    if (this.isTaskFlowEnabled()) {
-      result = await this.persistThroughTaskFlow(next);
+    if (this.isTaskFlowEnabled() && approvedAnchor) {
+      result = await this.persistProjectAnchorThroughTaskFlow(next, currentVersion);
     } else {
-      this.saveToDisk();
-      result = next;
+      this.initiatives.set(id, next);
+      if (this.isTaskFlowEnabled()) result = await this.persistThroughTaskFlow(next);
+      else {
+        try {
+          this.saveToDisk();
+        } catch (error) {
+          if (approvedAnchor) this.initiatives.set(id, existing);
+          throw error;
+        }
+        result = next;
+      }
     }
+    this.notifyProjectAnchorChange(existing, result);
     this.digestCacheInvalidator();
     return result;
   }
@@ -1303,16 +1386,21 @@ export class InitiativeTracker {
       this.saveToDisk();
       result = next;
     }
+    this.notifyProjectAnchorChange(existing, result);
     this.digestCacheInvalidator();
     return result;
   }
 
   async remove(id: string): Promise<boolean> {
+    const previous = this.get(id);
     if (this.isTaskFlowEnabled()) {
       const fid = this.findFlowIdForInitiative(id);
       if (!fid) {
         const removed = this.initiatives.delete(id);
-        if (removed) this.digestCacheInvalidator();
+        if (removed) {
+          this.notifyProjectAnchorChange(previous);
+          this.digestCacheInvalidator();
+        }
         return removed;
       }
       const registry = this.taskFlowRegistry!;
@@ -1371,12 +1459,14 @@ export class InitiativeTracker {
         }
       }
       this.initiatives.delete(id);
+      this.notifyProjectAnchorChange(previous);
       this.digestCacheInvalidator();
       return true;
     }
     const removed = this.initiatives.delete(id);
     if (removed) {
       this.saveToDisk();
+      this.notifyProjectAnchorChange(previous);
       this.digestCacheInvalidator();
     }
     return removed;

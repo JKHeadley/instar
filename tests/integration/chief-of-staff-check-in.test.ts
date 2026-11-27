@@ -1,3 +1,5 @@
+import { readRegistryApprovedProjectAnchor } from '../../src/core/ProjectAnchorRegistry.js';
+
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
 
 /**
@@ -31,7 +33,7 @@ function keypair() {
 }
 const ctxV = () => ({ countDroppedField: () => {}, countJailReject: () => {} });
 
-function app(opts: { loop: boolean; progress?: boolean }) {
+function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-checkin-')); dirs.push(dir);
   const keys = keypair();
   const tracker = new InitiativeTracker(dir);
@@ -62,7 +64,17 @@ function app(opts: { loop: boolean; progress?: boolean }) {
     state: { get: (k: string) => state.get(k) ?? null, getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined, readOnly: false },
     liveConfig: { get: (_k: string, fb?: unknown) => fb },
     ...(opts.loop ? { chiefOfStaffLoop: loop } : {}),
-    ...(opts.progress ? { initiativeTracker: tracker } : {}),
+    ...(opts.progress || opts.anchor ? { initiativeTracker: tracker } : {}),
+    ...(opts.anchor ? {
+      verifyDashboardOperatorSession: (token?: string) => token === 'anchor-owner',
+      telegram: {
+        getVerifiedOwner: () => 101,
+        findTopicMessage: (topic: number, id: number) => ({ entry: topic === 141133 && id === 11 ? {
+          messageId: 11, fromUser: true, forwarded: false, telegramUserId: 101,
+          timestamp: '2026-11-26T22:00:00Z', text: 'Use fewer tokens while keeping context intact.',
+        } : null }),
+      },
+    } : {}),
   } as unknown as RouteContext;
   const a = express();
   a.use(express.json());
@@ -135,5 +147,38 @@ describe('verified project progress on GET /chief-of-staff', () => {
       expect.objectContaining({ conversationKey: 'telegram:1', disposition: 'tracked' }),
       expect.objectContaining({ conversationKey: 'telegram:2', disposition: 'awaiting-binding', progress: null }),
     ]));
+  });
+});
+
+
+describe('source-backed project purpose', () => {
+  it('copies an exact owner message across topics and refuses missing history or replacement', async () => {
+    const { a, tracker } = app({ loop: false, anchor: true });
+    const project = await tracker.create({
+      id: 'context-budget', title: 'Context Budget', kind: 'project', description: 'Fixture',
+      phases: [{ id: 'fold', name: 'Fold' }], telegramTopicId: '141134',
+    });
+    const route = '/projects/context-budget/alignment-anchor';
+    const operator = { ...auth, 'X-Instar-Operator-Session': 'anchor-owner' };
+    const sourceMessage = { conversationKey: 'telegram:141133', messageId: '11', at: '2026-11-26T22:00:00Z' };
+    const body = { expectedVersion: project.version, conversationKey: 'telegram:141134', sourceMessage };
+
+    await request(a).put(route).set(auth).send(body).expect(403);
+    await request(a).put(route).set(operator).send({ ...body, expectedVersion: project.version! + 1 })
+      .expect(409, { error: 'project-anchor-stale-or-not-stored' });
+    await request(a).put(route).set(operator).send({ ...body, anchor: { done: [] } }).expect(400);
+    await request(a).put(route).set(operator).send({
+      ...body, sourceMessage: { ...sourceMessage, messageId: '12' },
+    }).expect(409, { error: 'project-anchor-owner-source-unverified' });
+    expect(tracker.get(project.id)?.approvedProjectAnchor).toBeUndefined();
+
+    await request(a).put(route).set(operator).send(body).expect(200);
+    const saved = tracker.get(project.id)!;
+    expect(readRegistryApprovedProjectAnchor(saved, body.conversationKey)).toEqual({
+      revision: 1, purpose: 'Use fewer tokens while keeping context intact.',
+      sourceMessages: [sourceMessage], done: [], outOfScope: [],
+    });
+    await request(a).put(route).set(operator).send({ ...body, expectedVersion: saved.version })
+      .expect(409, { error: 'project-anchor-already-exists' });
   });
 });

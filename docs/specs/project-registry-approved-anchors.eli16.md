@@ -1,0 +1,5 @@
+# Give a project its purpose back after a restart
+
+Instar can save the owner's original Telegram message as a project's purpose. When a project conversation resumes, it can read that purpose from the registry. If the original message is unavailable, the registry leaves the project as it was. The first pilot uses history already on the Studio. Agent-written checklists and scope still require owner approval.
+
+For example, if the owner described Context Budget inside the Chief of Staff conversation, the operator can point the registry to the original message. The registry checks who wrote it and copies the whole message into the purpose field. The original conversation, message number, and time remain attached so the team can trace where the wording came from. This first release can check original messages on the Studio. If another machine holds the only copy, the project keeps its current state. The Chief of Staff pilot will need that second lookup before it can run. A renderer test checks that project sessions receive the saved text when they recover their context.

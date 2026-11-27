@@ -1,4 +1,5 @@
 import { buildProjectCoverage } from '../core/ChiefOfStaffProjectProgress.js';
+import { isProjectAnchorSourceMessage, isValidProjectAnchor, type ProjectAnchorSourceMessage } from '../core/ProjectAnchorRegistry.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -26536,6 +26537,68 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const items = ctx.initiativeTracker.list({ kind: 'project' });
     res.json({ items, count: items.length });
+  });
+
+  router.put('/projects/:id/alignment-anchor', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const { expectedVersion, conversationKey, sourceMessage } = req.body ?? {};
+    if (ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session')) !== true) {
+      res.status(403).json({ error: 'dashboard-operator-session-required' });
+      return;
+    }
+    const tracker = ctx.initiativeTracker;
+    if (!tracker || ctx.state.readOnly || (ctx.coordinator?.enabled && !ctx.coordinator.holdsLease())) {
+      res.status(503).json({ error: 'project-registry-writer-unavailable' });
+      return;
+    }
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof conversationKey !== 'string' ||
+      !/^telegram:[1-9]\d*$/.test(conversationKey) || !isProjectAnchorSourceMessage(sourceMessage) ||
+      req.body.anchor !== undefined) {
+      res.status(400).json({ error: 'invalid-project-anchor' });
+      return;
+    }
+    const matches = tracker.list({ kind: 'project' }).filter((project) =>
+      project.telegramTopicId === conversationKey.slice('telegram:'.length));
+    if (matches.length !== 1 || matches[0]!.id !== req.params.id) {
+      res.status(409).json({ error: 'project-membership-is-missing-or-ambiguous' });
+      return;
+    }
+    const verifiedOwner = ctx.telegram?.getVerifiedOwner();
+    const readOwnerText = (source: ProjectAnchorSourceMessage): string | undefined => {
+      if (verifiedOwner === undefined) return undefined;
+      const topic = Number(source.conversationKey.slice('telegram:'.length));
+      const id = Number(source.messageId);
+      if (!Number.isSafeInteger(topic) || !Number.isSafeInteger(id)) return undefined;
+      const row = ctx.telegram?.findTopicMessage(topic, id, Date.parse(source.at)).entry;
+      if (row?.fromUser === true && row.forwarded === false && row.telegramUserId === verifiedOwner &&
+        Date.parse(row.timestamp) === Date.parse(source.at)) return row.text;
+    };
+    const project = matches[0]!;
+    if (project.version !== expectedVersion) {
+      res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
+      return;
+    }
+    if (project.approvedProjectAnchor) {
+      res.status(409).json({ error: 'project-anchor-already-exists' });
+      return;
+    }
+    const anchor = {
+      revision: (project.approvedProjectAnchorRevision ?? 0) + 1,
+      purpose: readOwnerText(sourceMessage),
+      sourceMessages: [sourceMessage],
+      done: [],
+      outOfScope: [],
+    };
+    if (!isValidProjectAnchor(anchor)) {
+      res.status(409).json({ error: 'project-anchor-owner-source-unverified' });
+      return;
+    }
+    try {
+      const saved = await tracker.approveProjectAnchor(req.params.id, expectedVersion, conversationKey, anchor);
+      res.json({ projectId: saved.id, revision: anchor.revision, projectVersion: saved.version });
+    } catch {
+      res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
+    }
   });
 
   router.get('/projects/:id', async (req, res) => {
