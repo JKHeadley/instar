@@ -17,3 +17,5 @@ This change adds no new capability. It makes two existing reliability checks tol
 ## Evidence
 
 Focused tests cover the real Cartographer worker's child cleanup and recovery installation's owned Node runtime. The Studio main run had recorded intermittent failures in both tests, and their isolated reruns passed.
+
+The undated action lifecycle now waits for Attention delivery as well as the saved run. A delayed delivery reproduced the original empty result and passed after the fixture changed. The feedback triage file passed in the exact merge-tree reproduction.
