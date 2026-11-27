@@ -68,10 +68,42 @@ export function rubricFor(label, question) {
   }));
 }
 
+// `reduced` is the run-1 form (one text, record id REDUCED_ID) or a list of
+// named context records ({ id, text }) from a plan with several context arms.
 export function sourceRecords(pack, reduced) {
   const records = pack.sources.messages.map(m => ({ id: `m${m.messageId}`, text: m.text }));
-  if (reduced !== null) records.push({ id: REDUCED_ID, text: reduced });
+  if (Array.isArray(reduced)) for (const c of reduced) records.push({ id: c.id, text: c.text });
+  else if (reduced !== null) records.push({ id: REDUCED_ID, text: reduced });
   return records.map(r => ({ ...r, sha256: sha(r.text) }));
+}
+
+// Context arm names become part of trial ids, so they stay plain.
+export const CONTEXT_ARM_NAME = /^[a-z][a-z0-9]{0,23}$/;
+
+// Several condensed versions of the conversation, each its own arm. Each arm
+// has either one text for every repeat or one text per repeat, so the repeats
+// can also measure how much the builder of the text varies. Record ids are
+// neutral, so a judge never sees an arm name.
+export function contextRecordsFor(contexts, repeats, seed) {
+  need(contexts && typeof contexts === 'object' && !Array.isArray(contexts), 'contexts-must-be-an-object');
+  const names = Object.keys(contexts);
+  need(names.length >= 1 && names.length <= 4, 'contexts-must-name-1-to-4-arms');
+  const records = [];
+  for (const arm of names) {
+    need(CONTEXT_ARM_NAME.test(arm) && !['none', 'full'].includes(arm), 'bad-context-arm-name');
+    const texts = contexts[arm];
+    need(Array.isArray(texts) && (texts.length === 1 || texts.length === repeats), 'context-texts-must-be-1-or-one-per-repeat');
+    texts.forEach((c, i) => {
+      const text = typeof c === 'string' ? c : c?.text;
+      need(typeof text === 'string' && text.trim().length > 0, 'context-text-required');
+      const builtBy = typeof c === 'string' ? null : (c.builtBy ?? null);
+      need(builtBy === null || /^[A-Za-z0-9._:@ -]{1,80}$/.test(builtBy), 'bad-context-built-by');
+      const repeat = texts.length === 1 ? null : i + 1;
+      records.push({ id: 'context-' + sha(seed + '\u0000context\u0000' + arm + '\u0000' + (repeat ?? 'all')).slice(0, 10),
+        arm, repeat, text, builtBy });
+    });
+  }
+  return { arms: ['none', ...names, 'full'], records };
 }
 
 export function availableFor(arm, records) {
@@ -80,8 +112,9 @@ export function availableFor(arm, records) {
   return records.filter(r => r.id !== REDUCED_ID).map(r => r.id);
 }
 
-export function buildPlan(pack, { reduced, repeats, judges, seed = randomBytes(16).toString('hex') }) {
+export function buildPlan(pack, { reduced, contexts, repeats, judges, seed = randomBytes(16).toString('hex') }) {
   need(Number.isSafeInteger(repeats) && repeats >= 2 && repeats <= 10, 'repeats-must-be-2-to-10');
+  if (contexts !== undefined) return buildContextPlan(pack, { contexts, repeats, judges, seed });
   need(typeof reduced === 'string' && reduced.trim().length > 0, 'reduced-context-required');
   need(Array.isArray(judges) && judges.length === 2 && judges[0].family !== judges[1].family, 'two-judge-families-required');
   const questions = new Map(pack.questions.cases.map(q => [q.id, q]));
@@ -107,6 +140,38 @@ export function buildPlan(pack, { reduced, repeats, judges, seed = randomBytes(1
     }
   }
   return { seed, order: seededOrder(trials.map(t => t.trialId), seed), trials, judges };
+}
+
+// A plan with named context arms. Each trial lists only the original messages
+// and its own context record, so a judge sees the conversation and what the
+// answer was given, never the other arms' texts.
+function buildContextPlan(pack, { contexts, repeats, judges, seed }) {
+  need(Array.isArray(judges) && judges.length === 2 && judges[0].family !== judges[1].family, 'two-judge-families-required');
+  const questions = new Map(pack.questions.cases.map(q => [q.id, q]));
+  need(questions.size === pack.questions.cases.length, 'duplicate-question-case');
+  const { arms, records: contextRecords } = contextRecordsFor(contexts, repeats, seed);
+  const messages = sourceRecords(pack, null);
+  const trials = [];
+  for (const label of pack.labels.cases) {
+    const question = questions.get(label.id);
+    need(question !== undefined, 'question-missing-for-case');
+    const criteria = criteriaFor(label);
+    const rubricHash = sha(rubricFor(label, question));
+    for (const arm of arms) for (let repeat = 1; repeat <= repeats; repeat += 1) {
+      const trialId = `${label.id}-${arm}-${repeat}`;
+      const own = contextRecords.find(c => c.arm === arm && (c.repeat === null || c.repeat === repeat));
+      const sources = own ? [...messages, own] : messages;
+      trials.push({
+        trialId, arm, repeat, caseId: label.id,
+        submissionId: 's' + sha(seed + '\u0000submission\u0000' + trialId).slice(0, 20),
+        criteria, rubricHash,
+        sources: sources.map(({ id, text }) => ({ id, hash: sha(text) })),
+        availableSourceIds: arm === 'none' ? [] : own ? [own.id] : messages.map(m => m.id),
+        judgeSlots: judges.map((judge, index) => ({ id: `slot-${index}`, family: judge.family, maxRetries: 1 })),
+      });
+    }
+  }
+  return { seed, order: seededOrder(trials.map(t => t.trialId), seed), trials, judges, arms, contexts: contextRecords };
 }
 
 // ---------------------------------------------------------------- prompts
@@ -425,9 +490,14 @@ export function writePlan(run, plan, pack, reduced) {
     run.write(`trials/${trial.trialId}.plan.json`, bytes.toString('utf8'));
     hashes[trial.trialId] = sha(bytes);
   }
-  run.write('reduced.json', { text: reduced, sha256: sha(reduced) });
+  if (plan.contexts) {
+    run.write('contexts.json', { version: 2, contexts: plan.contexts.map(c => ({ ...c, sha256: sha(c.text), chars: [...c.text].length })) });
+  } else {
+    run.write('reduced.json', { text: reduced, sha256: sha(reduced) });
+  }
   run.write('index.json', { version: 1, packManifestHash: pack.manifestHash, seed: plan.seed, order: plan.order,
-    judges: plan.judges.map(({ family, model }) => ({ family, model })), planHashes: hashes });
+    judges: plan.judges.map(({ family, model }) => ({ family, model })), planHashes: hashes,
+    ...(plan.arms ? { arms: plan.arms } : {}) });
 }
 
 function trialContext(run, pack, trialId) {
@@ -435,7 +505,11 @@ function trialContext(run, pack, trialId) {
   const planBytes = readFileSync(run.path(`trials/${trialId}.plan.json`));
   need(sha(planBytes) === index.planHashes[trialId], 'plan-hash-mismatch');
   const trial = JSON.parse(planBytes);
-  const records = sourceRecords(pack, run.read('reduced.json').text);
+  const contexts = run.has('contexts.json') ? run.read('contexts.json').contexts : run.read('reduced.json').text;
+  // A trial sees only the records its plan lists (run 1 plans list them all).
+  const listed = new Set(trial.sources.map(s => s.id));
+  const records = sourceRecords(pack, contexts).filter(r => listed.has(r.id));
+  need(records.length === listed.size, 'plan-source-missing');
   const label = pack.labels.cases.find(c => c.id === trial.caseId);
   const question = pack.questions.cases.find(c => c.id === trial.caseId);
   return { index, planBytes, planHash: index.planHashes[trialId], trial, records, label, question,
@@ -591,7 +665,8 @@ export function diagnoseRun(run, pack = null) {
   const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {}; const quoteMisses = {}; const idPatterns = {};
   const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
   for (const trialId of index.order) {
-    const arm = /-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown';
+    const arm = run.has(`trials/${trialId}.plan.json`) ? plainCode(run.read(`trials/${trialId}.plan.json`).arm)
+      : (/-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown');
     if (run.has(`answers/${trialId}.json`)) {
       const a = run.read(`answers/${trialId}.json`);
       bump(answers, `${arm} ${plainCode(a.parseOutcome?.status)} ${plainCode(a.parseOutcome?.reason)}`);
@@ -659,7 +734,8 @@ function armSummary() {
 export function totalRun(run, pack) {
   const index = run.read('index.json');
   const disclosure = run.tick(); // judges' outputs are first combined here
-  const arms = Object.fromEntries(ARMS.map(a => [a, armSummary()]));
+  const armNames = index.arms ?? ARMS;
+  const arms = Object.fromEntries(armNames.map(a => [a, armSummary()]));
   const perTrial = [];
   for (const trialId of index.order) {
     const ctx = trialContext(run, pack, trialId);
@@ -721,9 +797,13 @@ export function totalRun(run, pack) {
   }
   // Paired differences on the same case and repeat, as pass fractions.
   const key = t => `${t.caseId}/${t.repeat}`;
-  const by = Object.fromEntries(ARMS.map(a => [a, new Map(perTrial.filter(t => t.arm === a).map(t => [key(t), t]))]));
+  const by = Object.fromEntries(armNames.map(a => [a, new Map(perTrial.filter(t => t.arm === a).map(t => [key(t), t]))]));
   const paired = {};
-  for (const [x, y] of [['reduced', 'full'], ['reduced', 'none'], ['full', 'none']]) {
+  // Every pair of arms, condensed arms first, then full, then none: for run 1
+  // that is reduced-minus-full, reduced-minus-none and full-minus-none.
+  const ranked = [...armNames.filter(a => a !== 'full' && a !== 'none'), 'full', 'none'];
+  const pairs = ranked.flatMap((x, i) => ranked.slice(i + 1).map(y => [x, y]));
+  for (const [x, y] of pairs) {
     // Only pairs where both trials have a real result: a trial not run or not
     // yet judged would otherwise count as a failure against its arm.
     const diffs = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).scored && by[y].get(k).scored).map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
@@ -740,6 +820,7 @@ export function totalRun(run, pack) {
   const limits = ['arm-inferable-from-citations', 'answer-model-and-judge-a-same-family'];
   const totals = { version: 1, status: 'exploratory-not-qualification', limits, packManifestHash: index.packManifestHash,
     planHashes: sha(JSON.stringify(index.planHashes)), judges: index.judges, arms, paired,
+    ...(run.has('contexts.json') ? { contexts: run.read('contexts.json').contexts.map(({ id, arm, repeat, sha256, chars, builtBy }) => ({ id, arm, repeat, sha256, chars, builtBy })) } : {}),
     trials: perTrial.map(({ passFraction, ...t }) => ({ ...t, passFraction: Math.round(passFraction * 1000) / 1000 })) };
   run.write('totals.json', totals);
   return totals;
@@ -780,8 +861,21 @@ export function main(argv) {
   }
   if (command === 'plan') {
     const judges = [route(opts['judge-a'], opts), route(opts['judge-b'], opts)];
+    const repeats = Number(opts.repeats ?? 3);
+    if (opts.contexts) {
+      // { "<arm>": ["file", ...] or [{ "file": "...", "builtBy": "..." }, ...] }
+      const spec = JSON.parse(readFileSync(opts.contexts, 'utf8'));
+      need(spec && typeof spec === 'object' && !Array.isArray(spec), 'contexts-must-be-an-object');
+      const contexts = Object.fromEntries(Object.entries(spec).map(([arm, list]) => {
+        need(Array.isArray(list), 'context-texts-must-be-1-or-one-per-repeat');
+        return [arm, list.map(e => typeof e === 'string' ? readFileSync(e, 'utf8')
+          : { text: readFileSync(e?.file ?? fail('context-file-required'), 'utf8'), builtBy: e.builtBy ?? null })];
+      }));
+      writePlan(run, buildPlan(pack, { contexts, repeats, judges }), pack, null);
+      return { state: 'planned', trials: run.read('index.json').order.length, arms: run.read('index.json').arms };
+    }
     const reduced = readFileSync(opts.reduced ?? fail('reduced-file-required'), 'utf8');
-    writePlan(run, buildPlan(pack, { reduced, repeats: Number(opts.repeats ?? 3), judges }), pack, reduced);
+    writePlan(run, buildPlan(pack, { reduced, repeats, judges }), pack, reduced);
     return { state: 'planned', trials: run.read('index.json').order.length };
   }
   const order = run.read('index.json').order.slice(0, limit);

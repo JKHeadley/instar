@@ -6,4 +6,4 @@ Added a manual host that runs the private source-grounded case pack end to end. 
 
 ## Evidence
 
-All 17 host tests and the 8 existing evaluation node:test files pass. An independent second-pass review requested changes, and they are in (see the side-effects review). The new vitest wrapper passes 10 of 10.
+All 25 host tests and the 8 existing evaluation node:test files pass. An independent second-pass review requested changes, and they are in (see the side-effects review). The new vitest wrapper passes 10 of 10.

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
   checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, recordIdPattern, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
-  totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
+  totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt, contextRecordsFor,
 } from './source_grounded_host.mjs';
 
 const sha = v => createHash('sha256').update(v).digest('hex');
@@ -366,4 +366,85 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   const after = totalRun(run, pack).arms.full;
   assert.equal(after.notRun, 1);
   assert.equal(after.criteria.fail, before);
+});
+
+test('named context arms: neutral record ids, one text or one per repeat, and plain arm names', () => {
+  const { arms, records } = contextRecordsFor({ summary: ['S1', 'S2'], packet: [{ text: 'P', builtBy: 'context-budget 3984' }] }, 2, 'fixed');
+  assert.deepEqual(arms, ['none', 'summary', 'packet', 'full']);
+  assert.equal(records.length, 3);
+  for (const r of records) { assert.match(r.id, /^context-[0-9a-f]{10}$/); assert.ok(!r.id.includes(r.arm)); }
+  assert.deepEqual(records.map(r => r.repeat), [1, 2, null]);
+  assert.equal(new Set(records.map(r => r.id)).size, 3);
+  assert.throws(() => contextRecordsFor({ full: ['x'] }, 2, 's'), /bad-context-arm-name/);
+  assert.throws(() => contextRecordsFor({ 'two-words': ['x'] }, 2, 's'), /bad-context-arm-name/);
+  assert.throws(() => contextRecordsFor({ summary: ['a', 'b', 'c'] }, 2, 's'), /one-per-repeat/);
+  assert.throws(() => contextRecordsFor({ summary: [' '] }, 2, 's'), /context-text-required/);
+  assert.throws(() => contextRecordsFor({ summary: [{ text: 'x', builtBy: 'bad\nline' }] }, 2, 's'), /bad-context-built-by/);
+  assert.throws(() => contextRecordsFor({}, 2, 's'), /1-to-4-arms/);
+});
+
+test('a context-arm plan gives each trial only the messages and its own context text', () => {
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { contexts: { summary: ['SUMMARY-ONE', 'SUMMARY-TWO'], packet: ['PACKET-ALL'] }, repeats: 2, judges, seed: 'fixed' });
+  assert.deepEqual(plan.arms, ['none', 'summary', 'packet', 'full']);
+  assert.equal(plan.trials.length, 2 * 4 * 2);
+  const records = sourceRecords(pack, plan.contexts);
+  const own = t => records.filter(r => t.sources.some(s => s.id === r.id));
+  const s2 = plan.trials.find(t => t.arm === 'summary' && t.repeat === 2);
+  assert.deepEqual(s2.availableSourceIds, [plan.contexts.find(c => c.arm === 'summary' && c.repeat === 2).id]);
+  const judgeText = judgePrompt(s2, own(s2), Buffer.from('{}'), '{}');
+  assert.ok(judgeText.includes('SUMMARY-TWO') && judgeText.includes('ship the café'));
+  assert.ok(!judgeText.includes('SUMMARY-ONE') && !judgeText.includes('PACKET-ALL') && !/\bsummary\b|\bpacket\b/.test(judgeText));
+  const full = plan.trials.find(t => t.arm === 'full');
+  assert.deepEqual(full.availableSourceIds, ['m10', 'm11']);
+  assert.deepEqual(full.sources.map(s => s.id), ['m10', 'm11']);
+  const none = plan.trials.find(t => t.arm === 'none');
+  assert.ok(!answerPrompt(none, own(none), 'Q?').includes('café'));
+  const packet = plan.trials.filter(t => t.arm === 'packet');
+  assert.equal(new Set(packet.map(t => t.availableSourceIds[0])).size, 1);
+});
+
+test('totals for a context-arm run compare every pair of arms and list the contexts without their text', () => {
+  const pack = loadPack(syntheticPack());
+  const runDir = mkdtempSync(join(tmpdir(), 'sg-ctx-'));
+  for (const d of ['trials', 'answers', 'judges']) mkdirSync(join(runDir, d));
+  const plan = buildPlan(pack, { contexts: { summary: ['Summary-text one', 'Summary-text two'], packet: [{ text: 'Packet-text', builtBy: 'context-budget' }] }, repeats: 2, judges, seed: 'fixed' });
+  const run = { dir: runDir, path: (...p) => join(runDir, ...p),
+    write(rel, v) { writeFileSync(join(runDir, rel), typeof v === 'string' ? v : JSON.stringify(v)); },
+    read(rel) { return JSON.parse(readFileSync(join(runDir, rel), 'utf8')); },
+    has(rel) { try { readFileSync(join(runDir, rel)); return true; } catch { return false; } },
+    n: 0, tick() { return this.n++; } };
+  writePlan(run, plan, pack, null);
+  assert.ok(!run.has('reduced.json'));
+  for (const t of plan.trials) {
+    const usable = t.availableSourceIds.length > 0;
+    const answerRaw = JSON.stringify({ version: 1, caseId: t.caseId, status: usable ? 'supported' : 'insufficient-evidence',
+      answer: usable ? 'Friday.' : 'Not in the supplied records.', limitations: usable ? [] : ['no sources'],
+      claims: usable ? [{ claimId: 'c1', text: 'Friday.', basis: 'explicit-source', citations: [{ sourceId: t.availableSourceIds[0], start: 0, end: 1 }] }] : [] });
+    run.write(`answers/${t.trialId}.json`, { trialId: t.trialId, state: 'ok', usage: { output_tokens: 1 }, answerRaw, parseOutcome: { status: 'valid' } });
+    const planHash = run.read('index.json').planHashes[t.trialId];
+    // The packet arm misses a must-convey point; every other context passes.
+    t.judgeSlots.forEach((slot, i) => {
+      const raw = JSON.stringify({ version: 1, submissionId: t.submissionId, limitations: [], unlistedMaterialClaims: [],
+        criteria: t.criteria.map(c => ({ criterionId: c.id, reason: 'r', answerClaimIds: [], evidence: c.absence ? [] : [{ collection: 'answer', recordId: 'answer', start: 0, end: 1 }],
+          verdict: c.absence ? 'pass' : !usable ? 'fail' : (t.arm === 'packet' && c.id.startsWith('convey')) ? 'fail' : 'pass' })) });
+      const attempt = { trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, family: slot.family, attemptId: `${t.trialId}.${slot.id}.a0`,
+        ordinal: 0, planHash, answerHash: sha(answerRaw), completedOrdinal: run.tick(), state: 'valid', rawHash: sha(raw) };
+      run.write(`judges/${t.trialId}.slot-${i}.json`, { slotId: slot.id, family: slot.family, attempts: [attempt],
+        observations: [{ trialId: t.trialId, arm: t.arm, repeat: t.repeat, slotId: slot.id, attemptId: attempt.attemptId, family: slot.family, raw }] });
+    });
+  }
+  const totals = totalRun(run, pack);
+  assert.deepEqual(Object.keys(totals.arms), ['none', 'summary', 'packet', 'full']);
+  assert.deepEqual(Object.keys(totals.paired), ['summary-minus-packet', 'summary-minus-full', 'summary-minus-none', 'packet-minus-full', 'packet-minus-none', 'full-minus-none']);
+  assert.equal(totals.arms.summary.allCriteriaPass, 4);
+  assert.equal(totals.arms.packet.allCriteriaPass, 0);
+  assert.equal(totals.paired['summary-minus-packet'].completeOnly.better, 4);
+  assert.equal(totals.paired['packet-minus-full'].completeOnly.worse, 4);
+  assert.deepEqual(totals.contexts.map(c => [c.arm, c.repeat, c.builtBy]), [['summary', 1, null], ['summary', 2, null], ['packet', null, 'context-budget']]);
+  assert.equal(totals.contexts[2].chars, 'Packet-text'.length);
+  const text = JSON.stringify(totals);
+  for (const secret of ['Summary-text', 'Packet-text', 'café']) assert.ok(!text.includes(secret));
+  const d = diagnoseRun(run, pack);
+  assert.ok(Object.keys(d.answers).some(k => k.startsWith('packet ')) && Object.keys(d.answers).some(k => k.startsWith('summary ')));
 });

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T14:08:42.826Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "95fee5f8c3294a1218f3e5f355ed64c1ab7305e68559670b31bfbcef9f28055f",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs",
+    "upgrades/next/source-grounded-host.md",
+    "upgrades/side-effects/source-grounded-host.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Benchmark tool only: named context arms for the next measurement; no runtime path changes",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
