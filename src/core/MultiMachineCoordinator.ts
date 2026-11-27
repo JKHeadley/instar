@@ -1665,6 +1665,7 @@ export class MultiMachineCoordinator extends EventEmitter {
         // failed eval must never wedge the lease tick.
         await this.evaluateZombieRelinquish(performance.now(), new Date().toISOString())
           .catch(() => { /* @silent-fallback-ok — G1 eval is best-effort; retried next tick */ });
+      } else if (this.shouldDeferToPreferred()) {
         // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
         // preferred machine holding a HEALTHY lease: defer, do not contend. If the
         // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we

@@ -30,3 +30,16 @@ Actual baseline whole-file unit command reproduced one expected not-listed failu
 ## Second-pass review
 **Reviewer:** /root/queue_fastlane.
 Independent reviewer concurred with frozen source/test manifestd0246d4bfe16867dcbad45b269b2ec2f35a90f6fa067bb80e3461e063a10c9e9 after verifying all12file hashes and the discovery-state correction. No reviewer tests or author edits. Final actual-results review: the same independent reviewer read all final source/test/artifact hashes, raw107unit/1HTTP/1lifecycle pass logs and three exit-zero receipts, enforcing admission and build/type evidence. Concur with the review. Runtime/test hashes equal the executed frozen manifest. HTTP elapsed405.39seconds includes admission and startup;83milliseconds is test execution, not an exact wait calculation. No full-gate, publication or live claim is made. The reviewer ran no tests and made no author edits.
+
+## Retry an unknown mergeability result
+
+- Over-block. An exact verified head can now survive two transient UNKNOWN responses. A persistently unknown head still waits for the regular scan.
+- Under-block. A closed or moved target, a stable refusal, and a changed lease still prevent a merge. The ordinary candidate and act-time checks run on the latest response.
+- Layer. The exact handoff owns the retry because it has both the expected head and the acting lease epoch.
+- Signal and authority. UNKNOWN prompts another read. Only the existing checks can authorize a merge. See docs/signal-vs-authority.md.
+- Interactions. Two backoffs total one second, excluding the bounded GitHub requests. Discovery and the merge runner retain their existing behavior.
+- External surfaces. The audit records the last mergeability value so a future refusal can be diagnosed.
+- Multi-machine posture. Only the current lease holder retries, scoped to the same lease epoch. No new shared state or notices are created.
+- Rollback. Revert the change to restore one exact lookup. No state migration is required.
+
+Independent second pass by /root/mini_trial. Concur with the revised retry. An unreadable epoch cannot match a valid lease epoch. Successful and rejected reads recheck custody before updating the breaker. The exact head is checked again before merge eligibility.

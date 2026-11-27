@@ -395,6 +395,10 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       return;
     }
 
+    // A pruned old request must never become a NEW stop against a later session.
+    // Retained results were answered above; fresh exact stops still bypass feature/rate gates.
+    if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
+
     // Step 2a — an exact emergency stop skips the feature setting and the rate limit.
     const exactStop = isExactStopMessage(text);
     if (!exactStop) {
@@ -404,7 +408,6 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       const recent = (sendRate.get(deviceId) ?? []).filter((x) => t - x < 60_000);
       if (recent.length >= SEND_RATE_PER_MIN) { sendRate.set(deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
       recent.push(t); sendRate.set(deviceId, recent);
-      if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
       deps.pairing.scanInbound(text);
     }
     // Slack is dispatched on the serving machine. Refused BEFORE anything is saved, so the app

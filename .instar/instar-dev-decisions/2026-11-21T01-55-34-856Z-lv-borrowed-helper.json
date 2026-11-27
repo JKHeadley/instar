@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-21T01:55:34.856Z",
+  "slug": "lv-borrowed-helper",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 313,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/BorrowedRunMachine.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/borrowedDryRun.ts",
+      "src/localVerify/borrowedLaneFlow.ts",
+      "src/localVerify/borrowedPractice.ts",
+      "src/localVerify/helper/HelperService.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/mainRunObserver.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 263,
+    "deletedLines": 50
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

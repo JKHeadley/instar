@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "owner-needs-card-rules",
+  "sessionId": "8e84229b-531e-4493-9069-98980bbef193",
+  "timestamp": "2026-11-25T23:54:21.178Z",
+  "artifactPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "artifactSha256": "2e0e36b4b90b9cea7c3afef204e0572c2b50b5b541ae9380cbb12713737d72c5",
+  "coveredFiles": [
+    "docs/specs/owner-needs-card-rules.eli16.md",
+    "docs/specs/owner-needs-card-rules.md",
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/owner-needs-card-rules.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "docs/specs/owner-needs-card-rules.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/owner-needs-card-rules.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-18T19:51:37.756Z",
+  "slug": "boot-slow-callback-attributor",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 212,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/BootSlowCallbackAttributor.ts"
+    ],
+    "addedLines": 212,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

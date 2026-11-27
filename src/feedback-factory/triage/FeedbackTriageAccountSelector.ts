@@ -22,6 +22,16 @@ export type TriageAccountSelection =
   | { state: 'eligible'; account: VerifiedTriageAccount }
   | { state: 'saturated' | 'unreadable' };
 
+/**
+ * One named account, verified the same way as a selection: it must be an active, local,
+ * subscription-only codex-cli pool account whose credential identity holds across a fresh
+ * live quota read below 75%. `missing` and `unverified` are distinct so an operator can tell
+ * a wrong id from a signed-out or drifted login.
+ */
+export type PinnedAccountSelection =
+  | { state: 'eligible'; account: VerifiedTriageAccount }
+  | { state: 'missing' | 'unverified' | 'saturated' | 'unreadable' };
+
 export type LiveTriageQuotaReader = (opts: {
   codexHome: string; subscriptionOnly: true; timeoutMs: number; signal: AbortSignal;
 }) => Promise<CodexUsageSnapshot | null>;
@@ -158,6 +168,31 @@ export class FeedbackTriageAccountSelector {
   ambientAccount(): SubscriptionAccount | null {
     const home = path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
     return this.pool.list().find((account) => eligiblePoolAccount(account) && path.resolve(account.configHome) === home) ?? null;
+  }
+
+  /**
+   * Exactly the named pool account, or a named refusal. Never another account: a caller that
+   * pins an account must not be served by a neighbour when the pinned one is unavailable.
+   */
+  async selectPinned(accountId: string, deadlineAt = this.now() + 5_000): Promise<PinnedAccountSelection> {
+    const account = this.pool.list().find((entry) => entry.id === accountId);
+    if (!account) return { state: 'missing' };
+    const before = verifiedIdentity(account);
+    if (!before) return { state: 'unverified' };
+    const remaining = Math.min(5_000, deadlineAt - this.now());
+    if (remaining <= 700) return { state: 'unreadable' };
+    const controller = new AbortController();
+    const snapshot = await this.reader({ codexHome: path.resolve(account.configHome), subscriptionOnly: true,
+      timeoutMs: Math.min(4_200, remaining - 700), signal: controller.signal }).catch(() => null);
+    const after = verifiedIdentity(account);
+    if (!after || after.version !== before.version || after.loginAccountId !== before.loginAccountId) return { state: 'unverified' };
+    const usedPercent = liveTriageUsedPercent(snapshot, this.now());
+    if (usedPercent === null) return { state: 'unreadable' };
+    if (usedPercent >= 75) return { state: 'saturated' };
+    const selected: VerifiedTriageAccount = { accountId: account.id, configHome: path.resolve(account.configHome),
+      credentialVersion: after.version, loginAccountId: after.loginAccountId, limitFamily: 'codex',
+      usedPercent, acquiredAt: Date.parse(snapshot!.capturedAt!) };
+    return revalidateTriageAccount(this.pool, selected, this.now()) ? { state: 'eligible', account: selected } : { state: 'unverified' };
   }
 
   async selectAmbient(deadlineAt = this.now() + 5_000): Promise<TriageAccountSelection> {
