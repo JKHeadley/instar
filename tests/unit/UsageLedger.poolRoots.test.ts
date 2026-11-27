@@ -130,8 +130,8 @@ describe('local subscription transcript roots', () => {
     for (const id of ['a', 'b', 'c']) rollout(slot, id, home);
     let rowsAtCallback: number | undefined, waitingAtCallback: number | undefined;
     const ingest = ledger.ingestCodexFile.bind(ledger);
-    vi.spyOn(ledger, 'ingestCodexFile').mockImplementationOnce((root, file) => {
-      const result = ingest(root, file);
+    vi.spyOn(ledger, 'ingestCodexFile').mockImplementationOnce((root, file, prepared) => {
+      const result = ingest(root, file, prepared);
       setImmediate(() => {
         rowsAtCallback = ledger.rawRowCount;
         waitingAtCallback = ledger.listRoots()[0].filesPending;
