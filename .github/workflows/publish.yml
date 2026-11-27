@@ -89,7 +89,23 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
+      - name: Install release dependencies (up to three attempts)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            else
+              status=$?
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Release dependency installation failed after three attempts."
+              exit "$status"
+            fi
+            delay=$((attempt * 15))
+            echo "::warning::Release dependency installation failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
       - run: npm run build
       - uses: actions/download-artifact@v4
         with:

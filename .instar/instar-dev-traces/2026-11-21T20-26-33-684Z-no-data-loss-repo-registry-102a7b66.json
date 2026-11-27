@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "no-data-loss-repo-registry",
+  "sessionId": "d281f530-04c8-44f6-8798-ffb6bbad13cd",
+  "timestamp": "2026-11-21T20:26:33.684Z",
+  "artifactPath": "upgrades/side-effects/no-data-loss-repo-registry.md",
+  "artifactSha256": "4d0f417210e6fcb53cfbc5a67f4a980eff3b3fb8f235bcdfda50bbd8ad3ccbfa",
+  "specPath": "docs/specs/no-data-loss-on-machine-death.md",
+  "coveredFiles": [
+    "src/core/UpdateChecker.ts",
+    "upgrades/side-effects/no-data-loss-repo-registry.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only follow-up on the converged Tier-2 no-data-loss spec: one catch states its @silent-fallback-ok reason so the ratchet passes on the branch merged with main; no runtime change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

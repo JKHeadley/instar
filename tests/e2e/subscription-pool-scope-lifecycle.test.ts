@@ -77,6 +77,7 @@ describe('Subscription-pool pool-scope E2E lifecycle (feature is alive)', () => 
     expect(Array.isArray(res.body.accounts)).toBe(true);
     expect(res.body.pool.peersQueried).toBe(0);
     expect(res.body.pool.failed).toEqual([]);
+    expect(res.body.pool.answeredMachines).toEqual(expect.any(Array));
   });
 
   it('requires Bearer auth', async () => {

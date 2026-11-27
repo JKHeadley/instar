@@ -363,10 +363,17 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
       if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
         return { outcome: 'refused', failureClass: 'provider-rejected' };
+      // Resumed attempts can reach the drive without running admission again.
+      const unattended = episode.mode === 'unattended';
+      const { backupCode, ...otherSecretRefs } = browserAccount.vaultBindings ?? {};
+      const secretRefs = unattended ? otherSecretRefs : { ...otherSecretRefs, backupCode };
+      if (helper && unattended && backupCode) {
+        return { outcome: 'operator-only', failureClass: 'agent-hard-line', reason: 'unattended-backup-code-forbidden' };
+      }
       if (helper && !lastResortDrives.has(episode.id)) {
         const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
           provider: acct.provider, profileDir: (windowsHelper ? detail.windowsUserDataDir : undefined) ?? detail.userDataDir,
-          vaultBindingNames: Object.values(browserAccount.vaultBindings ?? {}).filter((name): name is string => typeof name === 'string'),
+          vaultBindingNames: Object.values(secretRefs).filter((name): name is string => typeof name === 'string'),
         }, signal);
         // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
         // helper with no seat; with the last resort available it falls through here too, instead
@@ -379,14 +386,14 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       // drive always navigates by agent (the fallback exists for a page the table cannot read);
       // its model calls are capped per drive by the port, bracketed here.
       const driver = new AnthropicReloginBrowserDriver({ browser: deps.createBrowser(detail.userDataDir),
-        resolveSecret: deps.resolveSecret, takeBackupCode: deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
+        resolveSecret: deps.resolveSecret, takeBackupCode: unattended ? undefined : deps.takeBackupCode, supervise: deps.supervise, seatLease, now,
         navigation: agentNavigation || lastResortDrive ? 'agent' : 'closed', navigate: deps.navigate,
         ...(deps.judgeDeviceLimitPage ? { judgeDeviceLimitPage: (text: string) => deps.judgeDeviceLimitPage!(acct.id, text) } : {}) });
       deps.lastResort?.beginDrive(episode.id);
       try {
         const driven = await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
           expectedIdentity: acct.email,
-          loginMethod: autonomousLoginMethod(browserAccount), secretRefs: browserAccount.vaultBindings ?? {},
+          loginMethod: autonomousLoginMethod(browserAccount), secretRefs, unattended,
           allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
         if (driven.outcome === 'refused' && driven.failureClass === 'device-limit') deps.onDeviceLimitStopped?.(acct.id);
         return driven;
@@ -449,25 +456,6 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     if (!entryKey) return 'unknown';
     return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey }) ?? 'unknown';
   };
-  // Unattended runs may spend single-use Google backup codes; never run one unattended when the
-  // bound vault entry is nearly empty (spec relogin-unattended-agent-session-and-slow-retry).
-  const backupCodesLow = async (browserAccount: PlaywrightAccount | null): Promise<boolean> => {
-    const name = browserAccount?.vaultBindings?.backupCode;
-    if (!name) return false;
-    // On the agent-session path the helper types codes itself and nothing removes a spent code from
-    // the vault, so the stored count cannot be trusted there: such accounts never run unattended on
-    // that path (held at approval). The driver path removes each code before typing it.
-    if (agentSession) return true;
-    try {
-      // Read fresh at every admission (no cache): the count must reflect codes the last run took.
-      const count = countBackupCodes(await deps.resolveSecret(name));
-      // One run spends at most one code per drive and has at most `maxAttempts` drives, and every
-      // run (first attempt or slow retry) re-checks here: keep at least one code past a full run.
-      return count < unattendedBackupCodeFloor(deps.maxAttempts);
-    } catch {
-      return true; // @silent-fallback-ok — an unreadable code store holds the repair at approval (the safe direction)
-    }
-  };
   const admissionFor = async (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode,
     current?: Pick<SubscriptionReloginEpisode, 'id' | 'loginCreatedAt' | 'startedAt' | 'finishedAt'>) => {
     const currentEpisodeId = current?.id;
@@ -479,7 +467,9 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       browserAccount?.loginMethod ?? null);
     const oldestSuccessAt = evidence.oldestSuccessAt === null ? null : Date.parse(evidence.oldestSuccessAt);
     const optedInIdentities = deps.unattendedPolicy?.identities ?? [];
-    const lowCodes = deps.mode === 'unattended' ? await backupCodesLow(browserAccount) : false;
+    // A helper has access to the machine vault. Keep accounts with a bound
+    // recovery code on explicit approval instead of entrusting that boundary to its prompt.
+    const helperHasBackupCode = !!helper && !!browserAccount?.vaultBindings?.backupCode;
     // The repair's OWN leftover login (the one its failed attempt created; reissues keep createdAt)
     // does not block its retry: the orchestrator replaces it at cli-starting, as for any attempt.
     // Any other pending login (an operator's) still blocks.
@@ -514,7 +504,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         minimumSuccessfulRepairs: deps.unattendedPolicy?.minimumSuccessfulRepairs,
         minimumEvidenceDays: deps.unattendedPolicy?.minimumEvidenceDays,
         helperHardLines: evidence.helperHardLines,
-        backupCodesLow: lowCodes,
+        backupCodesLow: helperHasBackupCode,
       } });
   };
   const scanCandidates = async () => {

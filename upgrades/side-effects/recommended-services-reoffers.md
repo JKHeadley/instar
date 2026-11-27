@@ -31,3 +31,6 @@ Rows replicate with the existing `recommendedServices` store. Any machine record
 
 ## 8. Rollback cost
 Turn the switch off, or revert. Rows already written stay in the ledger and are ignored by older code.
+
+## Slice B: `secret-lost` (boot check)
+`findUnresolvedSecrets(config)` in `src/recommended/reoffers.ts` walks the loaded config (bounded depth 8) for `{ "secret": true }` placeholders that survived the merge with the encrypted store. `recommendedServiceRoutes.ts` runs it once per server start (first tick with a ledger and an owner) through the new `unresolvedSecrets` dep and records `secret-lost` / `boot`, which re-offers Bitwarden under the same floor. Paths never reach the ledger or a message. Checked against the live Echo config: no false positive (zero unresolved). Over-block: a secret lost mid-run is only seen at the next start. Under-block: the CLI restore marker named in the spec is not built here; it lands with `state-loss-risk`. A check that throws is reported under `RecommendedServices.reoffer` and that start isn't counted. Dark behind the same switch.

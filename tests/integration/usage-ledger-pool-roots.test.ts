@@ -52,19 +52,30 @@ describe('subscription pool and usage HTTP coverage', () => {
       email: 'historical@example.invalid', configHome: slot, status: 'disabled' });
     const { app, ledger } = reader(home, pool);
     const blocked = writeRollout(slot, 'a', home);
-    writeRollout(slot, 'b', home);
-    const open = fs.openSync;
-    const deny = vi.spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
-      if (file === blocked) throw Object.assign(new Error('fixture access denied'), { code: 'EACCES' });
-      return open(file, flags, mode);
-    });
+    const other = writeRollout(slot, 'b', home);
+    const original = fs.readFileSync(blocked);
+    const stat = fs.promises.stat.bind(fs.promises);
+    let changed = false;
+    const replaceAfterListing = vi.spyOn(fs.promises, 'stat').mockImplementation((async (file: fs.PathLike, ...args: unknown[]) => {
+      const metadata = await (stat as (...values: unknown[]) => Promise<fs.Stats>)(file, ...args);
+      if (!changed && file === blocked) {
+        changed = true;
+        // A regular file becomes a symlink after discovery and before the worker opens it.
+        SafeFsExecutor.safeUnlinkSync(blocked, { operation: 'usage-ledger-pool-roots:replace-fixture' });
+        fs.symlinkSync(other, blocked);
+      }
+      return metadata;
+    }) as typeof fs.promises.stat);
     await ledger.scanTickAsync();
     const coverage = await request(app).get('/usage/coverage').expect(200);
     expect(coverage.body.rootMachineId).toBe('m_local');
     expect(coverage.body.roots).toMatchObject([{ origin: 'codex:subscription-pool', listing: 'partial', filesPending: 2 }]);
     await ledger.scanTickAsync();
     expect((await request(app).get('/usage/summary').expect(200)).body.total.tokens.total).toBe(15);
-    deny.mockRestore();
+    expect(changed).toBe(true);
+    replaceAfterListing.mockRestore();
+    SafeFsExecutor.safeUnlinkSync(blocked, { operation: 'usage-ledger-pool-roots:restore-fixture' });
+    fs.writeFileSync(blocked, original);
     await ledger.scanTickAsync();
     expect((await request(app).get('/usage/coverage').expect(200)).body.roots).toMatchObject([{ listing: 'listed', filesPending: 0 }]);
     expect((await request(app).get('/usage/summary').expect(200)).body.total.tokens.total).toBe(30);

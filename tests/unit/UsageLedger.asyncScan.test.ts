@@ -31,7 +31,7 @@ describe('UsageLedger.scanTickAsync', () => {
   let tmp: string; let home: string; let claudeA: string; let claudeB: string; let codexDir: string;
   const ledgers: UsageLedger[] = [];
 
-  function newLedger(opts: { filesPerTick?: number } = {}): UsageLedger {
+  function newLedger(opts: { filesPerTick?: number; dbPath?: string } = {}): UsageLedger {
     const ledger = new UsageLedger({
       dbPath: ':memory:', machineId: 'm_test', agentId: 'echo', agentHomes: [home],
       now: () => T0 + 3_600_000, ...opts,
@@ -140,6 +140,86 @@ describe('UsageLedger.scanTickAsync', () => {
     expect(readdirSync.mock.calls.length).toBeGreaterThan(0);
     expect(statSync.mock.calls.length).toBeGreaterThan(0);
   });
+
+  it('keeps the heartbeat and exact checkpoints across large mixed-provider batches', async () => {
+    const filler = (JSON.stringify({ type: 'ignored', text: 'π'.repeat(4096) }) + '\n').repeat(2300);
+    const huge = JSON.stringify({ type: 'ignored', text: '界'.repeat(1024 * 1024) }) + '\n';
+    const followingClaudeRow = line('cold-claude', home);
+    const partialAt = followingClaudeRow.length - 1;
+    const claudeFile = transcript(claudeA, home, 'cold-claude.jsonl',
+      line('cold-claude', home) + filler + huge + followingClaudeRow.slice(0, partialAt));
+    const codexFile = path.join(codexDir, 'sessions', '2026', '11', '10', 'rollout-cold.jsonl');
+    const codexStart = [
+      { type: 'session_meta', payload: { id: 'cold-codex', cwd: home } },
+      { type: 'turn_context', payload: { model: 'gpt-5.2' } },
+      tc(T0, 1000, 800, 100),
+    ].map(row => JSON.stringify(row) + '\n').join('');
+    fs.writeFileSync(codexFile, codexStart + filler + huge + JSON.stringify(tc(T0 + 2000, 2500, 2000, 300)) + '\n');
+
+    const ledger = newLedger();
+    const readSync = vi.spyOn(fs, 'readSync');
+    let heartbeats = 0;
+    const heartbeat = setInterval(() => { heartbeats++; }, 0);
+    try {
+      const first = await ledger.scanTickAsync();
+      expect(first.pending).toBeGreaterThan(0);
+      expect(first.rowsCounted).toBe(9);
+      expect(heartbeats).toBeGreaterThan(0);
+      expect(readSync).not.toHaveBeenCalled();
+      for (let tick = 0; tick < 10 && (await ledger.scanTickAsync()).pending > 0; tick++) {
+        // Each tick resumes from the last committed line.
+      }
+      expect(ledger.totals(T0 - DAY).calls).toBe(10);
+      expect((await ledger.scanTickAsync()).rowsCounted).toBe(0);
+      expect(readSync).not.toHaveBeenCalled();
+    } finally {
+      clearInterval(heartbeat);
+      readSync.mockRestore();
+    }
+    fs.appendFileSync(claudeFile, followingClaudeRow.slice(partialAt));
+    expect((await ledger.scanTickAsync()).rowsCounted).toBe(1);
+    expect((await ledger.scanTickAsync()).rowsCounted).toBe(0);
+    const control = newLedger();
+    control.scanTick();
+    expect(ledger.totals(T0 - DAY)).toEqual(control.totals(T0 - DAY));
+  });
+
+  it('replays snapshot detail in bounded passes and keeps the persisted offset across reopen', async () => {
+    const ignored = (JSON.stringify({ type: 'ignored', text: 'π'.repeat(4096) }) + '\n').repeat(2300);
+    const first = line('snapshot-detail', home);
+    const last = line('snapshot-detail', home);
+    const transcriptPath = transcript(claudeA, home, 'snapshot-detail.jsonl', first + ignored + last);
+    const source = newLedger();
+    source.scanTick();
+    const expected = source.totals(T0 - DAY);
+    const snapshot = path.join(tmp, 'snapshot.db');
+    expect(source.writeSnapshot(snapshot).written).toBe(true);
+    source.close();
+
+    const dbPath = path.join(tmp, 'recovered.db');
+    const recovered = newLedger({ dbPath });
+    expect(recovered.importSnapshotIfEmpty(snapshot).outcome).toBe('imported');
+    const db = (recovered as unknown as { db: import('better-sqlite3').Database }).db;
+    const detailRows = () => db.prepare('SELECT status, source_pos FROM usage_events WHERE source_path = ? ORDER BY source_pos').all(transcriptPath);
+    await recovered.scanTickAsync();
+    expect(detailRows()).toEqual([{ status: 'replay', source_pos: 0 }]);
+    for (let pass = 0; pass < 10 && detailRows().length < 2; pass++) await recovered.scanTickAsync();
+    expect(detailRows()).toEqual([
+      { status: 'replay', source_pos: 0 },
+      { status: 'replay', source_pos: Buffer.byteLength(first + ignored) },
+    ]);
+    expect(recovered.totals(T0 - DAY)).toEqual(expected);
+    expect(db.prepare('SELECT offset FROM checkpoints WHERE path = ?').get(transcriptPath)).toEqual({
+      offset: Buffer.byteLength(first + ignored + last),
+    });
+    recovered.close();
+
+    const continued = newLedger({ dbPath });
+    fs.appendFileSync(transcriptPath, line('snapshot-detail', home));
+    expect((await continued.scanTickAsync()).rowsCounted).toBe(1);
+    expect(continued.totals(T0 - DAY).calls).toBe(expected.calls + 1);
+    expect((await continued.scanTickAsync()).rowsCounted).toBe(0);
+  }, 15_000);
 
   it('lets timers on the main thread fire between the listing steps', async () => {
     for (let index = 0; index < 150; index++) transcript(claudeA, home, `bulk-${index}.jsonl`, line(`bulk-${index}`, home));

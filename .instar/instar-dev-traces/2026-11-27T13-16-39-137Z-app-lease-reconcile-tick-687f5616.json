@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "app-lease-reconcile-tick",
+  "sessionId": "599a21ed-1e6a-4e32-9ed1-9e2985fee973",
+  "timestamp": "2026-11-27T13:16:39.137Z",
+  "artifactPath": "upgrades/side-effects/app-lease-reconcile-tick.md",
+  "artifactSha256": "def723fda085bd17d3293171524bacb980340fe44f6949e9a0215ffd27b2fd3f",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/core/appConversationPool.ts",
+    "tests/e2e/app-conversations-pool-alive.test.ts",
+    "tests/unit/LeaseCoordinator.test.ts",
+    "tests/unit/app-conversations-pool.test.ts",
+    "upgrades/next/app-lease-reconcile-tick.md",
+    "upgrades/side-effects/app-lease-reconcile-tick.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches lease and session close authority on the app binding path, without new persisted state or a new external interface.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

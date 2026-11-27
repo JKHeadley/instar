@@ -111,7 +111,7 @@ describe('agent work cards over HTTP', () => {
     expect(rt.svc.cardIds()).toHaveLength(1);
   });
 
-  it('a member\'s request is not-started: no per-card row, one aggregated count; its approve control (PIN) starts it; a chosen cardId is refused', async () => {
+  it('a member\'s request is an actual owner approval; its PIN control starts it; a chosen cardId is refused', async () => {
     telegramRows.set('42:2002', { text: 'Can you also sort the list?', fromUser: true, forwarded: false, telegramUserId: 888 });
     const r = await request(app).post('/commitments').set(auth()).send({ type: 'one-time-action', userRequest: 'sort the venue list', agentResponse: 'I will sort it', topicId: 42, source: 'agent', sourceMessageId: '2002', followThroughOptOutReason: 'tracked on the work board' });
     expect(r.status, JSON.stringify(r.body)).toBe(201);
@@ -120,11 +120,11 @@ describe('agent work cards over HTTP', () => {
     const cardId = requestCardId('m1', r.body.id);
     const card = await request(app).get(`/work-board/cards/${cardId}`).set(auth());
     expect(card.body.card.status).toBe('not-started');
-    expect(card.body.card.needLine).toBe('Not started: waiting for your approval or board setting');
+    expect(card.body.card.needLine).toBe('Needs your approval before the agent starts');
     const board = await request(app).get('/work-board').set(auth());
     expect(board.body.notStartedCards).toMatchObject({ count: 1, cardIds: [cardId], more: 0 });
     expect(board.body.notStartedCards.shown[0]).toMatchObject({ id: cardId, requester: { personKey: 'adriana', isOwner: false } });
-    expect(board.body.lanes.find((l: { lane: string }) => l.lane === 'waiting-on-you').cards).toEqual([]);
+    expect(board.body.lanes.find((l: { lane: string }) => l.lane === 'waiting-on-you').cards.map((c: { id: string }) => c.id)).toContain(cardId);
     // the agent's note and evidence are refused while it is not started
     const note = await request(app).post(`/work-board/cards/${cardId}/notes`).set(auth()).send({ text: 'starting' });
     expect(note.status).toBe(409); expect(note.body.error).toBe('not-started');
@@ -219,4 +219,44 @@ describe('agent work cards over HTTP', () => {
     expect(fb.body.error).not.toBe('source-required');
     expect(fs.existsSync(project.stateDir)).toBe(true);
   });
+  it('keeps agent-internal work out of default board, Projects and Needs while retaining an explicit agent view', async () => {
+    const before=await request(app).get('/work-board').set(auth());
+    const created=await request(app).post('/work-board/cards').set(auth()).send({source:{conversationKey:'telegram:987654',messageId:'1'},title:'Keep the model registry current',need:'Keep the model registry current',carrier:'agent',outward:false,doneWhen:[{id:'d1',text:'Checked',certify:'agent-may-certify'}]});
+    expect(created.status,JSON.stringify(created.body)).toBe(201);
+    const id=created.body.cardId;
+    const card=await request(app).get('/work-board/cards/'+id).set(auth());
+    expect(card.body.card).toMatchObject({agentInternal:true,conversationAvailable:false,status:'not-started',lane:'with-agent'});
+    expect(card.body.card.needLine).not.toMatch(/your approval/);
+    const board=await request(app).get('/work-board').set(auth());
+    expect(board.body.ownerProjectionVersion).toBe(1);
+    expect(board.body.waitingOnYou).toBe(before.body.waitingOnYou);
+    expect(board.body.lanes.flatMap((l:any)=>l.cards).some((c:any)=>c.id===id)).toBe(false);
+    const agents=await request(app).get('/mobile/work-board?view=agent').set(auth());
+    expect(agents.status).toBe(200);
+    expect(agents.body.view).toBe('agent');
+    expect(agents.body.waitingOnYou).toBe(0);
+    expect(agents.body.lanes.flatMap((l:any)=>l.cards).find((c:any)=>c.id===id)?.agentInternal).toBe(true);
+    const projects=await request(app).get('/work/projects').set(auth());
+    expect(JSON.stringify(projects.body)).not.toContain(id);
+    const needs=await request(app).get('/needs?view=agent').set(auth());
+    expect(needs.status).toBe(200);
+    expect(JSON.stringify(needs.body)).not.toContain(id);
+    expect(needs.body.items.some((n:any)=>n.id==='work:not-started'||n.key==='work:not-started')).toBe(false);
+    expect((await request(app).get('/work-board?view=other').set(auth())).status).toBe(400);
+    const source = await request(app).get('/work-board?sourceConversationKey=telegram%3A987654').set(auth());
+    expect(source.status).toBe(200);
+    expect(source.body.cards).toEqual([]);
+    expect(source.body.total).toBe(0);
+    const owner = {kind:'person',personKey:'owner',proof:'pin',isOwner:true} as const;
+    expect(rt.svc.tap(owner,id,{action:'approve',materialHash:rt.svc.view(id)!.card.materialHash}).ok).toBe(true);
+    const pickup = rt.svc.view(id)!.pickups.find(p=>p.status==='pending')!;
+    expect(pickup).toBeTruthy();
+    expect(rt.svc.writeSystem('dispatched',id,{for:pickup.cause.id,attempt:1,outcome:'parked',reason:'decision:test'}).ok).toBe(true);
+    const ownerBoard = await request(app).get('/work-board').set(auth());
+    const agentBoard = await request(app).get('/work-board?view=agent').set(auth());
+    expect(agentBoard.body.pickups.parked).toBeGreaterThanOrEqual(1);
+    expect(ownerBoard.body.pickups.parked).toBe(before.body.pickups.parked);
+
+  });
+
 });

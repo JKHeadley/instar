@@ -95,9 +95,11 @@ describe('moveInboundFilesIntoScope', () => {
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/memory-session-policy.test.ts' }));
   const roots = () => [path.join(dir, 'inbound')];
 
-  it('includes the actual Telegram PDF directory and Slack recovery directory', () => {
+  it('includes the actual Telegram PDF directory and the inbound folder that holds Slack recovery files', () => {
     expect(memorySessionInboundRoots(path.join(dir, '.instar'))).toContain(path.join(dir, '.instar', 'telegram-documents'));
-    expect(memorySessionInboundRoots(dir)).toContain('/tmp/instar-slack');
+    expect(memorySessionInboundRoots(dir)).toContain(path.join(dir, 'telegram-inbound'));
+    // SEC-138: a shared /tmp folder is no longer a trusted inbound root.
+    expect(memorySessionInboundRoots(dir).some((r) => r.includes('instar-slack'))).toBe(false);
   });
 
   it('copies a named file and points the text at the copy', () => {

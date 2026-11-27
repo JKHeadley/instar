@@ -1274,6 +1274,13 @@ export class MultiMachineCoordinator extends EventEmitter {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
   }
 
+  /** App reconciliation uses lease authority without collecting health diagnostics. */
+  appBindingLeaseAuthority(): { holdsLease: boolean; heldElsewhere: boolean } {
+    if (!this._enabled) return { holdsLease: true, heldElsewhere: false };
+    return this.leaseCoordinator?.appBindingLeaseAuthority()
+      ?? { holdsLease: this._role === 'awake', heldElsewhere: false };
+  }
+
   /**
    * lease-freshness-lapse-retry — how long since this machine last CONFIRMED a lease
    * renewal, and the lease lifetime, so a send refused at the network boundary can say
@@ -1667,6 +1674,7 @@ export class MultiMachineCoordinator extends EventEmitter {
         // failed eval must never wedge the lease tick.
         await this.evaluateZombieRelinquish(performance.now(), new Date().toISOString())
           .catch(() => { /* @silent-fallback-ok — G1 eval is best-effort; retried next tick */ });
+      } else if (this.shouldDeferToPreferred()) {
         // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
         // preferred machine holding a HEALTHY lease: defer, do not contend. If the
         // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we

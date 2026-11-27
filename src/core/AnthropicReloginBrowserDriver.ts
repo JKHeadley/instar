@@ -107,6 +107,7 @@ export interface AnthropicReloginBrowserRequest {
    * never mint. Absent ⇒ `sign-in`.
    */
   intent?: 'sign-in' | 'enroll';
+  unattended?: boolean;
 }
 
 export interface AnthropicReloginBrowserDriverDeps {
@@ -310,6 +311,8 @@ export class AnthropicReloginBrowserDriver {
         // nothing on it may be acted on (spec §3.6) and the outcome mapping owns the rest.
         if (TERMINAL_GOOGLE_PAGE_CLASSES.has(snapshot.pageClass as GooglePasskeyPageClass))
           return { outcome: 'refused', failureClass: 'passkey-refused' };
+        if (snapshot.pageClass === 'google-backup-code-entry' && request.unattended)
+          return { outcome: 'operator-only', failureClass: 'agent-hard-line', reason: 'unattended-backup-code-forbidden' };
         if (snapshot.pageClass === 'phone-confirmation')
           return { outcome: 'operator-only', failureClass: 'phone-confirmation' };
         if (snapshot.pageClass === 'permission-expansion')
@@ -453,7 +456,7 @@ export class AnthropicReloginBrowserDriver {
       case 'fill-backup-code': {
         // Enroll: the worker (spec §3.7) marks the code consumed BEFORE handing its ref here.
         // Repair: a password account's second step; the code is taken OUT of the vault first.
-        if (!req.secretRefs.backupCode) return false;
+        if (req.unattended || !req.secretRefs.backupCode) return false;
         if (req.intent !== 'enroll' && (!usesPassword(req.loginMethod) || !this.deps.takeBackupCode)) return false;
         // At most ONE code per drive: a rejected code leaves the page on the backup-code field, and
         // re-offering the fill would drain the whole list. A second request ends the attempt instead.

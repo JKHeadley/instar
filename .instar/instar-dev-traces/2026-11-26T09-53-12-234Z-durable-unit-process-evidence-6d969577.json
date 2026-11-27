@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "durable-unit-process-evidence",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T09:53:12.234Z",
+  "artifactPath": "upgrades/side-effects/durable-unit-process-evidence.md",
+  "artifactSha256": "e4771068bc87c4677dfaee1df4ca07c3ca21da625b6438e2eff8a17f26c3e2fc",
+  "coveredFiles": [
+    "docs/specs/durable-unit-process-evidence.eli16.md",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/unitProcessOutput.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/unitProcessOutput.test.ts",
+    "upgrades/next/durable-unit-process-evidence.md",
+    "upgrades/side-effects/durable-unit-process-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Bounded private diagnostics for an existing failure path, with unchanged verdict authority.",
+  "eli16Path": "docs/specs/durable-unit-process-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/durable-unit-process-evidence.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

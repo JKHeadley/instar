@@ -11,7 +11,7 @@
  * every 30s for up to 5 minutes. Layer 3 timeout varies by message type.
  */
 
-import { HOLDER_RETRY_WINDOW_MS } from './types.js';
+import { getLastDeliveredAt, HOLDER_RETRY_WINDOW_MS } from './types.js';
 import type {
   MessageEnvelope,
   MessageType,
@@ -35,6 +35,13 @@ const ACK_TIMEOUT: Record<MessageType, number | null> = {
   system: null,
   'delivery-notice': null,
 };
+
+function elapsedAckTimeout(type: MessageType, deliveredAt: string | undefined): number | null {
+  const minutes = ACK_TIMEOUT[type];
+  return minutes != null && deliveredAt && Date.now() - Date.parse(deliveredAt) > minutes * 60_000
+    ? minutes
+    : null;
+}
 
 /** Layer 1 retry backoff schedule (seconds). Doubles after each attempt. */
 const LAYER1_BACKOFF_BASE_MS = 5_000;
@@ -266,17 +273,27 @@ export class DeliveryRetryManager {
     let expired = 0;
     let escalated = 0;
 
-    const inbox = await this.store.queryInbox(this.config.agentName);
+    const inbox = this.store.queryRetryInbox
+      ? await this.store.queryRetryInbox(this.config.agentName)
+      : await this.store.queryInbox(this.config.agentName);
 
     for (const snapshot of inbox) {
+      // These phases have no retry, expiry, or acknowledgement action in this loop.
+      if (['read', 'failed', 'expired', 'dead-lettered'].includes(snapshot.delivery.phase)) continue;
       // Sent has its initial synchronous router executor; a timer must not steal it.
       if (snapshot.delivery.phase === 'sent' && !this.isExpired(snapshot)) continue;
+      if (snapshot.delivery.phase === 'delivered' && 'lastDeliveredAt' in snapshot.delivery
+        && !this.isExpired(snapshot)
+        && elapsedAckTimeout(snapshot.message.type, snapshot.delivery.lastDeliveredAt) === null) continue;
       const claim = beginDeliveryAttempt(snapshot.message.id);
       if (!claim) continue;
       try {
       const envelope = await this.store.get(snapshot.message.id);
-      if (!envelope) continue;
+      if (!envelope || envelope.message.id !== snapshot.message.id) continue;
+      const recipient = envelope.message.to.agent;
+      if (recipient !== this.config.agentName && recipient !== '*') continue;
       const phase = envelope.delivery.phase;
+      if (phase === 'sent' && !this.isExpired(envelope)) continue;
       const messageId = envelope.message.id;
       const local = this.config.isLocalEnvelope ? this.config.isLocalEnvelope(envelope) : true;
 
@@ -452,34 +469,24 @@ export class DeliveryRetryManager {
 
       // ── Layer 3 Timeout: unacknowledged delivered messages ─
       if (phase === 'delivered') {
-        const timeout = ACK_TIMEOUT[envelope.message.type];
+        const timeout = elapsedAckTimeout(envelope.message.type, getLastDeliveredAt(envelope.delivery));
         if (timeout !== null) {
-          const deliveredAt = envelope.delivery.transitions
-            .filter(t => t.to === 'delivered')
-            .pop()?.at;
-          if (deliveredAt) {
-            const elapsed = Date.now() - new Date(deliveredAt).getTime();
-            if (elapsed > timeout * 60_000) {
-              // ACK timeout — escalate
-              if (this.config.onEscalate) {
-                this.config.onEscalate(
-                  envelope,
-                  `Layer 3 ACK timeout: ${envelope.message.type} message not acknowledged after ${timeout} minutes`,
-                );
-                escalated++;
-              }
-              // Mark as expired
-              envelope.delivery.phase = 'expired';
-              envelope.delivery.transitions.push({
-                from: 'delivered',
-                to: 'expired',
-                at: new Date().toISOString(),
-                reason: `ACK timeout (${timeout}min) for type=${envelope.message.type}`,
-              });
-              await this.store.updateEnvelope(envelope);
-              expired++;
-            }
+          if (this.config.onEscalate) {
+            this.config.onEscalate(
+              envelope,
+              `Layer 3 ACK timeout: ${envelope.message.type} message not acknowledged after ${timeout} minutes`,
+            );
+            escalated++;
           }
+          envelope.delivery.phase = 'expired';
+          envelope.delivery.transitions.push({
+            from: 'delivered',
+            to: 'expired',
+            at: new Date().toISOString(),
+            reason: `ACK timeout (${timeout}min) for type=${envelope.message.type}`,
+          });
+          await this.store.updateEnvelope(envelope);
+          expired++;
         }
       }
       } finally { claim.release(); }
@@ -527,7 +534,10 @@ export class DeliveryRetryManager {
   }
 
   /** Check if a message's delivery TTL has expired */
-  private isExpired(envelope: MessageEnvelope): boolean {
+  private isExpired(envelope: {
+    message: Pick<MessageEnvelope['message'], 'createdAt' | 'ttlMinutes'>;
+    delivery: Pick<MessageEnvelope['delivery'], 'expiresAt'>;
+  }): boolean {
     const createdAt = new Date(envelope.message.createdAt).getTime();
     const ttlMs = envelope.message.ttlMinutes * 60_000;
     return Date.now() > (envelope.delivery.expiresAt ?? createdAt + ttlMs);

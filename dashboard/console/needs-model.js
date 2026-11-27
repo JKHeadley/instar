@@ -15,6 +15,7 @@ import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 import { contextNeeds } from './context-model.js';
 import { workBoardNeedRows } from './work-model.js';
+import { repoNeedRows, REPOS_READ } from './repos-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -33,7 +34,15 @@ export function documentDecisionNeedRows(res) {
 export function trustRequestNeedRows(trust, now) {
   if (sourceState(trust) === 'off') return [];
   const requests = buildTrustRequests(trust, now);
-  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
+  return requests.ok ? requests.rows.map((r) => {
+    let reason = r.sub;
+    if (r.deliveryState === 'setup') {
+      reason = r.chatDeliveryUnconfirmed
+        ? 'Set up approvals in the Instar app because chat delivery is unconfirmed.'
+        : 'Set up approvals in the Instar app to review this request.';
+    }
+    return row(r.key, r.main, reason, `#/settings/allowed?s=approvals&request=${encodeURIComponent(r.requestId)}`, [r.requestId]);
+  }) : UNREADABLE;
 }
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
@@ -81,14 +90,14 @@ export function chiefOfStaffNeedRows(cos, now) {
   const projectHref = (p) => (typeof p.conversationKey === 'string' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(p.conversationKey) ? `#/work/chats?c=${encodeURIComponent(p.conversationKey)}` : href);
   // The server's short name (initiative title / conversation name / goal lead) when it sends one; else the same rule here.
   const title = (p) => (typeof p.title === 'string' && p.title.trim() ? cutAtWord(p.title, 60)
-    : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
+    : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : 'A project');
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
     // The owner paused it (spec cos-owner-pause-record §3.3): they already decided, so it asks nothing of them.
     if (p.pausedBy) continue;
     if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
     else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
-    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));
+    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, 'The project is waiting for your reply in its conversation.', projectHref(p)));
   }
   if (d.projects.length) {
     if (!d.lease.live) out.push(row('cos:paused', 'Your Chief of Staff is paused until you check in', 'Say anything in its conversation.', href));
@@ -103,7 +112,17 @@ export function chiefOfStaffNeedRows(cos, now) {
 export const NEED_SOURCES = [
   // First, so a real problem leads the Needs-you list. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
-    rows: ({ issues }) => { const rows = healthNeedRows(issues); return rows === null ? UNREADABLE : rows.map((r) => row(`health:${r.key}`, r.title, r.detail, r.href)); } },
+    rows: ({ issues }, _now, { raw = false } = {}) => {
+      const rows = healthNeedRows(issues, { includeAgentWork: raw });
+      return rows === null ? UNREADABLE : rows.map(r => ({
+        ...row(`health:${r.key}`, r.title, r.detail, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}),
+      }));
+    } },
+  // Work that exists on only one machine (no-data-loss-on-machine-death.md §1.4): a repository with no remote, or
+  // unpushed work past the grace window. One row per machine per kind. 503 = the registry is off here = nothing waiting.
+  { id: 'repos', page: 'capacity/repos', reads: { repos: REPOS_READ },
+    // warning-path: inline
+    rows: ({ repos }) => { const rows = repoNeedRows(repos); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href, r.refs), ownerAction: false, tone: r.kind === 'unknown' ? 'unknown' : 'bad' })); } },
   { id: 'merging', page: 'work/development', reads: { watcher: '/green-pr-automerge' },
     rows: ({ watcher }, now) => {
       if (agentOwnedStop(watcher.data)) return []; // the agent releases this itself; the page still shows it
@@ -145,7 +164,7 @@ export const NEED_SOURCES = [
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
   { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
-    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => ({ ...row(r.key, r.main, r.sub, r.href), ...(r.ownerAction === false ? { ownerAction: false } : {}), ...(r.cardId ? { board: { cardId: r.cardId, href: r.href, covers: r.covers || [], linkable: !!r.linkable, serverOwned: !!r.serverOwned, createdAt: r.createdAt || '' } } : {}) })); } },
   // Documents that ask the owner for a decision (document-decisions.md §3.7). 503 = documents off here = nothing waiting.
   { id: 'document-decisions', page: 'work/documents', reads: { waiting: '/docs/decisions/waiting' },
     rows: ({ waiting }) => documentDecisionNeedRows(waiting) },
@@ -177,11 +196,14 @@ export const NEED_SOURCES = [
   // machine). 503 = off here; a stale watcher heartbeat is "can't tell", never "nothing".
   // Read from the watcher's status only (cheap); the conversation names stay on the page itself.
   { id: 'context', page: 'settings/context', reads: { sentinel: '/context-budget/sentinel' },
-    rows: ({ sentinel }, now) => {
+    rows: ({ sentinel }, now, { raw = false } = {}) => {
       const needs = contextNeeds(sentinel.data, {}, now);
       if (needs === null) return UNREADABLE;
-      // The fold id is the ref: the watcher's own Attention notice names it, so one incident counts once.
-      return needs.map((n) => row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []));
+      // Keep the agent-owned diagnostic in the raw input so the gate can count it.
+      return needs.filter(n => raw || n.requiresUserAction !== false).map(n => ({
+        ...row(`context:${n.key}`, n.title, n.detail, '#/settings/context', n.ref ? [n.ref] : []),
+        ...(n.requiresUserAction === false ? { ownerAction: false } : {}),
+      }));
     } },
 ];
 
@@ -278,8 +300,9 @@ export function linkCoveredRows(rows) {
  * operator, plus which sources are unread (say "checking", never "quiet") or failed (say
  * partial, never "quiet"). A failed read keeps its last good rows for graceMs. 503 means off.
  */
-export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
+export function surfacedNeeds(known, now = Date.now(), graceMs = 120000, { raw = false } = {}) {
   const out = { rows: [], pending: [], failed: [] };
+  const add = (source, rows) => out.rows.push(...(raw ? rows.map(row => ({ ...row, source })) : rows));
   for (const s of NEED_SOURCES) {
     const k = known && known[s.id];
     if (s.when && !s.when(known || {})) continue;
@@ -288,15 +311,15 @@ export function surfacedNeeds(known, now = Date.now(), graceMs = 120000) {
     if (reads.every((r) => sourceState(r) === 'off')) continue; // switched off here; a page's builder handles one optional read being off
     if (reads.some(failedRead)) {
       out.failed.push(s.id);
-      if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows);
+      if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows);
       continue;
     }
-    const rows = s.rows(k.results, now);
-    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) out.rows.push(...k.rows); continue; }
+    const rows = s.rows(k.results, now, { raw });
+    if (rows === UNREADABLE) { out.failed.push(s.id); if (k.rows && now - (k.rowsAt || 0) <= graceMs) add(s.id, k.rows); continue; }
     k.rows = rows;
     k.rowsAt = now;
-    out.rows.push(...rows);
+    add(s.id, rows);
   }
-  out.rows = linkCoveredRows(out.rows);
+  if (!raw) out.rows = linkCoveredRows(out.rows);
   return out;
 }
