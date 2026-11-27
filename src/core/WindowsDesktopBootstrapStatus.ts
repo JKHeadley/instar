@@ -24,6 +24,10 @@ export function classifyWindowsDesktopPrepareFailure(error: unknown): string {
 
 const phases = new Set<WindowsDesktopBootstrapPhase>(['preflight', 'address', 'stage', 'update', 'install', 'confirm']);
 const codes: Array<[RegExp, string]> = [
+  // A load failure happens before the installer's phase handler exists, so it
+  // carries no phase marker and is reported under the default phase. It comes
+  // first so an EACCES or a CS-like path segment in the load error cannot claim it.
+  [/(?:ERR_MODULE_NOT_FOUND|Cannot find module|does not provide an export named)/i, 'installer-module-load-failed'],
   [/Windows companion installer requires WSL/i, 'wsl-unavailable'],
   [/Packaged Windows companion source is missing/i, 'companion-source-missing'],
   [/Windows user directory unavailable/i, 'windows-user-directory-unavailable'],
@@ -50,16 +54,29 @@ const codes: Array<[RegExp, string]> = [
   [/(?:Add-Type|\bCS\d{4}\b|Companion compiler produced no executable)/i, 'companion-compile-failed'],
   [/(?:Access is denied|UnauthorizedAccessException|EACCES)/i, 'windows-access-denied'],
   [/(?:Schedule\.Service|RegisterTaskDefinition|Task Scheduler service)/i, 'windows-task-scheduler-failed'],
-  [/(?:spawn powershell\.exe ENOENT|powershell\.exe: not found)/i, 'powershell-unavailable'],
-  [/(?:spawn wslpath ENOENT|wslpath: not found)/i, 'wslpath-unavailable'],
+  // The installer uses execFileSync, whose errors read "spawnSync <file> ENOENT",
+  // so every spawn pattern accepts both the async and the Sync spelling.
+  [/(?:spawn(?:Sync)? powershell\.exe ENOENT|powershell\.exe: not found)/i, 'powershell-unavailable'],
+  [/(?:spawn(?:Sync)? wslpath ENOENT|wslpath: not found)/i, 'wslpath-unavailable'],
+  [/(?:spawn(?:Sync)? cmd\.exe ENOENT|cmd\.exe: not found)/i, 'cmd-unavailable'],
+  [/spawn(?:Sync)? (?:cmd\.exe|wslpath|powershell\.exe) ETIMEDOUT/i, 'windows-command-timeout'],
+  // The installer re-runs itself under flock with a 130 s limit, below the
+  // parent's 140 s, so a slow install is normally killed here.
+  [/spawn(?:Sync)? flock ETIMEDOUT/i, 'installer-timeout'],
+  [/(?:spawn(?:Sync)? flock ENOENT|flock: not found)/i, 'flock-unavailable'],
+  [/spawn(?:Sync)? (?:cmd\.exe|wslpath|powershell\.exe|flock) ENOBUFS/i, 'installer-output-overflow'],
+  [/(?:exec format error|ENOEXEC|UtilBindVsockAnyPort|UtilAcceptVsock)/i, 'windows-interop-unavailable'],
 ];
-const safeCodes = new Set([...codes.map(([, code]) => code), 'installer-process-failed']);
+/** Failures of the installer process itself, read from the parent's error code. */
+const parentCodes: Record<string, string> = { ETIMEDOUT: 'installer-timeout', ENOBUFS: 'installer-output-overflow' };
+const safeCodes = new Set([...codes.map(([, code]) => code), ...Object.values(parentCodes),
+  'install-lock-busy', 'installer-process-failed']);
 const bootNonce = randomBytes(16).toString('hex');
 
 /** Only fixed vocabulary leaves this parser. Installer stderr may contain paths,
  * addresses, and process output, so it must never be returned by the API. */
 export function classifyWindowsDesktopBootstrapError(error: unknown): WindowsDesktopBootstrapStatus {
-  const value = error as { message?: unknown; stderr?: unknown } | null;
+  const value = error as { message?: unknown; stderr?: unknown; code?: unknown } | null;
   const message = typeof value?.message === 'string' ? value.message : '';
   const stderr = Buffer.isBuffer(value?.stderr) ? value.stderr.toString('utf8')
     : typeof value?.stderr === 'string' ? value.stderr : '';
@@ -67,8 +84,18 @@ export function classifyWindowsDesktopBootstrapError(error: unknown): WindowsDes
   const phaseMatch = output.match(/instar-desktop-installer-phase:(preflight|address|stage|update|install|confirm)/);
   const phase = phaseMatch && phases.has(phaseMatch[1] as WindowsDesktopBootstrapPhase)
     ? phaseMatch[1] as WindowsDesktopBootstrapPhase : 'preflight';
-  return { state: 'install-failed', phase,
-    code: codes.find(([pattern]) => pattern.test(output))?.[1] ?? 'installer-process-failed' };
+  // The parent's own kill (time limit or output cap) outranks text in the output.
+  const parentCode = typeof value?.code === 'string' && Object.hasOwn(parentCodes, value.code)
+    ? parentCodes[value.code] : undefined;
+  const matched = codes.find(([pattern]) => pattern.test(output))?.[1];
+  // flock -n exits 1 silently when another install holds the lock. Only the
+  // outer installer's marker is then present; a locked child that failed for
+  // its own reason prints its marker first.
+  // Node also copies a failed child's stderr into the error message, so count
+  // markers in stderr alone (or in the message when there is no stderr).
+  const markers = (stderr || message).match(/instar-desktop-installer-phase:/g)?.length ?? 0;
+  const lockBusy = markers <= 1 && /Command failed: flock -n\b/.test(output) ? 'install-lock-busy' : undefined;
+  return { state: 'install-failed', phase, code: parentCode ?? matched ?? lockBusy ?? 'installer-process-failed' };
 }
 
 function statusPath(stateDir: string): string {
