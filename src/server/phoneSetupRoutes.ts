@@ -579,6 +579,17 @@ export function mountPhoneSetupRoutes(router: Router, svc: MobilePairingService,
     res.json(ln ? ln.status() : { wanted: false, listening: false, available: false });
   });
 
+  // What the home listener refused lately (builder #63): route, status, reason code, device id prefix,
+  // caller address and time, newest first. Never a header value, body, query, signature or token.
+  router.get('/mobile/same-network/refusals', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!localOnly(req, res)) return;
+    const ln = svc.sameNetwork;
+    const n = Number(req.query.limit);
+    const limit = Number.isInteger(n) && n > 0 ? Math.min(n, 300) : 100;
+    res.json({ refusals: ln ? ln.recentRefusals(limit) : [] });
+  });
+
   router.post('/mobile/same-network/allow-network', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!localOnly(req, res)) return;

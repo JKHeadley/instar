@@ -44,6 +44,18 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'bootSlowCallbacks',
+    configPath: 'monitoring.bootSlowCallbacks',
+    description: 'Boot slow-callback attributor (fb-756ec068-89d): for 120 s after boot, logs any callback that holds the event loop over 1 s with the code that scheduled it; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Observation only: an async_hooks hook that times callbacks and writes at most 20 log lines, then disables itself; an internal error disables the hook, never the callback. No gate, notice, state file or outward action. false turns it off.',
+  },
+  {
+    name: 'noDataLossRepos',
+    configPath: 'noDataLoss.repos.enabled',
+    description: 'The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1): every repository this agent works in on each machine, its remotes, single-copy work and age, at GET /repos[?scope=pool]; a repository with no remote, or unpushed work past the grace window, is a Needs-you row; omitted => live on a development agent, dark on the fleet.',
+    justification: 'Read-only: every git call is a read through SafeGitExecutor.readStream (no optional locks, no fsmonitor), so it never fetches, pushes, creates a remote or touches a working tree. The scan has a 60 s and 200,000-entry budget per 15-minute tick, runs in async child processes and never walks the whole home folder. Its only outputs are its own state file, owned-repo journal records (state changes only) and a Needs-you row. enabled:false stops it and leaves nothing behind that acts.',
+  },
+  {
     name: 'agentSessionPlacement',
     configPath: 'multiMachine.placement.agentSessions.enabled',
     description: 'Agent-started sessions placed by load (docs/specs/agent-sessions-placed-by-load.md Step 1): every POST /sessions/spawn writes where it would have gone to logs/agent-session-placement.jsonl, and a topicless helper that asks with placement:"auto" starts on a peer with room when this machine is busy (load, verdict or memory); omitted => live on a development agent, dark on the fleet.',
@@ -56,10 +68,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Adds no automatic action: a change is applied only on the configured owner\'s live, authenticated "yes" to a server-rendered proposal, for an eligible conversation re-checked at the yes. Off, the propose lane works exactly as before and confirmIn is refused.',
   },
   {
+    name: 'approvalLinks',
+    configPath: 'security.approvalLinks.enabled',
+    description: 'SEC-135 (docs/specs/sec135-approval-link-guess-bound.md): a recommended-services confirm-page answer from a browser that never unlocked the dashboard, away from the machine, is admitted and charged by sign-in\'s own public PIN limits; owner opens (a marked browser or the machine itself, with the page\'s header) get their own mint allowance and protected tokens; confirmStats counters; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Adds no new limit and no outward action: every number is sign-in\'s shipped piece 1c policy, applied through the same counters, so a stranger gets no more guesses than at sign-in and the owner\'s marked browser and the machine keep their own budgets. The counters write one small file at most once a minute. enabled:false restores piece 1c\'s per-token behaviour exactly; token rows written while on carry an extra field older code ignores, and expire within 30 minutes.',
+  },
+  {
     name: 'usageLedger',
     configPath: 'usage.ledger.enabled',
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
     justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
+  },
+  {
+    name: 'usageLedgerServedAccount',
+    configPath: 'usage.ledger.servedAccount',
+    description: 'Spend by served account (docs/specs/quota-pacing-spend-by-account.md): each usage-ledger row records the account that actually served it (from the transcript folder and the recorded identity checks, with its basis), and GET /usage/accounts, /usage/accounts/size and /usage/account-mismatches report spend by login, the size of a point and tagged-vs-served disagreements; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only measurement: it adds nullable columns to the ledger\'s own raw-row table and two small state logs (identity checks, switch history), changes no placement, swap, shedding or model choice, and sends no notice. enabled:false writes rows as basis "off" and the three routes answer 503; the columns stay inert.',
   },
   {
     name: 'contextBudgetLayers',
@@ -602,6 +626,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Ships dryRun:true (the dry-run canary): on a dev agent the evidence pass, probes, decision trace (logs/stale-owner-release.jsonl) and GET /pool/stale-owner-release all run LIVE, but the engine logs would-claims and NEVER lands a force-claim CAS while dryRun holds — zero authority moves; graduation past dry-run is gated on the spec §5 quantified soak (≥5 operator-corroborated would-claims, zero wrong) PLUS the emission-fence + observer-staleness prerequisites. Additionally subordinate to multiMachine.sessionPool being live AND ≥2 registered machines (strict no-op otherwise). Probes are read-only authenticated handshakes to the operator\'s OWN machines — no external egress, no spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
   },
   {
+    name: 'stopGateReplayInput',
+    configPath: 'monitoring.stopGateReplayInput.enabled',
+    description: 'CMT-2204: the UnjustifiedStopGate keeps the credential-scrubbed stop reason + recent turns it judged (and its trusted evidence) under the provenance row\'s machine-local _contentFull, with a content-free prompt sha and a scrubChanged flag, so its decisions can be replayed against a cheaper model.',
+    justification: 'Observability only: no prompt text, model, timeout, parsing or continue/allow/escalate verdict changes. The capture is scrubbed for credential shapes before storage, lives only in the machine-local contextFull (stripped from contextRedacted, never served by GET /judgment-provenance, excluded from the cross-machine allowlist) under the existing 14-day retention and the census 300-row/day budget. Rows the 64 KB clamp truncates, or whose rebuilt sha differs, are not replay-eligible. Off on the fleet, where rows stay byte-identical.',
+  },
+  {
     name: 'selfDeferralGuard',
     configPath: 'monitoring.selfDeferralGuard.enabled',
     description:
@@ -951,6 +981,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true: a dev agent resolves and LOGS would-refuse verdicts and counts them on the authed /health, and delivers every message exactly as today (the legacy verified profile is still created). Refusing and the untrusted profile default need a deliberate dryRun:false. Reads in-memory trust profiles only: no new writes, no LLM, no spend, no outbound messages.',
   },
   {
+    name: 'credentialScrub',
+    configPath: 'security.credentialScrub.enabled',
+    description: 'SEC-164: live credentials of the outbound wall\'s kinds are masked in the server\'s and the lifeline\'s own output (stdout, stderr and logs/server.log) before they are written. Later parts add new incoming messages, transcript copies and the session-record sweeper under the same switch.',
+    justification: 'Masks only the agent\'s own log output, with the wall\'s precise provider-prefixed kinds; a false positive costs a few characters of a log line, never a message or a record another program owns. No new writes beyond the log line itself, no LLM, no spend, no outbound messages. The sweeper that rewrites other programs\' files ships later behind its own dry-run setting.',
+  },
+  {
     name: 'blockerLifecycleLedger',
     configPath: 'monitoring.blockerLifecycleLedger.enabled',
     description: 'Raw blocker lifecycle timing ledger and bounded summary/trend read surfaces.',
@@ -984,6 +1020,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'subscriptionPool.pacing.enabled',
     description: 'Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable, bounded history of every subscription quota reading and a read-only forecast of where each account lands at its reset and whether each provider keeps weekly room (GET /quota-pacing).',
     justification: 'Read-only measurement: it writes only its own sync-excluded history folder and an hourly tick log, sends no message, spends nothing, and nothing reads its verdicts to decide (the quota scheduler and placement keep their authority). The poll hook is a guarded call whose failure is counted and never changes a poll result. Off answers 503 and stops writes and sweeps.',
+  },
+  {
+    name: 'windowAwareAccountChoice',
+    configPath: 'subscriptionPool.pacing.windowAwareChoice',
+    description: 'Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads each limit window as it stands now — the weekly deadline pairs with weekly room (never the 5-hour reset), the Fable window binds Fable launches (never emptying the pick), and a window that reset, is a placeholder or was not read recently is unmeasured (never 0% and never last cycle\'s number) and triggers a deduped out-of-cycle read. One shadow row per placement (GET /quota-pacing/account-choice).',
+    justification: 'Placement already decides where a session runs; this changes only the inputs and the ranking it reads, and the measured tier always outranks an unread account, so it never certifies capacity nobody read. Off = every picker runs today\'s code unchanged. The shadow log is bounded (30-day self-trim) and sync-excluded with the other logs. Dev agents first so two weekly resets of shadow evidence exist before the fleet rung.',
   },
   {
     name: 'ecosystemIdeas',

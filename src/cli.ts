@@ -788,6 +788,40 @@ backupCmd
     return restoreBackup(id, opts);
   });
 
+// ── Borrowed-machine helper (local-verify-borrowed-unit-slices) ──
+
+const helperCmd = program
+  .command('helper')
+  .description('Owner controls for this machine\'s borrowed-machine test helper (pause, resume, uninstall)');
+
+helperCmd
+  .command('pause')
+  .description('Pause the helper: it refuses new work and stops current work')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, true);
+  });
+
+helperCmd
+  .command('resume')
+  .description('Resume the helper: it accepts new work again')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, false);
+  });
+
+helperCmd
+  .command('uninstall')
+  .description('Remove the helper sandbox, its learned list and its setting (needs --yes)')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--yes', 'Actually remove (without it, only lists what would be removed)')
+  .action(async (opts) => {
+    const { helperUninstall } = await import('./commands/helper.js');
+    return helperUninstall(opts);
+  });
+
 // ── Git State ────────────────────────────────────────────────────
 
 const gitCmd = program
@@ -1852,6 +1886,12 @@ lifelineCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(async (opts) => {
     const { TelegramLifeline } = await import('./lifeline/TelegramLifeline.js');
+    // SEC-164: mask live credentials in the lifeline's own output before any log captures it.
+    {
+      const { installOutputScrub, credentialScrubEnabledReader } = await import('./core/outputCredentialScrub.js');
+      const { detectProjectDir } = await import('./core/Config.js');
+      installOutputScrub(credentialScrubEnabledReader(opts.dir ?? detectProjectDir()));
+    }
     try {
       const lifeline = new TelegramLifeline(opts.dir);
       await lifeline.start();

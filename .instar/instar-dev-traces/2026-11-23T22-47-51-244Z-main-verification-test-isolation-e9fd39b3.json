@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "main-verification-test-isolation",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T22:47:51.244Z",
+  "artifactPath": "upgrades/side-effects/main-verification-test-isolation.md",
+  "artifactSha256": "ac0f11c6c0200337cafcc2f6fed89cecd5ab59c05d9af35bf0bbe2f5373e8af1",
+  "coveredFiles": [
+    "docs/specs/main-verification-test-isolation.eli16.md",
+    "tests/e2e/hybrid-search-lifecycle.test.ts",
+    "tests/e2e/session-management-e2e.test.ts",
+    "tests/helpers/realEmbeddingProvider.ts",
+    "tests/integration/hybrid-search.test.ts",
+    "tests/setup/real-embedding-cache.mjs",
+    "tests/setup/real-embedding-model.globalSetup.ts",
+    "tests/unit/grok-build-adapter-policy.test.ts",
+    "tests/unit/real-embedding-test-cache.test.ts",
+    "tests/unit/vector-search.test.ts",
+    "upgrades/next/main-verification-test-isolation.md",
+    "upgrades/side-effects/main-verification-test-isolation.md",
+    "vitest.config.ts",
+    "vitest.e2e.config.ts",
+    "vitest.integration.config.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible test fixtures and test setup only; unchanged production search, session, dispatch and policy code. Real semantic coverage retained and model acquisition isolated from suite hooks.",
+  "eli16Path": "docs/specs/main-verification-test-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-verification-test-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "systematic-debugging",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This changes only test fixtures and a bounded one-shot model preparation invoked by a test command; it adds no self-triggered spawn, restart, retry or recovery controller."
+  }
+}

@@ -1,3 +1,4 @@
+import { SecurityReviewPreflight, securityPreflightFlags } from './SecurityReviewPreflight.js';
 import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
 import { generateJobModeText, jobModeMarker, resolveInstructionsMode, overrideKey, judgeTranscriptFile, findClaudeTranscript, candidateClaudeConfigHomes } from './jobModeInstructions.js';
 import { JobModeCheckStore } from './jobModeCheckStore.js';
@@ -199,11 +200,14 @@ export const OTHER_PEOPLES_WORDS = [
   '[/OTHER PEOPLE\'S WORDS]',
 ].join('\n');
 
+const TESTING_THROUGHPUT_SCRIPT_SLUG = 'testing-throughput-report-script';
+
 export class JobScheduler {
   private config: JobSchedulerConfig;
   private sessionManager: SessionManager;
   private state: StateManager;
   private stateDir: string;
+  private readonly securityPreflight: SecurityReviewPreflight;
   private skipLedger: SkipLedger;
   private runHistory: JobRunHistory;
   private jobs: JobDefinition[] = [];
@@ -427,6 +431,14 @@ export class JobScheduler {
     this.sessionManager = sessionManager;
     this.state = state;
     this.stateDir = stateDir;
+    this.securityPreflight = new SecurityReviewPreflight({ stateDir,
+      flags: () => securityPreflightFlags(this.readAgentConfig()),
+      canWrite: () => {
+        if (this.state.readOnly) return false;
+        try { const role = this.roleGuardProvider?.(); return !role?.enabled || role.holdsLease; }
+        catch { return false; /* @silent-fallback-ok — unavailable ownership only disables optional evidence. */ }
+      },
+    });
     this.skipLedger = new SkipLedger(stateDir);
     this.skipLedger.onSkip = (event) => this.observeContinuitySkip(event.slug, event.reason);
     this.runHistory = new JobRunHistory(stateDir);
@@ -1035,7 +1047,15 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
+    if (job.origin === 'instar' && slug === TESTING_THROUGHPUT_SCRIPT_SLUG && !isScriptRunner) {
+      this.skipLedger.recordSkip(slug, 'disabled');
+      return 'skipped';
+    }
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       // This job was introduced with script runners, so it has no historical
       // session behavior to restore when the rollout is dark.
       if (job.slug === 'script-job-supervisor') {
@@ -1297,6 +1317,10 @@ export class JobScheduler {
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
     if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       if (slug === 'script-job-supervisor') {
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({
@@ -2916,6 +2940,9 @@ export class JobScheduler {
       trigger: string;
     },
   ): { sessionName: string } | { refused: string } {
+    if (job.origin === 'instar' && job.slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+      return { refused: 'script-only-job' };
+    }
     const projected = this.projectAsAgentmd(job);
     if (opts.origin !== 'triage') {
       // Rollback: today's job session, with the template's own frontmatter
@@ -3215,6 +3242,20 @@ export class JobScheduler {
       };
       this.state.saveJobState(jobState);
       this.clearFailureAlertState(job.slug);
+      // Evidence only, detached AFTER normal spawn/bookkeeping. Never changes
+      // the prompt, model, read instructions, completion or admission result.
+      if (job.slug === 'security-review' && securityPreflightFlags(this.readAgentConfig()).enabled) {
+        void this.securityPreflight.capture({ slug: job.slug, sessionId: session.id,
+          sessionName, runId, machineId: this.machineId ?? 'local', prompt }).then(result => {
+          if (this.state.readOnly) return;
+          try { this.state.appendEvent({ type: 'security_review_preflight', timestamp: new Date().toISOString(),
+            summary: `Security review evidence packet: ${result.status}`,
+            metadata: { slug: job.slug, runId, status: result.status, reason: result.reason,
+              ...(result.packetId ? { packetId: result.packetId } : {}) } }); }
+          catch { /* @silent-fallback-ok — optional scalar telemetry cannot disrupt the launched review. */ }
+        }).catch(() => { /* @silent-fallback-ok — no unhandled rejection in optional detached diagnostics. */ });
+      }
+
 
       this.state.appendEvent({
         type: 'job_triggered',

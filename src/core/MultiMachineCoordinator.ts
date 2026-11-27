@@ -23,7 +23,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
-import type { LeaseCoordinator } from './LeaseCoordinator.js';
+import type { LeaseCoordinator, LeaseHoldVerdict } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
@@ -1273,6 +1273,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
+   * lease-freshness-lapse-retry — how long since this machine last CONFIRMED a lease
+   * renewal, and the lease lifetime, so a send refused at the network boundary can say
+   * whether the renewal lapsed or the lease was lost within its lifetime. Null when no
+   * lease coordinator is attached (nothing to measure). Read-only.
+   */
+  leaseFreshness(): { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict } | null {
+    return this.leaseCoordinator?.renewalFreshness() ?? null;
+  }
+
+  /**
    * Whether this machine currently holds the ROUTER role (Multi-Machine Session
    * Pool, spec §L1). In v0.1 the router lease IS the fenced leader lease — the
    * single machine holding it owns channel ingress and runs the placement
@@ -1655,6 +1665,7 @@ export class MultiMachineCoordinator extends EventEmitter {
         // failed eval must never wedge the lease tick.
         await this.evaluateZombieRelinquish(performance.now(), new Date().toISOString())
           .catch(() => { /* @silent-fallback-ok — G1 eval is best-effort; retried next tick */ });
+      } else if (this.shouldDeferToPreferred()) {
         // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
         // preferred machine holding a HEALTHY lease: defer, do not contend. If the
         // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we

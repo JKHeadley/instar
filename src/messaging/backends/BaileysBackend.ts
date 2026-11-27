@@ -17,7 +17,7 @@
  */
 
 import fs from 'node:fs';
-import { canTranscribe, cannotTranscribeReason, transcribeAudioFile, transcriptionFailureReason } from '../../core/VoiceTranscription.js';
+import { canTranscribe, cannotTranscribeReason, reportVoiceUnreadable, transcribeAudioFile, transcriptionFailureReason } from '../../core/VoiceTranscription.js';
 import { escapeTypedPathTags } from '../../core/inboundMedia.js';
 import path from 'node:path';
 import type { WhatsAppAdapter, BaileysConfig, ConnectionState, BackendCapabilities } from '../WhatsAppAdapter.js';
@@ -442,6 +442,7 @@ export class BaileysBackend {
   ): Promise<void> {
     if (!canTranscribe(this.transcriptionOptions())) {
       // Nothing can transcribe here — the placeholder says why, so the agent can offer to fix it.
+      reportVoiceUnreadable('whatsapp');
       this.handlers.onMessage(
         jid,
         msg.key.id ?? `${Date.now()}`,
@@ -497,7 +498,7 @@ export class BaileysBackend {
 
     // Transcribe
     try {
-      const transcript = await transcribeAudioFile(filepath, { ...this.transcriptionOptions(), mediaType: 'audio/ogg', timeoutMs: 60_000, log: (note) => console.log(`[baileys] ${note}`) });
+      const transcript = await transcribeAudioFile(filepath, { ...this.transcriptionOptions(), channel: 'whatsapp', mediaType: 'audio/ogg', timeoutMs: 60_000, log: (note) => console.log(`[baileys] ${note}`) });
       const duration = audioMsg?.seconds ?? 0;
       console.log(`[baileys] Transcribed audio (${duration}s): "${transcript.slice(0, 80)}"`);
 

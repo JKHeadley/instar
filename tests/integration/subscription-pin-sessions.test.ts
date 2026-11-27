@@ -40,6 +40,9 @@ import { SessionManager } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
 import { selectAccount } from '../../src/core/QuotaAwareScheduler.js';
+import { decideWindowAwarePlacement, type SpawnPlacementContext, type WindowAwareDeps } from '../../src/core/windowAwarePlacement.js';
+import { UsageWallRescue } from '../../src/core/UsageWallRescue.js';
+import type { PlacementShadowInput } from '../../src/monitoring/AccountChoiceShadowLog.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
 
 describe('subscription-pool session pinning (integration)', () => {
@@ -177,5 +180,75 @@ describe('subscription-pool session pinning (integration)', () => {
 
     expect(interactiveRecord(tmux)?.subscriptionAccountId).toBeUndefined();
     expect(newSessionArgs().some((a) => typeof a === 'string' && a.startsWith('CLAUDE_CONFIG_DIR='))).toBe(false);
+  });
+
+  // ── quota pacing step 2 (docs/specs/quota-pacing-account-choice.md) ──────────────────────
+  // A: 40% into a week resetting in 6 days, 10% into 5 hours resetting in 30 min.
+  // B: 20% into a week resetting in 2 hours. The old score picks A; the window-aware score picks B.
+  describe('window-aware account choice through a real spawn', () => {
+    const NOW = Date.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const seedAB = () => {
+      pool.addFixture({ id: 'acct-a', nickname: 'A', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-a', email: 'a@example.test' });
+      pool.addFixture({ id: 'acct-b', nickname: 'B', provider: 'anthropic', framework: 'claude-code', configHome: '/h/.claude-b', email: 'b@example.test' });
+      pool.update('acct-a', { lastQuota: { fiveHour: { utilizationPct: 10, resetsAt: iso(NOW + 1_800_000) }, sevenDay: { utilizationPct: 40, resetsAt: iso(NOW + 144 * 3_600_000) }, measuredAt: iso(NOW - 60_000), windowsListed: ['fiveHour', 'sevenDay'] } });
+      pool.update('acct-b', { lastQuota: { sevenDay: { utilizationPct: 20, resetsAt: iso(NOW + 2 * 3_600_000) }, measuredAt: iso(NOW - 60_000), windowsListed: ['sevenDay'] } });
+    };
+
+    it('pinned path: on picks B and records a row with the session name and model; off picks A', async () => {
+      seedAB();
+      const rows: PlacementShadowInput[] = [];
+      const ctxs: Array<SpawnPlacementContext | undefined> = [];
+      let on = true;
+      const deps: WindowAwareDeps = { enabled: () => on, record: (r) => rows.push(r) };
+      manager.setSpawnAccountResolver((ctx) => {
+        ctxs.push(ctx);
+        const accounts = pool.list();
+        const oldPick = () => selectAccount(accounts, { nowMs: Date.now(), framework: 'claude-code' });
+        const a = deps.enabled()
+          ? decideWindowAwarePlacement({ accounts, framework: 'claude-code', softThresholdPct: 90, nowMs: Date.now(), ctx, deps, caller: 'spawn-pinned', oldPick })
+          : oldPick();
+        return a ? { configHome: a.configHome, accountId: a.id } : null;
+      });
+      const s1 = await manager.spawnSession({ name: 'wa-on', prompt: 'p', model: 'claude-opus-5-5' });
+      expect(s1.subscriptionAccountId).toBe('acct-b');
+      expect(ctxs[0]).toMatchObject({ model: 'claude-opus-5-5', modelSource: 'explicit' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ caller: 'spawn-pinned', newPick: 'acct-b', oldPick: 'acct-a', executed: 'acct-b' });
+      expect(rows[0].sessionName).toBe(s1.tmuxSession);
+      on = false;
+      const s2 = await manager.spawnSession({ name: 'wa-off', prompt: 'p' });
+      expect(s2.subscriptionAccountId).toBe('acct-a');
+      expect(rows).toHaveLength(1);
+    });
+
+    it('default path (UsageWallRescue.spawnAccount): on picks B, off keeps least-used', async () => {
+      seedAB();
+      pool.update('acct-a', { lastQuota: { sevenDay: { utilizationPct: 5, resetsAt: iso(NOW + 150 * 3_600_000) }, measuredAt: iso(NOW - 60_000), windowsListed: ['sevenDay'] } });
+      let on = true;
+      const rescue = new UsageWallRescue({
+        readConfig: () => ({ wallRescue: { enabled: true } }),
+        listAccounts: () => pool.list(),
+        getSession: () => undefined,
+        configHomeForSession: () => undefined,
+        resolveDefaultAccountId: async () => null,
+        swap: async () => ({ swapped: false, toAccountId: null, reason: 'x' }),
+        windowAware: { enabled: () => on },
+      });
+      manager.setSpawnAccountResolver((ctx) => rescue.spawnAccount(ctx));
+      expect((await manager.spawnSession({ name: 'wr-on', prompt: 'p' })).subscriptionAccountId).toBe('acct-b');
+      on = false;
+      expect((await manager.spawnSession({ name: 'wr-off', prompt: 'p' })).subscriptionAccountId).toBe('acct-a');
+    });
+
+    it('interactive lane passes the model context too', async () => {
+      seedAB();
+      const ctxs: Array<SpawnPlacementContext | undefined> = [];
+      manager.setSpawnAccountResolver((ctx) => { ctxs.push(ctx); return null; });
+      const tmux = await manager.spawnInteractiveSession(undefined, 'wa-interactive');
+      expect(ctxs).toHaveLength(1);
+      expect(ctxs[0]?.sessionName).toBe(tmux);
+      expect(ctxs[0]?.modelSource).toBe('unknown');
+    });
   });
 });

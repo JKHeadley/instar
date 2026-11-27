@@ -315,7 +315,10 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       const automationToken = req.get('X-Instar-Origin-Automation');
       if (automationToken) {
         if (req.get('X-Instar-Origin-Session')) throw new TelegramOriginHoldError('conflicting-origin-credentials');
-        runtime.service.runWithAutomationReply(automationToken, Number(req.params.topicId), req.body, next);
+        runtime.service.runWithAutomationReply(automationToken, Number(req.params.topicId), req.body, () => {
+          if (typeof req.body?.text === 'string') runtime.service.runWithSendPolicyInput(req.body.text, req.body.metadata, next);
+          else next();
+        });
         return;
       }
       await runtime.service.runWithSessionToken(req.get('X-Instar-Origin-Session') ?? '', async () => {

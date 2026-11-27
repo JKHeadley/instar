@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-readiness-account",
+  "sessionId": "fc3d3191-842f-463d-af54-a2abbc40e3f2",
+  "timestamp": "2026-11-26T16:30:39.867Z",
+  "artifactPath": "upgrades/side-effects/feedback-readiness-account.md",
+  "artifactSha256": "0054d980e075f2dc2a3fe0782d410e29b011a17b6a06aedc65a634345b7e51fe",
+  "coveredFiles": [
+    "docs/specs/feedback-readiness-account.eli16.md",
+    "src/data/awareness/feedback-readiness-account.md",
+    "upgrades/side-effects/feedback-readiness-account.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-sentence awareness wording fix so the triage config path appears once in migrated CLAUDE.md; revert fully undoes it",
+  "eli16Path": "docs/specs/feedback-readiness-account.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-readiness-account.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

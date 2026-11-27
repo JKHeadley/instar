@@ -9,17 +9,22 @@ afterAll(() => { server.close(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 /**
- * A host with two addresses, the second one unroutable, as the Bot API host is on the Studio.
+ * Both addresses are loopback. The first has a real IPv4 listener. The IPv6
+ * fallback is blocked on Node versions that support outbound BlockList.
+ * Older Node versions try the IPv6 loopback, where this fixture has no listener.
+ * No attempt depends on an external IPv6 route.
  * Both immediates run in the same check phase: the connect starts in the first and the pause runs in
  * the second, so timers are due before the event loop next polls and could see the finished connect.
  * That is what a pause in the middle of a round trip does on a real network.
  */
 function connectThroughPause(port: number, attemptTimeoutMs: number, pauseMs: number): Promise<{ ok: boolean; error?: unknown }> {
+  const blockList = new net.BlockList();
+  blockList.addAddress('::1', 'ipv6');
   return new Promise(resolve => {
     setImmediate(() => {
-      const socket = net.connect({ host: 'dual.test', port, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: attemptTimeoutMs,
+      const socket = net.connect({ host: 'dual.test', port, blockList, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: attemptTimeoutMs,
         lookup: (_host, _options, callback) => (callback as unknown as (e: null, a: Array<{ address: string; family: number }>) => void)(null, [
-          { address: '127.0.0.1', family: 4 }, { address: '100::1', family: 6 }]) });
+          { address: '127.0.0.1', family: 4 }, { address: '::1', family: 6 }]) });
       socket.once('connect', () => { socket.destroy(); resolve({ ok: true }); });
       socket.once('error', error => resolve({ ok: false, error }));
     });
@@ -37,13 +42,27 @@ describe('Telegram connect attempt window', () => {
     expect(net.getDefaultAutoSelectFamilyAttemptTimeout()).toBe(before);
     expect(TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
   });
-  it('turns an event-loop pause into a false connect timeout at the old value, and not at the new one', async () => {
+  it('finishes the old-window failure with a local IPv6 fallback', async () => {
     const port = await listening;
     const old = await connectThroughPause(port, 250, 400);
     expect(old.ok).toBe(false);
     expect((old.error as NodeJS.ErrnoException).code).toBe('ETIMEDOUT');
-    // That failure is proven unsent, so the outbox may retry it; the aim here is not to fail at all.
-    expect(provedUnsentCode(old.error)).not.toBeNull();
+    const codes = (old.error as AggregateError).errors.map((error: NodeJS.ErrnoException) => error.code);
+    expect(codes).toHaveLength(2);
+    expect(codes[0]).toBe('ETIMEDOUT');
+    expect(['ERR_IP_BLOCKED', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EADDRNOTAVAIL']).toContain(codes[1]);
+    expect(provedUnsentCode((old.error as AggregateError).errors[0])).toBe('ETIMEDOUT');
+    expect(provedUnsentCode(old.error)).toBe(codes[1] === 'ERR_IP_BLOCKED' ? null : 'ETIMEDOUT');
+  }, 30_000);
+  it('requires connect-phase proof for every address in an aggregate', () => {
+    const first = Object.assign(new Error('first connect timed out'), { code: 'ETIMEDOUT', syscall: 'connect' });
+    const refused = Object.assign(new Error('fallback refused'), { code: 'ECONNREFUSED', syscall: 'connect' });
+    const blocked = Object.assign(new Error('fallback blocked'), { code: 'ERR_IP_BLOCKED' });
+    expect(provedUnsentCode(Object.assign(new AggregateError([first, refused]), { code: 'ETIMEDOUT' }))).toBe('ETIMEDOUT');
+    expect(provedUnsentCode(Object.assign(new AggregateError([first, blocked]), { code: 'ETIMEDOUT' }))).toBeNull();
+  });
+  it('connects through the same pause with the production attempt window', async () => {
+    const port = await listening;
     expect(await connectThroughPause(port, TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS, 400)).toEqual({ ok: true });
   }, 30_000);
 });
