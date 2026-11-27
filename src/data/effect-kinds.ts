@@ -28,24 +28,44 @@ export interface EffectEntry {
   /** Input fields that name the recipients; absent means the effect has no recipient (`self`). */
   audienceFields?: string[];
   /** Exact GitHub destination in the connector’s repository_full_name field. */
-  githubRepository?: boolean;
+  githubRepository?: string;
   /** True when the effect has no recipient at all. */
   selfOnly?: boolean;
   floor?: FloorItem[];
 }
 
+export const INSTAR_GITHUB_REPOSITORY = 'jkheadley/instar';
+
 export const EFFECT_ENTRIES: readonly EffectEntry[] = [
-  { service: 'codex_apps', actions: ['github_create_pull_request'], operation: 'write', githubRepository: true },
-  { service: 'codex_apps', actions: ['github_update_pull_request'], operation: 'modify', githubRepository: true },
+  { service: 'codex_apps', actions: ['github_create_pull_request'], operation: 'write', githubRepository: INSTAR_GITHUB_REPOSITORY },
+  { service: 'codex_apps', actions: ['github_update_pull_request'], operation: 'modify', githubRepository: INSTAR_GITHUB_REPOSITORY },
   {
     service: 'codex_apps', actions: ['github_merge_pull_request'], operation: 'modify',
-    reversibility: 'irreversible', githubRepository: true, floor: ['irreversible-outside-role'],
+    reversibility: 'irreversible', githubRepository: INSTAR_GITHUB_REPOSITORY, floor: ['irreversible-outside-role'],
   },
 ];
 
 export function requiresOwnerProofForSameLevelGrant(service: string, operation: string, level: string): boolean {
-  return service === 'codex_apps' && (operation === 'write' || operation === 'modify')
-    && (level === 'log' || level === 'autonomous');
+  return (level === 'log' || level === 'autonomous')
+    && EFFECT_ENTRIES.some((entry) => entry.service === service && entry.operation === operation && !entry.floor?.length);
+}
+
+export function standingGrantRepositories(service: string, operation: string): string[] {
+  return [...new Set(EFFECT_ENTRIES.flatMap((entry) =>
+    entry.service === service && entry.operation === operation && !entry.floor?.length && entry.githubRepository
+      ? [entry.githubRepository] : [],
+  ))].sort();
+}
+
+export function trustGrantProofSubject(service: string, operation: string, level: string) {
+  const repositories = standingGrantRepositories(service, operation);
+  return {
+    kind: 'trust-grant',
+    service,
+    operation,
+    level,
+    ...(repositories.length && requiresOwnerProofForSameLevelGrant(service, operation, level) ? { repositories } : {}),
+  };
 }
 
 /**
@@ -79,6 +99,8 @@ export interface DerivedEffect {
   /** `self`, a sorted recipient list, or `unknown` (no audience rule). */
   audience: 'self' | 'unknown' | string[];
   floor: FloorItem[];
+  /** Standing and legacy admission for a repository-scoped entry. */
+  standingRepository?: string;
   /** True when an explicit table entry matched (not only the verb rules). */
   matched: boolean;
   /** Stable identity of this exact action: tool name plus canonical input. */
@@ -96,7 +118,7 @@ export function actionIdentityOf(toolName: string, toolInput: unknown): string {
 }
 
 /** The hook's verb rules, now held by the server (the hook keeps a copy only for its read fast path). */
-export function verbRules(action: string): { operation: EffectOperation; reversibility: Reversibility } {
+export function verbRules(action: string, classifyNamespacedMutations = true): { operation: EffectOperation; reversibility: Reversibility } {
   const tokens = action.split('_').filter(Boolean);
   // Connector namespaces can precede the actual verb (github__fetch_pr or github_fetch_pr).
   // Match whole tokens, never a service/engine allowlist or a substring such as "fetcher".
@@ -109,13 +131,19 @@ export function verbRules(action: string): { operation: EffectOperation; reversi
   const toolTokens = segments[segments.length - 1].split('_').filter(Boolean);
   const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
   const verb = toolTokens[segments.length === 1 && toolTokens[0] === 'github' ? 1 : 0] ?? '';
+  const mutationName = classifyNamespacedMutations ? verb : '';
+  const deletePrefix = /^(delete|remove|trash|purge|destroy|drop|clear)/;
+  const writePrefix = /^(send|create|post|write|add|insert|new|compose|publish)/;
+  const modifyPrefix = /^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/;
   let operation: EffectOperation = 'modify';
-  if (/^(delete|remove|trash|purge|destroy|drop|clear)$/.test(verb)) operation = 'delete';
-  else if (/^(send|create|post|write|add|insert|new|compose|publish)$/.test(verb)) operation = 'write';
-  else if (!mutatingPart && readVerb.test(verb)) operation = 'read';
+  if (deletePrefix.test(action) || deletePrefix.test(mutationName)) operation = 'delete';
+  else if (writePrefix.test(action) || writePrefix.test(mutationName)) operation = 'write';
+  else if (!modifyPrefix.test(action) && !mutatingPart && readVerb.test(verb)) operation = 'read';
+  const irreversiblePrefix = /^(send|publish|post|destroy|purge|drop)/;
+  const partialPrefix = /^(delete|remove|trash)/;
   let reversibility: Reversibility = 'reversible';
-  if (/^(send|publish|post|destroy|purge|drop)$/.test(verb)) reversibility = 'irreversible';
-  else if (/^(delete|remove|trash)$/.test(verb)) reversibility = 'partially-reversible';
+  if (irreversiblePrefix.test(action) || irreversiblePrefix.test(mutationName)) reversibility = 'irreversible';
+  else if (partialPrefix.test(action) || partialPrefix.test(mutationName)) reversibility = 'partially-reversible';
   return { operation, reversibility };
 }
 
@@ -145,7 +173,8 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   let itemCount = 1;
   for (const v of Object.values(input)) if (Array.isArray(v)) itemCount = Math.max(itemCount, v.length);
   const entry = EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action));
-  const rules = verbRules(parts.slice(2).join('__'));
+  // Preserve existing grant keys for mutations outside the explicit table.
+  const rules = verbRules(parts.slice(2).join('__'), !!entry);
   const signIn = isSignIn(service, action, input);
   const operation: EffectOperation = signIn ? 'sign-in' : (entry?.operation ?? rules.operation);
   const reversibility = entry?.reversibility ?? rules.reversibility;
@@ -162,6 +191,7 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
     kind: `${service}.${operation}`,
     audience,
     floor: [...(entry?.floor ?? [])],
+    ...(entry?.githubRepository ? { standingRepository: entry.githubRepository } : {}),
     matched: !!entry || signIn,
     actionIdentity: actionIdentityOf(toolName, input),
   };

@@ -17,3 +17,5 @@ GitHub pull request creation uses the write permission. Editing uses the modify 
 ## Evidence
 
 The tests cover the connector names, invalid repository inputs, owner proof on the initial setting, prior restrictions, and approval through both the app and private chat.
+
+Standing GitHub pull request permission is limited to the JKHeadley/instar repository. Other repositories still require approval for each pull request action.

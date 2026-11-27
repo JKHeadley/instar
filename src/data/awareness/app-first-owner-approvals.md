@@ -9,3 +9,5 @@ Use POST /trust/requests with the exact change. A response with via device and s
 Re-proposing an open, unexpired request whose chat delivery is unconfirmed can move that same request to the paired app without changing its identity or expiry. Give the owner the returned request id and ask them to review it under Changes to approve. Do not ask them to open Telegram first, expose approval codes, or approve on their behalf.
 
 When the GitHub connector opens a pull request, use the Codex Apps write setting in a trust grant request. The approval gate validates the target repository and requires owner proof for a standing grant even when the displayed level is already Log. GitHub pull request edits use the modify setting. A merge requires exact approval for that action.
+
+Standing GitHub pull request permission is limited to the JKHeadley/instar repository. Other repositories still require approval for each pull request action.

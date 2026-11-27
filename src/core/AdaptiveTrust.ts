@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { OperationMutability, TrustLevel, TrustSource, AutonomyBehavior } from './ExternalOperationGate.js';
 import type { TrustRecovery } from './TrustRecovery.js';
-import { requiresOwnerProofForSameLevelGrant } from '../data/effect-kinds.js';
+import { requiresOwnerProofForSameLevelGrant, trustGrantProofSubject } from '../data/effect-kinds.js';
 import { isTrustLevelRaise, proofCovers, proposalHashOf, raiseRefusal, TrustRaiseRefusedError, type OperatorProof } from './TrustRaiseGuard.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ export class AdaptiveTrust {
     // a narrowing needs no proof. A same-level setting that would enable a governed effect also needs proof.
     const current = this.getTrustLevel(service, operation).level;
     if ((isTrustLevelRaise(current, level) || (current === level && requiresOwnerProofForSameLevelGrant(service, operation, level)))
-      && !proofCovers(proof, proposalHashOf({ kind: 'trust-grant', service, operation, level }))) {
+      && !proofCovers(proof, proposalHashOf(trustGrantProofSubject(service, operation, level)))) {
       throw new TrustRaiseRefusedError(raiseRefusal([`${service} ${operation}: ${current} → ${level}`]));
     }
     this.ensureServiceTrust(service);
@@ -327,7 +327,7 @@ export class AdaptiveTrust {
     for (const op of operations) {
       const current = this.getTrustLevel(service, op).level;
       if ((isTrustLevelRaise(current, level) || (current === level && requiresOwnerProofForSameLevelGrant(service, op, level)))
-        && !proofCovers(proofs?.[op], proposalHashOf({ kind: 'trust-grant', service, operation: op, level }))) {
+        && !proofCovers(proofs?.[op], proposalHashOf(trustGrantProofSubject(service, op, level)))) {
         throw new TrustRaiseRefusedError(raiseRefusal([`${service} ${op}: ${current} → ${level}`]));
       }
     }

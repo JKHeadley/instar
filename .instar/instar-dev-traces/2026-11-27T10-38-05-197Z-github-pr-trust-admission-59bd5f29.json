@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "github-pr-trust-admission",
+  "sessionId": "87da9bff-10ca-490e-9a58-ffee3663eba8",
+  "timestamp": "2026-11-27T10:38:05.197Z",
+  "artifactPath": "upgrades/side-effects/github-pr-trust-admission.md",
+  "artifactSha256": "abd1b8294895f74beeda47e90a199b0bf4eef4282db22a3b3d99fb738bc2bd3f",
+  "specPath": "docs/specs/trust-journey.md",
+  "coveredFiles": [
+    "src/core/AdaptiveTrust.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/core/trustJourney/admission.ts",
+    "src/data/awareness/app-first-owner-approvals.md",
+    "src/data/effect-kinds.ts",
+    "tests/e2e/trust-app-approval-alive.test.ts",
+    "tests/integration/trust-governed-effects-routes.test.ts",
+    "tests/unit/connector-read-hook-migration.test.ts",
+    "tests/unit/trust-journey-governed-effects.test.ts",
+    "upgrades/next/github-pr-trust-admission.md",
+    "upgrades/side-effects/github-pr-trust-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Scope the signed GitHub pull request approval to the owner-authorized repository and preserve existing mutation policy",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -19,6 +19,17 @@ describe('deriveEffect', () => {
     expect(deriveEffect('mcp__mail__get_and_delete', {})!.operation).toBe('modify'); // a mutating tail is never a read
     expect(verbRules('send_message').reversibility).toBe('irreversible');
   });
+  it.each([
+    ['deleteRecord', 'delete', 'partially-reversible'],
+    ['delete-record', 'delete', 'partially-reversible'],
+    ['sendEmail', 'write', 'irreversible'],
+    ['postMessage', 'write', 'irreversible'],
+    ['purgeAll', 'delete', 'irreversible'],
+    ['dropTable', 'delete', 'irreversible'],
+    ['sendgrid_send', 'write', 'irreversible'],
+  ])('%s keeps its existing mutating kind and reversibility', (tool, operation, reversibility) => {
+    expect(deriveEffect(`mcp__foo__${tool}`, {})).toMatchObject({ kind: `foo.${operation}`, reversibility });
+  });
   it('has unknown audience without a table entry', () => {
     expect(deriveEffect('mcp__mail__send_email', { to: 'a@b.c' })!.audience).toBe('unknown');
   });

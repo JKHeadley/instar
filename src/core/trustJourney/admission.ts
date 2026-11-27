@@ -22,7 +22,7 @@ export type AdmissionDecision =
   /** "Don't do this": refused, naming the setting; no card is sent (spec section 2). */
   | { verdict: 'refused'; why: 'blocked' };
 
-export type AskReason = 'no-grant' | 'grant-asks' | 'unknown-scope' | 'always-ask-item' | 'sign-in' | 'unreadable-history' | 'holder-unreachable';
+export type AskReason = 'no-grant' | 'grant-asks' | 'unknown-scope' | 'always-ask-item' | 'sign-in' | 'unreadable-history' | 'holder-unreachable' | 'outside-repository';
 
 export interface AdmissionInputs {
   effect: DerivedEffect | null;
@@ -43,8 +43,10 @@ export function decideAdmission(i: AdmissionInputs): AdmissionDecision {
   if (!e) return { verdict: 'not-gated', why: 'not-an-mcp-tool' };
   if (e.operation === 'read') return { verdict: 'not-gated', why: 'read' };
   if (SYSTEM_SERVICES.includes(e.service)) return { verdict: 'legacy', why: 'system-service' };
+  const repositoryAllowed = !e.standingRepository
+    || (Array.isArray(e.audience) && e.audience.length === 1 && e.audience[0] === e.standingRepository);
   // Decision 15: sign-in inherits no write or legacy grant; it is always governed.
-  if (e.operation !== 'sign-in' && i.unchangedLegacy(e.kind)) return { verdict: 'legacy', why: 'unchanged-legacy-grant' };
+  if (e.operation !== 'sign-in' && repositoryAllowed && i.unchangedLegacy(e.kind)) return { verdict: 'legacy', why: 'unchanged-legacy-grant' };
 
   // Current restrictions first: a later "never do it" or an unreadable history wins over an earlier
   // one-time approval of the same call.
@@ -56,6 +58,7 @@ export function decideAdmission(i: AdmissionInputs): AdmissionDecision {
 
   if (e.operation === 'sign-in') return { verdict: 'ask', why: 'sign-in' };
   if (e.floor.length > 0) return { verdict: 'ask', why: 'always-ask-item' };
+  if (!repositoryAllowed && e.audience !== 'unknown') return { verdict: 'ask', why: 'outside-repository' };
   const level = i.provenLevel(e.kind);
   if (level === null) return { verdict: 'ask', why: 'no-grant' };
   if (level !== 'log' && level !== 'autonomous') return { verdict: 'ask', why: 'grant-asks' };
@@ -69,6 +72,7 @@ export function askSentence(reason: AskReason, sent: 'sent' | 'awaiting-acceptan
   const why: Record<AskReason, string> = {
     'no-grant': 'the person has not set what I may do alone for this kind of action',
     'grant-asks': 'the person asked to approve this kind of action first',
+    'outside-repository': 'this repository is outside the standing approval',
     'unknown-scope': 'who this action reaches cannot be worked out, so it needs the person',
     'always-ask-item': 'this kind of action always needs the person (it speaks publicly or widens the role)',
     'sign-in': 'signing in with a stored credential always needs the person',

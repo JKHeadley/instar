@@ -40,6 +40,9 @@ const names = [
   'mcp__other_engine__github__comment_on_pr', 'mcp__other_engine__github_merge_pull_request',
   'mcp__bridge__github__update_file', 'mcp__bridge__github_delete_file',
   'mcp__bridge__github__post_comment',
+  'mcp__foo__deleteRecord', 'mcp__foo__delete-record', 'mcp__foo__sendEmail',
+  'mcp__foo__postMessage', 'mcp__foo__purgeAll', 'mcp__foo__dropTable',
+  'mcp__codex_apps__github_create_issue', 'mcp__codex_apps__github_delete_file',
   'mcp__bridge__github_fetch_and_push', 'mcp__bridge__github_read_then_comment',
   'mcp__bridge__github_search_and_merge', 'mcp__bridge__execute_get_pr_info', 'mcp__bridge__opaque', 'mcp__bridge__github_inspect_read_only', 'mcp__bridge__github__inspect_read_only', 'mcp__bridge__github_mystery_get_pr',
 ];
@@ -57,19 +60,21 @@ describe('generated connector hook, executed with governed-service state', () =>
     expect(result.status, result.stderr).toBe(2);
     expect(JSON.parse(result.stdout).mutability).toBe('modify');
   });
-  it('holds GitHub PR creation and merge during outages even with legacy grants', () => {
+  it('holds GitHub PR creation, update, and merge during outages even with legacy grants', () => {
     const fallbackPath = path.join(stateDir, 'state', 'trust-legacy-kinds.json');
     const original = fs.readFileSync(fallbackPath);
-    fs.writeFileSync(fallbackPath, JSON.stringify({ legacyKinds: ['codex_apps.write', 'codex_apps.modify'] }));
+    fs.writeFileSync(fallbackPath, JSON.stringify({ legacyKinds: ['codex_apps.write', 'codex_apps.modify', 'foo.modify'] }));
     try {
       for (const namespace of ['github_', 'github__']) {
-        for (const action of ['create', 'merge']) {
+        for (const action of ['create', 'update', 'merge']) {
           const result = runHook(fresh, `mcp__codex_apps__${namespace}${action}_pull_request`, true, true);
           expect(result.status, result.stderr).toBe(2);
           expect(result.stderr).toContain('the agent server could not be reached');
         }
       }
-      expect(runHook(fresh, 'mcp__codex_apps__github__update_pull_request', true, true).status).toBe(0);
+      expect(runHook(fresh, 'mcp__codex_apps__github__create_issue', true, true).status).toBe(0);
+      expect(runHook(fresh, 'mcp__foo__deleteRecord', true, true).status).toBe(2);
+      expect(runHook(fresh, 'mcp__foo__send-email', true, true).status).toBe(2);
     } finally {
       fs.writeFileSync(fallbackPath, original);
     }

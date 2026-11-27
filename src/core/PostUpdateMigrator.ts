@@ -25390,12 +25390,17 @@ process.stdin.on('end', async () => {
     const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
     const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
     const verb = toolTokens[toolSegments.length === 1 && toolTokens[0] === 'github' ? 1 : 0] || '';
+    const isGithubPr = service === 'codex_apps' && /^(github_(create|update|merge)_pull_request)$/.test(action);
+    const mutationName = isGithubPr ? verb : '';
+    const deletePrefix = /^(delete|remove|trash|purge|destroy|drop|clear)/;
+    const writePrefix = /^(send|create|post|write|add|insert|new|compose|publish)/;
+    const modifyPrefix = /^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/;
     let mutability = 'modify';
-    if (/^(delete|remove|trash|purge|destroy|drop|clear)$/.test(verb)) {
+    if (deletePrefix.test(action) || deletePrefix.test(mutationName)) {
       mutability = 'delete';
-    } else if (/^(send|create|post|write|add|insert|new|compose|publish)$/.test(verb)) {
+    } else if (writePrefix.test(action) || writePrefix.test(mutationName)) {
       mutability = 'write';
-    } else if (!hasMutatingPart && readVerb.test(verb)) {
+    } else if (!modifyPrefix.test(action) && !hasMutatingPart && readVerb.test(verb)) {
       mutability = 'read';
     }
 
@@ -25427,8 +25432,7 @@ process.stdin.on('end', async () => {
     // (decision 15): when the server cannot judge it, it does not pass.
     const maySignIn = service === 'playwright' && (action === 'browser_type' || action === 'browser_fill_form');
     // PR creation needs live policy reconciliation and PR merge has an approval floor.
-    const requiresLivePrAdmission = service === 'codex_apps'
-      && /^(github_create_pull_request|github_merge_pull_request)$/.test(action);
+    const requiresLivePrAdmission = isGithubPr;
     const passesWhenUnreachable = () => !journeyImported
       || (!maySignIn && !requiresLivePrAdmission && (
         (mutability === 'read' && (serviceAllLegacy || readNames.includes(toolName)))
@@ -25442,9 +25446,11 @@ process.stdin.on('end', async () => {
 
     // Classify reversibility
     let reversibility = 'reversible';
-    if (/^(send|publish|post|destroy|purge|drop)$/.test(verb)) {
+    const irreversiblePrefix = /^(send|publish|post|destroy|purge|drop)/;
+    const partialPrefix = /^(delete|remove|trash)/;
+    if ((isGithubPr && action === 'github_merge_pull_request') || irreversiblePrefix.test(action) || irreversiblePrefix.test(mutationName)) {
       reversibility = 'irreversible';
-    } else if (/^(delete|remove|trash)$/.test(verb)) {
+    } else if (partialPrefix.test(action) || partialPrefix.test(mutationName)) {
       reversibility = 'partially-reversible';
     }
 

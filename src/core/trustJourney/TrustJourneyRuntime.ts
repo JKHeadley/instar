@@ -22,7 +22,7 @@ import { checkTrustProfileAgainstLog, TrustChangeLogWriter, type Narrowed } from
 import { decideAdmission, type AdmissionDecision } from './admission.js';
 import { TrustOutcomeLog } from './TrustOutcomeLog.js';
 import { planLegacyImport, writeLegacyKindsFile } from './legacyImport.js';
-import { deriveEffect, requiresOwnerProofForSameLevelGrant, type DerivedEffect } from '../../data/effect-kinds.js';
+import { deriveEffect, requiresOwnerProofForSameLevelGrant, standingGrantRepositories, trustGrantProofSubject, type DerivedEffect } from '../../data/effect-kinds.js';
 import type { AdapterKind, Receipt } from './accountPath.js';
 
 /** The journal-backed sink: every record goes through the replicated emitter and is awaited durable. */
@@ -102,7 +102,12 @@ export function summarizeChange(change: TrustChange, raises: string[] = []): str
   switch (change.kind) {
     case 'trust-grant': {
       const words: Record<string, string> = { blocked: 'never do it', 'approve-always': 'ask you first every time', 'approve-first': 'ask you first', log: 'do it and keep it in your record', autonomous: 'just do it' };
-      return [...widen, `Change: ${change.operation} actions on ${q(change.service)}: ${words[change.level] ?? change.level}`];
+      const repositories = standingGrantRepositories(change.service, change.operation);
+      return [
+        ...widen,
+        `Change: ${change.operation} actions on ${q(change.service)}: ${words[change.level] ?? change.level}`,
+        ...(repositories.length ? [`Standing GitHub pull request permission is limited to ${repositories.join(', ')}.`] : []),
+      ];
     }
     case 'autonomy-profile': return [...widen, `Change: switch the autonomy profile from ${change.from} to ${change.to}`];
     case 'trust-recovery': return [...widen, `Change: restore the trust level that incident ${q(change.incidentId)} lowered`];
@@ -352,7 +357,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
           if (effect?.matched && requiresOwnerProofForSameLevelGrant(service, op, level)) {
             if (isTrustLevelRaise(last.to as TrustLevel, level)) return null;
             const receipt = last.consumptionId ? store.consumption(last.consumptionId) : null;
-            const expected = proposalHashOf({ kind: 'trust-grant', service, operation: op, level: last.to });
+            const expected = proposalHashOf(trustGrantProofSubject(service, op, last.to));
             if (receipt?.principal !== 'owner' || receipt.proposalHash !== expected) return null;
           }
           return level;
@@ -372,7 +377,7 @@ export function createTrustJourneyRuntime(d: TrustJourneyRuntimeDeps): TrustAcco
         },
       });
       // Decision 13: only the serving-lease holder admits a governed effect; elsewhere it waits.
-      if (decision.verdict !== 'not-gated' && decision.verdict !== 'legacy' && !d.holdsLease()) {
+      if (decision.verdict !== 'not-gated' && (decision.verdict !== 'legacy' || effect?.standingRepository) && !d.holdsLease()) {
         return { decision: { verdict: 'ask', why: 'holder-unreachable' }, effect };
       }
       if (decision.verdict === 'proceed-once' && effect) {
