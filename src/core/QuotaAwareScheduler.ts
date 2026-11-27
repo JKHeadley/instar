@@ -572,6 +572,12 @@ export class QuotaAwareScheduler {
       this.cfg.logger?.warn(
         `[QuotaAwareScheduler] ${sessionName}: moved to ${next.id} (was ${exhaustedAccountId}) — earlier conversation NOT carried over; original brief re-delivered where on record`,
       );
+    } else if (preserved === undefined) {
+      // A legacy boolean result (or an object without the field) carries no evidence either
+      // way, so never log it as confirmed preservation.
+      this.cfg.logger?.log(
+        `[QuotaAwareScheduler] ${sessionName}: moved to ${next.id} (was ${exhaustedAccountId}) — whether the earlier conversation carried over is unknown (not reported)`,
+      );
     } else {
       this.cfg.logger?.log(
         `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,

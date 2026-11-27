@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T13:17:48.599Z",
+  "slug": "swap-preservation-unknown",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/QuotaAwareScheduler.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

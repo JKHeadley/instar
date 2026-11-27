@@ -101,4 +101,51 @@ describe('account-swap continuity is verified before the swap completes', () => 
     expect(r.swapped).toBe(true);
     expect(logs.join('\n')).not.toContain('conversation preserved');
   });
+
+  it.each([
+    ['a legacy boolean result', async () => true],
+    ['an object result without the field', async () => ({ ok: true })],
+  ] as const)('the scheduler reports preservation as unknown for %s, never as confirmed', async (_label, refreshFn) => {
+    const logs: string[] = [];
+    const accounts = [
+      { id: 'a', framework: 'claude-code', configHome: '/x/a' },
+      { id: 'b', framework: 'claude-code', configHome: '/x/b' },
+    ] as unknown as SubscriptionAccount[];
+    const sched = new QuotaAwareScheduler({
+      listAccounts: () => accounts,
+      refreshFn: refreshFn as never,
+      logger: { log: (m) => logs.push(m), warn: (m) => logs.push(m) },
+    });
+    const r = await sched.onQuotaPressure({
+      sessionName: 'sagemind-studio-imessage-codes',
+      exhaustedAccountId: 'a',
+      nowMs: Date.now(),
+      targetAccountId: 'b',
+    });
+    expect(r.swapped).toBe(true);
+    const all = logs.join('\n');
+    expect(all).not.toContain('conversation preserved');
+    expect(all).toContain('is unknown (not reported)');
+  });
+
+  it('the scheduler still reports confirmed preservation when the refresh says so', async () => {
+    const logs: string[] = [];
+    const accounts = [
+      { id: 'a', framework: 'claude-code', configHome: '/x/a' },
+      { id: 'b', framework: 'claude-code', configHome: '/x/b' },
+    ] as unknown as SubscriptionAccount[];
+    const sched = new QuotaAwareScheduler({
+      listAccounts: () => accounts,
+      refreshFn: async () => ({ ok: true, conversationPreserved: true }),
+      logger: { log: (m) => logs.push(m), warn: (m) => logs.push(m) },
+    });
+    const r = await sched.onQuotaPressure({
+      sessionName: 'sagemind-studio-imessage-codes',
+      exhaustedAccountId: 'a',
+      nowMs: Date.now(),
+      targetAccountId: 'b',
+    });
+    expect(r.swapped).toBe(true);
+    expect(logs.join('\n')).toContain('conversation preserved via --resume');
+  });
 });
