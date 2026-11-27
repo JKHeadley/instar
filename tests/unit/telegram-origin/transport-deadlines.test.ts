@@ -7,6 +7,7 @@ import type { OriginSessionLifecycle } from '../../../src/messaging/telegram-ori
 import { OriginTransportCancelledBeforeNetwork } from '../../../src/messaging/telegram-origin/OriginTransportCancellation.js';
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
+import { describeTransportFailure, transportFailureCategory } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { telegramFetch, TELEGRAM_API_CALL_TIMEOUT_MS } from '../../../src/messaging/telegram-egress.js';
 import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
@@ -183,8 +184,49 @@ describe('Telegram network deadlines after origin preparation', () => {
     await expect(h.send({ networkTimeoutMs: TELEGRAM_API_CALL_TIMEOUT_MS })).rejects.toMatchObject({ outcome: 'outcome-unknown' });
     const lines = warn.mock.calls.map(call => String(call[0])).filter(line => line.includes('outcome unknown'));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^\[telegram-origin\] send outcome unknown for [0-9a-f-]+ \(sendMessage after \d+ms\): fetch failed code=ECONNRESET cause=socket hang up$/);
+    expect(lines[0]).toMatch(/^\[telegram-origin\] send outcome unknown for [0-9a-f-]+ \(sendMessage after \d+ms\): connection-reset code=ECONNRESET$/);
     expect(lines[0]).not.toContain(h.token.split(':')[1]);
+  });
+  it('names a timed-out send by category and never copies the error message text into the log', async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const private_ = `chat 4290919884 said: meet at the clinic ${h.token}`;
+    h.network.mockImplementation(async () => { throw new DOMException(private_, 'TimeoutError'); });
+    await expect(h.send({ networkTimeoutMs: TELEGRAM_API_CALL_TIMEOUT_MS })).rejects.toMatchObject({ outcome: 'outcome-unknown' });
+    expect((await h.runtime.store.listOrigins()).records[0].children[0].state).toBe('outcome-unknown');
+    const lines = warn.mock.calls.map(call => String(call[0])).filter(line => line.includes('outcome unknown'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/\(sendMessage after \d+ms\): timeout$/);
+    expect(lines[0]).not.toContain('clinic');
+    expect(lines[0]).not.toContain('4290919884');
+    expect(lines[0]).not.toContain(h.token.split(':')[1]);
+    expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
+    expect(h.network).toHaveBeenCalledOnce();
+  });
+  it('keeps a throttled 429 answer retryable and separate from a timed-out send', async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.network.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 8 } }), { status: 429 }));
+    await expect(h.send({ networkTimeoutMs: TELEGRAM_API_CALL_TIMEOUT_MS })).rejects.toMatchObject({ outcome: 'known-failed', reason: 'telegram-429' });
+    const row = (await h.runtime.store.listOrigins()).records[0];
+    expect(row.children[0].state).toBe('queued');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('send outcome unknown'));
+  });
+  it.each([
+    ['a header timeout', { code: 'UND_ERR_HEADERS_TIMEOUT' }, 'timeout'],
+    ['a socket reset', { code: 'ECONNRESET' }, 'connection-reset'],
+    ['a DNS retry failure', { code: 'EAI_AGAIN' }, 'dns'],
+    ['a certificate failure', { code: 'CERT_HAS_EXPIRED' }, 'tls'],
+    ['an unrecognised code', { code: 'EWEIRD' }, 'other'],
+    ['no code at all', {}, 'other'],
+  ])('maps %s to one bounded category', (_label, cause, category) => {
+    const error = Object.assign(new TypeError('fetch failed: private words'), { cause: Object.assign(new Error('inner private words'), cause) });
+    expect(transportFailureCategory(error)).toBe(category);
+    expect(describeTransportFailure(error)).not.toContain('private');
+  });
+  it('drops an error code that is not of plain shape', () => {
+    const error = Object.assign(new Error('x'), { code: 'see https://example.invalid/?q=private' });
+    expect(describeTransportFailure(error)).toBe('other');
   });
   it('waits longer for a send than Telegram holds a throttled request, inside the server reply budget', () => {
     // Measured 2026-10-26: throttled chat-scoped requests answered after 14-33 s (200 or 429).

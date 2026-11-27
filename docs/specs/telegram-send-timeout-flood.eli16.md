@@ -9,7 +9,7 @@ Measuring inside the running server showed the cause. Telegram had slowed Echo's
 ## What changes
 
 1. The wait for an ordinary Telegram request goes from 15 seconds to 60 seconds, in both places that send (the main server and the lifeline process). Long polling already waited 60 seconds and is unchanged. With 60 seconds, a throttled send gets Telegram's real answer: either it is delivered and recorded, or Telegram says "too many requests", which the existing outbox already turns into a scheduled retry.
-2. When a send still ends as "outcome unknown", the server writes one log line saying which request it was, the error, and how many milliseconds it waited. The line never includes the web address (which carries the bot's secret token), and anything that looks like a token is blanked out.
+2. When a send still ends as "outcome unknown", the server writes one log line saying which request it was, what kind of request it was, how many milliseconds it waited, and what kind of network problem it hit: a timeout, a dropped connection, a name lookup failure, a secure-connection failure, or something else. It may add the short error code the system gives, such as ECONNRESET. It never copies the error message itself, so no part of the message, the web address or the bot's secret token can end up in the log.
 
 ## What already exists and stays the same
 

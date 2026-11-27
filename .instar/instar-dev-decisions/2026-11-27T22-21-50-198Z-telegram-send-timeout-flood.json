@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T22:21:50.198Z",
+  "slug": "telegram-send-timeout-flood",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
