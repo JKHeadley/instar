@@ -25,8 +25,10 @@ A check of this plan against Instar's rule book (Nov 19-20) found more to fix, a
 - The agent checks that it didn't copy client text into its memory or another client's folder, instead of just being told not to.
 - What the agent promised in a call, and the transcript and read behind it, reach all its machines even if the place the files live is unreachable, without anyone new being able to see them.
 - A run that stops while checkers are still finding things is called incomplete, never done.
-- Fixed numbers (exactly two readers, at least two rounds, one retry) became minimums based on evidence, so a short clear call doesn't pay for work it doesn't need, and a messy one keeps getting checked.
+- Fixed numbers (exactly two readers, at least two rounds, a set number of retries) became judgment based on evidence, so a short clear call doesn't pay for work it doesn't need, and a messy one keeps getting checked.
 
-It starts on development agents and on Luna, who will use it on her next real client call. Only after a real call where the operator finds nothing missing does it go to every agent. Nothing runs on its own; an agent uses it only for a meeting read. Turning it off is one setting.
+It first runs, start to finish, on a throwaway test agent that Echo watches. Only after that passes does it go to development agents and to Luna, who will use it on her next real client call. Only after a real call where the operator finds nothing missing does it go to every agent. Nothing runs on its own; an agent uses it only for a meeting read. Turning it off is one setting.
+
+A further check on Nov 27 led to five more fixes: every one of the agent's machines must confirm it holds the meeting before the read counts as ready, not just one; the whole skill runs on a supervised throwaway agent before Luna; retries and the number of blind readers are judged from what the agent observes, not fixed counts; and a summary bullet holding two requests must have both linked, which every checker now looks for.
 
 **Status.** Draft for Justin's approval. Nothing is built before he says yes.
