@@ -7,10 +7,10 @@
  * monitor evaluations are not logged — the graduation review reads placement
  * outcomes only (joined to the existing wall and swap logs by `sessionName`).
  *
- * Bounded and observational: written off the decision path (buffered, flushed
- * by an unref'd timer), never capped per row (rows are bounded by spawns, which
- * the existing spawn limits bound), self-trimmed to the last 30 days at each day
- * roll. Rows still in the buffer at an unclean stop are lost; the next process's
+ * Bounded and observational: each placement requests an asynchronous flush,
+ * with an unref'd maintenance timer. Spawn limits bound the row rate, and the
+ * log keeps the last 30 days. Rows still in the buffer at an unclean stop may
+ * be lost. The next process's
  * first flush records `lostOnRestart: 'unknown'` so the loss is never silent.
  * A failure here never changes a placement.
  *
@@ -84,7 +84,9 @@ export class AccountChoiceShadowLog {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastTrimDay: number | null = null;
   private pendingLossMark: boolean;
+  private readonly markerReset: Promise<void>;
   private flushing: Promise<void> | null = null;
+  private stopped = false;
   /** Writes that failed (counted, never thrown into a placement). */
   writeFailures = 0;
 
@@ -98,9 +100,10 @@ export class AccountChoiceShadowLog {
     let clean = false;
     try { hadLog = fs.existsSync(this.file); clean = fs.existsSync(this.cleanMarker); } catch { /* @silent-fallback-ok: unknown → mark below */ }
     this.pendingLossMark = hadLog && !clean;
-    if (clean) {
-      void SafeFsExecutor.safeUnlink(this.cleanMarker, { operation: 'AccountChoiceShadowLog:clear-clean-marker' }).catch(() => undefined);
-    }
+    this.markerReset = clean
+      ? SafeFsExecutor.safeUnlink(this.cleanMarker, { operation: 'AccountChoiceShadowLog:clear-clean-marker' })
+        .catch(() => { this.writeFailures++; })
+      : Promise.resolve();
     const flushMs = opts.flushMs ?? DEFAULT_FLUSH_MS;
     if (flushMs > 0) {
       this.timer = setInterval(() => { void this.flush(); }, flushMs);
@@ -108,8 +111,9 @@ export class AccountChoiceShadowLog {
     }
   }
 
-  /** Buffer one executed placement. Never throws. */
+  /** Buffer one executed placement and request an asynchronous flush. Never throws. */
   record(input: PlacementShadowInput): void {
+    if (this.stopped) return;
     try {
       const row: PlacementShadowRow = {
         kind: 'placement',
@@ -125,16 +129,26 @@ export class AccountChoiceShadowLog {
         this.pendingLossMark = false;
       }
       this.buffer.push(row);
+      void this.flush();
     } catch {
       this.writeFailures++; // @silent-fallback-ok: counted; a shadow failure never changes a placement
     }
   }
 
   /** Append buffered rows; trim to the last 30 days at each day roll. */
-  async flush(): Promise<void> {
+  flush(): Promise<void> {
     if (this.flushing) return this.flushing;
-    this.flushing = (async () => {
-      try {
+    this.flushing = this.flushPending().finally(() => {
+      this.flushing = null;
+      if (this.buffer.length > 0) void this.flush();
+    });
+    return this.flushing;
+  }
+
+  private async flushPending(): Promise<void> {
+    await this.markerReset;
+    try {
+      do {
         const rows = this.buffer;
         this.buffer = [];
         if (rows.length > 0) {
@@ -147,13 +161,10 @@ export class AccountChoiceShadowLog {
           this.lastTrimDay = day;
           await this.trim();
         }
-      } catch {
-        this.writeFailures++; // @silent-fallback-ok: counted and reported by the route
-      } finally {
-        this.flushing = null;
-      }
-    })();
-    return this.flushing;
+      } while (this.buffer.length > 0);
+    } catch {
+      this.writeFailures++; // @silent-fallback-ok: counted and reported by the route
+    }
   }
 
   /** Keep rows from the last 30 days (atomic rewrite). */
@@ -177,9 +188,12 @@ export class AccountChoiceShadowLog {
 
   /** Flush and mark a clean stop (the next process then records no possible loss). */
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await this.flush();
+    while (this.buffer.length > 0) await this.flush();
+    if (this.writeFailures > 0) return;
     try { await fs.promises.writeFile(this.cleanMarker, ''); } catch { /* @silent-fallback-ok: next start marks possible loss */ }
   }
 }

@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "window-aware-placement-log-drain",
+  "sessionId": "181652f6-4f88-440e-9a91-37b0c12c33ce",
+  "timestamp": "2026-11-27T20:01:08.966Z",
+  "artifactPath": "upgrades/side-effects/window-aware-placement-log-drain.md",
+  "artifactSha256": "5d0946220fb788f6dddbe8bd710eb9c68f0d054d20cc9389b0e470949b60ce1b",
+  "coveredFiles": [
+    "docs/specs/window-aware-placement-log-drain.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/AccountChoiceShadowLog.ts",
+    "tests/unit/window-aware-placement.test.ts",
+    "upgrades/next/window-aware-placement-log-drain.md",
+    "upgrades/side-effects/window-aware-placement-log-drain.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This repairs observational logging and adds a drain after HTTP admission closes. It does not change account authority or the existing global shutdown deadline. Wrapped focused and pinning tests plus independent review passed.",
+  "eli16Path": "docs/specs/window-aware-placement-log-drain.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-aware-placement-log-drain.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}
