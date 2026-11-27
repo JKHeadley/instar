@@ -316,7 +316,15 @@ export class NotificationSelectivityGate {
   /** Ledger lines waiting for the next write; a burst becomes one append instead of one per row. */
   private ledgerPending: string[] = [];
   private ledger(row: unknown): void {
-    this.ledgerPending.push(JSON.stringify(row) + '\n');
+    // Serialize here (rows must keep call order), but keep the old guarantee that a row which
+    // cannot be serialized only marks the ledger unhealthy and never throws out of route().
+    let line: string;
+    try { line = JSON.stringify(row) + '\n'; } catch (error) {
+      this.metrics.ledgerHealthy = false;
+      console.warn('[selectivity] decision ledger row not serializable:', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    this.ledgerPending.push(line);
     // A write is already queued and has not taken its batch yet: it will carry this row too.
     if (this.ledgerPending.length > 1) return;
     this.ledgerWrites = this.ledgerWrites.then(async () => {

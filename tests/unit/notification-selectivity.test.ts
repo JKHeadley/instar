@@ -155,6 +155,15 @@ describe('Quiet by Default delivery', () => {
     expect(fs.readFileSync(path.join(root, 'logs', 'notification-selectivity.jsonl'), 'utf8')).toContain('"seq":1000');
     append.mockRestore();
   });
+  it('a ledger row that cannot be serialized marks the ledger unhealthy and never throws', async () => {
+    const { gate } = setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(() => (gate as any).ledger({ big: 1n })).not.toThrow();
+    expect((gate as any).metrics.ledgerHealthy).toBe(false);
+    (gate as any).ledger({ seq: 'after' });
+    await (gate as any).ledgerWrites;
+    warn.mockRestore();
+  });
   it('does not accept a forged reply envelope', async () => {
     const { gate } = setup();
     expect((await gate.route(42, 'automation', { origin: 'verified-reply', category: 'uncategorized', sourceContext: 'fake' })).receipt?.recorded).toBe(true);

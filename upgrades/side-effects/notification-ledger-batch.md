@@ -10,6 +10,7 @@ A 1000-send burst queued 1000 sequential `mkdir` + `appendFile` steps. `close()`
 - Same rows, same order, same file and format.
 - Rotation is still checked before each write. Because the check is per batch, a file can exceed the 2 MB cap by at most one batch before the next write rotates it.
 - Error handling is unchanged: a failed write marks `ledgerHealthy` false and logs once. If a batched write fails, the whole batch is lost, as each single row was lost before.
+- Rows are now serialized when `ledger()` is called (needed to keep call order), not inside the queued write. A row that cannot be serialized is still caught: it marks `ledgerHealthy` false, logs once and is dropped, so it never throws out of `route()`. Today's rows are plain strings and numbers. A test covers it.
 - No route, response, setting or message changes.
 
 ## Risks considered
