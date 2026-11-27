@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T19:15:17.316Z",
+  "slug": "preferred-holder-restart-admission",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/LeaseCoordinator.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only evidence on request, with no self-triggered restart or renewal."
+  },
+  "verdict": "pass"
+}

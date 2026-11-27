@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-26T19:32:17.100Z",
+  "slug": "preferred-holder-restart-admission",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 71,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Guard of an existing planned restart request, no additional self-triggered restart or renewal."
+  },
+  "verdict": "pass"
+}

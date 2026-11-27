@@ -91,12 +91,23 @@ export function actionIdentityOf(toolName: string, toolInput: unknown): string {
 /** The hook's verb rules, now held by the server (the hook keeps a copy only for its read fast path). */
 export function verbRules(action: string): { operation: EffectOperation; reversibility: Reversibility } {
   const tokens = action.split('_').filter(Boolean);
-  const mutatingTail = tokens.slice(1).some((t) => /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(t));
+  // Connector namespaces can precede the actual verb (github__fetch_pr or github_fetch_pr).
+  // Match whole tokens, never a service/engine allowlist or a substring such as "fetcher".
+  // A mutation or execution wrapper anywhere keeps a compound tool governed.
+  const mutatingPart = tokens.some((t) => /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(t));
+  // With explicit __ namespaces the final segment is the tool. In the flattened
+  // spelling recognize the observed GitHub connector alias only. An arbitrary
+  // unknown first word (inspect_read, launch_get_status) is NOT a namespace.
+  const segments = action.split('__');
+  const toolTokens = segments[segments.length - 1].split('_').filter(Boolean);
+  const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+  const hasReadVerb = readVerb.test(toolTokens[0] ?? '')
+    || (segments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] ?? ''));
   let operation: EffectOperation = 'modify';
   if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) operation = 'delete';
   else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) operation = 'write';
   else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) operation = 'modify';
-  else if (!mutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) operation = 'read';
+  else if (!mutatingPart && hasReadVerb) operation = 'read';
   let reversibility: Reversibility = 'reversible';
   if (/^(send|publish|post|destroy|purge|drop)/.test(action)) reversibility = 'irreversible';
   else if (/^(delete|remove|trash)/.test(action)) reversibility = 'partially-reversible';
@@ -129,7 +140,7 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   let itemCount = 1;
   for (const v of Object.values(input)) if (Array.isArray(v)) itemCount = Math.max(itemCount, v.length);
   const entry = EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action));
-  const rules = verbRules(action);
+  const rules = verbRules(parts.slice(2).join('__'));
   const signIn = isSignIn(service, action, input);
   const operation: EffectOperation = signIn ? 'sign-in' : (entry?.operation ?? rules.operation);
   const reversibility = entry?.reversibility ?? rules.reversibility;

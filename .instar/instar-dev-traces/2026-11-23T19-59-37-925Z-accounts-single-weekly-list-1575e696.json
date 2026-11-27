@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "accounts-single-weekly-list",
+  "sessionId": "2298638c-0f8f-48bb-8203-4470cf1831bf",
+  "timestamp": "2026-11-23T19:59:37.925Z",
+  "artifactPath": "upgrades/side-effects/accounts-single-weekly-list.md",
+  "artifactSha256": "8e3dced60d203ab86e48bc4fcf8dd70780fa86a21cc99d07a7ae36190e3f90d4",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-accounts-order.test.ts",
+    "upgrades/eli16/accounts-single-weekly-list.md",
+    "upgrades/next/accounts-single-weekly-list.md",
+    "upgrades/side-effects/accounts-single-weekly-list.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible Accounts presentation change only: one column and weekly reset ordering, retaining quota data, account selection and existing sign-in authority.",
+  "eli16Path": "upgrades/eli16/accounts-single-weekly-list.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-single-weekly-list.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "review_accounts_list",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  }
+}

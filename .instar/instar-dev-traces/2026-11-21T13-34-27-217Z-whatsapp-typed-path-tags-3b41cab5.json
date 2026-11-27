@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "whatsapp-typed-path-tags",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T13:34:27.217Z",
+  "artifactPath": "upgrades/side-effects/whatsapp-typed-path-tags.md",
+  "artifactSha256": "17994403e6bdcc32cde75c48cfcfd8b18f25e839efade2f97bf7d23a78f5fb03",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T13-34-18-480Z-whatsapp-typed-path-tags.json",
+    "docs/specs/whatsapp-typed-path-tags.eli16.md",
+    "src/commands/server.ts",
+    "tests/unit/whatsapp-typed-path-tags.test.ts",
+    "upgrades/next/whatsapp-typed-path-tags.md",
+    "upgrades/side-effects/whatsapp-typed-path-tags.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace: WhatsApp typed path-tag escaping",
+  "eli16Path": "docs/specs/whatsapp-typed-path-tags.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/whatsapp-typed-path-tags.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

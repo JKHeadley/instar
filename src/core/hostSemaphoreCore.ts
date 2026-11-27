@@ -6,10 +6,10 @@
  * are extracted here so the test-runner lane can reuse them WITHOUT inheriting
  * spawn-lane POLICY. What moves into the core:
  *
- *  - the exclusive O_CREAT|O_EXCL lock primitive — but lock-RECLAIM policy is
+ *  - the exclusive atomic publication primitive — but lock-RECLAIM policy is
  *    a PARAMETER of the consumer, not the core: the spawn lane keeps its
- *    legacy pid-death unlink reclaim (`legacyPidDeathLockReclaim`, preserved
- *    bug-for-bug — see the defect note on that function), while the test lane
+ *    legacy pid-death unlink reclaim (`legacyPidDeathLockReclaim`, see
+ *    the constraints on that function), while the test lane
  *    uses ONLY its own race-safe age-reclaim (atomic rename + dev+ino verify,
  *    implemented in hostTestRunnerSemaphore.ts) and NEVER calls the legacy
  *    reclaim;
@@ -33,6 +33,7 @@
  */
 
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -235,7 +236,7 @@ export function atomicWriteFileSync(
   }
 }
 
-// ── Exclusive lock primitive (O_CREAT|O_EXCL) ────────────────────────────
+// ── Exclusive lock primitive (atomic hard link) ────────────────────────────
 
 export type LockTakeResult =
   | { ok: true; fd: number }
@@ -256,28 +257,36 @@ export type LockTakeResult =
     };
 
 /**
- * ONE attempt to take the exclusive lock at `lockPath` (O_CREAT|O_EXCL) and
- * stamp `record` into it. Returns the open fd on success; `held` when another
- * process holds it; `error` on any other failure (the caller decides its own
- * fail direction — the core never does).
+ * Stamp a private inode, then publish it with an exclusive hard link.
+ * A contender sees either no lock or the complete record.
  */
 export function tryTakeLockOnce(lockPath: string, record: string): LockTakeResult {
+  const tmp = `${lockPath}.tmp.${randomUUID()}`;
   let fd: number | null = null;
+  let published = false;
   try {
-    fd = fs.openSync(lockPath, 'wx', 0o600); // O_CREAT|O_EXCL
-    fs.writeSync(fd, record);
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, record);
+    try {
+      fs.linkSync(tmp, lockPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, reason: 'held' };
+      throw err;
+    }
+    published = true;
     return { ok: true, fd };
   } catch (err) {
-    const e = err as NodeJS.ErrnoException;
+    const { code } = err as NodeJS.ErrnoException;
+    return { ok: false, reason: 'error', ...(code ? { code } : {}) };
+  } finally {
     if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* @silent-fallback-ok: closing a maybe-invalid fd during error unwind is benign */
+      if (!published) {
+        try { fs.closeSync(fd); }
+        catch { /* @silent-fallback-ok: best-effort close of an unpublished lock */ }
       }
+      try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'hostSemaphoreCore.tryTakeLockOnce:cleanup-tmp' }); }
+      catch { /* @silent-fallback-ok: the temporary name does not participate in locking */ }
     }
-    if (e.code === 'EEXIST') return { ok: false, reason: 'held' };
-    return { ok: false, reason: 'error', ...(e.code ? { code: e.code } : {}) };
   }
 }
 
@@ -298,49 +307,24 @@ export function releaseLock(lockPath: string, fd: number | null, operation: stri
 }
 
 /**
- * LEGACY spawn-lane lock reclaim — remove the lock file when its recorded
- * holder pid is dead (or the record is unparseable). Preserved BUG-FOR-BUG
- * from HostSpawnSemaphore.reclaimStaleLock so the extraction changes nothing
- * about spawn behavior (the golden test pins it).
- *
- * KNOWN DEFECTS (surfaced by the test-runner-concurrency-bound §2.1 review;
- * the fix is the tracked spawn-lane back-port, NOT this extraction):
- *  - non-atomic unlink-then-recreate: two contenders can both observe a dead
- *    lock, both unlink, both enter — a holders row can be lost to
- *    last-write-wins;
- *  - torn-read hazard: the lock is created then written in TWO steps, so a
- *    contender can read an empty just-created lock, hit the parse catch, and
- *    unlink a LIVE lock;
- *  - `{pid, at}` carries no hostname and reclaim is not df-gated: on a synced
- *    home a peer machine pid-probes a foreign, locally-meaningless pid.
- * The TEST lane does NOT use this function at all (age-reclaim-only, §2.4).
+ * Spawn-lane recovery for a lock with a positively identified dead PID.
+ * An unreadable record may belong to an older process still stamping its lock.
+ * The legacy dead-owner unlink protocol still has no host identity or
+ * serialization between concurrent reclaimers.
  */
 export function legacyPidDeathLockReclaim(
   lockPath: string,
   pidAlive: (pid: number) => boolean,
 ): boolean {
   try {
-    const raw = fs.readFileSync(lockPath, 'utf-8');
-    const obj = JSON.parse(raw);
-    const pid = typeof obj?.pid === 'number' ? obj.pid : null;
-    if (pid !== null && pidAlive(pid)) return false; // live holder — wait
-    // Dead (or unparseable) lock holder — reclaim.
+    const obj = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    const pid = obj?.pid;
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || pidAlive(pid)) return false;
     SafeFsExecutor.safeUnlinkSync(lockPath, { operation: 'hostSemaphoreCore.legacyPidDeathLockReclaim' });
     return true;
   } catch {
-    // @silent-fallback-ok: a read/parse failure on the lock means we couldn't
-    // confirm a live holder; treat as reclaimable so a corrupt lock can't wedge
-    // the cap permanently. The O_EXCL re-create still races safely.
-    try {
-      SafeFsExecutor.safeUnlinkSync(lockPath, {
-        operation: 'hostSemaphoreCore.legacyPidDeathLockReclaim:corrupt',
-      });
-      return true;
-    } catch {
-      // @silent-fallback-ok: couldn't remove the corrupt lock (a race with
-      // another reclaimer) — report not-reclaimed; the caller waits + retries.
-      return false;
-    }
+    // @silent-fallback-ok: unable to prove this lock is abandoned, or to remove it.
+    return false;
   }
 }
 

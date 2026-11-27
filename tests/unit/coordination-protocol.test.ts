@@ -676,29 +676,34 @@ describe('CoordinationProtocol', () => {
       expect(stateB).toBeNull();
     });
 
-    it('claimLeadership succeeds after another machines lease expires', async () => {
-      const stateDir = path.join(tmpDir, '.instar');
-      const busA = new AgentBus({ stateDir, machineId: 'machine-a', transport: 'jsonl' });
-      const coordA = new CoordinationProtocol({
-        bus: busA, machineId: 'machine-a', stateDir, leaseTtlMs: 50, // 50ms lease
-      });
+    it('claimLeadership succeeds after another machines lease expires', () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const start = Date.now();
+        const stateDir = path.join(tmpDir, '.instar');
+        const busA = new AgentBus({ stateDir, machineId: 'machine-a', transport: 'jsonl' });
+        const coordA = new CoordinationProtocol({
+          bus: busA, machineId: 'machine-a', stateDir, leaseTtlMs: 50, // 50ms lease
+        });
 
-      const busB = new AgentBus({ stateDir, machineId: 'machine-b', transport: 'jsonl' });
-      const coordB = new CoordinationProtocol({
-        bus: busB, machineId: 'machine-b', stateDir, leaseTtlMs: 60000,
-      });
+        const busB = new AgentBus({ stateDir, machineId: 'machine-b', transport: 'jsonl' });
+        const coordB = new CoordinationProtocol({
+          bus: busB, machineId: 'machine-b', stateDir, leaseTtlMs: 60000,
+        });
 
-      // Machine A claims with short lease
-      coordA.claimLeadership();
+        // Machine A claims with short lease
+        coordA.claimLeadership();
 
-      // Wait for lease to expire
-      await new Promise(r => setTimeout(r, 100));
+        vi.setSystemTime(start + 51);
 
-      // Machine B should now be able to claim
-      const stateB = coordB.claimLeadership();
-      expect(stateB).not.toBeNull();
-      expect(stateB!.leaderId).toBe('machine-b');
-      expect(stateB!.fencingToken).toBe(2);
+        // Machine B should now be able to claim
+        const stateB = coordB.claimLeadership();
+        expect(stateB).not.toBeNull();
+        expect(stateB!.leaderId).toBe('machine-b');
+        expect(stateB!.fencingToken).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('isLeader returns true for current leader with valid lease', () => {
@@ -712,13 +717,19 @@ describe('CoordinationProtocol', () => {
       expect(coord.isLeader()).toBe(false);
     });
 
-    it('isLeader returns false when lease has expired', async () => {
-      const { coord } = makeCoordinator(tmpDir, 'machine-a', { leaseTtlMs: 50 });
-      coord.claimLeadership();
-      expect(coord.isLeader()).toBe(true);
+    it('isLeader returns false when lease has expired', () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const start = Date.now();
+        const { coord } = makeCoordinator(tmpDir, 'machine-a', { leaseTtlMs: 50 });
+        coord.claimLeadership();
+        expect(coord.isLeader()).toBe(true);
 
-      await new Promise(r => setTimeout(r, 100));
-      expect(coord.isLeader()).toBe(false);
+        vi.setSystemTime(start + 51);
+        expect(coord.isLeader()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('isLeaseExpired returns true when no leader exists', () => {
@@ -732,12 +743,18 @@ describe('CoordinationProtocol', () => {
       expect(coord.isLeaseExpired()).toBe(false);
     });
 
-    it('isLeaseExpired returns true after lease expires', async () => {
-      const { coord } = makeCoordinator(tmpDir, 'machine-a', { leaseTtlMs: 50 });
-      coord.claimLeadership();
+    it('isLeaseExpired returns true after lease expires', () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const start = Date.now();
+        const { coord } = makeCoordinator(tmpDir, 'machine-a', { leaseTtlMs: 50 });
+        coord.claimLeadership();
 
-      await new Promise(r => setTimeout(r, 100));
-      expect(coord.isLeaseExpired()).toBe(true);
+        vi.setSystemTime(start + 51);
+        expect(coord.isLeaseExpired()).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('renewLease extends the lease', () => {
