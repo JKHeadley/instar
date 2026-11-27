@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-18T21:35:00.000Z",
+  "slug": "topic-spawns-placed-by-load",
+  "carriers": {
+    "CMT-1936": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Step 2: topic-bound agent spawns (placement:auto with topicId, no live owner) placed like a new conversation through the fenced startCheckedTopicOnMachine path; its own spec checks feasibility first."
+    }
+  }
+}

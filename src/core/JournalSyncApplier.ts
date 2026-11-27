@@ -257,6 +257,7 @@ const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
   'trust-outcome-record': 'multiMachine.stateSync.trustJourneyOutcomes',
   'project-app-record': 'multiMachine.stateSync.projectApps',
   'project-app-blob': 'multiMachine.stateSync.projectAppBlobs',
+  'topic-spawn-brief': 'multiMachine.placement.agentSessions.topicBound',
   'conversation-graph-suggestion-record': 'multiMachine.stateSync.conversationGraphSuggestions',
   'telegram-topic-name-record': 'multiMachine.stateSync.telegramTopicNames',
   'context-layer-record': 'multiMachine.stateSync.contextLayers',

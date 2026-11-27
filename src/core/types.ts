@@ -2614,6 +2614,10 @@ export interface MachineCapacity {
     teamLogComputerRows?: boolean;
     /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
     documentsOrigin?: string | null;
+    /** Placement Step 2 (docs/specs/topic-spawns-placed-by-load.md): this build frames a verified
+     *  agent-spawn forward as the agent's own fresh task (agent authorship, null media id).
+     *  Advertised only while topicBound placement resolves on; a peer without it is never chosen. */
+    'agent-brief@1'?: boolean;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;

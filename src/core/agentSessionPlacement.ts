@@ -183,6 +183,9 @@ export interface PlacementEntry {
   told?: boolean;
   /** When the entry became not-observed (the 24 h hold runs from here). */
   notObservedAt?: string;
+  /** Placement Step 2: a topic-bound placement. The target names its session through its own
+   *  topic naming, so reads match the session bound to this topic. */
+  topicId?: number;
 }
 
 export function isUnresolved(e: PlacementEntry, nowMs: number = Date.now()): boolean {
@@ -228,10 +231,10 @@ export class AgentSessionPlacementStore {
     const now = this.now();
     return [...new Set(Object.values(this.entries).filter((e) => isUnresolved(e, now)).map((e) => e.machineId))];
   }
-  setPending(name: string, machineId: string): void {
+  setPending(name: string, machineId: string, extra?: { topicId?: number }): void {
     const at = new Date(this.now()).toISOString();
     this.prune(PLACEMENT_STORE_MAX - 1);
-    this.entries[name] = { machineId, state: 'pending', at, lastSeenAt: null, lastCheckAt: null, okReads: 0 };
+    this.entries[name] = { machineId, state: 'pending', at, lastSeenAt: null, lastCheckAt: null, okReads: 0, ...(typeof extra?.topicId === 'number' ? { topicId: extra.topicId } : {}) };
     this.save();
   }
   update(name: string, patch: Partial<PlacementEntry>): void {
@@ -280,17 +283,25 @@ export class AgentSessionPlacementStore {
 /** One read of a peer's active sessions: running, not running, or the read failed. */
 export type PeerRead = 'running' | 'not-running' | 'read-failed';
 
-/** Is the name running in a GET /sessions answer (array, or `{sessions: []}`)? Null = unparseable. */
-export function sessionRunningIn(list: unknown, name: string, entry?: PlacementEntry | null): boolean | null {
+/** The running row for the name in a GET /sessions answer (array, or `{sessions: []}`); undefined = none; null = unparseable. */
+export function findRunningSession(list: unknown, name: string, entry?: PlacementEntry | null): Record<string, unknown> | undefined | null {
   const rows = Array.isArray(list) ? list : Array.isArray((list as { sessions?: unknown })?.sessions) ? (list as { sessions: unknown[] }).sessions : null;
   if (!rows) return null;
-  return rows.some((r) => {
-    const s = r as { name?: unknown; tmuxSession?: unknown; id?: unknown; status?: unknown };
+  return rows.find((r) => {
+    const s = r as { name?: unknown; tmuxSession?: unknown; id?: unknown; status?: unknown; telegramTopicId?: unknown; topicId?: unknown };
     if (s.status !== undefined && s.status !== 'running' && s.status !== 'starting') return false;
+    // Placement Step 2: a topic placement is found by the session bound to its topic.
+    if (typeof entry?.topicId === 'number' && (s.telegramTopicId === entry.topicId || s.topicId === entry.topicId)) return true;
     return s.name === name || s.tmuxSession === name
       || (entry?.tmuxSession !== undefined && s.tmuxSession === entry.tmuxSession)
       || (entry?.sessionId !== undefined && s.id === entry.sessionId);
-  });
+  }) as Record<string, unknown> | undefined;
+}
+
+/** Is the name running in a GET /sessions answer (array, or `{sessions: []}`)? Null = unparseable. */
+export function sessionRunningIn(list: unknown, name: string, entry?: PlacementEntry | null): boolean | null {
+  const row = findRunningSession(list, name, entry);
+  return row === null ? null : row !== undefined;
 }
 
 // ── The service ──────────────────────────────────────────────────────────────
@@ -305,6 +316,10 @@ export interface AgentSessionPlacementDeps {
   nickname: (machineId: string) => string | null;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Placement Step 2: called once when a placed entry is seen gone (the brief is marked completed). */
+  onGone?: (name: string, entry: PlacementEntry) => void;
+  /** Placement Step 2: which pool machines are known to hold a topic's replicated brief. */
+  briefHolders?: (topicId: number, target: string) => { heldBy: string[]; notYet: string[] } | null;
 }
 
 export interface ShadowRow {
@@ -318,6 +333,9 @@ export interface ShadowRow {
   why?: string;
   blocker?: string | null;
   outcome?: string;
+  /** Placement Step 2: the topic id and its ownership state on every topic-bound row. */
+  topicId?: number;
+  topicOwnership?: 'none' | 'released' | 'self' | 'peer';
 }
 
 export class AgentSessionPlacementService {
@@ -380,12 +398,15 @@ export class AgentSessionPlacementService {
     this.recordRead(name, r);
     const cur = store.get(name) ?? existing;
     const who = { machineId: existing.machineId, nickname: this.deps.nickname(existing.machineId) };
+    // A topic placement's session is named by the target; null until a read learns it.
+    const placedName = cur.tmuxSession ?? (typeof cur.topicId === 'number' ? null : name);
+    const topicPart = typeof cur.topicId === 'number' ? { topicId: cur.topicId } : {};
     if (r === 'running') {
-      return { status: 409, body: { error: 'session-exists', code: 'session-exists', placementOutcome: 'exists-on-peer', placedOn: who, tmuxSession: cur.tmuxSession ?? name } };
+      return { status: 409, body: { error: 'session-exists', code: 'session-exists', placementOutcome: 'exists-on-peer', placedOn: who, tmuxSession: placedName, ...topicPart } };
     }
     if (cur.state === 'gone') { store.remove(name); return null; }
     if (cur.state === 'pending' || cur.state === 'unknown') {
-      return { status: 202, body: { placementOutcome: 'unconfirmed', placedOn: who, tmuxSession: name, next: `This name was already handed to ${who.nickname ?? who.machineId} and its start is not confirmed yet. Do not start the same work under a new name; check that machine.` } };
+      return { status: 202, body: { placementOutcome: 'unconfirmed', placedOn: who, tmuxSession: placedName, ...topicPart, next: `This name was already handed to ${who.nickname ?? who.machineId} and its start is not confirmed yet. Do not start the same work under a new name; check that machine.` } };
     }
     return { status: 409, body: { error: 'placement-bound-elsewhere', code: 'placement-bound-elsewhere', placementOutcome: 'placement-bound-elsewhere', placedOn: who, next: 'This name was placed on another machine and its outcome is not known. Use a new name to run the work again, after checking that machine.' } };
   }
@@ -393,9 +414,13 @@ export class AgentSessionPlacementService {
   async readPeer(machineId: string, name: string, entry?: PlacementEntry | null): Promise<PeerRead> {
     let body: unknown;
     try { body = await this.deps.readPeerSessions(machineId); } catch { return 'read-failed'; /* @silent-fallback-ok — a failed read is "not yet known", never "absent" */ }
-    const running = sessionRunningIn(body, name, entry);
-    if (running === null) return 'read-failed';
-    return running ? 'running' : 'not-running';
+    const row = findRunningSession(body, name, entry);
+    if (row === null) return 'read-failed';
+    // Placement Step 2: a topic placement learns the target's real session name from its read.
+    if (row && typeof entry?.topicId === 'number' && typeof row.tmuxSession === 'string' && entry.tmuxSession !== row.tmuxSession && this.deps.store.get(name)) {
+      this.deps.store.update(name, { tmuxSession: row.tmuxSession, ...(typeof row.id === 'string' ? { sessionId: row.id } : {}) });
+    }
+    return row ? 'running' : 'not-running';
   }
 
   /** In-request reconciliation after an unconfirmed hand-off: `reads` reads `gapMs` apart. Found → live. */
@@ -417,7 +442,11 @@ export class AgentSessionPlacementService {
     if (r === 'read-failed') { this.deps.store.update(name, { lastCheckAt: iso }); return; }
     if (r === 'running') { this.deps.store.update(name, { state: 'live', lastSeenAt: iso, lastCheckAt: iso, okReads: e.okReads + 1 }); return; }
     // A successful read where the name is NOT running: seen before → gone; never seen → stays as it is.
-    if (e.lastSeenAt) { this.deps.store.update(name, { state: 'gone', lastCheckAt: iso, okReads: e.okReads + 1 }); return; }
+    if (e.lastSeenAt) {
+      this.deps.store.update(name, { state: 'gone', lastCheckAt: iso, okReads: e.okReads + 1 });
+      try { this.deps.onGone?.(name, e); } catch { /* @silent-fallback-ok — the hook only marks a brief completed; the entry is already gone */ }
+      return;
+    }
     this.deps.store.update(name, { lastCheckAt: iso, okReads: e.okReads + 1 });
   }
 
@@ -468,7 +497,22 @@ export class AgentSessionPlacementService {
     this.deps.store.update(name, { told: true });
     const nick = this.deps.nickname(e.machineId) ?? e.machineId;
     const what = state === 'unknown' ? `${nick} could not be reached to check it` : `${nick} never showed it running`;
-    this.log({ name, topicBound: false, weight: 'standard', mode: 'live', outcome: `unresolved-${state}`, wouldPlaceOn: e.machineId });
+    this.log({ name, topicBound: typeof e.topicId === 'number', weight: 'standard', mode: 'live', outcome: `unresolved-${state}`, wouldPlaceOn: e.machineId, ...(typeof e.topicId === 'number' ? { topicId: e.topicId } : {}) });
+    if (typeof e.topicId === 'number') {
+      // Placement Step 2: name the topic, the machine and the held claim, and who holds the brief.
+      let holders: { heldBy: string[]; notYet: string[] } | null = null;
+      try { holders = this.deps.briefHolders?.(e.topicId, e.machineId) ?? null; } catch { holders = null; /* @silent-fallback-ok — reported as unknown below */ }
+      const nickOf = (id: string) => this.deps.nickname(id) ?? id;
+      const held = holders ? `The task brief is held by: ${holders.heldBy.map(nickOf).join(', ') || 'none confirmed'}; not yet confirmed on: ${holders.notYet.map(nickOf).join(', ') || 'none'}.` : 'Which machines hold the task brief is unknown.';
+      try {
+        this.deps.raiseAttention({
+          id: `agent-session-placement-${name}`,
+          title: `Unconfirmed topic start: topic ${e.topicId} on ${nick}`,
+          summary: `The agent's task "${name}" for topic ${e.topicId} was handed to ${nick} and its start was never confirmed (${what}). The topic stays claimed for ${nick}, so nothing else starts in it. ${held} Decide whether to release the topic and issue the work again; nothing restarts it automatically.`,
+        });
+      } catch { /* @silent-fallback-ok — attention is best-effort; the store and the audit log keep the state */ }
+      return;
+    }
     try {
       this.deps.raiseAttention({
         id: `agent-session-placement-${name}`,
