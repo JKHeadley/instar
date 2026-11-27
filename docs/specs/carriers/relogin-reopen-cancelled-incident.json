@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-11-27T00:23:00.000Z",
+  "slug": "relogin-reopen-cancelled-incident",
+  "carriers": {
+    "CMT-039": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "shared test line",
+      "excerpt": "A gearfinity3d repair (Mac Mini or Laptop) that ran by itself with its audit trail, via this fix, by 20:00 PT Friday 2026-11-27; tell the Chief of Staff by noon Friday if the test line slips."
+    },
+    "CMT-040": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Find why the Mac Mini gearfinity3d cell left the poller's admitted set at 2026-11-26 03:55:58Z, and decide whether admission bookkeeping should cancel an incident for a cell that misses a single poll at all (a debounce)."
+    },
+    "CMT-041": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Close two gaps left by this fix: a signed-out cell with no incident at all, and a repair row whose second source-closed cancel stays cancelled; decide each with the CMT-040 debounce."
+    }
+  }
+}
