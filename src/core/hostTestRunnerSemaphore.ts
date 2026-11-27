@@ -2463,7 +2463,7 @@ export class HostTestRunnerSemaphore {
 
   // ── Status (§2.7 — PURE read: lock-free, write-free, signal-free) ────
 
-  status(): {
+  status({ includeRecentEvents = true }: { includeRecentEvents?: boolean } = {}): {
     cap: number;
     targetedCap: number;
     posture: TestPosture;
@@ -2506,7 +2506,8 @@ export class HostTestRunnerSemaphore {
         state: 'held',
       });
     }
-    const recentEvents = readLedgerTail(this.paths, 50);
+    // Placement and capacity callers only need current holders and caps.
+    const recentEvents = includeRecentEvents ? readLedgerTail(this.paths, 50) : [];
     let nextSuiteClass: 'ordinary' | 'merge-gate' | 'unknown' = 'unknown';
     if (this.turnHistoryEligible(ctx) && read.turn &&
         resolveAlternatingSuiteTurns(ctx.tuning.file?.alternatingSuiteTurns) !== 'off') {

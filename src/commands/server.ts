@@ -28060,7 +28060,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // synchronously) and rewrites the holders file — on a 15 s timer that
             // would inflate the very event-loop lag this report measures.
             spawnCapSaturated: () => { const st = spawnSemMod.getHostSpawnSemaphore().peek(); return st.liveHolders >= st.cap; },
-            testRunnerSaturated: () => testSemMod.getHostTestRunnerSemaphore().status().suite.saturated,
+            testRunnerSaturated: () => testSemMod.getHostTestRunnerSemaphore().status({ includeRecentEvents: false }).suite.saturated,
             log: (line) => console.log(pc.dim(`  [load-report] ${line}`)),
             // trustworthy-machine-load C1: admission feeds on every verdict and is
             // advertised in the report (late-bound; null until constructed below).
