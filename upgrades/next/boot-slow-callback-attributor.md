@@ -1,0 +1,16 @@
+<!-- bump: patch -->
+## What Changed
+
+On development agents, the server now runs a short boot diagnostic. For the first two minutes after it starts, any callback that holds the event loop longer than one second is logged as one `[boot-slow-callback]` line, naming the callback type and the code that scheduled it. The diagnostic then switches itself off. It only observes and never changes or delays work. It is off on all other agents, behind `monitoring.bootSlowCallbacks`. It exists to find the ~22 s freeze the Mac Studio shows at every boot (fb-756ec068-89d) without profiling a live server, and it will be removed once that freeze is fixed.
+
+## What to Tell Your User
+
+Nothing to do. This only adds a few diagnostic lines to the development agent's log after a restart.
+
+## Summary of New Capabilities
+
+- A boot-time log line names any step that holds the server for over a second (development agents only).
+
+## Evidence
+
+8 unit tests in `tests/unit/boot-slow-callback-attributor.test.ts`. They hold the event loop on purpose from a timer, an immediate and a promise, and check each case is named with the scheduling code. They also check the threshold, the window closing, and the report cap. The ladder registry tests pass with the new retire entry.
