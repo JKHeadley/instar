@@ -5173,6 +5173,12 @@ export interface InstarConfig {
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
     /**
+     * Replay-input capture: the scrubbed prompt parts under the provenance row's
+     * machine-local field, so a decision can be rebuilt exactly. Unset = live on
+     * development agents, dark on the fleet.
+     */
+    replayInput?: { enabled?: boolean };
+    /**
      * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
      * something the agent is waiting on the person for must carry the ask's link and a
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.

@@ -31,6 +31,8 @@ describe('resolveToneGateOperatorConfig', () => {
       toneTierDryRun: true,
       recordCandidateBody: true,
       advisoryMigration: true,
+      // No developmentAgent on this config: the replay capture resolves dark.
+      replayInput: { enabled: false },
     });
   });
 
@@ -67,6 +69,7 @@ describe('resolveToneGateOperatorConfig', () => {
       // A config-less install is a FLEET install by definition: the dev-agent
       // gate resolves the migration dark, never undefined-and-therefore-truthy.
       advisoryMigration: false,
+      replayInput: { enabled: false },
     });
     expect(resolveToneGateOperatorConfig(undefined)).toEqual({
       failClosedOnExhaustion: undefined,
@@ -74,6 +77,22 @@ describe('resolveToneGateOperatorConfig', () => {
       toneTierDryRun: undefined,
       recordCandidateBody: undefined,
       advisoryMigration: false,
+      replayInput: { enabled: false },
+    });
+  });
+
+  describe('replayInput dev-agent gate', () => {
+    it('is live on a development agent and dark on the fleet when unset', () => {
+      expect(resolveToneGateOperatorConfig({ developmentAgent: true }).replayInput).toEqual({ enabled: true });
+      expect(resolveToneGateOperatorConfig({ developmentAgent: false }).replayInput).toEqual({ enabled: false });
+      expect(resolveToneGateOperatorConfig({ messaging: [] }).replayInput).toEqual({ enabled: false });
+    });
+
+    it('an explicit setting wins over the dev-agent default', () => {
+      expect(resolveToneGateOperatorConfig({ developmentAgent: true, toneGate: { replayInput: { enabled: false } } }).replayInput)
+        .toEqual({ enabled: false });
+      expect(resolveToneGateOperatorConfig({ developmentAgent: false, toneGate: { replayInput: { enabled: true } } }).replayInput)
+        .toEqual({ enabled: true });
     });
   });
 
