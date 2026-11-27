@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "constitution-frontier-design-review",
+  "sessionId": "177d1a8a-4ec0-4d36-bc01-3ef74f7926aa",
+  "timestamp": "2026-11-27T14:34:42.952Z",
+  "artifactPath": "upgrades/side-effects/constitution-frontier-design-review.md",
+  "artifactSha256": "01abc675b3b5318f2d24bb3ab16f7b78afdfe002cce5143bf726aca91caf97de",
+  "specPath": "docs/specs/frontier-design-review-standard.md",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/frontier-design-review-building-family-2026-11-17.json",
+    "docs/audits/frontier-design-review-building-family-merge-2026-11-27.json",
+    "docs/audits/frontier-design-review-root-family-2026-11-17.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/reports/frontier-design-review-building-family-merge-2026-11-27.md",
+    "docs/specs/reports/frontier-design-review-family-review-2026-11-17.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/constitution-frontier-design-review.md",
+    "upgrades/side-effects/constitution-frontier-design-review.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "constitution article approved with the spec; whole-PR trace after merging main and re-reading the Building family",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

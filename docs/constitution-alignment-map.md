@@ -9,11 +9,11 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 100 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Security Fixes Keep the Experience Whole from the security program, plus Trust Is Earned by Work and Granted Only by the Person from #3219) |
-| 2.0 rule rows | 123 (numbers 1 to 123, each once, with instar-2 #189, #190, #191 and #192, and #200) |
+| 1.x articles with a `**Rule.**` line | 103 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046, plus Security Fixes Keep the Experience Whole from the security program, plus Trust Is Earned by Work and Granted Only by the Person from #3219, plus Frontier Models Design and Review; Efficient Models Build from this change; *A Safeguard Must Leave a Benefit* and *Documents Stand on Their Own*, both added 2026-11-18, have no row in this map yet, a gap already on main before this change) |
+| 2.0 rule rows | 124 (numbers 1 to 124, each once, with instar-2 #189, #190, #191 and #192, #200, and Rule 124 from the counterpart of this change) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 14 Values |
 
-Map result: **55 aligned, 41 differs, 3 1.x-only**, plus 25 rule rows 2.0-only and 13 purpose rules 2.0-only (6 partial).
+Map result: **56 aligned, 41 differs, 3 1.x-only**, plus 25 rule rows 2.0-only and 13 purpose rules 2.0-only (6 partial).
 
 Of the differs rows: 7 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
 
@@ -76,6 +76,7 @@ Rank 5 (ownership vs grant) was closed by #3219, which brought *Sovereignty* to 
 | 1.x #2812 and 2.0 #192: No Feature May Require a Purchased Service | New article #97, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
 | 1.x #3046 and 2.0 #200: An Instar Agent Always Serves a Team | New article #98, a tree node under *An Instar Agent Is Always a Multi-Machine Entity*, and R123 | **Yes, as a pair.** Same approved wording in both books, except one sentence: 2.0 says it extends #31 and #113, and 1.x names the same thing in its own terms, *An Instar Agent Is Always a Multi-Machine Entity* and its cross-machine posture declaration. Neither is enforced yet. The pull request numbers are added here when the pull requests are opened. |
 | 1.x #3219 and 2.0 #204: the trust journey (changes 1 to 8, approved by Justin 2026-11-15 22:01 PST, telegram 142440) | New article #99, a tree node under *Agent Proposes, Operator Approves*; *Sovereignty* rewritten to the grant-based test; *Intelligence Infers, Keywords Only Guard* names what an approval covered. In 2.0: the role rule retitled with a narrowing condition, a new Value, the sign-off list's see-first item, the suggestions rule, Rules 10 and 104 | **Yes, as a pair.** Same approved wording in both books. Conflict 5 closes; row 18 is aligned. Neither is enforced yet. |
+| 1.x frontier design review article and 2.0 Rule 124 (approved by Justin 2026-11-17 15:32 PST, telegram 144319/144458, with the spec `docs/specs/frontier-design-review-standard.md`) | New article #103, a tree node under *Structure beats Willpower*, and R124 | **Yes, as a pair.** Same obligation. 1.x carries the approved article text and names the code that applies it; 2.0 carries the same Rule, Fails and In practice sentences in one Needs-building row, adds that the model registry is the doorway/model map of R56 and that the rule extends R56 and R65, and lists the outbound gate and Work Board hold as the check it owes. Neither book's check is live until the build lands. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -185,6 +186,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 98 | An Instar Agent Always Serves a Team | 123 | aligned | — | — | — |
 | 99 | Security Fixes Keep the Experience Whole | — | 1.x-only | — | — | A security-program article (operator approval telegram 141385, 2026-11-15), a child of *The User Experience Is the Product*. No 2.0 rule-book counterpart. |
 | 100 | Trust Is Earned by Work and Granted Only by the Person | 104 (purpose role + suggestions rules) | aligned | — | — | — |
+| 103 | Frontier Models Design and Review; Efficient Models Build | 124 | aligned | — | — | — |
 
 ## 6. 2.0 rule rows with no 1.x article
 

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-18T02:41:00.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:codex-cli-gpt-6.2-sol"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/frontier-design-review-family-review-2026-11-17.md",
+  "convergenceSha256": "6a37121fb0a49ebf1dbfee81501e555e1f9aa9564b07c1da2fafea2770e337d2",
+  "areas": {
+    "Building": {
+      "areaSha256": "f43013268822d280d362ee56058b0ef777b0d9851f5a0605ba4921c0620349a0",
+      "verdict": "accepted"
+    }
+  }
+}
