@@ -148,11 +148,12 @@ export interface CreateWorktreeResult {
  * skip `-C <dir>` prefixes; we always use `-C` here, so we route explicitly
  * rather than relying on the dispatcher.
  */
-function git(args: string[], cwd: string, operation: string, kind: 'read' | 'write'): string {
+function git(args: string[], cwd: string, operation: string, kind: 'read' | 'write', timeout?: number): string {
   const exec = kind === 'write' ? SafeGitExecutor.execSync : SafeGitExecutor.readSync;
   return exec(args, {
     cwd,
     operation,
+    timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
     sourceTreeWorktreeManagerOk: true,
   }).trim();
@@ -163,9 +164,10 @@ function tryGit(
   cwd: string,
   operation: string,
   kind: 'read' | 'write',
+  timeout?: number,
 ): { ok: true; stdout: string } | { ok: false; error: string } {
   try {
-    return { ok: true, stdout: git(args, cwd, operation, kind) };
+    return { ok: true, stdout: git(args, cwd, operation, kind, timeout) };
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { stderr?: Buffer | string };
     const msg = (e.stderr ? String(e.stderr) : e.message ?? 'unknown error').trim();
@@ -621,7 +623,9 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
     throw new Error(`path-containment: ${worktreesDir} changed before worktree add`);
   }
   assertWorktreeCapacity(worktreesDir);
-  const addResult = tryGit(addArgs, instarRepo, createOp, 'write');
+  // Checking out the whole repository can exceed the general 30-second Git
+  // budget on a busy disk. Keep a finite five-minute deadline only for add.
+  const addResult = tryGit(addArgs, instarRepo, createOp, 'write', 300_000);
   if (!addResult.ok) {
     throw new Error(classifyWorktreeAddError(addResult.error, worktreePath, instarRepo));
   }

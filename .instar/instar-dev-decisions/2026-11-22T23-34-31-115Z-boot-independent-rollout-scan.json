@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-22T23:34:31.115Z",
+  "slug": "boot-independent-rollout-scan",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 286,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/FeatureRolloutReconciler.ts",
+      "src/core/featureRolloutGitAsync.ts",
+      "src/core/featureRolloutScan.ts",
+      "src/data/awareness/rollout-scan-responsiveness.md"
+    ],
+    "addedLines": 271,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "src/core/FeatureRolloutReconciler.ts#reconcile",
+      "howCaught": "The existing cadence shares one whole reconciliation promise. Stop aborts owned discovery and prevents subsequent tracker writes. Application yields each artifact and every Git command retains its finite deadline. No automatic queued retry or new cadence is introduced."
+    }
+  },
+  "verdict": "pass"
+}

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { FeedbackSourceGenerations } from '../../src/feedback-factory/store/FeedbackSourceGenerations.js';
@@ -55,6 +55,30 @@ describe('FeedbackSourceGenerations', () => {
     expect(() => generations.append({ feedbackId: 'f3' })).not.toThrow();
     fs.writeFileSync(lock, `${process.pid}\n`);
     expect(() => generations.append({ feedbackId: 'f4' })).toThrow(/busy/);
+  });
+
+  it('persists a processing update once when a concurrent append holds the generation lock beyond 500 ms', () => {
+    const { dir, legacy, generations } = setup();
+    const lock = path.join(dir, '.feedback-generation.lock');
+    fs.writeFileSync(lock, `${process.pid}\n`);
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    const wait = vi.spyOn(Atomics, 'wait').mockImplementation((_buffer, _index, _value, timeout = 0) => {
+      const wasHeld = elapsed < 650;
+      elapsed += timeout;
+      if (wasHeld && elapsed >= 650) {
+        SafeFsExecutor.safeUnlinkSync(lock, { operation: 'feedback-source-generations.test:concurrent-append-finished' });
+      }
+      return 'timed-out';
+    });
+    try {
+      generations.append({ feedbackId: 'f1', status: 'processed' });
+      const rows = fs.readFileSync(legacy, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(rows.filter((row) => row.feedbackId === 'f1').map((row) => row.status)).toEqual(['unprocessed', 'processed']);
+    } finally {
+      wait.mockRestore();
+      clock.mockRestore();
+    }
   });
 
   it('recovers every compaction publish crash boundary without loss or an invalid handoff', () => {

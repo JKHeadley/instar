@@ -114,7 +114,7 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     expect(printAt).toBeGreaterThan(-1);
     expect(ackAt).toBeGreaterThan(printAt);
     const groups = buildInstarCodexHookGroups('/p');
-    expect(groups.UserPromptSubmit[0].hooks.some((h) => h.command.includes('telegram-topic-context.sh'))).toBe(true);
+    expect(groups.UserPromptSubmit[0].hooks.find((h) => h.command.includes('telegram-topic-context.sh'))?.timeout).toBeGreaterThan(11_000);
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
     expect(src).toContain("codexAdapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: codexBinForSuite, engine: CODEX_CLI_FRAMEWORK })");
     const routes = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf-8');

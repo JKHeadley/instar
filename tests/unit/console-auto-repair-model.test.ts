@@ -38,8 +38,26 @@ describe('auto-repair section model', () => {
   it('older and unreachable machines are listed but cannot be ticked', () => {
     const m = buildAutoRepair(read([], { configsMissing: ['old'], failed: [{ machineId: 'gone', error: 'timeout' }] }), { names: { old: 'Laptop' } });
     expect(m.rows.find((r: any) => r.machineId === 'old').unreadable).toBe('Needs an Instar update first');
-    // CMT-1541: no /pool evidence → says plainly that how long and whether anything is fixing it are not known.
-    expect(m.rows.find((r: any) => r.machineId === 'gone').unreadable).toBe("Couldn't reach a machine with no name yet (for how long is not known); not known whether anything is fixing it.");
+    expect(m.rows.find((r: any) => r.machineId === 'gone')).toMatchObject({ unreadable: 'Still checking this machine.', retryable: true });
+    expect(m.unresolved).toBe(true);
+  });
+
+  it('retains a machine that was omitted entirely from the fan-out', () => {
+    const ready = cfg('studio', 'approval', [], ['a@x.io'], { remote: false });
+    const poolMachines = { ok: true, data: { machines: [{ machineId: 'lap', nickname: 'Laptop' }] } };
+    const roster = [{ machineId: 'mini', nickname: 'Mini' }];
+    const partial = buildAutoRepair(read([ready], { expectedMachines: roster }), { poolMachines });
+    expect(partial.unresolved).toBe(true);
+    expect(partial.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ machineId: 'lap', name: 'Laptop', retryable: true }),
+      expect.objectContaining({ machineId: 'mini', name: 'Mini', retryable: true }),
+    ]));
+    const all = buildAutoRepair(read([ready, cfg('lap', 'off', [], []), cfg('mini', 'approval', [], ['a@x.io'])],
+      { expectedMachines: roster }), { poolMachines });
+    expect(all.unresolved).toBe(false);
+    const offline = buildAutoRepair({ ok: false }, { poolMachines });
+    expect(offline.unresolved).toBe(true);
+    expect(offline.rows).toEqual([expect.objectContaining({ name: 'Laptop' })]);
   });
 
   it('an unreachable machine says how long and whether anything is fixing it (CMT-1541)', () => {
@@ -47,7 +65,7 @@ describe('auto-repair section model', () => {
     const pool = { ok: true, data: { machines: [
       { machineId: 'lap', nickname: 'Laptop', liveness: { state: 'unreachable', source: 'direct', evidenceAt: '2026-11-09T11:48:00Z' }, reconnect: { state: 'retrying' } },
     ] } };
-    const m = buildAutoRepair(read([], { failed: [{ machineId: 'lap', error: 'timeout' }] }), { names: { lap: 'Laptop' }, poolMachines: pool, now });
+    const m = buildAutoRepair(read([], { failed: [{ machineId: 'lap', error: 'unreachable' }] }), { names: { lap: 'Laptop' }, poolMachines: pool, now });
     expect(m.rows[0].unreadable).toBe("Couldn't reach Laptop for 12 min; reconnecting by itself.");
   });
 
