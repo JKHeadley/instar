@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-24T13:50:05.818Z",
+  "slug": "source-grounded-judge-prototype",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 72,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/source_grounded_real_validator.check.mjs"
+    ],
+    "addedLines": 72,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

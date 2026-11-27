@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "source-grounded-judge-design",
+  "sessionId": "998f9cdd-58f3-4659-9992-913b0a93fc1f",
+  "timestamp": "2026-11-24T00:15:54.232Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-judge-design.md",
+  "artifactSha256": "228f69c3b962ad0fe3185365c95e4f819ca8325872dd590fee8d92057deb6ce7",
+  "coveredFiles": [
+    "docs/evaluation/context-budget/source-grounded-answer/answer.schema.json",
+    "docs/evaluation/context-budget/source-grounded-answer/overview.md",
+    "docs/evaluation/context-budget/source-grounded-answer/schema-validation.json",
+    "upgrades/side-effects/source-grounded-judge-design.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible schema type annotations and documentation of strict-tool verification; no runtime consumers or authority changes.",
+  "eli16Path": "docs/evaluation/context-budget/source-grounded-answer/overview.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-judge-design.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

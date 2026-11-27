@@ -1,0 +1,23 @@
+{
+  "unit": "tokens",
+  "qualification": {
+    "assembly": 0,
+    "answering": 0,
+    "tools": 0,
+    "checks": 0,
+    "repeats": 0,
+    "judging": 0,
+    "retries": 0,
+    "fallback": 0
+  },
+  "servingPerTask": {
+    "assembly": 0,
+    "answering": 0,
+    "tools": 0,
+    "checks": 0,
+    "repeats": 0,
+    "judging": 0,
+    "retries": 0,
+    "fallback": 0
+  }
+}

@@ -1,24 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { MacDesktopHost, DEFAULT_MAC_DESKTOP_HELPER } from '../../src/core/MacDesktopHost.js';
 import { macDesktopHelperBudgetScale, setMacDesktopHelperBudgetScale } from '../../src/core/MacDesktopHelperBudget.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { desktopHelperFixtureDir, disposeDesktopHelperFixture, pointPackagedDirAtFixture } from '../fixtures/macDesktopHelperFixture.js';
 
-// The real host binary is restricted to dist/native. Test helpers live beside
-// it for the duration of each test, so the production path and trust check run.
+
 const helpers: string[] = [];
 let helperSerial = 0;
-function cleanupScope(filename: string): { localVerifyScopeOk?: { verifyRoot: string } } {
-  const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
-  const at = filename.indexOf(marker);
-  // Local verify checks out a disposable source-tree copy. The destructive
-  // filesystem funnel admits only that exact verifier root when explicitly
-  // named; ordinary source-tree paths retain their normal protection.
-  return at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } };
-}
 function helper(reply: string): MacDesktopHost {
-  const filename = path.resolve('dist/native', `instar-desktop-capture-test-${process.pid}-${helperSerial++}`);
+  const filename = path.join(desktopHelperFixtureDir, `instar-desktop-capture-test-${process.pid}-${helperSerial++}`);
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const script = `#!${process.execPath}\nimport fs from 'node:fs';const reply = ${JSON.stringify(reply)};let count=0;if(process.argv[2]==='release'){let body='';process.stdin.on('data',chunk=>body+=chunk);process.stdin.on('end',()=>{if(reply==='release-fails')process.exit(69);const finish=()=>{if(reply.includes('record-release'))fs.writeFileSync(${JSON.stringify(filename + '.release')},body);if(reply!=='release-no-ack')process.stdout.write('{"ok":true}\\n');process.exit(0)};if(reply==='record-release-delayed')setTimeout(finish,150);else finish()});}else{\n` +
     `process.stdin.on('data', command => { count++;\n` +
@@ -50,18 +42,21 @@ function helper(reply: string): MacDesktopHost {
 }
 
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost persistent pipes', () => {
+  beforeEach(() => pointPackagedDirAtFixture(path.dirname(DEFAULT_MAC_DESKTOP_HELPER)));
+  afterAll(disposeDesktopHelperFixture);
+
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const filename of helpers.splice(0)) {
-      const scope = cleanupScope(filename);
-      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup', ...scope });
+      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup' });
       if (fs.existsSync(filename + '.release')) SafeFsExecutor.safeUnlinkSync(filename + '.release', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-release', ...scope,
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-release',
       });
       if (fs.existsSync(filename + '.fault')) SafeFsExecutor.safeUnlinkSync(filename + '.fault', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault', ...scope,
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-fault',
       });
       if (fs.existsSync(filename + '.commands')) SafeFsExecutor.safeUnlinkSync(filename + '.commands', {
-        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-commands', ...scope,
+        operation: 'tests/unit/MacDesktopHostCapture.test.ts:cleanup-commands',
       });
     }
   });

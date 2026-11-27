@@ -1,0 +1,82 @@
+{
+  "status": "fixture-label-arithmetic-only-not-model-or-product-evidence",
+  "checkedAt": "2026-11-23T20:35:01.311060+00:00",
+  "count": 16,
+  "checks": [
+    {
+      "id": "stale-significant",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "recent-significant",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "stale-low-significance",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "exact-fourteen-days",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "one-second-before-cutoff",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "one-second-after-cutoff",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "missing-date",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "invalid-date",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "future-date",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "missing-significance",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "empty-readable-store",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "unreadable-store",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "mixed-records",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "untrusted-contact-note",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "same-name-distinct-identities",
+      "labelCheck": "pass"
+    },
+    {
+      "id": "offset-equivalent-boundary",
+      "labelCheck": "pass"
+    }
+  ],
+  "sha256": {
+    "inputs.json": "940be8f49228e9b0f980c4f3fbe3259006fab901301be83717a9ffd3a835a864",
+    "labels.json": "4ed086862ec62b4ea746e4ddc0526cf19e3af3276541dcdf46f696824a0a96a0",
+    "protocol.md": "935713f0ada03f273ae2da6eb674f2b2310f3f6b3dd26d73fb125404a0f54634"
+  },
+  "limits": [
+    "No answering model called.",
+    "No held-out qualification performed.",
+    "No tool confinement implemented or verified.",
+    "No production date semantics changed."
+  ]
+}

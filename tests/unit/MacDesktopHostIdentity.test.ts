@@ -1,16 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MacDesktopHost } from '../../src/core/MacDesktopHost.js';
+import { MacDesktopHost, DEFAULT_MAC_DESKTOP_HELPER } from '../../src/core/MacDesktopHost.js';
 import type { DesktopHelperRetention } from '../../src/core/DesktopHelperRetention.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { desktopHelperFixtureDir, disposeDesktopHelperFixture, pointPackagedDirAtFixture } from '../fixtures/macDesktopHelperFixture.js';
 
-// Helpers sit beside the real binary so the production path and trust check run.
+
 const files: string[] = [];
 let serial = 0;
 interface Grants { screen: boolean; input: boolean; }
 function helper(inherited: Grants, own: Grants | 'fails'): { host: MacDesktopHost; spawns(): string[] } {
-  const filename = path.resolve('dist/native', `instar-desktop-identity-test-${process.pid}-${serial++}`);
+  const filename = path.join(desktopHelperFixtureDir, `instar-desktop-identity-test-${process.pid}-${serial++}`);
   const log = `${filename}.log`;
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const script = `#!${process.execPath}
@@ -60,15 +61,14 @@ function kept(installed: { host: MacDesktopHost }, inherited: Grants, own: Grant
 }
 
 describe.skipIf(process.platform !== 'darwin')('MacDesktopHost permission identity', () => {
+  beforeEach(() => pointPackagedDirAtFixture(path.dirname(DEFAULT_MAC_DESKTOP_HELPER)));
+  afterAll(disposeDesktopHelperFixture);
+
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const filename of files.splice(0)) {
       if (!fs.existsSync(filename)) continue;
-      const marker = `${path.sep}.worktrees${path.sep}.verify${path.sep}`;
-      const at = filename.indexOf(marker);
-      SafeFsExecutor.safeUnlinkSync(filename, {
-        operation: 'tests/unit/MacDesktopHostIdentity.test.ts:cleanup',
-        ...(at < 0 ? {} : { localVerifyScopeOk: { verifyRoot: filename.slice(0, at + marker.length - 1) } }),
-      });
+      SafeFsExecutor.safeUnlinkSync(filename, { operation: 'tests/unit/MacDesktopHostIdentity.test.ts:cleanup' });
     }
   });
 
