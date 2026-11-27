@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "profile-confirm-live-evidence",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:45:05.680Z",
+  "artifactPath": "upgrades/side-effects/profile-confirm-live-evidence.md",
+  "artifactSha256": "982047b4f028630171fc323dbdd316ff5fca3919272ea7eecb64966f6737c268",
+  "coveredFiles": [
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "docs/specs/reports/profile-confirmation-live/README.md",
+    "docs/specs/reports/profile-confirmation-live/final-pass.json",
+    "docs/specs/reports/profile-confirmation-live/first-failed.json",
+    "docs/specs/reports/profile-confirmation-live/second-reminder-failed.json",
+    "upgrades/side-effects/profile-confirm-live-evidence.eli16.md",
+    "upgrades/side-effects/profile-confirm-live-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only signed real-channel evidence; runtime source tree is unchanged from the tested commit.",
+  "eli16Path": "upgrades/side-effects/profile-confirm-live-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/profile-confirm-live-evidence.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

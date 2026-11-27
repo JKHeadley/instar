@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "topic-profile-catch-reasons",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T12:36:39.229Z",
+  "artifactPath": "upgrades/side-effects/topic-profile-catch-reasons.md",
+  "artifactSha256": "6a02a3511f24ed3c67512616afbd087a43b17693ebab533b22440bef88795922",
+  "coveredFiles": [
+    "src/core/handleProfileProposalReply.ts",
+    "src/core/profileProposalPlacement.ts",
+    "src/core/topicProfileWriteSurface.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Log lines and in-place reasons on five existing catch paths; no behavior, authority or response change.",
+  "eli16Path": "docs/eli16/topic-profile-catch-reasons.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/topic-profile-catch-reasons.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

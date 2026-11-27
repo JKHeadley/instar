@@ -141,6 +141,10 @@ export class ProfileDisplayConflictError extends Error {
 }
 
 export interface MutateOptions {
+  /** Internal synchronous confirmation fence, under the mutation lock. */
+  beforeWrite?: () => void;
+  /** Confirmed mixed proposals persist live and preview fields in one flush. */
+  shadow?: IntendedProfileShadow['fields'];
   /** Optional cosmetic compare-and-set, checked only while holding the topic lock. */
   expectedDisplayRevision?: string;
   /**
@@ -333,6 +337,7 @@ export class TopicProfileStore {
     return this.withTopicLock(
       key,
       async () => {
+        opts.beforeWrite?.();
         const entry = this.entryFor(key);
         if (opts.expectedDisplayRevision !== undefined &&
           topicDisplayRevision(entry.current?.messageOriginDisplay) !== opts.expectedDisplayRevision) {
@@ -363,6 +368,11 @@ export class TopicProfileStore {
         if (exclusion) throw new ProfileValidationRefusal(exclusion);
 
         if (!changed) {
+          if (opts.shadow) {
+            entry.intendedProfile = { fields: { ...entry.intendedProfile?.fields, ...opts.shadow },
+              recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
+            await this.flushDurably();
+          }
           return { changed: false, entry, supersededParked: false };
         }
 
@@ -392,6 +402,8 @@ export class TopicProfileStore {
         // An accepted LIVE write clears that topic's stale dry-run shadow
         // (§14 supersession discipline).
         if (!displayOnly && entry.intendedProfile) entry.intendedProfile = null;
+        if (opts.shadow) entry.intendedProfile = { fields: opts.shadow,
+          recordedAt: this.now().toISOString(), recordedBy: patch.updatedBy };
 
         await this.flushDurably();
         return { changed: true, entry, supersededParked };

@@ -29,7 +29,7 @@ export function buildTrustRequests(res, now = Date.now()) {
     else if (r.adapter === 'device') continuation = message || 'No approving device is reachable. Reconnect your approving iPhone or a Mac with Touch ID.';
     else continuation = message || 'Chat delivery is unconfirmed. Set up approvals in the Instar app, or check your private approval chat.';
     const unconfirmed = r.adapter !== 'device' && r.delivered !== true;
-    return { key: `trust:${r.requestId}`, requestId: r.requestId, summary,
+    return { key: `trust:${r.requestId}`, requestId: r.requestId, summary, chatDeliveryUnconfirmed: unconfirmed,
       main: ({ 'board-policy': 'Review how the agent starts work cards', 'one-action': 'Review an action the agent wants to take once', 'trust-grant': 'Review what the agent may do' })[r.changeKind] || 'Review a requested change', continuation,
       sub: `${unconfirmed && !continuation.startsWith('Chat delivery is unconfirmed.') ? 'Chat delivery is unconfirmed. ' : ''}${continuation}`,
       expiresAt: r.expiresAt, deliveryState: state };

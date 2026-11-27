@@ -25,7 +25,11 @@ describe('approval continuation is based on current eligibility', () => {
   });
   it('preserves setup instructions and does not claim approval capability from pairing', () => {
     const message = 'This Mac has no Touch ID. Use your paired iPhone to set up approvals.';
-    expect(buildTrustRequests(answer([open({ adapter: 'device' })], { state: 'setup', message }), NOW).rows[0].continuation).toBe(message);
+    const res = answer([open({ adapter: 'device' })], { state: 'setup', message });
+    expect(buildTrustRequests(res, NOW).rows[0].continuation).toBe(message);
+    expect(trustRequestNeedRows(res, NOW)?.[0].sub).toBe('Set up approvals in the Instar app to review this request.');
+    expect(trustRequestNeedRows(answer([open()], { state: 'setup', message }), NOW)?.[0].sub)
+      .toBe('Set up approvals in the Instar app because chat delivery is unconfirmed.');
   });
   it('does not infer a live app or failed chat delivery from absent availability metadata', () => {
     const r = buildTrustRequests({ ok: true, data: { requests: [open()] } }, NOW).rows[0];
@@ -50,12 +54,27 @@ describe('approval continuation is based on current eligibility', () => {
     expect(buildTrustRequests(answer([open({ changeKind: 'one-action', summary: ['mcp__raw_tool {long:json}'] })]), NOW).rows[0].main).toBe('Review an action the agent wants to take once');
     expect(buildTrustRequests(answer([open({ changeKind: 'trust-grant' })]), NOW).rows[0].main).toBe('Review what the agent may do');
     expect(buildTrustRequests(answer([open({ changeKind: 'future-kind' })]), NOW).rows[0].main).toBe('Review a requested change');
-    expect(rows![0]).toMatchObject({ key: 'need:trust:tr-request', action: { kind: 'href', href: '#/settings/allowed?s=approvals' } });
+    expect(rows![0]).toMatchObject({ key: 'need:trust:tr-request', action: { kind: 'href', href: '#/settings/allowed?s=approvals&request=tr-request' } });
     expect(trustRequestNeedRows({ ok: false, reason: 'offline' }, NOW)).toBeNull();
   });
 });
 
 describe('Allowed approval section', () => {
+  it('scrolls only to the exact approval from a Needs You link without granting it', async () => {
+    dom = new JSDOM('<main></main>', { url: 'http://localhost/dashboard/console/#/settings/allowed?s=approvals&request=second' });
+    Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location });
+    const scroll = vi.fn(function (this: HTMLElement) { return this.dataset.approvalRequest; });
+    dom.window.HTMLElement.prototype.scrollIntoView = scroll;
+    const post = vi.fn();
+    const get = vi.fn(async (path: string) => path === '/trust/requests'
+      ? answer([open({ expiresAt: '2099-11-23T23:00:00Z' }), open({ requestId: 'second', expiresAt: '2099-11-23T23:00:00Z' })])
+      : { ok: false, reason: 'not configured' });
+    await renderAllowed(dom.window.document.querySelector('main')!, { get, post });
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveReturnedWith('second');
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it('renders the whole change as text and offers guidance without granting approval', async () => {
     dom = new JSDOM('<body><main></main></body>', { url: 'http://localhost/dashboard/console/#/settings/allowed' });
     Object.assign(globalThis, { window: dom.window, document: dom.window.document, location: dom.window.location,

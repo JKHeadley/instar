@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "durable-scrub-before-json",
+  "sessionId": "50c56971-306c-4fc3-8da7-4bc992c8e0c1",
+  "timestamp": "2026-11-27T20:45:34.194Z",
+  "artifactPath": "upgrades/side-effects/durable-scrub-before-json.md",
+  "artifactSha256": "ff022741a00c8ab651658f518175fcaabb6b91821117996b847d1a1de99a77da",
+  "specPath": "docs/specs/durable-output-hygiene-standard.md",
+  "coveredFiles": [
+    "src/core/JudgmentProvenanceLog.ts",
+    "src/core/UnjustifiedStopGate.ts",
+    "src/core/durableSecretScrub.ts",
+    "src/scheduler/JevJobCompletionAudit.ts",
+    "src/scheduler/ScriptJobSupervisor.ts",
+    "tests/unit/JevJobCompletionAudit.test.ts",
+    "tests/unit/JudgmentProvenanceLog-envelope.test.ts",
+    "tests/unit/ScriptJobSupervisor.test.ts",
+    "tests/unit/stop-gate-replay-input-capture.test.ts",
+    "upgrades/next/durable-scrub-before-json.md",
+    "upgrades/side-effects/durable-scrub-before-json.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Existing redaction enforcement at durable and model output boundaries. The repair changes no approval or feature gate.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

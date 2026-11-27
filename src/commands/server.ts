@@ -3,7 +3,9 @@ import { creationPlacementSourceVersion } from '../core/CreationPlacementSnapsho
 import { readPeerMessageGeneration } from '../messaging/peerMessageTarget.js';
 import { resolveStallReconfirm } from '../core/StallReconfirm.js';
 import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
-import { crossTopicEligible, applyCrossTopicConfirm } from '../core/topicCreationProvenance.js';
+import { crossTopicEligible, applyCrossTopicConfirm, safeConversationName } from '../core/topicCreationProvenance.js';
+import { profileProposalPlacement } from '../core/profileProposalPlacement.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../core/handleProfileProposalReply.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { ALWAYS_AVAILABLE_REFUSAL, daemonRunsAgent } from '../core/alwaysAvailable.js';
 import { boundedHead, boundedTail, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
@@ -1253,10 +1255,9 @@ let _topicProfileResolver: import('../core/TopicProfileResolver.js').TopicProfil
  *  (conversational / /topic / /route / HTTP / recovery writes). Initialized in
  *  startServer() alongside the store + resolver. */
 let _topicProfileWriteSurface: import('../core/topicProfileWriteSurface.js').TopicProfileWriteSurface | null = null;
-/** Topic Profile (§10.1/§10.4): the shared armed-confirm slot manager —
- *  propose-confirm / switch-now / re-apply-cooldown all share ONE slot per
- *  topic. */
+/** Topic Profile: identified proposal questions plus the isolated legacy recovery slot. */
 let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileConfirmSlots | null = null;
+let _proposalPlacementSnapshot: ((source: string, target: string) => string | null) | null = null;
 /**
  * identity-security-creation-provenance v5: may the owner's yes in conversation A apply a confirmed
  * change to conversation B (the propose lane's confirmIn)? Re-checked when the yes arrives. Set where
@@ -2856,6 +2857,43 @@ async function handleTopicProfileIngress(
 
   const forwarded = (msg.metadata?.forwarded as boolean | undefined) === true;
   const trigger = parseProfileTrigger(text);
+  const source = String(topicId);
+  const messageId = platformMessageIdFrom(msg.id);
+  const rawReply = msg.metadata?.replyToMessageId;
+  const replyTo = typeof rawReply === 'number' && Number.isSafeInteger(rawReply) && rawReply > 0 ? rawReply : null;
+  if (slots && !forwarded) {
+    if (text.trim() === 'yes' && replyTo !== null && messageId !== null) {
+      const result = await handleAndAcknowledgeProfileProposalReply({
+        requests: slots.proposals, surface, source, text, messageId, replyTo, forwarded,
+        principal: { kind: 'operator', platform: 'telegram', uid: String(telegramUserId) },
+        eligible: target => {
+          const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+          if (!bound || bound.platform !== 'telegram' || bound.uid !== String(telegramUserId)) return false;
+          return target === source || (_crossTopicEligibility?.(telegram, String(telegramUserId), target, source).ok ?? false);
+        },
+        placement: target => _proposalPlacementSnapshot?.(source, target) ?? null,
+        name: target => safeConversationName(telegram.getTopicName(Number(target)), target),
+      }, async reply => {
+        const sent = await withNotificationEnvelope(stampResponse(), async () => telegram.sendToTopic(topicId, reply));
+        requireTelegramDelivery(sent);
+      });
+      if (result.matched) return true;
+      // A native reply to any other message can never fall back to an unrelated bare confirmation.
+      if (slots.peek(source)?.echoPlatformMessageId !== replyTo) return false;
+    }
+    if (trigger?.kind === 'confirm' || trigger?.kind === 'switch-now') {
+      // The platform can display a new question before its send promise resolves.
+      if (slots.proposals.pending(source) && !(await slots.proposals.settle(source))) return false;
+      const legacy = slots.peek(source);
+      const latest = slots.proposals.latestReceipt(source);
+      if (legacy && latest !== null && (legacy.echoPlatformMessageId === null || legacy.echoPlatformMessageId < latest)) {
+        slots.disarm(source);
+        return false;
+      }
+      if (replyTo !== null && legacy?.echoPlatformMessageId !== replyTo) return false;
+    }
+  }
+
   // A message that is not an explicit profile trigger passes to the agent
   // untouched; the agent drives the explicit propose/write routes itself.
   if (!trigger) return false;
@@ -3129,7 +3167,29 @@ export function wireTelegramRouting(
     const inboundMedia = Array.isArray(msg.metadata?.media) ? (msg.metadata!.media as InboundMediaLocal[]) : null;
     // The local form (with this machine's own download path) stays in process and in this machine's
     // queue; every send to another machine strips it to ids (SessionRouter, the spawn hop).
-    const sessionTextFor = (): Promise<string> => buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
+    const sessionTextFor = async (): Promise<string> => {
+      const original = await buildTelegramSessionText(topicId, text, inboundMedia, resolveInboundTelegramMessageId(msg));
+      const requests = _topicProfileConfirmSlots?.proposals;
+      const surface = _topicProfileWriteSurface;
+      if (!requests || !surface || msg.metadata?.teamPhone === true) return original;
+      const source = String(topicId);
+      const context = profileProposalConversationContext({ requests, source,
+        replyTo: msg.metadata?.replyToMessageId, messageId: platformMessageIdFrom(msg.id),
+        forwarded: msg.metadata?.forwarded === true,
+        authenticatedOwner: () => {
+          const bound = _agentServerRef?.getTopicOperatorStore()?.getOperator(source);
+          return telegramUserId > 0 && telegram.isAuthorizedSender(telegramUserId)
+            && bound?.platform === 'telegram' && bound.uid === String(telegramUserId);
+        },
+        eligible: target => _crossTopicEligibility?.(telegram, String(telegramUserId), target, source).ok ?? false,
+        placement: target => _proposalPlacementSnapshot?.(source, target) ?? null,
+        currentEcho: proposal => {
+          const fresh = surface.renderProposalEcho(proposal.target, proposal.patch, safeConversationName(telegram.getTopicName(Number(proposal.target)), proposal.target));
+          return fresh.ok ? fresh.echo : null;
+        },
+      });
+      return context ? `${original}\n\n${context}` : original;
+    };
 
     // Resolve user profile for context injection (Gap 8)
     // An inbound the lifeline-secret gate accepted WITHOUT proof of the
@@ -8617,7 +8677,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         _crossTopicEligibility = (tg, confirmerUid, destKey, sourceKey) => {
           // The switch is re-read LIVE at the yes, so turning it off between proposal and yes stops the write.
           const switchLive = liveConfig.get<boolean | undefined>('security.crossTopicConfirm.enabled', undefined);
-          if (!resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
+          if (destKey !== sourceKey && !resolveDevAgentGate(switchLive, config as { developmentAgent?: boolean })) return { ok: false, reason: 'switch-off' };
           const store = _agentServerRef?.getTopicOperatorStore() ?? null;
           const dest = /^\d+$/.test(destKey) ? Number(destKey) : null;
           const owner = tg?.getOwnerUserId();
@@ -34229,9 +34289,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               sessionRunning: (name) => sessionManager.isSessionAliveNonBlocking(name),
               // A close of a conversation this machine no longer serves (§2.1). Not the lease holder, so the
               // runtime-private exception and a reason beginning "topic moved". A KEEP refusal comes back here.
-              closeLostSession: async (key, tmux) => {
+              closeLostSession: async (key, tmux, mayCommit) => {
                 const rec = state.findSessionByTmux(tmux);
                 if (!rec) return { closed: true };
+                if (!mayCommit()) return { closed: false, detail: 'close authority changed or expired' };
                 const res = await terminateWithAuthority(rec.id, `topic moved: this machine no longer serves app conversation ${key}`, { via: 'app-conversation-lost', localPostTransferCloseout: true });
                 return res.terminated ? { closed: true } : { closed: false, detail: res.skipped };
               },
@@ -36055,6 +36116,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // not in the topic's chat history.
     const _topicSpawnBriefs = new TopicSpawnBriefStore(config.stateDir);
     _topicSpawnBriefsRef = _topicSpawnBriefs;
+    _proposalPlacementSnapshot = (source, target) => profileProposalPlacement(sessionOwnershipRegistry, _meshSelfId, source, target, coordinator.enabled);
     const _topicProfileCtx: {
       store: import('../core/TopicProfileStore.js').TopicProfileStore;
       resolver: import('../core/TopicProfileResolver.js').TopicProfileResolver;

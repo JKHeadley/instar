@@ -152,7 +152,8 @@ export interface AppPoolHandle {
   drainRunning(recordKey: string): boolean;
   sessionIdentity?(tmuxSession: string): string | null;
   sessionRunning(tmuxSession: string): boolean | Promise<boolean | 'indeterminate'>;
-  closeLostSession(conversationKey: string, tmuxSession: string): Promise<{ closed: boolean; detail?: string }>;
+  /** Recheck mayCommit immediately before a durable or irreversible close. */
+  closeLostSession(conversationKey: string, tmuxSession: string, mayCommit: () => boolean): Promise<{ closed: boolean; detail?: string }>;
   route(msg: InboundMessage): Promise<RouteOutcome>;
   /** Another machine is named as lease holder. A suspended or missed renewal alone is not the lease moving (§2.1). */
   leaseHeldElsewhere(): boolean;
