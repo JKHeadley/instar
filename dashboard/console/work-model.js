@@ -8,7 +8,6 @@ import { verifiedDisplayName } from './display-identity.js';
 // carries that card's titleHash so a tap made on an old copy of the card is refused.
 
 import { whenWords } from './mandates-model.js';
-import { verifiedDisplayName } from './display-identity.js';
 
 /** A Needs-you row's words for a card title: whole words, ending in "…" when cut (never "needs y"). */
 export const NEED_ROW_TITLE_MAX = 140;
