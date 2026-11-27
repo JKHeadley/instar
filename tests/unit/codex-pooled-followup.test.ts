@@ -4,6 +4,34 @@ import os from 'node:os';
 import path from 'node:path';
 import { codexFollowupFixture } from '../helpers/codexFollowupFixture.js';
 
+// Keep transcript resolution and the filesystem real. Stub only the unit
+// fixture's account query so process scheduling cannot decide its result.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    execFileSync(file: string, ...args: unknown[]) {
+      const active = fixture;
+      const query = args[0];
+      if (!active || file !== active.tmux || !Array.isArray(query) ||
+        query.join(' ') !== 'show-environment -t =pooled-session CODEX_HOME') {
+        return Reflect.apply(actual.execFileSync, undefined, [file, ...args]);
+      }
+      const value = fs.readFileSync(active.envFile, 'utf8').replace(/\n+$/, '');
+      if (value === '!missing') {
+        throw Object.assign(new Error('unknown variable'), { status: 1, stderr: 'unknown variable: CODEX_HOME\n' });
+      }
+      if (value === '!error') {
+        throw Object.assign(new Error('server unavailable'), { status: 2, stderr: 'server unavailable\n' });
+      }
+      if (value === '!timeout') {
+        throw Object.assign(new Error('tmux query timed out'), { code: 'ETIMEDOUT', status: null });
+      }
+      return value + '\n';
+    },
+  };
+});
+
 let fixture: ReturnType<typeof codexFollowupFixture> | undefined;
 afterEach(() => { vi.restoreAllMocks(); fixture?.cleanup(); fixture = undefined; });
 
@@ -60,7 +88,7 @@ it.each(['!missing', '-CODEX_HOME', 'CODEX_HOME='])('uses the normal Codex home 
   expect(seam.codexRolloutPathForSession(fixture.session)).toBe(decoy);
 });
 
-it.each(['!error', 'OTHER_KEY=/wrong', 'CODEX_HOME=/one\nCODEX_HOME=/two'])('does not fall back after an uncertain environment result %s', (value) => {
+it.each(['!error', '!timeout', 'OTHER_KEY=/wrong', 'CODEX_HOME=/one\nCODEX_HOME=/two'])('does not fall back after an uncertain environment result %s', (value) => {
   fixture = codexFollowupFixture();
   const { manager, paste } = fixture.boot();
   fs.writeFileSync(fixture.envFile, `${value}\n`);

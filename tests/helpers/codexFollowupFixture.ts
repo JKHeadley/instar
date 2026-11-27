@@ -42,7 +42,7 @@ export function codexFollowupFixture() {
     vi.spyOn(seam, 'verifyInjection').mockImplementation(() => undefined);
     return { manager, seam, paste, store: seam.inboundDeliveries };
   }
-  return { project, accountHome, rollout, envFile, session, boot,
+  return { project, accountHome, rollout, envFile, tmux, session, boot,
     cleanup() { for (const m of managers) { m.stopMonitoring(); (m as unknown as { inboundDeliveries: InboundDeliveryStore }).inboundDeliveries.close(); } project.cleanup(); },
   };
 }

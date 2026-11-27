@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "codex-pooled-followup-unit-fixture",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-27T09:59:15.001Z",
+  "artifactPath": "upgrades/side-effects/codex-pooled-followup-unit-fixture.md",
+  "artifactSha256": "ac3c0b98fcdc9255b5de1bc22967a162c3f5301eb9eba2815c24c4a422dce7a1",
+  "coveredFiles": [
+    "tests/helpers/codexFollowupFixture.ts",
+    "tests/unit/codex-pooled-followup.test.ts",
+    "upgrades/codex-pooled-followup-unit-fixture.eli16.md",
+    "upgrades/next/codex-pooled-followup-unit-fixture.md",
+    "upgrades/side-effects/codex-pooled-followup-unit-fixture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only replacement for a fixture shell boundary.",
+  "eli16Path": "upgrades/codex-pooled-followup-unit-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-pooled-followup-unit-fixture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}
