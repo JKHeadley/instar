@@ -151,6 +151,14 @@ describe('locked-proof safety helpers', () => {
     expect(text).not.toMatch(/echo[^\n]*\$PIN(?![_A-Za-z])/);
   });
 
+  it('stage-proof-agents re-stages over existing agents: init runs only for an agent with no config', () => {
+    const text = fs.readFileSync(path.join(DIR, 'stage-proof-agents.sh'), 'utf8');
+    const inits = text.split('\n').filter(l => l.includes('init --standalone'));
+    expect(inits).toHaveLength(2);
+    expect(inits[0]).toContain('as_user test -f "$A/.instar/config.json" ||');
+    expect(inits[1]).toContain('as_user test -f "$B/.instar/config.json" ||');
+  });
+
   it('configure-proof-agent refuses any directory outside the proof home, and needs --execute', () => {
     expect(isInsideProofHome('/Users/instarproof/.instar/agents/locked-proof')).toBe(true);
     expect(isInsideProofHome('/Users/instarproofX/a')).toBe(false);

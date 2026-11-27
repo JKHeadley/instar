@@ -6,6 +6,7 @@
  * pairing response carries only a version, never values, so a response cannot hand a
  * joiner arbitrary config.
  */
+import { publishRestartRequestFile } from './restartRequestFile.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { announceRestartRequested } from './restartRequestSignal.js';
 import fs from 'node:fs';
@@ -232,8 +233,7 @@ export function requestPairActivationRestart(stateDir: string, now: Date): void 
   void announceRestartRequested({ requestedBy: 'session-pool-activation', reason: 'sharing turned on at the first pairing', requestedAt: now.toISOString() });
   const flagPath = path.join(stateDir, 'state', 'restart-requested.json');
   fs.mkdirSync(path.dirname(flagPath), { recursive: true });
-  const temp = `${flagPath}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({
+  publishRestartRequestFile(flagPath, JSON.stringify({
     requestedAt: now.toISOString(),
     requestedBy: 'session-pool-activation',
     reason: 'sharing turned on at the first pairing',
@@ -241,7 +241,6 @@ export function requestPairActivationRestart(stateDir: string, now: Date): void 
     expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
     pid: process.pid,
   }, null, 2));
-  fs.renameSync(temp, flagPath);
 }
 
 function fillMissingPeople(entry: Json, people: TelegramHandoverPeople): boolean {

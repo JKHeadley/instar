@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "boot-slow-callback-attributor",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T19:50:34.363Z",
+  "artifactPath": "upgrades/side-effects/boot-slow-callback-attributor.md",
+  "artifactSha256": "5971850e9835a93164c962e2d3dab66f35c3aa32d49c3c33c217dc6631e95fd1",
+  "coveredFiles": [
+    "docs/specs/boot-slow-callback-attributor.eli16.md",
+    "src/commands/server.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/data/feature-ladders.json",
+    "src/monitoring/BootSlowCallbackAttributor.ts",
+    "tests/unit/boot-slow-callback-attributor.test.ts",
+    "upgrades/next/boot-slow-callback-attributor.md",
+    "upgrades/side-effects/boot-slow-callback-attributor.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dev-gated, observation-only boot diagnostic; a revert fully undoes it",
+  "eli16Path": "docs/specs/boot-slow-callback-attributor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/boot-slow-callback-attributor.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
