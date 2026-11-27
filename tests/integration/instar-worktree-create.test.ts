@@ -14,8 +14,9 @@
  * is covered by the file-level non-overlap assertion in the last test.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,7 +115,7 @@ describe('createWorktree (integration)', () => {
   let fix: Fixture;
 
   beforeEach(() => { fix = makeFixture(); });
-  afterEach(() => cleanup(fix));
+  afterEach(() => { vi.restoreAllMocks(); cleanup(fix); });
 
   it('refuses at the physical directory cap before adding a git worktree', async () => {
     const root = path.join(fix.agentHome, '.worktrees');
@@ -189,6 +190,81 @@ describe('createWorktree (integration)', () => {
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it.each(['new', 'existing'] as const)('allows a %s-branch checkout beyond the general Git deadline without extending other operations', async (branchKind) => {
+    const branch = `fix/slow-checkout-${branchKind}`;
+    if (branchKind === 'existing') git(['branch', branch], fix.bareRepo);
+    const actualExec = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const exec = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation((args, options) => {
+      const worktreeVerb = args.indexOf('worktree');
+      if (worktreeVerb >= 0 && args[worktreeVerb + 1] === 'add') {
+        // Model a 45-second checkout at the real executor boundary, without a
+        // wall-clock sleep. Older code inherits 30 seconds and fails here.
+        if ((options.timeout ?? 30_000) < 45_000) throw new Error('checkout exceeded the general 30-second Git deadline');
+      }
+      return actualExec(args, options);
+    });
+    const read = vi.spyOn(SafeGitExecutor, 'readSync');
+    const result = await createWorktree({
+      branch,
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    });
+    expect(result.createdBranch).toBe(branchKind === 'new');
+    expect(git(['branch', '--show-current'], result.worktreePath)).toBe(branch);
+    expect(fs.readFileSync(path.join(result.worktreePath, 'README.md'), 'utf8')).toBe('# Test\n');
+    expect(JSON.parse(fs.readFileSync(path.join(fix.agentHome, '.worktrees', '.ledger.jsonl'), 'utf8').trim())).toMatchObject({ branch });
+    const addCalls = exec.mock.calls.filter(([args]) => {
+      const i = args.indexOf('worktree');
+      return i >= 0 && args[i + 1] === 'add';
+    });
+    expect(addCalls).toHaveLength(1);
+    expect(addCalls[0][1].timeout).toBe(300_000);
+    for (const [args, options] of exec.mock.calls) {
+      if (args.includes('worktree') && args.includes('add')) continue;
+      expect(options.timeout).toBeUndefined();
+    }
+    expect(read.mock.calls.length).toBeGreaterThan(0);
+    for (const [, options] of read.mock.calls) expect(options.timeout).toBeUndefined();
+  });
+
+  it('still reports a checkout deadline failure once without a success ledger', async () => {
+    const actualExec = SafeGitExecutor.execSync.bind(SafeGitExecutor);
+    const exec = vi.spyOn(SafeGitExecutor, 'execSync').mockImplementation((args, options) => {
+      const i = args.indexOf('worktree');
+      if (i >= 0 && args[i + 1] === 'add') throw new Error('checkout timed out at its bounded deadline');
+      return actualExec(args, options);
+    });
+    await expect(createWorktree({
+      branch: 'fix/deadline-failure',
+      shareNodeModules: false,
+      resolveAgentHomeOpts: {
+        env: { INSTAR_AGENT_HOME: fix.agentHome },
+        instarHome: fix.instarHome,
+        registryLookup: fix.registryLookup,
+      },
+      resolveInstarRepoOpts: {
+        env: { INSTAR_REPO: fix.bareRepo },
+        fallbackChain: [],
+        urlAllowlist: fix.repoAllowlist,
+      },
+    })).rejects.toThrow('checkout timed out at its bounded deadline');
+    expect(exec.mock.calls.filter(([args]) => {
+      const i = args.indexOf('worktree');
+      return i >= 0 && args[i + 1] === 'add';
+    })).toHaveLength(1);
+    expect(fs.existsSync(path.join(fix.agentHome, '.worktrees', '.ledger.jsonl'))).toBe(false);
+    expect(fs.existsSync(path.join(fix.agentHome, '.instar', 'local', 'worktree-create.lock'))).toBe(false);
   });
 
   it('happy path: places worktree under <agent_home>/.worktrees, sets identity, writes ledger + audit mirror', async () => {

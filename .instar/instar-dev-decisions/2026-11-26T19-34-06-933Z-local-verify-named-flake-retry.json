@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-26T19:34:06.933Z",
+  "slug": "local-verify-named-flake-retry",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 205,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-verify-named-flake-retry.md",
+      "src/data/feature-ladders.json",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/laneReport.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/namedFlakeRetry.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/unhandledErrorsReporter.ts"
+    ],
+    "addedLines": 179,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

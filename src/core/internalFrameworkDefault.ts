@@ -131,3 +131,32 @@ export function resolveInternalFrameworkDefault(
     fallback: 'default',
   };
 }
+
+/**
+ * The §4.2 active-set filter (CMT-2289): the preference chain filtered to the
+ * frameworks that may receive automatic internal routing on this machine.
+ *
+ * A framework is active when it is the agent default, OR its provider BUILDS
+ * (`build(fw)` — binary present, model configured, …) AND it has a usable
+ * sign-in (`hasLogin(fw)` — frameworkLoginPresence.ts). The sign-in condition
+ * is what keeps an installed-but-signed-out gemini-cli from winning the `gate`
+ * category and failing every gate call. Order and de-duplication follow
+ * `preference`. Pure: both probes are injected.
+ */
+export function selectActiveInternalFrameworks(
+  preference: readonly IntelligenceFramework[],
+  defaultFramework: IntelligenceFramework,
+  build: (fw: IntelligenceFramework) => unknown,
+  hasLogin: (fw: IntelligenceFramework) => boolean,
+): IntelligenceFramework[] {
+  return preference.filter((fw) => {
+    if (fw === defaultFramework) return true;
+    try {
+      const built = build(fw);
+      return built !== null && built !== undefined && hasLogin(fw);
+    } catch {
+      // @silent-fallback-ok — a probe that throws means "not usable"; the policy falls through.
+      return false;
+    }
+  });
+}

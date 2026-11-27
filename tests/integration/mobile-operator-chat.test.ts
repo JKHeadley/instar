@@ -34,7 +34,7 @@ afterAll(() => {
 
 interface Spies { routed: Array<{ content: string; metadata: Record<string, unknown>; userId: string }>; logged: Array<Record<string, unknown>>; mirrors: Array<{ text: string; opts: Record<string, unknown> }>; killed: string[]; bound: unknown[] }
 
-function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill'; owner?: 'configured' | 'verified-only' | 'none' } = {}) {
+function setup(opts: { leaseFreshness?: () => unknown; peerUrl?: string; history?: Array<Record<string, unknown>>; chatEnabled?: boolean; lease?: { held: boolean }; mirrorFails?: boolean; deliverDelayMs?: number; deliverThrows?: boolean; noRouting?: boolean; sentinel?: 'kill'; owner?: 'configured' | 'verified-only' | 'none' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mchat-'));
   dirs.push(dir);
   const spies: Spies = { routed: [], logged: [], mirrors: [], killed: [], bound: [] };
@@ -78,7 +78,7 @@ function setup(opts: { peerUrl?: string; history?: Array<Record<string, unknown>
     (ctx as unknown as Record<string, unknown>).sessionManager = null;
   }
   const lease = opts.lease ?? { held: true };
-  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => lease.held };
+  const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => lease.held, leaseFreshness: opts.leaseFreshness };
   const svc = new MobilePairingService(deps);
   services.push(svc);
   const app = express();
@@ -250,6 +250,41 @@ describe('mobile operator chat', () => {
     expect(r.status).toBe(409);
     expect(r.body.error).toBe('not-serving');
     expect(off.spies.logged).toHaveLength(0);
+  });
+
+  it('audits the observed lease reason on a new signed refusal without recording private input', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const c = setup({ lease: { held: false }, leaseFreshness: () => ({ verdict: 'renewal-lapsed', ttlMs: 60_000, msSinceConfirmedRenewal: 60_100, secret: 'private-extra' }) });
+      const r = await chat(c, { text: 'private-input', requestId: rid() });
+      expect(r.status).toBe(409);
+      expect(r.body.error).toBe('not-serving');
+      const lines = log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('mobile-chat-not-serving'));
+      expect(lines).toHaveLength(1);
+      const row = JSON.parse(lines[0]);
+      expect(row).toMatchObject({ kind: 'mobile-chat-not-serving', sample: 'after-refusal', observedLeaseVerdict: 'renewal-lapsed', ttlMs: 60_000, msSinceConfirmedRenewal: 60_100 });
+      expect(Number.isFinite(Date.parse(row.at))).toBe(true);
+      expect(lines[0]).not.toContain('private');
+      expect(lines[0]).not.toContain(c.deviceId);
+      expect(c.spies.logged).toHaveLength(0);
+      expect(c.spies.routed).toHaveLength(0);
+    } finally { log.mockRestore(); }
+  });
+
+  it('preserves the refusal when diagnostics fail and emits no refusal audit for successful replays', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const off = setup({ lease: { held: false }, leaseFreshness: () => { throw new Error('private-diagnostic-error'); } });
+      expect((await chat(off, { text: 'private-input', requestId: rid() })).status).toBe(409);
+      const lines = () => log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('mobile-chat-not-serving'));
+      expect(JSON.parse(lines()[0]).observedLeaseVerdict).toBe('unavailable');
+      const c = setup();
+      const id = rid();
+      expect((await chat(c, { text: 'kept', requestId: id })).status).toBe(200);
+      c.lease.held = false;
+      expect((await chat(c, { text: 'kept', requestId: id })).status).toBe(200);
+      expect(lines()).toHaveLength(1);
+    } finally { log.mockRestore(); }
   });
 
   it('a recorded request answers its stored result even after the lease moved', async () => {

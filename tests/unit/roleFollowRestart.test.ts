@@ -47,6 +47,16 @@ describe('requestRoleRestart', () => {
     expect(fs.existsSync(path.join(stateDir, 'state', 'restart-requested.json'))).toBe(false);
     expect(readLastRoleRestart(stateDir)).toBeNull();
   });
+  it('does not publish or stamp when the role changes between announcement and publication', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
+    dirs.push(stateDir);
+    let checks = 0;
+    await requestRoleRestart({ stateDir, now: () => 5_000, stillNeeded: () => ++checks === 1 }, true);
+    expect(checks).toBe(2);
+    expect(fs.existsSync(path.join(stateDir, 'state', 'restart-requested.json'))).toBe(false);
+    expect(readLastRoleRestart(stateDir)).toBeNull();
+  });
+
   it('an unreadable stamp reads as none', () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'role-restart-'));
     dirs.push(stateDir);

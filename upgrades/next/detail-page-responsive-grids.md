@@ -1,10 +1,10 @@
 ## What Changed
 
-Web dashboard detail pages use the available content width. Meaningful cards form responsive columns, including individual accounts, and collapse to one column on narrow screens.
+Web dashboard detail pages use the available content width. Meaningful cards form responsive columns and collapse to one column on narrow screens.
 
 ## What to Tell Your User
 
-Accounts and other detail screens make better use of a wide window. Related cards appear side by side where they remain readable, while phones keep a single column. Existing buttons work as before.
+Health, Ideas and other detail screens make better use of a wide window. Related cards appear side by side where they remain readable, while phones keep a single column. Existing buttons work as before.
 
 ## Summary of New Capabilities
 

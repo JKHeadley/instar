@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "chief-of-staff-pr-public-visibility",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T04:46:20.711Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-pr-public-visibility.md",
+  "artifactSha256": "3a7a17aa67f7b709f9fa2ff2fb095904395069e3a5bf6bc5431e51ba4902d366",
+  "specPath": "docs/specs/chief-of-staff-pr-discovery.md",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffPrSearch.ts",
+    "tests/e2e/chief-of-staff-alive.test.ts",
+    "tests/fixtures/captured/github-pr-search/open-public-pr-3342.meta.json",
+    "tests/fixtures/captured/github-pr-search/open-public-pr-3342.txt",
+    "tests/integration/chief-of-staff-pr-search.test.ts",
+    "upgrades/next/chief-of-staff-pr-public-visibility.md",
+    "upgrades/side-effects/chief-of-staff-pr-public-visibility.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The existing public-only read now validates the upstream privacy boundary and invalidates stale observations on denial.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/chief-of-staff-pr-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

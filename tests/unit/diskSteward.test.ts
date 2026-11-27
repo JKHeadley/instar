@@ -221,6 +221,44 @@ describe('DiskSteward', () => {
     expect(s.status().duePost).toBeNull();
   });
 
+  it('a quiet hold (not-delivered) does not reset the repeat clock or count as a broken send (no-data-loss §6.2)', async () => {
+    const h = harness({ holder: false });
+    const s = h.make();
+    await s.tick();
+    h.setFree(120); h.advance(15 * MIN);
+    await h.tickAll(s);
+    const due = s.status().duePost!;
+    expect(due).toBeTruthy();
+    for (let i = 0; i < 5; i++) {
+      expect(s.applyAck(due.postId, 'not-delivered')).toBe(true);
+      // Still due: nobody saw it, so it is retried on the send backoff and the clock did not move.
+      expect(s.status().duePost?.postId).toBe(due.postId);
+      expect(s.status().lastPost).toBeNull();
+    }
+    expect(s.status().duePost!.nextAttemptAt).toBeGreaterThan(1_800_000_000_000);
+    // A choice the owner made is not a send failure: no degradation report after 4+ quiet holds.
+    expect(h.degrades).toEqual([]);
+    expect(h.logs.some((e) => e.event === 'post-not-delivered')).toBe(true);
+    // The other side of the boundary: a real delivery resets the clock.
+    expect(s.applyAck(due.postId, 'posted')).toBe(true);
+    expect(s.status().duePost).toBeNull();
+    expect(s.status().lastPost?.postId).toBe(due.postId);
+  });
+
+  it('a peer on an older version that refuses not-delivered is acknowledged as failed', async () => {
+    const acks: Array<[string, string]> = [];
+    const peerDue: DuePost = {
+      postId: 'p9', machineId: 'm_old', machineName: 'Old', kind: 'alert', level: 'warn', critical: false,
+      episodeStart: 1, stage: 0, createdAt: 1, free: 30 * GiB, total: 250 * GiB, change24h: null, daysToFloor: null,
+      cleared: [], cacheReclaimableBytes: 0, reaperArmed: null, pruneEnabled: false, cleanupNotHelping: false, failures: 0, nextAttemptAt: 0,
+    };
+    const h = harness({ peers: [{ machineId: 'm_old', status: async () => ({ ok: true as const, body: { duePost: peerDue } as never }), ack: async (id, outcome) => { acks.push([id, outcome]); return outcome !== 'not-delivered'; } }] });
+    h.deps.send = async () => 'not-delivered';
+    const s = h.make();
+    await h.tickAll(s);
+    expect(acks.slice(0, 2)).toEqual([['p9', 'not-delivered'], ['p9', 'failed']]);
+  });
+
   it('the holder renders and sends a peer due post, then acknowledges it', async () => {
     const acks: Array<[string, string]> = [];
     const peerDue: DuePost = {
