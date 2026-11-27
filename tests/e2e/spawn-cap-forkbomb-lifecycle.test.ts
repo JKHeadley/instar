@@ -23,7 +23,6 @@ import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import {
   configureHostSpawnSemaphore,
-  getHostSpawnSemaphore,
   _resetHostSpawnSemaphoreForTest,
 } from '../../src/core/hostSpawnSemaphore.js';
 import { SingleInstanceLock } from '../../src/core/SingleInstanceLock.js';
@@ -43,33 +42,31 @@ async function listen(app: express.Express): Promise<TestServer> {
 describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
   let server: TestServer;
   let fixtureHome: string;
-  let homeSpy: { mockRestore(): void };
+  let restoreHome: (() => void) | undefined;
 
   beforeEach(async () => {
-    fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-lifecycle-home-'));
-    homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
+    fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-cap-e2e-'));
+    const home = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
+    restoreHome = () => home.mockRestore();
     _resetHostSpawnSemaphoreForTest();
     // Mirror the production boot wiring: server.ts injects the config-resolved
     // spawnCap. With no operator override, the default cap (8) holds.
     configureHostSpawnSemaphore({});
-    expect(getHostSpawnSemaphore().status().holdersPath)
-      .toBe(path.join(fixtureHome, '.instar', 'host-spawn-holders.json'));
     const app = express();
     app.use(express.json());
-    const ctx: any = { config: { authToken: 'test', stateDir: '/tmp/.instar', port: 0 }, startTime: new Date() };
+    const ctx: any = { config: { authToken: 'test', stateDir: path.join(fixtureHome, '.instar'), port: 0 }, startTime: new Date() };
     app.use(createRoutes(ctx));
     server = await listen(app);
   });
 
   afterEach(async () => {
+    _resetHostSpawnSemaphoreForTest();
     try {
       await server?.close();
     } finally {
-      _resetHostSpawnSemaphoreForTest();
-      homeSpy?.mockRestore();
+      restoreHome?.();
       SafeFsExecutor.safeRmSync(fixtureHome, {
-        recursive: true, force: true,
-        operation: 'tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts:home-cleanup',
+        recursive: true, force: true, operation: 'tests/e2e/spawn-cap-forkbomb-lifecycle.test.ts:fixture-cleanup',
       });
     }
   });
@@ -79,6 +76,7 @@ describe('Fork-bomb prevention — lifecycle (E2E over HTTP)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.cap).toBe(8); // default — ON, never dark
+    expect(body.holdersPath).toBe(path.join(fixtureHome, '.instar', 'host-spawn-holders.json'));
     expect(typeof body.liveHolders).toBe('number');
     expect(body.saturated).toBe(false);
     expect(typeof body.acquireMs).toBe('number');

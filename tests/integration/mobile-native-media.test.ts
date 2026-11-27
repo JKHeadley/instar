@@ -5,7 +5,7 @@
  * download headers and ranges, the signed-record checks on each attachment field, redaction v2,
  * purge, app-reply files and app-media-path.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +29,7 @@ import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { CHUNK_BYTES } from '../../src/core/appMediaTypes.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 
 const HOST = 'echo.example.dev';
 const dirs: string[] = [];
@@ -52,6 +53,8 @@ async function setup(opts: { mediaEnabled?: boolean; transcribeVoice?: (p: strin
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => true };
   const pairing = new MobilePairingService(deps);
+  // Keep the real request-store clock injectable across an expiry/restart fixture.
+  pairing.useChatRequests(new MobileChatRequestStore(dir, () => Date.now()));
   pairing.nativeOn = true;
   cleanups.push(() => pairing.stop());
   const signer = loadMachineSigner(dir)!;
@@ -84,8 +87,8 @@ async function setup(opts: { mediaEnabled?: boolean; transcribeVoice?: (p: strin
   app.use(express.json({ verify: keep }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', mediaEnabled: opts.mediaEnabled ?? true }));
-  app.use(createMobileMediaRouter({ pairing, service: svc, mediaEnabled: opts.mediaEnabled ?? true }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', now: () => Date.now(), mediaEnabled: opts.mediaEnabled ?? true }));
+  app.use(createMobileMediaRouter({ pairing, service: svc, now: () => Date.now(), mediaEnabled: opts.mediaEnabled ?? true }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
@@ -604,5 +607,99 @@ describe('with the feature off', () => {
     expect(send.body.error).toBe('media-off');
     expect(send.body.action).toEqual(action);
     expect((await signed(e, 'POST', '/mobile/media/purge', { conversationKeys: ['telegram:5'], requestId: rid() })).status).toBe(200);
+  });
+});
+
+
+describe('durable browser outbox — upload reservation foundation', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('refuses a failed or full request reservation before allocating any upload', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const bytes = png();
+    const body = { conversationRef: `app:${key}`, ...describeFile(bytes), requestId: rid() };
+    const allocate = vi.spyOn(e.svc.media, 'startUpload');
+    const reserve = vi.spyOn(e.svc.deps.requests, 'reserve');
+    reserve.mockImplementationOnce(() => { throw new Error('fixture disk failure'); });
+    const failed = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(failed.status).toBe(503);
+    expect(allocate).not.toHaveBeenCalled();
+    reserve.mockReturnValueOnce({ kind: 'full' });
+    const full = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(full.status).toBe(429);
+    expect(allocate).not.toHaveBeenCalled();
+    const accepted = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(accepted.status).toBe(200);
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds failed durable finish across request-store reopening without a second upload allocation', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const body = { conversationRef: `app:${key}`, ...describeFile(png()), requestId: rid() };
+    const allocate = vi.spyOn(e.svc.media, 'startUpload');
+    vi.spyOn(e.svc.deps.requests, 'finish').mockReturnValueOnce(false);
+    const uncertain = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(uncertain.status).toBe(409);
+    expect(uncertain.body.error).toBe('outcome-unknown');
+    expect(uncertain.body.detail).not.toContain('new request');
+    expect(allocate).toHaveBeenCalledTimes(1);
+    const reopened = new MobileChatRequestStore(e.dir);
+    e.svc.deps.requests = reopened;
+    e.pairing.useChatRequests(reopened);
+    const repeated = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(repeated.status).toBe(409);
+    expect(repeated.body.error).toBe('outcome-unknown');
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a possibly allocated start unknown when allocation throws after its effect', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const body = { conversationRef: `app:${key}`, ...describeFile(png()), requestId: rid() };
+    const original = e.svc.media.startUpload.bind(e.svc.media);
+    const allocate = vi.spyOn(e.svc.media, 'startUpload').mockImplementationOnce((input) => {
+      original(input);
+      throw new Error('fixture crash after allocation');
+    });
+    expect((await signed(e, 'POST', '/mobile/media/uploads', body)).body.error).toBe('outcome-unknown');
+    expect((await signed(e, 'POST', '/mobile/media/uploads', body)).body.error).toBe('outcome-unknown');
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reallocates a lost-ack upload after its original request record expires and is pruned', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const before = Date.now();
+    const body = { conversationRef: `app:${key}`, ...describeFile(png()), requestId: `${before}-${crypto.randomUUID()}` };
+    const allocate = vi.spyOn(e.svc.media, 'startUpload');
+    expect((await signed(e, 'POST', '/mobile/media/uploads', body)).status).toBe(200);
+    vi.spyOn(Date, 'now').mockReturnValue(before + 25 * 60 * 60_000);
+    const replay = await signed(e, 'POST', '/mobile/media/uploads', body);
+    expect(replay.status).toBe(400);
+    expect(replay.body.error).toBe('request-id-too-old');
+    expect(e.svc.deps.requests.get(e.deviceId, body.requestId)).toBeNull();
+    expect(allocate).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers an accepted final send from its request result before checking expired upload state', async () => {
+    const e = await setup();
+    const key = await newConversation(e);
+    const bytes = png();
+    const uploadId = await upload(e, key, bytes);
+    const body = { text: 'same accepted file', requestId: rid(), attachments: [{ uploadId, ...describeFile(bytes) }] };
+    const accepted = await signed(e, 'POST', `/mobile/chat/app/${key}`, body);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.messageId).toBeTypeOf('string');
+    const getUpload = e.svc.media.getUpload.bind(e.svc.media);
+    vi.spyOn(e.svc.media, 'getUpload').mockImplementation((id) => {
+      const row = getUpload(id);
+      return row ? { ...row, state: 'expired' } : null;
+    });
+    const replay = await signed(e, 'POST', `/mobile/chat/app/${key}`, body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.messageId).toBe(accepted.body.messageId);
+    expect(e.dispatched).toHaveLength(1);
   });
 });

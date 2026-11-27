@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "dashboard-needs-authoritative",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T08:22:16.635Z",
+  "artifactPath": "upgrades/side-effects/dashboard-needs-authoritative.md",
+  "artifactSha256": "5a187cd5825549bf5dba2cad7b7d551a469bfd6f47be9f1bc79facadd4cab8ae",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/needs-actions.js",
+    "dashboard/console/needs-strip.js",
+    "tests/unit/console-needs-pages.test.ts",
+    "upgrades/next/dashboard-needs-in-place.md",
+    "upgrades/side-effects/dashboard-needs-authoritative.eli16.md",
+    "upgrades/side-effects/dashboard-needs-authoritative.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible, read-only dashboard compatibility with a server-owned admission policy. The authority for signed actions is outside this change.",
+  "eli16Path": "upgrades/side-effects/dashboard-needs-authoritative.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-needs-authoritative.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

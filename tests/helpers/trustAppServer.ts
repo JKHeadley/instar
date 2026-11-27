@@ -34,7 +34,13 @@ export async function cleanupTrustAppServers(operation: string): Promise<void> {
   for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation });
 }
 
-export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeof createTrustJourneyRuntime>[0]['sink'], telegram: Parameters<typeof createTrustJourneyRuntime>[0]['telegram'] = null) {
+export async function bootTrustAppServer(
+  prefix: string,
+  sink?: Parameters<typeof createTrustJourneyRuntime>[0]['sink'],
+  telegram: Parameters<typeof createTrustJourneyRuntime>[0]['telegram'] = null,
+  ownerNeeds?: (runtime: ReturnType<typeof createTrustJourneyRuntime>) => ConstructorParameters<typeof AgentServer>[0]['ownerNeedsCandidate'],
+  enableOwnerAdmission = false,
+) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), prefix));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -45,6 +51,7 @@ export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeo
   const config = {
     projectName: 'trust-app', projectDir: dir, stateDir, port: 0, authToken: 'tok', developmentAgent: true, dashboardPin: '424242',
     mobilePairing: { multiRoute: { enabled: false } },
+    ...(enableOwnerAdmission ? { needsYou: { ownerAdmission: { enabled: true } } } : {}),
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -58,7 +65,7 @@ export async function bootTrustAppServer(prefix: string, sink?: Parameters<typeo
   const sessionManager = createMockSessionManager() as never as { on: () => void };
   sessionManager.on = () => undefined;
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as never;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel, adaptiveTrust: trust, trustAccountPath: runtime } as never);
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel, adaptiveTrust: trust, trustAccountPath: runtime, ownerNeedsCandidate: ownerNeeds?.(runtime) } as never);
   servers.push(server);
   const app = server.getApp();
   const bearer = (r: request.Test) => r.set('Authorization', 'Bearer tok').set('X-Instar-AgentId', 'trust-app');

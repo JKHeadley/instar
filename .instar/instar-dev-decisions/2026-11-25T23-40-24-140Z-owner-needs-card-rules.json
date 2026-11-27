@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-25T23:40:24.140Z",
+  "slug": "owner-needs-card-rules",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/trustJourney/AccountPathService.ts",
+      "src/server/ownerNeedsSources.ts",
+      "src/server/ownerNeedsTrustApproval.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
