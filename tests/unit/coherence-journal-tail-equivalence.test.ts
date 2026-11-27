@@ -92,11 +92,14 @@ function line(i: number): string {
   const pad = 'é漢'.repeat(Math.floor(rand() * 3)) + 'p'.repeat(Math.floor(rand() * (rand() < 0.1 ? 90_000 : 400)));
   return JSON.stringify({ seq: i, kind: 'topic-placement', ts: 1_000 + i, data: { pad } });
 }
-function file(lines: number, trailingNewline: boolean): string {
+function file(lines: number, trailingNewline: boolean, crlf = false): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-tail-')); dirs.push(dir);
   const p = path.join(dir, 'stream.jsonl');
-  const body = Array.from({ length: lines }, (_, i) => line(i)).join('\n');
-  fs.writeFileSync(p, trailingNewline ? body + '\n' : body);
+  const eol = crlf ? '\r\n' : '\n';
+  const body = Buffer.from(Array.from({ length: lines }, (_, i) => line(i)).join(eol) + (trailingNewline ? eol : ''), 'utf-8');
+  // Splice a few invalid UTF-8 bytes into the middle of the file, as a damaged journal might hold.
+  const bad = body.length > 40 ? Buffer.concat([body.subarray(0, 20), Buffer.from([0xe6, 0xbc, 0xff]), body.subarray(20)]) : body;
+  fs.writeFileSync(p, bad);
   return p;
 }
 
@@ -104,20 +107,45 @@ describe('readTailTolerant equivalence with the previous whole-window reader', (
   it('returns identical entries, corrupt count and truncation over generated files and bounds', () => {
     let cases = 0;
     for (const lines of [0, 1, 2, 7, 60, 400, 1500]) {
-      for (const trailing of [true, false]) {
-        const p = file(lines, trailing);
+      for (const [trailing, crlf] of [[true, false], [false, false], [true, true]] as const) {
+        const p = file(lines, trailing, crlf);
         const size = fs.statSync(p).size;
-        for (const limit of [1, 3, 50, 500]) {
-          for (const ceiling of [size, Math.floor(size / 2), 10, 333, TAIL_READ_CHUNK_BYTES - 1, TAIL_READ_CHUNK_BYTES + 7, 4 * 1024 * 1024]) {
+        for (const limit of [0, 1, 3, 50, 500]) {
+          for (const ceiling of [size, Math.floor(size / 2), 10, 333, TAIL_READ_CHUNK_BYTES - 1, TAIL_READ_CHUNK_BYTES, TAIL_READ_CHUNK_BYTES + 7, 2 * TAIL_READ_CHUNK_BYTES, 2 * TAIL_READ_CHUNK_BYTES + 1, 4 * 1024 * 1024]) {
             const a: TolerantReadResult = referenceReadTailTolerant(io, p, limit, Math.max(1, ceiling));
             const b: TolerantReadResult = readTailTolerant(io, p, limit, Math.max(1, ceiling));
-            expect(b, `lines=${lines} trailing=${trailing} limit=${limit} ceiling=${ceiling}`).toEqual(a);
+            expect(b, `lines=${lines} trailing=${trailing} crlf=${crlf} limit=${limit} ceiling=${ceiling}`).toEqual(a);
             cases++;
           }
         }
       }
     }
-    expect(cases).toBeGreaterThan(300);
+    expect(cases).toBeGreaterThan(1000);
+  });
+
+  it('a read error part-way through returns no entries, as the whole-window read did', () => {
+    const p = file(3000, true);
+    let calls = 0;
+    const failing = { ...fs, readSync: (fd: number, buf: Buffer, off: number, len: number, pos: number) => {
+      if (++calls === 2) throw new Error('EIO');
+      return fs.readSync(fd, buf, off, len, pos);
+    } } as unknown as JournalFs;
+    const size = fs.statSync(p).size;
+    expect(calls).toBe(0);
+    expect(readTailTolerant(failing, p, 2000, 4 * 1024 * 1024)).toEqual({ entries: [], skippedCorrupt: 0, truncated: size > 4 * 1024 * 1024 });
+    expect(calls).toBe(2);
+  });
+
+  it('a line longer than many chunks is read in one pass and parsed whole', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-tail-')); dirs.push(dir);
+    const p = path.join(dir, 'long.jsonl');
+    fs.writeFileSync(p, JSON.stringify({ seq: 1, kind: 'topic-placement', data: { pad: 'q'.repeat(300_000) } }) + '\n');
+    let bytesRead = 0;
+    const counting = { ...fs, readSync: (fd: number, buf: Buffer, off: number, len: number, pos: number) => { bytesRead += len; return fs.readSync(fd, buf, off, len, pos); } } as unknown as JournalFs;
+    const r = readTailTolerant(counting, p, 10, 4 * 1024 * 1024);
+    expect(r.entries.map((e: JournalEntry) => e.seq)).toEqual([1]);
+    expect(bytesRead).toBe(fs.statSync(p).size);
+    expect(r).toEqual(referenceReadTailTolerant(fs as unknown as JournalFs, p, 10, 4 * 1024 * 1024));
   });
 
   it('a missing or empty file still returns nothing', () => {

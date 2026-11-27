@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T17:22:05.041Z",
+  "slug": "journal-tail-read-bounded",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CoherenceJournal.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

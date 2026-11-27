@@ -2019,15 +2019,15 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Bytes read per backward step of `readTailTolerant`. */
+export const TAIL_READ_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Standalone tolerant reverse-tail reader — shared by the writer's `readTail`
  * and (later) the read API's direct-file path. Reads at most `byteCeiling`
  * bytes from the end of `filePath`, parses lines newest-first, skips + counts
  * corrupt lines, and returns up to `limit` entries (newest first).
  */
-/** Bytes read per backward step of `readTailTolerant`. */
-export const TAIL_READ_CHUNK_BYTES = 64 * 1024;
-
 export function readTailTolerant(
   io: JournalFs,
   filePath: string,
@@ -2072,26 +2072,37 @@ export function readTailTolerant(
   try {
     fd = io.openSync(filePath, 'r');
     let pos = size;                 // bytes [pos, size) have been read
-    let head = Buffer.alloc(0);     // bytes [pos, first newline after pos): not yet a whole line
+    // Bytes [pos, first newline after pos), not yet a whole line, kept as chunks (oldest first) so a
+    // line longer than a chunk is joined once, when its start is found, not re-copied per chunk.
+    let headParts: Buffer[] = [];
     let sawNewline = false;
     while (pos > windowStart && result.entries.length < limit) {
       const chunkStart = Math.max(windowStart, pos - TAIL_READ_CHUNK_BYTES);
       const chunk = Buffer.alloc(pos - chunkStart);
       io.readSync(fd, chunk, 0, chunk.length, chunkStart);
       pos = chunkStart;
-      const buf = head.length ? Buffer.concat([chunk, head]) : chunk;
+      // `head` holds no newline, so only the new chunk can contain one. A chunk with no newline
+      // (part of a line longer than a chunk) is prepended without rescanning `head`, so a long
+      // line costs one pass, not one rescan per chunk.
+      const lastNlInChunk = chunk.lastIndexOf(0x0a);
+      if (lastNlInChunk < 0) {
+        headParts.unshift(chunk);
+        continue;
+      }
+      const buf = headParts.length ? Buffer.concat([chunk, ...headParts]) : chunk;
       // Every line after the first newline in buf is whole; take them newest-first.
       let lineEnd = buf.length;
-      let nl = buf.lastIndexOf(0x0a, lineEnd - 1);
+      let nl = lastNlInChunk;
       while (nl >= 0 && result.entries.length < limit) {
         sawNewline = true;
         take(buf.subarray(nl + 1, lineEnd));
         lineEnd = nl;
         nl = lineEnd > 0 ? buf.lastIndexOf(0x0a, lineEnd - 1) : -1;
       }
-      head = buf.subarray(0, lineEnd);
+      headParts = lineEnd > 0 ? [buf.subarray(0, lineEnd)] : [];
       if (result.entries.length >= limit) break;
     }
+    const head = headParts.length === 1 ? headParts[0] : Buffer.concat(headParts);
     if (result.entries.length < limit && pos === windowStart && head.length > 0) {
       // The window's first line. From file start it is whole. From mid-file it is a partial
       // record and is dropped, unless the window held no newline at all (the old body then

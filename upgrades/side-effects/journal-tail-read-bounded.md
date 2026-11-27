@@ -17,12 +17,15 @@ For every input, the new body returns the same `entries` (same records, same new
 
 The reader's byte budget, cursor, paging and replay logic in `CoherenceJournalReader.query` are untouched, so cursors and replay are unchanged.
 
+## How much it saves, honestly
+`CoherenceJournalReader.query` asks each file for `READER_MAX_LIMIT` (500) entries, not the page size, and applies the topic filter afterwards. So the read is now about 500 entries per file per page, not the whole 4 MiB window. Callers that pass `Number.MAX_SAFE_INTEGER` as the limit (`ReplicatedPeerStreamReader`, `JournalSyncApplier`) still read their whole window, now in 64 KiB steps. Other per-query costs are unchanged: one `statSync` per file (`safeSize`), one `statSync` per replica entry (`recvTsFor`, up to 500 per file and the largest remaining cost besides parsing), and the collapse and sort. A line longer than a chunk is joined once, not re-copied per chunk.
+
 ## Not done here
 The read stays synchronous, but it is now bounded by the entries needed. Making `OwnershipApplier.tick` asynchronous, or caching one read across the pages of a tick, would cut further but changes the tick's contract. Post-Mortem keeps the bounded-close companion and the rehearsal.
 
 ## Tests
 `tests/unit/coherence-journal-tail-equivalence.test.ts`:
-- compares the new reader with the old body (kept verbatim) over 392 combinations of generated files (corrupt, empty, multibyte and 90 KB lines; with and without a trailing newline), limits and byte ceilings, including ceilings around the chunk size;
+- compares the new reader with the old body (kept verbatim) over more than 1,000 combinations: generated files (corrupt, empty, multibyte, invalid-UTF-8 and 90 KB lines; LF and CRLF; with and without a trailing newline), limits including 0, and byte ceilings including exactly one and two chunks. A separate case covers a read error part-way through (still no entries), and another a 300 KB line read in one pass;
 - checks that a missing or empty file returns nothing;
 - proves a 50-entry read from a 3.6 MB file reads at most one 64 KiB chunk.
 
