@@ -253,6 +253,7 @@ export class AppConversationService {
   private readonly emergencyMarks = new Set<string>();
   /** Closes in flight, so a slow close isn't started twice. */
   private closingBindings = false;
+  private readonly pendingLostCloses = new Set<string>();
   private closeGeneration = 0;
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
@@ -947,21 +948,46 @@ export class AppConversationService {
         const sessionIdentity = pool.sessionIdentity?.(session);
         if (sessionIdentity === null || await pool.sessionRunning(session) !== true) continue;
         if (generation !== this.closeGeneration || this.activePool() !== pool) return;
-        if (pool.sessionIdentity?.(session) !== sessionIdentity ||
-            !this.liveConversation(key) || this.sessionFor(key) !== session) continue;
-        const self = this.deps.machineId();
-        const current = this.recordOf(pool, key);
-        if (current) {
-          if (current.ownerMachineId === self) continue;
-        } else {
+        const closeKey = sessionIdentity ?? session;
+        if (this.pendingLostCloses.has(closeKey)) continue;
+        const mayCommit = () => {
+          if (generation !== this.closeGeneration || this.activePool() !== pool ||
+              pool.sessionIdentity?.(session) !== sessionIdentity ||
+              !this.liveConversation(key) || this.sessionFor(key) !== session) return false;
+          const current = this.recordOf(pool, key);
+          if (current) return current.ownerMachineId !== this.deps.machineId();
           const lease = this.bindingLeaseAuthority(pool);
-          if (lease.holdsLease || !lease.heldElsewhere) continue;
-        }
-        const result = await pool.closeLostSession(key, session);
-        if (!result.closed) this.report('close after losing a conversation', new Error(`${key}: ${result.detail ?? 'refused'}; retried on the next reconcile`));
+          return !lease.holdsLease && lease.heldElsewhere;
+        };
+        if (!mayCommit()) continue;
+        const result = await this.closeLostBinding(pool, key, session, closeKey, mayCommit);
+        if (!result.closed) this.report('close after losing a conversation', new Error(`${key}: ${result.detail ?? 'refused'}`));
       } catch (err) {
         this.report('close after losing a conversation', err);
       }
+    }
+  }
+
+  private async closeLostBinding(
+    pool: AppPoolHandle, key: string, session: string, closeKey: string, mayCommit: () => boolean,
+  ): ReturnType<AppPoolHandle['closeLostSession']> {
+    const waitMs = 10_000;
+    const deadline = performance.now() + waitMs;
+    this.pendingLostCloses.add(closeKey);
+    const settle = () => this.pendingLostCloses.delete(closeKey);
+    const close = Promise.resolve().then(() =>
+      pool.closeLostSession(key, session, () =>
+        performance.now() < deadline && mayCommit() && performance.now() < deadline));
+    void close.then(settle, settle);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<Awaited<ReturnType<AppPoolHandle['closeLostSession']>>>((resolve) => {
+      timer = setTimeout(() => resolve({ closed: false, detail: 'close deadline exceeded' }), waitMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([close, timeout]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
