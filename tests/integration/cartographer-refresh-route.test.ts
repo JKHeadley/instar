@@ -168,6 +168,29 @@ describe('POST /cartographer/node/refresh (Tier 2 integration)', () => {
     expect(read.body.lastAuthoredBy).toBe('inline-agent');
   });
 
+  it('asks inline authors to retry while the startup scaffold is running', async () => {
+    const t = scaffoldedTree();
+    let releaseScaffold!: () => void;
+    const pause = new Promise<void>((resolve) => { releaseScaffold = resolve; });
+    const scaffold = t.scaffoldChunked({ chunkNodes: 1, onYield: () => pause });
+    const app = appWith(t);
+    const summary = 'Implements uniqueSampleSymbol for the sample.';
+    const refresh = () => bearer(request(app).post('/cartographer/node/refresh'))
+      .send({ path: 'src/Sample.ts', summary });
+
+    try {
+      const response = await refresh();
+      expect(response.status).toBe(503);
+      expect(response.headers['retry-after']).toBe('1');
+      expect(t.getNode('src/Sample.ts')?.summary).toBe('');
+    } finally {
+      releaseScaffold();
+      await scaffold;
+    }
+    expect((await refresh()).status).toBe(200);
+    expect(t.getNode('src/Sample.ts')?.summary).toBe(summary);
+  });
+
   it('400 for a non-existent (unscaffolded) node path', async () => {
     const res = await bearer(
       request(appWith(tree())).post('/cartographer/node/refresh'),

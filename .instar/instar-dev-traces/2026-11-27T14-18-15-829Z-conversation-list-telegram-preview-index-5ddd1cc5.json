@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "conversation-list-telegram-preview-index",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T14:18:15.829Z",
+  "artifactPath": "upgrades/side-effects/conversation-list-telegram-preview-index.md",
+  "artifactSha256": "1bb70e40f434dc321a827ddda3636d867ab47d4d7c341ab9b3992f2abdcbf98e",
+  "coveredFiles": [
+    "docs/specs/conversation-list-telegram-preview-index.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/unit/conversation-list-telegram-partial.test.ts",
+    "tests/unit/telegram-latest-topic-entries.test.ts",
+    "upgrades/next/conversation-list-telegram-preview-index.md",
+    "upgrades/side-effects/conversation-list-telegram-preview-index.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "List previews read an in-memory newest-entry index instead of scanning the log per topic; no authority, visibility or stored-data change; machine fix (CoS 2026-11-27)",
+  "eli16Path": "docs/specs/conversation-list-telegram-preview-index.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-list-telegram-preview-index.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

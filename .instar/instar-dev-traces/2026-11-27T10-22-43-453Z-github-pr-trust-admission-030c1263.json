@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "github-pr-trust-admission",
+  "sessionId": "87da9bff-10ca-490e-9a58-ffee3663eba8",
+  "timestamp": "2026-11-27T10:22:43.453Z",
+  "artifactPath": "upgrades/side-effects/github-pr-trust-admission.md",
+  "artifactSha256": "f21f024353f63428e8bd95f14517c7cfdab27ab74639105b3ba672bf6cdace96",
+  "specPath": "docs/specs/trust-journey.md",
+  "coveredFiles": [
+    "src/core/AdaptiveTrust.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/core/trustJourney/admission.ts",
+    "src/data/awareness/app-first-owner-approvals.md",
+    "src/data/effect-kinds.ts",
+    "src/server/routes.ts",
+    "tests/e2e/trust-app-approval-alive.test.ts",
+    "tests/integration/trust-governed-effects-routes.test.ts",
+    "tests/unit/connector-read-hook-migration.test.ts",
+    "tests/unit/trust-journey-governed-effects.test.ts",
+    "upgrades/next/github-pr-trust-admission.md",
+    "upgrades/side-effects/github-pr-trust-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Owner approval admission semantics under the approved trust journey specification",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

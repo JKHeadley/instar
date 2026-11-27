@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "codex-manual-balance-fresh-reset",
+  "sessionId": "ac84cfde-7918-428e-a90b-3a9baacf0561",
+  "timestamp": "2026-11-27T11:19:55.300Z",
+  "artifactPath": "upgrades/side-effects/codex-manual-balance-fresh-reset.md",
+  "artifactSha256": "bf211637a9d7886d9f035f36dd03f09eec60a92231b23a4d81b925223e63fc98",
+  "coveredFiles": [
+    "docs/specs/codex-manual-balance-fresh-reset.eli16.md",
+    "src/core/ManualQuotaBalance.ts",
+    "tests/unit/manual-quota-balance.test.ts",
+    "upgrades/next/codex-manual-balance-fresh-reset.md",
+    "upgrades/side-effects/codex-manual-balance-fresh-reset.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow existing manual destination ranking fix. Existing work, stop, identity, and recovery authority remains in place.",
+  "eli16Path": "docs/specs/codex-manual-balance-fresh-reset.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-manual-balance-fresh-reset.md",
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      3982
+    ],
+    "notes": "Independent review found that a separate fresh-only ranking suppressed all forecast-backed candidates while any fresh candidate remained eligible."
+  }
+}

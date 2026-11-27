@@ -141,10 +141,13 @@ describe('every other reader (§2.2, §2.7)', () => {
   });
 
   it('losing a conversation closes with the runtime-private exception and a reason beginning "topic moved"', () => {
-    const at = server.indexOf('closeLostSession: async (key, tmux) => {');
+    const at = server.indexOf('closeLostSession: async (key, tmux, mayCommit) => {');
     const block = server.slice(at, at + 500);
     expect(block).toContain('`topic moved:');
     expect(block).toContain('localPostTransferCloseout: true');
+    const fresh = block.indexOf('if (!mayCommit())');
+    expect(fresh).toBeGreaterThanOrEqual(0);
+    expect(fresh).toBeLessThan(block.indexOf('await terminateWithAuthority'));
   });
 
   it('`session-status` carries the app records this machine holds', () => {

@@ -59,6 +59,9 @@ async function getJson(path) {
 }
 
 export async function renderAccounts(main, ctx) {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  const want = query.get('s');
+  const repairView = query.get('view') === 'sign-in' || want === 'needs' || want === 'auto-repair';
   const { get } = ctx;
   const isCurrent = () => main.isConnected && (ctx.isCurrent?.() ?? true);
   if (!isCurrent()) return;
@@ -75,7 +78,7 @@ export async function renderAccounts(main, ctx) {
   const currentVisit = () => latestRender.get(main);
   latestRender.set(main, visit);
   main.classList.add('accounts-page');
-  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: repairView ? 'Loading sign-in repair' : 'Loading accounts' })));
   const [pool, relogin, inUse, machines] = await Promise.all([get('/subscription-pool?scope=pool', 8000), get('/subscription-relogin?scope=pool&retryTimeout=1', 16000), get('/subscription-pool/in-use'), get('/pool')]);
   if (!isCurrent() || currentVisit() !== visit) return;
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
@@ -83,43 +86,28 @@ export async function renderAccounts(main, ctx) {
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
   const autoRepair = buildAutoRepair(relogin, { names, blockers, poolMachines: machines });
   const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names, poolMachines: machines });
+  const switchView = el('nav', { class: 'conversation-tabs', 'aria-label': 'Accounts views' },
+    el('a', { class: repairView ? 'chip' : 'chip active', href: '#/capacity/accounts',
+      'aria-current': repairView ? null : 'page', text: 'Account usage' }),
+    el('a', { class: repairView ? 'chip active' : 'chip', href: '#/capacity/accounts?view=sign-in',
+      'aria-current': repairView ? 'page' : null, text: 'Sign-in repair' }));
   if (!page.ok) {
-    setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }),
-      cantTell(page.reason), autoRepairSection(autoRepair, currentVisit), legacyLink());
+    setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: repairView ? 'Sign-in repair' : 'Accounts', tone: 'muted' }),
+      switchView, cantTell(page.reason), repairView ? autoRepairSection(autoRepair, currentVisit) : null, legacyLink());
     return;
   }
-
-  const expandedRepairs = repairDisclosureState.get(main) || new Set();
-  repairDisclosureState.set(main, expandedRepairs);
-  const machineRepairs = page.repairs.map(group => {
-    const ownerCount = group.rows.filter(row => row.ownerAction).length;
-    const agentCount = group.rows.length - ownerCount;
-    const status = [
-      `${group.signedIn} of ${group.total} signed in`,
-      agentCount ? `${agentCount} for the agent to check or repair` : '',
-      ownerCount ? `${ownerCount} ${ownerCount === 1 ? 'needs' : 'need'} your action` : '',
-    ].filter(Boolean).join(', ');
-    const disclosure = el('details', { class: 'acct-repair-machine', open: ownerCount > 0 || expandedRepairs.has(group.key) },
-      el('summary', { class: 'acct-repair-summary' }, el('strong', { text: group.machine }), el('span', { text: status })),
-      el('ul', { class: 'acct-repair-rows' }, group.rows.map(row => el('li', { class: 'acct-repair-row' },
-        el('div', {}, el('span', { class: 'row-title', text: row.label }), el('span', { class: 'row-sub', text: row.status })),
-        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: row.ownerAction.buttonLabel, onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null))));
-    disclosure.addEventListener('toggle', () => {
-      if (disclosure.open) expandedRepairs.add(group.key);
-      else expandedRepairs.delete(group.key);
-    });
-    return disclosure;
-  });
-  const readyCount = page.signedInMachines.length;
-  const allSignedIn = readyCount ? el('details', { class: 'acct-repair-machine acct-repair-ready' },
-    el('summary', { class: 'acct-repair-summary' }, el('strong', { text: 'All signed in' }),
-      el('span', { text: `On ${readyCount} ${readyCount === 1 ? 'machine' : 'machines'}` })),
-    el('ul', { class: 'acct-repair-rows' }, page.signedInMachines.map(machine => el('li', { class: 'acct-repair-row', text: machine })))) : null;
-  const repairs = machineRepairs.length || allSignedIn
-    ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
-      el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-in repair' }),
-      machineRepairs.length ? el('p', { class: 'row-sub', text: 'Open a machine to see its accounts and any sign-in steps that need you.' }) : null,
-      machineRepairs, allSignedIn) : null;
+  if (repairView) {
+    const repairs = repairStatusSection(page, main, currentVisit);
+    const settings = autoRepairSection(autoRepair, currentVisit);
+    if (page.needs.length) markNeed(repairs, 'accounts');
+    setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Sign-in repair' }), switchView,
+      page.partial ? note(page.partial) : null,
+      !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
+      repairs, settings, legacyLink());
+    if (want === 'needs') arrivalScroll(repairs);
+    if (want === 'auto-repair') arrivalScroll(settings);
+    return;
+  }
 
   const rows = el('div', { class: 'acct-groups' });
   let preferences = readAccountLayout();
@@ -160,8 +148,9 @@ export async function renderAccounts(main, ctx) {
     const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': machineGroup ? `a:${encodeURIComponent(machineGroup)}:${a.id}` : `a:${a.id}` },
       el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse && !machineGroup ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
       el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
-      wins,
+      wins ?? el('span', { class: 'acct-bar', 'aria-hidden': 'true' }),
       !wins ? el('span', { class: 'acct-line', text: a.line }) : null,
+      !wins && a.lastCheckAge ? el('span', { class: 'acct-line', text: `Last checked ${a.lastCheckAge}` }) : null,
       a.stale ? el('span', { class: 'acct-line', text: `Some usage data is from ${a.readingAge}` }) : null,
       repairNote ? el('span', { class: 'acct-line', text: repairNote }) : null);
     row.addEventListener('click', () => openAccount(a, currentVisit(), page.needs));
@@ -175,16 +164,44 @@ export async function renderAccounts(main, ctx) {
       n.returnsAt && resetWords(n.returnsAt) ? el('span', { class: 'row-sub', text: `Room returns: ${resetWords(n.returnsAt).replace(/^resets /, '')}` }) : null,
       el('p', { class: 'hero-ask' }, askLink(n.action.about))))) : null;
 
-  if (page.needs.length) markNeed(repairs, 'accounts');
   setKids(main,
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
-    page.partial ? note(page.partial) : null,
-    !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    page.needs.length ? repairs : null, notices, list, page.needs.length ? null : repairs,
-    autoRepairSection(autoRepair, currentVisit), quotaForecastCard(get, page.accounts), legacyLink());
-  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want === 'needs') arrivalScroll(repairs);
-  if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
+    switchView, page.partial ? note(page.partial) : null, notices, list, quotaForecastCard(get, page.accounts), legacyLink());
+}
+
+function repairStatusSection(page, main, currentVisit) {
+  const expandedRepairs = repairDisclosureState.get(main) || new Set();
+  repairDisclosureState.set(main, expandedRepairs);
+  const machineRepairs = page.repairs.map(group => {
+    const ownerCount = group.rows.filter(row => row.ownerAction).length;
+    const agentCount = group.rows.length - ownerCount;
+    const status = [
+      `${group.signedIn} of ${group.total} signed in`,
+      agentCount ? `${agentCount} for the agent to check or repair` : '',
+      ownerCount ? `${ownerCount} ${ownerCount === 1 ? 'needs' : 'need'} your action` : '',
+    ].filter(Boolean).join(', ');
+    const disclosure = el('details', { class: 'acct-repair-machine', open: ownerCount > 0 || expandedRepairs.has(group.key) },
+      el('summary', { class: 'acct-repair-summary' }, el('strong', { text: group.machine }), el('span', { text: status })),
+      el('ul', { class: 'acct-repair-rows' }, group.rows.map(row => el('li', { class: 'acct-repair-row' },
+        el('div', {}, el('span', { class: 'row-title', text: row.label }), el('span', { class: 'row-sub', text: row.status })),
+        row.ownerAction ? el('button', { class: 'btn-quiet', type: 'button', text: row.ownerAction.buttonLabel, onclick: () => startNeed(row.ownerAction, currentVisit()) }) : null))));
+    disclosure.addEventListener('toggle', () => {
+      if (disclosure.open) expandedRepairs.add(group.key);
+      else expandedRepairs.delete(group.key);
+    });
+    return disclosure;
+  });
+  const readyCount = page.signedInMachines.length;
+  const allSignedIn = readyCount ? el('details', { class: 'acct-repair-machine acct-repair-ready' },
+    el('summary', { class: 'acct-repair-summary' }, el('strong', { text: 'All signed in' }),
+      el('span', { text: `On ${readyCount} ${readyCount === 1 ? 'machine' : 'machines'}` })),
+    el('ul', { class: 'acct-repair-rows' }, page.signedInMachines.map(machine => el('li', { class: 'acct-repair-row', text: machine })))) : null;
+  return machineRepairs.length || allSignedIn
+    ? el('section', { class: 'page-sections acct-repairs', id: 'sec-needs', 'aria-labelledby': 'account-repair-title' },
+      el('h2', { class: 'section-heading', id: 'account-repair-title', text: 'Sign-ins by machine' }),
+      machineRepairs.length ? el('p', { class: 'row-sub', text: 'Open a machine to see its accounts and any sign-in steps that need you.' }) : null,
+      machineRepairs, allSignedIn) : null;
+
 }
 
 function legacyLink() {

@@ -79,6 +79,28 @@ describe('accounts', () => {
     expect(r.accounts[0].stale).toBe(false);
   });
 
+  it('keeps the freshest usable value for each window when another machine needs sign-in', () => {
+    const result = summarizeAccounts(pool([
+      row({ lastQuota: { measuredAt: at(-75), sevenDay: { utilizationPct: 40 }, fable: { utilizationPct: 62 } } }),
+      row({ machineId: 'm_peer', remote: true, status: 'needs-reauth', lastQuota: { measuredAt: at(-2), secondary: { usedPercent: 54 } } }),
+      row({ machineId: 'm_other', remote: true, lastQuota: { measuredAt: at(-1) } }),
+    ]), { now: NOW }).accounts[0];
+    expect(result.signIn).toBe('needs-sign-in');
+    expect(result.windows.map(({ label, pct }) => [label, pct])).toEqual([['weekly', 54], ['Fable weekly', 62]]);
+    expect(result.readingAt).toBe(at(-75));
+    expect(result.stale).toBe(true);
+    expect(result).not.toHaveProperty('lastCheckedAt');
+  });
+
+  it('exposes the last check when no machine returned a usable quota window', () => {
+    const result = summarizeAccounts(pool([
+      row({ lastQuota: { measuredAt: at(-10) } }),
+      row({ machineId: 'm_peer', remote: true, lastQuota: { measuredAt: at(-5) } }),
+      row({ machineId: 'm_far', remote: true, lastQuota: { measuredAt: at(60) } }),
+    ]), { now: NOW }).accounts[0];
+    expect(result).toMatchObject({ windows: [], readingAt: null, lastCheckedAt: at(-5), usageLine: 'No reading yet.' });
+  });
+
   it('provides opaque grouping keys across accounts and leaves unknown machine identities unset', () => {
     const result = summarizeAccounts(pool([
       row({ machineId: 'self', machineNickname: 'Local display name' }),

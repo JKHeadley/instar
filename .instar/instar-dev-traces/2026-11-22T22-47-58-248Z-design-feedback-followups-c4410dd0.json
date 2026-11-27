@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "design-feedback-followups",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:47:58.248Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-followups.md",
+  "artifactSha256": "f0a55857b2aa278719b244bc1cd0f4b43f02ac1a8158546011ccb3044b73924c",
+  "coveredFiles": [
+    "docs/DESIGN-STANDARD.md",
+    "docs/design-feedback/DF-0002-fixed-chief-of-staff.md",
+    "docs/design-feedback/DF-0003-native-context-menus.md",
+    "docs/design-feedback/DF-0004-generated-chat-parentage.md",
+    "upgrades/side-effects/design-feedback-followups.eli16.md",
+    "upgrades/side-effects/design-feedback-followups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Public-safe feedback diagnoses and earned design rules only; no runtime change or completion claim.",
+  "eli16Path": "upgrades/side-effects/design-feedback-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/design-feedback-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,9 +1,9 @@
-import crypto from 'node:crypto';
+import { restartAdmissionTimedOut } from '../../core/plannedRestartAdmissionTimeout.js';
+import { readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFile } from '../../core/restartRequestFile.js';
 import { announceRestartRequested } from '../../core/restartRequestSignal.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SelfHealGate, SqliteSelfHealEpisodeStore, type SelfHealNotice } from '../../core/SelfHealGate.js';
-import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { consumeAdmissionToken, governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { ensureFeedbackFactoryGeneratedDefaults, inspectFeedbackFactoryGeneratedDefaults, type GeneratedDefaultsInspection } from './FeedbackFactoryGeneratedDefaults.js';
@@ -26,27 +26,23 @@ type HealContext = { inspection: GeneratedDefaultsInspection; fence: string | nu
 export function requestSelfHealRestart(stateDir: string, stableRequestId: string): boolean {
   const dir = path.join(stateDir, 'state'); fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const destination = path.join(dir, 'restart-requested.json');
-  if (fs.existsSync(destination)) {
-    try { return (JSON.parse(fs.readFileSync(destination, 'utf8')) as { requestId?: string }).requestId === stableRequestId; } catch { return false; }
-  }
-  const tmp = path.join(dir, `.restart-request.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`);
   const requestedAt = new Date().toISOString();
   const reason = 'feedback-factory generated defaults repaired';
   // planned-restart-keeps-lead §1 step 1: announce first (the holder's window renewal is signed and
   // persisted synchronously), then publish at once. The request carries the same fields as the
   // other planned writers (reason, one-hour expiry) so every consumer reads it the same way.
-  void announceRestartRequested({ requestedBy: 'self-heal-gate', reason, requestedAt });
   const body = JSON.stringify({ requestedAt, requestedBy: 'self-heal-gate', reason, requestId: stableRequestId, plannedRestart: true, expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(), pid: process.pid }, null, 2);
   try {
-    const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
-    try { fs.writeFileSync(fd, body); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    try { fs.linkSync(tmp, destination); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      return (JSON.parse(fs.readFileSync(destination, 'utf8')) as { requestId?: string }).requestId === stableRequestId;
-    }
-    return true;
+    return withRestartRequestFile(destination, () => {
+      const existing = readRestartRequestFile(destination);
+      if (existing !== null && !restartAdmissionTimedOut(destination, existing)) {
+        return (JSON.parse(existing) as { requestId?: string }).requestId === stableRequestId;
+      }
+      void announceRestartRequested({ requestedBy: 'self-heal-gate', reason, requestedAt });
+      replaceRestartRequestFile(destination, body, existing);
+      return true;
+    });
   } catch { return false; }
-  finally { try { SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'feedback-defaults-self-heal restart temp cleanup' }); } catch { /* already absent */ } }
 }
 
 export async function runFeedbackFactoryDefaultsSelfHeal(options: FeedbackDefaultsHealOptions): Promise<{ attempted: boolean; outcome: string }> {

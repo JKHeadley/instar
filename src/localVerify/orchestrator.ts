@@ -19,8 +19,17 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { FailureEvidence, FAILURE_EVIDENCE_FILE } from './failureEvidence.js';
+import type { UnitProcessOutput } from './unitProcessOutput.js';
+
+export interface UnitProcessTranscript {
+  step: string;
+  status: number | null;
+  signal: string | null;
+  stdout: UnitProcessOutput;
+  stderr: UnitProcessOutput;
+}
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
-import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { readProgress, readTaskUpdateTimeouts, readUnhandledErrors } from './unhandledErrorsReporter.js';
 import { clearNamedFlakeFailures, namedFlakeRetryPassed, namedFlakeRetryPattern, namedFlakeRetrySelection } from './namedFlakeRetry.js';
 
 /** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
@@ -72,6 +81,7 @@ export interface ExecResult {
   pid: number | null;
   /** For isolated preflight commands, every process in the dedicated group exited. */
   quiescent?: boolean;
+  unitOutput?: Pick<UnitProcessTranscript, 'stdout' | 'stderr'>;
 }
 
 export interface GitCallOpts {
@@ -118,9 +128,14 @@ export interface OrchestratorSeams {
   exec(
     command: string,
     args: string[],
-    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean },
+    opts: { cwd: string; env: NodeJS.ProcessEnv; deadlineMs: number; onPid?: (pid: number) => void; signal?: AbortSignal; isolatedGroup?: boolean; captureUnitOutput?: boolean },
   ): Promise<ExecResult>;
   fs: OrchestratorFs;
+  keepUnitTranscripts?(input: {
+    headSha: string;
+    startedAtMs: number;
+    transcripts: readonly UnitProcessTranscript[];
+  }): Promise<string>;
   now(): number;
   sleep(ms: number): Promise<void>;
   /** Live full-suite holders of the host test-runner bound that are not one of `ours`. */
@@ -442,6 +457,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   const startedFirstParts = new Set<LaneName>();
   const observedFailures = new Map<string, FileFailure>();
   const failureEvidence = new FailureEvidence();
+  const unitTranscripts: UnitProcessTranscript[] = [];
   const captureFailures = (lane: LaneName, report: ParsedLaneReport) => {
     try { failureEvidence.capture(lane, report); }
     catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
@@ -508,12 +524,13 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
   runEnv.PATH = [binDir, input.baseEnv.PATH ?? ''].filter(Boolean).join(path.delimiter);
 
   /** Run one process step; a deadline is an error naming the step. */
-  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal) => {
+  const exec = async (command: string, args: string[], step: string, deadline: { ms: number; capped: boolean }, env = runEnv, signal?: AbortSignal, captureUnitOutput = false) => {
     const t0 = seams.now();
     const r = await seams.exec(command, args, {
       cwd: p.runDir, env, deadlineMs: deadline.ms,
       onPid: (pid) => { ourPids.add(pid); },
       ...(signal ? { signal } : {}),
+      ...(captureUnitOutput ? { captureUnitOutput } : {}),
     });
     // Per-step timing (metadata only): the Acceptance measurement reads these.
     seams.log({ event: 'step', step, ms: seams.now() - t0, status: r.status ?? null, deadlineKilled: r.deadlineKilled, ...(r.aborted ? { stoppedEarly: true } : {}) });
@@ -850,7 +867,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       }
       const t = seams.now();
       const laneDeadlineAt = t + d.lanes[lane.name];
-      type Part = { report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean };
+      type Part = { report: ParsedLaneReport | null; status: number | null; unhandled: number | null; aborted: boolean; taskUpdateTimeouts?: number };
       /**
        * One vitest process of this lane. `afterFirst`: it runs the rest of a lane whose first part
        * already ran, so it gets what is left of the lane's deadline (the deadline covers both parts).
@@ -883,7 +900,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             path.join(binDir, 'vitest'),
             ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
               ...fileArgs],
-            key, stepBudget(), env, stopLanes.signal,
+            key, stepBudget(), env, stopLanes.signal, lane.name === 'unit',
           );
         } catch (e) {
           if (e instanceof RunError && e.step.startsWith('deadline:')) {
@@ -904,11 +921,18 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
           throw e;
         }
         if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
+        const errors = reporter ? seams.fs.readFile(errorsPath) : null;
+        const unhandled = readUnhandledErrors(errors, !!input.namedFlakeRetry || key === 'unit-task-update-retry');
+        const taskUpdateTimeouts = lane.name === 'unit' && r.status === 1 && !r.signal
+          ? readTaskUpdateTimeouts(errors) : null;
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
         if (text != null) {
           const wantDigest = wantFileCounts || flow !== null;
-          try { report = parseVitestJson(text, p.runDir, { outcomeDigest: wantDigest, namedRetry: !!input.namedFlakeRetry }); } catch { report = null; }
+          try { report = parseVitestJson(text, p.runDir, {
+            outcomeDigest: wantDigest, namedRetry: !!input.namedFlakeRetry,
+            checkCompletion: taskUpdateTimeouts !== null || key === 'unit-task-update-retry',
+          }); } catch { report = null; }
           if (report && wantDigest) {
             // The digest is taken aside and removed again, so the lane report every later step
             // reads is exactly the one it would have been without the option.
@@ -926,15 +950,14 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
             own: changedForIsolation?.has(file) ?? false, result: 'failed',
           });
         });
-        const errors = reporter ? seams.fs.readFile(errorsPath) : null;
-        const unhandled = readUnhandledErrors(errors, !!input.namedFlakeRetry);
         if (lane.name === 'unit' && (r.status !== 0 || r.signal) &&
             ![...(report?.files.values() ?? [])].some(counts => counts.failed > 0)) {
+          if (r.unitOutput) unitTranscripts.push({ step: key, status: r.status, signal: r.signal, ...r.unitOutput });
           try {
             failureEvidence.captureUnitExit({ step: key, status: r.status, signal: r.signal, stdout: r.stdout, stderr: r.stderr }, errors);
           } catch { seams.log({ event: 'failure-evidence-capture-failed' }); }
         }
-        return { report, status: r.status, unhandled, aborted: false };
+        return { report, status: r.status, unhandled, aborted: false, ...(taskUpdateTimeouts === null ? {} : { taskUpdateTimeouts }) };
       };
       /** The lane's usual processes, side by side. allSettled: every process has exited before the lane settles, even when one hits its deadline (nothing is left running outside the slot or the cleanup). */
       const runProcs = async (afterFirst: boolean): Promise<Part[]> => {
@@ -1131,7 +1154,37 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       };
 
       if (!first) {
-        const parts = counting ? await runProcsWithTakeBack() : await runProcs(false);
+        let parts = counting ? await runProcsWithTakeBack() : await runProcs(false);
+        const original = parts[0];
+        if (lane.name === 'unit' && !counting && parts.length === 1
+            && original.taskUpdateTimeouts !== undefined && original.report?.completeAndClean
+            && original.report.files.size === laneFiles.length
+            && laneFiles.every(file => {
+              const counts = original.report?.files.get(file);
+              return counts?.failed === 0 && !counts.message;
+            })
+            && !stopLanes.signal.aborted && seams.now() < laneDeadlineAt) {
+          seams.log({ event: 'unit-task-update-retry', step: 'unit', timeouts: original.taskUpdateTimeouts,
+            files: original.report.files.size, remainingMs: laneDeadlineAt - seams.now() });
+          reran = true;
+          const retry = await runPart('unit-task-update-retry', [], true);
+          const comparable = retry.report?.completeAndClean && retry.report.files.size === original.report.files.size
+            && [...original.report.files].every(([file, counts]) => {
+              const observed = retry.report?.files.get(file);
+              return observed?.passed === counts.passed && observed.failed === 0
+                && observed.skipped === counts.skipped && observed.todo === counts.todo && !observed.message;
+            });
+          const accepted = retry.status === 0 && retry.unhandled === 0 && comparable === true;
+          seams.log({ event: 'unit-task-update-retry-result', step: 'unit-task-update-retry', status: retry.status,
+            unhandled: retry.unhandled, timeouts: retry.taskUpdateTimeouts ?? null, files: retry.report?.files.size ?? null, accepted });
+          const retryFailedTests = [...(retry.report?.files.values() ?? [])].some(counts => counts.failed > 0);
+          if (accepted || retry.aborted) parts = [retry];
+          else if (retryFailedTests) {
+            // Preserve the assertion failure and the original worker error. A
+            // file isolation pass cannot substitute for a clean full retry.
+            parts = [{ ...retry, unhandled: combineUnhandled([original.unhandled, retry.unhandled]) }];
+          }
+        }
         if (parts.some((x) => x.aborted)) {
           seams.log({ event: 'lane-stopped-early', lane: lane.name });
           if (flow && helperPlan) await flow.laneEnded(lane.name as FlowLane);
@@ -1713,6 +1766,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         if (r.matched > 0) seams.log({ event: 'leftovers-reaped', where: 'run-end', matched: r.matched, killed: r.killed, sample: r.sample });
       } catch (e) {
         seams.log({ event: 'leftovers-reap-failed', where: 'run-end', detail: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    if (failed && unitTranscripts.length > 0 && seams.keepUnitTranscripts) {
+      try {
+        const transcriptPath = await seams.keepUnitTranscripts({
+          headSha: input.headSha, startedAtMs, transcripts: unitTranscripts,
+        });
+        seams.log({ event: 'unit-transcript-kept', path: transcriptPath });
+      } catch {
+        seams.log({ event: 'unit-transcript-write-failed' });
       }
     }
     try {

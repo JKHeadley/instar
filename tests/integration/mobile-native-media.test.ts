@@ -27,11 +27,13 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { CHUNK_BYTES } from '../../src/core/appMediaTypes.js';
+import { mediaDiskFloorBytes } from '../../src/core/AppMediaStore.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 
 const HOST = 'echo.example.dev';
+const FIXTURE_VOLUME_BYTES = 2e12;
 const dirs: string[] = [];
 const cleanups: Array<() => void> = [];
 beforeAll(() => { ProcessIntegrity.reset(); ProcessIntegrity.initialize('1.2.36', null); });
@@ -45,7 +47,12 @@ const sha = (b: Buffer | string) => crypto.createHash('sha256').update(b).digest
 const png = (n = 200) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), crypto.randomBytes(n)]);
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
-async function setup(opts: { mediaEnabled?: boolean; transcribeVoice?: (p: string, t: string) => Promise<string>; transcribeDeadlineMs?: number } = {}) {
+async function setup(opts: {
+  mediaEnabled?: boolean;
+  freeDiskBytes?: number;
+  transcribeVoice?: (p: string, t: string) => Promise<string>;
+  transcribeDeadlineMs?: number;
+} = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmedia-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
@@ -65,6 +72,7 @@ async function setup(opts: { mediaEnabled?: boolean; transcribeVoice?: (p: strin
   const svc: AppConversationService = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger,
+    mediaDiskSpace: () => ({ free: opts.freeDiskBytes ?? 1e12, total: FIXTURE_VOLUME_BYTES }),
     dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
     ...(opts.transcribeVoice ? { transcribeVoice: opts.transcribeVoice, voiceProviderName: () => 'groq' } : {}),
     ...(opts.transcribeDeadlineMs !== undefined ? { transcribeDeadlineMs: opts.transcribeDeadlineMs } : {}),
@@ -137,6 +145,7 @@ describe('uploads through the device authenticator', () => {
     const key = await newConversation(e);
     const bytes = png();
     const start = await signed(e, 'POST', '/mobile/media/uploads', { conversationRef: `app:${key}`, ...describeFile(bytes), requestId: rid() });
+    expect(start.status, JSON.stringify(start.body)).toBe(200);
     const id = start.body.uploadId as string;
     expect((await signed(e, 'PUT', `/mobile/media/uploads/${id}/chunks/0`, { not: 'bytes' })).status).toBe(415);
     expect((await signed(e, 'POST', '/mobile/media/uploads', undefined, Buffer.from('x'))).status).toBe(415);
@@ -144,6 +153,23 @@ describe('uploads through the device authenticator', () => {
     const ok = await signed(e, 'PUT', `/mobile/media/uploads/${id}/chunks/0`, undefined, bytes);
     expect(ok.status).toBe(200);
     expect(ok.body.state).toBe('complete');
+  });
+
+  it('reports the disk floor at upload start before any chunk request can be addressed', async () => {
+    const e = await setup({ freeDiskBytes: mediaDiskFloorBytes(FIXTURE_VOLUME_BYTES) - 1 });
+    const key = await newConversation(e);
+    const bytes = png();
+    const start = await signed(e, 'POST', '/mobile/media/uploads', {
+      conversationRef: `app:${key}`, ...describeFile(bytes), requestId: rid(),
+    });
+    expect(start.status).toBe(507);
+    expect(start.body).toMatchObject({ error: 'media-disk-floor' });
+    expect(start.body.uploadId).toBeUndefined();
+
+    // Reproduce what the old test saw when it tried to use the missing ID.
+    const chunk = await signed(e, 'PUT', `/mobile/media/uploads/${start.body.uploadId}/chunks/0`, { not: 'bytes' });
+    expect(chunk.status).toBe(403);
+    expect(chunk.body).toMatchObject({ error: 'device-not-allowed' });
   });
 
   it('a bearer token cannot upload; a retry of the start answers the same upload; a changed field conflicts', async () => {

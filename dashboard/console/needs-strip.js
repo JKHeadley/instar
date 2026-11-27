@@ -195,7 +195,8 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = fa
       const card = cardLinkOf(r);
       const cardHref = card && hrefFor ? hrefFor({ kind: 'href', href: card.href }) : card?.href;
       const showCard = card && cardHref !== href;
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+      const action = href ? el('span', { class: 'needs-row-action', text: cardHref === href ? 'Open card' : 'Open details' }) : null;
+      return el('li', {}, href ? el('a', { class: 'needs-row needs-row-link', href }, ...body, action) : el('div', { class: 'needs-row' }, ...body),
         ...(showCard ? [el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label })] : []),
         ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
     };
