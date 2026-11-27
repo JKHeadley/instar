@@ -1,34 +1,36 @@
-# Pull-request description lint at open time — the EARLY WARNING.
+# Pull-request description lint: the EARLY WARNING.
 #
 # Runs safe-merge's own merge-time body checks (ELI16, decision audit, release
-# fragment) plus the UX Impact rule on EVERY pull request, whatever its base.
-# The ELI16, decision-audit and release-fragment gates run only for base `main`,
-# so a stacked pull request used to meet its first description refusal at merge
-# time, after a full verifier run.
+# fragment) and, reported separately, the UX Impact rule, on EVERY pull request,
+# whatever its base. The ELI16, decision-audit and release-fragment gates run
+# only for base `main`, so a stacked pull request used to meet its first
+# description refusal at merge time, after a full verifier run.
 #
-# Signal, never authority: warnings and a job summary only, the job always
-# succeeds, and it is NOT a required context. The merge-time floor stays the gate.
+# Signal, never authority. The result is an always-success commit status
+# `description-early-warning` on the pull request's head, plus warnings and a
+# job summary on this run. Every step is non-failing, the script always exits
+# 0, and the status is never required.
 #
-# SECURITY: on: pull_request (never pull_request_target); read-only token; no
-# persisted checkout credentials; the checker code is checked out from the
-# default branch and the pull request's commits are read only as data.
-# Trust boundary, stated plainly: GitHub loads this YAML from the pull request's
-# merge commit, so a pull request CAN change its own warning. That is accepted:
-# the warning gates nothing (not required; safe-merge re-checks at merge time).
-# pull_request_target would load the YAML from the BASE branch, which for a
-# stacked pull request is a branch that may predate this file, so the stacked
-# pull requests this exists for would get no warning at all.
+# TRUST: `workflow_run` workflows are always loaded from the default branch, so
+# neither this file nor the script it runs can be changed by the pull request
+# being judged. The pull request's title, body, files and decision records are
+# read live from the REST API and treated only as data: never executed and never
+# placed in a shell line. Checkout credentials are not persisted. The token can
+# read contents and pull requests and write commit statuses, nothing else.
 name: PR description lint
 
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: ["PR description lint trigger"]
+    types: [completed]
 
 permissions:
   contents: read
+  pull-requests: read
+  statuses: write
 
 concurrency:
-  group: pr-description-lint-${{ github.event.pull_request.number }}
+  group: pr-description-lint-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -39,26 +41,21 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout the checker from the default branch
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch the pull request's base and head
-        run: git fetch --no-tags origin ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
+        continue-on-error: true
         with:
           node-version: '22'
       - name: Check the description
+        continue-on-error: true
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
-          PR_PUSHER: ${{ github.actor }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
           # Same literal author scope as the UX impact gate.
           INSTAR_UX_SCOPE: "jkheadley"
-        run: node scripts/pr-description-lint.mjs
+        run: node scripts/pr-description-lint.mjs || true

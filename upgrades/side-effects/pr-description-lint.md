@@ -7,13 +7,13 @@
 
 ## Summary of the change
 
-This adds a new GitHub workflow, `.github/workflows/pr-description-lint.yml`, and its script, `scripts/pr-description-lint.mjs`, with unit tests (`tests/unit/pr-description-lint.test.ts`) and an ELI16 note (`docs/specs/pr-description-lint.eli16.md`).
-- It runs on every pull request, whatever its base, on opened, edited, synchronize, reopened and ready_for_review.
-- It runs safe-merge's own merge-time body checks (`runLocalBodyChecks`: eli16, decision-audit, release-fragment, imported from `scripts/safe-merge.mjs`), plus the UX Impact rule (`scripts/ux-impact-lint.mjs`, run as a subprocess).
-- It reports warnings only: one warning annotation per failing check and a job summary. The job uses `continue-on-error`, always exits 0, and is not a required context.
-- For a failing UX check, it adds a plain hint when an apostrophe inside the UX Impact section breaks the lint's quote matching.
+This adds two GitHub workflows and one script, with unit tests (`tests/unit/pr-description-lint.test.ts`) and an ELI16 note (`docs/specs/pr-description-lint.eli16.md`).
+- `.github/workflows/pr-description-lint-trigger.yml` runs on every `pull_request`, whatever its base. It has no permissions, reads no pull-request text and only prints a line, so it always succeeds.
+- `.github/workflows/pr-description-lint.yml` runs on `workflow_run` of that trigger. GitHub always loads a `workflow_run` workflow from the **default branch**, so neither the workflow nor its script can be changed by the pull request it judges, whatever that pull request's base.
+- `scripts/pr-description-lint.mjs` reads the pull request **live** from the REST API: title, body, author, and the changed files exactly as safe-merge reads them, plus decision records at the head. It runs safe-merge's own `runLocalBodyChecks` (eli16, decision-audit, release-fragment) and, reported **separately**, the UX Impact rule (`scripts/ux-impact-lint.mjs`, unchanged). It then posts an always-`success` commit status, `description-early-warning`, saying what "would be refused if merged as it stands now", plus warnings and a job summary.
+- Every step is `continue-on-error` and the script always exits 0, so this can never produce a red check row on a pull request. That matters because safe-merge refuses on any red row, required or not.
 
-Tier 1: four new files and no change to existing code. Effort: one design pass, plus one round after the rule 7 DISSENT (wording, snapshot note, persisted credentials off, and the trust statement corrected); the tests ran four times.
+Tier 1: five new files and no change to existing code. Effort: a design pass, then one round after two rule 7 dissents (Jobs and Projects; the Chief of Staff's reviewer), which moved the check to `workflow_run`, separated the UX advice, read live data, and made every step non-failing.
 
 ## Decision-point inventory
 
@@ -32,10 +32,9 @@ No block/allow surface, so over-block does not apply. A false warning costs a re
 ## 2. Under-block
 
 No block/allow surface, so under-block does not apply. As a warning it can still miss these cases:
-- **A re-run of an old workflow run** judges the event's frozen body. The ELI16 gate re-reads the live body to avoid that; this lint does not. Every edit starts a fresh run, so a stale warning lasts only until the next edit, and it can never block.
-- **A head whose objects cannot be fetched** produces a "could not run" warning instead of the check rows.
-
----
+- **Fork pull requests:** `workflow_run.pull_requests` is empty for a head in a fork, so those get no warning. Every pull request in this repository is same-repository today.
+- **Bootstrap:** the check exists only once this merges, because a `workflow_run` workflow comes from the default branch. So this pull request does not check itself.
+- **A run that cannot read the API or fetch the objects** prints a "could not run" warning and posts no status.
 
 ## 3. Level-of-abstraction fit
 
@@ -61,23 +60,21 @@ It adds no static heuristic at a competing-signals decision point. It displays t
 
 ## 5. Interactions
 
-- **Shadowing:** it runs beside the existing main-only ELI16, decision-audit and release-fragment gates and the path-scoped UX gate. For a pull request aimed at main, the same verdict appears twice: once from the gate, once as this warning. That is intentional and harmless. It shadows nothing.
-- **Double-fire:** the existing gates fail a main-based pull request, and this lint only warns. Nothing else acts on its output.
-- **Races:** the concurrency group, keyed by pull request with cancel-in-progress, keeps only the latest run.
+- **Shadowing:** for a pull request aimed at main, the same verdicts also come from the existing gates. This only adds a status that always passes, and it shadows nothing.
+- **safe-merge:** safe-merge reads check rows and commit statuses. Here, the trigger row always succeeds, the `workflow_run` job's rows attach to the default branch rather than the pull request, and the posted status is always `success`. So none of them can ever refuse a merge. Tests pin each property.
+- **Races:** the concurrency group, keyed by head sha, keeps only the latest run.
 - **Feedback loops:** none.
-
----
 
 ## 6. External surfaces
 
-- **GitHub:** one extra check row per pull request, "Description early warning", which always succeeds, with warning annotations. It is read-only (`contents: read`), and it runs on `pull_request`, never `pull_request_target`, so forks get no secrets.
-- **Checker trust, stated plainly (corrected after the rule 7 read by Jobs and Projects):** the checker script is checked out from the default branch with `persist-credentials: false`, and the pull request's commits are read only as data. But for `pull_request`, GitHub loads the workflow YAML from the pull request's merge commit, so **a pull request can change its own warning.** That is accepted because the warning gates nothing: it is not required, and safe-merge re-checks at merge time.
-  - The alternative was rejected. `pull_request_target` loads the YAML from the pull request's **base** branch. For a stacked pull request, that is a branch that may predate this file, so the stacked pull requests this exists for would get no warning at all. It would also run with base-side privileges next to untrusted data, which costs more risk than a self-editable warning.
-- **Wording:** the three safe-merge body checks and the UX Impact rule are reported separately. A UX-only failure is never described as a safe-merge refusal, and the summary says it is a snapshot of the event, since safe-merge re-reads live data at merge time. A test pins both.
+- **GitHub:** one trigger row per pull request (always green), one `description-early-warning` commit status on the head (always success), and runs listed under Actions.
+- **Permissions:**
+  - The trigger has none.
+  - The check has `contents: read`, `pull-requests: read` and `statuses: write`. That is the least it needs: it writes only its own status context.
+  - Checkout credentials are not persisted. The objects are fetched anonymously, which works because the repository is public.
+- **Trust:** the pull request's title, body, files and decision records are data only. They are never executed and never interpolated into a shell line; the body reaches the UX lint as a process argument, not through a shell.
 - **Other agents, users, persistent state:** none. Nothing is installed into agents, and no runtime source changes.
 - **Operator surface:** none.
-
----
 
 ## 6b. Operator-surface quality (Operator-Surface Quality standard)
 
@@ -107,5 +104,5 @@ Not required (not a gate, sentinel, watchdog, session or messaging change). An i
 
 ## Evidence pointers
 
-- `tests/unit/pr-description-lint.test.ts`: 14 tests pass. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
+- `tests/unit/pr-description-lint.test.ts`: 21 tests pass. A dry run against live pull requests #4010, #3890 and the stacked #3767 posted nothing and reported correctly: #3767 lacks an ELI16 section. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
 - The existing gates' `branches: [main]` filters in `eli16-pr-gate.yml`, `decision-audit-gate.yml` and `release-fragment-gate.yml`.

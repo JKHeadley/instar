@@ -16,12 +16,12 @@
  * failing check and always exits 0. It is not a required context; admission stays
  * with the verifier's admission reader and the merge-time floor stays the gate.
  *
- * Inputs come from the event and git (no network): PR_TITLE, PR_BODY,
- * PR_AUTHOR_LOGIN, PR_AUTHOR_TYPE, BASE_SHA, HEAD_SHA. The workflow runs this
- * file and its imports from `main`, and treats the pull request's commits only as
- * data. The workflow file itself comes from the pull request (pull_request), so a
- * pull request can change its OWN warning; that is accepted because the warning
- * gates nothing (see the side-effects review).
+ * Trust: this runs from a `workflow_run` workflow, which GitHub always loads from
+ * the DEFAULT branch, so neither the workflow nor this script can be changed by
+ * the pull request it judges, whatever its base. The pull request's title, body,
+ * files and decision records are read LIVE from the REST API (as safe-merge does)
+ * and treated only as data. The result is posted as an always-success commit
+ * status `description-early-warning` on the head, which is never required.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -117,7 +117,7 @@ export function renderReport({ checks, failing }, { baseRef } = {}) {
     ...(other.length ? ['', '**UX Impact (its own gate, not a safe-merge check)**', '', '| Check | Result | Detail |', '|---|---|---|', ...other.map(row)] : []),
     '',
     failing.length
-      ? [bodyFails ? `**${bodyFails} check(s) would make safe-merge refuse this pull request.**` : '', otherFails ? `**The UX Impact declaration would fail its gate.**` : '', 'Fix them before asking for a test slot.'].filter(Boolean).join(' ')
+      ? [bodyFails ? `**${bodyFails} check(s): this pull request would be refused if merged as it stands now.**` : '', otherFails ? `**The UX Impact declaration would fail its gate.**` : '', 'Fix them before asking for a test slot.'].filter(Boolean).join(' ')
       : 'All description checks pass.',
   ].join('\n');
   return { annotations, summary };
@@ -125,35 +125,89 @@ export function renderReport({ checks, failing }, { baseRef } = {}) {
 
 function git(args) { return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
 
-function main() {
-  const env = process.env;
-  const base = env.BASE_SHA; const head = env.HEAD_SHA;
+/** Pull-request numbers from a workflow_run event's `pull_requests` JSON (same-repo heads only). */
+export function prNumbersFromRun(json) {
   try {
-    if (!base || !head) throw new Error('BASE_SHA and HEAD_SHA are required');
-    const files = parseNameStatusZ(git(['diff', '--name-status', '-z', '-M', `${base}...${head}`]));
-    const decisionRecords = decisionRecordPaths(files).map((p) => {
-      try { return JSON.parse(git(['show', `${head}:${p}`])); } catch { return {}; } // same as safe-merge: an unreadable record covers nothing
-    });
+    const list = JSON.parse(String(json ?? '[]'));
+    return Array.isArray(list) ? [...new Set(list.map((p) => Number(p?.number)).filter((n) => Number.isSafeInteger(n) && n > 0))] : [];
+  } catch { return []; }
+}
+
+/** The commit-status payload: always `success` (never a gate), describing what would be refused now. */
+export function statusFor({ failing }, targetUrl) {
+  const bodyFails = failing.filter((c) => SAFE_MERGE_BODY_CHECKS.includes(c.name)).map((c) => c.name);
+  const ux = failing.some((c) => !SAFE_MERGE_BODY_CHECKS.includes(c.name));
+  const parts = [];
+  if (bodyFails.length) parts.push(`would be refused if merged as it stands now (${bodyFails.join(', ')})`);
+  if (ux) parts.push('UX Impact would fail its gate');
+  const description = (parts.length ? `Advisory: ${parts.join('; ')}` : 'Advisory: description checks pass').slice(0, 140);
+  return { state: 'success', context: 'description-early-warning', description, ...(targetUrl ? { target_url: targetUrl } : {}) };
+}
+
+async function api(path, { token, method = 'GET', body, raw = false } = {}) {
+  const res = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, Accept: raw ? 'application/vnd.github.raw' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}`);
+  return raw ? res.text() : res.json();
+}
+
+async function lintOne({ repo, pr, token, runUrl, summaryPath }) {
+  // Everything about the pull request is read live and treated as DATA: never executed, never put in a shell line.
+  const live = await api(`/repos/${repo}/pulls/${pr}`, { token });
+  const files = [];
+  for (let page = 1; page <= 30; page++) {
+    const rows = await api(`/repos/${repo}/pulls/${pr}/files?per_page=100&page=${page}`, { token });
+    files.push(...rows.map((f) => ({ filename: String(f?.filename ?? ''), status: String(f?.status ?? '') })));
+    if (rows.length < 100) break;
+  }
+  const head = String(live.head?.sha ?? ''); const base = String(live.base?.sha ?? '');
+  if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(base)) throw new Error('unreadable head or base sha');
+  const decisionRecords = [];
+  for (const p of decisionRecordPaths(files)) {
+    try { decisionRecords.push(JSON.parse(await api(`/repos/${repo}/contents/${p}?ref=${head}`, { token, raw: true }))); } catch { decisionRecords.push({}); } // same as safe-merge: an unreadable record covers nothing
+  }
+  // The UX lint reads a git diff; the objects are fetched as data (public repository, no credentials).
+  let ux = { status: 2, stderr: '' };
+  try {
+    execFileSync('git', ['fetch', '--no-tags', '--quiet', 'origin', base, head], { stdio: 'ignore' });
     const here = path.dirname(fileURLToPath(import.meta.url));
-    let ux = { status: 2, stderr: '' };
-    try {
-      const out = execFileSync(process.execPath, [path.join(here, 'ux-impact-lint.mjs'), '--base', base, '--head', head, '--scope', env.INSTAR_UX_SCOPE ?? '', '--pusher', env.PR_PUSHER ?? '', '--body', env.PR_BODY ?? ''], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-      ux = { status: 0, stderr: '', stdout: out };
-    } catch (e) { ux = { status: typeof e?.status === 'number' ? e.status : 2, stderr: String(e?.stderr ?? '') }; }
-    const verdict = lintDescription({
-      title: env.PR_TITLE, body: env.PR_BODY, authorLogin: env.PR_AUTHOR_LOGIN, authorType: env.PR_AUTHOR_TYPE,
-      files, decisionRecords, uxCheck: (() => { const c = uxCheckFromExit(ux.status, ux.stderr); return c.ok ? c : { ...c, detail: `${c.detail}${uxApostropheHint(env.PR_BODY)}` }; })(),
-    });
-    const { annotations, summary } = renderReport(verdict, { baseRef: env.BASE_REF });
-    for (const a of annotations) console.log(a);
-    if (env.GITHUB_STEP_SUMMARY) fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `${summary}\n`);
-    console.log(summary);
+    execFileSync(process.execPath, [path.join(here, 'ux-impact-lint.mjs'), '--base', base, '--head', head, '--scope', process.env.INSTAR_UX_SCOPE ?? '', '--pusher', String(live.user?.login ?? ''), '--body', String(live.body ?? '')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    ux = { status: 0, stderr: '' };
+  } catch (e) { ux = { status: typeof e?.status === 'number' ? e.status : 2, stderr: String(e?.stderr ?? '') }; }
+  const uxRow = uxCheckFromExit(ux.status, ux.stderr);
+  const verdict = lintDescription({
+    title: live.title, body: live.body, authorLogin: live.user?.login, authorType: live.user?.type,
+    files, decisionRecords, uxCheck: uxRow.ok ? uxRow : { ...uxRow, detail: `${uxRow.detail}${uxApostropheHint(live.body)}` },
+  });
+  const { annotations, summary } = renderReport(verdict, { baseRef: live.base?.ref });
+  for (const a of annotations) console.log(a);
+  if (summaryPath) fs.appendFileSync(summaryPath, `### Pull request #${pr}\n\n${summary}\n\n`);
+  console.log(summary);
+  const status = statusFor(verdict, runUrl);
+  if (process.env.LINT_DRY_RUN === '1') { console.log(`dry run: would post ${JSON.stringify(status)} to ${head}`); return; }
+  await api(`/repos/${repo}/statuses/${head}`, { token, method: 'POST', body: status });
+}
+
+async function main() {
+  const env = process.env;
+  try {
+    const repo = env.GITHUB_REPOSITORY; const token = env.GH_TOKEN;
+    if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
+    const prs = prNumbersFromRun(env.RUN_PULL_REQUESTS);
+    if (!prs.length) { console.log('No same-repository pull request on this run; nothing to check.'); return; }
+    const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL}/${repo}/actions/runs/${env.GITHUB_RUN_ID}` : undefined;
+    for (const pr of prs.slice(0, 5)) {
+      try { await lintOne({ repo, pr, token, runUrl, summaryPath: env.GITHUB_STEP_SUMMARY }); }
+      catch (e) { console.log(`::warning title=Description check could not run for #${pr}::${String(e?.message ?? e).slice(0, 300)}`); }
+    }
   } catch (e) {
     // Never block: an internal error is itself a warning, and the merge-time floor still decides.
     console.log(`::warning title=Description check could not run::${String(e?.message ?? e).slice(0, 300)}`);
   }
-  process.exit(0);
 }
 
 const isCliEntry = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());
-if (isCliEntry) main();
+if (isCliEntry) main().finally(() => process.exit(0));
