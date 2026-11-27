@@ -17,7 +17,7 @@ describe('UndatedActionResurfacer production lifecycle', () => {
   let server: AgentServer;
   const raisedAttentionIds: string[] = [];
 
-  beforeAll(async () => {
+  beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'undated-e2e-'));
     const stateDir = path.join(dir, '.instar');
     fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
@@ -40,7 +40,6 @@ describe('UndatedActionResurfacer production lifecycle', () => {
     const sessionManager = createMockSessionManager() as any;
     sessionManager.on = () => undefined;
     server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), evolution, telegram: telegram as any });
-    await new Promise((resolve) => setTimeout(resolve, 30));
   });
 
   afterAll(async () => {
@@ -49,10 +48,9 @@ describe('UndatedActionResurfacer production lifecycle', () => {
   });
 
   it('is constructed, reads the real action store, and delegates to the production Attention seam', async () => {
-    // The first run happens shortly after boot; on a loaded machine that is later than a fixed
-    // 30 ms (seen on a peer verifier, 2026-11-04), so wait for it, bounded at 10 s.
+    // Wait for the first run and its asynchronous Attention delivery.
     let res = await request(server.getApp()).get('/evolution/actions/undated-resurfacer');
-    for (let i = 0; i < 100 && !(res.body.totalRuns >= 1); i++) {
+    for (let i = 0; i < 100 && !(res.body.totalRuns >= 1 && raisedAttentionIds.length > 0); i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       res = await request(server.getApp()).get('/evolution/actions/undated-resurfacer');
     }
