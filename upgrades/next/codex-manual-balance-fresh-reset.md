@@ -4,7 +4,7 @@
 
 ## What Changed
 
-Manual Codex balancing prefers freshly reset local accounts with a verified 0% weekly reading while their usage forecasts are gathering history. Remaining hours and work already on each account guide the choice. When no fresh reset qualifies, the existing forecast ordering applies.
+Manual Codex balancing can use freshly reset local accounts with a verified 0% weekly reading while their usage forecasts are gathering history. It compares how many sessions are already on the fresh account and the best account with a forecast before choosing. If the fresh account has more sessions, the move goes to the account with a forecast.
 
 ## What to Tell Your User
 

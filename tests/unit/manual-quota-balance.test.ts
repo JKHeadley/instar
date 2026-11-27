@@ -48,6 +48,29 @@ describe('manual unused-quota selection', () => {
     expect(choose(candidates, readings)?.accountId).toBe('later');
     expect(choose(candidates, readings, [session('assigned', 'later')])?.accountId).toBe('earlier');
   });
+  it('spreads successive moves between a fresh reset and an eligible forecast-backed account', () => {
+    const fresh = freshReset('fresh');
+    const candidates = [account('source'), fresh.local, account('warm')];
+    const readings = [fresh.forecast, summary('warm')];
+    const running = Array.from({ length: 8 }, (_, index) => session(String(index)));
+    const targets = running.map(current => {
+      const target = choose(candidates, readings, running)?.accountId;
+      current.subscriptionAccountId = target;
+      return target;
+    });
+    expect(targets).toEqual(['fresh', 'warm', 'fresh', 'warm', 'fresh', 'warm', 'fresh', 'warm']);
+  });
+  it.each(['weekly-use-began', 'short-window-full'])('chooses a forecast-backed target when fresh eligibility ends (%s)', reason => {
+    const fresh = freshReset('fresh');
+    if (reason === 'weekly-use-began') {
+      fresh.local.lastQuota!.sevenDay!.utilizationPct = 1;
+      fresh.forecast.sevenDay!.used = 1;
+    } else {
+      fresh.local.lastQuota!.windowsListed = ['fiveHour', 'sevenDay'];
+      fresh.local.lastQuota!.fiveHour = { utilizationPct: 100, resetsAt: new Date(now + 3_600_000).toISOString() };
+    }
+    expect(choose([account('source'), fresh.local, account('warm')], [fresh.forecast, summary('warm')])?.accountId).toBe('warm');
+  });
   it.each(['rollout-source', 'older-window', 'future-window', 'old-reading', 'nonzero', 'unexpected-short-window', 'invalid-reason'])(
     'requires fresh and corroborated zero usage even when the forecast is warming up (%s)', reason => {
       const { local, forecast } = freshReset('target', reason === 'older-window' ? 150 : reason === 'future-window' ? 169 : 166);

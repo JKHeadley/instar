@@ -12,6 +12,7 @@ export interface BalanceSession {
   id: string; tmuxSession: string; framework?: string; subscriptionAccountId?: string; status: string;
 }
 export interface BalancePick { accountId: string; score: number }
+interface RankedBalancePick extends BalancePick { running: number }
 
 const HOUR_MS = 3_600_000;
 
@@ -24,8 +25,8 @@ export function selectManualBalanceTarget(accounts: SubscriptionAccount[], summa
   if (!Number.isFinite(soft) || soft <= 0) return null;
   const source = accounts.find(account => account.id === sourceId);
   const sourceIdentity = source ? identityKey(source.provider, source.email) : null;
-  const scored: BalancePick[] = [];
-  const freshResets: BalancePick[] = [];
+  const scored: RankedBalancePick[] = [];
+  const freshResets: RankedBalancePick[] = [];
   for (const account of accounts) {
     if (account.id === sourceId || account.framework !== CODEX_CLI_FRAMEWORK || account.provider !== 'openai' || account.status !== 'active'
       || !isLocallyExecutable(account) || isDeviceLimitBenched(account) || account.deviceLimitSuspectedAt
@@ -57,16 +58,20 @@ export function selectManualBalanceTarget(accounts: SubscriptionAccount[], summa
     const aliases = new Set(accounts.filter(a => identityKey(a.provider, a.email) === identity).map(a => a.id));
     const running = sessions.filter(s => s.status === 'running' && s.framework === CODEX_CLI_FRAMEWORK && aliases.has(s.subscriptionAccountId ?? '')).length;
     if (freshReset) {
-      freshResets.push({ accountId: account.id, score: hoursLeft / (1 + running) });
+      freshResets.push({ accountId: account.id, score: hoursLeft / (1 + running), running });
       continue;
     }
     const central = forecast.central;
     if (central === null || !Number.isFinite(central) || central < 0 || central >= 100) continue;
     const score = (100 - central) / hoursLeft / (1 + running);
-    if (Number.isFinite(score) && score > 0) scored.push({ accountId: account.id, score });
+    if (Number.isFinite(score) && score > 0) scored.push({ accountId: account.id, score, running });
   }
-  const candidates = freshResets.length > 0 ? freshResets : scored;
-  return candidates.sort((a, b) => b.score - a.score || a.accountId.localeCompare(b.accountId))[0] ?? null;
+  const byScore = (a: BalancePick, b: BalancePick) => b.score - a.score || a.accountId.localeCompare(b.accountId);
+  const bestForecast = scored.sort(byScore)[0];
+  // Scores use different units, so compare concentration across the two groups.
+  const bestFresh = freshResets.filter(pick => !bestForecast || pick.running <= bestForecast.running).sort(byScore)[0];
+  const selected = bestFresh ?? bestForecast;
+  return selected ? { accountId: selected.accountId, score: selected.score } : null;
 }
 
 interface PendingBalance { sessionName: string; sessionId: string; sourceId: string; targetId: string; sourceIdentity: string; targetIdentity: string; targetHome: string }
