@@ -27,7 +27,7 @@ An automatic sign-in repair can start only from an open sign-in incident: a reco
 
 `SubscriptionLoginLedger.reconcileAdmission` runs on every quota poll. When a previously admitted cell drops out of a poll's admitted set, it closes that cell's open incident with outcome `cancelled`. A cell drops out when it is missing from that scan, not eligible, or past the 64-cell limit. When the cell comes back on the next poll, nothing reopens the incident. Incidents are opened only on a status transition (`recordStatus` / a `transition-to-needs-reauth` poll outcome). An account that is still `needs-reauth` makes no transition, so it never gets a new incident. Its repair shows `no-open-incident` forever, and the slow retry of its failed repair is unscheduled ("source closed").
 
-Live evidence: on the Mac Mini, gearfinity3d's incident 32 (exchange-failed, exchange-corroborated, observed) was opened 2026-11-25 16:12Z. It was closed `cancelled` at 2026-11-26 03:55:58Z while the account stayed `needs-reauth`, and the slow retry of repair 07a05cb5 was unscheduled at 03:56:09Z. The account is still signed out. The Laptop's gearfinity3d cell shows the same `no-open-incident` blocker.
+Live evidence: on the Mac Mini, one account's incident 32 (exchange-failed, exchange-corroborated, observed) was opened 2026-11-25 16:12Z. It was closed `cancelled` at 2026-11-26 03:55:58Z while the account stayed `needs-reauth`, and the slow retry of repair 07a05cb5 was unscheduled at 03:56:09Z. The account is still signed out. The Laptop's account A cell shows the same `no-open-incident` blocker.
 
 ## Change
 
@@ -86,12 +86,12 @@ A new record opened from the pool status alone would carry weaker evidence (`sta
   - never reopens when the account is no longer signed out, or when the field is absent;
   - does nothing for a cell with no incident.
 - The existing ledger and quota-poller tests are expected to pass unchanged. They run in Local Verify, because the M5 is reserved for the shared test line.
-- Live proof after update: gearfinity3d on the Mac Mini shows `relogin-reopened`, and its repair then runs by itself. Its incident 32 was cancelled on 2026-11-26 03:55:58Z. The reopen and the following repair attempt are recorded as separate observations. The Laptop is conditional: its `no-open-incident` blocker does not show its latest incident is a recent cancellation, so its ledger is checked before any claim (tracked as CMT-039 on the Mac M5 Pro). <!-- tracked: CMT-039 (origin m_a804869356b259820b3236e7c5a2ae7d) -->
+- Live proof after update: account A on the Mac Mini shows `relogin-reopened`, and its repair then runs by itself. Its incident 32 was cancelled on 2026-11-26 03:55:58Z. The reopen and the following repair attempt are recorded as separate observations. The Laptop is conditional: its `no-open-incident` blocker does not show its latest incident is a recent cancellation, so its ledger is checked before any claim (tracked as CMT-039 on the Mac M5 Pro). <!-- tracked: CMT-039 (origin m_a804869356b259820b3236e7c5a2ae7d) -->
 
 ## Maturation plan
 
 - **test-agent-live:** the unit test drives the real ledger on a real SQLite file, the same as a throwaway agent would.
-- **dev-agent-live:** from the release that carries it, on every machine of this agent. The Mac Mini gearfinity3d cell is expected to show relogin-reopened on the first poll after the update; the Laptop cell only if its ledger shows its latest incident was cancelled, which is checked first.
+- **dev-agent-live:** from the release that carries it, on every machine of this agent. The Mac Mini account A cell is expected to show relogin-reopened on the first poll after the update; the Laptop cell only if its ledger shows its latest incident was cancelled, which is checked first.
 - **fleet:** the same release, ungated (Frontloaded Decision 2). It restores state that existing rules already depend on, and adds no authority.
 - **graduation criterion:** within 48 hours of the update, at least one cell shows relogin-reopened followed by a repair attempt that the unchanged admission check accepted. Reopen counts per cell are read alongside admission drop-outs: more than one reopen per cell per day is a signal of admission churn, reviewed under CMT-040, not a repair failure.
 - **dark-window:** none. If the criterion is not met within 7 days, the reason is recorded on CMT-039.
@@ -103,7 +103,7 @@ Revert the PR. A reopened incident stays open until a poll resolves it, or until
 
 ## Multi-machine posture
 
-The pool status the poller passes is this machine's own: the same account shows `needs-reauth` on one machine and `active` on another in `GET /subscription-pool?scope=pool` today (gearfinity3d on 2026-11-26), so a peer's status does not set it. If a stale status ever reached this check, the repair's own live login check would end it `resolved-elsewhere`.
+The pool status the poller passes is this machine's own: the same account shows `needs-reauth` on one machine and `active` on another in `GET /subscription-pool?scope=pool` today (account A on 2026-11-26), so a peer's status does not set it. If a stale status ever reached this check, the repair's own live login check would end it `resolved-elsewhere`.
 
 machine-local, physical-credential-locality: the ledger records sign-in incidents for the logins on that machine's own disk, and each machine reopens only its own cells.
 
@@ -111,9 +111,9 @@ machine-local, physical-credential-locality: the ledger records sign-in incident
 
 > **Carrier (frozen excerpts: the work the tracked markers in this spec point at, commitments on the Mac M5 Pro):** <!-- tracked: CMT-039, CMT-040, CMT-041 -->
 >
-> **CMT-039** — "A gearfinity3d repair (Mac Mini or Laptop) that ran by itself with its audit trail, via this fix, by 20:00 PT Friday 2026-11-27; tell the Chief of Staff by noon Friday if the test line slips."
+> **CMT-039** — "A account A repair (Mac Mini or Laptop) that ran by itself with its audit trail, via this fix, by 20:00 PT Friday 2026-11-27; tell the Chief of Staff by noon Friday if the test line slips."
 >
-> **CMT-040** — "Find why the Mac Mini gearfinity3d cell left the poller's admitted set at 2026-11-26 03:55:58Z, and decide whether admission bookkeeping should cancel an incident for a cell that misses a single poll at all (a debounce)."
+> **CMT-040** — "Find why the Mac Mini account A cell left the poller's admitted set at 2026-11-26 03:55:58Z, and decide whether admission bookkeeping should cancel an incident for a cell that misses a single poll at all (a debounce)."
 >
 > **CMT-041** — "Close two gaps left by this fix: a signed-out cell with no incident at all, and a repair row whose second source-closed cancel stays cancelled; decide each with the CMT-040 debounce."
 >

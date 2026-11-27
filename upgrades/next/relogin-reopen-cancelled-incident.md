@@ -14,4 +14,4 @@ An account that stays signed out keeps its open sign-in incident, so its automat
 
 ## Evidence
 
-Mac Mini, gearfinity3d: incident 32 was closed "cancelled" at 2026-11-26 03:55:58Z while the account stayed signed out, and the slow retry of repair 07a05cb5 was unscheduled. The Laptop shows the same "no open incident" blocker. Unit tests are in tests/unit/relogin-reopen-cancelled-incident.test.ts.
+Mac Mini, account A: incident 32 was closed "cancelled" at 2026-11-26 03:55:58Z while the account stayed signed out, and the slow retry of repair 07a05cb5 was unscheduled. The Laptop shows the same "no open incident" blocker. Unit tests are in tests/unit/relogin-reopen-cancelled-incident.test.ts.

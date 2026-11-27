@@ -6,7 +6,7 @@ When an account gets signed out on a machine, Instar writes down an "incident": 
 
 Every few minutes, Instar re-checks which accounts on the machine it is tracking. If an account briefly drops off that list, its open incident is closed as "cancelled". When the account comes back on the next check, nobody reopens the incident. A new incident is only ever opened when an account changes from signed in to signed out, and an account that is still signed out does not change. So it stays signed out with no incident, and the repair can never start again.
 
-That is what happened to the gearfinity3d account on the Mac Mini on the evening of November 25. Its incident was closed as cancelled while the account stayed signed out, and its next automatic repair try was dropped. The Laptop shows the same problem for the same account.
+That is what happened to one account on the Mac Mini on the evening of November 25. Its incident was closed as cancelled while the account stayed signed out, and its next automatic repair try was dropped. The Laptop shows the same problem for the same account.
 
 ## What changes
 

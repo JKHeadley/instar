@@ -14,7 +14,7 @@ A GPT-tier external pass ran in all three rounds. A clean-door Claude read also 
 
 ## ELI10 Overview
 
-A sign-in repair can start only from an open "incident", the record that an account's login failed on that machine. When an account briefly dropped off the tracked list, its incident was closed as "cancelled", and nothing reopened it while the account stayed signed out. So no repair could start again. That happened to gearfinity3d on the Mac Mini. Now such an incident is reopened as it was, when the pool still says the account is signed out and nothing has read it clean since. A repair that the closing cancelled mid-run is given one more start.
+A sign-in repair can start only from an open "incident", the record that an account's login failed on that machine. When an account briefly dropped off the tracked list, its incident was closed as "cancelled", and nothing reopened it while the account stayed signed out. So no repair could start again. That happened to account A on the Mac Mini. Now such an incident is reopened as it was, when the pool still says the account is signed out and nothing has read it clean since. A repair that the closing cancelled mid-run is given one more start.
 
 ## Original vs Converged
 
