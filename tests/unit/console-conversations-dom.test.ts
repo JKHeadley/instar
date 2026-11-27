@@ -42,6 +42,29 @@ async function boot(hash: string, handler: (url: string, options?: any) => { sta
 }
 
 describe('native console Conversations', () => {
+  it('a hierarchy switched off here offers Chats instead of a dead end', async () => {
+    const f = await boot('#/work/conversations', () => ({ status: 503, body: { code: 'conversation-graph-off' } }));
+    expect(f.main.textContent).toContain('This view of your conversations is not switched on here yet.');
+    const open = [...f.main.querySelectorAll('a')].find((a) => a.textContent === 'Open Chats') as HTMLAnchorElement;
+    expect(open.getAttribute('href')).toBe('#/work/chats');
+  });
+
+  // "Watch the session" (Justin, topic 140618, 2026-11-14): a conversation's page links to the session answering it.
+  it('a conversation page links to its running session, and says so plainly when none is running', async () => {
+    const node = { ref: { kind: 'conversation', platform: 'telegram', chatId: '-100123', topicId: 42 }, title: 'Worker', kind: 'conversation' };
+    const graph = (url: string) => url.endsWith('/pending') ? { body: { items: [] } } : { body: { partial: false, node, children: { items: [], nextCursor: null } } };
+    const running = { sessions: [{ tmuxSession: 'echo-topic-42', status: 'running', conversationRef: 'telegram:42', startedAt: new Date(Date.now() - 7_200_000).toISOString() }], pool: { selfMachineNickname: 'Mac Studio' } };
+    const f = await boot('#/work/conversations?node=opaque-node', (url) => url.startsWith('/sessions?scope=pool') ? { body: running } : graph(url));
+    const link = f.main.querySelector('.conversation-live-session a') as HTMLAnchorElement;
+    expect(link?.textContent).toBe('Watch the session');
+    expect(link.getAttribute('href')).toBe('#/work/sessions?s=echo-topic-42');
+    expect(f.main.querySelector('.conversation-live-session')!.textContent).toContain('Running on Mac Studio, started 2 h ago.');
+    dom.window.close();
+    const g = await boot('#/work/conversations?node=opaque-node', (url) => url.startsWith('/sessions?scope=pool') ? { body: { sessions: [], pool: {} } } : graph(url));
+    expect(g.main.querySelector('.conversation-live-session a')).toBeNull();
+    expect(g.main.querySelector('.conversation-live-session')!.textContent).toBe('No session is running for this conversation right now. The next message in it starts one.');
+  });
+
   it('Review suggestions refreshes itself: the 30 s page re-run never reloads it or cancels an Accept', async () => {
     const calls: string[] = [];
     const ctx = { selfRefreshing: vi.fn() };

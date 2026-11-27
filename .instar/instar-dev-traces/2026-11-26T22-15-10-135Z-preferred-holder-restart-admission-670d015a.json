@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "preferred-holder-restart-admission",
+  "sessionId": "18cdffec-831e-45fb-aad0-e5da2a65a801",
+  "timestamp": "2026-11-26T22:15:10.135Z",
+  "artifactPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "artifactSha256": "9cdbc89ff13aa7a55b2e90e844cd6342030b88f05d96a78fb23778bd415409ba",
+  "specPath": "docs/specs/planned-restart-keeps-lead.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/DesktopSetupTarget.ts",
+    "src/core/ForegroundRestartWatcher.ts",
+    "src/core/LeaseContinuity.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/PlannedRestartVerifyGuard.ts",
+    "src/core/SubscriptionReloginOperatorConfig.ts",
+    "src/core/plannedRestartAdmissionTimeout.ts",
+    "src/lifeline/ServerSupervisor.ts",
+    "src/server/routes.ts",
+    "src/threadline/connectEnable.ts",
+    "tests/e2e/planned-restart-keeps-lead-boot-path.test.ts",
+    "tests/integration/planned-restart-lease-admission.test.ts",
+    "tests/integration/server-restart-route.test.ts",
+    "upgrades/eli16/preferred-holder-restart-admission.md",
+    "upgrades/next/preferred-holder-restart-admission.md",
+    "upgrades/side-effects/preferred-holder-restart-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Both installed restart consumers make a serving-continuity decision using a new authenticated internal route.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
