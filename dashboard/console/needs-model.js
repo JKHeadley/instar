@@ -34,7 +34,15 @@ export function documentDecisionNeedRows(res) {
 export function trustRequestNeedRows(trust, now) {
   if (sourceState(trust) === 'off') return [];
   const requests = buildTrustRequests(trust, now);
-  return requests.ok ? requests.rows.map((r) => row(r.key, r.main, r.sub, '#/settings/allowed?s=approvals', [r.requestId])) : UNREADABLE;
+  return requests.ok ? requests.rows.map((r) => {
+    let reason = r.sub;
+    if (r.deliveryState === 'setup') {
+      reason = r.chatDeliveryUnconfirmed
+        ? 'Set up approvals in the Instar app because chat delivery is unconfirmed.'
+        : 'Set up approvals in the Instar app to review this request.';
+    }
+    return row(r.key, r.main, reason, `#/settings/allowed?s=approvals&request=${encodeURIComponent(r.requestId)}`, [r.requestId]);
+  }) : UNREADABLE;
 }
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
@@ -82,14 +90,14 @@ export function chiefOfStaffNeedRows(cos, now) {
   const projectHref = (p) => (typeof p.conversationKey === 'string' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(p.conversationKey) ? `#/work/chats?c=${encodeURIComponent(p.conversationKey)}` : href);
   // The server's short name (initiative title / conversation name / goal lead) when it sends one; else the same rule here.
   const title = (p) => (typeof p.title === 'string' && p.title.trim() ? cutAtWord(p.title, 60)
-    : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : String(p.conversationKey || 'a project'));
+    : typeof p.goal === 'string' && p.goal.trim() ? shortProjectTitle(p.goal, 60) : 'A project');
   for (const p of d.projects) {
     if (!p || typeof p !== 'object') continue;
     // The owner paused it (spec cos-owner-pause-record §3.3): they already decided, so it asks nothing of them.
     if (p.pausedBy) continue;
     if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', projectHref(p)));
     else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', projectHref(p)));
-    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', projectHref(p)));
+    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, 'The project is waiting for your reply in its conversation.', projectHref(p)));
   }
   if (d.projects.length) {
     if (!d.lease.live) out.push(row('cos:paused', 'Your Chief of Staff is paused until you check in', 'Say anything in its conversation.', href));

@@ -78,6 +78,7 @@ function setup() {
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Ann',
     killSession: () => true, onEmergencyStop: () => undefined,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
     dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
   });
   pairing.useAppConversationStore(svc.store);

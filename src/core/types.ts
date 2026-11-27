@@ -3144,6 +3144,8 @@ export interface MultiMachineConfig {
      */
     plannedRestartLeaseContinuity?: {
       enabled?: boolean;
+      /** Require a fresh authenticated holder confirmation before a planned supervised restart. Off by default. */
+      admissionEnabled?: boolean;
       /** Replaces the measured base of the window (still under the peer-enforced caps). */
       windowMs?: number;
     };
@@ -3876,6 +3878,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Enables the read-only project binding batch preview. Defaults off. */
+    bindingBatchPreview?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;
@@ -7961,6 +7965,16 @@ export interface MonitoringConfig {
    * fleet). Registered in DEV_GATED_FEATURES.
    */
   selfDeferralGuard?: {
+    enabled?: boolean;
+  };
+  /**
+   * CMT-2204: the UnjustifiedStopGate records the credential-scrubbed stop
+   * reason + recent turns it judged under its provenance row's machine-local
+   * `_contentFull`, plus a content-free prompt sha, so its decisions can be
+   * replayed. `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev, DARK on the fleet). Registered in DEV_GATED_FEATURES.
+   */
+  stopGateReplayInput?: {
     enabled?: boolean;
   };
   /**

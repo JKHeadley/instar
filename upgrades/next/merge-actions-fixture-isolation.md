@@ -1,15 +1,14 @@
-# Upgrade Guide — Merge Actions Fixture Isolation
+# Upgrade Guide — vNEXT
 
+<!-- internal-only -->
 <!-- bump: patch -->
 
 ## What Changed
-The Actions-contract merge-check integration fixture explicitly selects the existing Actions verification mode in its child environment. It no longer inherits a hosting agent’s local-verification setting. Production merge policy is unchanged.
+
+The GitHub Actions merge tests select Actions mode and run from a private installed-agent directory. This keeps the developer’s agent configuration and live verification server outside the fixture.
 
 ## Evidence
-All six Actions-contract and eighteen local-floor integration tests passed together. Missing Actions checks still refuse the fake merge; local-mode record requirements remain covered separately. Complete normal verification remains required before merging history-import updates.
 
-## What to Tell Your User
-The verification test correction changes no setup or history-import behavior. The complete history updates still need normal verification before they can merge.
+The six existing Actions cases cover pending checks, missing checks and a complete set of checks from the required producers. The local verification fixture exercises the separate server-backed checks.
 
-## Summary of New Capabilities
-None. This correction makes a test independent of the computer’s verification configuration.
+All 24 integration cases passed together on the combined change.

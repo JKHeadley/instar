@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-27T15:20:29.055Z",
+  "slug": "usage-ledger-bounded-ingestion",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 555,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/UsageLedgerTranscript.ts",
+      "src/monitoring/UsageLedgerTranscript.worker.ts"
+    ],
+    "addedLines": 459,
+    "deletedLines": 96
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Scheduled ingestion yielded between files while synchronously reading and parsing each entire unread range. Cold and invalidated checkpoints increase that range. The Studio stall samples establish overlap without causal attribution."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

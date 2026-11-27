@@ -9,9 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { ACTIONS_FLOOR_CONTEXTS } from '../../scripts/safe-merge.mjs';
+import { ACTIONS_FLOOR_CONTEXTS, resolveAgentHome, parseAgentServerConfig } from '../../scripts/safe-merge.mjs';
 
-const SCRIPT = path.resolve(__dirname, '../../scripts/safe-merge.mjs');
+const SCRIPTS = path.resolve(__dirname, '../../scripts');
+let script: string;
 const HEAD = '0353e0c5932140fbe63133af7fd09bffe798a5da';
 
 let dir: string;
@@ -43,7 +44,7 @@ esac
 }
 
 function run() {
-  const r = spawnSync(process.execPath, [SCRIPT, '2302', '--auto', '--squash', '--repo', 'JKHeadley/instar'], {
+  const r = spawnSync(process.execPath, [script, '2302', '--auto', '--squash', '--repo', 'JKHeadley/instar'], {
     encoding: 'utf-8',
     // Exercise the Actions contract even when the hosting agent uses the local floor.
     env: { ...process.env, INSTAR_MERGE_FLOOR: 'actions', PATH: `${dir}:${process.env.PATH}` },
@@ -56,6 +57,18 @@ describe('safe-merge --auto — zero GitHub Actions checks is not green', () => 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-merge-nochecks-'));
     log = path.join(dir, 'calls.log');
+    // Exercise the Actions contract in an actual private installed-script home.
+    // A checkout script resolves its git common-dir to the real agent home,
+    // which may use local admission instead of Actions.
+    const installedScripts = path.join(dir, '.instar/shadow-install/node_modules/instar/scripts');
+    fs.mkdirSync(installedScripts, { recursive: true });
+    fs.cpSync(SCRIPTS, installedScripts, { recursive: true });
+    const config = { monitoring: { greenPrAutoMerge: { floor: 'actions' } } };
+    fs.writeFileSync(path.join(dir, '.instar/config.json'), JSON.stringify(config));
+    expect(resolveAgentHome(installedScripts)).toBe(dir);
+    const selected = parseAgentServerConfig(fs.readFileSync(path.join(dir, '.instar/config.json'), 'utf8'));
+    expect(selected).toMatchObject({ floor: 'actions', port: null, tokenSource: null });
+    script = path.join(installedScripts, 'safe-merge.mjs');
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/safe-merge-no-checks-ran.test.ts:afterEach' }));
 

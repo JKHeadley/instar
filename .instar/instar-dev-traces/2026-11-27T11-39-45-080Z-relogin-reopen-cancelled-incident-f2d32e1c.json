@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "relogin-reopen-cancelled-incident",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-27T11:39:45.080Z",
+  "artifactPath": "upgrades/side-effects/relogin-reopen-cancelled-incident.md",
+  "artifactSha256": "a50db35d01a2ad6f78de35779c23f4e5150cf130f211ee936f8421b03efa48af",
+  "coveredFiles": [
+    "docs/specs/carriers/relogin-reopen-cancelled-incident.json",
+    "docs/specs/relogin-reopen-cancelled-incident.eli16.md",
+    "docs/specs/relogin-reopen-cancelled-incident.md",
+    "docs/specs/reports/relogin-reopen-cancelled-incident-convergence.md",
+    "upgrades/next/relogin-reopen-cancelled-incident.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs wording only: replace real account names with neutral labels in this change's spec, ELI16, report, carrier and release note; no runtime change",
+  "eli16Path": "docs/specs/relogin-reopen-cancelled-incident.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/relogin-reopen-cancelled-incident.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

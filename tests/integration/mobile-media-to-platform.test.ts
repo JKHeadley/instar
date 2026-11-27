@@ -93,6 +93,7 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null; enfo
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger, dispatch: () => null,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
   });
   cleanups.push(() => svc.stop());
 

@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "usage-ledger-bounded-ingestion",
+  "sessionId": "181652f6-4f88-440e-9a91-37b0c12c33ce",
+  "timestamp": "2026-11-27T17:35:54.408Z",
+  "artifactPath": "upgrades/side-effects/usage-ledger-bounded-ingestion.md",
+  "artifactSha256": "9d45580df524e23e9a717bf5f9ca0cf612586441dd58d6de55a0b3c49bbca13f",
+  "coveredFiles": [
+    "docs/specs/usage-ledger-bounded-ingestion.eli16.md",
+    "src/monitoring/UsageLedger.ts",
+    "upgrades/side-effects/usage-ledger-bounded-ingestion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only error-path clarification verified with repository ratchets and focused unit, HTTP and initialized-server tests. No executable behavior changes.",
+  "eli16Path": "docs/specs/usage-ledger-bounded-ingestion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-ledger-bounded-ingestion.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

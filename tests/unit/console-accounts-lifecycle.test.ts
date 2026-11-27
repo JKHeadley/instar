@@ -98,7 +98,7 @@ function useAutoRepair() {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  dom = new JSDOM('<main></main>', { url: 'https://fixture.invalid/dashboard/console/#/capacity/accounts', pretendToBeVisual: true });
+  dom = new JSDOM('<main></main>', { url: 'https://fixture.invalid/dashboard/console/#/capacity/accounts?view=sign-in', pretendToBeVisual: true });
   for (const key of ['window', 'document', 'location', 'localStorage']) vi.stubGlobal(key, dom.window[key]);
   vi.stubGlobal('requestAnimationFrame', (callback) => setTimeout(callback, 0));
   main = document.querySelector('main');
@@ -175,7 +175,7 @@ describe('Accounts action dialog ownership', () => {
     await settle(850);
     expect(document.querySelector('[role=dialog]')).toBeNull();
     expect(get.mock.calls.filter(([path]) => path !== '/quota-pacing')).toHaveLength(8);
-    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(2);
+    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(0);
     expect(writes(fetch)).toEqual([start, cancel]);
   });
 
@@ -209,6 +209,7 @@ describe('Accounts action dialog ownership', () => {
   });
 
   it('does not replace another Accounts dialog when an older unlock check returns', async () => {
+    location.hash = '#/capacity/accounts';
     const pending = deferred();
     const fetch = transport({ '/dashboard/unlock-check': pending.promise });
     await renderAccounts(main, { ...ctx, get: reads() });
@@ -270,6 +271,7 @@ describe('Accounts action dialog ownership', () => {
   });
 
   it('keeps the next page dialog after the repair-cell request completed', async () => {
+    location.hash = '#/capacity/accounts';
     const fetch = transport({ '/dashboard/unlock': reply(unlockResult), [repair]: reply() });
     const episodes = [{ id: 'fixture-episode', machineId: 'fixture-studio', accountId: 'fixture-account', state: 'failed' }];
     await renderAccounts(main, { ...ctx, get: reads({ episodes }) });
@@ -286,6 +288,7 @@ describe('Accounts action dialog ownership', () => {
   });
 
   it('allows the repair already sent before navigation to complete without opening a dialog', async () => {
+    location.hash = '#/capacity/accounts';
     const pending = deferred();
     const fetch = transport({ '/dashboard/unlock': reply(unlockResult), [repair]: pending.promise });
     const episodes = [{ id: 'fixture-episode', machineId: 'fixture-studio', accountId: 'fixture-account', state: 'failed' }];
@@ -318,7 +321,7 @@ describe('Accounts action dialog ownership', () => {
     await settle(4000);
     expectNextDialog();
     expect(get.mock.calls.filter(([path]) => path !== '/quota-pacing')).toHaveLength(4);
-    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(1);
+    expect(get.mock.calls.filter(([path]) => path === '/quota-pacing')).toHaveLength(0);
     expect(fetch.mock.calls.filter(([path]) => path.includes('/completion?'))).toHaveLength(1);
   });
 
@@ -341,6 +344,7 @@ describe('Accounts action dialog ownership', () => {
   });
 
   it('does not let a slower initial read overwrite a newer render in the same visit', async () => {
+    location.hash = '#/capacity/accounts';
     const pending = deferred();
     const old = reads({}, account('Old Account'));
     const slow = renderAccounts(main, { ...ctx, get: async (path) => {

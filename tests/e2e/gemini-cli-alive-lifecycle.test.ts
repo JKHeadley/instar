@@ -15,10 +15,10 @@
  *   1. STRUCTURAL (always runs, CI-safe): the production resolution path names
  *      and constructs the gemini provider. Gated to skip cleanly when the
  *      binary is absent (CI without gemini installed stays green).
- *   2. REAL SMOKE (runs ONLY when the binary is present, e.g. the dev box with
- *      v0.25.2 installed): a real `gemini -m gemini-2.5-flash --approval-mode
- *      default -p "<known-answer>"` returns the expected PONG-style text. A
- *      genuine alive proof, not a mock.
+ *   2. REAL SMOKE (runs when the binary is present): the production provider
+ *      launches Gemini in a disposable workspace and reports the CLI's auth
+ *      refusal. In an already trusted checkout with a dedicated OAuth login,
+ *      INSTAR_TEST_LIVE_GEMINI=1 exercises the expected PONG-style reply.
  *
  * MEASURED 2026-08-14 (round 10) — WHERE THAT CLAIM CURRENTLY STOPS. On this dev box the smoke
  * assertion has never actually executed. The binary IS present, so layer 2 runs and the file
@@ -36,6 +36,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
+import { liveGeminiSmokeEnabled, withGeminiSmokeWorkspace } from '../helpers/geminiSmokeWorkspace.js';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
@@ -72,9 +73,10 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
     expect(inner).toBeInstanceOf(GeminiCliIntelligenceProvider);
   });
 
-  it.skipIf(!haveGemini)(
+  it.skipIf(!haveGemini && !liveGeminiSmokeEnabled)(
     'a REAL one-shot returns the expected smoke text through the production provider',
     async () => {
+      expect(geminiPath).not.toBeNull();
       const provider = buildIntelligenceProvider({
         framework: 'gemini-cli',
         binaryPath: geminiPath!,
@@ -85,11 +87,12 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
       // Reply-with-PONGXYZ smoke. Run through the ALIVE provider, not a mock.
       let out: string;
       try {
-        out = await provider!.evaluate(
+        out = await withGeminiSmokeWorkspace(() => provider!.evaluate(
           'Reply with exactly the single word: PONGGEMINI and nothing else.',
           { model: 'fast', timeoutMs: 45_000 },
-        );
+        ));
       } catch (err) {
+        if (liveGeminiSmokeEnabled) throw err;
         // `haveGemini` proves the binary is INSTALLED, not that it is USABLE. An uncredentialed CLI
         // exits before it reads our prompt, so there is nothing here to assert about our code — the
         // provider embeds the CLI's own stderr in this message, and only that named cause is skipped.
