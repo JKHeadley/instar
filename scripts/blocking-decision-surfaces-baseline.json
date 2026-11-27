@@ -186,8 +186,8 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "55dc2d028cb2ccdfed758bd51feb17390bc95524aabbc84c0c4899b3ca014faf",
-      "reason": "Re-declared 2026-11-22 (SEC-156): --browser now asks the agent server to type a browser-only password (POST /secrets/type) and only reports the outcome; the old local typing path is a plain refusal. Earlier: safe #N field selection and reported/retried refused consume (2026-11-17). No message or session blocking authority; every refusal stays scoped to the requested operation."
+      "sha256": "81ff8c844e6e7848ed15845a689fa0d51516220e40e6fd7bab99884b1efdcc07",
+      "reason": "Re-declared 2026-11-27 (SEC-156 second pass): the --browser branch no longer prints driver output (the server stopped returning it) and names the fixed category instead; its exits and refusals are unchanged. Re-declared 2026-11-22 (SEC-156): --browser now asks the agent server to type a browser-only password (POST /secrets/type) and only reports the outcome; the old local typing path is a plain refusal. Earlier: safe #N field selection and reported/retried refused consume (2026-11-17). No message or session blocking authority; every refusal stays scoped to the requested operation."
     },
     {
       "path": "src/templates/scripts/browser/chrome-ledger.sh",

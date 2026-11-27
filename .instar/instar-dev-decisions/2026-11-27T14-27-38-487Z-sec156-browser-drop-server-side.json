@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-27T14:27:38.487Z",
+  "slug": "sec156-browser-drop-server-side",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/templates/scripts/secret-drop-retrieve.mjs matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/server/routes.ts",
+      "src/templates/scripts/secret-drop-retrieve.mjs"
+    ],
+    "addedLines": 15,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

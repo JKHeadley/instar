@@ -162,14 +162,15 @@ if (res.status === 409) {
       process.stderr.write(`browser: could not reach the agent server (${e.message}) — secret NOT consumed (safe to retry)\n`);
       process.exit(1);
     }
-    if (typeof typed.output === 'string' && typed.output) process.stderr.write(typed.output.endsWith('\n') ? typed.output : `${typed.output}\n`);
+    // The server never returns the driver's output (it was just handed the secret); only a fixed category.
     if (typed.typed) {
       process.stderr.write(typed.consumed
         ? 'browser: typed — secret consumed. If the sign-in fails, ask for a new Secret Drop.\n'
         : 'browser: typed. If the sign-in fails, ask for a new Secret Drop.\n');
       process.exit(0);
     }
-    process.stderr.write(`browser: exited ${typed.exitCode ?? 1} — secret NOT consumed (read the page before retrying).\n`);
+    const why = typed.category === 'timeout' ? 'the browser driver timed out' : 'the browser driver did not finish typing';
+    process.stderr.write(`browser: ${why} (exit ${typed.exitCode ?? 1}) — secret NOT consumed (read the page before retrying; the driver's details are in the agent server log).\n`);
     process.exit(typeof typed.exitCode === 'number' && typed.exitCode > 0 ? typed.exitCode : 1);
   }
   process.stderr.write(`HTTP 409: ${typeof info?.error === 'string' ? info.error : '(no error message)'}\n`);

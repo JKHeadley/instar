@@ -314,6 +314,35 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  const browserTypeWithDriver = async (driverBody: string) => {
+    const app = mount(tmpDir);
+    const reqRes = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
+      .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
+    const token = reqRes.body.token as string;
+    const form = await request(app).get(`/secrets/drop/${token}`);
+    const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
+    await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw-SYNTHETIC-VALUE' }).expect(200);
+    const browserDir = path.join(tmpDir, '.instar', 'scripts', 'browser');
+    fs.mkdirSync(browserDir, { recursive: true });
+    fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), `#!/bin/bash\n${driverBody}\n`, { mode: 0o755 });
+    return request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
+  };
+
+  it('the type response carries a fixed category and never the driver output, on success', async () => {
+    // The synthetic driver echoes the value it read plus page text: none of it may come back.
+    const r = await browserTypeWithDriver('v=$(cat); echo "typed $v into SENSITIVE-PAGE-TEXT"; echo "stderr $v" >&2; exit 0');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ typed: true, exitCode: 0, consumed: true, browserHost: 'accounts.example.com', category: 'typed' });
+    expect(JSON.stringify(r.body)).not.toMatch(/SYNTHETIC-VALUE|SENSITIVE-PAGE-TEXT|stderr/);
+  });
+
+  it('the type response carries a fixed category and never the driver output, on failure (kept for retry)', async () => {
+    const r = await browserTypeWithDriver('v=$(cat); echo "failed with $v on SENSITIVE-PAGE-TEXT" >&2; exit 3');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ typed: false, exitCode: 3, consumed: false, browserHost: 'accounts.example.com', category: 'driver-failed' });
+    expect(JSON.stringify(r.body)).not.toMatch(/SYNTHETIC-VALUE|SENSITIVE-PAGE-TEXT/);
+  });
+
   it('stored-copy branch (after a restart): a failed delete consumes nothing (503) and a retry succeeds', async () => {
     const token = await dropSecret(mount(tmpDir), { code: '333333' });
     const fresh = mount(tmpDir); // a new process: the in-memory copy is gone

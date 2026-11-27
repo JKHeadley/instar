@@ -32368,13 +32368,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // Typed: the browser drop is gone (it was never on disk). Not typed: kept for a retry.
         if (typed) secretDrop.consumeReceived(token);
         const consumed = typed;
-        // The driver's own messages (never the value: it reads the value from standard input only).
-        const output = `${String(stdout ?? '')}${String(stderr ?? '')}`.slice(-2000);
-        res.json({ typed, exitCode, consumed, browserHost: host, output });
+        // Response boundary: the driver was just handed a secret, so none of its output is ever
+        // returned (it could echo page text or the value itself). The caller gets a fixed result
+        // and a fixed category; the driver's own messages stay on this machine's log, truncated.
+        const timedOut = !!err && ((err as { killed?: boolean }).killed === true || (err as { signal?: unknown }).signal != null);
+        const category: 'typed' | 'timeout' | 'driver-failed' = typed ? 'typed' : timedOut ? 'timeout' : 'driver-failed';
+        if (!typed) console.warn(`[secret-drop] browser type for ${host} ended as ${category} (exit ${exitCode}); driver output withheld from the response`);
+        void stdout; void stderr;
+        res.json({ typed, exitCode, consumed, browserHost: host, category });
       });
     } catch (err) {
       secretTypeInFlight.delete(token);
-      res.status(500).json({ error: 'browser-driver-failed', detail: err instanceof Error ? err.message : 'could not start the browser driver' });
+      console.warn(`[secret-drop] could not start the browser driver: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(500).json({ error: 'browser-driver-failed', detail: 'could not start the browser driver' });
       return;
     }
     child.stdin?.on('error', () => { /* @silent-fallback-ok — the exit callback reports the failure */ });
