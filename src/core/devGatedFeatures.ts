@@ -50,6 +50,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Read-only: removes nothing, writes only its own plan and audit files under local-state, and every git/gh call is capped by the disk-steward run deadline so it cannot cost that run its other results. false turns it off.',
   },
   {
+    name: 'bootSlowCallbacks',
+    configPath: 'monitoring.bootSlowCallbacks',
+    description: 'Boot slow-callback attributor (fb-756ec068-89d): for 120 s after boot, logs any callback that holds the event loop over 1 s with the code that scheduled it; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Observation only: an async_hooks hook that times callbacks and writes at most 20 log lines, then disables itself; an internal error disables the hook, never the callback. No gate, notice, state file or outward action. false turns it off.',
+  },
+  {
     name: 'noDataLossRepos',
     configPath: 'noDataLoss.repos.enabled',
     description: 'The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1): every repository this agent works in on each machine, its remotes, single-copy work and age, at GET /repos[?scope=pool]; a repository with no remote, or unpushed work past the grace window, is a Needs-you row; omitted => live on a development agent, dark on the fleet.',

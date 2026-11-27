@@ -5,6 +5,7 @@
  * child has exited but whose marker is still present gets a short settle window
  * (see EXIT_SETTLE_RESTART_HOLD_MS).
  */
+import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -247,7 +248,10 @@ export function readPlannedRestartVerifyState(
 ): PlannedRestartVerifyState {
   let request: PlannedRestartFlag;
   try {
-    request = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'restart-requested.json'), 'utf8')) as PlannedRestartFlag;
+    const flag = path.join(stateDir, 'state', 'restart-requested.json');
+    const raw = fs.readFileSync(flag, 'utf8');
+    if (restartAdmissionTimedOut(flag, raw)) return { pending: false, pendingSinceMs: null, hold: false, holdUntilMs: null };
+    request = JSON.parse(raw) as PlannedRestartFlag;
   } catch {
     // @silent-fallback-ok — absent or unreadable flag means no planned restart is pending.
     return { pending: false, pendingSinceMs: null, hold: false, holdUntilMs: null };

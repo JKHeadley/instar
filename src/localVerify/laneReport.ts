@@ -69,6 +69,7 @@ export interface FileCounts {
 
 export interface ParsedLaneReport {
   files: Map<string, FileCounts>;
+  completeAndClean?: boolean;
 }
 
 /** Bound on a stored failure message (record and audit stay small). */
@@ -178,7 +179,7 @@ function relativize(name: string, rootDir: string): string {
  * `opts.outcomeDigest` adds each file's `outcomeDigest` (borrowed helpers). Without it the output
  * is exactly what it was before the option existed: no field is added, renamed or reordered.
  */
-export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean; outcomeDigest?: boolean; namedRetry?: boolean } = {}): ParsedLaneReport {
+export function parseVitestJson(text: string, rootDir: string, opts: { solo?: boolean; outcomeDigest?: boolean; namedRetry?: boolean; checkCompletion?: boolean } = {}): ParsedLaneReport {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -272,7 +273,23 @@ export function parseVitestJson(text: string, rootDir: string, opts: { solo?: bo
     }
     if (opts.outcomeDigest) c.outcomeDigest = outcomeDigest(outcomes.get(path) ?? []);
   }
-  return { files };
+  if (!opts.checkCompletion) return { files };
+  const summary = doc as Record<string, unknown>;
+  let passed = 0;
+  let skipped = 0;
+  let todo = 0;
+  let failed = 0;
+  for (const counts of files.values()) {
+    passed += counts.passed;
+    skipped += counts.skipped;
+    todo += counts.todo;
+    failed += counts.failed;
+  }
+  return { files, completeAndClean: failed === 0 && passed > 0 && summary.success === true
+    && summary.numFailedTestSuites === 0 && summary.numPendingTestSuites === 0 && summary.numFailedTests === 0
+    && summary.numPassedTests === passed && summary.numPendingTests === skipped && summary.numTodoTests === todo
+    && summary.numTotalTests === passed + skipped + todo
+    && (doc as { testResults: unknown[] }).testResults.length === files.size };
 }
 
 /** The counts of a file without its test names (what may stay in a lane report after a re-run). */
