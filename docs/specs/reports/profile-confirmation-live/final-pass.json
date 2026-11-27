@@ -1,0 +1,156 @@
+{
+  "artifact": {
+    "build": {
+      "candidate": "f64b4cdff15ec278e021646997ce4e8cde0e1ffa",
+      "files": {
+        "dist/cli.js": "1732e1ee504a262eb5d11ff36cb306a773c76e61b29b7589817df49864ff6458",
+        "dist/commands/server.js": "88e9398d16f68be10a11e41f46eab982dac976ad172fc22d553e62b6f16c9324",
+        "dist/core/ProfileProposalRequests.js": "a5b85e66d41ca8e9a37ead2632d4f1eb85d0aab80478af3bf57d196c49f9148b",
+        "dist/core/handleProfileProposalReply.js": "fe5122c56829b9b80cf0d437cf3f1bacfad4c2edd5b6293d70054f4b81ef1f16",
+        "dist/messaging/TelegramAdapter.js": "0c1a633b3d8bcdfcc6d77b884c63d9373db6bf135061afc3fa4070b4869743b4",
+        "dist/server/routes.js": "4de74b6f708aa00fa7f25b2140f5fbd4dc9addd37886504a7ade9e4bbf2c19c4"
+      },
+      "runtimeUnchanged": true,
+      "sourceTree": "99192efe42d9c31c4f70e9cb26f642ccab38330f"
+    },
+    "createdAt": "2026-11-22T22:43:18.475Z",
+    "featureId": "profile-confirmation-clarity",
+    "riskCategories": [
+      "happy-path",
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "runId": "registered-reminder-final-live-build-bound-20261122",
+    "runnerFingerprint": "real-user-browser-to-real-claude-source:e760c8dfe729bc598b38ca4bed0251368ab13bd74bba81b40daea8b0a17d9eeb",
+    "scenarios": [
+      {
+        "description": "An exact native yes applies only the displayed target",
+        "evidence": {
+          "candidate": "f64b4cdff15ec278e021646997ce4e8cde0e1ffa",
+          "channelId": "213",
+          "messageIds": [
+            "226",
+            "232"
+          ],
+          "questionA": "226",
+          "questionB": "227",
+          "reminder": "231"
+        },
+        "id": "exact-yes",
+        "riskCategory": "happy-path",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Numbered yes applies nothing and gets exactly one registered readable reminder",
+        "evidence": {
+          "candidate": "f64b4cdff15ec278e021646997ce4e8cde0e1ffa",
+          "channelId": "213",
+          "messageIds": [
+            "227",
+            "228",
+            "231"
+          ],
+          "questionA": "226",
+          "questionB": "227",
+          "reminder": "231"
+        },
+        "id": "numbered-yes-reminder",
+        "riskCategory": "regression",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "An intervening agent message does not cancel the pending question",
+        "evidence": {
+          "candidate": "f64b4cdff15ec278e021646997ce4e8cde0e1ffa",
+          "channelId": "213",
+          "messageIds": [
+            "226",
+            "227",
+            "229",
+            "230",
+            "231",
+            "232"
+          ],
+          "questionA": "226",
+          "questionB": "227",
+          "reminder": "231"
+        },
+        "id": "agent-message-survival",
+        "riskCategory": "lifecycle",
+        "surface": "telegram",
+        "verdict": "PASS"
+      },
+      {
+        "description": "Two pending questions resolve independently, including a native reply to the reminder",
+        "evidence": {
+          "candidate": "f64b4cdff15ec278e021646997ce4e8cde0e1ffa",
+          "channelId": "213",
+          "messageIds": [
+            "226",
+            "227",
+            "231",
+            "232",
+            "233"
+          ],
+          "nativeReplyTarget": "231",
+          "questionA": "226",
+          "questionB": "227",
+          "reminder": "231"
+        },
+        "id": "two-independent-pending",
+        "riskCategory": "concurrency",
+        "surface": "telegram",
+        "verdict": "PASS"
+      }
+    ],
+    "surfaces": [
+      "telegram"
+    ]
+  },
+  "entry": {
+    "featureId": "profile-confirmation-clarity",
+    "runId": "registered-reminder-final-live-build-bound-20261122",
+    "contentHash": "7d47a64ed8c4b495c36dcebfe02f4accb9f4c66c5b4d637bc988021e6f109eca",
+    "signature": "oNs2hN3VGrQv4K6lvkL0jAeqPE4QCOA4Hp2o3ezenWsoXac5D2qzSYEb3nwkXLSNJqtrIzCHWtVnAT4S7m3CDg==",
+    "signerFingerprint": "e760c8dfe729bc598b38ca4bed0251368ab13bd74bba81b40daea8b0a17d9eeb",
+    "surfaces": [
+      "telegram"
+    ],
+    "riskCategories": [
+      "happy-path",
+      "regression",
+      "lifecycle",
+      "concurrency"
+    ],
+    "createdAt": "2026-11-22T22:43:18.475Z",
+    "prevEntryHash": "627a0597b68c9e7e1f923244dd3cfa7f72c13652641cc4bd590674250883ac84"
+  },
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxBpzsmm0FX9jzBz/8JAaO3keSDiRqbWbb56xWrK7hXw=\n-----END PUBLIC KEY-----\n",
+  "buildFiles": {
+    "dist/cli.js": "1732e1ee504a262eb5d11ff36cb306a773c76e61b29b7589817df49864ff6458",
+    "dist/commands/server.js": "88e9398d16f68be10a11e41f46eab982dac976ad172fc22d553e62b6f16c9324",
+    "dist/core/handleProfileProposalReply.js": "fe5122c56829b9b80cf0d437cf3f1bacfad4c2edd5b6293d70054f4b81ef1f16",
+    "dist/core/ProfileProposalRequests.js": "a5b85e66d41ca8e9a37ead2632d4f1eb85d0aab80478af3bf57d196c49f9148b",
+    "dist/messaging/TelegramAdapter.js": "0c1a633b3d8bcdfcc6d77b884c63d9373db6bf135061afc3fa4070b4869743b4",
+    "dist/server/routes.js": "4de74b6f708aa00fa7f25b2140f5fbd4dc9addd37886504a7ade9e4bbf2c19c4"
+  },
+  "observedSettings": {
+    "afterNumbered": {
+      "A": "claude-code",
+      "B": "claude-code"
+    },
+    "afterA": {
+      "A": "codex-cli",
+      "B": "claude-code"
+    },
+    "afterB": {
+      "A": "codex-cli",
+      "B": "codex-cli",
+      "source": "claude-code"
+    }
+  },
+  "scope": "Four Chief-required Telegram scenarios. Claude source; real signed-in user, real bot ingress and egress. Not Slack proof, all-risk-category proof, a full suite or production health certification."
+}

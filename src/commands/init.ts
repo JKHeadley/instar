@@ -508,6 +508,7 @@ async function initFreshProject(projectName: string, options: InitOptions): Prom
   // Install hooks
   installHooks(stateDir);
   console.log(`  ${pc.green('✓')} Created .instar/hooks/instar/ (behavioral guardrails)`);
+  installSelectedCodexHooks(projectDir, enabledFrameworks);
 
   // Initialize coherence infrastructure
   try {
@@ -909,6 +910,7 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   // Install hooks
   installHooks(stateDir);
   console.log(pc.green('  Created:') + ' .instar/hooks/instar/ (behavioral guardrails)');
+  installSelectedCodexHooks(projectDir, enabledFrameworks);
 
   // Ensure manifest signing key exists (additive — won't overwrite)
   const manifestIntegrity = new ManifestIntegrity(path.join(stateDir, 'state'));
@@ -3979,7 +3981,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
   // resolved URLs AND Claude-Code-only writes can be gated for codex-only
   // installs (portability audit PR 2 of 4).
   let serverPort: number | undefined;
-  let enabledFrameworks: ReadonlyArray<string> = ['claude-code'];
+  let enabledFrameworks: ReadonlyArray<IntelligenceFramework> = ['claude-code'];
   try {
     const configPath = path.join(stateDir, 'config.json');
     if (fs.existsSync(configPath)) {
@@ -4007,9 +4009,7 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
   // installClaudeSettings for the codex-cli framework. Writes the per-project
   // <projectDir>/.codex/hooks.json (NOT the global ~/.codex — that would leak
   // gates into the operator's personal Codex). Spec: docs/specs/codex-enforcement-hook-layer.md
-  const codexEnabled = enabledFrameworks.includes('codex-cli');
-  if (codexEnabled) {
-    installCodexHooks(projectDir);
+  if (installSelectedCodexHooks(projectDir, enabledFrameworks)) {
     // P0 (codex-full-parity): arm the hooks so Codex actually runs them on the first
     // session — registration alone leaves them untrusted/dark. Best-effort + fail-soft at
     // init: a brand-new agent may not be Codex-logged-in yet (auth lives in CODEX_HOME), in
@@ -4041,6 +4041,12 @@ export function refreshHooksAndSettings(projectDir: string, stateDir: string): v
     fs.mkdirSync(skillsDir, { recursive: true });
     installBuiltinSkills(skillsDir, serverPort ?? 4321);
   }
+}
+
+function installSelectedCodexHooks(projectDir: string, enabledFrameworks: readonly IntelligenceFramework[]): boolean {
+  if (!enabledFrameworks.includes('codex-cli')) return false;
+  installCodexHooks(projectDir);
+  return true;
 }
 
 /**

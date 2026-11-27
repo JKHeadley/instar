@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T19:35:43.970Z",
+  "slug": "native-owner-approval-disposable-route",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 315,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SubscriptionReloginOperatorConfig.ts",
+      "src/core/trustJourney/biometricCurrentSetProof.ts",
+      "src/server/nativeOwnerApprovalRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 285,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

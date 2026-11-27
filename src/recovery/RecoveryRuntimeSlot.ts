@@ -17,6 +17,7 @@ export interface RecoveryRuntimeSlot {
 interface SlotManifest {version:1;digest:string;files:Array<{path:string;sha256:string;size:number;executable:boolean}>}
 const HASH=/^[a-f0-9]{64}$/;
 const MAX_FILES=20_000,MAX_BYTES=768*1024*1024;
+const NATIVE_LIBRARY_SCAN_TIMEOUT_MS=10_000;
 export const RECOVERY_RUNTIME_SLOT_CAPACITY=8;
 function allocationStore(stateDir:string):RecoveryAdmission{return new RecoveryAdmission({stateDir,agentId:'runtime-allocation',machineId:'runtime-allocation',certificationRoot:'',bootId:'allocation-only'});}
 function owned(st:fs.Stats):boolean{return [0,process.getuid?.()].includes(st.uid)&&!(st.mode&0o022);}
@@ -52,7 +53,7 @@ function nodeDependencies(node:string):void {
   // A copied Homebrew Node can still depend on mutable Homebrew libraries.
   // Standalone official Node only names protected OS libraries on macOS.
   if(['cffaedfe','cefaedfe','cafebabe','bebafeca'].includes(magic.toString('hex'))){
-    const output=withSyncOp(()=>execFileSync('/usr/bin/otool',['-L',node],{encoding:'utf8',timeout:3000,maxBuffer:16384}));
+    const output=withSyncOp(()=>execFileSync('/usr/bin/otool',['-L',node],{encoding:'utf8',timeout:NATIVE_LIBRARY_SCAN_TIMEOUT_MS,maxBuffer:16384}));
     for(const line of output.split('\n').slice(1)){if(line.startsWith(node+' (architecture '))continue;const library=line.trim().split(' ')[0];if(library&&!library.startsWith('/usr/lib/')&&!library.startsWith('/System/Library/'))throw new Error('recovery-node-standalone-runtime-required');}
   }
 }

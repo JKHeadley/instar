@@ -24,6 +24,7 @@ import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
 import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface, type ProfileWriteRegime } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
+import { handleAndAcknowledgeProfileProposalReply } from '../../src/core/handleProfileProposalReply.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { notificationContext } from '../../src/messaging/NotificationSelectivityGate.js';
 import { TEAM_ACCESS_DIR } from '../../src/core/TeamAccessLog.js';
@@ -410,11 +411,73 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
             if (String(t) === '130715') return o.sourceOperator === null ? null : { platform: 'telegram', uid: String(o.sourceOperator ?? OWNER) };
             return o.destBinding && o.destVerified !== false ? { platform: 'telegram', uid: String(o.destBinding) } : null;
           },
+          allBindings: () => [],
+          everVerifiedOperatorUids: () => [],
           getBinding: (t: number | string) => (String(t) !== '130715' && o.destBinding ? { platform: 'telegram', uid: String(o.destBinding) } : null),
         },
       },
     };
   }
+
+  it('keeps two identified proposals and sends an explicit reminder without creating another', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
+    const f = fakes(); const app = buildApp(bundle, f.extra);
+    const one = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    const two = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'claude-code', confirmIn: 130715 });
+    expect(one.body.requestId).toMatch(/^R-/); expect(two.body.requestId).not.toBe(one.body.requestId);
+    expect(bundle.confirmSlots.proposals.list('130715')).toHaveLength(2);
+    const reminder = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ remindRequestId: one.body.requestId, confirmIn: 130715 });
+    expect(reminder.status).toBe(200); expect(reminder.body.requestId).toBe(one.body.requestId);
+    expect(bundle.confirmSlots.proposals.list('130715')).toHaveLength(2);
+    expect(f.sends[2].text).not.toBe(f.sends[0].text);
+    expect(f.sends[2].text).toContain('Codex'); expect(f.sends[2].text).toContain('summary');
+    expect(f.sends[2].text).not.toContain('framework →'); expect(bundle.store.resolve(23)).toBeNull();
+  });
+
+  it.each(['shared', 'unreadable'])('server-owned clarification hides both pending changes for a %s audience', async mode => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false }); const f = fakes();
+    const app = buildApp(bundle, f.extra);
+    const ids: string[] = [];
+    for (const framework of ['codex-cli', 'claude-code']) {
+      const r = await request(app).post('/topic-profile/23/propose').set('X-Instar-Request', '1').send({ framework, confirmIn: 130715 });
+      expect(r.status).toBe(200); ids.push(r.body.requestId);
+    }
+    if (mode === 'shared') {
+      const dir = path.join(stateDir, TEAM_ACCESS_DIR); fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'confined.json'), JSON.stringify({ entries: [{ ref: 'telegram:130715' }] }));
+    } else f.extra.topicOperatorStore.getOperator = () => { throw new Error('audience read unavailable'); };
+    const r = await request(app).post('/topic-profile/130715/propose').set('X-Instar-Request', '1').send({ clarifyPending: true });
+    expect(r.status).toBe(200); expect(r.body.requests).toEqual([]);
+    const sent = f.sends.at(-1)!.text;
+    expect(sent).toBe('Which change do you mean? Please name the change you want to make.');
+    for (const privateText of ['Scaling', 'Codex', 'Claude', ...ids]) expect(sent).not.toContain(privateText);
+    expect(bundle.confirmSlots.proposals.list('130715')).toHaveLength(2); expect(bundle.store.resolve(23)).toBeNull();
+  });
+
+  it('retains a real committed profile result after failed acknowledgment and duplicate inbound', async () => {
+    const bundle = buildBundle(FLEET_REGIME, { boundOperator: false }); const f = fakes();
+    const r = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
+      .send({ framework: 'codex-cli', confirmIn: 130715 });
+    expect(r.status).toBe(200);
+    const proposed = bundle.confirmSlots.proposals.get('130715', r.body.requestId)!;
+    let failAck = true; let ackAttempts = 0;
+    const run = () => handleAndAcknowledgeProfileProposalReply({ requests: bundle.confirmSlots.proposals, surface: bundle.surface,
+      source: '130715', text: 'yes', messageId: 950, replyTo: proposed.receipts[0].messageId, forwarded: false,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(OWNER) }, eligible: () => true,
+      placement: () => 'standalone', name: () => 'Scaling' }, async () => {
+        ackAttempts++; if (failAck) throw new Error('Telegram acknowledgment unavailable');
+      });
+    const first = await run(); expect(first.result?.ok).toBe(true); expect(first.acknowledgment).toBe('failed');
+    failAck = false;
+    const duplicate = await run(); expect(duplicate.result).toEqual(first.result);
+    expect(duplicate.acknowledgment).toBe('delivered'); expect(ackAttempts).toBe(2);
+    expect(bundle.respawns).toEqual(['23']); expect(bundle.store.resolve(23)?.framework).toBe('codex-cli');
+    const durable = new TopicProfileStore({ stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
+    expect(durable.resolve(23)?.framework).toBe('codex-cli');
+  });
 
   it.each([{ framework: 'codex-cli' }, { model: 'opus' }])('posts the exact run-setting proposal %j to the asking conversation without writing', async patch => {
     const bundle = buildBundle(FLEET_REGIME, { boundOperator: false });
@@ -425,10 +488,10 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     expect(f.sends).toHaveLength(1);
     expect(f.sends[0].topic).toBe(130715);
     expect(f.sends[0].category).toBe('owner-decision');
-    expect(f.sends[0].text).toContain('framework' in patch ? 'framework → codex-cli' : 'model → opus');
-    expect(f.sends[0].text).toContain('Reply "yes" to apply exactly the above.');
-    expect(f.sends[0].text).toContain('Proposed change for the conversation "Scaling" (not this one):');
-    expect(bundle.confirmSlots.peek('130715')?.targetTopicKey).toBe('23');
+    expect(f.sends[0].text).toContain('framework' in patch ? 'Use Codex' : 'Model: opus');
+    expect(f.sends[0].text).toContain('Reply to this message with yes.');
+    expect(f.sends[0].text).toContain('Change how “Scaling” runs?');
+    expect(bundle.confirmSlots.proposals.list('130715')[0]?.target).toBe('23');
     expect(bundle.confirmSlots.peek('23')).toBeNull();
     expect(bundle.store.resolve(23)).toBeNull(); // nothing written until the owner says yes
   });
@@ -439,7 +502,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     const res = await request(buildApp(bundle, f.extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
       .send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(res.status).toBe(200);
-    expect(bundle.confirmSlots.peek('130715')?.patch).toEqual({ framework: 'codex-cli' });
+    expect(bundle.confirmSlots.proposals.list('130715')[0]?.patch).toEqual({ framework: 'codex-cli' });
     expect(bundle.store.resolve(23)).toBeNull();
   });
 
@@ -458,7 +521,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
       expect(res.body.refusal).toBe(reason);
       expect(f.sends, reason).toHaveLength(notices);
       if (notices) expect(f.sends[0].text).toContain("I can't change the conversation \"Scaling\" from here");
-      expect(bundle.confirmSlots.peek('130715')).toBeNull();
+      expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]);
     }
   });
 
@@ -497,7 +560,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
       .send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(res.status).toBe(422);
     expect(res.body.refusal).toBe(which === 'source' ? 'source-shared' : 'destination-confined');
-    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]);
     expect(bundle.store.resolve(23)).toBeNull();
   });
 
@@ -508,7 +571,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
       .send({ framework: 'unknown-engine', confirmIn: 130715 });
     expect(res.status).toBe(400);
     expect(f.sends).toHaveLength(0);
-    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]);
   });
 
   it('disarms an unseen proposal when Telegram records it quiet instead of delivering it', async () => {
@@ -518,7 +581,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     const res = await request(buildApp(bundle, extra)).post('/topic-profile/23/propose').set('X-Instar-Request', '1')
       .send({ framework: 'codex-cli', confirmIn: 130715 });
     expect(res.status).toBe(502);
-    expect(bundle.confirmSlots.peek('130715')).toBeNull();
+    expect(bundle.confirmSlots.proposals.list('130715')).toEqual([]);
     expect(bundle.store.resolve(23)).toBeNull();
   });
 
@@ -529,7 +592,7 @@ describe('identity-security-creation-provenance v5: propose with confirmIn', () 
     expect(res.status).toBe(200);
     expect(f.sends[0].topic).toBe(23);
     expect(f.sends[0].category).toBe('owner-decision');
-    expect(bundle.confirmSlots.peek('23')?.targetTopicKey).toBeUndefined();
+    expect(bundle.confirmSlots.proposals.list('23')[0]?.target).toBe('23');
   });
 });
 

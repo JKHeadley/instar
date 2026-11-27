@@ -66,6 +66,44 @@ function makeFlA() { return new FencedLease(crypt('A'), { leaseTtlMs: TTL, failo
 function makeFlB() { return new FencedLease(crypt('B'), { leaseTtlMs: TTL, failoverThresholdMs: FAILOVER }); }
 
 describe('LeaseCoordinator', () => {
+  it('verifies the observed foreign record once and refuses it after expiry', () => {
+    const peer = makeFlB().buildAcquisition(undefined, 1_000, 1);
+    const self = makeFlA();
+    const verify = vi.spyOn(self, 'verifyLease');
+    let now = 2_000;
+    let higherEpoch = 0;
+    const tunnel: LeaseTransport = {
+      broadcast: async () => true,
+      observed: () => ({ lease: peer, lastNonceByHolder: { B: peer.nonce } }),
+      isReachable: () => true,
+      higherEpochEvidence: () => higherEpoch,
+    };
+    const store = new FakeStore();
+    store.lease = { ...peer };
+    store.epoch = peer.epoch;
+    const lc = new LeaseCoordinator({ lease: self, store, tunnel, presumedDeadHolders: () => new Set(), now: () => now });
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: true });
+    expect(verify).toHaveBeenCalledTimes(1);
+    higherEpoch = peer.epoch + 1;
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+    higherEpoch = 0;
+    now = 1_000 + TTL + 1;
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+  });
+
+  it('accepts confirmed local lease authority and refuses a forged durable holder', async () => {
+    const store = new FakeStore();
+    const peer = makeFlB().buildAcquisition(undefined, 1_000, 1);
+    store.lease = { ...peer, signature: 'invalid' };
+    store.epoch = peer.epoch;
+    const lc = new LeaseCoordinator({ lease: makeFlA(), store, presumedDeadHolders: () => new Set(), now: () => 2_000 });
+    expect(lc.appBindingLeaseAuthority()).toEqual({ holdsLease: false, heldElsewhere: false });
+
+    const solo = new LeaseCoordinator({ lease: makeFlA(), store: new FakeStore(), presumedDeadHolders: () => new Set(), now: () => 2_000 });
+    expect(await solo.acquireIfEligible()).toBe(true);
+    expect(solo.appBindingLeaseAuthority()).toEqual({ holdsLease: true, heldElsewhere: false });
+  });
+
   it('reports once at five consecutive own-candidate write read-backs and resets on success', async () => {
     let fail = true;
     const store: LeaseStore = {

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-26T22:39:16.998Z",
+  "slug": "chief-of-staff-binding-preview",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffBindingBatch.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 71,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

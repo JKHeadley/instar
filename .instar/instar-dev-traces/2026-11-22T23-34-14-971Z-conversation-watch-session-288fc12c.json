@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "slug": "conversation-watch-session",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-22T23:34:14.971Z",
+  "artifactPath": "upgrades/side-effects/conversation-watch-session.md",
+  "artifactSha256": "f61ba71cdabb204bc4b3111dfa1047ef8b991882b89cb96fbecc6f5ec76016ac",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "upgrades/side-effects/conversation-watch-session.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible shell request repair, preserves signed Chats boundary and existing assertions",
+  "eli16Path": "docs/specs/conversation-watch-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-watch-session.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

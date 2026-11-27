@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "conversation-watch-session",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-22T23:35:38.593Z",
+  "artifactPath": "upgrades/side-effects/conversation-watch-session.md",
+  "artifactSha256": "645982a8c9f6cdace8d222023cda70e042b671181f7b5e900144e602bd210b74",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/nav-model.js",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-front-doors.test.ts",
+    "upgrades/side-effects/conversation-watch-session.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible shell display request repair with phone normalization and navigation preference; existing authorization unchanged",
+  "eli16Path": "docs/specs/conversation-watch-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-watch-session.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

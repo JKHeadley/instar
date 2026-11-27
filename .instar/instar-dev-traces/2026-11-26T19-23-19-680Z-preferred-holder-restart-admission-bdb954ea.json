@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "preferred-holder-restart-admission",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T19:23:19.680Z",
+  "artifactPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "artifactSha256": "fe4dd436c24dfb8b74652f699274ee4beeca445507aa70660121d2e8e13fdc24",
+  "coveredFiles": [
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/integration/planned-restart-lease-admission.test.ts",
+    "upgrades/eli16/preferred-holder-restart-admission.md",
+    "upgrades/next/preferred-holder-restart-admission.md",
+    "upgrades/side-effects/preferred-holder-restart-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dark injected admission only; no production startup option or process effects.",
+  "eli16Path": "upgrades/eli16/preferred-holder-restart-admission.md",
+  "sideEffectsPath": "upgrades/side-effects/preferred-holder-restart-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Request-driven guard of an existing supervisor restart path, with no new self-triggered restart or renewal."
+  }
+}

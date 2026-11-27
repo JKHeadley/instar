@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "claude-auth-fixture-isolation",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T04:05:29.547Z",
+  "artifactPath": "upgrades/side-effects/claude-auth-fixture-isolation.md",
+  "artifactSha256": "efff5220b9c5ee695262c1bab6e049fdfcf18fc79d1ac3db4497422326a4de1d",
+  "coveredFiles": [
+    "docs/specs/claude-auth-fixture-isolation.eli16.md",
+    "tests/unit/ClaudeCliIntelligenceProvider-key.test.ts",
+    "tests/unit/claudeReviewerLogin.test.ts",
+    "upgrades/next/claude-auth-fixture-isolation.md",
+    "upgrades/side-effects/claude-auth-fixture-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two existing unit fixtures now control their environment, clean temporary directories and check the expected test key in the fake process. No production files changed.",
+  "eli16Path": "docs/specs/claude-auth-fixture-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/claude-auth-fixture-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

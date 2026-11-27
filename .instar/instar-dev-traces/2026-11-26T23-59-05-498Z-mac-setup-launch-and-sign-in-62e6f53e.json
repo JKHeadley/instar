@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mac-setup-launch-and-sign-in",
+  "sessionId": "c2c63f1e-c980-4c22-83e9-95850b28354c",
+  "timestamp": "2026-11-26T23:59:05.498Z",
+  "artifactPath": "upgrades/side-effects/mac-setup-launch-and-sign-in.md",
+  "artifactSha256": "b45bed107fd6bcbd5c648fa409965b030e5cba2cc63ac238ae136656717544da",
+  "specPath": "docs/specs/mac-app-creates-agent.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/commands/server.ts",
+    "src/install/doorSteps.ts",
+    "tests/unit/install-flow.test.ts",
+    "upgrades/next/mac-setup-launch-and-sign-in.md",
+    "upgrades/side-effects/mac-setup-launch-and-sign-in.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The change is reversible but affects normal server start and the app account step.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

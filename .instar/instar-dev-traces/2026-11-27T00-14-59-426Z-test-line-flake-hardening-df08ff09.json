@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "test-line-flake-hardening",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-27T00:14:59.426Z",
+  "artifactPath": "upgrades/side-effects/test-line-flake-hardening.md",
+  "artifactSha256": "d6f351dde7f24414361d3fed9b090f56c5b0f9c3d115dd2d76b955d8e191276c",
+  "coveredFiles": [
+    "docs/specs/test-line-flake-hardening.eli16.md",
+    "src/commands/recoveryMainWiring.ts",
+    "src/recovery/RecoveryRuntimeSlot.ts",
+    "tests/integration/cartographer-eventloop-worker.test.ts",
+    "upgrades/next/test-line-flake-hardening.md",
+    "upgrades/side-effects/test-line-flake-hardening.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three bounded deadline changes preserve the existing verification and authorization decisions and are fully reversible.",
+  "eli16Path": "docs/specs/test-line-flake-hardening.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/test-line-flake-hardening.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
