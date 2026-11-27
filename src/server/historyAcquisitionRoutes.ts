@@ -7,6 +7,7 @@ import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { ImportWriterBusy } from '../import/ImportedHistoryStore.js';
 import type { AcquisitionJob, OwnerChat, Provider } from '../import/HistoryAcquisition.js';
 import type { AcquisitionNotice, HistoryAcquisitionWorker } from '../import/HistoryAcquisitionWorker.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { mobileOwnerDeviceAdmission, revalidateQueuedOwnerAdmissionSnapshot } from './mobileOwnerDeviceAdmission.js';
 
@@ -84,7 +85,16 @@ export class HistoryAcquisitionChat {
       try {
         const owner = ownerKey(admission.identity.userId);
         if (this.worker && machine && this.hasPrivateOwner(owner)) providers = this.worker.providers(owner, machine);
-      } catch { /* Missing provider proof always leaves the action unavailable. */ }
+      } catch {
+        DegradationReporter.getInstance().report({
+          feature: 'HistoryAcquisition.providerDiscovery',
+          primary: 'Verify available history providers for the signed owner',
+          fallback: 'Keep history import providers unavailable',
+          reason: 'provider-proof-unavailable',
+          impact: 'History import remains unavailable until provider proof can be read.',
+          internalOnly: true,
+        });
+      }
       res.json({acquisition:{version:1,providers}});
     });
     return router;

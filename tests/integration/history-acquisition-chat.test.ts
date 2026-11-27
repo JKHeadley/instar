@@ -7,6 +7,31 @@ import { HistoryAcquisitionStore } from '../../src/import/HistoryAcquisition.js'
 import { AcquisitionArchives } from '../../src/import/archiveStaging.js';
 import { ImportedHistoryStore } from '../../src/import/ImportedHistoryStore.js';
 import { HistoryAcquisitionChat } from '../../src/server/historyAcquisitionRoutes.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+
+it('keeps provider discovery closed and reports an internal diagnostic when proof lookup fails', async () => {
+  const privateError = 'private-provider-fixture@example.test';
+  const h = await historyApp({
+    available: () => { throw new Error(privateError); },
+    accounts: () => [],
+    delivery: () => undefined,
+  });
+  const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+  try {
+    const response = await h.send('GET', '/mobile/imported-history/capabilities');
+    expect(response.status).toBe(200);
+    expect(response.body.acquisition.providers).toEqual([]);
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({
+      feature: 'HistoryAcquisition.providerDiscovery',
+      reason: 'provider-proof-unavailable',
+      internalOnly: true,
+    }));
+    expect(JSON.stringify(report.mock.calls)).not.toContain(privateError);
+  } finally {
+    report.mockRestore();
+    await h.close();
+  }
+});
 
 it('uses a real signed owner message, stops at missing delivery permission, and copies a staged fixture only on distinct preview consent',async () => {
   const email = 'pilot@example.test';

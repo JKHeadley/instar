@@ -35,3 +35,11 @@ A source revert undoes these repairs. No data migration or user-state deletion i
 ## Verification
 
 Red: startup cleanup regression test failed with zero reporter calls; existing gitignore test failed with two entries. Green: 33 unit checks and 10 HTTP integration checks passed. Independent review_import_verification_repairs found no concrete issue. Four production lifecycle tests passed, including unsafe staging with successful signed owner history reads. The SQLite wiring allowlist now accounts for the existing registered acquisition store, registered worker lease and transaction-scoped writer handle; no handle implementation changes. Ordinary full verification remains required. No passing full-suite or published result is claimed.
+
+## Provider proof lookup failure
+
+The signed capability route already withheld providers when their proof lookup threw. That exception now emits a fixed internal diagnostic through the existing degradation reporter. The response continues to return an empty provider list. The diagnostic contains a fixed reason and describes the affected operation. Accounts, provider errors and archive data stay within the lookup.
+
+The route already owns the safe response, and the reporter provides visibility. Expected outcomes such as an absent connection or insufficient owner custody continue through their normal branches. The change adds no provider request, permission, retry or enrollment action. The diagnostic is machine-local to the lookup. A source revert restores the previous reporting behavior without a migration.
+
+The focused signed HTTP test establishes the failure with an injected synthetic error and checks that the diagnostic excludes that error. The unit ratchet and history chat unit tests passed after the repair.
