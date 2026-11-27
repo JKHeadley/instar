@@ -86,7 +86,7 @@ function production(home: string, stateDir: string, values: Record<string, unkno
   const started: number[] = [];
   let busy = true; // another suite holds the host's slot until the test frees it
   const closed = new Set<number>();
-  seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+  seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: 'b'.repeat(40), isDraft: false, mergeable: 'MERGEABLE' });
   seams.baseHead = async () => 'b'.repeat(40);
   seams.isPrOpen = async (pr) => !closed.has(pr);
   seams.foreignSuiteHolders = () => (busy ? [{ pid: 1 }] : []);

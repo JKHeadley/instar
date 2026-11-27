@@ -47,6 +47,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { holdReasonOf, isStackedPr } from '../monitoring/greenPrLogic.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
@@ -230,6 +231,8 @@ export interface PrView {
   headRefOid: string;
   baseRefName: string;
   baseRefOid: string;
+  isDraft?: boolean;
+  mergeable?: string;
   /** Title + body + changed files (gh `--json title,body,files`; files = the first 100). Absent on older seams ⇒ unknown. */
   title?: string | null;
   body?: string | null;
@@ -669,7 +672,7 @@ export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo; /** Admitted over the cap by an operator front or release. */ operatorOverCap?: true }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
   /** `held`: the operator holds this change (queue controls). `overflow-full`: an operator admission found the queue and its overflow full. */
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' | 'not-lease-holder' | 'waiting-expired' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' | 'not-lease-holder' | 'waiting-expired' | 'waiting-ineligible' };
 
 // ---- operator queue controls (spec local-verify-queue-controls.md) ----
 
@@ -1941,6 +1944,10 @@ export class LocalVerifyService {
       }
       if (!this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
       if (!this.leaseState().holds) return { ok: false, code: 'not-lease-holder' };
+      if (view.isDraft !== false || view.mergeable !== 'MERGEABLE' || isStackedPr(view)
+        || holdReasonOf({ isDraft: view.isDraft, title: view.title ?? '', labels: view.labels?.map(label => label.name) ?? [] })) {
+        return { ok: false, code: 'waiting-ineligible' };
+      }
     }
     if (!isValidSha(view.headRefOid) || !isValidSha(currentBase)) return { ok: false, code: 'pr-invalid-shas' };
     const headSha = view.headRefOid;
@@ -2056,7 +2063,7 @@ export class LocalVerifyService {
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
-        const w = replayPriority ? null : this.waiting.refused(pr);
+        const w = replayPriority || opts.waitingRefill ? null : this.waiting.refused(pr);
         this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}),
           ...(w ? { firstRefusedAt: w.firstRefusedAt, refusals: w.refusals, waitPosition: this.waiting.liveAhead(pr).length + 1 } : {}) });
         return { ok: false, code: 'queue-full' };
@@ -2072,7 +2079,7 @@ export class LocalVerifyService {
       // again); a repair needs a red `main`, when the list reserves nothing.
       const ahead = this.waitingAhead(pr, !!opts.waitingRefill);
       if (ahead.length > 0) {
-        const w = this.waiting.refused(pr);
+        const w = opts.waitingRefill ?? this.waiting.refused(pr);
         this.audit({ event: 'queue-full-waiting', pr, firstRefusedAt: w.firstRefusedAt, refusals: w.refusals,
           waitPosition: ahead.length + 1, ahead: ahead.slice(0, 5).map((x) => x.pr), freeSlots: LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() });
         return { ok: false, code: 'queue-full' };
@@ -2180,7 +2187,7 @@ export class LocalVerifyService {
         if (!current || !this.waiting.isLive(current)) continue;
         try {
           const r = await this.request(w.pr, { explicit: false, waitingRefill: current });
-          if (!r.ok && (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas')) {
+          if (!r.ok && (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas' || r.code === 'waiting-ineligible')) {
             this.waitingRefillUnavailableUntil.set(w.pr, this.now() + 120_000);
           } else this.waitingRefillUnavailableUntil.delete(w.pr);
           this.audit({ event: 'waiting-auto-offer', pr: w.pr, firstRefusedAt: w.firstRefusedAt,

@@ -40,3 +40,11 @@ Revert the refill source and route changes normally; no data migration or extern
 **Reviewer:** /root/distributed_train.
 
 Concur with the review. The reviewer read this entire current-shipment artifact, including signal versus authority, ownership and race bounds, the release-note correction and main merge, evidence limits and rollback. The reviewer independently checked that all five current committed runtime/test blobs equal the executed GREEN manifest hashes and that the preserved complete pre-push baseline reports the stated newest-fragment refusal. The actual 23/9/8 focused evidence is supported by the prior raw-log review. The diagnostic dry-run baseline and the absence of full-suite, publication and live claims are retained honestly. The reviewer ran no tests and made no source edits. The earlier artifact and its original review remain unchanged.
+
+## Review correction on 64ad550c
+
+An automatic re-offer requires a current GitHub view that is non-draft, mergeable, and targets main. It reuses the existing hold-label and hold-title rules. An ineligible or unknown view leaves the waiter and its original timestamps in place and uses the same two-minute backoff as a transient read failure. This lets a later eligible waiter proceed and preserves the earlier waiter's original age. A capacity or priority refusal also leaves the timestamps intact.
+
+This is existing coordinator admission authority. Explicit requests, merge eligibility, and review-trace checks retain their existing paths. GitHub readiness can change after admission, so dispatch and merge still need current-head checks. The correction adds no durable fields. Reverting it restores the previous behavior without changing saved waiters.
+
+The amended worktree passed 30 focused unit cases, including the readiness matrix and capacity-race regression. The run reported an unavailable SQLite native binding in the shared checkout. All selected waiting-list cases ran. After the two readiness fixtures were updated, all nine focused HTTP integration cases and all eight production-wiring lifecycle cases also passed. Independent review of the amended bytes is pending.

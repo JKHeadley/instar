@@ -31,7 +31,7 @@ afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, {
 
 const view = (pr: number, over: Partial<PrView> = {}): PrView => ({
   author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: head(pr), baseRefName: 'main', baseRefOid: sha('b'),
-  title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }], ...over,
+  isDraft: false, mergeable: 'MERGEABLE', title: 'chore: unrelated', body: 'nothing about the check', files: [{ path: 'src/core/Foo.ts' }], ...over,
 });
 
 function record(over: Partial<LocalVerifyRecord> = {}): LocalVerifyRecord {
@@ -133,6 +133,55 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     expect(s.prQueue()).toHaveLength(CAP);
     expect(s.svc.snapshot().queue.find((e) => e.pr === 50)?.firstRefusedAt).toBe(firstRefusedAt);
     expect(s.svc.snapshot().waiting.map((w) => w.pr)).toEqual([60]);
+  });
+
+  it.each([
+    { isDraft: true },
+    { title: '  [HOLD] parking this change' },
+    { labels: [{ name: 'Do-Not-Merge' }] },
+    { mergeable: 'CONFLICTING' },
+    { mergeable: 'UNKNOWN' },
+    { baseRefName: 'stacked-parent' },
+  ])('does not automatically re-offer an ineligible waiter (%j)', async (ineligible) => {
+    const candidates = views(50, 60);
+    const s = setup({ views: candidates });
+    await fill(s);
+    await s.svc.request(50);
+    s.advance(MIN);
+    await s.svc.request(60);
+    const before = s.svc.snapshot().waiting.find((w) => w.pr === 50);
+    candidates[50] = { ...candidates[50], ...ineligible };
+    await s.finishCurrent();
+    await s.svc.tick();
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.prQueue()).toContain(60);
+    expect(s.svc.snapshot().waiting.find((w) => w.pr === 50)).toEqual(before);
+    expect(s.audit().find((row) => row.event === 'waiting-auto-offer' && row.pr === 50))
+      .toMatchObject({ result: 'waiting-ineligible' });
+  });
+
+  it('does not refresh a waiter if capacity fills during its automatic offer', async () => {
+    const candidates = views(50, 70);
+    candidates[70] = view(70, { labels: [{ name: 'merge-throughput' }] });
+    const s = setup({ views: candidates });
+    await fill(s);
+    await s.svc.request(50);
+    const before = s.svc.snapshot().waiting.find((w) => w.pr === 50);
+    await s.finishCurrent();
+    s.advance(MIN);
+    const original = s.seams.prView;
+    s.seams.prView = async (pr) => {
+      if (pr === 50) expect((await s.svc.request(70)).ok).toBe(true);
+      return original(pr);
+    };
+
+    await s.svc.tick();
+
+    expect(s.prQueue()).toContain(70);
+    expect(s.prQueue()).not.toContain(50);
+    expect(s.svc.snapshot().waiting.find((w) => w.pr === 50)).toEqual(before);
+    expect(s.audit().find((row) => row.event === 'waiting-auto-offer' && row.pr === 50))
+      .toMatchObject({ result: 'queue-full' });
   });
 
   it('does not refill after coordinator ownership is lost during the current-head read', async () => {

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "local-verify-auto-refill",
+  "sessionId": "b528b042-91e4-4687-b182-8f0750aaedd6",
+  "timestamp": "2026-11-27T07:22:00.236Z",
+  "artifactPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "artifactSha256": "c185f6770e53091be2c9ba84d60a925763e8a614b873277be7dd70470c5ba5f0",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/serviceSeams.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow and reversible correction to automatic queue admission. The second-pass reviewer concurred on the staged amendment.",
+  "eli16Path": "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

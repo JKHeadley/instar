@@ -42,7 +42,7 @@ function baseCtx(stateDir: string, over: Partial<RouteContext>): RouteContext {
 }
 
 function view(pr: number, over: Partial<PrView> = {}): PrView {
-  return { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: sha('b'), ...over };
+  return { author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: sha('b'), isDraft: false, mergeable: 'MERGEABLE', ...over };
 }
 
 function setup(prs: number[], opts: { controls?: boolean } = {}) {
