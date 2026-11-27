@@ -191,6 +191,8 @@ export const OTHER_PEOPLES_WORDS = [
   '[/OTHER PEOPLE\'S WORDS]',
 ].join('\n');
 
+const TESTING_THROUGHPUT_SCRIPT_SLUG = 'testing-throughput-report-script';
+
 export class JobScheduler {
   private config: JobSchedulerConfig;
   private sessionManager: SessionManager;
@@ -1030,7 +1032,15 @@ export class JobScheduler {
     // job's body runs as an agentmd session exactly as before the change,
     // through the normal quota / capacity / claim path below.
     const isScriptRunner = this.isScriptRunnerJob(job);
+    if (job.origin === 'instar' && slug === TESTING_THROUGHPUT_SCRIPT_SLUG && !isScriptRunner) {
+      this.skipLedger.recordSkip(slug, 'disabled');
+      return 'skipped';
+    }
     if (isScriptRunner && !this.scriptRunnersActiveFor(job.slug)) {
+      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       // This job was introduced with script runners, so it has no historical
       // session behavior to restore when the rollout is dark.
       if (job.slug === 'script-job-supervisor') {
@@ -1292,6 +1302,10 @@ export class JobScheduler {
     // The gate above can wait for seconds. A safety hold recorded during that
     // wait must take effect on this fire, before the script claim or launch.
     if (runsAsScript && !this.scriptRunnersActiveFor(slug)) {
+      if (slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        return 'skipped';
+      }
       if (slug === 'script-job-supervisor') {
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({
@@ -2911,6 +2925,9 @@ export class JobScheduler {
       trigger: string;
     },
   ): { sessionName: string } | { refused: string } {
+    if (job.origin === 'instar' && job.slug === TESTING_THROUGHPUT_SCRIPT_SLUG) {
+      return { refused: 'script-only-job' };
+    }
     const projected = this.projectAsAgentmd(job);
     if (opts.origin !== 'triage') {
       // Rollback: today's job session, with the template's own frontmatter
