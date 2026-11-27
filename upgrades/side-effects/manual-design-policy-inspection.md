@@ -98,3 +98,14 @@ The command is now documented on the documentation site, in the CLI reference an
 **Reviewer:** independent second-pass reviewer, a fresh Claude Opus 5.5 general-purpose helper started by Echo on the Mac Studio on 2026-11-27, not the author. It was given the staged change and the questions to check, not a conclusion.
 
 Concur. The renamed file has the same content blob as the original (`66fb861e1a2acb9d565167ca91a9ef6117628a76`, a 100 percent rename). In `src/localVerify/harnessClassifier.ts` only the one path entry changes spelling. The matcher anchors each pattern at both ends and treats a pattern with no wildcards as an exact path, so the old entry matched only the old file and the new entry matches only the new file. No other entry covers either path, so the list flags the same set of files as before. A search of tracked files found no remaining import, build entry, configuration or test path that names `src/commands/designPolicy.ts`; the remaining mentions are earlier review notes in this artifact and audit records. The harness classifier unit test uses the new path and passed 44 of 44. The reviewer did not review the documentation-site pages.
+
+## Screen registry catch-up after main (2026-11-27)
+
+`tests/unit/design-screen-registry.test.ts` failed four tests on the previous head, and also on the head before the rename, because main had added screens the registry did not list. Data-only fix in `docs/design/screens.json`, no code change:
+
+- New screen `console-capacity-repos` (the Repositories page, `#/capacity/repos`, rendered by `repos.js` from `repos-model.js`), with the same shared console files as its sibling Machine care page.
+- `quota-forecast.js` and `quota-forecast-model.js` join the Accounts screen's sources, because `accounts.js` imports them.
+- `needs-actions.js` and `repos-model.js` join the shared files of every screen that already shares the Needs You strip, because `needs-strip.js` and `needs-model.js` import them.
+- Two public site pages are registered as screens instead of excepted, because a person sees them: `site-agent-link-fallback` (`/a`, the permanent agent link fallback) and `site-link-computer-fallback` (`/link/computer`).
+
+Every new entry is `uncaptured` and tracked by the same commitment as the rest of the registry. On the M5, the registry validator returns no errors, every dashboard and pairing asset classifies as registered, and the only unregistered outside-root files are the nine with written exceptions.
