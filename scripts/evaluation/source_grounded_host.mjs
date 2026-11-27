@@ -558,9 +558,26 @@ export function classifyQuote(text, quote) {
   return 'not-found';
 }
 
+// The form of a record id that did not resolve, as a pattern class only.
+export function recordIdPattern(collection, id, sourceIds, claimIds) {
+  const v = typeof id === 'string' ? id : '';
+  const col = collection === 'source' || collection === 'answer' ? collection : 'bad-collection';
+  if (v === '') return `${col} empty-id`;
+  if (sourceIds.has(v)) return `${col} is-source-id`;
+  if (v === 'answer') return `${col} is-answer`;
+  if (/^limitations\/[0-9]+$/.test(v)) return `${col} is-limitation-out-of-range`;
+  const c = /^claims\/([^/]+)(\/text)?$/.exec(v);
+  if (c) return `${col} claims-path${c[2] ? '' : '-without-text'}${claimIds.has(c[1]) ? '' : '-unknown-claim'}`;
+  if (claimIds.has(v)) return `${col} bare-claim-id`;
+  if (/^claims?\b/i.test(v)) return `${col} other-claim-form`;
+  if (/^(m|msg|message)[-_ ]?[0-9]+$/i.test(v)) return `${col} other-message-form`;
+  if (/^(source|record)s?[/:-]/i.test(v)) return `${col} prefixed-id`;
+  return `${col} other`;
+}
+
 export function diagnoseRun(run, pack = null) {
   const index = run.read('index.json');
-  const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {}; const quoteMisses = {};
+  const judges = {}; const answers = {}; const judgeShapes = {}; const answerShapes = {}; const quoteMisses = {}; const idPatterns = {};
   const bump = (o, k) => { o[k] = (o[k] ?? 0) + 1; };
   for (const trialId of index.order) {
     const arm = /-(none|reduced|full)-/.exec(trialId)?.[1] ?? 'unknown';
@@ -602,18 +619,22 @@ export function diagnoseRun(run, pack = null) {
             const text = new Map(ctx.records.map(r => [r.id, r.text]));
             const look = (col, id) => (col === 'source' ? text.get(id) : answerRecordText(answer, id));
             const v = JSON.parse(stripFence(at.modelText));
+            const sourceIds = new Set(ctx.records.map(r => r.id));
+            const claimIds = new Set((answer.claims ?? []).map(c => c.claimId));
             for (const f of Array.isArray(v?.criteria) ? v.criteria : []) for (const e of Array.isArray(f?.evidence) ? f.evidence : []) {
               const k = classifyQuote(look(e?.collection, e?.recordId), e?.quote); if (k !== 'exact') bump(quoteMisses, `${arm} ${plainCode(at.family)} evidence ${k}`);
+              if (k === 'unknown-record') bump(idPatterns, `${arm} ${plainCode(at.family)} evidence ${recordIdPattern(e?.collection, e?.recordId, sourceIds, claimIds)}`);
             }
             for (const u of Array.isArray(v?.unlistedMaterialClaims) ? v.unlistedMaterialClaims : []) {
               const k = classifyQuote(answerRecordText(answer, u?.recordId), u?.quote); if (k !== 'exact') bump(quoteMisses, `${arm} ${plainCode(at.family)} unlisted ${k}`);
+              if (k === 'unknown-record') bump(idPatterns, `${arm} ${plainCode(at.family)} unlisted ${recordIdPattern('answer', u?.recordId, sourceIds, claimIds)}`);
             }
           } catch { bump(quoteMisses, `${arm} ${plainCode(at.family)} unreadable`); }
         }
       }
     }
   }
-  return { version: 1, answers, judges, answerShapes, judgeShapes, quoteMisses };
+  return { version: 1, answers, judges, answerShapes, judgeShapes, quoteMisses, idPatterns };
 }
 
 // ---------------------------------------------------------------- totals

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, checkCodexStream, diagnoseRun, shapeCodes, classifyQuote, recordIdPattern, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -238,7 +238,7 @@ test('diagnose reports counts and plain codes only, never model text', () => {
   assert.deepEqual(d.judges, { 'none anthropic valid none': 1, 'none openai invalid other': 1, 'none openai timeout none': 1,
     'full anthropic skipped none': 1, 'full slot-1 not-judged none': 1 });
   assert.ok(!JSON.stringify(d).includes('café'));
-  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {}); assert.deepEqual(d.quoteMisses, {});
+  assert.deepEqual(d.judgeShapes, {}); assert.deepEqual(d.answerShapes, {}); assert.deepEqual(d.quoteMisses, {}); assert.deepEqual(d.idPatterns, {});
 });
 
 test('a missed quote is classified for diagnosis only', () => {
@@ -251,6 +251,18 @@ test('a missed quote is classified for diagnosis only', () => {
   assert.equal(classifyQuote(text, 'ship it ... rotate keys'), 'elision');
   assert.equal(classifyQuote(text, 'ship on Monday'), 'not-found');
   assert.equal(spanOf(text, 'said "ship it"'), null); // resolution itself stays exact
+});
+
+test('an unresolved record id is reported as a pattern class only', () => {
+  const src = new Set(['m10', 'm11']); const claims = new Set(['c1']);
+  assert.equal(recordIdPattern('answer', 'm10', src, claims), 'answer is-source-id');
+  assert.equal(recordIdPattern('answer', 'claims/c1', src, claims), 'answer claims-path-without-text');
+  assert.equal(recordIdPattern('answer', 'claims/c9/text', src, claims), 'answer claims-path-unknown-claim');
+  assert.equal(recordIdPattern('answer', 'c1', src, claims), 'answer bare-claim-id');
+  assert.equal(recordIdPattern('source', 'message 12', src, claims), 'source other-message-form');
+  assert.equal(recordIdPattern('source', 'limitations/3', src, claims), 'source is-limitation-out-of-range');
+  assert.equal(recordIdPattern('evidence', 'café secret', src, claims), 'bad-collection other');
+  assert.equal(recordIdPattern('source', '', src, claims), 'source empty-id');
 });
 
 test('shape codes name the schema rule and location, never the text', () => {
