@@ -37,7 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import readline from 'node:readline';
-import { setImmediate as yieldToEventLoop } from 'node:timers';
+import { Worker } from 'node:worker_threads';
 import type { QuotaState } from '../core/types.js';
 import type { CredentialProvider, ClaudeCredentials } from './CredentialProvider.js';
 import { redactToken, redactEmail } from './CredentialProvider.js';
@@ -576,6 +576,45 @@ export class JsonlParser {
   }
 }
 
+/** Read the existing seven-day fallback in the quota worker. */
+export async function scanClaudeJsonlQuota(projectsDir: string): Promise<QuotaState | null> {
+  if (!fs.existsSync(projectsDir)) return null;
+
+  // Look at files from the last 7 days
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const files = JsonlParser.findFiles(projectsDir, sevenDaysAgo);
+  if (files.length === 0) return null;
+
+  const windowStart = new Date(sevenDaysAgo);
+  const windowEnd = new Date();
+  let totalCounts: JsonlTokenCounts = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    totalBilled: 0,
+  };
+
+  for (const file of files) {
+    const counts = await JsonlParser.parseFileAsync(file, windowStart, windowEnd);
+    totalCounts.inputTokens += counts.inputTokens;
+    totalCounts.outputTokens += counts.outputTokens;
+    totalCounts.cacheCreationTokens += counts.cacheCreationTokens;
+    totalCounts.cacheReadTokens += counts.cacheReadTokens;
+    totalCounts.totalBilled += counts.totalBilled;
+  }
+
+  if (totalCounts.totalBilled === 0) return null;
+
+  const estimatedPercent = JsonlParser.estimateUtilization(totalCounts);
+
+  return {
+    usagePercent: estimatedPercent,
+    source: 'claude-jsonl',
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
 // ── QuotaCollector ───────────────────────────────────────────────────
 
 export class QuotaCollector extends EventEmitter {
@@ -1000,47 +1039,32 @@ export class QuotaCollector extends EventEmitter {
 
   // ── Private: JSONL Fallback ──────────────────────────────────────
 
-  private async collectFromJsonl(): Promise<QuotaState | null> {
-    const projectsDir = this.getJsonlDir();
-    if (!fs.existsSync(projectsDir)) return null;
-
-    // Look at files from the last 7 days
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const files = JsonlParser.findFiles(projectsDir, sevenDaysAgo);
-    if (files.length === 0) return null;
-
-    const windowStart = new Date(sevenDaysAgo);
-    const windowEnd = new Date();
-    let totalCounts: JsonlTokenCounts = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      totalBilled: 0,
-    };
-
-    for (const file of files) {
-      const counts = await JsonlParser.parseFileAsync(file, windowStart, windowEnd);
-      // Yield between files so other work (lease pulls, health probes) runs.
-      // The `node:timers` import is deliberate: a test's fake timers replace
-      // the global setImmediate, and this yield must not depend on them.
-      await new Promise<void>((resolve) => yieldToEventLoop(resolve));
-      totalCounts.inputTokens += counts.inputTokens;
-      totalCounts.outputTokens += counts.outputTokens;
-      totalCounts.cacheCreationTokens += counts.cacheCreationTokens;
-      totalCounts.cacheReadTokens += counts.cacheReadTokens;
-      totalCounts.totalBilled += counts.totalBilled;
-    }
-
-    if (totalCounts.totalBilled === 0) return null;
-
-    const estimatedPercent = JsonlParser.estimateUtilization(totalCounts);
-
-    return {
-      usagePercent: estimatedPercent,
-      source: 'claude-jsonl',
-      lastUpdated: new Date().toISOString(),
-    };
+  private collectFromJsonl(): Promise<QuotaState | null> {
+    return new Promise((resolve, reject) => {
+      const compiled = new URL('./QuotaJsonlScan.worker.js', import.meta.url);
+      const workerUrl = fs.existsSync(compiled)
+        ? compiled
+        : new URL('../../dist/monitoring/QuotaJsonlScan.worker.js', import.meta.url);
+      const worker = new Worker(workerUrl, {
+        workerData: this.getJsonlDir(),
+        execArgv: [],
+        env: {},
+      });
+      let settled = false;
+      const finish = (result: QuotaState | null, error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        void worker.terminate();
+        if (error) reject(error);
+        else resolve(result);
+      };
+      const timer = setTimeout(() => finish(null, new Error('Quota JSONL scan timed out')), 10 * 60_000);
+      timer.unref();
+      worker.once('message', (result: QuotaState | null) => finish(result));
+      worker.once('error', (error) => finish(null, error));
+      worker.once('exit', (code) => finish(null, new Error(`Quota JSONL scan worker exited before returning a result (${code})`)));
+    });
   }
 
   private getJsonlDir(): string {

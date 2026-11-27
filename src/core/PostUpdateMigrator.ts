@@ -1,3 +1,4 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
@@ -301,6 +302,10 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
     return `${lead}${floor}${tail}`;
   });
 }
+
+// The compact hook collects identity and recovery context before printing.
+// Its local HTTP reads can spend up to 36 seconds in sequence.
+export const COMPACT_SESSION_START_TIMEOUT_SECONDS = 45;
 
 /**
  * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
@@ -3696,7 +3701,7 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
         alwaysOverwrite: true,
       },
-      {
+      ...templateRoots.map((skillRoot) => ({
         // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
         // wrapper must plumb enabledFrameworks into detection on EXISTING
         // agents too — installBuiltinSkills never overwrites, so this sync
@@ -3705,12 +3710,12 @@ export class PostUpdateMigrator {
         // shipped-content entries: a prior-hash gate over a shipped script
         // classifies ordinary drift as customization and stops refreshing
         // forever (the constitution-mirror lesson).
-        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        label: `spec-converge cross-model-review enabledFrameworks plumbing${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      },
+      })),
       // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
       // `installBuiltinSkills` writes a skill's files only when the skill is
       // MISSING, so an existing agent's templates freeze at whatever version
@@ -14054,6 +14059,16 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
     }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with one or two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
+    if (content.includes('calibrated small Mac with two unit workers and one worker for each remaining suite')) {
+      content = content.replace('calibrated small Mac with two unit workers', 'calibrated small Mac with one or two unit workers');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
+    }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
@@ -18793,13 +18808,24 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       hooks.SessionStart = [
         { matcher: 'startup', hooks: [sessionStartHook] },
         { matcher: 'resume', hooks: [sessionStartHook] },
-        { matcher: 'compact', hooks: [sessionStartHook] },
+        { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       ];
       patched = true;
       result.upgraded.push('.claude/settings.json: added SessionStart hooks (startup/resume/compact)');
     } else {
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
+      const groups = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>;
+      for (const group of groups) {
+        if (group.matcher !== 'compact') continue;
+        for (const hook of group.hooks ?? []) {
+          if (hook.command === sessionStartHook.command && hook.timeout === sessionStartHook.timeout) {
+            hook.timeout = COMPACT_SESSION_START_TIMEOUT_SECONDS;
+            patched = true;
+            result.upgraded.push('.claude/settings.json: extended compaction recovery hook timeout');
+          }
+        }
+      }
     }
     {
       // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
@@ -22165,6 +22191,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -22178,6 +22205,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
@@ -22714,8 +22745,6 @@ if [ "\$PC_OK" = "1" ] && [ "\$PC_MODE" = "suppressed" ]; then
   exit 3
 fi
 
-if [ "\$PC_OK" != "1" ]; then
-# Older server: the two calls the hook always made.
 # Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
 # post-compaction seed hook, so on the first prompt after a detected compaction
 # the server returns the topic's verified standing packet, in its disclosure
@@ -22769,6 +22798,8 @@ if [ -n "\$CB_SEED_SHOWN" ]; then
   exit 0
 fi
 
+if [ "\$PC_OK" != "1" ]; then
+# Older server: the two calls the hook always made.
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -23247,11 +23278,11 @@ fi
 CONFIG_FILE="\$INSTAR_DIR/config.json"
 if [ -f "\$CONFIG_FILE" ]; then
   PORT=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('port', 4040))" 2>/dev/null || echo "4040")
-  HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+  HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
   if [ "\$HEALTH" = "200" ]; then
     echo ""
     echo "Instar server: RUNNING on port \${PORT}"
-    CAPS=\$(curl -s "http://localhost:\${PORT}/capabilities" 2>/dev/null)
+    CAPS=\$(curl -s --max-time 2 "http://localhost:\${PORT}/capabilities" 2>/dev/null)
     if echo "\$CAPS" | grep -q '"featureGuide"' 2>/dev/null; then
       echo ""
       echo "--- YOUR CAPABILITIES ---"
@@ -23298,10 +23329,10 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
     if [ -z "\$AUTH_TOKEN" ]; then
       AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+    HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       WM_QUERY=\$(python3 -c "import urllib.parse; print(urllib.parse.quote('compaction-recovery context-restoration'))" 2>/dev/null)
-      WORKING_MEM=\$(curl -s -H "Authorization: Bearer \${AUTH_TOKEN}" \
+      WORKING_MEM=\$(curl -s --max-time 2 -H "Authorization: Bearer \${AUTH_TOKEN}" \
         "http://localhost:\${PORT}/context/working-memory?prompt=\${WM_QUERY}&limit=6" 2>/dev/null)
       if [ -n "\$WORKING_MEM" ]; then
         WM_CONTEXT=\$(echo "\$WORKING_MEM" | python3 -c "
@@ -25349,9 +25380,17 @@ process.stdin.on('end', async () => {
     // only explicitly unambiguous reads bypass the API; an unknown verb must
     // reach the gate for the authoritative decision.
     const actionTokens = action.split('_').filter(Boolean);
-    const hasMutatingTail = actionTokens.slice(1).some(token =>
-      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    // The actual verb may follow connector namespaces, in either __ or _ form.
+    // Whole-token matches are engine-neutral; compound mutations and execution stay governed.
+    // Only the observed GitHub alias has a flattened namespace; unknown direct verbs stay governed.
+    const hasMutatingPart = actionTokens.some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(token)
     );
+    const toolSegments = parts.slice(2);
+    const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
+    const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
@@ -25359,7 +25398,7 @@ process.stdin.on('end', async () => {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
-    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+    } else if (!hasMutatingPart && hasReadVerb) {
       mutability = 'read';
     }
 

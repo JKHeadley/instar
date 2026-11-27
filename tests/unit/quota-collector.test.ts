@@ -615,7 +615,7 @@ describe('QuotaCollector', () => {
     expect(state?.usagePercent).toBe(73.2);
   });
 
-  it('falls back to JSONL when OAuth fails', async () => {
+  it('falls back to JSONL off the collector thread when OAuth fails', async () => {
     // Write credentials (will fail on OAuth)
     await provider.writeCredentials({
       accessToken: 'test-token',
@@ -642,12 +642,19 @@ describe('QuotaCollector', () => {
       retry: { maxRetries: 0, baseDelayMs: 1, maxDelayMs: 1, jitterFactor: 0 },
     });
 
-    const result = await collector.collect();
-
-    expect(result.success).toBe(true);
-    expect(result.dataSource).toBe('jsonl-fallback');
-    expect(result.dataConfidence).toBe('estimated');
-    expect(result.state?.usagePercent).toBeGreaterThan(0);
+    const mainDiscovery = vi.spyOn(JsonlParser, 'findFiles').mockImplementation(() => {
+      throw new Error('The server thread must not enumerate transcript files');
+    });
+    try {
+      const result = await collector.collect();
+      expect(mainDiscovery).not.toHaveBeenCalled();
+      expect(result.success).toBe(true);
+      expect(result.dataSource).toBe('jsonl-fallback');
+      expect(result.dataConfidence).toBe('estimated');
+      expect(result.state?.usagePercent).toBe(50);
+    } finally {
+      mainDiscovery.mockRestore();
+    }
   });
 
   it('returns none when both sources fail', async () => {

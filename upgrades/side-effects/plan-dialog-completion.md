@@ -1,20 +1,20 @@
-# Plan approval wording and dialog ownership
+# Plan dialog ownership
 
 ## Summary
 
-Tier 1. The Plans list and confirmation describe the work the user is approving. Delayed completion closes only the panel that initiated the action. The changes are confined to the browser model, renderer, and fixtures.
+Tier 1. Delayed completion closes only the panel that initiated the action and refreshes Plans even if the panel was dismissed. The change is confined to the renderer and fixtures.
 
 ## Signal and authority
 
-The existing plan and round state supply the displayed label. The existing server still determines eligibility, records permission, and controls execution. The acknowledgement action, round index and request payload remain unchanged. When a work name is unavailable, the UI identifies the step by position.
+The existing plan and round state supply the displayed label. The existing server still determines eligibility, records permission, and controls execution. The acknowledgement action, round index and request payload remain unchanged.
 
 ## Over-block and under-block
 
-A disconnected panel skips the delayed close and reload. An already-sent action may finish and remains visible on the next ordinary Plans read. A panel still on screen can complete its existing close and refresh flow. Success and stale-plan conflict responses use the same panel ownership check.
+A disconnected panel skips the delayed close. Plans still refreshes after the result. A panel still on screen can complete its existing close and refresh flow. Success and stale-plan conflict responses use the same panel ownership check.
 
 ## Interactions and multi-machine posture
 
-The fix uses the DOM panel returned by the shared sheet and applies only to replaced or closed panels. It changes no device or machine routing, storage, or startup behavior. Existing plans and mixed-version installs remain readable. Tests exercise approval names, eligible and ineligible states, request bytes, and delayed results with the owning panel open or replaced.
+The fix uses the DOM panel returned by the shared sheet and applies only to replaced or closed panels. It changes no device or machine routing, storage, or startup behavior. Existing plans and mixed-version installs remain readable. Tests exercise the existing request and delayed results with the owning panel open or replaced.
 
 ## Rollback
 

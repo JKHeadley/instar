@@ -515,6 +515,17 @@ export interface MessagingConfig {
 
 // ── Store Interface ────────────────────────────────────────────────
 
+/** The latest recorded delivery in transition order. */
+export function getLastDeliveredAt(delivery: Pick<DeliveryState, 'transitions'>): string | undefined {
+  return delivery.transitions?.filter(transition => transition.to === 'delivered').at(-1)?.at;
+}
+
+/** Metadata used to find retry candidates before reloading the authoritative envelope. */
+export interface RetryInboxEntry {
+  message: Pick<AgentMessage, 'id' | 'createdAt' | 'ttlMinutes' | 'type'>;
+  delivery: Pick<DeliveryState, 'phase' | 'expiresAt'> & { lastDeliveredAt: string | undefined };
+}
+
 /** Interface for the message persistence layer */
 export interface IMessageStore {
   /** Initialize the store (create dirs, rebuild indexes) */
@@ -542,6 +553,9 @@ export interface IMessageStore {
 
   /** Query inbox messages with filters */
   queryInbox(agentName: string, filter?: MessageFilter): Promise<MessageEnvelope[]>;
+
+  /** Read retry metadata without reopening unchanged envelopes when supported. */
+  queryRetryInbox?(agentName: string): Promise<RetryInboxEntry[]>;
 
   /** Query outbox messages with filters */
   queryOutbox(agentName: string, filter?: MessageFilter): Promise<MessageEnvelope[]>;

@@ -14,6 +14,17 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type ExecSeam = { execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer?: number, env?: NodeJS.ProcessEnv): Promise<string> };
 
+async function applyUpdateThroughRetries(checker: UpdateChecker) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const update = checker.applyUpdate();
+    const [result] = await Promise.all([update, vi.runAllTimersAsync()]);
+    return result;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 describe('UpdateChecker.applyUpdate()', () => {
   let tmpDir: string;
   let checker: UpdateChecker;
@@ -61,9 +72,10 @@ describe('UpdateChecker.applyUpdate()', () => {
     // network. Before 2026-09-03 this relied on a REAL npm invocation failing
     // fast; a slow registry made it hang to the 30s timeout on every CI shard
     // and locally (ACT-361).
-    vi.spyOn(checker as never as { execAsync(cmd: string, args: string[], t: number): Promise<string> }, 'execAsync' as never)
+    const exec = vi.spyOn(checker as unknown as ExecSeam, 'execAsync')
       .mockRejectedValue(new Error('npm install failed (mocked network seam)'));
-    const result = await checker.applyUpdate();
+    const result = await applyUpdateThroughRetries(checker);
+    expect(exec).toHaveBeenCalledTimes(3);
 
     // Should return a structured result even on failure
     expect(result).toHaveProperty('success');
@@ -73,7 +85,7 @@ describe('UpdateChecker.applyUpdate()', () => {
     expect(result).toHaveProperty('restartNeeded');
     expect(typeof result.message).toBe('string');
     expect(result.message.length).toBeGreaterThan(0);
-  }, 30000);
+  });
 
   it('includes changeSummary in message when available', async () => {
     vi.spyOn(checker, 'check').mockResolvedValue({
@@ -84,15 +96,16 @@ describe('UpdateChecker.applyUpdate()', () => {
       changeSummary: 'Fixed security issues and improved performance',
     });
     // Same mocked exec seam as above — never a real npm call (ACT-361).
-    vi.spyOn(checker as never as { execAsync(cmd: string, args: string[], t: number): Promise<string> }, 'execAsync' as never)
+    const exec = vi.spyOn(checker as unknown as ExecSeam, 'execAsync')
       .mockRejectedValue(new Error('npm install failed (mocked network seam)'));
 
-    const result = await checker.applyUpdate();
+    const result = await applyUpdateThroughRetries(checker);
+    expect(exec).toHaveBeenCalledTimes(3);
 
     // Even if the npm update fails, the result should be structured
     expect(result).toHaveProperty('message');
     expect(typeof result.message).toBe('string');
-  }, 30000);
+  });
 });
 
 describe('UpdateChecker.fetchChangelog()', () => {

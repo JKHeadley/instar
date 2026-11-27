@@ -41,11 +41,21 @@ describe('Plan completion owns its dialog', () => {
     expect(original.isConnected).toBe(false);
     expect(newer.isConnected).toBe(true);
     expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Accounts Settings');
-    expect(get).toHaveBeenCalledTimes(reads);
+    expect(get.mock.calls.length).toBeGreaterThan(reads);
   });
 
   it.each(['success', 'version mismatch'])('still closes and refreshes its own open dialog after %s', async outcome => {
     const { complete, original, get, reads } = await openApproval();
+    complete(outcome === 'success' ? { ok: true, data: {} } : { ok: false, reason: 'version mismatch' });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(original.isConnected).toBe(false);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(get.mock.calls.length).toBeGreaterThan(reads);
+  });
+
+  it.each(['success', 'version mismatch'])('refreshes after %s when the original dialog was dismissed', async outcome => {
+    const { complete, original, get, reads, ui } = await openApproval();
+    ui.closeSheet();
     complete(outcome === 'success' ? { ok: true, data: {} } : { ok: false, reason: 'version mismatch' });
     await vi.advanceTimersByTimeAsync(1100);
     expect(original.isConnected).toBe(false);

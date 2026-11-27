@@ -26,13 +26,13 @@ const T = 777001;
 const TOKEN = 'itest-token';
 const BRIEFING = `=== TOPIC ${T} INTENT BRIEFING (auto-injected) ===\n  CURRENT WORK\n    goal: prove the delta hook\n=== END TOPIC INTENT BRIEFING ===`;
 
-interface Rig { home: string; port: number; server: http.Server; hits: string[]; messages: Array<Record<string, unknown>>; briefing: string; reduce: boolean; seedFetches: SeedFetchLog }
+interface Rig { home: string; port: number; server: http.Server; hits: string[]; messages: Array<Record<string, unknown>>; briefing: string; reduce: boolean; offerSeed: boolean; seedFetches: SeedFetchLog }
 
 async function startRig(withRoute: boolean): Promise<Rig> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-delta-int-'));
   const stateDir = path.join(home, '.instar');
   fs.mkdirSync(path.join(stateDir, 'hooks', 'instar'), { recursive: true });
-  const rig: Rig = { home, port: 0, server: null as unknown as http.Server, hits: [], messages: [], briefing: BRIEFING, reduce: false, seedFetches: new SeedFetchLog() };
+  const rig: Rig = { home, port: 0, server: null as unknown as http.Server, hits: [], messages: [], briefing: BRIEFING, reduce: false, offerSeed: false, seedFetches: new SeedFetchLog() };
   const app = express();
   app.use((req, res, next) => {
     rig.hits.push(req.path);
@@ -51,6 +51,12 @@ async function startRig(withRoute: boolean): Promise<Rig> {
       briefing: () => rig.briefing, messages: (_t, limit) => rig.messages.slice(-limit), seedFetches: rig.seedFetches,
     }));
   }
+  app.post('/context-budget/codex-seed', (_q, r) => {
+    r.json(rig.offerSeed
+      ? { deliver: true, text: 'Verified recovery packet', epoch: 'compact-1', carrier: 'packet:abcdef01' }
+      : { deliver: false, reason: 'no-compaction' });
+  });
+  app.post('/context-budget/codex-seed/ack', (_q, r) => { r.json({ ok: true }); });
   // The two calls an older server answers.
   app.get('/topic-intent/:id/briefing', (_q, r) => { r.type('text/plain').send(rig.briefing); });
   app.get('/telegram/topics/:id/messages', (_q, r) => { r.json({ topicId: T, messages: rig.messages.slice(-15) }); });
@@ -94,7 +100,7 @@ describe('per-prompt hook → prompt-context route (real script, real server)', 
       SafeFsExecutor.safeRmSync(r.home, { recursive: true, force: true, operation: OP });
     }
   });
-  afterEach(() => { withRoute.hits.length = 0; older.hits.length = 0; withRoute.messages = [...MSGS]; older.messages = [...MSGS]; withRoute.briefing = BRIEFING; withRoute.reduce = false; });
+  afterEach(() => { withRoute.hits.length = 0; older.hits.length = 0; withRoute.messages = [...MSGS]; older.messages = [...MSGS]; withRoute.briefing = BRIEFING; withRoute.reduce = false; withRoute.offerSeed = false; });
 
   it('makes ONE request for the context and prints the full output while in shadow', async () => {
     withRoute.messages = [...MSGS];
@@ -106,6 +112,16 @@ describe('per-prompt hook → prompt-context route (real script, real server)', 
     expect(out).toContain(`TOPIC ${T} RECENT HISTORY (auto-injected):`);
     expect(out).toContain('first ask from the user');
     expect(out).toContain('*** UNANSWERED MESSAGE(S) FROM USER ***');
+  });
+
+  it('delivers the Codex seed even when prompt-context succeeds', async () => {
+    withRoute.offerSeed = true;
+    const out = await runHook(withRoute, { env: { INSTAR_FRAMEWORK: 'codex-cli' } });
+    expect(withRoute.hits.filter((p) => p !== '/health')).toEqual([
+      `/topic/${T}/prompt-context`, '/context-budget/codex-seed', '/context-budget/codex-seed/ack',
+    ]);
+    expect(out).toContain('Verified recovery packet');
+    expect(out).not.toContain('first ask from the user');
   });
 
   it('prints the same context as the two older calls (an older server: 404 → fallback)', async () => {

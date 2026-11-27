@@ -162,18 +162,16 @@ function openProject(r, { post, topicHref, refresh }) {
   const summary = el('p', { class: 'card-line', text: r.detailFailed ? `Couldn't load its rounds: ${r.detailFailed}.` : r.sub });
 
   let panel;
-  // Completion owns the panel that started it, never a dialog opened afterward.
-  const closeOwnPanel = () => {
-    if (!panel?.isConnected) return;
-    closeSheet();
+  const finish = () => {
+    if (panel?.isConnected) closeSheet();
     refresh();
   };
-  const done = () => setTimeout(closeOwnPanel, 700);
+  const done = () => setTimeout(finish, 700);
   const write = async (kind, path, body) => {
     const x = await post(`/projects/${id}/${path}`, body);
     if (x.ok) return { ok: true, message: resultWords(kind, x.data) };
     const w = refusalWords(x.reason);
-    if (w.refresh) setTimeout(closeOwnPanel, 900);
+    if (w.refresh) setTimeout(finish, 900);
     return { ok: false, message: w.text };
   };
 

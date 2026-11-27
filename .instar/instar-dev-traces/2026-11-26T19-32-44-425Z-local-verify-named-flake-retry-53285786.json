@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "local-verify-named-flake-retry",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T19:32:44.425Z",
+  "artifactPath": "upgrades/side-effects/local-verify-named-flake-retry.md",
+  "artifactSha256": "20f429be9d68f4b7ad7f2d97c5c1f36a555d3a090703bbaf4889ea73867c2259",
+  "specPath": "docs/specs/local-verify-named-flake-retry.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-named-flake-retry.eli16.md",
+    "docs/specs/local-verify-named-flake-retry.md",
+    "docs/specs/reports/local-verify-named-flake-retry-convergence.md",
+    "src/data/awareness/local-verify-named-flake-retry.md",
+    "src/data/feature-ladders.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/namedFlakeRetry.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/unhandledErrorsReporter.ts",
+    "tests/e2e/local-verify-likely-failing-first-lifecycle.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/namedFlakeRetry.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/record.test.ts",
+    "upgrades/next/local-verify-named-flake-retry.md",
+    "upgrades/side-effects/local-verify-named-flake-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 3,
+  "tierReasoning": "The verifier verdict path handles new evidence and keeps the existing verdict authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

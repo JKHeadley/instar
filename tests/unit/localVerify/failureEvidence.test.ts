@@ -73,6 +73,20 @@ describe('bounded failed verification evidence', () => {
     expect(result.failures.length).toBeGreaterThan(0);
   });
 
+  it('keeps a unit exit even when named failures have filled the artifact', () => {
+    const evidence = new FailureEvidence();
+    for (let i = 0; i < 100; i++) evidence.capture('e2e', report('x'.repeat(1000)));
+    const initialCount = JSON.parse(evidence.serialize()).failures.length;
+    evidence.captureUnitExit({ step: 'unit', status: null, signal: 'SIGKILL', stdout: '', stderr: 'x'.repeat(3000) + 'worker stopped' }, null);
+    const text = evidence.serialize();
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(FAILURE_EVIDENCE_BYTES);
+    expect(JSON.parse(text).failures.length).toBeLessThan(initialCount);
+    expect(JSON.parse(text)).toMatchObject({
+      truncated: true,
+      processFailures: [{ step: 'unit', status: null, signal: 'SIGKILL', stderr: expect.stringMatching(/worker stopped$/) }],
+    });
+  });
+
   it('does not retain successful test output', () => {
     const evidence = new FailureEvidence();
     evidence.capture('unit', parseVitestJson(JSON.stringify({ testResults: [{

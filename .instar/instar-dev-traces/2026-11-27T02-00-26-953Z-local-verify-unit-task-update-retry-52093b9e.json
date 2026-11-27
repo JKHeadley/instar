@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "local-verify-unit-task-update-retry",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-27T02:00:26.953Z",
+  "artifactPath": "upgrades/side-effects/local-verify-unit-task-update-retry.md",
+  "artifactSha256": "8aba4d4da31b873dcd3851eadcf691d4dbf78701e4c333025ab54d737522956b",
+  "coveredFiles": [
+    "src/localVerify/laneReport.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/unhandledErrorsReporter.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One reversible retry for an exact worker timeout. Existing merge authority still requires a complete green report.",
+  "eli16Path": "docs/specs/local-verify-unit-task-update-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-unit-task-update-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

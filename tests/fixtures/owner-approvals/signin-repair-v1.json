@@ -1,0 +1,102 @@
+{
+  "synthetic": true,
+  "appClockMs": "1795719300000",
+  "keys": {
+    "authorityEd25519SpkiBase64": "MCowBQYDK2VwAyEA6AWuqg21OCNTdW7e3V7oEm42B0MmlMb5fLo2SkE8vSw=",
+    "phoneP256SpkiBase64": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwVDsXZYTAK49lGZBAyiXHRWx+JMEF1MFqfCZfT0+xe/Lq9PZ+vD6T3RCQAgwFqVa+kEsr5lMCN16CJcOBeekEw=="
+  },
+  "policy": {
+    "config": {
+      "enabled": true,
+      "dryRun": false,
+      "mode": "unattended",
+      "unattendedPolicy": {
+        "identities": [
+          "repair-owner@example.invalid"
+        ],
+        "minimumSuccessfulRepairs": 0,
+        "minimumEvidenceDays": 0
+      }
+    },
+    "expectedRevision": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "configDigest": "sha256:2db6e26a8faed5514a76688be705ba336b67bf67406d72809869ef9a0c8120ef"
+  },
+  "inventory": {
+    "inventory": [
+      "instar.owner-approval.inventory.v1",
+      "https://paired.example",
+      "synthetic-owner-authority",
+      "owner-1",
+      "synthetic-iphone",
+      "1795719600000",
+      [
+        [
+          "11111111-1111-4111-8111-111111111111",
+          "349d15a18689cd500121a2d41673d982e2c259cd7a2cb78345892cd30b4cef3f"
+        ]
+      ]
+    ],
+    "signerKeyId": "test-holder-key-1",
+    "signature": "1BXjrYaQ6HX-1FTBwu05KnI3ohuTjUEaOs17OA4XdOk-rbXV64eTob9k3v-ZT4CtktVGOfUN1Pt_fT-LiqIvCw"
+  },
+  "disclosure": {
+    "disclosure": [
+      "instar.owner-approval.disclosure.v1",
+      "https://paired.example",
+      "synthetic-owner-authority",
+      "owner-1",
+      "synthetic-iphone",
+      "11111111-1111-4111-8111-111111111111",
+      "subscription-relogin.configure.v1",
+      "Let this Mac repair sign-in for the selected subscription without asking each time.",
+      "1795719600000",
+      [
+        [
+          "synthetic-mac",
+          "Test Mac",
+          "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sha256:2db6e26a8faed5514a76688be705ba336b67bf67406d72809869ef9a0c8120ef",
+          [
+            "Test subscription"
+          ]
+        ]
+      ]
+    ],
+    "signerKeyId": "test-holder-key-1",
+    "signature": "-WX4KzwIKjCUS2NcvwYpZBr_cZd7vJaZnmdgj4D5zwz-VxztOtcZRY6NLlqtJGA9wN-A-Qk3Ux-hkI3kv83GAg"
+  },
+  "challenge": {
+    "challenge": [
+      "instar.owner-approval.confirm.biometric.v1",
+      "https://paired.example",
+      "synthetic-owner-authority",
+      "2",
+      "process-1",
+      "owner-1",
+      "synthetic-iphone",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "9c959d5e9dfb823e0ccc9428e470cd88ad769175e67651d5913fe404609605e6",
+      "1",
+      "11111111-1111-4111-8111-111111111111",
+      "subscription-relogin.configure.v1",
+      "349d15a18689cd500121a2d41673d982e2c259cd7a2cb78345892cd30b4cef3f",
+      "22222222-2222-4222-8222-222222222222",
+      "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "1795719360000",
+      "face-id-current-set-v1"
+    ],
+    "signerKeyId": "test-holder-key-1",
+    "signature": "eKksTJx4yjIV7jmFIjMCPkxd77AUMy8QKCp_uQlNFxAf1sR8rb4sbPU6McUo3DSjtrolj-0USqrlf3mvl4-uBw"
+  },
+  "submit": {
+    "proposalHash": "349d15a18689cd500121a2d41673d982e2c259cd7a2cb78345892cd30b4cef3f",
+    "challengeId": "22222222-2222-4222-8222-222222222222",
+    "localAssurance": "face-id-current-set-v1",
+    "signature": "MEUCIQCqu5pb1PwcvVG-ly7_jpto9PMq4ggUfgqRc1AjgSmdFgIgTYXucc9OLM-KSGIu5T7cAdMjZyrYYAqeqYFvg8Szzx0"
+  },
+  "exactBytesBase64": {
+    "inventory": "WyJpbnN0YXIub3duZXItYXBwcm92YWwuaW52ZW50b3J5LnYxIiwiaHR0cHM6Ly9wYWlyZWQuZXhhbXBsZSIsInN5bnRoZXRpYy1vd25lci1hdXRob3JpdHkiLCJvd25lci0xIiwic3ludGhldGljLWlwaG9uZSIsIjE3OTU3MTk2MDAwMDAiLFtbIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsIjM0OWQxNWExODY4OWNkNTAwMTIxYTJkNDE2NzNkOTgyZTJjMjU5Y2Q3YTJjYjc4MzQ1ODkyY2QzMGI0Y2VmM2YiXV1d",
+    "disclosure": "WyJpbnN0YXIub3duZXItYXBwcm92YWwuZGlzY2xvc3VyZS52MSIsImh0dHBzOi8vcGFpcmVkLmV4YW1wbGUiLCJzeW50aGV0aWMtb3duZXItYXV0aG9yaXR5Iiwib3duZXItMSIsInN5bnRoZXRpYy1pcGhvbmUiLCIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJzdWJzY3JpcHRpb24tcmVsb2dpbi5jb25maWd1cmUudjEiLCJMZXQgdGhpcyBNYWMgcmVwYWlyIHNpZ24taW4gZm9yIHRoZSBzZWxlY3RlZCBzdWJzY3JpcHRpb24gd2l0aG91dCBhc2tpbmcgZWFjaCB0aW1lLiIsIjE3OTU3MTk2MDAwMDAiLFtbInN5bnRoZXRpYy1tYWMiLCJUZXN0IE1hYyIsInNoYTI1NjpiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiIiwic2hhMjU2OjJkYjZlMjZhOGZhZWQ1NTE0YTc2Njg4YmU3MDViYTMzNmI2N2JmNjc0MDZkNzI4MDk4NjllZjlhMGM4MTIwZWYiLFsiVGVzdCBzdWJzY3JpcHRpb24iXV1dXQ==",
+    "challenge": "WyJpbnN0YXIub3duZXItYXBwcm92YWwuY29uZmlybS5iaW9tZXRyaWMudjEiLCJodHRwczovL3BhaXJlZC5leGFtcGxlIiwic3ludGhldGljLW93bmVyLWF1dGhvcml0eSIsIjIiLCJwcm9jZXNzLTEiLCJvd25lci0xIiwic3ludGhldGljLWlwaG9uZSIsImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCI5Yzk1OWQ1ZTlkZmI4MjNlMGNjYzk0MjhlNDcwY2Q4OGFkNzY5MTc1ZTY3NjUxZDU5MTNmZTQwNDYwOTYwNWU2IiwiMSIsIjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInN1YnNjcmlwdGlvbi1yZWxvZ2luLmNvbmZpZ3VyZS52MSIsIjM0OWQxNWExODY4OWNkNTAwMTIxYTJkNDE2NzNkOTgyZTJjMjU5Y2Q3YTJjYjc4MzQ1ODkyY2QzMGI0Y2VmM2YiLCIyMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIiLCJCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjIiwiMTc5NTcxOTM2MDAwMCIsImZhY2UtaWQtY3VycmVudC1zZXQtdjEiXQ=="
+  }
+}

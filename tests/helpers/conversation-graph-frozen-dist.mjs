@@ -23,9 +23,17 @@ function inventory(root,names){return names.flatMap(name=>files(root,name)).sort
 function fileMeta(root,names){return names.map(name=>{const stat=fs.lstatSync(path.join(root,name));if(!stat.isFile()||stat.isSymbolicLink())throw new Error('fixture-code-file-invalid');return{path:name,bytes:stat.size,executable:!!(stat.mode&0o111),mtimeNs:String(fs.statSync(path.join(root,name),{bigint:true}).mtimeNs)};});}
 function selected(repository,critical){return critical.map(module=>{const source=path.join(repository,'src',module+'.ts'),built=path.join(repository,'dist',module+'.js');if(fs.statSync(source).mtimeMs>fs.statSync(built).mtimeMs)throw new Error('fixture-current-normal-dist-required');return{module,sourceSha256:sha(fs.readFileSync(source)),loadedDistSha256:sha(fs.readFileSync(built))};});}
 function directories(root,relative,mode,filesAlreadyReadonly=false){const file=path.join(root,relative),stat=fs.lstatSync(file);if(stat.isSymbolicLink())return;if(stat.isDirectory()){fs.chmodSync(file,mode);for(const name of fs.readdirSync(file))directories(root,path.join(relative,name),mode,filesAlreadyReadonly);}else if(stat.isFile()&&mode===0o500){if(filesAlreadyReadonly){if(stat.mode&0o222)throw new Error('fixture-code-writable-copy-refused');}else fs.chmodSync(file,(stat.mode&0o111)?0o500:0o400);}}
+// Unlinking read-only files on POSIX only requires write access to their
+// parent directories. Avoid a separate lstat for every file during teardown.
+function makeSnapshotDirectoriesWritable(directory) {
+  fs.chmodSync(directory, 0o700);
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) makeSnapshotDirectoriesWritable(path.join(directory, entry.name));
+  }
+}
 export async function freezeGraphDist(repository,critical,onPhase=()=>{}){
  onPhase('inventory-start');const sourceBefore=selected(repository,critical),names=await packageFiles(repository),before=fileMeta(repository,names);onPhase('inventory-ready');const root=fs.mkdtempSync(path.join(os.tmpdir(),'conversation-graph-code-'));fs.chmodSync(root,0o700);let SafeFsExecutor;
- const thaw=()=>{directories(root,'',0o700);};
+ const thaw=()=>makeSnapshotDirectoriesWritable(root);
  try{
   onPhase('copy-start');const sourceModes=new Map(before.map(row=>[row.path,row.executable?0o500:0o400])),createdParents=new Set([root]);for(const name of names){const parent=path.dirname(path.join(root,name));if(!createdParents.has(parent)){fs.mkdirSync(parent,{recursive:true,mode:0o700});createdParents.add(parent);}}
   // Copy files concurrently (bounded in practice by libuv's thread pool, 4 by default): one at a time
@@ -47,9 +55,9 @@ export async function freezeGraphDist(repository,critical,onPhase=()=>{}){
   onPhase('verify-ready');directories(root,'',0o500,true);const frozenMetadata=JSON.stringify(fileMeta(root,names));onPhase('readonly-ready');
   let closed=false;return{root,modules,identity:{manifestPath,format:'isolated-declared-package-v1',treeSha256:sha(JSON.stringify(copied)),fileCount:copied.length,createdAt:new Date().toISOString(),assetSelection:'package-json-files-exact-declared-roots',dependencyMode:'existing-node_modules-symlink',dependencyLockSha256:sha(fs.readFileSync(path.join(repository,'package-lock.json')))},moduleURL:name=>pathToFileURL(path.join(root,'dist',name+'.js')).href,
    assertUnchanged(){if(JSON.stringify(fileMeta(root,names))!==frozenMetadata)throw new Error('fixture-frozen-code-changed');},
-   close(){if(closed)return;thaw();SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'graph-live-fixture:frozen-public-code-cleanup'});closed=true;}};
+   async close(){if(closed)return;thaw();await SafeFsExecutor.safeRm(root,{recursive:true,force:true,operation:'graph-live-fixture:frozen-public-code-cleanup'});closed=true;}};
  }catch(error){
   if(!SafeFsExecutor&&fs.existsSync(path.join(root,'dist/core/SafeFsExecutor.js')))try{({SafeFsExecutor}=await import(pathToFileURL(path.join(root,'dist/core/SafeFsExecutor.js')).href));}catch{/* public-code-only incomplete copy has no service/keys/admission; startup remains refused */}
-  if(SafeFsExecutor){thaw();SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'graph-live-fixture:failed-code-snapshot-cleanup'});}throw error;
+  if(SafeFsExecutor){thaw();await SafeFsExecutor.safeRm(root,{recursive:true,force:true,operation:'graph-live-fixture:failed-code-snapshot-cleanup'});}throw error;
  }
 }

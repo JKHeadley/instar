@@ -7,7 +7,7 @@
  * `main` is not healthy). Both sides of every rule.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   GreenPrAutoMerger,
   freshState,
@@ -472,6 +472,45 @@ describe('merge line hand-off (CMT-980): tick({ handoff })', () => {
     expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).toEqual({ acted: true, reason: 'merged' });
     expect(lookups).toEqual([3714]);
     expect(h.runCalls).toEqual([expect.objectContaining({ pr: 3714, headRefOid: 'sha3714', strategy: 'sync' })]);
+  });
+
+  it.each([
+    ['settled', 'MERGEABLE', 'sha3714', 2, 'merged'],
+    ['still unknown', 'UNKNOWN', 'sha3714', 3, 'handoff-not-eligible:not-mergeable'],
+    ['head moved', 'UNKNOWN', 'new', 2, 'handoff-not-eligible:head-moved'],
+  ])('rechecks unknown exact mergeability when %s', async (_name, mergeable, headRefOid, reads, reason) => {
+    const target = pr({ number: 3714, headRefOid: 'sha3714', headRefName: 'fix/busy-followup',
+      authorLogin: 'echo-bot', isCrossRepository: false, mergeable: 'UNKNOWN' });
+    const h = harness([]);
+    let calls = 0;
+    h.deps.refetchHandoffPr = async () => ++calls === 1 ? target : { ...target, mergeable, headRefOid };
+    h.deps.refetchPr = async () => ({ title: target.title, labels: [], isDraft: false, headRefOid, state: 'OPEN' });
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['3714:sha3714:main']) }).lv);
+    expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } })).toEqual({ acted: reason === 'merged', reason });
+    expect(calls).toBe(reads);
+    expect(h.runCalls).toHaveLength(reason === 'merged' ? 1 : 0);
+  });
+
+  it('does not save a failed retry under a superseded lease', async () => {
+    const h = harness([]);
+    let epoch = 1;
+    let calls = 0;
+    h.deps.leaseEpoch = () => epoch;
+    h.deps.refetchHandoffPr = async () => {
+      if (++calls === 1) return pr({ number: 3714, headRefOid: 'sha3714', mergeable: 'UNKNOWN' });
+      epoch++;
+      save.mockClear(); // Earlier setup writes occurred while the lease was still current.
+      throw new Error('read interrupted during lease change');
+    };
+    const save = vi.spyOn(h.deps, 'saveState');
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: new Set(['3714:sha3714:main']) }).lv);
+    expect(await w.tick({ handoff: { pr: 3714, head: 'sha3714' } }))
+      .toEqual({ acted: false, reason: 'not-lease-holder' });
+    expect(calls).toBe(2);
+    expect(save).not.toHaveBeenCalled();
+    expect(h.runCalls).toEqual([]);
   });
 
   it.each([
