@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "design-feedback-followups",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:59:11.483Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-followups.md",
+  "artifactSha256": "b26abd047f1377f595e0e3bbb9b7587e989edefc3ccbadeb97022a777285f482",
+  "coveredFiles": [
+    "docs/DESIGN-STANDARD.md",
+    "upgrades/side-effects/design-feedback-followups.eli16.md",
+    "upgrades/side-effects/design-feedback-followups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation metadata and machine-summary consistency only; no runtime or weakening.",
+  "eli16Path": "upgrades/side-effects/design-feedback-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/design-feedback-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

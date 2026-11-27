@@ -9,11 +9,17 @@ import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import {
   CHIEF_OF_STAFF_KIND_REGISTRATION, CHIEF_OF_STAFF_RECORD_KIND, CHIEF_OF_STAFF_STORE_KEY,
   chiefOfStaffRecordStoreSchema, LEGAL_TRANSITIONS, isLegalTransition,
-  buildTreePut, buildTreeTombstone, buildBindingPut, buildLifecycleEvent, buildCheckEvent, buildIntent, buildOutcome, buildRenewal, buildGraduation, buildLastTick,
+  buildOwnerNeedsWithdrawal, buildTreePut, buildTreeTombstone, buildBindingPut, buildLifecycleEvent, buildCheckEvent, buildIntent, buildOutcome, buildRenewal, buildGraduation, buildLastTick,
   foldBindingState, foldIntentState, foldProjectCheckState, deriveLeaseExpiry, foldLastTicks, latestPerKey, deriveIntentKey, deriveOutcomeKey,
+  findOwnerNeedsWithdrawal,
+  buildOwnerNeedsCompletion,
+  ownerNeedsCompletionRecordKey,
+  confirmsOwnerNeedsDecision,
   type UnionEntry,
 } from '../../src/core/ChiefOfStaffStore.js';
 import { JOURNAL_KINDS, DEFAULT_RETENTION } from '../../src/core/CoherenceJournal.js';
+
+import { ownerNeedsAskKey } from '../../src/core/OwnerNeedsWithdrawal.js';
 
 const hlc = (physical: number, logical = 0, node = 'm_a'): HlcTimestamp => ({ physical, logical, node });
 const ctx = () => ({ countDroppedField: () => {}, countJailReject: () => {} });
@@ -296,5 +302,89 @@ describe('ChiefOfStaffStore — tree + last-tick folds', () => {
     const b = entry(buildLastTick('m_b', iso(T0)), hlc(1, 0, 'm_b'));
     const m = foldLastTicks([a2, b, a]);
     expect(m.get('m_a')).toBe(iso(T0 + H)); expect(m.get('m_b')).toBe(iso(T0));
+  });
+});
+
+describe('owner request withdrawal journal records', () => {
+  it('preserves the exact request without affecting the project binding', () => {
+    const ask = { project: CK, bindingVersion: 'v1', episode: 'e1', requestVersion: 'r1' };
+    const withdrawal = { kind: 'owner-ask-withdrawal' as const, ask, key: ownerNeedsAskKey(ask), coordinator: 'coordinator', leaseEpoch: 1 };
+    const record = entry(buildOwnerNeedsWithdrawal(withdrawal), hlc(2));
+    const bound = entry(buildBindingPut(bindingInput), hlc(1));
+    expect(record.data.withdrawal).toEqual(withdrawal);
+    expect(findOwnerNeedsWithdrawal([bound, record], ask)).toEqual(withdrawal);
+    expect(findOwnerNeedsWithdrawal([bound, record], { ...ask, requestVersion: 'r2' })).toBeNull();
+    expect(findOwnerNeedsWithdrawal([bound], ask)).toBeNull();
+    expect(foldBindingState([bound, record])).toEqual(foldBindingState([bound]));
+    for (const invalid of [
+      { ...record.data, op: 'delete' },
+      { ...record.data, recordType: 'tree', conversationKey: CK },
+      { ...record.data, recordKey: 'owner-ask-withdrawal:wrong-key' },
+    ]) {
+      expect(chiefOfStaffRecordStoreSchema.validate(invalid, ctx())).toBeNull();
+    }
+  });
+});
+
+
+describe('owner request completion journal records', () => {
+  it('binds the verification and close to the same exact request and lease', () => {
+    const binding = hlc(1);
+    const ask = { project: CK, bindingVersion: '1.0.m_a', episode: 'e1', requestVersion: 'r1' };
+    const evidence = { evidenceHash: SHA, evidenceIds: ['pr'], machine: 'm_a', at: iso(T0), doneItems: { pr: 'pass' as const } };
+    const { data } = entry(buildOwnerNeedsCompletion(ask, binding, 4, evidence), hlc(2));
+    expect(data).toMatchObject({
+      recordKey: ownerNeedsCompletionRecordKey(ask),
+      recordType: 'binding-lifecycle',
+      event: 'owner-ask-completed',
+      verdict: 'done-verified',
+      completionAsk: ask,
+      bindingHlc: binding,
+      leaseEpoch: 4,
+      ...evidence,
+    });
+    const config = { checkCadenceHours: 24, maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5 };
+    const journal = [{ data, origin: 'm_a' }, entry(buildBindingPut(bindingInput), binding)];
+    const current = foldBindingState(journal).get(CK);
+    expect(current?.closed).toBe(true);
+    expect(foldProjectCheckState(journal, CK, config, new Date(T0), current).lastVerdict).toBe('done-verified');
+
+    const rebound = [...journal, entry(buildBindingPut(bindingInput), hlc(3))];
+    const replacement = foldBindingState(rebound).get(CK);
+    expect(replacement?.closed).toBe(false);
+    expect(foldProjectCheckState(rebound, CK, config, new Date(T0), replacement).lastVerdict).toBeNull();
+    for (const change of [
+      { op: 'delete' },
+      { by: 'chief-of-staff' },
+      { event: 'closed' },
+      { leaseEpoch: 0 },
+      { bindingHlc: hlc(3) },
+      { completionAsk: { ...ask, requestVersion: 'r2' } },
+      { evidenceHash: undefined },
+    ]) {
+      expect(chiefOfStaffRecordStoreSchema.validate({ ...data, ...change }, ctx())).toBeNull();
+    }
+  });
+});
+
+describe('owner decision journal reconciliation', () => {
+  it('requires the exact verified local entry and rejects conflicting or incomplete peer history', () => {
+    const ask = { project: CK, bindingVersion: '1.0.m_a', episode: 'e1', requestVersion: 'r1' };
+    const key = ownerNeedsAskKey(ask);
+    const completion = entry(buildOwnerNeedsCompletion(ask, hlc(1), 4, {
+      evidenceHash: SHA, evidenceIds: [], machine: 'm_a', at: iso(T0),
+    }), hlc(2));
+    const withdrawal = entry(buildOwnerNeedsWithdrawal({
+      kind: 'owner-ask-withdrawal', ask, key, coordinator: 'm_a', leaseEpoch: 4,
+    }), hlc(3));
+
+    expect(confirmsOwnerNeedsDecision(completion, [completion], [completion])).toBe(true);
+    expect(confirmsOwnerNeedsDecision(withdrawal, [withdrawal], [])).toBe(true);
+    expect(confirmsOwnerNeedsDecision(completion, [], [completion])).toBe(false);
+    expect(confirmsOwnerNeedsDecision(completion, [completion], null)).toBe(false);
+    expect(confirmsOwnerNeedsDecision(completion, [completion], [withdrawal])).toBe(false);
+    expect(confirmsOwnerNeedsDecision(withdrawal, [withdrawal], [completion])).toBe(false);
+    const changed = { ...completion, data: { ...completion.data, evidenceHash: 'b'.repeat(64) } };
+    expect(confirmsOwnerNeedsDecision(completion, [completion], [changed])).toBe(false);
   });
 });

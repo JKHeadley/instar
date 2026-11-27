@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "slug": "disk-steward-peer-fallback",
+  "sessionId": "f6048ef3-0b6d-4266-92e6-cfac0f0efb81",
+  "timestamp": "2026-11-22T08:23:56.498Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-peer-fallback.md",
+  "artifactSha256": "a3a6a756c2eb99dc0a85e525c52c545862dd3877cf2164f3c51e0456e6924248",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/data/awareness/disk-pool-read-fallback.md",
+    "src/monitoring/diskSteward/peerRead.ts",
+    "src/monitoring/diskSteward/wiring.ts",
+    "src/server/diskStewardRoutes.ts",
+    "tests/e2e/disk-steward-lifecycle.test.ts",
+    "tests/integration/disk-steward-routes.test.ts",
+    "tests/unit/diskSteward-peer-fallback.test.ts",
+    "upgrades/next/disk-steward-peer-fallback.md",
+    "upgrades/side-effects/disk-steward-peer-fallback.eli16.md",
+    "upgrades/side-effects/disk-steward-peer-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible wiring repair using the existing admission and GET fallback helper; no new credential authority, migration or cleanup retry.",
+  "eli16Path": "upgrades/side-effects/disk-steward-peer-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-peer-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "codex-sol",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "no-data-loss-repo-registry",
+  "sessionId": "676909c6-f7e4-4202-ab7a-f8d489e719ac",
+  "timestamp": "2026-11-20T20:56:04.756Z",
+  "artifactPath": "upgrades/side-effects/no-data-loss-repo-registry.md",
+  "artifactSha256": "d7de099a8bc0bdd831b74a03f95af3dbf808a92a892fcf38f2fb2c3d5091e420",
+  "specPath": "docs/specs/no-data-loss-on-machine-death.md",
+  "coveredFiles": [
+    "src/server/ownedRepoRoutes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the increment-1 commit: marks one intentional fallback (unreachable peer) for the no-silent-fallbacks ratchet.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "comment-only marker on an existing catch; no self-triggered action changed"
+  }
+}

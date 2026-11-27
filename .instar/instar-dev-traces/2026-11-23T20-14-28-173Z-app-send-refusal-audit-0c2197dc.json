@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "slug": "app-send-refusal-audit",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T20:14:28.173Z",
+  "artifactPath": "upgrades/side-effects/app-send-refusal-audit.md",
+  "artifactSha256": "61fcc4177d75c0e801b07157e222a6c3222657fd02b67fb84ff25ae9affdf50a",
+  "coveredFiles": [
+    "docs/specs/app-send-refusal-audit.eli16.md",
+    "src/data/awareness/mobile-chat-serving-refusal-audit.md",
+    "src/server/AgentServer.ts",
+    "src/server/mobileChatServingAudit.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-chat-serving-audit-alive.test.ts",
+    "tests/integration/mobile-operator-chat.test.ts",
+    "tests/unit/mobile-chat-serving-audit.test.ts",
+    "upgrades/next/app-send-refusal-audit.md",
+    "upgrades/side-effects/app-send-refusal-audit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible fixed-schema observability on an existing refusal. No lease, response, replay, admission, credential or policy change. Actual independent review and allocated9unit18HTTP1lifecycle passes, full coordinator gate still required.",
+  "eli16Path": "docs/specs/app-send-refusal-audit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-send-refusal-audit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "app_refusal_audit_review",
+        "outcome": "concur",
+        "verified": false
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One fixed diagnostic record follows an existing request-time refusal. No autonomous action loop, retry, notification, restart, spawn or queue mutation is added."
+  }
+}

@@ -1,0 +1,9 @@
+# GitHub Reads Work The Same Across Engines
+
+Some connected tools include an extra name before the actual command. For example, a GitHub read may arrive as `github__fetch_pr` or `github_fetch_pr`. Instar was looking for a read word at the beginning of the whole name. It therefore treated these reads as changes and asked the owner to approve them, even though the existing policy already allows reads. This made Codex sessions hand ordinary GitHub investigation to another session.
+
+This repair teaches the existing classifier to find the actual command after its namespace. The rule applies to every service and engine; it does not give Codex a special permission. Both the server and its installed operation hook recognize the same read words. Explicit namespace separators identify the final tool segment. The observed flattened GitHub alias can put `github_` before its command; arbitrary unknown words are not treated as namespaces. An unknown command remains governed rather than being guessed from a word buried in its name.
+
+Creating, pushing, commenting, merging, updating and deleting stay behind the existing gate. A tool name that combines reading with a change also stays governed. Existing direct-tool write and delete classifications, sign-in rules, action identities and trust records are preserved. Existing agents receive the corrected built-in hook through the normal update path; custom hooks are preserved.
+
+The focused checks exercise real tool names, the generated hook as a running program, replacement of an old installed hook, the authenticated HTTP route and a started server before and after runtime reload. The complete repository suite belongs to the throughput verification lane. Reverting this patch restores the old classifier without changing any saved permission or database format.

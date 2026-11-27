@@ -138,9 +138,9 @@ describe('pre-push smoke scope helpers', () => {
     expect(decision.reason).toContain('affected test case count 1001');
   });
 
-  it('classifies a list timeout as an explicit non-blocking indeterminate skip with zero tests run', () => {
+  it('classifies a list timeout as a verification requirement with zero tests run', () => {
     expect(classifyVitestListRun({ status: null, signal: 'SIGTERM' })).toEqual({
-      action: 'skip-indeterminate',
+      action: 'verify-indeterminate',
       reason: 'affected-test listing timed out',
       testsRun: 0,
     });

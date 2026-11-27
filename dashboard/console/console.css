@@ -368,8 +368,16 @@ details.more[open] summary .chev { transform: rotate(90deg); }
 }
 /* A link styled as the primary button centres its label the way a <button> does (it sat top-left, 2026-11-20 audit). */
 a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
+
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
+#sec-auto-repair .btn-primary:disabled {
+  opacity: 1;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+  color: var(--text-muted);
+  filter: none;
+}
 .unlock-error { min-height: 20px; margin-top: var(--s-3); color: var(--bad); font-size: 13px; }
 
 .foot-note { margin-top: var(--s-10); text-align: center; font-size: 12.5px; color: var(--text-faint); }
@@ -515,7 +523,7 @@ button.list-head { cursor: pointer; }
 .sheet-grab { width: 40px; height: 4px; border-radius: 4px; background: var(--hairline-strong); margin: 10px auto 2px; }
 .sheet-head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-3) var(--s-5) var(--s-2); }
 .sheet-title { flex: 1; margin: 0; font-size: 18px; line-height: 1.35; font-weight: 700; letter-spacing: -.015em; color: var(--text-strong); }
-.sheet-close { flex: none; font-size: 20px; line-height: 1; }
+.sheet-close { min-width: 44px; min-height: 44px; flex: none; font-size: 20px; line-height: 1; }
 .sheet-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: var(--s-2) var(--s-5) var(--s-6); display: flex; flex-direction: column; gap: var(--s-5); }
 @media (min-width: 900px) {
   .sheet { left: auto; top: 0; height: 100dvh; width: min(520px, 42vw); max-height: none; border-radius: 0; border: 0; border-left: 1px solid var(--hairline-strong); transform: translateX(24px); }
@@ -1249,6 +1257,7 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Conversations uses the console's existing rows, chips and semantic colors. */
 .conversations-page { max-width: 760px; min-width: 0; }
 .conversation-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.conversation-tabs .chip { min-width: 44px; min-height: 44px; justify-content: center; }
 .conversation-tabs .active { border-color: var(--accent); color: var(--accent); }
 .conversation-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0; }
 .conversation-search input { flex: 1 1 180px; min-width: 0; margin: 0; }
@@ -1439,10 +1448,24 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-input { height: 44px; padding: 0 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
 .chat-fingerprint { font-family: var(--font-mono); letter-spacing: .04em; }
 @media (max-width: 899px) {
-  /* The open conversation fits between the top bar and the bottom tab bar: the messages scroll inside it,
-     so the composer stays on the first screen however long the conversation is (flex: 1 alone sizes to content). */
+  /* An expanded Needs-you list keeps normal document scrolling and its bottom clearance. */
   .chats-page .chat-open { min-height: 0; height: calc(100dvh - var(--topbar-h, 56px) - 64px - 32px); }
   .chats-page .chat-messages { height: auto; flex: 1 1 auto; min-height: 160px; }
+  /* With the list closed, the shell takes its actual space before sizing the chat.
+     Only messages yield space; the composer stays above the bottom navigation. */
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; padding-bottom: var(--nav-total); }
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .topbar,
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .preview-banner,
+  .app:has(.chats-page.has-open):not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .net-line { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main-column:has(.chats-page.has-open) { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main-column:has(.chats-page.has-open) > .needs-strip { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .main:has(> .chats-page.has-open) { flex: 1; min-height: 0; padding-bottom: var(--s-4); }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) > .main:has(> .chats-page.has-open) { overflow-y: auto; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open,
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-view,
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-open { height: 100%; min-height: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-open > :not(.chat-messages) { flex-shrink: 0; }
+  .app:not(:has(.needs-strip[data-open="1"]:not([hidden]))) .chats-page.has-open .chat-messages { height: auto; flex: 1 1 auto; min-height: 0; }
   .chat-bubble { max-width: 88%; }
   .chat-menu .btn-quiet { padding: 0 10px; }
 }
@@ -1667,7 +1690,8 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-compact-first { flex: 1; min-width: 0; font-size: 14px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .needs-compact .chev { flex: none; color: var(--text-muted); }
 .needs-strip[data-state="loading"] .needs-compact-label, .needs-strip[data-state="unknown"] .needs-compact-label { color: var(--text-muted); font-weight: 600; }
-.needs-close { flex: none; font-size: 13px; }
+.needs-close { flex: none; font-size: 13px; min-width: 44px; min-height: 44px; }
+.needs-strip button.needs-more { min-width: 44px; min-height: 44px; }
 /* "Make a card" on a conversation message (work-front-doors stage 2b): quiet, after the message. */
 .conversation-message .conversation-make-card { margin-top: 2px; font-size: 13px; min-height: 32px; padding: 2px 8px; }
 /* Whose turn (work-front-doors §6, Luna's board): light red while a card waits on you, light blue while it moves. */
@@ -1776,9 +1800,56 @@ a.needs-row:hover { background: var(--surface-raised); }
   .wc-tile-foot .work-actions > button { flex: 1 1 auto; }
 }
 
+/* Suggestions still under review do not bury the useful next step. */
+.ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
+.ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+
+
 /* A long approval inbox stays within the screen; all received actions remain reachable. */
 .needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }
 .needs-group-heading { margin: 0; padding: 10px 14px 4px; font-size: 12px; font-weight: 650; color: var(--text-muted); }
 .needs-groups .needs-rows { border: 0; }
 .needs-group + .needs-group { border-top: 1px solid var(--hairline); }
 .needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Pending sends are the user's own local content, with ordinary phone-sized actions. */
+.chat-pending { margin: var(--s-3) 0; padding: var(--s-3); border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface); min-width: 0; }
+.chat-pending-entry { padding: var(--s-3) 0; border-top: 1px solid var(--hairline); min-width: 0; }
+.chat-pending-entry > .card-line:first-child { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10rem; overflow: auto; }
+.chat-pending-entry .chat-list-actions { margin-bottom: 0; }
+.chat-pending-entry .btn-quiet { min-height: 44px; white-space: normal; text-align: left; }
+
+.chat-file-recovery-sheet .sheet-close { min-width: 44px; min-height: 44px; }
+.chat-file-recovery-sheet .chat-list-actions { min-width: 0; max-width: 100%; }
+.chat-file-recovery-sheet a[download] { min-width: 0; max-width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+
+/* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
+.main.accounts-page { max-width: none; min-width: 0; }
+.accounts-page .acct-list,
+.accounts-page .acct-list > .list-section,
+.accounts-page .acct-list .list-rows { display: flex; flex-direction: column; align-items: stretch; min-width: 0; }
+.accounts-page .acct-list .list-rows { gap: 0; }
+.accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
+.needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
+.accounts-page .acct-layout { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 12px; }
+.accounts-page .acct-layout-field { display: flex; flex: 0 1 13rem; flex-direction: column; gap: 4px; min-width: min(100%, 10rem); }
+.accounts-page .acct-layout-field select { width: 100%; }
+.accounts-page .acct-groups { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Sign-in status is independent of account usage order and grouping. */
+.acct-repairs { display: grid; gap: var(--s-3); }
+.acct-repairs h2, .acct-repairs h3, .acct-repairs p { margin: 0; }
+.acct-repair-machine { min-width: 0; border: 1px solid var(--hairline); border-radius: var(--r-md); padding: var(--s-3); background: var(--surface-raised); }
+.acct-repair-summary { min-height: 44px; display: list-item; cursor: pointer; color: var(--text-muted); line-height: 1.5; padding-block: 10px; }
+.acct-repair-summary strong { color: var(--text-strong); margin-inline-end: var(--s-2); }
+.acct-repair-summary span { overflow-wrap: anywhere; }
+.acct-repair-rows { list-style: none; padding: 0; margin: var(--s-2) 0 0; }
+.acct-repair-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); padding-block: var(--s-2); }
+.acct-repair-row + .acct-repair-row { border-top: 1px solid var(--hairline); }
+.acct-repair-row .row-title, .acct-repair-row .row-sub { display: block; white-space: normal; overflow-wrap: anywhere; }
+.acct-repair-row .btn-quiet { min-height: 44px; }
+.acct-repair-row .row-title { font-weight: 600; }
+.acct-repair-row .row-sub { color: var(--text-muted); }

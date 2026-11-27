@@ -10,6 +10,7 @@ import { machineControls } from './conversation-machines.js';
 import { renderSuggestions } from './conversation-suggestions.js';
 import { openMakeCard, sourceKeyFor, messageIdFor } from './make-card.js';
 import { mountSourceCards } from './conversation-source-cards.js';
+import { conversationSession } from './conversation-session.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -92,9 +93,13 @@ function failure(main, result, retry) {
   const text = result.status === 503 ? 'Conversations is not switched on here yet.'
     : result.status === 404 ? 'This conversation is unavailable.'
       : 'Conversations could not be loaded. Try again.';
+  // Switched off here (never released on this agent): the working Chats page is offered, not a dead end.
+  const off = result.status === 503 && result.data?.code === 'conversation-graph-off';
   setKids(main, el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
-    note(text), el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
+    note(off ? 'This view of your conversations is not switched on here yet. Chats shows the same conversations, and you can read and reply there.' : text),
+    off ? el('a', { class: 'btn-primary btn-inline', href: '#/work/chats', text: 'Open Chats' })
+      : el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
 }
 
 function itemRow(item, state) {
@@ -212,6 +217,17 @@ export async function renderConversations(main, ctx) {
       nav(state.q && !origin.includes('node=') ? 'Back to results' : 'Back', origin),
       pageHead({ eyebrow: 'Conversations', headline: node.title }),
       syncLine);
+    // "Watch the session": the session answering this conversation, like the app's Open session.
+    const liveKey = node.kind === 'conversation' ? sourceKeyFor(node.ref) : null;
+    if (liveKey) {
+      const live = el('p', { class: 'need-sub conversation-live-session', role: 'status', text: 'Checking for a running session…' });
+      body.append(live);
+      void read('/sessions?scope=pool', controller.signal).then((res) => {
+        if (!current()) return;
+        const m = conversationSession(res, liveKey);
+        setKids(live, m.href ? el('a', { class: 'btn-quiet btn-inline', href: m.href, text: m.label }) : null, el('span', { text: m.href ? ` ${m.words}` : m.words }));
+      }).catch(() => {});
+    }
     // Original history leads. No generated digest substitutes for the source.
     if (node.kind === 'conversation' && node.source) {
       setKids(main, body);

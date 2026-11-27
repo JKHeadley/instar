@@ -112,6 +112,7 @@ function sheetControls(panel) {
     !visible.some(other => other.matches('input[type="radio"]:checked') && other.name === node.name && other.form === node.form));
 }
 
+let sheetGeneration = 0;
 export function sheet({ title, onClose }, ...content) {
   closeSheet();
   const opener = document.activeElement;
@@ -149,6 +150,7 @@ export function sheet({ title, onClose }, ...content) {
   document.addEventListener('keydown', onKey);
   document.addEventListener('focusin', onFocus);
   openSheet = { root, onClose, onKey, onFocus, priorOverflow, background, opener };
+  sheetGeneration++;
   requestAnimationFrame(() => root.classList.add('open'));
   panel.querySelector('.sheet-close').focus({ preventScroll: true });
   return panel;
@@ -157,6 +159,7 @@ export function closeSheet() {
   if (!openSheet) return;
   const { root, onClose, onKey, onFocus, priorOverflow, background, opener } = openSheet;
   openSheet = null;
+  sheetGeneration++;
   document.documentElement.style.overflow = priorOverflow;
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('focusin', onFocus);
@@ -438,10 +441,15 @@ export function refusedUnlock(check) {
   );
 }
 
-export function askPin({ title, explain, adapter = 'body', fresh = false }) {
+let latestPinCheck = 0;
+export function askPin({ title, explain, adapter = 'body', fresh = false, isCurrent = () => true }) {
+  if (!isCurrent()) return Promise.resolve(null);
+  const pinCheck = ++latestPinCheck;
+  const startingSheet = sheetGeneration;
   // `fresh`: ask even while an unlock is held, for a long action that would outlive the one it has.
   if (adapter === 'session' && operatorSession() && !fresh) return Promise.resolve({ session: operatorSession() });
   return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!isCurrent() || pinCheck !== latestPinCheck || startingSheet !== sheetGeneration) { resolve(null); return; }
     if (!check.accepted) {
       sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
       return;
@@ -452,8 +460,10 @@ export function askPin({ title, explain, adapter = 'body', fresh = false }) {
     let settled = false;
     const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
     const form = el('form', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: explain || 'This needs your dashboard PIN.' }), input, go, err);
+    const stillOpen = () => isCurrent() && panel.isConnected;
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
+      if (!stillOpen() || go.disabled) return;
       const pin = input.value;
       if (!pin) { err.textContent = 'Type your PIN.'; return; }
       if (adapter === 'body') { input.value = ''; finish({ pin }); closeSheet(); return; }
@@ -462,15 +472,19 @@ export function askPin({ title, explain, adapter = 'body', fresh = false }) {
         const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
         input.value = '';
         const d = await r.json().catch(() => ({}));
+        if (!stillOpen()) { finish(null); return; }
         if (!r.ok || typeof d.operatorSessionToken !== 'string' || !d.operatorSessionToken) {
           err.textContent = d.error ? `${d.error}${typeof d.attemptsRemaining === 'number' ? ` · ${d.attemptsRemaining} tries left` : ''}` : 'That did not work.';
           go.disabled = false; input.focus(); return;
         }
         opSession = { token: d.operatorSessionToken, expiresAt: d.operatorSessionExpiresAt || new Date(Date.now() + 10 * 60000).toISOString() };
         finish({ session: opSession.token }); closeSheet();
-      } catch { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+      } catch {
+        if (stillOpen()) { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+        else finish(null);
+      }
     });
-    sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
-    setTimeout(() => input.focus(), 50);
+    const panel = sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
+    setTimeout(() => { if (stillOpen()) input.focus(); }, 50);
   }));
 }
