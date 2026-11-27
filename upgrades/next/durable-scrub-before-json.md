@@ -2,7 +2,7 @@
 
 ## What Changed
 
-Instar masks credentials in saved diagnostic copies before converting the records to JSON. That preserves detection when a credential appears in a JSON snippet or a multiline private key. The stop replay copy also masks private-key blocks, and script supervision cleans output before shortening it.
+Instar masks credentials in saved judgment and job diagnostics before converting the records to JSON. That preserves detection when a credential appears in a JSON snippet or a multiline private key. The stop replay copy also masks private-key blocks, and script supervision cleans output before shortening it.
 
 ## What to Tell Your User
 

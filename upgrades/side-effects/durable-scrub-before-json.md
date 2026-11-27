@@ -17,3 +17,7 @@ This repair applies the existing durable credential scrubber to raw string field
 Synthetic labelled JSON and multiline private key blocks exercise both durable write paths and the outbound prompt. The checks also confirm that the field label survives while the synthetic value is masked.
 
 Stop replay capture now masks private key blocks. Supervisor output is scrubbed before its length limit, and the existing supervisor patterns also run on raw strings.
+
+## Release Note Review
+
+The release note now describes the effect for people reviewing saved judgment and job diagnostics. The correction removes the internal-only classification and pairs the new note with this review. Pipeline Strategy concurred on the previous note-only commit `f8102767` in receipt `e1883976`. The wording now names the saved surfaces more precisely. Source and tests are unchanged from the prior independent and Chief reviews `251cb8af` and `8c3625a0`.
