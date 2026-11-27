@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The Telegram delivery check now says when the confirmation window has expired and delivery is still unverified. This happens 30 minutes after a send attempt ends without a clear answer from Telegram.
+
+## What to Tell Your User
+
+Telegram may have received the message, so avoid sending it again. If Telegram's receipt becomes available later, the delivery check will show the confirmed result.
+
+## Summary of New Capabilities
+
+The delivery check shows the new status automatically. No settings change is needed.
+
+## Evidence
+
+The focused owner lookup tests cover the 30-minute boundary, the resend guard, and a later receipt taking precedence.
