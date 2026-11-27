@@ -1,0 +1,62 @@
+{
+  "version": 3,
+  "slug": "local-verify-small-peer-trial",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-24T18:43:48.168Z",
+  "artifactPath": "upgrades/side-effects/local-verify-small-peer-trial.md",
+  "artifactSha256": "d2eac0deeb3691cba75c109ba3ac978a3387c30ced7535e7a73bee21c9c92d67",
+  "specPath": "docs/specs/local-verify-small-peer-trial.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-small-peer-trial.eli16.md",
+    "docs/specs/local-verify-small-peer-trial.md",
+    "docs/specs/local-verify-small-peer-trial.review.md",
+    "scripts/local-verify/probe-trial-scope.mjs",
+    "scripts/local-verify/probe-trial-watchdog.mjs",
+    "scripts/local-verify/trial-coalition.py",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-main-on-peers.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/launchdSpawn.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/record.ts",
+    "src/localVerify/runSmallPeerWatchdog.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "src/localVerify/smallPeerReceipts.ts",
+    "src/localVerify/smallPeerSupervisor.ts",
+    "src/localVerify/smallPeerWatchdog.ts",
+    "src/localVerify/trialExecutionScope.ts",
+    "src/scaffold/templates.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/local-verify-peer-works-through-restart-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/localVerify/smallPeerMemory.test.ts",
+    "tests/unit/localVerify/smallPeerReceipts.test.ts",
+    "tests/unit/localVerify/trialExecutionScope.test.ts",
+    "upgrades/next/local-verify-small-peer-trial.md",
+    "upgrades/side-effects/local-verify-small-peer-trial.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The opt-in peer adds a machine-specific cancellation and admission path.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/local-verify-small-peer-trial.review.md",
+      "iterations": null,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Admission rechecks the native memory floor before every spawn. Under sustained low memory all trials refuse, a running attempt stops once, and recovery waits for sustained headroom."
+    }
+  }
+}

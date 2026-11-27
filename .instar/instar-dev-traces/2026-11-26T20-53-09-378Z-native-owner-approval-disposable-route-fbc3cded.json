@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-owner-approval-disposable-route",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-26T20:53:09.378Z",
+  "artifactPath": "upgrades/side-effects/native-owner-approval-disposable-route.md",
+  "artifactSha256": "7a4b29c83a5adb0a2497e1909223d988a7b48865138f7e5fcb82e02f34ab0812",
+  "coveredFiles": [
+    "src/server/nativeOwnerApprovalRoutes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit exported Express Router type fixes declaration packaging without changing runtime behavior or authority.",
+  "eli16Path": "docs/specs/native-owner-approval-signin-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-owner-approval-disposable-route.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

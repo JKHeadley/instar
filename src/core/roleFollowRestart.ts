@@ -5,10 +5,10 @@
  * start. A durable timestamp bounds it, so a flapping lease cannot become a restart loop.
  */
 
+import { readRestartRequestFile, removeActiveRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from './restartRequestFile.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { announceRestartRequested, announceRestartWithdrawn } from './restartRequestSignal.js';
 
 export const ROLE_RESTART_MIN_INTERVAL_MS = 15 * 60_000;
@@ -101,16 +101,20 @@ export async function requestRoleRestart(files: RoleRestartFiles, toAwake: boole
   const dir = path.join(files.stateDir, 'state');
   fs.mkdirSync(dir, { recursive: true });
   const flag = path.join(dir, 'restart-requested.json');
-  const tmp = `${flag}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({
+  const raw = JSON.stringify({
     requestedAt,
     requestedBy: 'role-change',
     reason,
     plannedRestart: true,
     expiresAt: new Date(now + 60 * 60_000).toISOString(),
     pid: process.pid,
-  }, null, 2));
-  fs.renameSync(tmp, flag);
+  }, null, 2);
+  const published = await withRestartRequestFileAsync(flag, () => {
+    if (files.stillNeeded && !files.stillNeeded()) return false;
+    replaceRestartRequestFile(flag, raw, readRestartRequestFile(flag));
+    return true;
+  });
+  if (!published) return;
   fs.writeFileSync(stampPath(files.stateDir), JSON.stringify({ at: now, toAwake, ...(toAwake ? { promotionId: randomUUID(), leaseEpoch: files.leaseEpoch ?? null, machineId: files.machineId ?? null } : {}) }));
 }
 
@@ -127,14 +131,16 @@ export async function requestRoleRestart(files: RoleRestartFiles, toAwake: boole
  */
 export function withdrawRoleRestart(files: Pick<RoleRestartFiles, 'stateDir'>, pid: number = process.pid): boolean {
   const flag = path.join(files.stateDir, 'state', 'restart-requested.json');
+  let raw: string;
   let row: { requestedBy?: unknown; pid?: unknown };
   try {
-    row = JSON.parse(fs.readFileSync(flag, 'utf-8')) as { requestedBy?: unknown; pid?: unknown };
+    raw = fs.readFileSync(flag, 'utf-8');
+    row = JSON.parse(raw) as { requestedBy?: unknown; pid?: unknown };
   } catch {
     return false; // @silent-fallback-ok: no request (or one being written) means nothing to withdraw
   }
-  if (row.requestedBy !== 'role-change' || row.pid !== pid) return false;
-  SafeFsExecutor.safeUnlinkSync(flag, { operation: 'src/core/roleFollowRestart.ts:withdrawRoleRestart' });
+  if (!row || row.requestedBy !== 'role-change' || row.pid !== pid) return false;
+  if (!removeActiveRestartRequestFile(flag, raw)) return false;
   announceRestartWithdrawn(); // the pending-restart renewal returns to the TTL at once
   return true;
 }

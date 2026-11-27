@@ -56,6 +56,7 @@ import type { AgentRegistryEntry } from '../core/types.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import { sign, verify } from '../core/MachineIdentity.js';
 import { signRequest } from '../server/machineAuth.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { NonceStore } from '../core/NonceStore.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import { localRouteSignatureCounters, logSafe, type LocalEnvelopeSigner } from '../threadline/localEnvelopeSignature.js';
@@ -546,7 +547,7 @@ export class MessageRouter implements IMessageRouter {
       await this.setPhase(envelope, 'failed', reason);
       this.recordGenerationEvidence('held', 'proof-unavailable', messageId);
       this.reportTerminalFailure(envelope, reason);
-      return { messageId, threadId, phase: 'failed' };
+      return { messageId, threadId, phase: 'failed', delivered: false, failureReason: reason, notice: 'The message was not sent because the receiving session could not be verified.' };
     }
 
     // Route the message based on target
@@ -570,11 +571,20 @@ export class MessageRouter implements IMessageRouter {
     }
     // Broadcast ('*') and an unresolved 'best' stay saved locally as before.
 
-    return {
+    const result: SendResult = {
       messageId,
       threadId,
       phase: (await this.store.get(messageId))?.delivery.phase ?? 'failed',
     };
+    if (!isLocalMachine) {
+      result.delivered = ['received', 'delivered', 'read'].includes(envelope.delivery.phase);
+      if (envelope.delivery.phase === 'failed') {
+        result.failureReason = envelope.delivery.failureReason ?? 'cross-machine delivery failed';
+        result.notice = this.lastFailureNotice.get(messageId) ?? `The message was not delivered: ${result.failureReason}.`;
+        this.lastFailureNotice.delete(messageId);
+      }
+    }
+    return result;
   }
 
   async acknowledge(messageId: string, sessionId: string): Promise<void> {
@@ -1270,21 +1280,23 @@ export class MessageRouter implements IMessageRouter {
 
     // Verify target machine is paired and active
     if (!identityManager.isMachineActive(targetMachine)) {
-      if (envelope.message.type !== 'delivery-notice' && envelope.message.to.agent === this.config.localAgent) {
-        // (falls through to the existing failed write below; the sender is told after it)
-        queueMicrotask(() => this.reportTerminalFailure(envelope, `target machine ${targetMachine} not active or unknown`));
+      const standing = this.registryStanding(targetMachine);
+      if (standing === 'revoked') {
+        // A revoked machine is removed from this agent on purpose: no fallback.
+        await this.failCrossMachine(
+          envelope,
+          targetMachine,
+          `target machine ${targetMachine} was removed (revoked) from this agent's machines`,
+          `The message was not delivered: that machine was removed from this agent's machines, so nothing will be sent to it.`,
+        );
+        return;
       }
-      const now = new Date().toISOString();
-      envelope.delivery = {
-        ...envelope.delivery,
-        phase: 'failed',
-        transitions: [
-          ...envelope.delivery.transitions,
-          { from: envelope.delivery.phase, to: 'failed', at: now, reason: `target machine ${targetMachine} not active or unknown` },
-        ],
-        failureReason: `target machine ${targetMachine} not active or unknown`,
-      };
-      await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+      await this.failCrossMachine(
+        envelope,
+        targetMachine,
+        `target machine ${targetMachine} is not known to this machine (not in its machine registry)`,
+        `The message was not delivered: this machine does not know the target machine, so it had no way to reach it. The target may need to be paired with this machine again.`,
+      );
       return;
     }
 
@@ -1417,6 +1429,78 @@ export class MessageRouter implements IMessageRouter {
     return { valid: true };
   }
 
+  /** Per-send side channel for the honest SendResult (bounded, consumed by send()). */
+  private readonly lastFailureNotice = new Map<string, string>();
+  /** Notice dedup: target machine → last DegradationReporter report (ms). */
+  private readonly failureReportedAt = new Map<string, number>();
+  private static readonly FAILURE_REPORT_WINDOW_MS = 30 * 60_000;
+  private static readonly MAX_TRACKED = 200;
+
+  private rememberBounded(map: Map<string, string>, key: string, value: string): void {
+    map.set(key, value);
+    while (map.size > MessageRouter.MAX_TRACKED) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  /** 'revoked' | 'unknown' standing of a machine this registry does not list as active. */
+  private registryStanding(machineId: string): 'revoked' | 'unknown' {
+    try {
+      const registry = this.crossMachine?.identityManager.loadRegistry();
+      const entry = registry?.machines?.[machineId];
+      if (entry && (entry.status === 'revoked' || entry.revokedAt)) return 'revoked';
+    } catch {
+      // @silent-fallback-ok — an unreadable registry reads as unknown; both
+      // outcomes fail the send, only the wording of the reason differs.
+    }
+    return 'unknown';
+  }
+
+  /** Terminal cross-machine failure: record it, keep the notice for send(), raise ONE deduped signal per target. */
+  private async failCrossMachine(envelope: MessageEnvelope, targetMachine: string, reason: string, notice: string): Promise<void> {
+    const now = new Date().toISOString();
+    envelope.delivery = {
+      ...envelope.delivery,
+      phase: 'failed',
+      transitions: [
+        ...envelope.delivery.transitions,
+        { from: envelope.delivery.phase, to: 'failed', at: now, reason },
+      ],
+      failureReason: reason,
+    };
+    await this.store.updateDelivery(envelope.message.id, envelope.delivery);
+    // §C/§D.6 (main's cross-machine phase 1): a same-agent message that ends here is also
+    // reported to its sender — the local notifier, or a signed notice back to the machine it
+    // came from. Told after the failed write, same order as the other terminal failures.
+    if (envelope.message.type !== 'delivery-notice' && envelope.message.to.agent === this.config.localAgent) {
+      this.reportTerminalFailure(envelope, reason);
+    }
+    this.rememberBounded(this.lastFailureNotice, envelope.message.id, notice);
+    const nowMs = Date.now();
+    const last = this.failureReportedAt.get(targetMachine) ?? 0;
+    if (nowMs - last < MessageRouter.FAILURE_REPORT_WINDOW_MS) return;
+    this.failureReportedAt.set(targetMachine, nowMs);
+    while (this.failureReportedAt.size > MessageRouter.MAX_TRACKED) {
+      const oldest = this.failureReportedAt.keys().next().value;
+      if (oldest === undefined) break;
+      this.failureReportedAt.delete(oldest);
+    }
+    try {
+      DegradationReporter.getInstance().report({
+        feature: 'MessageRouter.crossMachineDelivery',
+        primary: `Deliver a message from ${this.config.localMachine} to machine ${targetMachine}`,
+        fallback: 'Return the failure to the sender (HTTP 502 with a notice); nothing was queued',
+        reason,
+        impact: 'A cross-machine message was not delivered; the sending session was told',
+      });
+    } catch {
+      // @silent-fallback-ok — the failure is already recorded on the envelope and
+      // returned to the caller; the operator signal is best-effort.
+    }
+  }
+
   /**
    * Relay an envelope to a remote machine via HTTP.
    * Uses Machine-HMAC (5-header scheme) for transport auth.
@@ -1435,7 +1519,8 @@ export class MessageRouter implements IMessageRouter {
         sequence,
       );
 
-      const url = `${targetUrl}${envelope.message.to.sessionGenerationRequired ? GENERATION_RELAY_MACHINE_PATH : RELAY_MACHINE_PATH}`;
+      const relayPath = envelope.message.to.sessionGenerationRequired ? GENERATION_RELAY_MACHINE_PATH : RELAY_MACHINE_PATH;
+      const url = targetUrl.replace(/\/+$/, '') + relayPath;
       const response = await fetch(url, {
         method: 'POST',
         ...(envelope.message.to.sessionGenerationRequired ? { redirect: 'manual' as const } : {}),

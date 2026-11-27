@@ -137,6 +137,7 @@ export function listNeeds(d, names = {}, now = Date.now()) {
   for (const [machine, apps] of byMachine) {
     out.push({
       key: `canary:${machine}`,
+      requiresUserAction: false,
       title: 'Recovery after a long conversation is compressed is not working on this machine',
       detail: `Affected: ${[...new Set(apps)].join(', ')}. A conversation that gets compressed may lose what we were working on. I will not shorten any context on this machine until it works again.`,
       ask: 'Recovery after a conversation is compressed is not working',

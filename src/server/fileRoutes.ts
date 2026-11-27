@@ -635,7 +635,28 @@ const NEVER_EDITABLE_PREFIXES = [
   // submodule sources git fetches. Viewing them is unchanged.
   '.git/',
   '.gitmodules',
+  // SEC-174: files a program runs without an execute bit. A development checkout under `.worktrees/` holds
+  // scripts its commit hook and test runs execute; nobody edits one from the phone. The boot wrapper
+  // (every extension) runs at each server start, and Windows has no execute bit to catch it.
+  '.worktrees/',
+  '.instar/instar-boot.',
+  // SEC-178: backup snapshots. Restoring one copies its files back over the live ones, including fenced
+  // ones such as `.instar/jobs.json`, so an edited snapshot copy would reach a fenced file at the next
+  // restore. Nobody edits a snapshot from the phone; viewing is unchanged.
+  '.instar/backups/',
 ];
+
+/**
+ * SEC-174: file names that are never editable at any depth, because a package manager runs what they name
+ * (`package.json` scripts and lifecycle hooks, `.npmrc` settings). Matched on the last path segment, any case.
+ */
+const NEVER_EDITABLE_NAMES = ['package.json', '.npmrc'];
+
+/** SEC-174: does the last segment of this (normalized, lower-cased, `/`-separated) path match a fenced name? */
+export function hasNeverEditableName(normalized: string): boolean {
+  const base = normalized.replace(/\/+$/, '').split('/').pop() ?? '';
+  return NEVER_EDITABLE_NAMES.includes(base);
+}
 
 /**
  * SEC-173: a file with an execute bit is a script something may run, so the editor never saves one,
@@ -667,6 +688,7 @@ export function isNeverEditable(relativePath: string): boolean {
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
+  if (hasNeverEditableName(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
     // SEC-144: also match the same path inside a nested project root, such as a worktree under
