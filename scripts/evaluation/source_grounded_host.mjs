@@ -528,7 +528,7 @@ export function totalRun(run, pack) {
     if (outcome === 'valid') s.structurallyValid += 1;
     s.outputTokens += answer?.usage?.output_tokens ?? 0;
     const ledgers = [0, 1].map(i => (run.has(`judges/${trialId}.slot-${i}.json`) ? run.read(`judges/${trialId}.slot-${i}.json`) : null));
-    let passed = false; let critical = 0; let verdicts = [];
+    let passed = false; let critical = 0; let verdicts = []; let scored = false;
     if (outcome === 'valid' && ledgers.every(Boolean)) {
       const result = evaluateJudgeFlow(
         { planBytes: ctx.planBytes, planHash: ctx.planHash, parsePlan: b => JSON.parse(b), rubricBytes: ctx.rubricBytes,
@@ -540,6 +540,7 @@ export function totalRun(run, pack) {
         validateCapture,
       );
       if (result.state === 'evaluated') {
+        scored = true;
         if (result.consensus.structurallyComplete) s.judgedComplete += 1;
         verdicts = result.consensus.criteria.map(c => c.verdict);
         for (const v of verdicts) s.criteria[v] = (s.criteria[v] ?? 0) + 1;
@@ -556,6 +557,7 @@ export function totalRun(run, pack) {
     } else {
       // An invalid or missing answer fails every criterion it cannot show.
       s.criteria.fail += ctx.trial.criteria.length;
+      scored = true; // a real answer that could not be graded is a real result
     }
     if (passed) s.allCriteriaPass += 1;
     // Critical failures come only from judge findings; an ungradeable answer is
@@ -563,7 +565,7 @@ export function totalRun(run, pack) {
     if (critical > 0) s.criticalFailureTrials += 1;
     s.criticalSignals += critical;
     s.byRepeat[repeat] = (s.byRepeat[repeat] ?? 0) + (passed ? 1 : 0);
-    perTrial.push({ trialId, caseId: ctx.trial.caseId, arm, repeat, outcome, passed, critical,
+    perTrial.push({ trialId, caseId: ctx.trial.caseId, arm, repeat, outcome, passed, critical, scored,
       passFraction: verdicts.length ? verdicts.filter(v => v === 'pass').length / verdicts.length : 0 });
   }
   for (const s of Object.values(arms)) {
@@ -575,7 +577,9 @@ export function totalRun(run, pack) {
   const by = Object.fromEntries(ARMS.map(a => [a, new Map(perTrial.filter(t => t.arm === a).map(t => [key(t), t]))]));
   const paired = {};
   for (const [x, y] of [['reduced', 'full'], ['reduced', 'none'], ['full', 'none']]) {
-    const diffs = [...by[x].keys()].filter(k => by[y].has(k)).map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
+    // Only pairs where both trials have a real result: a trial not run or not
+    // yet judged would otherwise count as a failure against its arm.
+    const diffs = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).scored && by[y].get(k).scored).map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
     paired[`${x}-minus-${y}`] = { pairs: diffs.length, mean: diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : null,
       better: diffs.filter(d => d > 0).length, worse: diffs.filter(d => d < 0).length, same: diffs.filter(d => d === 0).length };
   }

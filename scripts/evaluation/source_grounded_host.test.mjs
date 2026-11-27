@@ -282,7 +282,10 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json.bak`), readFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`)));
   writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`), '');
   run.has = rel => { try { return readFileSync(join(runDir, rel), 'utf8').length > 0; } catch { return false; } };
-  assert.equal(totalRun(run, pack).arms.full.notJudged, 1);
+  const partial = totalRun(run, pack);
+  assert.equal(partial.arms.full.notJudged, 1);
+  assert.equal(partial.paired['full-minus-none'].pairs, 3); // the unjudged full trial leaves the pairing
+  assert.equal(partial.trials.find(x => x.trialId === full.trialId).scored, false);
   // A trial with no answer recorded is counted as not run, not as failed criteria.
   const before = totalRun(run, pack).arms.full.criteria.fail;
   writeFileSync(join(runDir, `answers/${full.trialId}.json`), '');
