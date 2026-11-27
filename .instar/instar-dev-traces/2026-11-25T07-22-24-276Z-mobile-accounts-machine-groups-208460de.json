@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "mobile-accounts-machine-groups",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T07:22:24.276Z",
+  "artifactPath": "upgrades/side-effects/mobile-accounts-machine-groups.md",
+  "artifactSha256": "bf8394e7985ba8154469428e66570742ce1b0f443ab369a49ab66314b87db89a",
+  "coveredFiles": [
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobileCapacityRoutes.ts",
+    "tests/integration/mobile-native-capacity-screens.test.ts",
+    "tests/unit/mobile-native-capacity-screens.test.ts",
+    "upgrades/next/mobile-accounts-machine-groups.md",
+    "upgrades/side-effects/mobile-accounts-machine-groups.eli16.md",
+    "upgrades/side-effects/mobile-accounts-machine-groups.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive opaque grouping metadata on an existing authorized read. No new route, credential, persistence or action authority.",
+  "eli16Path": "upgrades/side-effects/mobile-accounts-machine-groups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-accounts-machine-groups.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

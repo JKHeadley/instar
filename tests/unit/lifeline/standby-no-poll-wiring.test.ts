@@ -44,14 +44,14 @@ describe('standby-no-poll guard — TelegramLifeline.start() wiring', () => {
     // Source delegates to the pure, separately-unit-tested predicate so the
     // wiring and the default-true semantics cannot drift.
     expect(lifelineSrc).toMatch(
-      /const\s+telegramPollingEnabled\s*=\s*shouldOwnTelegramPoll\(this\.projectConfig\)/,
+      /const\s+telegramPollingEnabled\s*=.*override.*shouldOwnTelegramPoll\(this\.projectConfig\)/,
     );
     expect(lifelineSrc).toContain("import { shouldOwnTelegramPoll } from './telegramPollOwnership.js'");
   });
 
   it('runs the server supervisor BEFORE/OUTSIDE the poll gate (a standby still serves + joins the pool)', () => {
     const supervisorIdx = lifelineSrc.indexOf('await this.supervisor.start()');
-    const gateIdx = lifelineSrc.indexOf('const telegramPollingEnabled =');
+    const gateIdx = lifelineSrc.indexOf('await this.startPollingAtBoot()');
     expect(supervisorIdx).toBeGreaterThan(0);
     expect(gateIdx).toBeGreaterThan(0);
     expect(supervisorIdx).toBeLessThan(gateIdx); // supervisor.start() is not inside the gate
@@ -84,7 +84,7 @@ describe('standby-no-poll guard — TelegramLifeline.start() wiring', () => {
     // The replay interval is set up after the gate closes; assert it still exists
     // and is not accidentally nested inside the poll-enabled branch.
     const replayIdx = lifelineSrc.indexOf('this.replayInterval = setInterval(');
-    const gateIdx = lifelineSrc.indexOf('if (telegramPollingEnabled) {');
+    const gateIdx = lifelineSrc.indexOf('await this.startPollingAtBoot()');
     expect(replayIdx).toBeGreaterThan(gateIdx); // after the gate
   });
 });

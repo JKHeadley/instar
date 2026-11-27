@@ -31,9 +31,9 @@ function printSkip(reason) {
   console.log('   The PR test matrix still runs the full suite before merge.');
 }
 
-function printIndeterminateSkip(reason) {
-  console.warn(`⏭️  LOCAL SMOKE SKIPPED — affected set indeterminate; tests run: 0. ${reason}.`);
-  console.warn('   PRE_PUSH_SMOKE_RESULT=SKIPPED reason=affected-set-indeterminate tests_run=0');
+function printIndeterminateFailure(reason) {
+  console.warn(`LOCAL SMOKE REQUIRES VERIFICATION — affected set indeterminate; tests run: 0. ${reason}.`);
+  console.warn('   PRE_PUSH_SMOKE_RESULT=VERIFY reason=affected-set-indeterminate tests_run=0');
   console.warn('   The local tier did not pass; CI remains the authority and runs the full suite before merge.');
 }
 
@@ -81,11 +81,11 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
 function exitOnUnusableListing(listed) {
   const list = listed.result;
   const listDisposition = classifyVitestListRun(list);
-  if (listDisposition.action === 'skip-indeterminate') {
+  if (listDisposition.action === 'verify-indeterminate') {
     process.stdout.write(list.stdout ?? '');
     process.stderr.write(list.stderr ?? '');
-    printIndeterminateSkip(listDisposition.reason);
-    process.exit(0);
+    printIndeterminateFailure(listDisposition.reason);
+    process.exit(1);
   }
   if (listDisposition.action === 'fail') {
     process.stdout.write(list.stdout ?? '');
@@ -149,8 +149,8 @@ let changed = [];
 try {
   changed = changedFilesSince(base.ref);
 } catch (err) {
-  console.warn(`pre-push smoke: could not compute changed files from ${base.ref} (${err instanceof Error ? err.message : err}) — skipping local smoke; CI is the authority.`);
-  process.exit(0);
+  console.warn(`pre-push smoke: could not compute changed files from ${base.ref} (${err instanceof Error ? err.message : err}) — local verification required.`);
+  process.exit(1);
 }
 
 console.log(`🧪 Running smoke tier against ${base.ref} (${base.reason}); changed files: ${changed.length}.`);

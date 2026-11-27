@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { fileURLToPath } from 'node:url';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -112,8 +113,8 @@ describe('feedback drain — full pass on the operated store\'s real shapes', ()
       provider: 'codex-cli', modelFamily: 'gpt-6-astra', promptVersion: 'feedback-readiness-v1', schemaVersion: 'feedback-readiness-decision-v1',
       decisionPointId: 'feedback-cluster-readiness', maxBatch: 50, maxTokens: 1200, maxDailySpendUsd: 5,
     })).status).toBe(200);
-    expect((await request(app).post('/feedback-factory/consumer/promote').set({ ...auth, 'X-Instar-Request': '1' })
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-approved-live-shapes' })).status).toBe(200);
+    const { promote } = await promoteConsumerFromProposal(app, { auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-approved-live-shapes', noncePrefix: 'feedback-live-shapes-sim' });
+    expect(promote.status, JSON.stringify(promote.body)).toBe(200);
   });
 
   afterAll(async () => {

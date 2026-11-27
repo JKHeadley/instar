@@ -1,3 +1,4 @@
+import { CreationPlacementSnapshot, type CreationPlacementView } from './CreationPlacementSnapshot.js';
 /**
  * ChiefOfStaffLoop — the check-in loop of docs/specs/chief-of-staff-topic.md (§2.1–§2.9, §3, §4).
  *
@@ -16,10 +17,12 @@
  * invariants hold the authority. The judge can never start a run or close a project on its own.
  */
 
+import { ownerNeedsAskKey, type OwnerNeedsAskIdentity, type OwnerNeedsWithdrawal } from './OwnerNeedsWithdrawal.js';
+import { resolveOwnerNeedsWaitIdentity } from './ChiefOfStaffWaitCards.js';
 import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
-  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal,
+  buildCheckEvent, buildLastTick, buildLifecycleEvent, buildOwnerPauseEvent, buildOwnerItemCheckEvent, buildCheckRequestedEvent, doneItemCheckRef, hlcKey, compareHlc, ownerPauseEventForAsk, unknownLifecycleEvents, buildRenewal, buildOwnerNeedsCompletion, buildOwnerNeedsWithdrawal, findOwnerNeedsCompletion, findOwnerNeedsWithdrawal, ownerNeedsCompletionRecordKey, type OwnerNeedsCompletionReceipt, type CheckEventInput,
   type BindingState, type OwnerPauseRecord, OWNER_PAUSE_FIELD_MAX, OWNER_PAUSE_QUOTE_MAX, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, foldTreeRecords, type TreeNode, type TreeRecord, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { composePauseAsk, type OwnerPauseSource } from './cosOwnerPauseSource.js';
@@ -318,6 +321,12 @@ export function composeNote(items: NoteItem[], cap: number, statusUrl: string | 
 
 // ── deps ─────────────────────────────────────────────────────────────────────
 
+type OwnerNeedsDecisionWrite =
+  | { kind: 'withdrawal'; record: OwnerNeedsWithdrawal }
+  | { kind: 'completion'; bindingHlc: HlcTimestamp; check: Pick<CheckEventInput, 'evidenceHash' | 'evidenceIds' | 'netDiffHighWater' | 'machine' | 'at' | 'doneItems'> };
+
+type OwnerNeedsRecordBuilder = Parameters<ChiefOfStaffLoopDeps['journal']['emit']>[1];
+
 export interface ChiefOfStaffLoopDeps {
   now: () => number;
   machineId: string;
@@ -333,6 +342,11 @@ export interface ChiefOfStaffLoopDeps {
      * decision that "nothing is there" must come from this read instead.
      */
     loadUnionComplete?(): UnionEntry[] | null;
+    /** Non-flushing creation projection read and strict current source signature. */
+    loadUnionCompleteReadOnly?(): UnionEntry[] | null;
+    /** Hold the coordinator writer fence through the durable append. Invoke prepare inside that fence. */
+    appendOwnerNeedsDecision?(leaseEpoch: number, prepare: () => { key: string; build: OwnerNeedsRecordBuilder } | null): Promise<boolean>;
+    creationSourceVersion?(): string | null;
     /** Resolve once `seq` is fsynced (CoherenceJournal.awaitDurableSeq). The loop awaits the check-event before it claims, so the owner's action gate reads a fresh fold (§2.4 step 2c). */
     awaitDurable?(seq: number): Promise<void>;
   };
@@ -511,10 +525,16 @@ export class ChiefOfStaffLoop {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
-  constructor(private readonly d: ChiefOfStaffLoopDeps) {}
+  private readonly creationPlacement: CreationPlacementSnapshot;
+  constructor(private readonly d: ChiefOfStaffLoopDeps) {
+    this.creationPlacement = new CreationPlacementSnapshot({ enabled: d.enabled, version: () => d.journal.creationSourceVersion?.() ?? null, load: () => d.journal.loadUnionCompleteReadOnly?.() ?? null });
+  }
+
+  creationPlacementSnapshot(): CreationPlacementView { return this.creationPlacement.get(); }
 
   start(): void {
     if (this.timer) return;
+    this.creationPlacement.refresh();
     const ms = Math.max(5, this.d.config().tickMinutes) * 60_000;
     this.timer = setInterval(() => { void this.tick(); }, ms);
     (this.timer as unknown as { unref?: () => void }).unref?.();
@@ -589,6 +609,73 @@ export class ChiefOfStaffLoop {
     try { union = this.d.journal.loadUnionComplete?.() ?? null; } catch { /* @silent-fallback-ok: null IS the reported answer; the caller refuses with could-not-check */ return null; }
     if (!union) return null;
     return new Map(boundProjects(union).map((p) => [p.conversationKey, { goal: p.goal, doneDefinition: p.doneDefinition, repos: p.linked?.repos ?? [] }]));
+  }
+
+  ownerNeedsWithdrawal(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsWithdrawal>(union => findOwnerNeedsWithdrawal(union, ask));
+  }
+
+  ownerNeedsCompletion(ask: OwnerNeedsAskIdentity) {
+    return this.readOwnerNeedsRecord<OwnerNeedsCompletionReceipt>(union => findOwnerNeedsCompletion(union, ask));
+  }
+
+  /** Read the exact request and its outcome from one complete coordinator snapshot. */
+  ownerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, disclosure: Parameters<typeof resolveOwnerNeedsWaitIdentity>[2],
+  ) {
+    return this.readOwnerNeedsRecord(union => {
+      const withdrawal = findOwnerNeedsWithdrawal(union, ask);
+      const completion = findOwnerNeedsCompletion(union, ask);
+      if (withdrawal && completion) throw new Error('conflicting owner request decisions');
+      if (withdrawal) return { status: 'withdrawn', withdrawal } as const;
+      if (completion) return { status: 'completed', completion } as const;
+      const current = resolveOwnerNeedsWaitIdentity(union, ask.project, disclosure);
+      return current && ownerNeedsAskKey(current) === ownerNeedsAskKey(ask)
+        ? { status: 'pending', ask: current } as const
+        : { status: 'stale' } as const;
+    });
+  }
+
+  /** Called by an authenticated decision transaction after evidence collection. */
+  appendOwnerNeedsDecision(
+    ask: OwnerNeedsAskIdentity, leaseEpoch: number,
+    disclosure: () => Parameters<typeof resolveOwnerNeedsWaitIdentity>[2] | null,
+    decision: OwnerNeedsDecisionWrite,
+  ): Promise<boolean> {
+    const journal = this.d.journal;
+    if (!journal.appendOwnerNeedsDecision || !Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) return Promise.resolve(false);
+    return journal.appendOwnerNeedsDecision(leaseEpoch, () => {
+      if (!this.checksHere()) return null;
+      const currentDisclosure = disclosure();
+      if (!currentDisclosure) return null;
+      const current = this.ownerNeedsDecision(ask, currentDisclosure);
+      if (!current.available || current.record?.status !== 'pending') return null;
+      if (decision.kind === 'completion') {
+        if (hlcKey(decision.bindingHlc) !== ask.bindingVersion) return null;
+        return { key: ownerNeedsCompletionRecordKey(ask), build: buildOwnerNeedsCompletion(ask, decision.bindingHlc, leaseEpoch, decision.check) };
+      }
+      const { record } = decision;
+      if (record.leaseEpoch !== leaseEpoch || record.key !== ownerNeedsAskKey(ask) || ownerNeedsAskKey(record.ask) !== record.key) return null;
+      return { key: 'owner-ask-withdrawal:' + record.key, build: buildOwnerNeedsWithdrawal(record) };
+    });
+  }
+
+  /** Absence is meaningful only after reading the complete authenticated journal. */
+  private readOwnerNeedsRecord<T>(lookup: (union: UnionEntry[]) => T | null):
+    { available: true; record: T | null } | { available: false } {
+    try {
+      const union = this.d.journal.loadUnionCompleteReadOnly?.();
+      return union ? { available: true, record: lookup(union) } : { available: false };
+    } catch {
+      // @silent-fallback-ok: the consumer receives explicit unavailability.
+      return { available: false };
+    }
+  }
+
+  /** A binding's absence is meaningful only in a complete, non-flushing union. */
+  bindingPreviewKeys(): ReadonlySet<string> | null {
+    const snapshot = this.readOwnerNeedsRecord((union) => new Set(boundProjects(union).map((project) => project.conversationKey)));
+    return snapshot.available ? snapshot.record : null;
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
@@ -704,6 +791,7 @@ export class ChiefOfStaffLoop {
   }
 
   async tick(): Promise<void> {
+    this.creationPlacement.refresh();
     // A tick that fires while "Ask for an update" runs is not dropped: it runs as soon as that check ends.
     if (this.ticking) { if (this.checkNowRunning) this.tickWaiting = true; return; }
     this.ticking = true;

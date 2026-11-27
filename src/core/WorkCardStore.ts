@@ -23,6 +23,11 @@
  *   dispatched    the pickup controller's closing record (system only)
  *   policy        board-level approval policy (person only); key `wb-policy:<id>`
  *   graduation    the pilot's day-7 / day-14 measurement (system only); key `wb-graduation:day<N>`
+ *   note          the lease holder's pointer to a progress-note conversation event (system only;
+ *                 agent-work-cards-default §2); key `wc:<id>:n:<eventId hash>`
+ *   hold-lifted   the pickup hold on a gate-written card was lifted (system only; §3); key `wc:<id>:hl:once`
+ *   quiet-repickup the one automatic re-pickup of a quiet card (system only; §3); key `wc:<id>:qr:<newest agent record hash>`
+ *   enabled-at    the request-to-card gate's first run for a team (system only, non-card; §3); key `wb-request-cards:enabled-at:<teamKey>`
  *
  * This module is PURE: schema, builders and folds. No I/O.
  */
@@ -43,13 +48,35 @@ export function workBoardEnabled(config: { developmentAgent?: boolean; workBoard
   return resolveDevAgentGate(config?.workBoard?.enabled, config);
 }
 
-export const WORK_RECORD_TYPES = ['created', 'edited', 'waiting-on', 'tap', 'evidence', 'claimed-done', 'dispatching', 'dispatched', 'policy', 'graduation'] as const;
+export const WORK_RECORD_TYPES = ['created', 'edited', 'waiting-on', 'tap', 'evidence', 'claimed-done', 'dispatching', 'dispatched', 'policy', 'graduation', 'note', 'hold-lifted', 'quiet-repickup', 'enabled-at'] as const;
 export type WorkRecordType = typeof WORK_RECORD_TYPES[number];
+/** Record kinds that name no card (board-level). */
+export const NON_CARD_RECORD_TYPES: ReadonlySet<string> = new Set(['policy', 'graduation', 'enabled-at']);
+/** System-written record kinds the lease holder's runtime writes (never a route). */
+export type SystemRecordType = 'dispatching' | 'dispatched' | 'note' | 'hold-lifted' | 'quiet-repickup' | 'enabled-at';
 
 export const MATERIAL_FIELDS = ['title', 'need', 'doneWhen', 'carrier', 'outward', 'links'] as const;
 export type MaterialField = typeof MATERIAL_FIELDS[number];
-const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief'] as const;
+/** `refs` is NON-material (agent-work-cards-default §3): internal references, never part of the approval hash. */
+const EDITABLE_FIELDS = [...MATERIAL_FIELDS, 'recommendation', 'due', 'projectKey', 'whyYou', 'covers', 'mirror', 'brief', 'refs'] as const;
 export type EditableField = typeof EDITABLE_FIELDS[number];
+
+/** Fields only the in-process request-to-card gate may write (agent-work-cards-default §3 "Gate-only fields"). */
+export const GATE_ONLY_FIELDS = ['requester', 'requestTextHash', 'recordedAsHash', 'pickupHold'] as const;
+export const REF_KINDS = ['commitment', 'blocker-ledger', 'parent-card'] as const;
+export type RefKind = typeof REF_KINDS[number];
+export interface CardRef { kind: RefKind; id: string }
+export const MAX_REFS = 20;
+const REF_ID_RE = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** The fixed prefix a progress-note conversation event carries; `SCHEMA_MAX.noteText` is the store's text ceiling minus it. */
+export const NOTE_EVENT_PREFIX = 'Work board: the agent noted: ';
+/** The app-conversation store's `MAX_STORED_TEXT` (kept in step by tests/unit/agent-work-cards-store.test.ts). */
+const APP_CONVERSATION_MAX_STORED_TEXT = 16_000;
+/** Hold lifts and quiet re-pickups wait this long past `quietAfterHours` before the clock alone derives `quiet`: the holder's self-heal gets first (§3 "Quiet, with one self-heal first"). */
+export const QUIET_CLOCK_GRACE_MS = 5 * 60_000;
+/** The reasons a `hold-lifted` record may carry. */
+export const HOLD_LIFT_REASONS = ['quiet', 'person-cause', 'system-cause'] as const;
+export type HoldLiftReason = typeof HOLD_LIFT_REASONS[number];
 
 export const PERMITTING_TAPS = ['approve', 'answer', 'confirm-done', 'unhold', 'retry', 'unarchive'] as const;
 export const RESTRICTING_TAPS = ['hold', 'withdraw-approval', 'reopen', 'archive', 'redact'] as const;
@@ -65,7 +92,7 @@ export type DispatchOutcome = typeof DISPATCH_OUTCOMES[number];
 
 /** Absolute schema ceilings (every machine must accept what any owner-raised limit allows).
  *  The owner-set per-field limits (`workBoard.limits`) are enforced at the write route. */
-export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, whyYou: 32000, coverKeys: 256, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000, closeNote: 2000 } as const;
+export const SCHEMA_MAX = { title: 2000, need: 64000, recommendation: 32000, whyYou: 32000, coverKeys: 256, doneItemText: 8000, optionText: 2000, linkLabel: 300, url: 2000, reason: 2000, evidence: 32000, answer: 8000, question: 8000, closeNote: 2000, noteText: APP_CONVERSATION_MAX_STORED_TEXT - NOTE_EVENT_PREFIX.length } as const;
 
 /**
  * How a person closes a card (work-front-doors §6, Luna's board): "Done" with a closeout note, or "Not
@@ -85,10 +112,15 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MACHINE_RE = /^[\w-]{1,64}$/;
 export const ITEM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const RECORD_ID_RE = /^(wc:wc_[0-9a-f]{16}:[A-Za-z0-9_.:-]{1,200}|wb-policy:[A-Za-z0-9_.:-]{1,120}|wb-graduation:day(7|14))$/;
+const RECORD_ID_RE = /^(wc:wc_[0-9a-f]{16}:[A-Za-z0-9_.:-]{1,200}|wb-policy:[A-Za-z0-9_.:-]{1,120}|wb-graduation:day(7|14)|wb-request-cards:[A-Za-z0-9_.:-]{1,160})$/;
 const ATTACHMENT_ID_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 const CONVERSATION_KEY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const PROJECT_KEY_RE = /^(telegram|app|slack|imessage|whatsapp):[A-Za-z0-9_.:-]{1,128}$/;
+/** `general` is the reserved home of a task with no project (agent-work-cards-default §4); not a conversation. */
+export const GENERAL_PROJECT_KEY = 'general';
+const PROJECT_KEY_RE = /^((telegram|app|slack|imessage|whatsapp):[A-Za-z0-9_.:-]{1,128}|general)$/;
+/** A recording conversation named by a pickup hold or a card source: an app key, `telegram:<topic>` or `slack:<channel>:<thread>`. */
+const SOURCE_CONVERSATION_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|telegram:-?\d{1,20}|slack:[A-Za-z0-9_.:-]{1,160})$/;
+export function isSourceConversationKey(v: unknown): v is string { return typeof v === 'string' && SOURCE_CONVERSATION_RE.test(v); }
 /** A Needs-you item key a card says it is about (docs/specs/work-board-cards-appear.md §3). Which ones a writer may use is the service's rule. */
 export const NEED_REF_RE = /^[a-z][a-z0-9-]*:[A-Za-z0-9_.:#@-]{1,200}$/;
 const MIRROR_REF_MAX = 300;
@@ -115,7 +147,15 @@ export interface DoneWhenItem { id: string; text: string; certify: 'owner-confir
 export type CardLink = { label: string; url: string } | { label: string; attachmentId: string; sha256: string };
 export type Carrier = 'agent' | { personKey: string };
 export type Principal = 'agent' | 'none' | { personKey: string };
-export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence' } | { kind: 'agent' } | { kind: 'system' };
+/**
+ * `isOwner` on a person write is stamped by the SERVER from the team record (agent-work-cards-default §3
+ * "Gate-only fields"), never accepted from a body; absent on records older than this field.
+ */
+export type By = { kind: 'person'; personKey: string; proof: 'pin' | 'presence'; isOwner?: boolean } | { kind: 'agent' } | { kind: 'system' };
+/** Who asked for a gate-written card, read from the durable message row (§3); gate-only. */
+export interface CardRequester { personKey: string; isOwner: boolean }
+/** Why a gate-written card's pickup is held (§3 "Pickup hold"). */
+export type PickupHold = { kind: 'recording-session'; conversationKey: string } | { kind: 'backfill' };
 export interface CardMirror { ref: string; hlc: HlcTimestamp; waitSince?: string; note?: string; waitRef?: string; cleared?: boolean }
 
 /** A done-when item's state as a card's brief shows it. */
@@ -192,7 +232,39 @@ function vBy(v: unknown): By | null {
   const b = v as Record<string, unknown>;
   if (b.kind === 'agent') return { kind: 'agent' };
   if (b.kind === 'system') return { kind: 'system' };
-  if (b.kind === 'person' && typeof b.personKey === 'string' && PERSON_KEY_RE.test(b.personKey) && (b.proof === 'pin' || b.proof === 'presence')) return { kind: 'person', personKey: b.personKey, proof: b.proof };
+  if (b.kind === 'person' && typeof b.personKey === 'string' && PERSON_KEY_RE.test(b.personKey) && (b.proof === 'pin' || b.proof === 'presence')) {
+    return { kind: 'person', personKey: b.personKey, proof: b.proof, ...(typeof b.isOwner === 'boolean' ? { isOwner: b.isOwner } : {}) };
+  }
+  return null;
+}
+
+function vRefs(v: unknown): CardRef[] | null {
+  if (!Array.isArray(v) || v.length > MAX_REFS) return null;
+  const out: CardRef[] = []; const seen = new Set<string>();
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object') return null;
+    const r = raw as Record<string, unknown>;
+    if (!(REF_KINDS as ReadonlyArray<string>).includes(r.kind as string) || typeof r.id !== 'string' || !REF_ID_RE.test(r.id)) return null;
+    const key = `${r.kind}:${r.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind: r.kind as RefKind, id: r.id });
+  }
+  return out;
+}
+
+function vRequester(v: unknown): CardRequester | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.personKey !== 'string' || !PERSON_KEY_RE.test(r.personKey) || typeof r.isOwner !== 'boolean') return null;
+  return { personKey: r.personKey, isOwner: r.isOwner };
+}
+
+function vPickupHold(v: unknown): PickupHold | null {
+  if (!v || typeof v !== 'object') return null;
+  const h = v as Record<string, unknown>;
+  if (h.kind === 'backfill') return { kind: 'backfill' };
+  if (h.kind === 'recording-session' && isSourceConversationKey(h.conversationKey)) return { kind: 'recording-session', conversationKey: h.conversationKey };
   return null;
 }
 
@@ -268,6 +340,11 @@ function vFields(raw: Record<string, unknown>, requireAll: boolean): Record<stri
     if (raw.brief === null) out.brief = null;
     else { const b = vBrief(raw.brief); if (!b) return null; out.brief = b; }
   }
+  if (has('refs')) {
+    // Non-material internal references (agent-work-cards-default §3): bounded, typed, never a URL. An older
+    // machine drops the unknown field and keeps the record.
+    const r = vRefs(raw.refs); if (!r) return null; out.refs = r;
+  }
   return out;
 }
 
@@ -282,6 +359,8 @@ const KNOWN_FIELDS = [
   'itemId', 'text', 'attachmentIds', 'reopens', 'evidenceIds',
   'for', 'attempt', 'machineId', 'outcome', 'recovery', 'causeKind',
   'day', 'decision', 'metrics',
+  // agent-work-cards-default: request-to-card fields, notes, holds, re-pickups and the gate's first run.
+  'refs', 'requester', 'requestTextHash', 'recordedAsHash', 'pickupHold', 'eventId', 'eventIds', 'writerBinding', 'teamKey', 'newestAgentRecordId',
 ] as const;
 
 export const workCardRecordStoreSchema: StoreFieldSchema = {
@@ -307,6 +386,12 @@ export const workCardRecordStoreSchema: StoreFieldSchema = {
       if (!r.metrics || typeof r.metrics !== 'object' || Array.isArray(r.metrics) || JSON.stringify(r.metrics).length > 16_000) return null;
       return { recordType: type, by, at: r.at, day: r.day, decision: r.decision, metrics: r.metrics };
     }
+    if (type === 'enabled-at') {
+      // The request-to-card gate's first run for a team (agent-work-cards-default §3 "The first run"); the lease holder's own record.
+      if (by.kind !== 'system') return null;
+      if (!isStr(r.teamKey, 128)) return null;
+      return { recordType: type, by, at: r.at, teamKey: r.teamKey };
+    }
     if (!isCardId(r.cardId)) return null;
     const base = { recordType: type, cardId: r.cardId, by, at: r.at };
     switch (type as WorkRecordType) {
@@ -319,7 +404,30 @@ export const workCardRecordStoreSchema: StoreFieldSchema = {
           if (!s || typeof s !== 'object' || !isStr(s.conversationKey, 200) || !isStr(s.messageId, 200)) return null;
           source = { conversationKey: s.conversationKey as string, messageId: s.messageId as string };
         }
-        return { ...base, ...f, ...(source ? { source } : {}) };
+        // Gate-only fields (§3): validated here; WHO may write them is the service's rule.
+        const gate: Record<string, unknown> = {};
+        if (r.requester !== undefined) { const q = vRequester(r.requester); if (!q) return null; gate.requester = q; }
+        if (r.requestTextHash !== undefined) { if (typeof r.requestTextHash !== 'string' || !SHA256_RE.test(r.requestTextHash)) return null; gate.requestTextHash = r.requestTextHash; }
+        if (r.recordedAsHash !== undefined) { if (typeof r.recordedAsHash !== 'string' || !SHA256_RE.test(r.recordedAsHash)) return null; gate.recordedAsHash = r.recordedAsHash; }
+        if (r.pickupHold !== undefined) { const h = vPickupHold(r.pickupHold); if (!h) return null; gate.pickupHold = h; }
+        return { ...base, ...f, ...(source ? { source } : {}), ...gate };
+      }
+      case 'note': {
+        // The holder's pointer to one note event, or to the events of one coalesced interval (§2). Ids only, never text.
+        if (by.kind !== 'system') return null;
+        if (r.eventId !== undefined) { if (!isStr(r.eventId, 200) || r.eventIds !== undefined) return null; return { ...base, eventId: r.eventId }; }
+        if (!Array.isArray(r.eventIds) || r.eventIds.length === 0 || r.eventIds.length > 2000 || !r.eventIds.every((x) => isStr(x, 200))) return null;
+        return { ...base, eventIds: [...new Set(r.eventIds as string[])] };
+      }
+      case 'hold-lifted': {
+        if (by.kind !== 'system') return null;
+        if (typeof r.reason !== 'string' || !(HOLD_LIFT_REASONS as ReadonlyArray<string>).includes(r.reason)) return null;
+        return { ...base, reason: r.reason };
+      }
+      case 'quiet-repickup': {
+        if (by.kind !== 'system') return null;
+        if (!isRecordId(r.newestAgentRecordId)) return null;
+        return { ...base, newestAgentRecordId: r.newestAgentRecordId };
       }
       case 'edited': {
         if (by.kind === 'system') return null;
@@ -418,11 +526,18 @@ export type Build = (hlc: HlcTimestamp, origin: string, observed?: HlcTimestamp)
  * before it ticks the clock, for its witness read); `created` is fixed per card, and the
  * pickup controller's records are derived from the cause and attempt so a repeat is a no-op.
  */
-export function mintRecordKey(recordType: WorkRecordType, cardId: string | null, extra?: { for?: string; attempt?: number; outcome?: string }): string {
+export function mintRecordKey(recordType: WorkRecordType, cardId: string | null, extra?: { for?: string; attempt?: number; outcome?: string; eventId?: string; teamKey?: string; newestAgentRecordId?: string }): string {
   const rnd = randomBytes(8).toString('hex');
   switch (recordType) {
     case 'policy': return `wb-policy:${rnd}`;
     case 'graduation': return `wb-graduation:day${extra?.attempt ?? 7}`;
+    case 'enabled-at': return `wb-request-cards:enabled-at:${(extra?.teamKey ?? 'team').replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 120)}`;
+    // A note pointer is keyed by its event (one event, one pointer); a coalesced pointer by its first event.
+    case 'note': return `wc:${cardId}:n:${shortId(extra?.eventId ?? rnd)}`;
+    // A card is never re-held (§3), so its one lift has one key: two holders racing on a split lease write one record.
+    case 'hold-lifted': return `wc:${cardId}:hl:once`;
+    // Idempotent per newest agent-written record (§3 "Quiet"): a park's own system record cannot mint a new key.
+    case 'quiet-repickup': return `wc:${cardId}:qr:${shortId(extra?.newestAgentRecordId ?? rnd)}`;
     case 'created': return `wc:${cardId}:created`;
     case 'edited': return `wc:${cardId}:e:${rnd}`;
     case 'waiting-on': return `wc:${cardId}:q:${rnd}`;
@@ -438,9 +553,9 @@ function shortId(id: string): string { return createHash('sha256').update(id).di
 
 /** Builder for the emitter: (hlc, origin, observed) → envelope data. */
 export function buildRecord(recordType: WorkRecordType, cardId: string | null, fields: Record<string, unknown>, recordKey?: string): Build {
-  const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined });
+  const key = recordKey ?? mintRecordKey(recordType, cardId, { for: fields.for as string | undefined, attempt: fields.attempt as number | undefined, outcome: fields.outcome as string | undefined, eventId: fields.eventId as string | undefined, teamKey: fields.teamKey as string | undefined, newestAgentRecordId: fields.newestAgentRecordId as string | undefined });
   return (hlc, origin, observed) => {
-    if (recordType !== 'policy' && recordType !== 'graduation' && !isCardId(cardId)) return null;
+    if (!NON_CARD_RECORD_TYPES.has(recordType) && !isCardId(cardId)) return null;
     return { ...fields, recordType, ...(cardId ? { cardId } : {}), recordKey: key, hlc, op: 'put', origin, ...(observed ? { observed } : {}) };
   };
 }
@@ -484,7 +599,7 @@ export interface UnionEntry { data: Record<string, unknown>; origin: string }
 /** A record as the fold sees it: validated, with its record id (= record key) and HLC. */
 export interface FoldRecord { id: string; hlc: HlcTimestamp; origin: string; d: Record<string, unknown> }
 
-export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-approval' | 'claims-done' | 'done' | 'parked'
+export type CardStatus = 'removed' | 'unknown' | 'archived' | 'held' | 'needs-approval' | 'not-started' | 'claims-done' | 'done' | 'parked'
   | 'waiting-on-person' | 'with-person' | 'quiet' | 'with-agent';
 
 export interface QuestionState { id: string; text: string; options?: string[]; principal: Principal; state: 'open' | 'answered' | 'replaced'; replacedBy?: string; reason?: string; answer?: string; answeredBy?: string; at: string }
@@ -535,7 +650,12 @@ export interface CardFold {
   redacted: { by: By; at: string } | null;
   approvalRequired: boolean;
   approvalValid: boolean;
-  approvedBy: { by: By; at: string; id: string } | null;
+  /**
+   * The approval in force: a person's tap (`source: 'tap'`), or the team owner's own sender-verified request
+   * (`source: 'requester-message'`, agent-work-cards-default §1 "The owner's own request is the yes"), whose
+   * `by` names the requester with `proof: 'message'`.
+   */
+  approvedBy: { by: By | { kind: 'person'; personKey: string; proof: 'message' }; at: string; id: string; source: 'tap' | 'requester-message'; conversationKey?: string; messageId?: string } | null;
   withdrawn: boolean;
   currentClaim: ClaimState | null;
   needsConfirm: boolean;
@@ -543,6 +663,10 @@ export interface CardFold {
   doneByAgentOwnEvidence: boolean;
   unknown: string[];
   newestRecordAt: number;
+  /** The physical time of the newest AGENT-written record (a `note` pointer counts; a person's tap does not): the quiet clock (§3). */
+  newestAgentRecordAt: number;
+  /** The id of that newest agent-written record (the quiet re-pickup's idempotent key names it). */
+  newestAgentRecordId: string | null;
   newestHlc: HlcTimestamp | null;
   /** Ids of records that changed a material field (fold order), for the transcript line. */
   lastMaterialChangeFields: string[];
@@ -550,6 +674,32 @@ export interface CardFold {
   lastMaterialIdx: number;
   workable: boolean;
   policy: ApprovalPolicy;
+  // ── agent-work-cards-default ──
+  /** Internal references (non-material, §3): the commitment this card tracks, a Blocker Ledger entry, a parent card. */
+  refs: CardRef[];
+  /** Who asked, as the durable message row named them (gate-only; null = unverified or agent-initiated). */
+  requester: CardRequester | null;
+  requestTextHash: string | null;
+  recordedAsHash: string | null;
+  pickupHold: PickupHold | null;
+  /** Held: `pickupHold` on `created` with no `hold-lifted` record after it (§3 "Pickup hold"). */
+  pickupHeld: boolean;
+  /** `need` is the owner's whole message and cannot be edited (§1 `need-locked-to-request`). */
+  needLockedToRequest: boolean;
+  /** Approval rests on the owner's own request (§1): valid while inward, agent-carried and not withdrawn. */
+  requestApproved: boolean;
+  /** `recordedAsHash ≠ requestTextHash`: the agent recorded the request in its own words (a label, not a judgment). */
+  recordedInAgentWords: boolean;
+  /** An agent `edited` touched `title` or `doneWhen` after creation (§1 "changed since asked"). */
+  changedSinceAsked: boolean;
+  /** An agent-work card (§1): agent-carried, inward, no recommendation, agent-written. */
+  agentWork: boolean;
+  /** `note` pointer records in fold order (ids only; the words are in the conversation). */
+  notes: Array<{ id: string; eventIds: string[]; at: string }>;
+  /** `quiet-repickup` records in fold order. */
+  quietRepickups: Array<{ id: string; newestAgentRecordId: string; at: string }>;
+  /** The `hold-lifted` record, when one exists. */
+  holdLifted: { id: string; reason: HoldLiftReason; at: string } | null;
 }
 
 const EMPTY_LAST_WRITER = (): Record<MaterialField, 'person' | 'agent'> => ({ title: 'agent', need: 'agent', doneWhen: 'agent', carrier: 'agent', outward: 'agent', links: 'agent' });
@@ -597,7 +747,9 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     waitingOn: 'agent', materialHash: '', lastWriter: EMPTY_LAST_WRITER(), carrierTrail: [], questions: [], openQuestion: null,
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
-    unknown: [], newestRecordAt: 0, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
+    unknown: [], newestRecordAt: 0, newestAgentRecordAt: 0, newestAgentRecordId: null, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
+    refs: [], requester: null, requestTextHash: null, recordedAsHash: null, pickupHold: null, pickupHeld: false, needLockedToRequest: false, requestApproved: false,
+    recordedInAgentWords: false, changedSinceAsked: false, agentWork: false, notes: [], quietRepickups: [], holdLifted: null,
   };
   const validate = workCardRecordStoreSchema.validate;
   const ctx: StoreValidateContext = { countDroppedField: () => { /* counted by the envelope layer */ } } as unknown as StoreValidateContext;
@@ -628,6 +780,13 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     const by = v.by as By;
     const at = v.at as string;
     const type = v.recordType as WorkRecordType;
+    // The quiet clock reads the AGENT's activity (agent-work-cards-default §3): its own records, the holder's note
+    // pointers (presence in the card's conversation), the card's creation (the baseline: a new card is never quiet at
+    // birth) and a delivered hand-over (the agent was just given the card). A person's tap does not reset it.
+    const handedOver = type === 'dispatched' && (v.outcome === 'injected' || v.outcome === 'spawned');
+    if (by.kind === 'agent' || type === 'note' || type === 'created' || handedOver) {
+      if (physical >= f.newestAgentRecordAt) { f.newestAgentRecordAt = physical; f.newestAgentRecordId = rec.id; }
+    }
     // After a redact, only person taps and the pickup controller's closing records count.
     if (f.redacted && !(type === 'tap' || type === 'dispatched')) continue;
     switch (type) {
@@ -637,6 +796,12 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         for (const k of EDITABLE_FIELDS) if (v[k] !== undefined) (f as unknown as Record<string, unknown>)[k] = v[k];
         titlesSeen.push(f.title);
         if (v.source) f.source = v.source as CardFold['source'];
+        if (v.requester) f.requester = v.requester as CardRequester;
+        if (typeof v.requestTextHash === 'string') f.requestTextHash = v.requestTextHash;
+        if (typeof v.recordedAsHash === 'string') f.recordedAsHash = v.recordedAsHash;
+        if (v.pickupHold) f.pickupHold = v.pickupHold as PickupHold;
+        // The owner's yes is anchored to the row's whole text: `need` is then immutable (§1).
+        f.needLockedToRequest = !!(f.requester?.isOwner && f.requestTextHash);
         const w = byIsPerson(by) ? 'person' : 'agent';
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
         f.carrierTrail.push({ carrier: f.carrier, by, at });
@@ -648,6 +813,8 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         const changed: string[] = [];
         for (const k of EDITABLE_FIELDS) {
           if (v[k] === undefined) continue;
+          // A locked `need` never moves, whichever machine's record says so (the route refuses; the fold is the authority).
+          if (k === 'need' && f.needLockedToRequest) continue;
           const cur = (f as unknown as Record<string, unknown>)[k];
           if (sameValue(cur, v[k])) continue;
           (f as unknown as Record<string, unknown>)[k] = v[k];
@@ -659,6 +826,23 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         if (v.title !== undefined && titlesSeen[titlesSeen.length - 1] !== f.title) titlesSeen.push(f.title);
         if (v.carrier !== undefined && changed.includes('carrier')) f.carrierTrail.push({ carrier: f.carrier, by, at });
         if (changed.length) { f.lastMaterialIdx = idx; f.lastMaterialChangeFields = changed; }
+        // "changed since asked" (§1): a deterministic label on a request-approved card, never a judgment of meaning.
+        if (!byIsPerson(by) && (changed.includes('title') || changed.includes('doneWhen'))) f.changedSinceAsked = true;
+        break;
+      }
+      case 'note': {
+        if (!f.created) break;
+        f.notes.push({ id: rec.id, eventIds: Array.isArray(v.eventIds) ? (v.eventIds as string[]) : [String(v.eventId)], at });
+        break;
+      }
+      case 'hold-lifted': {
+        if (!f.created) break;
+        if (!f.holdLifted) f.holdLifted = { id: rec.id, reason: v.reason as HoldLiftReason, at };
+        break;
+      }
+      case 'quiet-repickup': {
+        if (!f.created) break;
+        f.quietRepickups.push({ id: rec.id, newestAgentRecordId: String(v.newestAgentRecordId), at });
         break;
       }
       case 'waiting-on': {
@@ -729,7 +913,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         claimIdx.set(rec.id, idx);
         break;
       }
-      case 'dispatching': case 'dispatched': case 'policy': case 'graduation': break;
+      case 'dispatching': case 'dispatched': case 'policy': case 'graduation': case 'enabled-at': break;
     }
   }
   f.reopens.sort();
@@ -756,8 +940,19 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   else if (typeof f.carrier === 'object') f.approvalRequired = false;
   else if (f.policy === 'outward-only') f.approvalRequired = false;
   else f.approvalRequired = !allPerson;
-  f.approvalValid = !f.withdrawn && approveIdx >= 0 && approveIdx > f.lastMaterialIdx && approveRec !== null;
-  if (f.approvalValid && approveRec) f.approvedBy = { by: approveRec.by, at: approveRec.at, id: approveRec.id };
+  // A tap counts only when it covers the card as folded now (the hash). The owner's own sender-verified request
+  // (agent-work-cards-default §1) counts while the card stays inward and agent-carried with no withdrawal: it
+  // approved "do what I asked" (the locked `need`), so the agent's edits to title, items and links keep it.
+  const tapValid = approveIdx >= 0 && approveIdx > f.lastMaterialIdx && approveRec !== null;
+  f.requestApproved = !f.withdrawn && !!f.requester?.isOwner && f.needLockedToRequest && f.carrier === 'agent' && !f.outward;
+  f.approvalValid = !f.withdrawn && (tapValid || f.requestApproved);
+  if (f.approvalValid && tapValid && approveRec) f.approvedBy = { by: approveRec.by, at: approveRec.at, id: approveRec.id, source: 'tap' };
+  else if (f.approvalValid && f.requestApproved && f.requester) {
+    f.approvedBy = { by: { kind: 'person', personKey: f.requester.personKey, proof: 'message' }, at: f.createdAt ?? '', id: `wc:${cardId}:created`, source: 'requester-message', ...(f.source ? { conversationKey: f.source.conversationKey, messageId: f.source.messageId } : {}) };
+  }
+  f.recordedInAgentWords = !!(f.requestTextHash && f.recordedAsHash && f.requestTextHash !== f.recordedAsHash);
+  f.agentWork = f.createdBy?.kind === 'agent' && f.carrier === 'agent' && !f.outward && f.recommendation === null;
+  f.pickupHeld = !!f.pickupHold && !f.holdLifted;
   const approvalOk = !f.approvalRequired || f.approvalValid;
 
   // ── evidence, claims and sign-off: one hash, one generation (§3) ──
@@ -790,29 +985,51 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
   }
   f.openQuestion = f.questions.find((q) => q.state === 'open') ?? null;
   if (f.done) f.waitingOn = 'none';
-  f.workable = f.carrier === 'agent' && f.unknown.length === 0 && !f.redacted && !held && f.archives.length === 0 && !f.done && approvalOk;
+  // A held card (§3 "Pickup hold") is not handed to a card session: the recording conversation owns the work.
+  // Its `hold-lifted` record is the transition into workable, and so the pickup's cause.
+  f.workable = f.carrier === 'agent' && f.unknown.length === 0 && !f.redacted && !held && f.archives.length === 0 && !f.done && approvalOk && !f.pickupHeld;
   return f;
 }
 
-/** Status precedence (§5) — the pickup state and the clock are inputs, never stored. */
-export function deriveStatus(f: CardFold, pickup: { pendingOrParked: boolean; parked: boolean }, now: number, quietAfterHours: number): CardStatus {
+/**
+ * Status precedence (§5) — the pickup state and the clock are inputs, never stored.
+ * `pickup.quietParked`: the churn brake parked a quiet re-pickup (agent-work-cards-default §3 "Quiet, with one
+ * self-heal first"): that park, not the clock, is what makes a card `quiet`. The clock still derives `quiet` for a
+ * card no holder has re-picked-up yet, after a grace past `quietAfterHours` so the self-heal comes first.
+ */
+export function deriveStatus(f: CardFold, pickup: { pendingOrParked: boolean; parked: boolean; quietParked?: boolean }, now: number, quietAfterHours: number): CardStatus {
   if (f.redacted) return 'removed';
   if (f.unknown.length) return 'unknown';
   if (f.archives.length) return 'archived';
   if (f.holds.length) return 'held';
-  if (f.approvalRequired && !f.approvalValid) return 'needs-approval';
+  // An agent-work card without approval is `not-started` (not an ask: no per-card row); a withdrawn approval,
+  // an outward card or a person-written card the agent will carry stays `needs-approval` (§1).
+  if (f.approvalRequired && !f.approvalValid) return f.agentWork && !f.withdrawn ? 'not-started' : 'needs-approval';
   if (f.currentClaim && f.needsConfirm && !f.done) return 'claims-done';
   if (f.done) return 'done';
+  if (pickup.quietParked) return 'quiet';
   if (pickup.parked) return 'parked';
   if (f.openQuestion && typeof f.openQuestion.principal === 'object') return 'waiting-on-person';
   if (typeof f.carrier === 'object') return 'with-person';
-  if (!pickup.pendingOrParked && now - f.newestRecordAt > quietAfterHours * 3_600_000) return 'quiet';
+  // A held card does not derive `quiet` (§3): the recording conversation is doing the work.
+  if (f.pickupHeld) return 'with-agent';
+  if (!pickup.pendingOrParked && !f.quietRepickups.some((q) => q.newestAgentRecordId === f.newestAgentRecordId) && now - f.newestAgentRecordAt > quietAfterHours * 3_600_000 + QUIET_CLOCK_GRACE_MS) return 'quiet';
   return 'with-agent';
 }
 
 export type Lane = 'waiting-on-you' | 'with-agent' | 'waiting-on-others' | 'done' | 'archived';
 
-const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown', 'held', 'needs-approval', 'claims-done', 'parked', 'waiting-on-person', 'with-person', 'quiet']);
+/** `not-started` is deliberately NOT here (§1): it is never a per-card Needs-you row; its lane is `with-agent`. */
+export const WAITING_STATUSES: ReadonlySet<CardStatus> = new Set<CardStatus>(['unknown', 'held', 'needs-approval', 'claims-done', 'parked', 'waiting-on-person', 'with-person', 'quiet']);
+
+/** Internal origin is not the same as agent-carried work: verified requests and actual person decisions stay public. */
+export function isAgentInternalCard(f: CardFold): boolean {
+  return f.createdBy?.kind === 'agent' && !f.requester && !f.outward && f.carrier === 'agent'
+    && typeof f.waitingOn !== 'object'
+    && !(f.openQuestion && typeof f.openQuestion.principal === 'object')
+    // A future owner-certified milestone becomes actionable when a claim exists.
+    && !(f.currentClaim && f.needsConfirm && !f.done);
+}
 
 /** The lane for a viewer. Phase 1: only the team owner acts, so only the owner has "Waiting on you". */
 export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold, viewerPersonKey: string | null, capacityWaitSurfaced = false): Lane {
@@ -821,6 +1038,15 @@ export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold,
   if (status === 'archived') return f.closeout?.as === 'done' ? 'done' : 'archived';
   if (status === 'done') return 'done';
   if (viewerIsOwner) {
+    // Execution state belongs to the agent. Only a structured person action can put it on the owner's list.
+    if (f.carrier === 'agent') {
+      const question = f.openQuestion && typeof f.openQuestion.principal === 'object' ? f.openQuestion.principal.personKey : null;
+      const waiting = typeof f.waitingOn === 'object' ? f.waitingOn.personKey : null;
+      const approval = f.approvalRequired && !f.approvalValid && !isAgentInternalCard(f);
+      const confirmation = status === 'claims-done' && f.needsConfirm && !f.done;
+      if (approval || confirmation || question !== null && (viewerPersonKey === null || question === viewerPersonKey) || waiting !== null && (viewerPersonKey === null || waiting === viewerPersonKey)) return 'waiting-on-you';
+      return question || waiting ? 'waiting-on-others' : 'with-agent';
+    }
     if (WAITING_STATUSES.has(status) || capacityWaitSurfaced) return 'waiting-on-you';
     return 'with-agent';
   }
@@ -836,7 +1062,12 @@ export function laneFor(status: CardStatus, viewerIsOwner: boolean, f: CardFold,
 const TERMINAL_OUTCOMES: ReadonlySet<string> = new Set(['injected', 'spawned', 'void', 'stopped', 'not-delivered']);
 
 export type CauseKind = 'work' | 'answer' | 'retry' | 'stop';
-export interface PickupCause { id: string; cardId: string; kind: CauseKind; agentCaused: boolean; at: string; hlc: HlcTimestamp; by: By; answerOnly?: boolean; redact?: boolean }
+/**
+ * `repickup`: a `work` cause minted by the holder's `quiet-repickup` record (agent-work-cards-default §3): the one
+ * automatic re-pickup of a quiet card, counted inside the churn budget as its own kind, so the first one runs and
+ * the second parks into the quiet row. `holdLift`: the cause is a `hold-lifted` record.
+ */
+export interface PickupCause { id: string; cardId: string; kind: CauseKind; agentCaused: boolean; at: string; hlc: HlcTimestamp; by: By; answerOnly?: boolean; redact?: boolean; repickup?: boolean; holdLift?: boolean }
 
 /**
  * Walk the card's records in fold order and emit one cause per transition: a record after
@@ -862,15 +1093,22 @@ export function derivePickupCauses(cardId: string, records: FoldRecord[], polici
     if (!seenCard.length) continue;
     const type = rec.d.recordType;
     if (type === 'dispatching' || type === 'dispatched') continue;
-    // Evidence and questions can never change whether a card is workable (a finish needs a claim, an
-    // answer is a tap), so no fold is needed at them: the walk is quadratic only in taps, edits and
-    // claims, not in a long run of evidence.
-    if (type === 'evidence' || type === 'waiting-on') continue;
+    // Evidence, questions and note pointers can never change whether a card is workable (a finish needs a
+    // claim, an answer is a tap), so no fold is needed at them: the walk is quadratic only in taps, edits
+    // and claims, not in a long run of evidence or notes (agent-work-cards-default §2 excludes `note`).
+    if (type === 'evidence' || type === 'waiting-on' || type === 'note') continue;
     const f = foldCard(cardId, seenCard, seenPol);
     const by = (rec.d.by as By) ?? { kind: 'system' };
     const at = String(rec.d.at ?? '');
+    // The holder's one automatic re-pickup (§3 "Quiet"): a work cause on a card that is already workable,
+    // keyed by the record id so the churn brake and foldPickups see it.
+    if (type === 'quiet-repickup') {
+      if (f.workable) causes.push({ id: rec.id, cardId, kind: 'work', agentCaused: true, at, hlc: rec.hlc, by, repickup: true });
+      prevWorkable = f.workable; prevDone = f.done; last = f;
+      continue;
+    }
     if (f.workable && !prevWorkable) {
-      causes.push({ id: rec.id, cardId, kind: 'work', agentCaused: by.kind !== 'person', at, hlc: rec.hlc, by });
+      causes.push({ id: rec.id, cardId, kind: 'work', agentCaused: by.kind !== 'person', at, hlc: rec.hlc, by, ...(type === 'hold-lifted' ? { holdLift: true } : {}) });
     } else if (!f.workable && prevWorkable && !(f.done && !prevDone)) {
       causes.push({ id: rec.id, cardId, kind: 'stop', agentCaused: by.kind !== 'person', at, hlc: rec.hlc, by, ...(f.redacted ? { redact: true } : {}) });
     }
@@ -966,6 +1204,7 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
   const byCard = new Map<string, FoldRecord[]>(); const policies: FoldRecord[] = [];
   for (const r of records) {
     if (r.d.recordType === 'policy') { policies.push(r); continue; }
+    if (r.d.recordType === 'enabled-at' || r.d.recordType === 'graduation') continue; // board-level, read by the service directly
     const id = r.d.cardId;
     if (!isCardId(id)) continue;
     (byCard.get(id) ?? byCard.set(id, []).get(id)!).push(r);
@@ -977,8 +1216,37 @@ export function partitionRecords(records: FoldRecord[]): { byCard: Map<string, F
 export function redactedView(f: CardFold, name: string): Partial<CardFold> & { removedBy: string } {
   return {
     cardId: f.cardId, conversationKey: f.conversationKey, redacted: f.redacted, removedBy: name,
-    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [],
+    title: `removed by ${name}`, need: '', doneWhen: [], links: [], recommendation: null, whyYou: null, covers: [], mirror: null, brief: null, questions: [], openQuestion: null, evidence: [], claims: [], refs: [],
   };
 }
 
 export function isValidConversationKey(v: unknown): boolean { return typeof v === 'string' && CONVERSATION_KEY_RE.test(v); }
+
+// ── request-to-card helpers (agent-work-cards-default §3) ───────────────────
+
+/**
+ * The card a commitment gets: a pure function of the commitment's replicated identity `(originMachineId, id)`, so the
+ * origin's gate, the holder's sweep and any machine that sees the replicated commitment write the SAME `created` record.
+ */
+export function requestCardId(originMachineId: string, commitmentId: string): string {
+  return `wc_${createHash('sha256').update(`commitment:${originMachineId}:${commitmentId}`).digest('hex').slice(0, 16)}`;
+}
+
+/** The `refs` id of a commitment: `<originMachineId>:<id>`. */
+export function commitmentRefId(originMachineId: string, commitmentId: string): string { return `${originMachineId}:${commitmentId}`; }
+
+/** One normalisation for `requestTextHash` and `recordedAsHash`, so the two labels compare wording, not whitespace or case. */
+export function normalizeRequestText(text: string): string {
+  return text.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+export function requestTextHashOf(text: string): string { return sha256Hex(normalizeRequestText(text)); }
+
+/** Cut at a word boundary with "…", never past `limit` (the gate never writes an over-limit field). */
+export function cutAtWord(text: string, limit: number): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (t.length <= limit) return t;
+  const room = Math.max(1, limit - 1);
+  const head = t.slice(0, room);
+  const sp = head.lastIndexOf(' ');
+  return `${(sp > room * 0.5 ? head.slice(0, sp) : head).trimEnd()}…`;
+}

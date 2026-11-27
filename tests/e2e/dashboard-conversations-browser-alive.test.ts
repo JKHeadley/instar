@@ -34,7 +34,7 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/dashboard-conversations-browser-alive.test.ts' });
 });
 
-async function boot() {
+async function boot(options: { nativeEnabled?: boolean; outboxEnabled?: boolean; recoveryGeneration?: string } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'browser-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -43,7 +43,7 @@ async function boot() {
   await new MachineIdentityManager(stateDir).generateIdentity({ name: 'e2e machine' });
   const config = {
     projectName: 'browser-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent: true, dashboardPin: PIN,
-    mobilePairing: { multiRoute: { enabled: false } },
+    mobilePairing: { multiRoute: { enabled: false }, ...(options.nativeEnabled !== undefined ? { native: { enabled: options.nativeEnabled } } : {}), browser: { outboxEnabled: options.outboxEnabled, outboxRecoveryGeneration: options.recoveryGeneration } },
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
@@ -129,5 +129,38 @@ describe('browser devices — production wiring', () => {
     expect(st.body.key).toMatchObject({ state: 'active' });
     (config as unknown as { mobilePairing: { browser?: { enabled: boolean } } }).mobilePairing.browser = { enabled: false };
     expect((await send('GET', '/mobile/device')).body.error).toBe('browser-devices-off');
+  });
+});
+
+
+describe('durable browser outbox — actual production capability wiring', () => {
+  it('advertises real native/request/media support and reads flag-off/restoration generation live', async () => {
+    const { server, config } = await boot();
+    expect(server.appConversations).not.toBeNull();
+    expect(server.appConversations!.deps.requests).toBe(server.mobilePairing!.chatRequests());
+    expect(server.appConversations!.media).toBeTruthy();
+    const read = () => request(server.getApp()).get('/mobile/browser-devices/status')
+      .set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'browser-e2e').set('Host', HOST);
+    const live = await read();
+    expect(live.status).toBe(200);
+    expect(live.headers['cache-control']).toBe('no-store');
+    expect(live.body.outbox).toMatchObject({ version: 1, enabled: true, text: true, media: true, recoveryGeneration: '1' });
+    expect(live.body.outbox.stopPhrases).toContain('stop everything');
+    expect(live.body.outbox.stopPhrases).not.toContain('stop the build please');
+    config.mobilePairing!.browser = { outboxEnabled: false, outboxRecoveryGeneration: 'restore-before-boot' };
+    const held = await read();
+    expect(held.body.outbox).toMatchObject({ version: 1, enabled: false, text: false, media: false, recoveryGeneration: 'restore-before-boot' });
+    config.mobilePairing!.browser.outboxEnabled = true;
+    expect((await read()).body.outbox).toMatchObject({ enabled: true, recoveryGeneration: 'restore-before-boot' });
+    expect((await request(server.getApp()).get('/mobile/browser-devices/status').set('Host', HOST)).status).toBe(401);
+  });
+  it('does not advertise an uninitialized native path as durable outbox support', async () => {
+    const { server } = await boot({ nativeEnabled: false });
+    expect(server.appConversations).toBeNull();
+    const held = await request(server.getApp()).get('/mobile/browser-devices/status')
+      .set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'browser-e2e').set('Host', HOST);
+    expect(held.status).toBe(503);
+    expect(held.body.error).toBe('browser-devices-off');
+    expect(held.body.outbox?.enabled).not.toBe(true);
   });
 });

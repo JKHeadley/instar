@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "agent-work-cards-slice1",
+  "sessionId": "61e5c2a0-e245-4cf7-92a9-e660c912a3ec",
+  "timestamp": "2026-11-21T10:32:05.643Z",
+  "artifactPath": "upgrades/side-effects/agent-work-cards-slice1.md",
+  "artifactSha256": "ab9021284ac8bbd0f7829c1982ce7ec80c410a6ee42381e69172f681d484be41",
+  "specPath": "docs/specs/agent-work-cards-default.md",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/under-the-hood.md",
+    "site/src/content/docs/architecture/work-board.md",
+    "site/src/content/docs/features/routing-spend-control-room.md",
+    "site/src/content/docs/reference/api.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "upgrades/side-effects/agent-work-cards-slice1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-only follow-up on the slice 1 PR (Docs Coverage floor on the merge commit); the slice stays Tier 2 under its converged spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

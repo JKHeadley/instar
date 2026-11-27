@@ -57,3 +57,20 @@ describe('chiefOfStaffNeedRows', () => {
     for (const g of goals) for (const max of [20, 40, 60]) { expect(shortJs(g, max)).toBe(shortTs(g, max)); expect(cutJs(g, max)).toBe(cutTs(g, max)); }
   });
 });
+
+describe('the Conversations card does not repeat the Needs-you list (2026-11-20 dashboard audit)', () => {
+  it('with the list on screen only the check-in rows stay; without it every row shows', async () => {
+    const { chiefOfStaffCardRows } = await import('../../dashboard/console/needs-model.js');
+    const rows = [{ key: 'need:cos:waiting:telegram:1', main: 'A is waiting on you' }, { key: 'need:cos:parked:telegram:2', main: 'B is parked' }, { key: 'need:cos:expiring', main: 'Your Chief of Staff pauses within a day unless you check in' }];
+    expect(chiefOfStaffCardRows(rows, { stripShown: true }).map((r) => r.key)).toEqual(['need:cos:expiring']);
+    expect(chiefOfStaffCardRows(rows, { stripShown: false })).toHaveLength(3);
+    expect(chiefOfStaffCardRows(rows.slice(0, 2), { stripShown: true })).toEqual([]);
+    expect(chiefOfStaffCardRows(null)).toEqual([]);
+  });
+  it('the Conversations page reads whether the list is on screen (wiring)', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../../dashboard/console/chats.js', import.meta.url), 'utf8');
+    expect(src).toContain("document.querySelector('#needsStrip:not([hidden])')");
+    expect(src).toContain('chiefOfStaffCardRows(this.cosNeeds, { stripShown })');
+  });
+});

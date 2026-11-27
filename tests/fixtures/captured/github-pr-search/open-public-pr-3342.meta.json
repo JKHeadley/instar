@@ -1,0 +1,8 @@
+{
+  "source": "GitHub GraphQL v4 public JKHeadley/instar repository visibility and open PR #3342",
+  "command": "gh api graphql against JKHeadley/instar with isPrivate and pullRequests(first:1,headRefName:topic/144473-permanent-agent-links,states:[OPEN])",
+  "capturedAt": "2026-11-24T04:44:28.603039+00:00",
+  "machine": "Echo Studio",
+  "redactions": [],
+  "note": "Public provider response written unchanged. The small head-ref selection exercises the same repository visibility and PR page fields as the provider."
+}

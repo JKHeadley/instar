@@ -1,3 +1,4 @@
+import { smallPeerMemoryAllows, SMALL_PEER_COLLECTOR } from '../localVerify/smallPeerMemory.js';
 import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
 /**
  * selfActionRegistry.ts — the self-action controller registry (Part D1 of
@@ -30,6 +31,7 @@ import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/Session
 import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
 import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
+import { PeerBuildLedger } from '../core/identityBuildFence.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
 import { catchUpAttemptDue, CATCH_UP_MAX_FAILURES, CATCH_UP_RETRY_MS } from '../core/ConversationUnreadService.js';
@@ -56,7 +58,9 @@ import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/
 import { planAdoption, readSystemTopicIds, withAdoptionBrake, MAX_ADOPTS_PER_KIND_PER_BOOT, SYSTEM_TOPIC_ADOPTION_INTERVAL_MS } from '../messaging/SystemTopicAdoption.js';
 import { SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StageAdvancer, MAX_TARGET_REDS_PER_COMMIT, type SessionPoolStage } from '../core/StageAdvancer.js';
+import { nextSiblingAttemptAtMs, SIBLING_DEFAULT_INTERVAL_MS, SIBLING_DEFAULT_MAX_AGE_MS, SIBLING_FIRST_RETRY_MS } from '../core/sibling-holdings.js';
 import { SessionPoolRolloutDriver } from '../core/SessionPoolRolloutDriver.js';
+import { layer2RetryDecision, LAYER2_MAX_RETRIES, LAYER2_RETRY_INTERVAL_MS } from '../messaging/DeliveryRetryManager.js';
 import type { SessionPoolE2EResultStore, StageE2EResult } from '../core/SessionPoolE2EResultStore.js';
 import { decideAttentionExpiry, planAttentionSupersessions, resolveAttentionLifecycleConfig, type AttentionLifecycleItem } from '../core/AttentionLifecycle.js';
 import { MAIN_FAIR_SHARE_MS, decideMergeHandoff, decideStart, decideStarved, decideVerifyRetry } from '../localVerify/LocalVerifyService.js';
@@ -78,6 +82,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { DEFAULT_AGENT_WORKTREE_REAPER_CONFIG } from '../monitoring/AgentWorktreeReaper.js';
+import { EPISODE_CAP_MS, PENDING_RENEW_CADENCE_MS, REQUEST_POLL_MAX_MS, nextRequestPollMs, pendingRenewalDue } from '../core/LeaseContinuity.js';
 import { RECLAIM_DEFAULTS } from '../monitoring/agentWorktreeReclaimMain.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
@@ -87,6 +92,10 @@ import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminde
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
 import { pickupBudgetLeft } from '../core/WorkBoardPickupController.js';
 import { DEFAULT_WORK_BOARD_SETTINGS } from '../core/WorkBoardService.js';
+import { askDecision, freshAsk, noteAsked, noteSkipped, type AskState } from '../localVerify/borrowedAsk.js';
+import { DRY_RUN_LIMITS } from '../localVerify/borrowedDryRun.js';
+import { BORROWED_PROXY } from '../localVerify/BorrowedRunMachine.js';
+import { untold, type HelperEvent } from '../localVerify/borrowedNotices.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -327,6 +336,55 @@ const codexArmSessionSweep: SelfActionController = {
   },
 };
 
+/**
+ * planned-restart-lease-continuity (docs/specs/planned-restart-keeps-lead.md §1): while a restart request
+ * is pending the holder renews its lease with a window as the expiry once per pending cadence (10 s on a
+ * tunnel) and polls the request file every 2 s (doubling to 60 s on a read error). The pinned pressure
+ * is a request that is never consumed: the renewals keep their cadence (never faster) and stop at the
+ * episode's four-hour cap, which the episode rule ends; the poll's read always fails, so it backs off to
+ * its 60 s ceiling and stays there. Both are rate-floored sentinels, not count-bounded loops.
+ */
+const plannedRestartLeaseContinuity: SelfActionController = {
+  id: 'planned-restart-lease-continuity',
+  actionVerb: 'retry',
+  models: 'src/core/LeaseCoordinator.ts (pending window renewals, pendingRenewalDue) + src/core/MultiMachineCoordinator.ts (request-file poll, nextRequestPollMs)',
+  modelsPath: 'src/core/LeaseCoordinator.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The episode is process memory; a restart is the event the renewal exists for, and the next process starts no episode until a request is seen again, so a restart cannot speed the cadence up.' },
+  boundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1 + Math.ceil((4 * 60 * 60_000) / REQUEST_POLL_MAX_MS) + 6,
+  perTargetBoundK: Math.ceil((4 * 60 * 60_000) / PENDING_RENEW_CADENCE_MS) + 1,
+  ticks: 2 * 60 * 60, // four hours at 2 s: the cap is reached inside the horizon
+  tickMs: 2_000,
+  eternalSentinel: { reason: 'While the request is pending the renewal must keep running at its cadence or the lead lapses during the boot it protects; it stops at the four-hour cap.', rateFloorMs: 2_000 },
+  delegatedGiveUp: 'The episode end rule (planned-restart-keeps-lead §1 step 3): withdrawn, absent 60 s with no ledger row, consumed but alive past the shutdown bound, or the four-hour cap',
+  makeUnderPressure(f, sink) {
+    const openedAt = f.clock.nowMs();
+    let lastRenewal: number | null = null;
+    let pollEvery = 2_000;
+    let nextPollAt = openedAt;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        // One action per tick: the renewal first (it protects the lead); the poll takes the next tick,
+        // so two emits never share a timestamp and the 2 s floor is the tick itself.
+        if (pendingRenewalDue({ nowMs: now, lastRenewalMs: lastRenewal, cadenceMs: PENDING_RENEW_CADENCE_MS, episodeOpenedAtMs: openedAt, capMs: EPISODE_CAP_MS })) {
+          lastRenewal = now;
+          sink.emit({ verb: 'retry', target: 'pending-window-renewal' });
+          sink.emitTimesMs.push(now);
+          return;
+        }
+        if (now >= nextPollAt) {
+          // The read fails for ever under pressure: the poll backs off and stays at its ceiling.
+          sink.emit({ verb: 'retry', target: 'restart-request-poll' });
+          sink.emitTimesMs.push(now);
+          pollEvery = nextRequestPollMs(false, pollEvery);
+          nextPollAt = now + pollEvery;
+        }
+      },
+    };
+  },
+};
+
 /** desktop-relock-guard-replacement: the sweep replaces a dead relock guard for
  * one duty, then fails that duty loudly. The count lives on the durable marker. */
 const desktopRelockGuardReplacement: SelfActionController = {
@@ -405,6 +463,31 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** owner-record-fence-notice (identity-security piece 2c §4): a machine stays below the minimum build, so every
+ * 15-minute pass finds the same list. One notice per distinct list, saved in the ledger: under sustained pressure
+ * it is raised once and never repeated. */
+const ownerRecordFenceNotice: SelfActionController = {
+  id: 'owner-record-fence-notice',
+  actionVerb: 'notify',
+  models: 'src/core/ownerRecordSync.ts (maybeNotifyFence — PeerBuildLedger.noticeDue, one notice per distinct list)',
+  modelsPath: 'src/core/ownerRecordSync.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last notified list is saved in state/owner-record/peer-builds.json, so a restart or lease move cannot reset it.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 30,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const ledger = new PeerBuildLedger(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fence-notice-')), 'peer-builds.json'));
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!ledger.noticeDue(['below:m_old'])) return;
+        sink.emit({ verb: 'notify', target: 'owner:fence' });
       },
     };
   },
@@ -5859,6 +5942,142 @@ const heldDebtLossNotice: SelfActionController = {
  * park at the cap (a settling state); a failure park re-arms ONCE on an ownership change; nothing
  * else but a person's tap adds an attempt. Waiting for capacity is a free read and emits nothing.
  */
+/**
+ * local-verify-borrowed-helper-asking — the run machine asks its borrowed helper one 2-second status
+ * question at the start of every verify (docs/specs/local-verify-borrowed-slices-count.md, F
+ * "Asking the helper"). Pinned worst case: the helper never answers (a closed laptop) while the
+ * line verifies a change every 30 minutes, for 14 days. Brake: after 10 unanswered in a row only
+ * every 5th verify asks; after 7 days with no answer none does until the helper announces itself.
+ * The asking state lives in the practice record, so a restart keeps the brake.
+ */
+const localVerifyBorrowedHelperAsking: SelfActionController = {
+  id: 'local-verify-borrowed-helper-asking',
+  actionVerb: 'retry-helper-status',
+  models: 'src/localVerify/borrowedAsking.ts (HelperAsking.decide → askDecision; ask → noteAsked; skip → noteSkipped)',
+  modelsPath: 'src/localVerify/borrowedAsking.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return localVerifyBorrowedHelperAsking.makeUnderPressure(f, sink); } },
+  boundK: 80,
+  perTargetBoundK: 80,
+  ticks: 14 * 48,
+  tickMs: 30 * 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'borrowed-ask:m_laptop';
+    return { tick() {
+      sink.considered += 1;
+      const s = (f.durableState.get(key) as AskState | undefined) ?? freshAsk();
+      const d = askDecision(s, f.clock.nowMs());
+      if (d === 'stopped') return;
+      if (d === 'skip') { f.durableState.set(key, noteSkipped(s)); return; }
+      sink.emit({ verb: 'retry-helper-status', target: 'm_laptop' });
+      f.durableState.set(key, noteAsked(s, !f.targetAlwaysRejects(), f.clock.nowMs()));
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-dry-run-resend — the dry run sends again a file the helper did not finish
+ * (it handed the slice back for its owner, or stayed silent). Pinned worst case: the helper hands
+ * back every slice forever. Brakes: each file is sent at most DRY_RUN_LIMITS.maxSends times in a
+ * run; a request that could not finish is started again at most DRY_RUN_LIMITS.maxStarts times
+ * (10 minutes apart), then stopped. The model drives every start of one request.
+ */
+const localVerifyBorrowedDryRunResend: SelfActionController = {
+  id: 'local-verify-borrowed-dry-run-resend',
+  actionVerb: 'retry-dry-run-slice',
+  models: 'src/localVerify/borrowedDryRun.ts (runLane: pending files sent again until DRY_RUN_LIMITS.maxSends)',
+  modelsPath: 'src/localVerify/borrowedDryRun.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The start count is per process: a restart may start a request again, each time under the same per-file and per-request caps; the request is persisted, so an operator stop or a gave-up stop survives the restart.' },
+  boundK: 10 * DRY_RUN_LIMITS.maxSends * DRY_RUN_LIMITS.maxStarts,
+  perTargetBoundK: DRY_RUN_LIMITS.maxSends * DRY_RUN_LIMITS.maxStarts,
+  ticks: 200,
+  tickMs: DRY_RUN_LIMITS.pollMs,
+  makeUnderPressure(f, sink) {
+    const files = Array.from({ length: 10 }, (_, i) => `tests/integration/f${i}.test.ts`);
+    let starts = 0;
+    let sends = new Map<string, number>();
+    let pending: string[] = [];
+    return { tick() {
+      sink.considered += 1;
+      // A run ended unfinished: the request starts again while under its start cap.
+      if (pending.length === 0) {
+        if (starts >= DRY_RUN_LIMITS.maxStarts) return;
+        starts += 1;
+        sends = new Map();
+        pending = [...files];
+      }
+      const next: string[] = [];
+      for (const file of pending) {
+        sends.set(file, (sends.get(file) ?? 0) + 1);
+        sink.emit({ verb: 'retry-dry-run-slice', target: file });
+        // Handed back: sent again only while under the cap.
+        if (f.targetAlwaysRejects() && (sends.get(file) ?? 0) < DRY_RUN_LIMITS.maxSends) next.push(file);
+      }
+      pending = next;
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-helper-notice — the coordinator tells each helper event (a wrong pass, a
+ * lapse, a pass that made main red) once. Pinned worst case: a peer lists the same events in every
+ * status poll forever, and the coordinator ticks every 30 seconds. Brake: the told ids are kept
+ * in the practice record, and `untold` drops every id already told, so each event is told once.
+ */
+const localVerifyBorrowedHelperNotice: SelfActionController = {
+  id: 'local-verify-borrowed-helper-notice',
+  actionVerb: 'notify-helper-event',
+  models: 'src/localVerify/BorrowedRunMachine.ts (onPeerStatus/tick → untold → tell → markTold)',
+  modelsPath: 'src/localVerify/BorrowedRunMachine.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure(f, sink) { return localVerifyBorrowedHelperNotice.makeUnderPressure(f, sink); } },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 200,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const events: HelperEvent[] = ['a', 'b', 'c'].map((c, i) => ({ id: c.repeat(32), at: i, runMachineId: 'm_m5', helper: 'm_winpc', lane: 'integration', kind: 'lapse', reason: 'invalid-answers', fault: true }));
+    const key = 'borrowed-told';
+    return { tick() {
+      sink.considered += 1;
+      const told = new Set((f.durableState.get(key) as string[] | undefined) ?? []);
+      for (const e of untold(events, told)) {
+        sink.emit({ verb: 'notify-helper-event', target: e.id });
+        told.add(e.id);
+      }
+      f.durableState.set(key, [...told]);
+    } };
+  },
+};
+
+/**
+ * local-verify-borrowed-baseline-push — the coordinator offers its baseline results to each peer
+ * that runs a helper. Pinned worst case: the peer refuses every offer and the coordinator ticks
+ * every 30 seconds for a day. Brake: one version is offered at most every 5 minutes and at most
+ * BORROWED_PROXY.baselineMaxTries times; only a new version (the next green main) is offered again.
+ */
+const localVerifyBorrowedBaselinePush: SelfActionController = {
+  id: 'local-verify-borrowed-baseline-push',
+  actionVerb: 'retry-baseline-push',
+  models: 'src/localVerify/BorrowedRunMachine.ts (pushBaseline: retry gap and per-version cap)',
+  modelsPath: 'src/localVerify/BorrowedRunMachine.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The offer counts are in memory: a restart may offer the current version again up to the same cap, once per restart; a peer that stored it acknowledges and is never offered it again.' },
+  boundK: BORROWED_PROXY.baselineMaxTries,
+  perTargetBoundK: BORROWED_PROXY.baselineMaxTries,
+  ticks: 2_880,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    let tries = 0;
+    let triedAt = -Infinity;
+    return { tick() {
+      sink.considered += 1;
+      if (tries >= BORROWED_PROXY.baselineMaxTries || f.clock.nowMs() - triedAt < BORROWED_PROXY.baselineRetryMs) return;
+      tries += 1;
+      triedAt = f.clock.nowMs();
+      sink.emit({ verb: 'retry-baseline-push', target: 'm_m5' });
+      if (!f.targetAlwaysRejects()) tries = BORROWED_PROXY.baselineMaxTries; // stored: never offered again
+    } };
+  },
+};
+
 const workBoardPickup: SelfActionController = {
   id: 'work-board-pickup',
   actionVerb: 'pickup-spawn',
@@ -6069,7 +6288,182 @@ const pairingOutcomeNoticeRetry: SelfActionController = {
   },
 };
 
+
+/**
+ * sibling-holdings-refresh: the background cache of what the agent's OTHER machines
+ * hold (docs/specs/sibling-machine-reach.md §3.1) polling a peer that stays dead. It
+ * is an Eternal Sentinel: it keeps trying so the peer is seen again when it comes
+ * back, but never faster than its backoff — one quick 60 s retry for a never-read
+ * peer, then 10 → 20 → 40 → 60 minutes, capped at the age limit.
+ */
+const siblingHoldingsRefresh: SelfActionController = {
+  id: 'sibling-holdings-refresh',
+  actionVerb: 'refresh',
+  models: 'src/core/sibling-holdings.ts (SiblingHoldingsCache.refreshPeer — nextSiblingAttemptAtMs per-peer backoff, 12-peer per-tick bound, live switch)',
+  modelsPath: 'src/core/sibling-holdings.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The cache is memory-only; after a restart the peer is never-read again and gets one 60 s retry, then the same doubling backoff — a restart can add at most one extra attempt.' },
+  boundK: 0,
+  perTargetBoundK: 0,
+  ticks: 24 * 6,
+  tickMs: SIBLING_DEFAULT_INTERVAL_MS,
+  eternalSentinel: { reason: 'A dead peer is retried so its holdings reappear by themselves when it comes back; the backoff holds the rate at one attempt per hour.', rateFloorMs: SIBLING_FIRST_RETRY_MS },
+  delegatedGiveUp: 'The 60-minute age cap on the backoff (SIBLING_DEFAULT_MAX_AGE_MS) and the live toneGate.siblingReach.enabled switch read every tick',
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let nextAttemptAtMs = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextAttemptAtMs) return;
+        sink.emit({ verb: 'refresh', target: 'dead-peer' });
+        sink.emitTimesMs.push(now);
+        failures += 1;
+        nextAttemptAtMs = nextSiblingAttemptAtMs({ nowMs: now, failures, neverRead: true, intervalMs: SIBLING_DEFAULT_INTERVAL_MS, maxAgeMs: SIBLING_DEFAULT_MAX_AGE_MS });
+      },
+    };
+  },
+};
+
+
+/** message-holder-redelivery (relay-asof-holder-skew §2): a message whose role is known but
+ * has no accepted holder is re-resolved by the Layer-2 lane every 30 s. Under pressure the
+ * holder never appears: ten redeliveries, one dead letter with the plain reason, then quiet. */
+const messageHolderRedelivery: SelfActionController = {
+  id: 'message-holder-redelivery',
+  actionVerb: 'retry',
+  models: 'src/messaging/DeliveryRetryManager.ts (doCycle — layer2RetryDecision over a holderPending envelope; dead letter + sender notice at LAYER2_MAX_RETRIES)',
+  modelsPath: 'src/messaging/DeliveryRetryManager.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+  },
+  boundK: LAYER2_MAX_RETRIES + 1,
+  perTargetBoundK: LAYER2_MAX_RETRIES + 1,
+  ticks: 4 * 60 * 4, // one hour of 15 s ticks
+  tickMs: 15_000,
+  makeUnderPressure: (f, sink) => makeMessageHolderRedeliveryLoop(f, sink),
+};
+
+function makeMessageHolderRedeliveryLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'message-holder-redelivery:episode';
+  return {
+    tick() {
+      sink.considered += 1;
+      const persisted = f.durableState.get(key) as { attempts: number; lastAttemptAt: number; firstAttemptAt?: number; deadLettered?: boolean } | undefined;
+      if (persisted?.deadLettered) return;
+      const now = f.clock.nowMs();
+      const decision = layer2RetryDecision(persisted ?? { attempts: 0, lastAttemptAt: 0, firstAttemptAt: now }, now);
+      if (decision === 'wait') return;
+      if (decision === 'give-up') {
+        f.durableState.set(key, { ...persisted, deadLettered: true });
+        sink.emit({ verb: 'notify', target: 'sender:echo-lead' });
+        return;
+      }
+      f.durableState.set(key, { attempts: (persisted?.attempts ?? 0) + 1, lastAttemptAt: now, firstAttemptAt: persisted?.firstAttemptAt ?? now });
+      void f.targetAlwaysRejects();
+      sink.emit({ verb: 'retry', target: 'echo-topic-144319' });
+      void LAYER2_RETRY_INTERVAL_MS;
+    },
+  };
+}
+
+
+
+/**
+ * browser-outbox-recovery — one original browser request and one immutable step
+ * against a permanently rejecting target. This is a minimal MODEL of
+ * dashboard/console/outbox-runner.js step()/schedule()/process(), backed by the
+ * durable claimAttempt()/finishAttempt() ledger in dashboard/console/chat-outbox.js.
+ *
+ * Reconnect, timers, broadcasts and reconstruction consider the SAME persisted
+ * step; none clears its seven admitted attempts or nextEligibleAt. A rejected
+ * attempt follows the live 2s, 4s, 8s, 16s, 30s, 30s backoff. At exhaustion the
+ * original content remains held. An explicit user renewal or independently
+ * confirmed new chunk/phase is a DIFFERENT episode/suboperation and is excluded
+ * from this pinned no-progress pressure fixture, not simulated as a reconnect.
+ *
+ * Held-state broadcast steady state: process() returns immediately for the
+ * exhausted holdCode; it does not rewrite the row, emit changed(), mint another
+ * operation or arm another episode. An already pending wakeup may reconsider it
+ * but emits zero target requests. This model therefore counts physical target
+ * retry actions, not status probes owned by the existing connection lifecycle.
+ *
+ * The model does not stand in for browser execution: console-outbox-runner.test.ts
+ * covers actual runner decisions, while console-chat-outbox-browser.test.ts drives
+ * seven real IndexedDB claims and reconstruction with the original ledger intact.
+ */
+const browserOutboxRecovery: SelfActionController = {
+  id: 'browser-outbox-recovery',
+  actionVerb: 'retry-original-request',
+  models: 'dashboard/console/outbox-runner.js step/schedule/process; dashboard/console/chat-outbox.js claimAttempt/finishAttempt (durable seven-attempt immutable-step ledger)',
+  modelsPath: 'dashboard/console/outbox-runner.js',
+  boundK: 7,
+  perTargetBoundK: 7,
+  ticks: 60,
+  tickMs: 2_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return browserOutboxRecovery.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const key = 'browser-outbox-recovery:scope:original-request:immutable-step';
+    return { tick() {
+      sink.considered += 1;
+      const prior = f.durableState.get(key) as {
+        attempts: number; nextEligibleAt: number; held: boolean; accepted: boolean;
+      } | undefined;
+      const state = prior ?? { attempts: 0, nextEligibleAt: 0, held: false, accepted: false };
+      if (state.held || state.accepted) return;
+      if (state.attempts >= 7) {
+        f.durableState.set(key, { ...state, held: true });
+        return;
+      }
+      if (f.clock.nowMs() < state.nextEligibleAt) return;
+      const attempts = state.attempts + 1;
+      // Admission lands before the physical effect, so rebuilding the controller
+      // cannot acquire a fresh count while this same target still rejects it.
+      f.durableState.set(key, { ...state, attempts });
+      sink.emit({ verb: 'retry-original-request', target: 'scope:original-request:immutable-step' });
+      const rejected = f.targetAlwaysRejects();
+      f.durableState.set(key, {
+        attempts,
+        nextEligibleAt: rejected ? f.clock.nowMs() + Math.min(2_000 * 2 ** (attempts - 1), 30_000) : 0,
+        held: rejected && attempts >= 7,
+        accepted: !rejected,
+      });
+    } };
+  },
+};
+
+const smallPeerTrialAdmission: SelfActionController = {
+  id: 'small-peer-trial-admission',
+  actionVerb: 'spawn',
+  models: 'src/localVerify/LocalVerifyService.ts (acceptPeerRun checks the local memory floor before starting the trial)',
+  modelsPath: 'src/localVerify/LocalVerifyService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Every admission measures current memory. Reboot cannot turn insufficient memory into an eligible sample.' },
+  boundK: 0,
+  perTargetBoundK: 0,
+  ticks: 40,
+  tickMs: 1000,
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered++;
+      const now = f.clock.nowMs();
+      const floor = 4 * 2 ** 30;
+      const sample = { collector: SMALL_PEER_COLLECTOR, sampledAt: now, pressureLevel: 1, availableBytes: floor };
+      if (smallPeerMemoryAllows(sample, floor, now)) sink.emit({ verb: 'spawn', target: 'small-peer-trial' });
+    } };
+  },
+};
+
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  browserOutboxRecovery,
+  smallPeerTrialAdmission,
+  siblingHoldingsRefresh,
   pairingOutcomeNoticeRetry,
   neverSilentConversationRecovery,
   localVerifyLeftoverReaper,
@@ -6093,7 +6487,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   learnedSkillReconciler,
   failureCalloutInvestigation,
   attributionAuditRetry,
+  messageHolderRedelivery,
   reachSecondPersonNotice,
+  ownerRecordFenceNotice,
   presenceUsageNotice,
 
   jobPortableTransferPoll,
@@ -6215,4 +6611,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   heldForwardExpiryReport,
   heldDebtLossNotice,
   workBoardPickup,
+  plannedRestartLeaseContinuity,
+  localVerifyBorrowedHelperAsking,
+  localVerifyBorrowedDryRunResend,
+  localVerifyBorrowedHelperNotice,
+  localVerifyBorrowedBaselinePush,
 ];

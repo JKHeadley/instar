@@ -76,7 +76,7 @@
 | 3.2.1 | Image tag transformation | `[image:path]` → explicit read instruction for Claude | Yes | Yes | - |
 | 3.2.2 | Document tag transformation | `[document:path]` → explicit read instruction | Yes | Yes | - |
 | 3.2.3 | Voice tag transformation | `[voice] transcript` handling | Yes | N/A (voice not supported yet) | - |
-| 3.2.4 | Long message temp files | Messages >500 chars written to temp file, reference injected | Yes (`/tmp/instar-telegram/`) | Yes (v0.25.0: >500 chars → `/tmp/instar-slack/`) | - |
+| 3.2.4 | Long message temp files | Messages >500 chars written to temp file, reference injected | Yes (`/tmp/instar-telegram/`) | Yes (>500 chars → project `.instar/telegram-inbound/`, owner-only; was `/tmp/instar-slack/` before SEC-138) | - |
 | 3.2.5 | Injection tag format | `[telegram:N "topic" from User (uid:123)]` | Yes | `[slack:CHANNEL_ID]` (no sender info) | - |
 | 3.2.6 | Sender name sanitization | Strip control chars, collapse whitespace, neuter instruction-framing | Yes | Yes (v0.25.0) | - |
 | 3.2.7 | Topic name sanitization | Lowercase ALL-CAPS patterns, strip injection attempts | Yes | No | - |
@@ -89,7 +89,7 @@
 |---|---------|-------------|----------|-------|----------|
 | 3.3.1 | Thread history in context | Include recent messages when spawning/injecting | Yes (TopicMemory → JSONL fallback, last 50) | Partial (ring buffer last 30; vNEXT: falls back to `conversations.history` API when ring buffer is empty — prevents amnesia on spawn after restart) | - |
 | 3.3.2 | Unanswered message count | Track messages awaiting response | Yes | Yes | - |
-| 3.3.3 | Context file for session | Write context file to temp path for session to read | Yes (JSON format, `/tmp/instar-telegram/ctx-*.txt`) | Yes (human-readable thread history format matching Telegram, `/tmp/instar-slack/ctx-*.txt`) | - |
+| 3.3.3 | Context file for session | Write context file to temp path for session to read | Yes (JSON format, `/tmp/instar-telegram/ctx-*.txt`) | Yes (human-readable thread history format matching Telegram, project `.instar/telegram-inbound/slack-ctx-*.txt`, owner-only (SEC-138)) | - |
 | 3.3.4 | Relay instructions in context | Include relay script usage in context file | Yes | Yes | - |
 | 3.3.5 | Topic context hook | UserPromptSubmit hook that fetches history on `[telegram:N]` | Yes (`telegram-topic-context.sh`) | No (no equivalent hook) | - |
 

@@ -1,0 +1,14 @@
+{
+  "description": "DF-0001 boundary cases for usage colour, shared by the server (src/server/mobileCapacityRoutes.ts) and the web console (dashboard/console/accounts-model.js). tests/unit/usage-tone-parity.test.ts feeds every case to both sides. resetInPast: the limit's reset time has passed since the reading. countsAsTop: the limit can decide the account's tone and usage line.",
+  "bands": { "attn": 75, "bad": 90 },
+  "cases": [
+    { "pct": 74, "resetInPast": false, "tone": null, "countsAsTop": true },
+    { "pct": 75, "resetInPast": false, "tone": "attn", "countsAsTop": true },
+    { "pct": 89, "resetInPast": false, "tone": "attn", "countsAsTop": true },
+    { "pct": 89.6, "resetInPast": false, "tone": "bad", "countsAsTop": true },
+    { "pct": 90, "resetInPast": false, "tone": "bad", "countsAsTop": true },
+    { "pct": 100, "resetInPast": false, "tone": "bad", "countsAsTop": true },
+    { "pct": 100, "resetInPast": true, "tone": null, "countsAsTop": false }
+  ],
+  "names": { "5-hour": "5-hour", "weekly": "Weekly", "Fable weekly": "Fable weekly" }
+}

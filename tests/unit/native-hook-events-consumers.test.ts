@@ -97,7 +97,7 @@ describe('session-id bridge + shared side effects (criterion 3a)', () => {
   it('both routes call the same side-effect function (wiring)', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf8');
     const oldRoute = src.slice(src.indexOf("router.post('/hooks/events'"), src.indexOf("router.post('/hooks/events'") + 2500);
-    expect(oldRoute).toContain('dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid)');
+    expect(oldRoute).toContain('dispatchHookEvent(hookEventDispatchDeps(), payload, sid)'); // sid: the route-selected id, validated once (hook-reporter-event-delivery)
     expect(oldRoute).not.toContain('setClaudeSessionId');
     expect(oldRoute).not.toContain('subagentTracker.onStart');
     const nativeBlock = src.slice(src.indexOf('ctx.nativeHookIngest.setProcessor'), src.indexOf("router.post('/hooks/native-events'"));

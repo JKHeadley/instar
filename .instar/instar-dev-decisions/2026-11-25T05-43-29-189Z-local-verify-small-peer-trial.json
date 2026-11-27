@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-25T05:43:29.189Z",
+  "slug": "local-verify-small-peer-trial",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/smallPeerMemory.ts",
+      "src/localVerify/smallPeerReceipts.ts",
+      "src/localVerify/smallPeerWatchdog.ts"
+    ],
+    "addedLines": 45,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

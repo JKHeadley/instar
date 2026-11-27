@@ -5,6 +5,7 @@
  * peer's invalid summaries with a count; two machines disagreeing gives unknown; a bad or
  * unknown ?account= id is 404 with no file read.
  */
+import { buildQuotaForecast } from '../../dashboard/console/quota-forecast-model.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -103,6 +104,11 @@ describe('GET /quota-pacing', () => {
     expect(acct.accountId).toBe('codex-justin-gmail');
     expect(acct.weekly.verdict).toBe('will-leave-unused');
     expect(acct.weekly.display.central).toBe(47);
+    const page = buildQuotaForecast({ ok: true, data: res.body }, [{ id: 'codex-justin-gmail', name: 'Justin Gmail' }], NOW);
+    expect(page.state).toBe('ready');
+    expect(page.providers[0].accounts[0].name).toBe('Justin Gmail');
+    expect(page.providers[0].accounts[0].lines.join(' ')).toContain('47%');
+    expect(page.calibration).toContain('No forecasts have been checked');
     expect(JSON.stringify(res.body)).not.toContain('headley@example.test');
     expect(res.body.sources).toEqual([{ machineId: 'm_self', machine: 'Studio', status: 'ok' }]);
     expect(res.body.coverage.accounts['codex-justin-gmail'].rows).toBeGreaterThan(100);
