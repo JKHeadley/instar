@@ -1807,6 +1807,17 @@ a.needs-row:hover { background: var(--surface-raised); }
 .needs-group + .needs-group { border-top: 1px solid var(--hairline); }
 .needs-groups:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+/* Pending sends are the user's own local content, with ordinary phone-sized actions. */
+.chat-pending { margin: var(--s-3) 0; padding: var(--s-3); border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface); min-width: 0; }
+.chat-pending-entry { padding: var(--s-3) 0; border-top: 1px solid var(--hairline); min-width: 0; }
+.chat-pending-entry > .card-line:first-child { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 10rem; overflow: auto; }
+.chat-pending-entry .chat-list-actions { margin-bottom: 0; }
+.chat-pending-entry .btn-quiet { min-height: 44px; white-space: normal; text-align: left; }
+
+.chat-file-recovery-sheet .sheet-close { min-width: 44px; min-height: 44px; }
+.chat-file-recovery-sheet .chat-list-actions { min-width: 0; max-width: 100%; }
+.chat-file-recovery-sheet a[download] { min-width: 0; max-width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+
 /* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
 .main.accounts-page { max-width: none; min-width: 0; }
 .accounts-page .acct-list,

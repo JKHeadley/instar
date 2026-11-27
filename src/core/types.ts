@@ -4314,7 +4314,13 @@ export interface InstarConfig {
      * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
      * (default 6) per machine.
      */
-    browser?: { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number };
+    browser?: {
+      enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number;
+      /** Disable new browser outbox network work while retaining logout/cleanup support. */
+      outboxEnabled?: boolean;
+      /** Advance before restoring after a historical downgrade; old entries require local review. */
+      outboxRecoveryGeneration?: string;
+    };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
