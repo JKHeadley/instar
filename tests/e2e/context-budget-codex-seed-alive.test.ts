@@ -19,21 +19,30 @@ import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { buildContextLayers, contextLayersEnabled, type ContextLayers } from '../../src/monitoring/contextLayers/contextLayersBoot.js';
-import { wireStandingPacket } from '../../src/monitoring/contextLayers/standingPacketBoot.js';
+import { PROJECT_ANCHOR_FIXTURE_LINE, persistedProjectAnchorFixture, projectAnchorHistoryFixture, FIXTURE_PROJECT_ANCHOR_OWNER } from '../fixtures/project-standing-anchor.js';
+import { wireProjectAnchorRegistry, wireStandingPacket } from '../../src/monitoring/contextLayers/standingPacketBoot.js';
 import { rowRefFor } from '../../src/monitoring/contextLayers/LayerStore.js';
 import { CompactionCanary } from '../../src/monitoring/compactionCanary.js';
 import { buildInstarCodexHookGroups } from '../../src/core/installCodexHooks.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
+import { createProjectPurposePilotReader, projectPurposeDesignationDigest } from '../../src/core/ProjectPurposePilot.js';
+import { readStandingPacketPointer } from '../../src/monitoring/contextLayers/standingPacket.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 
 const OP = 'tests/e2e/context-budget-codex-seed-alive.test.ts';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const T = 141133;
 const SID = '01a1c8e9-8b19-7d00-92cb-92bda3000003';
 const FRAME = 'OPERATOR FRAME: keep Codex topics coherent across compactions.';
+const ORDINARY_BRIEFING = 'Ordinary fixture briefing after withdrawal.';
 
 describe('Codex next-prompt seed — alive on the production init path', () => {
   const dirs: string[] = [];
@@ -45,22 +54,41 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP });
   });
 
-  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }) {
+  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, currentAnchorOwner = projectAnchorHistoryFixture.getVerifiedOwner) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cbcs-e2e-')); dirs.push(root);
     const sd = path.join(root, '.instar'); fs.mkdirSync(sd);
     const topicMemory = new TopicMemory(sd); await topicMemory.open(); mems.push(topicMemory);
     topicMemory.insertMessage({ messageId: 1, topicId: T, text: FRAME, fromUser: true, timestamp: new Date(Date.UTC(2026, 10, 10, 10)).toISOString(), sessionName: null });
-    const sessions = [{ id: 'inst-codex', telegramTopicId: T, framework: 'codex-cli', claudeSessionId: SID }];
+    const sessions = [{ id: 'inst-codex', tmuxSession: 'fixture-codex', telegramTopicId: T, framework: 'codex-cli', claudeSessionId: SID }];
+    const conversationBindAuth = createConversationBindAuth(sd);
+    const currentBindToken = conversationBindAuth.mint('fixture-codex', [T]);
+    const proof = { onCheck: () => {} };
     // server.ts: the layers, gated; then the standing packet.
     const layers: ContextLayers | null = contextLayersEnabled(config, config.contextBudget?.enabled) ? buildContextLayers({ stateDir: sd, authToken: 'e2e-auth-token-0123456789' }) : null;
-    if (layers) { const s = wireStandingPacket({ layers, stateDir: sd, topicMemory, sessions: () => sessions, debounceMs: 60_000 }); stops.push(() => s.stop()); }
+    if (layers) {
+      const stager = wireStandingPacket({ layers, stateDir: sd, topicMemory, sessions: () => sessions, debounceMs: 60_000 });
+      stops.push(wireProjectAnchorRegistry(stager, await persistedProjectAnchorFixture(sd), { stateDir: sd, history: { ...projectAnchorHistoryFixture, getVerifiedOwner: currentAnchorOwner } }), () => stager.stop());
+    }
     const ctx = {
       config: { projectName: 'e2e', projectDir: root, stateDir: sd, port: 0, authToken: 'e2e-auth-token-0123456789' } as never,
-      sessionManager: { listRunningSessions: () => sessions } as never,
+      sessionManager: {
+        listRunningSessions: () => sessions,
+        matchesCurrentConversationBindToken: async (name: string, id: string, token: string) => {
+          if (name !== 'fixture-codex' || id !== 'inst-codex' || token !== currentBindToken) return false;
+          proof.onCheck();
+          return true;
+        },
+      } as never,
       state: { getJobState: () => null, getSession: () => null } as never,
-      topicMemory, startTime: new Date(), contextLayers: layers,
+      topicMemory, startTime: new Date(), contextLayers: layers, conversationBindAuth,
     } as unknown as RouteContext;
-    const app = express(); app.use(express.json()); app.use('/', createRoutes(ctx));
+    const app = express();
+    app.use(express.json());
+    app.get('/health', (_req, res) => res.sendStatus(200));
+    app.get(`/topic/${T}/prompt-context`, (_req, res) => {
+      res.json({ schema: 'prompt-context/1', mode: 'full', briefing: ORDINARY_BRIEFING, messages: [] });
+    });
+    app.use('/', createRoutes(ctx));
     const day = path.join(root, 'codex-home', 'sessions', '2026', '11', '10'); fs.mkdirSync(day, { recursive: true });
     const rollout = path.join(day, `rollout-2026-11-10T10-00-00-${SID}.jsonl`);
     // Stamped just after the canary's verification epoch starts (its first scan), as a live rollout would be.
@@ -71,7 +99,7 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
       { timestamp: t, type: 'compacted', payload: { message: '', window_id: 'w-e2e-seed', replacement_history: [] } },
       { timestamp: t, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `[telegram:${T}] where were we?` }] } },
     ].map((x) => JSON.stringify(x)).join('\n') + '\n');
-    return { app, layers, sd, rollout };
+    return { app, layers, sd, rollout, conversationBindAuth, currentBindToken, proof };
   }
 
   it('dev agent: detection → the first prompt gets the verified packet → the ack marks the epoch → the canary counts it recovered', async () => {
@@ -89,6 +117,8 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     expect(offer.status).toBe(200);
     expect(offer.body).toMatchObject({ deliver: true, epoch: 'w-e2e-seed' });
     expect(offer.body.text).toContain(FRAME);
+    expect(offer.body.text.indexOf(PROJECT_ANCHOR_FIXTURE_LINE)).toBeGreaterThan(0);
+    expect(offer.body.text.indexOf(PROJECT_ANCHOR_FIXTURE_LINE)).toBeLessThan(offer.body.text.indexOf(FRAME));
     expect((await request(b.app).post('/context-budget/codex-seed/ack').send({ sessionId: SID, transcriptPath: b.rollout, epoch: offer.body.epoch, carrier: offer.body.carrier })).status).toBe(200);
     // Codex records the printed seed as model input (a developer message): the canary's transcript evidence.
     fs.appendFileSync(b.rollout, `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: offer.body.text }] } })}\n`);
@@ -100,11 +130,112 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     expect((await request(b.app).post('/context-budget/codex-seed').send(body)).body).toEqual({ deliver: false, reason: 'already-seeded' });
   });
 
+  it('seeds recovery without an anchor approved by the previous owner', async () => {
+    let owner = FIXTURE_PROJECT_ANCHOR_OWNER;
+    const b = await boot({ developmentAgent: true }, () => owner);
+    expect(b.layers!.standingPacket()!.packetForSession(T)).toContain(PROJECT_ANCHOR_FIXTURE_LINE);
+    owner++;
+    const offer = await request(b.app).post('/context-budget/codex-seed').send({
+      topicId: T, sessionId: SID, transcriptPath: b.rollout, framework: 'codex-cli',
+    });
+    expect(offer.body).toMatchObject({ deliver: true });
+    expect(offer.body.text).not.toContain(PROJECT_ANCHOR_FIXTURE_LINE);
+  });
+
   it('fleet agent: 503 — the hook falls through to today\'s output', async () => {
     const b = await boot({});
     expect(b.layers).toBeNull();
     expect((await request(b.app).post('/context-budget/codex-seed').send({ topicId: T, sessionId: SID, transcriptPath: b.rollout, framework: 'codex-cli' })).status).toBe(503);
   });
+
+  it('discloses a proposal only to the authenticated destination Codex session', async () => {
+    const b = await boot({ developmentAgent: true });
+    const purpose = 'Private fixture purpose for one session.';
+    const stager = b.layers!.standingPacket()!;
+    const grant = {
+      projectId: 'context-budget', conversationKey: `telegram:${T}`,
+      source: { conversationKey: 'telegram:141385', messageId: '101', at: '2026-11-26T22:00:00.000Z' },
+      purposeSha256: createHash('sha256').update(purpose).digest('hex'),
+    };
+    fs.writeFileSync(path.join(b.sd, 'state', 'project-purpose-pilot.json'), JSON.stringify(grant), { mode: 0o600 });
+    const pilotReader = createProjectPurposePilotReader(b.sd, {
+      getVerifiedOwner: () => 123,
+      findTopicMessage: () => ({ entry: {
+        fromUser: true, forwarded: false, telegramUserId: 123, timestamp: grant.source.at, text: purpose,
+      } }),
+    }, 'fixture-studio', projectPurposeDesignationDigest('fixture-studio', 123, grant));
+    stager.setProjectAnchorReader((conversationKey) => {
+      const proposal = pilotReader({ id: grant.projectId }, conversationKey);
+      return proposal ? { status: 'proposed', ...proposal } : { status: 'missing' };
+    });
+    const body = { topicId: T, sessionId: SID, transcriptPath: b.rollout, framework: 'codex-cli' };
+    const offer = (token?: string) => {
+      const req = request(b.app).post('/context-budget/codex-seed');
+      if (token) req.set('X-Instar-Bind-Token', token);
+      return req.send(body);
+    };
+    const unbound = await offer();
+    expect(unbound.body).toEqual({ deliver: false, reason: 'not-this-topic-session' });
+    const wrongSession = await offer(b.conversationBindAuth.mint('another-session', [T]));
+    expect(wrongSession.body).toEqual({ deliver: false, reason: 'not-this-topic-session' });
+    const wrongTopic = await offer(b.conversationBindAuth.mint('fixture-codex', [141385]));
+    expect(wrongTopic.body).toEqual({ deliver: false, reason: 'not-this-topic-session' });
+    const sameNameOtherToken = b.conversationBindAuth.mint('fixture-codex', [T]);
+    expect(sameNameOtherToken).not.toBe(b.currentBindToken);
+    expect((await offer(sameNameOtherToken)).body).toEqual({ deliver: false, reason: 'not-this-topic-session' });
+    const authorized = await offer(b.currentBindToken);
+    expect(authorized.body).toMatchObject({ deliver: true, epoch: 'w-e2e-seed' });
+    expect(authorized.body.text).toContain(purpose);
+    let stagedHash: string | undefined;
+    b.proof.onCheck = () => {
+      stagedHash = readStandingPacketPointer(b.sd, String(T))?.sha256;
+      fs.writeFileSync(path.join(b.sd, 'state', 'project-purpose-pilot.retired'), '', { mode: 0o600 });
+    };
+    const listener = b.app.listen(0, '127.0.0.1');
+    try {
+      await once(listener, 'listening');
+      const address = listener.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not listen on TCP');
+      const projectDir = path.dirname(b.sd);
+      fs.writeFileSync(path.join(b.sd, 'config.json'), JSON.stringify({ port: address.port, projectName: 'e2e' }));
+      const migrator = new PostUpdateMigrator({
+        stateDir: b.sd, projectDir, port: address.port, hasTelegram: true, projectName: 'e2e',
+      }) as unknown as { getTelegramTopicContextHook(): string };
+      const hook = path.join(b.sd, 'test-codex-prompt-hook.sh');
+      fs.writeFileSync(hook, migrator.getTelegramTopicContextHook(), { mode: 0o700 });
+      const runHook = async (token: string) => {
+        const child = spawn('bash', [hook], { env: {
+          PATH: process.env.PATH ?? '', HOME: projectDir, CLAUDE_PROJECT_DIR: projectDir,
+          INSTAR_AUTH_TOKEN: 'e2e-auth-token-0123456789', INSTAR_BIND_TOKEN: token,
+          INSTAR_FRAMEWORK: 'codex-cli',
+        } });
+        let output = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+        const timeout = setTimeout(() => child.kill(), 10_000);
+        try {
+          child.stdin.end(JSON.stringify({ prompt: `[telegram:${T}] where were we?`, session_id: SID, transcript_path: b.rollout }));
+          const [status] = await once(child, 'close');
+          expect(status).toBe(0);
+          return output;
+        } finally {
+          clearTimeout(timeout);
+        }
+      };
+      const wrongCredentialOutput = await runHook(sameNameOtherToken);
+      expect(wrongCredentialOutput).toContain(ORDINARY_BRIEFING);
+      expect(wrongCredentialOutput).not.toContain(purpose);
+      expect(stagedHash, 'wrong session token cannot trigger withdrawal').toBeUndefined();
+      expect(fs.existsSync(path.join(b.sd, 'state', 'project-purpose-pilot.retired'))).toBe(false);
+
+      const output = await runHook(b.currentBindToken);
+      expect(output).toContain(ORDINARY_BRIEFING);
+      expect(output).not.toContain(purpose);
+      expect(stagedHash).toBeDefined();
+      expect(readStandingPacketPointer(b.sd, String(T))?.sha256).toBe(stagedHash);
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  }, 15_000);
 
   it('WIRED: the per-prompt hook asks only for Codex and prints before acknowledging; Codex runs that hook on UserPromptSubmit; server.ts wires the Codex suite trigger', () => {
     const mig = fs.readFileSync(path.join(ROOT, 'src/core/PostUpdateMigrator.ts'), 'utf-8');

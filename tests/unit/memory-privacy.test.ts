@@ -27,6 +27,54 @@ describe('MemoryPrivacy', () => {
   });
   afterEach(() => SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/memory-privacy.test.ts' }));
 
+  it('joins a corpus Telegram sender to the owner only when the configured account and owner profile agree', () => {
+    config = { ownerUserId: 'owner' };
+    lists = { telegramOwnerId: 71, telegramAuthorizedIds: [71, 72] };
+    users = [user('owner', { telegramUserId: 71 }), user('other', { telegramUserId: 72 })];
+    const privacy = make();
+    const original = privacy.corpusOperatorBindingFingerprint();
+    expect(privacy.isCorpusOperator('telegram:71', null, true)).toBe(true);
+    expect(privacy.isCorpusOperator('telegram:71', 'other', true)).toBe(false);
+    expect(privacy.isCorpusOperator('telegram:72', null, true)).toBe(false);
+    expect(privacy.isCorpusOperator('telegram:71', null, false)).toBe(false);
+    expect(privacy.isOwnerSender('telegram:71', null)).toBe(false);
+    users = [user('owner', { telegramUserId: 73 }), user('other', { telegramUserId: 71 })];
+    expect(privacy.isCorpusOperator('telegram:71', null, true)).toBe(false);
+    expect(privacy.corpusOperatorBindingFingerprint()).not.toBe(original);
+  });
+
+  it('does not carry a historical corpus operator across an explicit owner transfer', () => {
+    lists = { telegramOwnerId: 71, telegramAuthorizedIds: [71] };
+    users = [user('first-owner', { telegramUserId: 71 })];
+    const privacy = make();
+    privacy.establishBaseline();
+    expect(privacy.isOperator('telegram:71')).toBe(true);
+    expect(privacy.isCorpusOperator('telegram:71', null, true)).toBe(true);
+
+    config = { ownerUserId: 'second-owner' };
+    lists = { telegramOwnerId: 72, telegramAuthorizedIds: [72] };
+    users = [...users, user('second-owner', { telegramUserId: 72 })];
+    expect(privacy.isOperator('telegram:71')).toBe(true);
+    expect(privacy.isCorpusOperator('telegram:71', null, true)).toBe(false);
+    expect(privacy.isCorpusOperator('user:first-owner', 'first-owner', false)).toBe(false);
+    expect(privacy.isCorpusOperator('telegram:72', null, true)).toBe(true);
+    config = { ownerUserId: 'missing-owner' };
+    expect(privacy.isCorpusOperator('telegram:71', null, true)).toBe(false);
+  });
+
+  it('invalidates the inferred corpus binding when a profile loses its baseline channel alias', () => {
+    lists = { slackAuthorizedIds: ['U1'], slackBotUserId: 'B' };
+    const privacy = make();
+    privacy.establishBaseline();
+    users = [user('linked', { slackUserId: 'U1' })];
+    expect(privacy.isCorpusOperator('user:linked', 'linked', false)).toBe(true);
+    const original = privacy.corpusOperatorBindingFingerprint();
+
+    users = [user('linked', { slackUserId: 'U2' })];
+    expect(privacy.isCorpusOperator('user:linked', 'linked', false)).toBe(false);
+    expect(privacy.corpusOperatorBindingFingerprint()).not.toBe(original);
+  });
+
   it('is single-person with one reachable human', () => {
     lists = { slackAuthorizedIds: ['U1'], slackBotUserId: 'B' };
     expect(make().isMultiPerson()).toBe(false);

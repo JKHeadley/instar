@@ -20,7 +20,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import { PostUpdateMigrator, STANDING_PACKET_PY, SEED_CARRIER_PY } from '../../src/core/PostUpdateMigrator.js';
 import { CompactionCanary } from '../../src/monitoring/compactionCanary.js';
@@ -36,7 +39,7 @@ afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, {
 
 const meta = (): LayerMeta => ({ author: { sessionId: 's1', machine: 'm1', model: null, kind: 'derived' }, asOf: { at: Date.now() - 60_000, lastMessageId: 9 } });
 
-function agent(o: { turnChars?: number; recoveryOff?: boolean } = {}) {
+function agent(o: { turnChars?: number; recoveryOff?: boolean; ownerBinding?: () => string } = {}) {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sph-')); dirs.push(projectDir);
   const stateDir = path.join(projectDir, '.instar');
   const hooksDir = path.join(stateDir, 'hooks', 'instar');
@@ -46,7 +49,7 @@ function agent(o: { turnChars?: number; recoveryOff?: boolean } = {}) {
   fs.writeFileSync(path.join(stateDir, 'AGENT.md'), '# Agent: Echo\n' + Array.from({ length: 450 }, (_, i) => `principle ${i} ${'words '.repeat(10)}`).join('\n'));
   fs.writeFileSync(path.join(stateDir, 'MEMORY.md'), Array.from({ length: 80 }, (_, i) => `memory ${i} ${'fact '.repeat(12)}`).join('\n'));
   const migrator = new PostUpdateMigrator({ stateDir, port: 1, sessions: { claudePath: 'claude' } } as never) as unknown as { getHookContent(n: string): string };
-  for (const n of ['session-start', 'compaction-recovery']) fs.writeFileSync(path.join(hooksDir, `${n}.sh`), migrator.getHookContent(n), { mode: 0o755 });
+  for (const n of ['session-start', 'compaction-recovery', 'pre-compact-steer']) fs.writeFileSync(path.join(hooksDir, `${n}.sh`), migrator.getHookContent(n), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'fit-recovery-output.mjs'), PostUpdateMigrator.getFitRecoveryOutput(), { mode: 0o755 });
 
   // The topic's layers and TopicMemory rows.
@@ -63,7 +66,7 @@ function agent(o: { turnChars?: number; recoveryOff?: boolean } = {}) {
   store.writeDerived(T, 'h1', 'current', { goal: 'H1-GOAL: ship S10', trend: 'testing', themes: ['packet'] }, { ...meta(), status: 'live' });
   store.writeDerived(T, 'h2', 'current', { present: false }, { ...meta(), status: 'absent' });
   store.writeDerived(T, 'h3', 'current', { summary: 'H3-BODY ' + 'story '.repeat(300), disclosure: 'read 2 chunks' }, { ...meta(), status: 'live' });
-  const src: PacketRowSource = { getRow: (_t, id) => rows.get(id) ?? null, countMessagesAfter: () => ({ total: 1, fromUser: 0 }) };
+  const src: PacketRowSource = { operatorBindingFingerprint: o.ownerBinding, getRow: (_t, id) => rows.get(id) ?? null, countMessagesAfter: () => ({ total: 1, fromUser: 0 }) };
   const stager = new StandingPacketStager({ stateDir, store, rows: src, sessionsForTopic: () => ['inst-1'] });
   return { projectDir, stateDir, hooksDir, rows, stager };
 }
@@ -76,6 +79,34 @@ function compact(a: ReturnType<typeof agent>, sid = 'sess-pkt') {
   });
 }
 
+async function compactWithAuthority(a: ReturnType<typeof agent>, sid = 'sess-pkt', preCompact = false) {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const packetHash = url.searchParams.get('packetHash') ?? '';
+    const authenticated = req.headers.authorization === 'Bearer fixture-token';
+    const current = authenticated && (
+      (url.pathname === `/topic/${T}/standing-packet/recovery-current` && a.stager.stagedRecoveryCurrent(T, packetHash))
+      || (url.pathname === '/standing-packet/keep-current/inst-1' && a.stager.stagedKeepCurrent('inst-1', packetHash))
+    );
+    res.end(JSON.stringify({ current }));
+  }).listen(0, '127.0.0.1');
+  try {
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing fixture port');
+    fs.writeFileSync(path.join(a.stateDir, 'config.json'), JSON.stringify({ port: address.port, authToken: 'fixture-token' }));
+    return await new Promise<{ status: number; stdout: string }>((resolve, reject) => {
+      const child = execFile('bash', [path.join(a.hooksDir, preCompact ? 'pre-compact-steer.sh' : 'session-start.sh')], {
+        env: { INSTAR_SESSION_ID: 'inst-1', PATH: process.env.PATH ?? '', HOME: a.projectDir, CLAUDE_PROJECT_DIR: a.projectDir, INSTAR_TELEGRAM_TOPIC: T },
+        timeout: 60_000,
+      }, (error, stdout) => error ? reject(error) : resolve({ status: 0, stdout }));
+      child.stdin!.end(JSON.stringify({ source: 'compact', session_id: sid, hook_event_name: preCompact ? 'PreCompact' : 'SessionStart' }));
+    });
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
 const seeded = (a: ReturnType<typeof agent>, sid: string) => fs.existsSync(path.join(a.stateDir, 'state', 'context-layers', '_seeded', `${sid}.json`));
 
 describe('the standing packet through the real session-start compact hook', () => {
@@ -84,7 +115,7 @@ describe('the standing packet through the real session-start compact hook', () =
     const r = a.stager.stageNow(T);
     expect(r.ok).toBe(true);
     const staged = fs.readFileSync(path.join(standingPacketDir(a.stateDir), `${T}.md`), 'utf-8');
-    const out = compact(a);
+    const out = await compactWithAuthority(a);
     expect(out.status).toBe(0);
     expect(out.stdout.length).toBeLessThanOrEqual(10_000);
     expect(out.stdout).toContain(MARKER);
@@ -119,11 +150,26 @@ describe('the standing packet through the real session-start compact hook', () =
     expect(canary.report(true).groups[0]).toMatchObject({ truncated: 0 });
   });
 
-  it('a reduced packet: still ≤ 10,000, every delivered operator row whole, its Read line for the full packet present', () => {
+  it('both generated Claude hooks reject staged owner quotes after an owner change', async () => {
+    let binding = 'owner-before';
+    const a = agent({ ownerBinding: () => binding });
+    expect(a.stager.stageNow(T).ok).toBe(true);
+    const frame = a.rows.get(1)!.text;
+    expect((await compactWithAuthority(a)).stdout).toContain(frame);
+    expect((await compactWithAuthority(a, 'sess-pkt', true)).stdout).toContain(frame);
+
+    binding = 'owner-after';
+    const recovery = await compactWithAuthority(a);
+    expect(recovery.stdout).toContain(MARKER);
+    expect(recovery.stdout).not.toContain(frame);
+    expect((await compactWithAuthority(a, 'sess-pkt', true)).stdout).not.toContain(frame);
+  }, 20_000);
+
+  it('a reduced packet: still ≤ 10,000, every delivered operator row whole, its Read line for the full packet present', async () => {
     const a = agent({ turnChars: 1300 });
     const r = a.stager.stageNow(T);
     expect(r.ok && r.packet.reduced).toBe(true);
-    const out = compact(a, 'sess-red');
+    const out = await compactWithAuthority(a, 'sess-red');
     expect(out.stdout.length).toBeLessThanOrEqual(10_000);
     if (!r.ok) return;
     for (const s of r.packet.deliveredSpans) expect(out.stdout).toContain(a.rows.get(s.messageId)!.text);
@@ -142,6 +188,22 @@ describe('the standing packet through the real session-start compact hook', () =
     expect(out.stdout).not.toContain('FORGED-WORDS');
     expect(out.stdout).toContain(MARKER);
     expect(out.stdout.length).toBeLessThanOrEqual(10_000);
+  });
+
+  it('recovers ordinary Claude context when a staged proposal fails its live check', () => {
+    const a = agent();
+    const purpose = 'Private proposed fixture purpose.';
+    a.stager.setProjectAnchorReader(() => ({
+      status: 'proposed', projectId: 'context-budget', purpose,
+      source: { conversationKey: 'telegram:141385', messageId: '101', at: '2026-11-26T22:00:00.000Z' },
+    }));
+    const staged = a.stager.stageNow(T);
+    expect(staged.ok && staged.packet.delivered.includes(purpose)).toBe(true);
+    const out = compact(a, 'sess-proposal-unavailable');
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain(MARKER);
+    expect(out.stdout).not.toContain(purpose);
+    expect(out.stdout).not.toContain('--- STANDING PACKET');
   });
 
   it('recovery switched off: no packet even when staged — today\'s behaviour exactly (the env-only read resolves startup)', () => {
@@ -163,7 +225,7 @@ describe('the standing packet through the real session-start compact hook', () =
     expect(JSON.parse(fs.readFileSync(path.join(a.stateDir, 'state', 'context-layers', '_seeded', 'sess-none.json'), 'utf-8')).carrier).toBe('legacy');
   });
 
-  it('a non-BMP character and a CRLF row are delivered byte-exact and counted in UTF-16 units', () => {
+  it('a non-BMP character and a CRLF row are delivered byte-exact and counted in UTF-16 units', async () => {
     const a = agent();
     const rows = a.rows;
     // Re-stage with an emoji and CRLF in the newest operator row (replace the TopicMemory text and its U reference).
@@ -173,7 +235,7 @@ describe('the standing packet through the real session-start compact hook', () =
     store.writeProtected(T, 'u', 'm-9', [rowRefFor(9, text)], meta(), { label: 'operator', authority: 'operator', rowId: 9, at: Date.UTC(2026, 10, 10, 10, 9) });
     const r = a.stager.stageNow(T);
     expect(r.ok).toBe(true);
-    const out = compact(a, 'sess-utf');
+    const out = await compactWithAuthority(a, 'sess-utf');
     expect(out.stdout).toContain(text);
     expect(out.stdout.length).toBeLessThanOrEqual(10_000);
     expect(seeded(a, 'sess-utf')).toBe(true);
@@ -213,7 +275,7 @@ describe('the fitter refuses a spoofed packet section', () => {
 });
 
 describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
-  function staged(o: { mutate?: (p: Record<string, unknown>) => void; text?: string; topic?: string } = {}) {
+  function prepareStaged(o: { mutate?: (p: Record<string, unknown>) => void; text?: string; topic?: string } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sph-py-')); dirs.push(root);
     const dir = path.join(root, 'state', 'context-layers', '_standing');
     fs.mkdirSync(dir, { recursive: true });
@@ -223,7 +285,10 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
     o.mutate?.(p);
     fs.writeFileSync(path.join(dir, `${T}.json`), JSON.stringify(p));
     fs.writeFileSync(path.join(dir, `${T}.md`), body);
-    return spawnSync('python3', ['-c', STANDING_PACKET_PY, root, o.topic ?? T], { encoding: 'utf-8' }).stdout;
+    return { root, hash: p.sha256, args: ['-c', STANDING_PACKET_PY, root, o.topic ?? T] };
+  }
+  function staged(o?: Parameters<typeof prepareStaged>[0]) {
+    return spawnSync('python3', prepareStaged(o).args, { encoding: 'utf-8' }).stdout;
   }
   it('prints a valid packet, nonce-delimited', () => {
     expect(staged()).toMatch(/^--- STANDING PACKET [0-9a-f]{8} ---\n=== STANDING PACKET \(topic 141133\) ===\nhello\n=== END STANDING PACKET ===\n--- END STANDING PACKET [0-9a-f]{8} ---\n$/);
@@ -231,6 +296,7 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
   it.each([
     ['older than 7 days', { mutate: (p: Record<string, unknown>) => { p.builtAt = Date.now() - 8 * 86_400_000; } }],
     ['built in the future', { mutate: (p: Record<string, unknown>) => { p.builtAt = Date.now() + 3_600_000; } }],
+    ['project anchor freshness cannot be confirmed', { mutate: (p: Record<string, unknown>) => { p.projectAnchorHash = 'a'.repeat(64); } }],
     ['not verified', { mutate: (p: Record<string, unknown>) => { p.verified = false; } }],
     ['another topic', { mutate: (p: Record<string, unknown>) => { p.topicKey = '999'; } }],
     ['a length mismatch', { mutate: (p: Record<string, unknown>) => { p.chars = 3; } }],
@@ -239,6 +305,29 @@ describe('STANDING_PACKET_PY: each boundary of the hook-side read', () => {
     ['a non-numeric topic', { topic: '-141133' }],
   ])('prints nothing when %s', (_n, o) => {
     expect(staged(o as Parameters<typeof staged>[0])).toBe('');
+  });
+  it('prints an anchored packet only after the local server confirms its exact hash', async () => {
+    const { root, hash, args } = prepareStaged({ mutate: (p) => { p.projectAnchorHash = 'a'.repeat(64); } });
+    let current = true;
+    const server = createServer((req, res) => {
+      const requestMatches = req.url === `/topic/${T}/standing-packet/recovery-current?packetHash=${hash}`
+        && req.headers.authorization === 'Bearer fixture-token';
+      res.end(JSON.stringify({ current: current && requestMatches }));
+    }).listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('missing fixture port');
+      fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ port: address.port }));
+      const run = () => promisify(execFile)('python3', args, {
+        env: { ...process.env, INSTAR_AUTH_TOKEN: 'fixture-token' },
+      });
+      expect((await run()).stdout).toContain('hello');
+      current = false;
+      expect((await run()).stdout).toBe('');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
   it('counts UTF-16 units like the server: an emoji-heavy packet at exactly 6,500 units prints, one more does not', () => {
     const at = '🎯'.repeat(3250);

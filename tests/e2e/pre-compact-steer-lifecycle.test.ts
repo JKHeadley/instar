@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { startStandingPacketAuthority } from '../fixtures/standing-packet-authority.js';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { writeKeepInstructions } from '../../src/monitoring/keepInstructions.js';
@@ -63,6 +65,15 @@ describe('PreCompact steering lifecycle — update path to hook output', () => {
     expect(await runInstalled(stdin)).toEqual({ out: '', code: 0 });
     const text = 'Keep the Anchor, the open ledger rows and the work in flight.';
     expect(writeKeepInstructions(stateDir, { instarSessionId: IID, text, source: 'standing-packet' }).written).toBe(true);
-    expect(await runInstalled(stdin)).toEqual({ out: text, code: 0 });
+    expect(await runInstalled(stdin)).toEqual({ out: '', code: 0 });
+    const authority = await startStandingPacketAuthority(IID, createHash('sha256').update(text).digest('hex'));
+    try {
+      fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ ...authority.config, projectName: 'e2e' }));
+      expect(await runInstalled(stdin)).toEqual({ out: text, code: 0 });
+      authority.revoke();
+      expect(await runInstalled(stdin)).toEqual({ out: '', code: 0 });
+    } finally {
+      await authority.close();
+    }
   });
 });

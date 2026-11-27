@@ -981,6 +981,21 @@ export class TopicMemory {
     return r && Number.isSafeInteger(r.messageId) ? r.messageId : null;
   }
 
+  /** Exact protected-row lookup without scanning the topic's listing watermark. */
+  getUserCorpusMessage(topicId: number, messageId: number): TopicMessage | null {
+    if (!this.db) return null;
+    const row = this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName, sender_name AS senderName,
+             sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND message_id = ? AND (from_user = 1 OR origin IN ('relay', 'a2a'))
+    `).get(topicId, messageId) as Record<string, unknown> | undefined;
+    return row ? mapRow(row) : null;
+  }
+
   getUserCorpusRows(topicId: number, opts: { afterRowId?: number; limit?: number; messageId?: number } = {}): { rows: Array<{ rowId: number; message: TopicMessage }>; complete: boolean; maxRowId: number } {
     if (!this.db) return { rows: [], complete: false, maxRowId: 0 };
     const bounded = Math.max(1, Math.min(Math.floor(opts.limit ?? 2_000), 10_000));

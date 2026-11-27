@@ -229,6 +229,46 @@ describe('U — the protected user corpus', () => {
       expect(uc.refresh(T)).toMatchObject({ listed: 0 });
     });
 
+    it('restarts an advanced watermark on a binding change and resumes the new pass after restart', async () => {
+      const s = await setup();
+      for (let id = 1; id <= 205; id++) s.row(id, `Owner message ${id}`);
+      let fingerprint = 'before';
+      const make = () => new UserCorpus({
+        store: s.store, rows: s.tm, isOperator: () => fingerprint === 'after',
+        bindingFingerprint: () => fingerprint, machine: 'm_unit',
+      });
+      const before = make();
+      expect(before.refresh(T).complete).toBe(false);
+      expect(before.refresh(T).complete).toBe(true);
+      expect(s.store.read(String(T), 'u', 'm-1')?.data.authority).toBe('none');
+
+      fingerprint = 'after';
+      expect(make().refresh(T).complete).toBe(false);
+      expect(s.store.read(String(T), 'u', 'm-1')?.data.authority).toBe('operator');
+      const resumed = make().refresh(T);
+      expect(resumed.complete).toBe(true);
+      expect(resumed.listed).toBeLessThan(205);
+      expect(s.store.read(String(T), 'u', 'm-205')?.data.authority).toBe('operator');
+    });
+
+    it('resolves the exact topic and channel message ID across different local row IDs', async () => {
+      const first = await setup();
+      const second = await setup();
+      second.row(99, 'Different local insertion', { topicId: T + 1 });
+      for (const copy of [first, second]) {
+        copy.row(8, 'Repeated words.');
+        copy.row(9, 'Repeated words.', { forwarded: true });
+        copy.row(8, 'Different topic.', { topicId: T + 1 });
+      }
+      const localId = (copy: typeof first) => copy.tm.getUserCorpusRows(T, { messageId: 8 }).rows[0].rowId;
+      expect(localId(first)).not.toBe(localId(second));
+      for (const copy of [first, second]) {
+        expect(copy.tm.getUserCorpusMessage(T, 8)).toMatchObject({ messageId: 8, text: 'Repeated words.', forwarded: false });
+        expect(copy.tm.getUserCorpusMessage(T, 9)).toMatchObject({ messageId: 9, text: 'Repeated words.', forwarded: true });
+        expect(copy.tm.getUserCorpusMessage(T + 1, 8)?.text).toBe('Different topic.');
+      }
+    });
+
     it('counts legacy rows with no sender identity as unattributed (third-party, no authority)', async () => {
       const s = await setup();
       s.row(1, 'an old row with nobody on it', { telegramUserId: undefined });

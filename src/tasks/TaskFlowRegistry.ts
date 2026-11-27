@@ -383,6 +383,25 @@ export class TaskFlowRegistry extends EventEmitter {
     }, 'startStep');
   }
 
+  /** Replace controller-private state without consuming or creating a wait. */
+  async replaceControllerState(args: {
+    flowId: string;
+    expectedRevision: number;
+    principal: TaskFlowPrincipal;
+    stateJson: unknown;
+  }): Promise<ApplyResult> {
+    this.validateStateJsonSize(args.stateJson);
+    return this.applyOcc(args.flowId, args.expectedRevision, (current) => {
+      this.assertControllerScope(current, args.principal);
+      return {
+        ...current,
+        stateJson: args.stateJson,
+        revision: current.revision + 1,
+        updatedAt: this.now(),
+      };
+    }, 'replaceControllerState');
+  }
+
   async setFlowWaiting(args: {
     flowId: string;
     expectedRevision: number;

@@ -1115,16 +1115,29 @@ export class SessionManager extends EventEmitter {
 
   /** One key of a session's tmux environment: its line (`K=V`, or `-K` when removed), or null when
    * tmux reports the variable unknown. Every other failure throws. */
-  private async tmuxEnvLine(tmuxSession: string, key: string): Promise<string | null> {
+  private async tmuxEnvLine(tmuxSession: string, key: string, timeout = 5000): Promise<string | null> {
     try {
       const result = await promisify(execFile)(this.config.tmuxPath,
-        ['show-environment', '-t', `=${tmuxSession}`, key], { timeout: 5000, encoding: 'utf8', maxBuffer: 16 * 1024 });
+        ['show-environment', '-t', `=${tmuxSession}`, key], { timeout, encoding: 'utf8', maxBuffer: 16 * 1024 });
       const line = result.stdout.trim();
       return line === '' ? null : line;
     } catch (error) {
       const e = error as { code?: number; stderr?: unknown };
       if (e.code === 1 && /unknown variable/i.test(String(e.stderr ?? ''))) return null;
       throw error;
+    }
+  }
+
+  /** Match the token to this running incarnation without returning its environment. */
+  async matchesCurrentConversationBindToken(tmuxSession: string, sessionId: string, token: string): Promise<boolean> {
+    try {
+      const [runtimeId, runtimeToken] = await Promise.all([
+        this.tmuxEnvLine(tmuxSession, 'INSTAR_SESSION_ID', 500),
+        this.tmuxEnvLine(tmuxSession, 'INSTAR_BIND_TOKEN', 500),
+      ]);
+      return runtimeId === `INSTAR_SESSION_ID=${sessionId}` && runtimeToken === `INSTAR_BIND_TOKEN=${token}`;
+    } catch {
+      return false; // @silent-fallback-ok — no live session proof means ordinary recovery only.
     }
   }
 
