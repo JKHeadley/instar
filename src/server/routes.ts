@@ -1,3 +1,4 @@
+import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
@@ -10295,6 +10296,33 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
     res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
   });
+  router.post('/chief-of-staff/project-binding-preview', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const enabled = ctx.liveConfig?.get(
+      'chiefOfStaff.bindingBatchPreview', ctx.config.chiefOfStaff?.bindingBatchPreview ?? false,
+    ) ?? ctx.config.chiefOfStaff?.bindingBatchPreview;
+    if (enabled !== true || !ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'project-binding-preview-disabled' });
+      return;
+    }
+    const operatorSession = req.get('x-instar-operator-session');
+    if (ctx.verifyDashboardOperatorSession?.(operatorSession) !== true) {
+      res.status(403).json({ error: 'dashboard-operator-session-required' });
+      return;
+    }
+    const bound = ctx.chiefOfStaffLoop.bindingPreviewKeys();
+    if (!bound) {
+      res.status(503).json({ error: 'project-list-unavailable' });
+      return;
+    }
+    const preview = previewOwnerBindingBatch(req.body?.draft, bound);
+    if (!preview) {
+      res.status(400).json({ error: 'invalid-project-binding-draft' });
+      return;
+    }
+    res.json(preview);
+  });
+
   // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
   // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
   // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,

@@ -3876,6 +3876,8 @@ export interface InstarConfig {
    *  owner-tunable at the agent level; per-project values live on the binding. */
   chiefOfStaff?: {
     enabled?: boolean;
+    /** Enables the read-only project binding batch preview. Defaults off. */
+    bindingBatchPreview?: boolean;
     displayName?: string;
     tickMinutes?: number;
     defaultCadenceHours?: number;
