@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "ladder-entry-projections-calibration",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T02:36:55.659Z",
+  "artifactPath": "upgrades/side-effects/ladder-entry-projections-calibration.md",
+  "artifactSha256": "342061cdcb14aa64114ddc45fd43d7ddc6940530b065173feea6c766ea290eba",
+  "coveredFiles": [
+    "src/data/feature-ladders.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One data line in the ladder registry for a spec that names it; no code.",
+  "eli16Path": "docs/specs/ladder-entry-projections-calibration.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ladder-entry-projections-calibration.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
