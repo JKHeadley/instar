@@ -25,3 +25,9 @@ Second-pass reviewer: independent main-health review. Concurred after the schedu
 ## Rollback
 
 Revert the change and deploy the previous verifier through the coordinated fleet rollout. The prior watermark reader ignores the optional fields. Keep existing verification and merge holds in force during the rollback.
+
+## Second-pass review
+
+**Reviewer:** Independent Claude Fable 5.2 helper for the Echo Chief of Staff session.
+
+CONCUR on cfe48a172ec23509fd7a7680e0d1e84fe3988149. The earlier dissent is closed. The reviewer checked the full main-health decision path, the existing merge restrictions, restart recovery, and mixed-verifier handling. Review record: pr-4007-rereview.md. Pipeline Strategy also concurred on the follow-up.

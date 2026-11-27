@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "local-verify-main-confirmation-cadence",
+  "sessionId": "b528b042-91e4-4687-b182-8f0750aaedd6",
+  "timestamp": "2026-11-27T19:22:19.010Z",
+  "artifactPath": "upgrades/side-effects/local-verify-main-confirmation-cadence.md",
+  "artifactSha256": "829bfc89fa12011d5331f32fb3b8637f58daf4d3d54406fc6fae9b881a757d70",
+  "specPath": "docs/specs/local-verify-merge-authority.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.eli16.md",
+    "docs/specs/local-verify-merge-authority.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/mainHealth.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-main-confirmation-cadence.md",
+    "upgrades/side-effects/local-verify-main-confirmation-cadence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind independent verifier concurrence to both classified runtime paths; this commit changes review evidence only.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
