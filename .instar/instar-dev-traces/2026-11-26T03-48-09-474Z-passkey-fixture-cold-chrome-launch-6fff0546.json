@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "passkey-fixture-cold-chrome-launch",
+  "sessionId": "6b63c201-c16e-4622-aa4a-91afd5e38ceb",
+  "timestamp": "2026-11-26T03:48:09.474Z",
+  "artifactPath": "upgrades/side-effects/passkey-fixture-cold-chrome-launch.md",
+  "artifactSha256": "9564d6ea9aaab9f5a9e4dbd3755225b8393fbdc5e7fe008784c36067d1bbcee1",
+  "coveredFiles": [
+    "src/core/ChromeCdpReloginBrowser.ts",
+    "tests/integration/passkey-browser-fixture.test.ts",
+    "upgrades/eli16/passkey-fixture-cold-chrome-launch.md",
+    "upgrades/next/passkey-fixture-cold-chrome-launch.md",
+    "upgrades/side-effects/passkey-fixture-cold-chrome-launch.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One call's timeout moves from the operation budget to the launch budget, plus a test warm-up; no authority, persistence or API change.",
+  "eli16Path": "upgrades/eli16/passkey-fixture-cold-chrome-launch.md",
+  "sideEffectsPath": "upgrades/side-effects/passkey-fixture-cold-chrome-launch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
