@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "signed-local-history-intake-verification",
+  "sessionId": "41652017-0805-405d-bb4e-2a975fb349ce",
+  "timestamp": "2026-11-25T12:55:57.466Z",
+  "artifactPath": "upgrades/side-effects/signed-local-history-intake-verification.md",
+  "artifactSha256": "b69fdac6720fc978c6d88532525dbd6285d42e3b2ecedf31c5d3774423e62ede",
+  "specPath": "docs/specs/local-history-native-contract.md",
+  "coveredFiles": [
+    "docs/specs/local-history-native-contract.md",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/signed-local-history-intake-verification.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Aligns exact owner-only intake route inventory and registry documentation for standalone router.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Documentation and ratchet fixture only."
+  }
+}

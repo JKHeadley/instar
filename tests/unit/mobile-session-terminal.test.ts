@@ -206,6 +206,17 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/work/projects/pause'],
       ['POST', '/mobile/work/projects/done-item'],
       ['POST', '/mobile/work/projects/finish'],
+      // Signed local history intake admits only the enrolled owner phone.
+      ['GET', '/mobile/imported-history/local/targets'],
+      ['GET', '/mobile/imported-history/local/operations/0123456789abcdef0123456789abcdef'],
+      ['POST', '/mobile/imported-history/local/channels'],
+      ['POST', '/mobile/imported-history/local/challenge'],
+      ['POST', '/mobile/imported-history/local/uploads'],
+      ['POST', '/mobile/imported-history/local/cancel'],
+      ['POST', '/mobile/imported-history/local/preview'],
+      ['POST', '/mobile/imported-history/local/apply'],
+      ['POST', '/mobile/imported-history/local/uploads/0123456789abcdef0123456789abcdef/complete'],
+      ['PUT', '/mobile/imported-history/local/uploads/0123456789abcdef0123456789abcdef/files/fixture/chunks/0'],
       // The owner removes a member's computer from People (member-browser-any-computer follow-up).
       ['POST', '/mobile/team/people/u_0123/computers/d_0123/forget'],
     ];
