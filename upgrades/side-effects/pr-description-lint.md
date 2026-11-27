@@ -12,8 +12,10 @@ This adds two GitHub workflows and one script, with unit tests (`tests/unit/pr-d
 - `.github/workflows/pr-description-lint.yml` runs on `workflow_run` of that trigger. GitHub always loads a `workflow_run` workflow from the **default branch**, so neither the workflow nor its script can be changed by the pull request it judges, whatever that pull request's base.
 - `scripts/pr-description-lint.mjs` reads the pull request **live** from the REST API: title, body, author, and the changed files exactly as safe-merge reads them, plus decision records at the head. It runs safe-merge's own `runLocalBodyChecks` (eli16, decision-audit, release-fragment) and, reported **separately**, the UX Impact rule (`scripts/ux-impact-lint.mjs`, unchanged). It then posts an always-`success` commit status, `description-early-warning`, saying what "would be refused if merged as it stands now", plus warnings and a job summary.
 - Every step is `continue-on-error` and the script always exits 0, so this can never produce a red check row on a pull request. That matters because safe-merge refuses on any red row, required or not.
+- **Bound to its event (after a third rule 7 read):** only pull requests whose head is the run's own `head_sha`, with this repository as their base, are judged. The pull request is re-read after the file list, and nothing is posted if its head, base, title or body changed meanwhile; the newer run reports instead. Each pull request gets its own status context, `description-early-warning (#N)`, so two pull requests sharing a head commit are never mixed.
+- **Reviewer notes (the Chief of Staff's reviewer):** decision-record paths are URL-encoded per segment in the API path. The summary goes only to the job summary and is never echoed to the log, where a line beginning `::` could act as a workflow command. There is no `cancel-in-progress`, because this run's rows attach to the default branch's head and a cancelled row there could be misread as a red main.
 
-Tier 1: five new files and no change to existing code. Effort: a design pass, then one round after two rule 7 dissents (Jobs and Projects; the Chief of Staff's reviewer), which moved the check to `workflow_run`, separated the UX advice, read live data, and made every step non-failing.
+Tier 1: five new files and no change to existing code. Effort: a design pass, then two rounds after three rule 7 dissents (Jobs and Projects; the Chief of Staff's reviewer), which moved the check to `workflow_run`, separated the UX advice, read live data, and made every step non-failing.
 
 ## Decision-point inventory
 
@@ -104,5 +106,5 @@ Not required (not a gate, sentinel, watchdog, session or messaging change). An i
 
 ## Evidence pointers
 
-- `tests/unit/pr-description-lint.test.ts`: 21 tests pass. A dry run against live pull requests #4010, #3890 and the stacked #3767 posted nothing and reported correctly: #3767 lacks an ELI16 section. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
+- `tests/unit/pr-description-lint.test.ts`: 22 tests pass. A dry run against live pull requests #4010, #3890 and the stacked #3767 posted nothing and reported correctly: #3767 lacks an ELI16 section. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
 - The existing gates' `branches: [main]` filters in `eli16-pr-gate.yml`, `decision-audit-gate.yml` and `release-fragment-gate.yml`.

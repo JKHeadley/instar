@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 // @ts-expect-error — plain ESM script without type declarations
-import { parseNameStatusZ, uxCheckFromExit, lintDescription, renderReport, uxApostropheHint, prNumbersFromRun, statusFor, consequenceOf } from '../../scripts/pr-description-lint.mjs';
+import { parseNameStatusZ, uxCheckFromExit, lintDescription, renderReport, uxApostropheHint, prNumbersFromRun, prRefsFromRun, statusFor, consequenceOf } from '../../scripts/pr-description-lint.mjs';
 // @ts-expect-error — plain ESM script without type declarations
 import { runLocalBodyChecks } from '../../scripts/safe-merge.mjs';
 
@@ -96,6 +96,7 @@ describe('the commit status is always success and names what would be refused no
   it('posts success with the refusing safe-merge checks, and UX separately', () => {
     const st = statusFor({ failing: [{ name: 'eli16', ok: false }, { name: 'ux-impact', ok: false }] }, 'https://example.test/run');
     expect(st).toMatchObject({ state: 'success', context: 'description-early-warning', target_url: 'https://example.test/run' });
+    expect(statusFor({ failing: [] }, undefined, 4010).context).toBe('description-early-warning (#4010)');
     expect(st.description).toContain('would be refused if merged as it stands now (eli16)');
     expect(st.description).toContain('UX Impact would fail its gate');
     expect(st.description.length).toBeLessThanOrEqual(140);
@@ -109,12 +110,18 @@ describe('the commit status is always success and names what would be refused no
   });
 });
 
-describe('prNumbersFromRun', () => {
-  it('reads numbers from the workflow_run pull_requests JSON and tolerates junk', () => {
-    expect(prNumbersFromRun('[{"number":4010},{"number":4010},{"number":3767}]')).toEqual([4010, 3767]);
-    expect(prNumbersFromRun('[]')).toEqual([]);
-    expect(prNumbersFromRun('not json')).toEqual([]);
-    expect(prNumbersFromRun(undefined)).toEqual([]);
+describe('prRefsFromRun binds the run to its event', () => {
+  const H = 'a'.repeat(40); const OTHER = 'b'.repeat(40);
+  const entry = (number: number, sha: string, url = 'https://api.github.com/repos/JKHeadley/instar') => ({ number, head: { sha }, base: { repo: { url, name: 'instar' } } });
+  it('keeps only pull requests whose head is the run head sha in this repository', () => {
+    const json = JSON.stringify([entry(4010, H), entry(4011, OTHER), entry(4012, H, 'https://api.github.com/repos/someone/fork'), entry(4010, H)]);
+    expect(prRefsFromRun(json, { runHeadSha: H, repo: 'JKHeadley/instar' })).toEqual([{ number: 4010, headSha: H }]);
+    expect(prNumbersFromRun(json, { runHeadSha: H, repo: 'JKHeadley/instar' })).toEqual([4010]);
+  });
+  it('drops everything without a run head sha, and tolerates junk', () => {
+    expect(prRefsFromRun(JSON.stringify([entry(4010, H)]), { repo: 'JKHeadley/instar' })).toEqual([]);
+    expect(prRefsFromRun('not json', { runHeadSha: H })).toEqual([]);
+    expect(prRefsFromRun(undefined, { runHeadSha: H })).toEqual([]);
   });
 });
 
@@ -125,7 +132,7 @@ describe('the CLI never blocks', () => {
     expect(r.stdout).toMatch(/::warning title=Description check could not run::GITHUB_REPOSITORY and GH_TOKEN are required/);
   });
   it('exits 0 and does nothing when the run carries no pull request', () => {
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/pr-description-lint.mjs')], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GITHUB_REPOSITORY: 'o/r', GH_TOKEN: 'x', RUN_PULL_REQUESTS: '[]' } });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts/pr-description-lint.mjs')], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GITHUB_REPOSITORY: 'o/r', GH_TOKEN: 'x', RUN_PULL_REQUESTS: '[]', RUN_HEAD_SHA: 'c'.repeat(40) } });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('nothing to check');
   });
@@ -149,6 +156,9 @@ describe('the workflows: trusted from the default branch, any base, never a red 
   it('has least privilege, no persisted credentials, and no pull-request text in any shell line', () => {
     expect(lint).toMatch(/^permissions:\n {2}contents: read\n {2}pull-requests: read\n {2}statuses: write\n/m);
     expect(lint).toMatch(/persist-credentials: false/);
+    expect(lint).toMatch(/cancel-in-progress: false/);
+    expect(lint).not.toMatch(/cancel-in-progress: true/);
+    expect(lint).toMatch(/RUN_HEAD_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
     // No expression is ever interpolated into a shell line; event data reaches the script only through env.
     const runLines = lint.split('\n').filter((l) => /^\s*run:/.test(l));
     expect(runLines.length).toBe(1);

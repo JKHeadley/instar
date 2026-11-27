@@ -7,7 +7,7 @@
 # description refusal at merge time, after a full verifier run.
 #
 # Signal, never authority. The result is an always-success commit status
-# `description-early-warning` on the pull request's head, plus warnings and a
+# `description-early-warning (#N)` per pull request on its head, plus warnings and a
 # job summary on this run. Every step is non-failing, the script always exits
 # 0, and the status is never required.
 #
@@ -29,9 +29,12 @@ permissions:
   pull-requests: read
   statuses: write
 
+# No cancel-in-progress: this run's check rows attach to the default branch's
+# head, and a cancelled row there could be misread as a red main. Each run is
+# short, bound to its own head, and posts nothing if the pull request moved.
 concurrency:
   group: pr-description-lint-${{ github.event.workflow_run.head_sha }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   description-lint:
@@ -56,6 +59,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           # Same literal author scope as the UX impact gate.
           INSTAR_UX_SCOPE: "jkheadley"
         run: node scripts/pr-description-lint.mjs || true

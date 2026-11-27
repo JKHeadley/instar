@@ -20,8 +20,10 @@
  * the DEFAULT branch, so neither the workflow nor this script can be changed by
  * the pull request it judges, whatever its base. The pull request's title, body,
  * files and decision records are read LIVE from the REST API (as safe-merge does)
- * and treated only as data. The result is posted as an always-success commit
- * status `description-early-warning` on the head, which is never required.
+ * and treated only as data. The run is bound to its event: only pull requests whose head is the run's head
+ * sha in this repository are judged, and nothing is posted if the head, base, title or body changed while
+ * checking. The result is an always-success commit status `description-early-warning (#N)` per pull
+ * request on that head, which is never required.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -125,23 +127,40 @@ export function renderReport({ checks, failing }, { baseRef } = {}) {
 
 function git(args) { return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }); }
 
-/** Pull-request numbers from a workflow_run event's `pull_requests` JSON (same-repo heads only). */
-export function prNumbersFromRun(json) {
+/**
+ * The pull requests a workflow_run event is about, bound to that event: only entries whose head sha is
+ * the run's own head sha and whose base repository is this repository. Anything else is dropped.
+ */
+export function prRefsFromRun(json, { runHeadSha, repo } = {}) {
   try {
     const list = JSON.parse(String(json ?? '[]'));
-    return Array.isArray(list) ? [...new Set(list.map((p) => Number(p?.number)).filter((n) => Number.isSafeInteger(n) && n > 0))] : [];
+    if (!Array.isArray(list)) return [];
+    const seen = new Set(); const out = [];
+    for (const p of list) {
+      const number = Number(p?.number); const headSha = String(p?.head?.sha ?? '');
+      const baseRepo = String(p?.base?.repo?.name ?? ''); const baseUrl = String(p?.base?.repo?.url ?? '');
+      if (!Number.isSafeInteger(number) || number <= 0 || seen.has(number)) continue;
+      if (!runHeadSha || headSha !== runHeadSha) continue;
+      // The base repository URL decides when present; the bare name is only a fallback when GitHub omits the URL.
+      if (repo && !(baseUrl ? baseUrl.endsWith(`/repos/${repo}`) : (baseRepo && repo.endsWith(`/${baseRepo}`)))) continue;
+      seen.add(number); out.push({ number, headSha });
+    }
+    return out;
   } catch { return []; }
 }
 
+/** Back-compatible: just the bound numbers. */
+export function prNumbersFromRun(json, opts) { return prRefsFromRun(json, opts).map((r) => r.number); }
+
 /** The commit-status payload: always `success` (never a gate), describing what would be refused now. */
-export function statusFor({ failing }, targetUrl) {
+export function statusFor({ failing }, targetUrl, pr) {
   const bodyFails = failing.filter((c) => SAFE_MERGE_BODY_CHECKS.includes(c.name)).map((c) => c.name);
   const ux = failing.some((c) => !SAFE_MERGE_BODY_CHECKS.includes(c.name));
   const parts = [];
   if (bodyFails.length) parts.push(`would be refused if merged as it stands now (${bodyFails.join(', ')})`);
   if (ux) parts.push('UX Impact would fail its gate');
   const description = (parts.length ? `Advisory: ${parts.join('; ')}` : 'Advisory: description checks pass').slice(0, 140);
-  return { state: 'success', context: 'description-early-warning', description, ...(targetUrl ? { target_url: targetUrl } : {}) };
+  return { state: 'success', context: pr ? `description-early-warning (#${pr})` : 'description-early-warning', description, ...(targetUrl ? { target_url: targetUrl } : {}) };
 }
 
 async function api(path, { token, method = 'GET', body, raw = false } = {}) {
@@ -154,7 +173,7 @@ async function api(path, { token, method = 'GET', body, raw = false } = {}) {
   return raw ? res.text() : res.json();
 }
 
-async function lintOne({ repo, pr, token, runUrl, summaryPath }) {
+async function lintOne({ repo, pr, runHeadSha, token, runUrl, summaryPath }) {
   // Everything about the pull request is read live and treated as DATA: never executed, never put in a shell line.
   const live = await api(`/repos/${repo}/pulls/${pr}`, { token });
   const files = [];
@@ -165,9 +184,12 @@ async function lintOne({ repo, pr, token, runUrl, summaryPath }) {
   }
   const head = String(live.head?.sha ?? ''); const base = String(live.base?.sha ?? '');
   if (!/^[0-9a-f]{40}$/.test(head) || !/^[0-9a-f]{40}$/.test(base)) throw new Error('unreadable head or base sha');
+  // Bound to the triggering event: judge only the revision this run was started for.
+  if (head !== runHeadSha) { console.log(`#${pr}: head moved from ${runHeadSha} to ${head}; the newer run reports, nothing posted.`); return; }
   const decisionRecords = [];
   for (const p of decisionRecordPaths(files)) {
-    try { decisionRecords.push(JSON.parse(await api(`/repos/${repo}/contents/${p}?ref=${head}`, { token, raw: true }))); } catch { decisionRecords.push({}); } // same as safe-merge: an unreadable record covers nothing
+    const encoded = p.split('/').map(encodeURIComponent).join('/');
+    try { decisionRecords.push(JSON.parse(await api(`/repos/${repo}/contents/${encoded}?ref=${head}`, { token, raw: true }))); } catch { decisionRecords.push({}); } // same as safe-merge: an unreadable record covers nothing
   }
   // The UX lint reads a git diff; the objects are fetched as data (public repository, no credentials).
   let ux = { status: 2, stderr: '' };
@@ -184,9 +206,16 @@ async function lintOne({ repo, pr, token, runUrl, summaryPath }) {
   });
   const { annotations, summary } = renderReport(verdict, { baseRef: live.base?.ref });
   for (const a of annotations) console.log(a);
+  // The summary goes only to the job summary: it is never echoed to the log, where a line beginning `::`
+  // could be read as a workflow command. Annotations above are escaped one line each.
   if (summaryPath) fs.appendFileSync(summaryPath, `### Pull request #${pr}\n\n${summary}\n\n`);
-  console.log(summary);
-  const status = statusFor(verdict, runUrl);
+  else console.log(summary.replace(/^::/gm, ': :'));
+  // Recheck after the reads: if the pull request moved meanwhile, this verdict may not describe its head.
+  const again = await api(`/repos/${repo}/pulls/${pr}`, { token });
+  if (String(again.head?.sha ?? '') !== runHeadSha || String(again.base?.sha ?? '') !== base || String(again.body ?? '') !== String(live.body ?? '') || String(again.title ?? '') !== String(live.title ?? '')) {
+    console.log(`#${pr}: changed while being checked; the newer run reports, nothing posted.`); return;
+  }
+  const status = statusFor(verdict, runUrl, pr);
   if (process.env.LINT_DRY_RUN === '1') { console.log(`dry run: would post ${JSON.stringify(status)} to ${head}`); return; }
   await api(`/repos/${repo}/statuses/${head}`, { token, method: 'POST', body: status });
 }
@@ -196,11 +225,13 @@ async function main() {
   try {
     const repo = env.GITHUB_REPOSITORY; const token = env.GH_TOKEN;
     if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GH_TOKEN are required');
-    const prs = prNumbersFromRun(env.RUN_PULL_REQUESTS);
-    if (!prs.length) { console.log('No same-repository pull request on this run; nothing to check.'); return; }
+    const runHeadSha = String(env.RUN_HEAD_SHA ?? '');
+    if (!/^[0-9a-f]{40}$/.test(runHeadSha)) throw new Error('RUN_HEAD_SHA is required');
+    const prs = prRefsFromRun(env.RUN_PULL_REQUESTS, { runHeadSha, repo });
+    if (!prs.length) { console.log('No same-repository pull request bound to this run; nothing to check.'); return; }
     const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL}/${repo}/actions/runs/${env.GITHUB_RUN_ID}` : undefined;
-    for (const pr of prs.slice(0, 5)) {
-      try { await lintOne({ repo, pr, token, runUrl, summaryPath: env.GITHUB_STEP_SUMMARY }); }
+    for (const { number: pr } of prs.slice(0, 5)) {
+      try { await lintOne({ repo, pr, runHeadSha, token, runUrl, summaryPath: env.GITHUB_STEP_SUMMARY }); }
       catch (e) { console.log(`::warning title=Description check could not run for #${pr}::${String(e?.message ?? e).slice(0, 300)}`); }
     }
   } catch (e) {
