@@ -1,7 +1,7 @@
 /**
  * Reopen a cancelled incident while the account is still signed out
  * (docs/specs/relogin-reopen-cancelled-incident.md). Live case, 2026-11-25: on the Mac Mini,
- * gearfinity3d's exchange-corroborated incident was closed `cancelled` by admission bookkeeping
+ * One account's exchange-corroborated incident was closed `cancelled` by admission bookkeeping
  * while the account stayed `needs-reauth`, and nothing ever opened a new one, so no repair could
  * start again (`no-open-incident`).
  */
@@ -24,11 +24,11 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/relogin-reopen-cancelled-incident.test.ts:cleanup' });
 });
 
-const cell = (at: string, extra: Record<string, unknown> = {}) => ({ accountId: 'gearfinity3d', supported: true, disabled: false, at, ...extra });
+const cell = (at: string, extra: Record<string, unknown> = {}) => ({ accountId: 'acct-reopen', supported: true, disabled: false, at, ...extra });
 /** An ISO time `ms` after the current incident's cancellation. */
 const afterCancel = (l: SubscriptionLoginLedger, ms: number): string => new Date(Date.parse(l.listEpisodes()[0]!.closedAt!) + ms).toISOString();
 function openIncident(l: SubscriptionLoginLedger): number {
-  const opened = l.recordStatus({ accountId: 'gearfinity3d', status: 'needs-reauth', at: '2026-11-25T16:12:35.000Z',
+  const opened = l.recordStatus({ accountId: 'acct-reopen', status: 'needs-reauth', at: '2026-11-25T16:12:35.000Z',
     causeClass: 'exchange-failed', corroboration: 'exchange-corroborated' });
   return opened.episodeId!;
 }
@@ -62,7 +62,7 @@ describe('reconcileAdmission reopens an incident cancelled only by admission boo
     const resolved = ledger();
     resolved.reconcileAdmission([cell('2026-11-25T16:13:00.000Z', { needsReauth: true })]);
     openIncident(resolved);
-    resolved.recordStatus({ accountId: 'gearfinity3d', status: 'active', at: '2026-11-25T17:00:00.000Z', corroboration: 'exchange-corroborated' });
+    resolved.recordStatus({ accountId: 'acct-reopen', status: 'active', at: '2026-11-25T17:00:00.000Z', corroboration: 'exchange-corroborated' });
     resolved.reconcileAdmission([cell('2026-11-25T18:00:00.000Z', { needsReauth: true })]);
     expect(resolved.listEpisodes()[0]).toMatchObject({ outcome: 'resolved' });
 
@@ -96,7 +96,7 @@ describe('reconcileAdmission reopens an incident cancelled only by admission boo
     l.reconcileAdmission([]);
     const closedAt = l.listEpisodes()[0]!.closedAt!;
     l.reconcileAdmission([cell(afterCancel(l, 60_000), { needsReauth: false })]);
-    l.recordObservation({ accountId: 'gearfinity3d', at: new Date(Date.parse(closedAt) + 90_000).toISOString(), outcome: { kind: 'resolved-clean' } });
+    l.recordObservation({ accountId: 'acct-reopen', at: new Date(Date.parse(closedAt) + 90_000).toISOString(), outcome: { kind: 'resolved-clean' } });
     l.reconcileAdmission([cell(new Date(Date.parse(closedAt) + 120_000).toISOString(), { needsReauth: true })]);
     expect(l.listEpisodes()[0]).toMatchObject({ outcome: 'cancelled' });
   });
@@ -128,8 +128,8 @@ describe('reconcileAdmission reopens an incident cancelled only by admission boo
 });
 
 describe('a repair cancelled because its incident closed is re-admitted when that incident is open again', () => {
-  const input = { sourceEpisodeId: 32, accountId: 'gearfinity3d', machineId: 'machine-1', mode: 'unattended' as const,
-    inputDigest: `sha256:${'a'.repeat(64)}`, profileId: 'gearfinity-google', framework: 'claude-code', provider: 'anthropic' };
+  const input = { sourceEpisodeId: 32, accountId: 'acct-reopen', machineId: 'machine-1', mode: 'unattended' as const,
+    inputDigest: `sha256:${'a'.repeat(64)}`, profileId: 'profile-reopen', framework: 'claude-code', provider: 'anthropic' };
   function store(): SubscriptionReloginStore {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-reopen-store-'));
     dirs.push(dir);
