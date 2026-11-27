@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-27T12:30:21.633Z",
+  "slug": "source-grounded-host",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/source_grounded_host.mjs",
+      "scripts/evaluation/source_grounded_host.test.mjs"
+    ],
+    "addedLines": 19,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

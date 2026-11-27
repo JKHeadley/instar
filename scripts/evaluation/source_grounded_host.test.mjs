@@ -271,6 +271,13 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   assert.equal(totals.arms.none.criticalFailureTrials, 0); // a justified refusal fails decision, not critically
   assert.deepEqual(totals.arms.full.independence, { supported: 4 });
   assert.equal(totals.paired['full-minus-none'].better, 4);
+  assert.deepEqual(totals.paired['full-minus-none'].completeOnly, { pairs: 4, mean: totals.paired['full-minus-none'].mean, better: 4, worse: 0, same: 0 });
+  const first = totals.trials.find(x => x.arm === 'full');
+  assert.equal(first.complete, true);
+  assert.equal(first.verdictCounts.incomplete, 0);
+  const criteriaCount = plan.trials.find(x => x.trialId === first.trialId).criteria.length;
+  assert.equal(Object.values(first.verdictCounts).reduce((a, b) => a + b, 0), criteriaCount);
+  assert.equal(first.verdictCounts.pass, criteriaCount);
   assert.equal(totals.arms.full.outputTokens, 20);
   const text = JSON.stringify(totals);
   for (const secret of ['café', 'Friday', 'rotate', 'Summary']) assert.ok(!text.includes(secret));

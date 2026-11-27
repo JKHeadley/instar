@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T12:29:22.584Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "a33cb5336d72f2f5b74bfbd4e2bd4d85b68255ac23054c1352be64fa702b398d",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual evaluation tool with no runtime callers; totals gain per-trial judging completeness and complete-only paired comparisons; no model call or scoring module changes.",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

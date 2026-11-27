@@ -528,7 +528,7 @@ export function totalRun(run, pack) {
     if (outcome === 'valid') s.structurallyValid += 1;
     s.outputTokens += answer?.usage?.output_tokens ?? 0;
     const ledgers = [0, 1].map(i => (run.has(`judges/${trialId}.slot-${i}.json`) ? run.read(`judges/${trialId}.slot-${i}.json`) : null));
-    let passed = false; let critical = 0; let verdicts = []; let scored = false;
+    let passed = false; let critical = 0; let verdicts = []; let scored = false; let complete = false;
     if (outcome === 'valid' && ledgers.every(Boolean)) {
       const result = evaluateJudgeFlow(
         { planBytes: ctx.planBytes, planHash: ctx.planHash, parsePlan: b => JSON.parse(b), rubricBytes: ctx.rubricBytes,
@@ -541,7 +541,8 @@ export function totalRun(run, pack) {
       );
       if (result.state === 'evaluated') {
         scored = true;
-        if (result.consensus.structurallyComplete) s.judgedComplete += 1;
+        complete = result.consensus.structurallyComplete === true;
+        if (complete) s.judgedComplete += 1;
         verdicts = result.consensus.criteria.map(c => c.verdict);
         for (const v of verdicts) s.criteria[v] = (s.criteria[v] ?? 0) + 1;
         passed = result.consensus.structurallyComplete && verdicts.every(v => v === 'pass');
@@ -565,7 +566,9 @@ export function totalRun(run, pack) {
     if (critical > 0) s.criticalFailureTrials += 1;
     s.criticalSignals += critical;
     s.byRepeat[repeat] = (s.byRepeat[repeat] ?? 0) + (passed ? 1 : 0);
-    perTrial.push({ trialId, caseId: ctx.trial.caseId, arm, repeat, outcome, passed, critical, scored,
+    const verdictCounts = { pass: 0, fail: 0, disputed: 0, incomplete: 0 };
+    for (const v of verdicts) verdictCounts[v] = (verdictCounts[v] ?? 0) + 1;
+    perTrial.push({ trialId, caseId: ctx.trial.caseId, arm, repeat, outcome, passed, critical, scored, complete, verdictCounts,
       passFraction: verdicts.length ? verdicts.filter(v => v === 'pass').length / verdicts.length : 0 });
   }
   for (const s of Object.values(arms)) {
@@ -582,6 +585,12 @@ export function totalRun(run, pack) {
     const diffs = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).scored && by[y].get(k).scored).map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
     paired[`${x}-minus-${y}`] = { pairs: diffs.length, mean: diffs.length ? diffs.reduce((a, b) => a + b, 0) / diffs.length : null,
       better: diffs.filter(d => d > 0).length, worse: diffs.filter(d => d < 0).length, same: diffs.filter(d => d === 0).length };
+    // The same comparison over pairs where both judges finished every criterion,
+    // so a judging gap is not read as a worse answer.
+    const done = [...by[x].keys()].filter(k => by[y].has(k) && by[x].get(k).complete && by[y].get(k).complete)
+      .map(k => by[x].get(k).passFraction - by[y].get(k).passFraction);
+    paired[`${x}-minus-${y}`].completeOnly = { pairs: done.length, mean: done.length ? done.reduce((a, b) => a + b, 0) / done.length : null,
+      better: done.filter(d => d > 0).length, worse: done.filter(d => d < 0).length, same: done.filter(d => d === 0).length };
   }
   // Known limits travel with the numbers, so no reader of totals.json misses them.
   const limits = ['arm-inferable-from-citations', 'answer-model-and-judge-a-same-family'];
