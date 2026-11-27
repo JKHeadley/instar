@@ -24,10 +24,13 @@
  * compatibility with direct callers. This component never blocks a run.
  */
 
+/* @self-action-controller: autonomous-heartbeat-send-retry */
+/* @self-action-controller: autonomous-heartbeat-gone-topic */
 import { EventEmitter } from 'node:events';
 import { DegradationReporter } from './DegradationReporter.js';
 import type { ProxyCoordinator } from './ProxyCoordinator.js';
 import { scrubFocus } from './autonomousHeartbeatScrub.js';
+import { isHeartbeatTopicGone } from './autonomousHeartbeatSendError.js';
 import type {
   AutonomousHeartbeatRunState,
   AutonomousHeartbeatRunStateStoreLike,
@@ -154,6 +157,26 @@ const DEFAULTS = {
  *  per-run budget). */
 const BACKOFF_LADDER_MINUTES = [25, 40, 60, 90];
 
+/**
+ * Spacing after a FAILED send, per topic. A failed send rolls its reservation
+ * back (it must not consume budget), so without this the next tick — about a
+ * minute later — retried at once: one 43-minute local outage on 2026-11-24
+ * became 100 error rows. 5m, doubling, capped at 30m; reset on the next success.
+ */
+export const SEND_RETRY_BASE_MS = 5 * 60_000;
+export const SEND_RETRY_MAX_MS = 30 * 60_000;
+/**
+ * A topic whose refusal said it can no longer receive (deleted/closed thread,
+ * chat gone) is re-checked at most this often within the same run — a closed
+ * topic can be reopened and a missing chat can be a fixable membership problem.
+ */
+export const UNREACHABLE_REPROBE_MS = 60 * 60_000;
+
+/** Wait before the next try after `failures` consecutive failed sends (>= 1). */
+export function sendRetryWaitMs(failures: number): number {
+  return Math.min(SEND_RETRY_BASE_MS * 2 ** (Math.max(failures, 1) - 1), SEND_RETRY_MAX_MS);
+}
+
 type RunState = AutonomousHeartbeatRunState;
 
 export class AutonomousProgressHeartbeat extends EventEmitter {
@@ -167,6 +190,10 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     recentOutputChangeWindowMs: number;
   };
   private readonly runState = new Map<string, RunState>();
+  /** Per-topic spacing after failed sends, bound to the run that failed (in memory; a restart grants one fresh try). */
+  private readonly sendFailures = new Map<number, { runId: string; count: number; retryAt: number }>();
+  /** Topics whose last refusal said the topic can no longer receive, bound to that run; re-checked hourly. */
+  private readonly unreachableTopics = new Map<number, { runId: string; retryAt: number }>();
   private readonly lastEmits: HeartbeatEmit[] = [];
   private static readonly LAST_EMITS_CAP = 50;
 
@@ -259,6 +286,8 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
     lastTickAt: number;
     topicsConsidered: number;
     lastEmits: HeartbeatEmit[];
+    sendRetryWaitingTopicIds: number[];
+    unreachableTopicIds: number[];
   } {
     return {
       enabled: this.cfg.enabled,
@@ -274,6 +303,8 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       lastTickAt: this.lastTickAt,
       topicsConsidered: this.topicsConsidered,
       lastEmits: [...this.lastEmits],
+      sendRetryWaitingTopicIds: [...this.sendFailures.keys()],
+      unreachableTopicIds: [...this.unreachableTopics.keys()],
     };
   }
 
@@ -304,6 +335,13 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       const runs = this.deps.listActiveAutonomousRuns();
       this.topicsConsidered = runs.length;
       const activeRunIds = new Set<string>();
+      const activeTopicIds = new Set(runs.map((r) => r.topicId));
+      for (const topicId of [...this.sendFailures.keys()]) {
+        if (!activeTopicIds.has(topicId)) this.sendFailures.delete(topicId);
+      }
+      for (const topicId of [...this.unreachableTopics.keys()]) {
+        if (!activeTopicIds.has(topicId)) this.unreachableTopics.delete(topicId);
+      }
       for (const run of runs) {
         const markers = this.deps.getRunMarkers(run.topicId);
         if (markers?.runId) activeRunIds.add(markers.runId);
@@ -413,6 +451,22 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       return;
     }
 
+    // #8b Delivery: a topic that said it can no longer receive is not tried again
+    // for this run; a topic whose last send failed waits out its retry spacing.
+    // Both marks belong to the run that failed: a new run gets a fresh try.
+    const gone = this.unreachableTopics.get(topicId);
+    if (gone && gone.runId !== markers.runId) this.unreachableTopics.delete(topicId);
+    else if (gone && now < gone.retryAt) {
+      this.recordSuppressed(topicId, now, 'topic-unreachable');
+      return;
+    }
+    const failure = this.sendFailures.get(topicId);
+    if (failure && failure.runId !== markers.runId) this.sendFailures.delete(topicId);
+    else if (failure && now < failure.retryAt) {
+      this.recordSuppressed(topicId, now, 'send-retry-wait');
+      return;
+    }
+
     // #9 One-voice free: acquire the shared lease; release UNCONDITIONALLY here.
     if (!this.deps.proxyCoordinator.tryAcquire(topicId, 'autonomous-heartbeat')) {
       this.recordSuppressed(topicId, now, 'lease-held');
@@ -452,6 +506,8 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
           isProxy: true,
           tier: 1,
         });
+        this.sendFailures.delete(topicId);
+        this.unreachableTopics.delete(topicId);
         this.recordEmit({ topicId, at: now, minutesSilent, focus: scrub.focus, dryRun: false });
         this.emit('emitted', { topicId, minutesSilent, focus: scrub.focus });
       } catch (err) {
@@ -462,7 +518,20 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
         // under-counting is the unsafe direction because a restart could spam.
         const rolledBack = this.commitRunState(previousState, topicId, now, false);
         this.recordSuppressed(topicId, now, rolledBack ? 'send-failed' : 'send-failed-reservation-retained');
-        this.emit('send-error', { topicId, err });
+        const runId = markers.runId;
+        const topicGone = isHeartbeatTopicGone(err);
+        // Recorded once per run: an hourly re-check refused the same way stays quiet.
+        const alreadyKnownGone = topicGone && this.unreachableTopics.has(topicId);
+        if (!alreadyKnownGone) this.emit('send-error', { topicId, err });
+        if (topicGone) {
+          this.sendFailures.delete(topicId);
+          if (!alreadyKnownGone) this.emit('topic-unreachable', { topicId, err });
+          this.unreachableTopics.set(topicId, { runId, retryAt: now + UNREACHABLE_REPROBE_MS });
+        } else {
+          this.unreachableTopics.delete(topicId);
+          const count = (this.sendFailures.get(topicId)?.count ?? 0) + 1;
+          this.sendFailures.set(topicId, { runId, count, retryAt: now + sendRetryWaitMs(count) });
+        }
       }
     } finally {
       this.deps.proxyCoordinator.release(topicId, 'autonomous-heartbeat');

@@ -19519,6 +19519,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (telegram) {
         const { AutonomousProgressHeartbeat } = await import('../monitoring/AutonomousProgressHeartbeat.js');
         const { AutonomousHeartbeatRunStateStore } = await import('../monitoring/AutonomousHeartbeatRunStateStore.js');
+        const { AutonomousHeartbeatSendError: AhSendError, describeHeartbeatSendError: ahDescribeSendError, extractRouteErrorDetail: ahExtractRouteErrorDetail } = await import('../monitoring/autonomousHeartbeatSendError.js');
         const {
           reportableAutonomousJobs,
           readAutonomousRunMarkers,
@@ -19638,7 +19639,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             sendMessage: async (topicId, text, metadata) => {
               const response = await sendAutomationReply('autonomous-heartbeat', topicId, { text, metadata }, deterministicAutomationAuthor());
-              if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
+              if (!response.ok) {
+                // Keep the route's own reason so the evidence row explains the refusal
+                // and a deleted/closed topic can be told apart from a passing outage.
+                let detail: string | null = null;
+                try { detail = ahExtractRouteErrorDetail(await response.text()); } catch { /* @silent-fallback-ok: the status alone is still recorded */ detail = null; }
+                throw new AhSendError(response.status, detail);
+              }
             },
           },
           {
@@ -19659,7 +19666,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'fired', reason: 'emitted', context: { topicId: e.topicId, minutesSilent: e.minutesSilent, dryRun: false } });
         });
         autonomousHeartbeat.on('send-error', (e: { topicId: number; err: unknown }) => {
-          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, errorName: e.err instanceof Error ? e.err.name : 'unknown' } });
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'error', reason: 'send failed', context: { topicId: e.topicId, ...ahDescribeSendError(e.err) } });
+        });
+        autonomousHeartbeat.on('topic-unreachable', (e: { topicId: number; err: unknown }) => {
+          featureEvidence.record('monitoring.autonomousHeartbeat', { kind: 'held', reason: 'topic unreachable: stopped trying for this run', context: { topicId: e.topicId, ...ahDescribeSendError(e.err) } });
         });
         autonomousHeartbeat.on('tick-error', (err: unknown) => {
           featureEvidence.recordAtMostEvery('monitoring.autonomousHeartbeat', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'tick failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });

@@ -28,6 +28,8 @@ import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSo
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
+import { SEND_RETRY_BASE_MS, UNREACHABLE_REPROBE_MS, sendRetryWaitMs } from '../monitoring/AutonomousProgressHeartbeat.js';
+import { AutonomousHeartbeatSendError, isHeartbeatTopicGone } from '../monitoring/autonomousHeartbeatSendError.js';
 import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
 import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
@@ -193,6 +195,82 @@ export interface SelfActionController {
 }
 
 // ── The seeded controllers ─────────────────────────────────────────────────
+
+/**
+ * autonomous-heartbeat-send-retry — the autonomous-run progress note after a
+ * FAILED send. The failed send rolls its reservation back (it must not consume
+ * budget), so before 2026-11-27 the next ~1-minute tick retried at once: a
+ * 43-minute local outage became 100 failures. Under a refusal that never clears,
+ * tries are spaced by the REAL sendRetryWaitMs (5m, doubling, capped at 30m), so
+ * no two tries are closer than the 5m floor. A declared Eternal Sentinel: a run
+ * that is still active should keep a sparse chance of reporting once the route
+ * recovers, and the run itself ends (its job's time box) as the give-up.
+ */
+const autonomousHeartbeatSendRetry: SelfActionController = {
+  id: 'autonomous-heartbeat-send-retry',
+  actionVerb: 'retry-progress-notify',
+  models: 'src/monitoring/AutonomousProgressHeartbeat.ts (sendFailures + sendRetryWaitMs after a failed send)',
+  modelsPath: 'src/monitoring/AutonomousProgressHeartbeat.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The spacing is in memory; a restart grants one immediate try per topic, then the same 5m floor applies.' },
+  delegatedGiveUp: 'the autonomous run ending (its time box) removes the topic from the active set and clears its retry state',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 600,
+  tickMs: 60_000, // the heartbeat's 1-minute tick
+  eternalSentinel: { reason: 'sparse retry of a due progress note while its run stays active', rateFloorMs: SEND_RETRY_BASE_MS },
+  makeUnderPressure(f, sink) {
+    let failures = 0;
+    let retryAt = Number.NEGATIVE_INFINITY;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < retryAt) return;
+        sink.emit({ verb: 'notify', target: 'topic-progress' });
+        sink.emitTimesMs.push(now);
+        if (f.targetAlwaysRejects()) {
+          failures += 1;
+          retryAt = now + sendRetryWaitMs(failures);
+        }
+      },
+    };
+  },
+};
+
+/**
+ * autonomous-heartbeat-gone-topic — a send refused because the topic can no
+ * longer receive (thread deleted/closed, chat gone) marks the topic unreachable
+ * for that run; within the run it is re-checked at most every
+ * UNREACHABLE_REPROBE_MS (60m), since a closed topic can be reopened. A declared
+ * Eternal Sentinel on that floor; the run ending (or a new run id) clears it.
+ */
+const autonomousHeartbeatGoneTopic: SelfActionController = {
+  id: 'autonomous-heartbeat-gone-topic',
+  actionVerb: 'retry-progress-notify',
+  models: 'src/monitoring/AutonomousProgressHeartbeat.ts (unreachableTopics via isHeartbeatTopicGone + UNREACHABLE_REPROBE_MS)',
+  modelsPath: 'src/monitoring/AutonomousProgressHeartbeat.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart grants one fresh try, which is refused the same way and re-marks the topic for another hour.' },
+  delegatedGiveUp: 'the autonomous run ending (its time box) removes the topic from the active set and clears its mark',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 600,
+  tickMs: 60_000,
+  eternalSentinel: { reason: 'hourly re-check of a closed topic while its run stays active', rateFloorMs: UNREACHABLE_REPROBE_MS },
+  makeUnderPressure(f, sink) {
+    let retryAt = Number.NEGATIVE_INFINITY;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < retryAt) return;
+        sink.emit({ verb: 'notify', target: 'topic-gone' });
+        sink.emitTimesMs.push(now);
+        const refusal = new AutonomousHeartbeatSendError(500, 'Bad Request: message thread not found');
+        if (f.targetAlwaysRejects() && isHeartbeatTopicGone(refusal)) retryAt = now + UNREACHABLE_REPROBE_MS;
+      },
+    };
+  },
+};
 
 /**
  * proactive-swap-monitor — THE presenting case (#1035, ff3083a31). The real
@@ -6616,4 +6694,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyBorrowedDryRunResend,
   localVerifyBorrowedHelperNotice,
   localVerifyBorrowedBaselinePush,
+  autonomousHeartbeatSendRetry,
+  autonomousHeartbeatGoneTopic,
 ];
