@@ -1,0 +1,200 @@
+{
+  "category": "maintenance",
+  "sinceHours": 48,
+  "generatedAt": "2026-11-25T10:25:56.636Z",
+  "summary": {
+    "totalJobs": 12,
+    "healthy": 7,
+    "failing": 0,
+    "skipping": 1,
+    "disabled": 5,
+    "totalRuns": 28,
+    "totalFailures": 0,
+    "avgSuccessRate": 100
+  },
+  "jobs": [
+    {
+      "slug": "project-map-refresh",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 4,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "coherence-audit",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 4,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "memory-hygiene",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 3,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "memory-export",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 8,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "capability-audit",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 8,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "attribution-review",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 53,
+        "byReason": {
+          "gate": 48,
+          "paused": 5
+        }
+      }
+    },
+    {
+      "slug": "doorway-scan",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "feature-maturation-review",
+      "enabled": true,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 1,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "gemini-payg-reconcile",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "routing-price-refresh",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "routing-price-web-verify",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    },
+    {
+      "slug": "stall-matrix-live-check",
+      "enabled": false,
+      "state": {
+        "consecutiveFailures": 0
+      },
+      "stats": {
+        "totalRuns": 0,
+        "failures": 0
+      },
+      "skips": {
+        "total": 0,
+        "byReason": {}
+      }
+    }
+  ]
+}

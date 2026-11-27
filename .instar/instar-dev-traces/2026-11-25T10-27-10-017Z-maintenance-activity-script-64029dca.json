@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "maintenance-activity-script",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-25T10:27:10.017Z",
+  "artifactPath": "upgrades/side-effects/maintenance-activity-script.md",
+  "artifactSha256": "55f65b95074d193c52cb11de94012d886041ba1b69ee5e15e268b93db7a9d731",
+  "coveredFiles": [
+    "docs/specs/guardian-activity-script.eli16.md",
+    "src/scaffold/templates/jobs/instar/guardian-activity-report-script.md",
+    "src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs",
+    "tests/fixtures/maintenance-category-report.json",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-scripts/guardian-activity-report.test.ts",
+    "upgrades/side-effects/maintenance-activity-script.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible extension to disabled report using existing read-only category data",
+  "eli16Path": "docs/specs/guardian-activity-script.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maintenance-activity-script.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T10:27:47.768Z",
+  "slug": "maintenance-activity-script",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/scaffold/templates/jobs/instar/guardian-activity-report-script.md",
+      "src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs"
+    ],
+    "addedLines": 29,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

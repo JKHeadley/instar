@@ -123,7 +123,13 @@ describe('script runner execution', () => {
     const slug = 'guardian-activity-report-script';
     const source = new URL('../../../src/scaffold/templates/jobs/instar/scripts/guardian-activity-report-script.mjs', import.meta.url);
     const script = fs.readFileSync(source, 'utf8');
-    const fixture = fs.readFileSync(new URL('../../fixtures/guardian-category-report.json', import.meta.url), 'utf8');
+    const routes = {
+      '/jobs/category-report/guardian?sinceHours=24': 'guardian-category-report.json',
+      '/jobs/category-report/maintenance?sinceHours=48': 'maintenance-category-report.json',
+    };
+    const fixtures = new Map(Object.entries(routes).map(([route, name]) => [
+      route, fs.readFileSync(new URL(`../../fixtures/${name}`, import.meta.url), 'utf8'),
+    ]));
     addScriptJob(project.stateDir, slug, script);
     lockState.value = trustedLockFor([{ slug, script }]);
 
@@ -134,6 +140,11 @@ describe('script runner execution', () => {
         return;
       }
       requests.push(req.url ?? '');
+      const fixture = fixtures.get(req.url ?? '');
+      if (!fixture) {
+        res.writeHead(404).end();
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(fixture);
     });
     server.listen(0, '127.0.0.1');
@@ -153,7 +164,9 @@ describe('script runner execution', () => {
       expect(run).toMatchObject({ result: 'success', runner: 'script', tokens: 0 });
       const saved = fs.readFileSync(path.join(project.stateDir, 'reports', 'guardian', `${run.runId}.txt`), 'utf8');
       expect(saved).toContain('7 jobs, 288 runs, 1 failure, 2 jobs with skips.');
-      expect(requests).toEqual(['/jobs/category-report/guardian?sinceHours=24']);
+      const maintenance = fs.readFileSync(path.join(project.stateDir, 'reports', 'maintenance', `${run.runId}.txt`), 'utf8');
+      expect(maintenance).toContain('12 jobs, 28 runs, 0 failures, 1 job with skips.');
+      expect(requests.sort()).toEqual(Object.keys(routes).sort());
       expect(sm._spawnCount).toBe(0);
     } finally {
       server.closeAllConnections();

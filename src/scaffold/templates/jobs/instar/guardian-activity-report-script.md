@@ -1,6 +1,6 @@
 ---
-name: Guardian Activity Report (Script)
-description: Summarize monitoring-job runs, failures and skips without launching a model.
+name: Guardian and Maintenance Activity Report (Script)
+description: Summarize monitoring and maintenance runs, failures and skips without launching a model.
 schedule: "0 */6 * * *"
 priority: low
 expectedDurationMinutes: 2
@@ -15,4 +15,4 @@ scriptTimeoutMinutes: 2
 supervision: tier0
 scriptSupervision: deterministic
 ---
-Read the guardian category's run and skip counts and save a local activity report. Keep the existing guardian review for interpreting findings, coverage and schedules. This activity report starts disabled.
+Save local activity counts for guardian and maintenance jobs. Keep the existing reviews for interpreting findings, coverage and schedules. This activity report starts disabled.
