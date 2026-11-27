@@ -1,7 +1,7 @@
 <!-- bump: patch -->
 ## What Changed
 
-The reference docs gain a page describing eight maintenance read routes that had no documentation, and those routes are listed in the API reference. This is documentation only; no code changes.
+The reference docs gain a page describing eight maintenance routes that had no documentation: seven read routes and one maintenance action (POST /sessions/claude-binary/prune, which runs one prune pass), and those routes are listed in the API reference. This is documentation only; no code changes.
 
 ## What to Tell Your User
 

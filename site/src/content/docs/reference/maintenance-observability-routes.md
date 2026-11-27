@@ -1,6 +1,6 @@
 ---
-title: Maintenance and observability read routes
-description: Read-only routes that report what the server's background maintenance and safety instruments are doing.
+title: Maintenance and observability routes
+description: Seven read routes that report what the server's background maintenance and safety instruments are doing, plus one maintenance action (the Claude binary prune).
 ---
 
 These routes answer "what is this instrument doing right now?" for background maintenance and safety features. All of them require the Bearer token. All except `POST /sessions/claude-binary/prune` are read-only.
