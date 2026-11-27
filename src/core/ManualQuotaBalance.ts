@@ -4,8 +4,8 @@ import { CODEX_CLI_FRAMEWORK } from './frameworkFacts.js';
 import path from 'node:path';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { isLocallyExecutable, isDeviceLimitBenched, type SubscriptionAccount } from './SubscriptionPool.js';
-import { identityKey, sameReset, type LoginSummary } from '../monitoring/quotaPacing.js';
-import { FRESH_READING_MS, isValidState, windowNow } from './windowAwareChoice.js';
+import { identityKey, PACING, sameReset, type LoginSummary } from '../monitoring/quotaPacing.js';
+import { FRESH_READING_MS, isValidState, WEEKLY_WINDOW_MS, windowNow } from './windowAwareChoice.js';
 import type { SwapResult } from './QuotaAwareScheduler.js';
 
 export interface BalanceSession {
@@ -13,7 +13,9 @@ export interface BalanceSession {
 }
 export interface BalancePick { accountId: string; score: number }
 
-/** Forecast gap is a percentage-point pace, not a token or cost estimate. */
+const HOUR_MS = 3_600_000;
+
+/** Compare forecast gaps and observed fresh resets in separate ranking groups. */
 export function selectManualBalanceTarget(accounts: SubscriptionAccount[], summaries: LoginSummary[], sessions: BalanceSession[],
   sourceId: string, now: number, softThreshold = 90, homeReady = (home: string): boolean => {
     try { fs.accessSync(home, fs.constants.R_OK | fs.constants.W_OK); return fs.statSync(home).isDirectory(); } catch { return false; } // @silent-fallback-ok: inaccessible local home is ineligible
@@ -23,6 +25,7 @@ export function selectManualBalanceTarget(accounts: SubscriptionAccount[], summa
   const source = accounts.find(account => account.id === sourceId);
   const sourceIdentity = source ? identityKey(source.provider, source.email) : null;
   const scored: BalancePick[] = [];
+  const freshResets: BalancePick[] = [];
   for (const account of accounts) {
     if (account.id === sourceId || account.framework !== CODEX_CLI_FRAMEWORK || account.provider !== 'openai' || account.status !== 'active'
       || !isLocallyExecutable(account) || isDeviceLimitBenched(account) || account.deviceLimitSuspectedAt
@@ -39,19 +42,31 @@ export function selectManualBalanceTarget(accounts: SubscriptionAccount[], summa
     if (matching.length !== 1) continue;
     const summary = matching[0]; const forecast = summary.sevenDay;
     const time = Date.parse(summary.newestMeasuredAt ?? '');
+    const forecastReset = Date.parse(forecast?.resetsAt ?? '');
     if (!summary.fresh || summary.drifted || summary.measuredAtSynthesized || summary.sourceKind !== 'live'
       || !Number.isFinite(time) || time > now || now - time >= FRESH_READING_MS || !forecast
-      || !Number.isFinite(forecast.central) || forecast.central === null || forecast.central < 0 || forecast.central >= 100
       || !Number.isFinite(forecast.hoursLeft) || forecast.hoursLeft === null || forecast.hoursLeft <= 0
-      || !sameReset(Date.parse(forecast.resetsAt ?? ''), weekly.resetsAtMs ?? NaN)) continue;
-    const hoursLeft = ((weekly.resetsAtMs ?? NaN) - now) / 3_600_000;
+      || weekly.resetsAtMs === null || !sameReset(forecastReset, weekly.resetsAtMs)) continue;
+    const hoursLeft = (weekly.resetsAtMs - now) / HOUR_MS;
     if (!Number.isFinite(hoursLeft) || hoursLeft <= 0) continue;
+    // The local weekly sample proves zero; summary freshness can describe another window.
+    const windowStart = Math.max(weekly.resetsAtMs, forecastReset) - WEEKLY_WINDOW_MS;
+    const freshReset = forecast.central === null && forecast.reason === 'not-enough-readings'
+      && account.lastQuota?.source === 'codex-app-server' && weekly.pct === 0 && forecast.used === 0
+      && measured >= windowStart && now - windowStart < PACING.SLOPE_SEGMENT.minSpanH * HOUR_MS;
     const aliases = new Set(accounts.filter(a => identityKey(a.provider, a.email) === identity).map(a => a.id));
     const running = sessions.filter(s => s.status === 'running' && s.framework === CODEX_CLI_FRAMEWORK && aliases.has(s.subscriptionAccountId ?? '')).length;
-    const score = (100 - forecast.central) / hoursLeft / (1 + running);
+    if (freshReset) {
+      freshResets.push({ accountId: account.id, score: hoursLeft / (1 + running) });
+      continue;
+    }
+    const central = forecast.central;
+    if (central === null || !Number.isFinite(central) || central < 0 || central >= 100) continue;
+    const score = (100 - central) / hoursLeft / (1 + running);
     if (Number.isFinite(score) && score > 0) scored.push({ accountId: account.id, score });
   }
-  return scored.sort((a, b) => b.score - a.score || a.accountId.localeCompare(b.accountId))[0] ?? null;
+  const candidates = freshResets.length > 0 ? freshResets : scored;
+  return candidates.sort((a, b) => b.score - a.score || a.accountId.localeCompare(b.accountId))[0] ?? null;
 }
 
 interface PendingBalance { sessionName: string; sessionId: string; sourceId: string; targetId: string; sourceIdentity: string; targetIdentity: string; targetHome: string }
