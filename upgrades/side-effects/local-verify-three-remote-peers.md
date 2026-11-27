@@ -83,3 +83,23 @@ The review verified that the dispatch fixture now gives the service all four
 entries, the audit re-arms after the setting returns to its default, and the
 migration preserves operator text. The peer capacity reviewer independently
 concurred on the underlying peer limit change and its reservation safeguards.
+
+## Second-pass review
+
+**Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
+
+**Reviewed head:** `18ac59014c3e8912f54e1dd91f18168fa12b1841` (full branch against merge base `18fd2b5b8312169d2df3dc3ccde86d1be30c300c`; the delta from the earlier reviewed head `d06812c1528e4ac423730d28984bc0de1c6f1781` was read line by line).
+
+**Verdict:** concur.
+
+What I checked on this exact head:
+
+- `src/localVerify/peer.ts`: the only change is the peer limit (three). Acceptance of a returned record is unchanged: it must answer exactly the hand-off that was persisted before the send (attempt id, PR, head, base, verifier version, policy and lease epoch).
+- `src/localVerify/LocalVerifyService.ts`: the dispatch loop is generic over the configured peers, keeps one outstanding attempt per peer and persists the reservation before sending. `queueCap()` returns the configured value only for an integer from 10 through 30 and otherwise the fixed default of 10; the restore bound uses the fixed maximum, so a restart with a lowered or invalid setting cannot drop admitted work. The delta adds only the `invalid-queue-cap` audit entry: it is written once per invalid episode, carries the setting name and bounds and not the raw value, goes through the audit writer that never throws, and does not change the returned cap.
+- `src/localVerify/localVerifyWiring.ts`: the setting is read live; the delta changes the absent-value default from null to undefined so that an unset setting is not audited as invalid. An explicit null is audited and falls back to 10.
+- Tests added in the delta cover what I asked for: values 31, 9, 0, -1, 10.5 and the string "30" fall back and audit once; the audit re-arms after the setting returns to its default; a cap of 30 admits exactly thirty and refuses the next; a fourth configured peer receives nothing while three peers hold PRs 1 to 3 and the fourth PR stays queued.
+- Awareness now arrives through the registry file `src/data/awareness/local-verify-capacity.md`; the hand-added line in the template and migrator was removed, and the older overflow sentence is corrected in place by an idempotent, line-anchored replacement that leaves surrounding operator text alone.
+
+Nothing in the delta weakens what I judged sound at the earlier head: verdict integrity with three peers, the default cap of 10, the per-peer resource gates and queue ordering are unchanged. No test was removed and no skip was added.
+
+Limits of this review: I read the code and tests; I did not run the suites (machine-load rule). The integration order with #3730 (this change merges first, #3730 is then rebased so both read the same live cap) is stated in the pull request body and is a merge-order commitment, not something this branch enforces.

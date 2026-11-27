@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-verify-three-remote-peers",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-27T13:45:18.520Z",
+  "artifactPath": "upgrades/side-effects/local-verify-three-remote-peers.md",
+  "artifactSha256": "6550a0ee65ffba2b9ac7ccb932a4c84c829f6d72f08d916d10a774e100fa941c",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-capacity.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-three-remote-peers.md",
+    "upgrades/side-effects/local-verify-three-remote-peers.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Independent second-pass review of the three-remote-peer limit and live queue cap on exact head 18ac5901; harness-changing paths require a recorded independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
