@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-27T18:05:15.845Z",
+  "slug": "local-verify-main-confirmation-cadence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 110,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/mainHealth.ts"
+    ],
+    "addedLines": 90,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

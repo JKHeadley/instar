@@ -8,7 +8,7 @@
  *                   unknown (missing/unreadable watermark, a lease taken over from a
  *                   different machine, or `main` unverified for too long). Merges
  *                   are repair-only; no notice yet.
- *   main-red      — the re-run failed too. ONE deduped signal `local-verify:main-red`.
+ *   main-red      — a failing file repeated on the same head. ONE deduped signal `local-verify:main-red`.
  *
  * Cleared only by a green verify of a head equal to or descending from the head
  * that went red (`git merge-base --is-ancestor`, through the verifier's git funnel).
@@ -44,6 +44,8 @@ interface Watermark {
   lastGreenHead: string | null;
   reason: string;
   updatedAt: string;
+  lastCoveredAt?: number;
+  failureConfirmation?: MainFailureConfirmation;
   /** The serving-lease epoch this machine held when it last wrote (null = unknown / single machine). */
   leaseEpoch?: number | null;
   /** The machine that held the lease at that epoch (this machine — the watermark is machine-local). */
@@ -60,6 +62,17 @@ interface Watermark {
    */
   unknownSince?: number;
 }
+
+interface MainFailureConfirmation {
+  head: string;
+  attempts: number;
+  files: string[];
+  sawUnnamed?: boolean;
+}
+
+// A run reports at most 30 files; retain the union of the two prior runs.
+const MAX_CONFIRMATION_FILES = 60;
+const MAX_CONFIRMATION_ATTEMPTS = 3;
 
 /** Why the age of the oldest unverified merge is unknown (the `main-age-unknown` audit line). */
 export type MainAgeUnknownReason = 'field-absent' | 'file-unreadable' | 'future' | 'non-finite' | 'other-machine' | 'carried';
@@ -104,6 +117,7 @@ export const MAIN_VERIFY_LIMITS = Object.freeze({
   debounceMs: 10 * MIN,
   /** …but no later than this after the first unverified head. */
   debounceCapMs: 30 * MIN,
+  healthyIntervalMs: 60 * MIN,
   /**
    * While `main` is suspect or red the wait is short: merging is closed until a green
    * `main` verify, so waiting only keeps it closed. Two minutes = the head read the same
@@ -223,7 +237,7 @@ export function decideMainHeadEnqueue(
   sha: string,
   now: number,
   limits: { debounceMs: number; debounceCapMs: number } = MAIN_VERIFY_LIMITS,
-  opts: { healthy?: boolean } = {},
+  opts: { healthy?: boolean; cadenceReady?: boolean } = {},
 ): { next: MainHeadObservation; enqueue: boolean } {
   const next: MainHeadObservation = { ...prev };
   if (sha !== next.head) { next.head = sha; next.since = now; }
@@ -234,7 +248,7 @@ export function decideMainHeadEnqueue(
   const ready = next.immediate
     || now - next.since >= debounceMs
     || now - next.firstUnverifiedAt >= debounceCapMs;
-  if (!ready) return { next, enqueue: false };
+  if (!ready || opts.cadenceReady === false) return { next, enqueue: false };
   next.immediate = false;
   next.handled = sha;
   next.firstUnverifiedAt = null;
@@ -351,8 +365,8 @@ export class MainHealth {
   private readonly file: string;
   private readonly machineId: string;
   private readonly seams: MainHealthSeams;
-  /** The red head whose single flake re-run has already been spent. */
-  private rerunSpentFor: string | null = null;
+  private failureConfirmation: MainFailureConfirmation | null = null;
+  private lastCoveredAt: number | null = null;
   private readonly raised = new Set<string>();
   /** The lease epoch recorded in the watermark (kept across boots until an acquisition supplies a new one). */
   private leaseEpoch: number | null = null;
@@ -383,6 +397,14 @@ export class MainHealth {
 
   isHealthy(): boolean { return this.snap.state === 'healthy'; }
 
+  /** The healthy cadence does not delay confirmation retries or an overdue main. */
+  mainCadenceReady(now: number): boolean {
+    if (!this.isHealthy() || this.lastCoveredAt === null) return true;
+    const oldestUnverified = this.unknownSince ?? this.oldestUnverifiedAt;
+    return now - this.lastCoveredAt >= MAIN_VERIFY_LIMITS.healthyIntervalMs
+      || (oldestUnverified !== null && now - oldestUnverified >= MAIN_HEALTH_LIMITS.unverifiedSuspectMs);
+  }
+
   /**
    * Boot, or lease (re-)acquisition. `foreignHolder` is true when a different
    * machine held the lease since this machine last did (unknown ⇒ false: the
@@ -396,6 +418,8 @@ export class MainHealth {
     const stored = typeof w?.leaseEpoch === 'number' ? w.leaseEpoch : null;
     const epochGap = typeof opts.epoch === 'number' && stored !== null && opts.epoch !== stored && opts.epoch !== stored + 1;
     this.leaseEpoch = opts.epoch !== undefined ? opts.epoch : stored;
+    this.failureConfirmation = null;
+    this.lastCoveredAt = null;
     if (opts.foreignHolder || epochGap) {
       if (epochGap) this.seams.audit({ event: 'main-health-epoch-gap', storedEpoch: stored, epoch: opts.epoch });
       // Another machine held the lease in between: what merged meanwhile is not known here, so the
@@ -411,6 +435,17 @@ export class MainHealth {
       this.set({ state: 'main-suspect', redHead: w?.redHead ?? null, reason: w ? 'watermark-other-machine' : 'boot-unknown', lastGreenHead: w?.lastGreenHead ?? null });
     } else {
       // A readable watermark of this machine: kept as-is (healthy stays healthy, a freeze survives).
+      const covered = judgeStoredTime(w.lastCoveredAt, this.seams.now());
+      this.lastCoveredAt = covered.ok ? covered.at : null;
+      const confirmation = w.failureConfirmation;
+      if (w.state === 'main-suspect' && confirmation && confirmation.head === w.redHead
+        && Number.isInteger(confirmation.attempts) && confirmation.attempts > 0
+        && confirmation.attempts < MAX_CONFIRMATION_ATTEMPTS && Array.isArray(confirmation.files)
+        && (confirmation.sawUnnamed === undefined || typeof confirmation.sawUnnamed === 'boolean')
+        && confirmation.files.length <= MAX_CONFIRMATION_FILES
+        && confirmation.files.every(file => typeof file === 'string' && file.length > 0)) {
+        this.failureConfirmation = confirmation;
+      }
       this.set({ state: w.state, redHead: w.redHead, reason: w.state === 'healthy' ? 'watermark-healthy' : w.reason, lastGreenHead: w.lastGreenHead });
     }
     return this.snapshot();
@@ -427,7 +462,9 @@ export class MainHealth {
    * `age` (a green verify only): the age after this verify, as the service computed it. It is
    * written in the same watermark write as `lastGreenHead`, and it ends an unknown age.
    */
-  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>, age?: { oldestUnverifiedAt: number | null }): Promise<'rerun' | 'cleared' | 'none'> {
+  async onVerify(head: string, outcome: 'success' | 'failure' | 'error', detail?: Record<string, unknown>,
+    age?: { oldestUnverifiedAt: number | null; coveredAt?: number }, failingFiles: readonly string[] = [],
+  ): Promise<'rerun' | 'cleared' | 'none'> {
     if (outcome === 'error') return 'none'; // only `failure` counts as red
     if (outcome === 'success') {
       let ageChanged = false;
@@ -437,6 +474,11 @@ export class MainHealth {
         this.oldestUnverifiedAt = at;
         this.unknownSince = null;
         this.bootUnknownReason = null;
+        const covered = judgeStoredTime(age.coveredAt, this.seams.now());
+        if (covered.ok && (this.lastCoveredAt === null || covered.at > this.lastCoveredAt)) {
+          this.lastCoveredAt = covered.at;
+          ageChanged = true;
+        }
       }
       if (this.snap.state === 'healthy') {
         this.set({ ...this.snap, lastGreenHead: head, reason: 'green' });
@@ -456,21 +498,38 @@ export class MainHealth {
       }
       const wasRed = this.snap.state === 'main-red';
       if (this.snap.state === 'main-suspect' && red) this.seams.audit({ event: 'main-flake', head: red });
-      this.rerunSpentFor = null;
+      this.failureConfirmation = null;
       this.raised.delete('local-verify:main-red');
       this.raised.delete('local-verify:main-unverified');
       this.set({ state: 'healthy', redHead: null, reason: 'green', lastGreenHead: head });
       return wasRed || red !== null ? 'cleared' : 'none';
     }
     // failure
-    if (this.snap.state === 'healthy' || (this.snap.state === 'main-suspect' && this.rerunSpentFor !== head && this.snap.redHead !== head)) {
-      this.rerunSpentFor = head;
-      this.set({ ...this.snap, state: 'main-suspect', redHead: head, reason: 'first-failure' });
-      return 'rerun';
+    let reason = 'rerun-failed';
+    if (this.snap.state !== 'main-red') {
+      const previous = this.failureConfirmation?.head === head ? this.failureConfirmation : null;
+      const files = [...new Set(failingFiles)].slice(0, MAX_CONFIRMATION_FILES);
+      const unnamed = files.length === 0;
+      const confirmed = previous && (files.some(file => previous.files.includes(file))
+        || (unnamed && (previous.sawUnnamed ?? previous.files.length === 0)));
+      if (!confirmed) {
+        const attempts = (previous?.attempts ?? 0) + 1;
+        if (attempts < MAX_CONFIRMATION_ATTEMPTS) {
+          this.failureConfirmation = {
+            head,
+            attempts,
+            files: [...new Set([...(previous?.files ?? []), ...files])].slice(0, MAX_CONFIRMATION_FILES),
+            sawUnnamed: unnamed || (previous ? previous.sawUnnamed ?? previous.files.length === 0 : false),
+          };
+          this.set({ ...this.snap, state: 'main-suspect', redHead: head, reason: attempts === 1 ? 'first-failure' : 'failure-unconfirmed' });
+          return 'rerun';
+        }
+        reason = 'failure-confirmation-exhausted';
+      }
     }
-    // The re-run failed too (or a further head failed while already red).
-    this.set({ ...this.snap, state: 'main-red', redHead: head, reason: 'rerun-failed' });
-    this.raise('local-verify:main-red', { redHead: head, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental", ...(detail ? { runDetail: detail } : {}) });
+    this.failureConfirmation = null;
+    this.set({ ...this.snap, state: 'main-red', redHead: head, reason });
+    this.raise('local-verify:main-red', { redHead: head, reason, rollback: "monitoring.greenPrAutoMerge.floor: 'actions' if the red is environmental", ...(detail ? { runDetail: detail } : {}) });
     return 'none';
   }
 
@@ -574,6 +633,8 @@ export class MainHealth {
         v: 1, machineId: this.machineId, state: this.snap.state, redHead: this.snap.redHead,
         lastGreenHead: this.snap.lastGreenHead, reason: this.snap.reason, updatedAt: new Date(this.seams.now()).toISOString(),
         leaseEpoch: this.leaseEpoch, holderMachineId: this.machineId,
+        ...(this.lastCoveredAt === null ? {} : { lastCoveredAt: this.lastCoveredAt }),
+        ...(this.failureConfirmation === null ? {} : { failureConfirmation: this.failureConfirmation }),
         ...(this.unknownSince !== null ? { unknownSince: this.unknownSince } : this.oldestUnverifiedAt !== null ? { oldestUnverifiedAt: this.oldestUnverifiedAt } : {}),
       };
       const tmp = `${this.file}.tmp`;

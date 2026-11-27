@@ -1617,6 +1617,38 @@ describe('a main verify on whichever host is free', () => {
       expect(trustOf(c.stateDir)).toMatchObject({ anchor: { head: HEAD }, notLocallyVerifiedAt: null });
     });
 
+    it('required local corroboration can use an entry delayed by the latest peer green', async () => {
+      const { c } = await peerGreen();
+      const peerHead = sha('a');
+      const newest = sha('b');
+      c.peer.setResult(() => ({ state: 'running' }));
+      c.advance(130 * 60_000);
+      c.svc.noteMainHead(peerHead);
+      c.advance(10 * 60_000);
+      c.svc.noteMainHead(peerHead);
+      await c.runTimers();
+      const dispatched = c.peer.runs().at(-1)!;
+      expect(dispatched.headSha).toBe(peerHead);
+      c.svc.noteMainHead(newest);
+      c.advance(10 * 60_000);
+      c.svc.noteMainHead(newest);
+      c.peer.setResult(() => ({ state: 'done', record: mainRecord(dispatched, {
+        startedAt: new Date(c.now() - 10 * 60_000).toISOString(),
+        finishedAt: new Date(c.now()).toISOString(),
+      }) }));
+      await c.svc.tick();
+      await c.flush();
+      expect(c.svc.mainHealth().lastGreenHead).toBe(peerHead);
+      expect(c.svc.snapshot().queue.find(e => e.headSha === newest)?.mainCadenceManaged).toBe(true);
+      expect(c.spawned).toHaveLength(0);
+      c.setForeignHolders([]);
+      c.advance(60_000);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(JSON.parse(fs.readFileSync(c.spawned[0]!.inputPath, 'utf-8'))).toMatchObject({ kind: 'main', headSha: newest });
+      expect(auditsOf(c.stateDir).some(e => e.event === 'main-local-corroboration')).toBe(true);
+    });
+
     it('this machine\'s own red on the head a peer called green quarantines that peer and, with no third machine, tells the owner', async () => {
       const { c } = await peerGreen();
       c.advance(2.5 * H + 60_000);
@@ -1975,14 +2007,18 @@ describe('a main verify on whichever host is free', () => {
       const mains = c.svc.snapshot().queue.filter((e) => e.kind === 'main');
       expect(mains.find((e) => e.remote)?.headSha).toBe(HEAD);
       expect(c.spawned).toHaveLength(0); // one main verify at a time, on either host
-      // When the peer run ends green, the pending one may start.
+      // When the peer run ends green, it starts the healthy cadence interval.
       c.peer.setResult(() => ({ state: 'done', record: mainRecord(req) }));
       c.advance(PEER_LIMITS.pollMs);
       await c.svc.tick();
       await c.runTimers();
       expect(c.svc.mainHealth().lastGreenHead).toBe(HEAD);
-      // ... and it does: the newer head now runs here (the peer is asked for nothing more).
+      // The pending head stays queued until that interval opens, then runs here.
       await c.flush();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(0);
+      c.advance(60 * 60_000);
+      await c.svc.tick();
       await c.runTimers();
       expect(c.spawned).toHaveLength(1);
       expect(JSON.parse(fs.readFileSync(c.spawned[0].inputPath, 'utf-8'))).toMatchObject({ kind: 'main', headSha: sha('e') });

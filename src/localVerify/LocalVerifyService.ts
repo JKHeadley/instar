@@ -429,6 +429,8 @@ export interface QueueEntry {
   priority: number;
   /** 'main' for a post-merge verify of `main` (pr 0, head == base). */
   kind?: 'main';
+  /** Ordinary main observations observe the healthy cadence. Retries and local corroboration do not. */
+  mainCadenceManaged?: true;
   /** Not started before this time (backoff of a `main` error re-run). */
   notBefore?: number;
   /** Time spent paused for a pending update; subtracted from the starved clock. */
@@ -1661,7 +1663,10 @@ export class LocalVerifyService {
       const t = this.trust();
       if (sha !== t.anchor?.head && t.notLocallyVerifiedAt === null) { t.notLocallyVerifiedAt = now; this.saveTrust(); }
     }
-    const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, { healthy: this.health.isHealthy() });
+    const d = decideMainHeadEnqueue(o, sha, now, MAIN_VERIFY_LIMITS, {
+      healthy: this.health.isHealthy(),
+      cadenceReady: this.health.mainCadenceReady(now),
+    });
     o.head = d.next.head; o.since = d.next.since; o.firstUnverifiedAt = d.next.firstUnverifiedAt;
     o.handled = d.next.handled; o.immediate = d.next.immediate;
     if (d.enqueue) {
@@ -1698,7 +1703,7 @@ export class LocalVerifyService {
   }
 
   /* @self-action-controller: local-verify-main-schedule */
-  private enqueueMain(sha: string, why: 'head-changed' | 'rerun'): void {
+  private enqueueMain(sha: string, why: 'head-changed' | 'rerun', useHealthyCadence = why === 'head-changed'): void {
     const f = this.inFlight;
     // A `main` verify running on a peer counts as in flight: it is never replaced (that would
     // cancel it), and a newer head queues behind it exactly as behind a local run.
@@ -1719,6 +1724,7 @@ export class LocalVerifyService {
     this.queue.push({
       id: crypto.randomBytes(6).toString('hex'), pr: MAIN_VERIFY_PR, headSha: sha, baseSha: sha, baseRefName: 'main',
       firstQueuedAt: this.now(), attempts: 0, errorRetries: 0, starvedRaised: false, priority: MAIN_VERIFY_LIMITS.priority, kind: 'main',
+      ...(useHealthyCadence ? { mainCadenceManaged: true as const } : {}),
     });
     this.audit({ event: 'main-queued', headSha: sha, why });
     this.pump();
@@ -2412,10 +2418,13 @@ export class LocalVerifyService {
     const key = `${head}:${t.notLocallyVerifiedAt}`;
     if (this.corroborationFiredFor === key) return;
     if ((this.mainErrorRetries.get(head) ?? 0) > MAIN_VERIFY_LIMITS.errorRetries) return;
-    if (this.queue.some((e) => e.kind === 'main') || this.inFlight?.entry.kind === 'main' || this.starting?.kind === 'main') return;
+    if (this.inFlight?.entry.kind === 'main' || this.starting?.kind === 'main') return;
+    const pending = this.queue.find(e => e.kind === 'main');
+    if (pending && (pending.remote || !pending.mainCadenceManaged)) return;
     this.corroborationFiredFor = key;
     this.audit({ event: 'main-local-corroboration', headSha: head, notLocallyVerifiedSinceMs: this.now() - t.notLocallyVerifiedAt });
-    this.enqueueMain(head, 'head-changed');
+    if (pending) delete pending.mainCadenceManaged;
+    else this.enqueueMain(head, 'head-changed', false);
   }
 
   /**
@@ -3033,7 +3042,8 @@ export class LocalVerifyService {
     // A peer is offered `main` only while the switch is on and main is healthy: a peer can make
     // main suspect, never red (the confirming re-run and every run while suspect or red are the
     // coordinator's own).
-    if (e.kind === 'main' && (!this.mainOnPeersOn() || !this.health.isHealthy())) return false;
+    if (e.kind === 'main' && (!this.mainOnPeersOn() || !this.health.isHealthy()
+      || (e.mainCadenceManaged && !this.health.mainCadenceReady(this.now())))) return false;
     // SEC-113 D2.3: no local anchor, no measurement, or main commits only peers have checked past the
     // refresh age: `main` runs here, so a peer's green can never carry main past the 3 h bound alone.
     if (e.kind === 'main' && !peerMainRoutingAllowed(this.trust(), this.now(), MAIN_HEALTH_LIMITS.unverifiedSuspectMs).allowed) return false;
@@ -4427,7 +4437,9 @@ export class LocalVerifyService {
     // An entry reserved for a peer attempt (or being prepared for one) is the peer's, never started here.
     // One `main` verify at a time: a pending one waits while a peer runs another.
     const mainOnPeer = !!this.remoteMain();
-    let admissible: QueueEntry[] = ordered.filter((e) => !e.remote && e !== this.dispatching && !(mainOnPeer && e.kind === 'main'));
+    const cadenceReady = this.health.mainCadenceReady(now);
+    let admissible: QueueEntry[] = ordered.filter((e) => !e.remote && e !== this.dispatching
+      && !(e.kind === 'main' && (mainOnPeer || (e.mainCadenceManaged && !cadenceReady))));
     // Queue controls, the start check: a change the operator holds never starts (its entry is
     // normally already out of the queue; this covers one that could not be moved yet).
     if (this.queueControlsOn() && this.operator.anyHold()) admissible = admissible.filter((e) => e.kind === 'main' || !this.operator.isHeld(e.pr));
@@ -5005,7 +5017,7 @@ export class LocalVerifyService {
       const n = d.retries;
       this.mainErrorRetries.set(head, n);
       if (d.requeue) {
-        this.queue.push({ ...entry, id: crypto.randomBytes(6).toString('hex'), notBefore: d.notBefore });
+        this.queue.push({ ...entry, mainCadenceManaged: undefined, id: crypto.randomBytes(6).toString('hex'), notBefore: d.notBefore });
         this.audit({ event: 'main-error-retry', headSha: head, attempt: n });
       }
       return;
@@ -5049,9 +5061,14 @@ export class LocalVerifyService {
       if (Number.isFinite(ms)) noteDuration(this.trust(), ms);
       this.saveTrust();
     }
+    const coveredAt = head === current || (current !== null && this.releaseAlias.get(current) === head)
+      || this.mainRunOnCurrentHead === head ? Math.min(Date.parse(record.finishedAt), this.now()) : undefined;
     this.mainRunOnCurrentHead = null;
     // A green verify hands the age over, so it is written in the same watermark write as the green head (and ends an unknown age).
-    const work = this.health.onVerify(head, record.outcome, detail, record.outcome === 'success' ? { oldestUnverifiedAt: this.mainObs.oldestUnverifiedAt } : undefined).then(async (action) => {
+    const work = this.health.onVerify(head, record.outcome, detail,
+      record.outcome === 'success' ? { oldestUnverifiedAt: this.mainObs.oldestUnverifiedAt, coveredAt } : undefined,
+      record.outcome === 'failure' ? this.mainFailure?.files : undefined,
+    ).then(async (action) => {
       if (this.health.isHealthy()) this.clearMainFailure();
       try {
         if (this.health.isHealthy()) this.firstPartReport.green();
