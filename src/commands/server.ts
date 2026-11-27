@@ -21071,15 +21071,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           catch { return null; } // @silent-fallback-ok — no key ⇒ the referee alone
         },
         refereeFor: nsRefereeFor,
+        // A notice that does not go out names why, as a bounded label the watcher logs (CMT-2078).
         sendTelegramNotice: async (topicId, text, inboundMessageId, button) => {
-          if (!nsTelegram) return null;
+          if (!nsTelegram) return { undelivered: 'no-adapter' };
           const r = await sendNeverSilentTelegramNotice(nsTelegram, topicId, text, inboundMessageId, button ? [button] : undefined) as { recorded?: boolean; messageId?: number };
-          return r && r.recorded !== true && typeof r.messageId === 'number' ? String(r.messageId) : null;
+          if (r && r.recorded === true) return { undelivered: 'held-quiet' };
+          return r && typeof r.messageId === 'number' ? String(r.messageId) : { undelivered: 'no-message-id' };
         },
         sendSlackNotice: async (key, text) => {
-          if (!_slackAdapter) return null;
+          if (!_slackAdapter) return { undelivered: 'no-adapter' };
           const ts = await _slackAdapter.sendToChannel(key, text);
-          return ts || null;
+          return ts || { undelivered: 'no-message-id' };
         },
         evidence: (kind, reason, context) => {
           const flat: Record<string, string | number | boolean | null> = {};

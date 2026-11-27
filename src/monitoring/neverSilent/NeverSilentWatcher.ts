@@ -17,6 +17,11 @@ import type { NeverSilentStore, Incident, Obligation, ConversationPlatform, Sile
 import type { ConversationSilenceJudge, SilenceVerdict } from './ConversationSilenceJudge.js';
 import { decideNeverSilentAction, renderNotice, ASK_BUTTON_TEXT, engineName, STALE_LOGIN_HOLD_MS, STALE_LOGIN_WAIT_REASON, type NeverSilentAction } from './NeverSilentPolicy.js';
 
+/** Why a never-silent notice did not go out. Bounded labels only, never message text. */
+export type NoticeUndeliveredReason = 'no-adapter' | 'held-quiet' | 'no-message-id';
+const NOTICE_UNDELIVERED_REASONS: ReadonlySet<string> = new Set<NoticeUndeliveredReason>(['no-adapter', 'held-quiet', 'no-message-id']);
+export interface NoticeUndelivered { undelivered: NoticeUndeliveredReason }
+
 export interface NeverSilentConfig {
   enabled: boolean;
   /** Judge on (off ⇒ every incident is `undetermined` and told). */
@@ -74,7 +79,12 @@ export interface NeverSilentDeps {
   applyFallback: (platform: ConversationPlatform, key: string, target: string, by: 'automatic' | 'tap', redriveText: string) => Promise<{ ok: boolean; from: string | null; fromUpdatedBy: string | null; reason?: string }>;
   /** Undo this feature's move once the original login works (only if nobody changed it since), restoring who set it. */
   restoreFallback: (platform: ConversationPlatform, key: string, from: string | null, fromUpdatedBy: string | null) => Promise<boolean>;
-  sendNotice: (platform: ConversationPlatform, key: string, text: string, button?: { text: string; data: string }) => Promise<string | null>;
+  /**
+   * Send a notice. Returns the platform message id, or why it was not delivered: an object with a
+   * bounded reason, or null when the sender cannot say. The watcher logs the reason on the
+   * notice-undelivered row so an unknown outcome is never invisible (CMT-2078).
+   */
+  sendNotice: (platform: ConversationPlatform, key: string, text: string, button?: { text: string; data: string }) => Promise<string | null | NoticeUndelivered>;
   repairStarted: (accountId: string | null) => boolean;
   accountHealthy: (accountId: string) => boolean;
   log?: (event: Record<string, unknown>) => void;
@@ -342,8 +352,9 @@ export class NeverSilentWatcher {
     const uncovered = open.filter((o) => !o.coveredBy.includes('waiting') && !o.standbySeenAt);
     if (!uncovered.length) return;
     const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null, ...(waitingReason ? { waitingReason } : {}) });
-    const id = await this.safeAsync(() => this.d.sendNotice(platform, key, text), null);
-    if (id === null) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting' }); return; }
+    const sent = await this.deliverNotice(platform, key, text);
+    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting', reason: sent.reason }); return; }
+    const id = sent.id;
     this.d.store.markCovered(uncovered.map((o) => o.id), 'waiting');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'waiting', class: cls, covered: uncovered.length });
     this.d.store.appendNotice(incident.id, { kind: 'waiting', revision: `waiting|${cls}`, messageId: id, at: this.now(), covered: uncovered.map((o) => o.id) });
@@ -373,8 +384,9 @@ export class NeverSilentWatcher {
       kind: 'status', count, silenceClass: s.silenceClass, framework: fresh.framework, action: s.action, outcome: s.outcome,
       target: s.target, repairStarted: this.safe(() => this.d.repairStarted(fresh.accountId), false), askReason: s.askReason,
     });
-    const id = await this.safeAsync(() => this.d.sendNotice(platform, key, text, button), null);
-    if (id === null) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision }); return; }
+    const sent = await this.deliverNotice(platform, key, text, button);
+    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision, reason: sent.reason }); return; }
+    const id = sent.id;
     this.d.store.markCovered(open.map((o) => o.id), 'status');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'status', revision, covered: open.length, ask: !!button });
     this.d.store.appendNotice(incident.id, { kind: 'status', revision, messageId: id, at: this.now(), covered: open.map((o) => o.id) });
@@ -409,7 +421,8 @@ export class NeverSilentWatcher {
       if (outcome !== 'succeeded') {
         this.d.store.updateIncident(inc.id, { ask: { ...(fresh.ask ?? inc.ask!), state: 'open' } });
         const text = `I couldn't move this conversation to ${engineName(target)} just now. It stays where it is and I'll tell you here when it's fixed.`;
-        await this.safeAsync(() => this.d.sendNotice(fresh.platform, fresh.conversationKey, text), null);
+        const sent = await this.deliverNotice(fresh.platform, fresh.conversationKey, text);
+        if ('reason' in sent) this.log({ event: 'notice-undelivered', incident: inc.id, kind: 'move-failed', reason: sent.reason });
         return;
       }
       this.d.store.updateIncident(inc.id, { action: 'fallback', outcome: 'succeeded' });
@@ -445,6 +458,19 @@ export class NeverSilentWatcher {
 
   private safe<T>(fn: () => T, fallback: T): T {
     try { return fn(); } catch { return fallback; /* @silent-fallback-ok — a failed lookup takes the conservative value; telling still happens */ }
+  }
+  /** Send one notice and name why it did not go out, as a bounded label (CMT-2078). Never throws. */
+  private async deliverNotice(platform: ConversationPlatform, key: string, text: string, button?: { text: string; data: string }): Promise<{ id: string } | { reason: string }> {
+    try {
+      const r = await this.d.sendNotice(platform, key, text, button);
+      if (typeof r === 'string' && r) return { id: r };
+      if (r && typeof r === 'object') return { reason: NOTICE_UNDELIVERED_REASONS.has(r.undelivered) ? r.undelivered : 'unknown-reason' };
+      return { reason: 'no-receipt' };
+    } catch (err) {
+      // @silent-fallback-ok — the failure is logged by the caller as notice-undelivered with this reason
+      const name = err instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(err.name) ? err.name : 'Error';
+      return { reason: `threw:${name}` };
+    }
   }
   private async safeAsync<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
     try { return await fn(); } catch { return fallback; /* @silent-fallback-ok — a failed action is recorded as refused; telling still happens */ }

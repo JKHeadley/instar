@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "never-silent-undelivered-reason",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T23:21:20.024Z",
+  "artifactPath": "upgrades/side-effects/never-silent-undelivered-reason.md",
+  "artifactSha256": "7ba619345ec64443bec6ec45a23f1396b31682cca3d56ec5e06cd8db783ba19f",
+  "coveredFiles": [
+    "docs/specs/never-silent-undelivered-reason.eli16.md",
+    "src/commands/server.ts",
+    "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+    "src/monitoring/neverSilent/neverSilentWiring.ts",
+    "tests/unit/neverSilent-watcher.test.ts",
+    "upgrades/next/never-silent-undelivered-reason.md",
+    "upgrades/side-effects/never-silent-undelivered-reason.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Logging only: an undelivered never-silent notice records one bounded reason label; sending, retry, coverage and the evidence mapping are unchanged apart from two declared edges; a revert restores the old behaviour.",
+  "eli16Path": "docs/specs/never-silent-undelivered-reason.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/never-silent-undelivered-reason.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

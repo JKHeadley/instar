@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NeverSilentStore, type ConversationPlatform } from './NeverSilentStore.js';
-import { NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type SessionFacts } from './NeverSilentWatcher.js';
+import { NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type NoticeUndelivered, type SessionFacts } from './NeverSilentWatcher.js';
 import { ConversationSilenceJudge, type RefereeRoute } from './ConversationSilenceJudge.js';
 import { ENGINE_LOGIN_READERS } from '../../providers/adapters/engineSessionHooks.js';
 import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
@@ -59,8 +59,8 @@ export interface NeverSilentWiringInput {
   /** A referee provider for an engine (built once per engine by the caller), or null when that engine has none. */
   refereeFor: (framework: string) => IntelligenceProvider | null;
   // notices
-  sendTelegramNotice: (topicId: number, text: string, inboundMessageId: string, button?: { text: string; data: string }) => Promise<string | null>;
-  sendSlackNotice: (channelId: string, text: string) => Promise<string | null>;
+  sendTelegramNotice: (topicId: number, text: string, inboundMessageId: string, button?: { text: string; data: string }) => Promise<string | null | NoticeUndelivered>;
+  sendSlackNotice: (channelId: string, text: string) => Promise<string | null | NoticeUndelivered>;
   /** Shared feature-evidence log (the maturation ladder reads it). */
   evidence?: (kind: 'fired' | 'error', reason: string, context: Record<string, unknown>) => void;
   now?: () => number;
