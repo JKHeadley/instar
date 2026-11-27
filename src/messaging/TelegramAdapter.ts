@@ -682,6 +682,13 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicToPurpose: Map<number, string> = new Map();
   private registryPath: string;
   private messageLogPath: string;
+  /** Lines in the message log as of `logLineCountBytes`, kept by counting only the bytes appended
+   *  since the last check, so the rotation check never rereads the whole log (2026-11-27 stall:
+   *  a 30 MB log paid a full read and split on every append). null = not counted yet. */
+  private logLineCount: number | null = null;
+  private logLineCountBytes = 0;
+  /** Inode at the last count: a log replaced by a new file of any size is counted again. */
+  private logLineCountIno: number | bigint | null = null;
   /** Durable append-seam dedupe, seeded from the bounded JSONL on first use. */
   private loggedMessageKeys = new Set<string>();
   private messageLogDedupeSeeded = false;
@@ -5269,7 +5276,24 @@ export class TelegramAdapter implements MessagingAdapter {
       // Only check rotation when file exceeds ~20MB
       if (stat.size < 20 * 1024 * 1024) return;
 
-      const content = fs.readFileSync(this.messageLogPath, 'utf-8');
+      // Count lines without reading the whole log on every append: only the bytes added since the
+      // last count are read. A file smaller than at the last count was rotated or truncated
+      // elsewhere, so it is counted again from the start.
+      if (this.logLineCount === null || stat.size < this.logLineCountBytes || stat.ino !== this.logLineCountIno) {
+        this.logLineCount = 0;
+        this.logLineCountBytes = 0;
+        this.logLineCountIno = stat.ino;
+      }
+      if (stat.size > this.logLineCountBytes) {
+        this.logLineCount += this.countNewlines(this.logLineCountBytes, stat.size);
+        this.logLineCountBytes = stat.size;
+      }
+      // N newlines can mean N+1 lines (a final line without its newline), so read at N >= 100,000
+      // and let the full read below make the exact decision, as before.
+      if (this.logLineCount < 100_000) return;
+
+      const raw = fs.readFileSync(this.messageLogPath);
+      const content = raw.toString('utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > 100_000) {
         const kept = lines.slice(-75_000);
@@ -5282,9 +5306,37 @@ export class TelegramAdapter implements MessagingAdapter {
           throw rotateErr;
         }
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
+        const rotated = fs.statSync(this.messageLogPath);
+        this.logLineCount = kept.length;
+        this.logLineCountBytes = rotated.size;
+        this.logLineCountIno = rotated.ino;
+      } else {
+        // The newline count overstated non-empty lines (blank lines): adopt the exact count from
+        // this read, so later appends again only count their own bytes.
+        this.logLineCount = lines.length;
+        this.logLineCountBytes = raw.length; // bytes on disk, not the decoded length (invalid UTF-8 decodes longer)
       }
     } catch {
       // @silent-fallback-ok — log rotation non-critical
+      this.logLineCount = null;
+    }
+  }
+
+  /** Newline bytes in the message log between two offsets, read in 1 MB chunks (no decode, no split). */
+  private countNewlines(from: number, to: number): number {
+    const CHUNK = 1024 * 1024;
+    const fd = fs.openSync(this.messageLogPath, 'r');
+    try {
+      const buf = Buffer.alloc(CHUNK);
+      let count = 0;
+      for (let pos = from; pos < to; pos += CHUNK) {
+        const n = fs.readSync(fd, buf, 0, Math.min(CHUNK, to - pos), pos);
+        if (n <= 0) break;
+        for (let i = 0; i < n; i++) if (buf[i] === 0x0a) count++;
+      }
+      return count;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* @silent-fallback-ok: closing a read-only handle */ }
     }
   }
 
