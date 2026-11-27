@@ -66,6 +66,8 @@ async function machine(id: string, routingKey: string, channel: string, peers: (
   const keyLedger = new MobileDeviceKeyLedger({ stateDir: dir, signer, keyLookup });
   pairing.keyLedger = keyLedger;
   const svc = new AppConversationService({
+    // Hermetic disk reading: the host's free space must not decide a media test (2026-11-27, PR 3932 on the M5).
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
     stateDir: dir, machineId: () => id, registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger, dispatch: () => null,
   });
