@@ -78,6 +78,9 @@ describe('E2E: internal LLM component reliability lifecycle', () => {
         realCalls: 20,
         errorRate: 0.9,
         status: 'failing',
+        // CMT-2289: seeded error rows carry no error class, so they read as
+        // the documented legacy label 'unrecorded'.
+        errorClasses: { unrecorded: 18 },
       },
     ]);
     expect(fullSummary).not.toHaveBeenCalled();

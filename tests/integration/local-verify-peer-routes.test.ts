@@ -146,6 +146,7 @@ describe('peer verifier routes (integration, real HTTP)', () => {
     expect((await run(runBody())).body.reason).toBe('peer-disabled');
     expect((await run({ ...runBody(), kind: 'main-arbitration', pr: 0, headSha: sha('b'), smallPeerTrial: policy })).status).toBe(400);
     expect((await run({ ...runBody(), smallPeerTrial: { ...policy, e2e: 3 } })).status).toBe(400);
+    expect((await run({ ...runBody(), smallPeerTrial: { ...policy, unitWorkers: 1 } })).body.reason).toBe('peer-disabled');
     expect((await run({ ...runBody(), smallPeerTrial: { ...policy, floorBytes: 9999 } })).body.reason).toBe('peer-disabled');
     expect((await request(url).post('/local-verify/peer-trial-lease').set(headers).send({
       attemptId: ATT, leaseEpoch: 7, coordinatorMachineId: 'coord',
