@@ -185,7 +185,8 @@ describe('standing packet — alive on the production init path', () => {
   it('WIRED: server.ts attaches the stager under the layers gate, clears it off, and both spawn and resume read the packet', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
     expect(src).toContain("const { wireStandingPacket } = await import('../monitoring/contextLayers/standingPacketBoot.js');");
-    expect(src).toContain('try { clearStagedStandingPackets(config.stateDir); }');
+    expect(src).toContain('retireLegacyFullPackets(config.stateDir);');
+    expect(src).toContain('clearStagedStandingPackets(config.stateDir);');
     expect(src).toContain('const standingPacket = _contextLayers?.standingPacket()?.packetForSession(topicId) ?? null;');
     expect(src).toMatch(/const standingPacket = liveConfig\.get<boolean>\('contextBudget\.compactionRecovery\.enabled', true\) !== false\n\s+\? \(_contextLayers\?\.standingPacket\(\)\?\.packetForSession\(topicId\) \?\? null\)/);
     expect(src).toContain('contextContent = topicMemory.formatContextForSession(topicId, 50, { standingPacket });');
