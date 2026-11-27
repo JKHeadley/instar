@@ -144,6 +144,67 @@ describe('DeliveryRetryManager', () => {
       expect((await store.get(envelope.message.id))?.delivery.phase).toBe(field === 'phase' ? 'sent' : 'queued');
     });
 
+    it('uses the ordinary inbox for a store without a specialized retry query', async () => {
+      Object.defineProperty(store, 'queryRetryInbox', { value: undefined });
+      const queryInbox = vi.spyOn(store, 'queryInbox');
+      const envelope = makeEnvelope();
+      await store.save(envelope);
+
+      expect((await manager.tick()).retried).toBe(1);
+      expect(queryInbox).toHaveBeenCalledWith('test-agent');
+    });
+
+    it.each(['read', 'failed', 'expired', 'dead-lettered'] as const)('skips the inert %s phase without reopening it', async phase => {
+      const envelope = makeEnvelope();
+      envelope.delivery.phase = phase;
+      envelope.delivery.expiresAt = Date.now() - 1000;
+      await store.save(envelope);
+      const get = vi.spyOn(store, 'get');
+
+      expect(await manager.tick()).toEqual({ retried: 0, expired: 0, escalated: 0 });
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: 'handoff with no acknowledgement deadline', type: 'handoff', age: 10, ttl: 30, due: false },
+      { label: 'query before the acknowledgement deadline', type: 'query', age: 2, ttl: 30, due: false },
+      { label: 'query past the acknowledgement deadline', type: 'query', age: 6, ttl: 30, due: true },
+      { label: 'handoff past its delivery deadline', type: 'handoff', age: 6, ttl: 5, due: true },
+    ] as const)('reopens a delivered envelope only when due: $label', async ({ type, age, ttl, due }) => {
+      const envelope = makeEnvelope({ type, createdAt: new Date(Date.now() - age * 60_000).toISOString(), ttlMinutes: ttl });
+      envelope.delivery.phase = 'delivered';
+      envelope.delivery.transitions.push({ from: 'queued', to: 'delivered', at: envelope.message.createdAt });
+      await store.save(envelope);
+      const get = vi.spyOn(store, 'get');
+
+      const result = await manager.tick();
+      expect(get).toHaveBeenCalledTimes(due ? 1 : 0);
+      expect(result.expired).toBe(due ? 1 : 0);
+    });
+
+    it('uses the latest delivery and notices a deadline crossing without a file change', async () => {
+      const now = Date.now();
+      const envelope = makeEnvelope({ type: 'query', createdAt: new Date(now - 10 * 60_000).toISOString() });
+      envelope.delivery.phase = 'delivered';
+      envelope.delivery.transitions.push(
+        { from: 'queued', to: 'delivered', at: envelope.message.createdAt },
+        { from: 'queued', to: 'delivered', at: new Date(now - 4 * 60_000).toISOString() },
+      );
+      await store.save(envelope);
+      const get = vi.spyOn(store, 'get');
+      const clock = vi.spyOn(Date, 'now');
+      try {
+        clock.mockReturnValue(now + 60_000);
+        expect((await manager.tick()).expired).toBe(0);
+        expect(get).not.toHaveBeenCalled();
+        clock.mockReturnValue(now + 60_001);
+        expect((await manager.tick()).expired).toBe(1);
+        expect(get).toHaveBeenCalledOnce();
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
     it('does not retry if delivery fails', async () => {
       tmuxOps = makeTmux({ isSessionAlive: () => false });
       delivery = new MessageDelivery(new MessageFormatter(), tmuxOps);

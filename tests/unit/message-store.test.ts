@@ -148,6 +148,21 @@ describe('MessageStore', () => {
     }
   });
 
+  it('returns an empty retry inbox before the store directory exists', async () => {
+    const absent = new MessageStore(path.join(tmpDir, 'absent-store'));
+    expect(await absent.queryRetryInbox('target-agent')).toEqual([]);
+  });
+
+  it('skips corrupt envelopes and picks up a repaired file on the next scan', async () => {
+    const envelope = makeEnvelope({ id: 'retry-repaired' });
+    const file = path.join(tmpDir, 'store', 'retry-repaired.json');
+    fs.writeFileSync(file, '{');
+    expect(await store.queryRetryInbox('target-agent')).toEqual([]);
+
+    fs.writeFileSync(file, JSON.stringify(envelope));
+    expect((await store.queryRetryInbox('target-agent')).map(entry => entry.message.id)).toEqual(['retry-repaired']);
+  });
+
   // ── Initialization ──────────────────────────────────────────────
 
   describe('initialization', () => {

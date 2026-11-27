@@ -20,6 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { getLastDeliveredAt } from './types.js';
 import type {
   IMessageStore,
   MessageEnvelope,
@@ -352,8 +353,12 @@ export class MessageStore implements IMessageStore {
         revision,
         recipient: message.to.agent,
         entry: {
-          message: { id: message.id, createdAt: message.createdAt, ttlMinutes: message.ttlMinutes },
-          delivery: { phase: delivery.phase, expiresAt: delivery.expiresAt },
+          message: { id: message.id, createdAt: message.createdAt, ttlMinutes: message.ttlMinutes, type: message.type },
+          delivery: {
+            phase: delivery.phase,
+            expiresAt: delivery.expiresAt,
+            lastDeliveredAt: delivery.phase === 'delivered' ? getLastDeliveredAt(delivery) : undefined,
+          },
         },
       };
     } catch {
