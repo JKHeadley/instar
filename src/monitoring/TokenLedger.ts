@@ -1051,6 +1051,7 @@ export class TokenLedger {
     try {
       handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
     } catch {
+      // @silent-fallback-ok: a discovered transcript may disappear before open; leave its cursor for the next scan.
       return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
     }
     try {
@@ -1068,6 +1069,7 @@ export class TokenLedger {
           headHash = fingerprintHead(head);
         }
       } catch {
+        // @silent-fallback-ok: an unavailable fingerprint leaves the existing cursor intact for a later scan.
         return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
       }
       if (this.closed) return null;

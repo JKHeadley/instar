@@ -5,3 +5,5 @@ The token ledger keeps its place in each transcript so it only counts new record
 The scheduled scan now opens the file, checks its metadata, and reads the fingerprint asynchronously. The server can keep answering requests while those disk operations finish. If the file matches the saved checkpoint, the ledger keeps its original place. If the content changed, the existing replacement logic starts from the beginning and deduplicates usage records. A scan interrupted during the fingerprint check leaves the existing checkpoint available for the next scan.
 
 The test holds a fingerprint read open and checks that the heartbeat still runs. It then resumes the scan and checks that a same-size replacement is counted exactly once. The token routes and saved checkpoint format stay the same.
+
+If an open file disappears or cannot be fingerprinted, the scan keeps the last saved position so it can safely revisit the file on a later pass. The repository check now recognizes those two retry paths.
