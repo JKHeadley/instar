@@ -10,15 +10,17 @@
  * days → Initiative completed. The routes answer 200 when the feature is live and 503 when dark.
  * Only the model and the executor's external boundaries (git, GitHub, sandbox runtime, sessions) are scripted.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { createHmac } from 'node:crypto';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
+import { HostSpawnSemaphore, getHostSpawnSemaphore } from '../../src/core/hostSpawnSemaphore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig, IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
 import { handleFeedbackSubmit } from '../../src/feedback-factory/receiver/handlers.js';
@@ -193,9 +195,15 @@ describe('feedback executor — production lifecycle (live on a development agen
   let blob: FakeBlobServer;
   const clock = { now: Date.now() };
   let edge: ReturnType<typeof executorEdge>;
+  let fixtureSlots: HostSpawnSemaphore;
+  let restoreSlotStatus: () => void;
 
   beforeAll(async () => {
     ({ root, stateDir } = prepare('feedback-execute-e2e-'));
+    // The sessions run inside this fixture, so the executor should observe only its slots.
+    fixtureSlots = new HostSpawnSemaphore({ cap: 1, holdersPath: path.join(root, 'spawn-holders.json') });
+    const slotStatus = vi.spyOn(getHostSpawnSemaphore(), 'status').mockImplementation(() => fixtureSlots.status());
+    restoreSlotStatus = () => slotStatus.mockRestore();
     edge = executorEdge(root, clock);
     blob = new FakeBlobServer();
     await blob.start();
@@ -244,6 +252,7 @@ describe('feedback executor — production lifecycle (live on a development agen
 
   afterAll(async () => {
     await server.stop();
+    restoreSlotStatus();
     await blob.stop();
     delete process.env[TOKEN_ENV];
     SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback-execute-lifecycle.test.ts' });
@@ -259,8 +268,8 @@ describe('feedback executor — production lifecycle (live on a development agen
       provider: 'claude-code', modelFamily: 'fable-5', promptVersion: 'feedback-readiness-v1', schemaVersion: 'feedback-readiness-decision-v1',
       decisionPointId: 'feedback-cluster-readiness', maxBatch: 50, maxTokens: 900, maxDailySpendUsd: 5,
     })).status).toBe(200);
-    expect((await request(app).post('/feedback-factory/consumer/promote').set(HX)
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote' })).status).toBe(200);
+    const { promote } = await promoteConsumerFromProposal(app, { auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-promote', noncePrefix: 'feedback-execute-sim' });
+    expect(promote.status, JSON.stringify(promote.body)).toBe(200);
     expect((await request(app).post('/feedback-factory/drain/tick').set({ ...HX, 'X-Instar-AgentId': 'e2e', 'X-Instar-Request-Nonce': 'feedback-execute-e2e-0001' })).status).toBe(202);
     for (let attempt = 0; attempt < 200 && tracker.list().filter((i) => i.feedbackWorkKey).length < 1; attempt++) await new Promise((r) => setTimeout(r, 10));
     const initiative = tracker.list().find((i) => i.feedbackWorkKey)!;
@@ -281,8 +290,13 @@ describe('feedback executor — production lifecycle (live on a development agen
     expect((await request(app).get('/feedback-factory/triage/queue').set(H)).body.items[0]).toMatchObject({ initiativeId: initiative.id, executionState: 'queued' });
 
     // Executor: claim → workspaces → canary (both paths) → confined build session.
+    expect(fixtureSlots.acquire('occupied')).toBe(true);
+    const deferred = await executeTick(app, clock);
+    expect(deferred.lastTick).toMatchObject({ started: 0, reason: 'admission:spawn-limiter-saturated' });
+    expect(edge.state.spawned).toHaveLength(0);
+    fixtureSlots.release('occupied');
     let status = await executeTick(app, clock);
-    expect(status.counts).toMatchObject({ running: 1 });
+    expect(status.counts, JSON.stringify(status.lastTick)).toMatchObject({ running: 1 });
     expect(edge.state.spawned[0]).toMatch(/^feedback-canary-/);
     expect(edge.state.spawned[1]).toMatch(/^feedback-.*-a1$/);
     expect(edge.state.confinedGuardChecks).toBeGreaterThan(1);

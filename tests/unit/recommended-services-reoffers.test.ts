@@ -15,7 +15,7 @@ import { RecommendedServicesLedger, foldChoice, validateRow } from '../../src/re
 import { RECOMMENDED_SERVICE_CATALOG, type CatalogRow } from '../../src/recommended/catalog.js';
 import {
   EVENT_FRESH_MS, PROBLEM_KINDS, REOFFER_DAILY_WINDOW_MS, REOFFER_PENDING_TTL_MS, cooloffMs, eventBlock, isDuplicateEvent,
-  nextReoffer, renderReoffer, type ReofferFacts,
+  findUnresolvedSecrets, nextReoffer, renderReoffer, type ReofferFacts,
 } from '../../src/recommended/reoffers.js';
 import {
   TranscriptionUnavailableError, registerVoiceUnreadableListener, reportVoiceUnreadable, transcribeAudioFileDetailed,
@@ -193,5 +193,31 @@ describe('the voice-unreadable source', () => {
   it('a throwing listener never changes what the channel sees', () => {
     registerVoiceUnreadableListener(() => { throw new Error('boom'); });
     expect(() => reportVoiceUnreadable('whatsapp')).not.toThrow();
+  });
+});
+
+describe('secret-lost: finding a secret the config refers to but the store no longer holds', () => {
+  it('finds surviving placeholders at any depth and in arrays, and nothing in a resolved config', () => {
+    expect(findUnresolvedSecrets({ authToken: 'abc', messaging: [{ type: 'telegram', config: { token: 'x' } }] })).toEqual([]);
+    expect(findUnresolvedSecrets({ authToken: { secret: true }, messaging: [{ config: { token: { secret: true }, chatId: '1' } }] }))
+      .toEqual(['authToken', 'messaging.0.config.token']);
+    expect(findUnresolvedSecrets({ a: { secret: 'yes' }, b: [{ secret: true }] })).toEqual(['b.0']);
+    expect(findUnresolvedSecrets(null)).toEqual([]);
+  });
+
+  it('stops at its depth bound, so an odd config cannot stall a start', () => {
+    let deep: Record<string, unknown> = { secret: true };
+    for (let i = 0; i < 20; i++) deep = { n: deep };
+    expect(findUnresolvedSecrets(deep)).toEqual([]);
+    expect(findUnresolvedSecrets(deep, 25)).toHaveLength(1);
+  });
+
+  it('re-offers Bitwarden in fixed words that name no setting', () => {
+    expect(PROBLEM_KINDS['secret-lost']!.service).toBe('bitwarden');
+    const row = RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'bitwarden')!;
+    const text = renderReoffer('secret-lost', row, { linkBase: null, choice: 'no', deliveredBefore: 0 });
+    expect(text).toContain("no vault holding a copy");
+    expect(text).toContain('You said no to Bitwarden earlier');
+    expect(text).toContain('at least 90 days');
   });
 });

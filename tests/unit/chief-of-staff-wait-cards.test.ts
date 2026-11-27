@@ -12,7 +12,7 @@ import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
 import { WorkBoardService, resolveWorkBoardSettings, type WorkPrincipal } from '../../src/core/WorkBoardService.js';
 import { workCardRecordStoreSchema, type UnionEntry } from '../../src/core/WorkCardStore.js';
 import { buildBindingPut, buildCheckEvent, buildOwnerPauseEvent, buildLifecycleEvent, buildLastTick, foldProjectCheckState, type ProjectCheckState, type CosVerdict } from '../../src/core/ChiefOfStaffStore.js';
-import { ChiefOfStaffWaitCards, waitCardId, composeWaitCard, inertText, waitAsk, humanTimeUtc, WAIT_CARD_ITEM, type WaitCardProject } from '../../src/core/ChiefOfStaffWaitCards.js';
+import { ChiefOfStaffWaitCards, resolveOwnerNeedsWaitIdentity, waitCardId, composeWaitCard, inertText, waitAsk, humanTimeUtc, WAIT_CARD_ITEM, type WaitCardProject } from '../../src/core/ChiefOfStaffWaitCards.js';
 import { cardJson } from '../../src/core/workBoardViews.js';
 
 const OWNER: WorkPrincipal = { kind: 'person', personKey: 'justin', proof: 'pin', isOwner: true };
@@ -56,6 +56,37 @@ function rig(opts: { softOpenCards?: number; maxAgentCardsPerDay?: number; enabl
   const card = () => svc.view(waitCardId(CK));
   return { svc, cos, board, add, check, sync, card, logs, project, bindingHlc, advance: (ms: number) => { clock += ms; }, conversations: () => conversations, now: () => clock };
 }
+
+describe('exact wait identity from coordinator records', () => {
+  it('preserves carry-forward identity and distinguishes changes, reverts and new episodes', () => {
+    const t = rig();
+    const disclosure = { revision: 'd1', action: 'approve' };
+    const identity = () => resolveOwnerNeedsWaitIdentity(t.cos, CK, disclosure);
+    expect(identity()).toBeNull();
+
+    t.check('waiting-on-user', 'Please approve.');
+    const original = identity()!;
+    expect(original).not.toBeNull();
+    t.check('waiting-on-user', 'no new evidence');
+    t.check('waiting-on-user', 'Please approve.');
+    expect(identity()).toEqual(original);
+    t.check('waiting-on-user', 'Please approve with the new evidence.');
+    expect(identity()).toMatchObject({ episode: original.episode });
+    expect(identity()?.requestVersion).not.toBe(original.requestVersion);
+    t.check('waiting-on-user', 'Please approve.');
+    expect(identity()?.requestVersion).not.toBe(original.requestVersion);
+    expect(resolveOwnerNeedsWaitIdentity(t.cos, CK, { revision: 'd2', action: 'decline' })).not.toEqual(identity());
+    expect(resolveOwnerNeedsWaitIdentity(t.cos, CK, { revision: 'd3', action: 'approve' })).not.toEqual(identity());
+    expect(resolveOwnerNeedsWaitIdentity(t.cos, CK, { revision: '', action: 'approve' })).toBeNull();
+
+    t.check('moving');
+    expect(identity()).toBeNull();
+    t.check('waiting-on-user', 'Please approve.');
+    expect(identity()?.episode).not.toBe(original.episode);
+    t.add(buildLifecycleEvent(CK, 'closed', t.bindingHlc, 'owner-tap', new Date(t.now()).toISOString()));
+    expect(identity()).toBeNull();
+  });
+});
 
 describe('Chief of Staff wait cards — open', () => {
   it('opens one owner-carried card for a recorded wait, with recommendation, why-you, project link and no Approve step', () => {

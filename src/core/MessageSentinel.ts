@@ -429,6 +429,11 @@ const STOP_TOKEN_SCAN: readonly RegExp[] = [];
  * not consumed and not killed. Delivery is the safe direction for the operator
  * channel; killing on a guessed substring is not.
  */
+/** Snapshot of the same canonical exact set used by server stop admission. */
+export function exactStopPhrases(): readonly string[] {
+  return [...new Set([...SLASH_STOP, ...FAST_STOP_EXACT])];
+}
+
 export function isExactStopMessage(message: string): boolean {
   const t = (message ?? '').toLowerCase().trim();
   if (!t) return false;

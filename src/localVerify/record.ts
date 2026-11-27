@@ -32,6 +32,7 @@ export interface PreflightEvidence {
 export const PREFLIGHT_MAX_SELECTED_FILES = 5;
 
 export interface LocalVerifyRecord {
+  smallPeerReceipt?: import('./smallPeerWatchdog.js').TrialReceipt;
   repo: string;
   pr: number;
   headSha: string;
@@ -95,6 +96,51 @@ export interface LocalVerifyRecord {
   /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
   preflight?: PreflightEvidence;
   firstPart?: FirstPartEvidence;
+  /**
+   * Present only when a borrowed helper took part in this verify (spec
+   * local-verify-borrowed-slices-count.md, F "The record"): which helper, whether the verify was
+   * assigned to count its passes or drawn compare-only (one in ten, before the helper was asked),
+   * and per lane a count and a digest of the files sent. Never on a `main` record: a main verify
+   * never counts a helper's results. A peer's signed record carries the field unchanged.
+   */
+  borrowed?: BorrowedRecordField;
+}
+
+export interface BorrowedRecordField {
+  /** The helper's machine id. Checked here by format only; whether it is a known machine is checked where the record is imported. */
+  helper: string;
+  assigned: 'counting' | 'compare-only';
+  lanes: Array<{ lane: 'unit' | 'integration' | 'e2e'; files: number; filesDigest: string }>;
+}
+
+const BORROWED_HELPER_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
+const BORROWED_LANES: readonly string[] = Object.freeze(['unit', 'integration', 'e2e']);
+/** At most this many files of one lane on a helper. */
+export const BORROWED_RECORD_MAX_FILES = 20_000;
+
+/**
+ * The record check of `borrowed`: a machine id by format, `assigned` one of its two values, at
+ * most three lanes (each lane once), a whole number of files up to 20,000 and a 64-character
+ * digest; exactly these keys at every level. Pure.
+ */
+export function isValidBorrowedField(v: unknown): v is BorrowedRecordField {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const x = v as Record<string, unknown>;
+  if (!Object.keys(x).every((k) => k === 'helper' || k === 'assigned' || k === 'lanes')) return false;
+  if (typeof x.helper !== 'string' || !BORROWED_HELPER_ID.test(x.helper)) return false;
+  if (x.assigned !== 'counting' && x.assigned !== 'compare-only') return false;
+  if (!Array.isArray(x.lanes) || x.lanes.length > 3) return false;
+  const seen = new Set<string>();
+  for (const l of x.lanes) {
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return false;
+    const t = l as Record<string, unknown>;
+    if (!Object.keys(t).every((k) => k === 'lane' || k === 'files' || k === 'filesDigest')) return false;
+    if (typeof t.lane !== 'string' || !BORROWED_LANES.includes(t.lane) || seen.has(t.lane)) return false;
+    seen.add(t.lane);
+    if (typeof t.files !== 'number' || !Number.isSafeInteger(t.files) || t.files < 0 || t.files > BORROWED_RECORD_MAX_FILES) return false;
+    if (typeof t.filesDigest !== 'string' || !/^[0-9a-f]{64}$/.test(t.filesDigest)) return false;
+  }
+  return true;
 }
 
 export interface PeerAttemptRef {
@@ -142,6 +188,8 @@ export interface FlakyRetry {
   lane: string;
   /** The first run's failure (first failing test + message), bounded. */
   firstMessage: string;
+  /** The verifier reran these named assertions, retaining the original file inventory. */
+  namedRetry?: true;
   /** Shared: full names of the tests that failed in the lane run, at most 20, each whole (a longer name is left out). */
   failedTests?: string[];
   /** Shared: the true number of failed tests, so a shorter list is disclosed. */
@@ -176,6 +224,9 @@ function flakyNameFieldsOk(r: Record<string, unknown>): boolean {
   }
   if (r.testSetHash !== undefined && !(typeof r.testSetHash === 'string' && /^[0-9a-f]{64}$/.test(r.testSetHash))) return false;
   const clearance = r.soloPasses !== undefined || r.soloSeconds !== undefined || r.evidence !== undefined;
+  if (r.namedRetry !== undefined && (r.namedRetry !== true || r.importRelated !== undefined || list.length < 1 || list.length > 3
+    || typeof r.testSetHash !== 'string' || r.failedTestsTotal !== list.length || new Set(list).size !== list.length || !Array.isArray(r.soloPassedByName)
+    || r.soloPassedByName.length !== list.length || !list.every((name, index) => name === (r.soloPassedByName as string[])[index]))) return false;
   if (r.importRelated === undefined) return !clearance;
   if (r.importRelated !== true) return false;
   if (r.soloPasses !== 3) return false;
@@ -263,7 +314,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
       return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
         && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000 && flakyNameFieldsOk(r);
     });
-    if (!ok) errors.push('flakyRetried');
+    if (!ok || (x.flakyRetried as FlakyRetry[]).reduce((sum, r) => sum + (r.namedRetry ? (r.failedTests?.length ?? 0) : 0), 0) > 3) errors.push('flakyRetried');
   }
   if (x.failedFiles !== undefined) {
     if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
@@ -299,6 +350,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
       && Object.keys(p).every((k) => ['mode', 'outcome', 'reason', 'elapsedMs', 'changedFiles', 'selectedFiles', 'selectedCases', 'headSha', 'baseSha', 'repeatedFailedFile'].includes(k));
     if (!valid) errors.push('preflight');
   }
+  if (x.borrowed !== undefined && (!isValidBorrowedField(x.borrowed) || x.kind === 'main')) errors.push('borrowed');
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }
 

@@ -83,6 +83,11 @@ function callGated(updater: AutoUpdater, version: string, bypassWindow = false):
   return (updater as unknown as { gatedRestart: (v: string, b?: boolean) => Promise<void> }).gatedRestart(version, bypassWindow);
 }
 
+async function callGatedAndAdvance(updater: AutoUpdater, version: string, bypassWindow = false): Promise<void> {
+  // Advance the silent restart delay without draining a future batch timer.
+  await Promise.all([callGated(updater, version, bypassWindow), vi.advanceTimersByTimeAsync(2_000)]);
+}
+
 function batchState(updater: AutoUpdater): {
   targetVersion: string | null;
   eligibleAt: number | null;
@@ -98,9 +103,7 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-updater-cascade-test-'));
     fs.mkdirSync(path.join(tmpDir, 'state'), { recursive: true });
-    // Fake timers so the existing 2-second pre-restart wait inside
-    // gatedRestart's silent-restart branch advances without slowing the suite.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-22T22:13:00.000Z'));
   });
 
@@ -122,8 +125,7 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     updater.setSessionDeps(emptySessionManager(), null);
 
     // First restart — v1.2.34 — empty sessions → silent restart → flag written.
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync(); // flush the 2s pre-restart wait
+    await callGatedAndAdvance(updater, '1.2.34');
 
     expect(fs.existsSync(restartFlagPath(tmpDir))).toBe(true);
     const flag1 = JSON.parse(fs.readFileSync(restartFlagPath(tmpDir), 'utf-8'));
@@ -163,8 +165,7 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
     const flag1Mtime = fs.statSync(restartFlagPath(tmpDir)).mtimeMs;
 
     vi.setSystemTime(new Date(Date.now() + 5 * 60_000));
@@ -194,16 +195,14 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
     const flag1Mtime = fs.statSync(restartFlagPath(tmpDir)).mtimeMs;
 
     // 20 minutes pass — past the 15min window AND past the 30min same-version
     // cooldown (the version is different).
     vi.setSystemTime(new Date(Date.now() + 20 * 60_000));
 
-    await callGated(updater, '1.2.36');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.36');
 
     const flag2 = JSON.parse(fs.readFileSync(restartFlagPath(tmpDir), 'utf-8'));
     expect(flag2.targetVersion).toBe('1.2.36');
@@ -222,8 +221,7 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
 
     vi.setSystemTime(new Date(Date.now() + 5 * 60_000));
     updater.setSessionDeps(activeSessionManager(1), null);
@@ -252,13 +250,11 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
     const flag1Mtime = fs.statSync(restartFlagPath(tmpDir)).mtimeMs;
 
     vi.setSystemTime(new Date(Date.now() + 60_000));
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
 
     // Same-version cooldown should noop. No batch timer, no flag rewrite.
     expect(batchState(updater).timerActive).toBe(false);
@@ -276,12 +272,10 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
 
     vi.setSystemTime(new Date(Date.now() + 2 * 60_000));
-    await callGated(updater, '1.2.36', /* bypassWindow */ true);
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.36', /* bypassWindow */ true);
 
     const flag = JSON.parse(fs.readFileSync(restartFlagPath(tmpDir), 'utf-8'));
     expect(flag.targetVersion).toBe('1.2.36');
@@ -299,12 +293,10 @@ describe('AutoUpdater × RestartCascadeDampener integration', () => {
     );
     updater.setSessionDeps(emptySessionManager(), null);
 
-    await callGated(updater, '1.2.34');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.34');
 
     vi.setSystemTime(new Date(Date.now() + 60_000));
-    await callGated(updater, '1.2.36');
-    await vi.runOnlyPendingTimersAsync();
+    await callGatedAndAdvance(updater, '1.2.36');
 
     const flag = JSON.parse(fs.readFileSync(restartFlagPath(tmpDir), 'utf-8'));
     expect(flag.targetVersion).toBe('1.2.36');

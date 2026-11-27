@@ -1381,14 +1381,15 @@ esac`);
       const ok = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'gone' });
       expect(ok.status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
+      // The timed wait was checked above; these status probes use the immediate path.
       // a start-less record is decided by the probe (a process newer than the record is gone; the stub says alive)
       fs.writeFileSync(survivor, `4242 - ${Math.floor(Date.now() / 1000) - 1000}\n`);
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'gone' }).status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
       // a record WITH a start time does not expire: identity is checked
       fs.writeFileSync(survivor, `4242 133000000000000000 ${Math.floor(Date.now() / 1000) - 1000}\n`);
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       SafeFsExecutor.safeRmSync(survivor, { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
     });
 
@@ -1424,7 +1425,7 @@ esac`);
       fs.writeFileSync(path.join(left, 'pid.txt'), '5151\r\n');
       fs.writeFileSync(path.join(left, 'pidstart.txt'), '133000000000000001\r\n');
       fs.writeFileSync(path.join(left, 'verdict.txt'), 'driver-still-running\r\n');
-      const r = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' });
+      const r = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('outlived its timeout');
       expect(fs.readFileSync(survivor, 'utf-8')).toMatch(/^5151 133000000000000001 \d+\n$/);
@@ -1440,7 +1441,7 @@ esac`);
       expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive' }).status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
       SafeFsExecutor.safeRmSync(path.join(left, 'rc.txt'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       expect(fs.existsSync(survivor)).toBe(true);
       // the registration writes the verdict file
       nd(['target'], { STUB_SESSION: '0', STUB_SURVIVOR: 'gone' });

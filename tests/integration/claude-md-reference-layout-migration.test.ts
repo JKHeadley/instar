@@ -36,7 +36,9 @@ describe('CLAUDE.md reference layout — full migrate() on a legacy agent', () =
     fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'legacy', port: 4043 }));
     fs.writeFileSync(path.join(stateDir, 'AGENT.md'), '# Legacy\n\n## Who I Am\n\nI am Legacy.\n');
     // A legacy agent: the old full template plus an operator's own section.
-    legacy = generateClaudeMd('legacy', 'Legacy', 4043, false) + '\n## Shop Rules\n\nNever ship on Fridays.\n';
+    legacy = generateClaudeMd('legacy', 'Legacy', 4043, false)
+      .replaceAll('| Where did we discuss this before? | `GET /mobile/conversations/search?q=...&scope=pool` (app, Telegram, and Slack history) |',
+        '| Something I wrote before | `GET /memory/search?q=...` |') + '\n## Shop Rules\n\nNever ship on Fridays.\n';
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), legacy);
     fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# AGENTS.md — legacy\n\nCodex shadow.\n');
     const m = new PostUpdateMigrator({ projectDir, stateDir, port: 4043, hasTelegram: false, projectName: 'legacy' });
@@ -62,6 +64,10 @@ describe('CLAUDE.md reference layout — full migrate() on a legacy agent', () =
     // Migration-appended sections (not in the template) reach the reference files.
     const allRef = files.map(f => fs.readFileSync(path.join(refDir, f), 'utf-8')).join('\n');
     expect(allRef).toContain('### Quota-enforcement scheduler pause');
+    expect(claudeMd).toContain('| Where did we discuss this before? | `GET /mobile/conversations/search?q=...&scope=pool`');
+    expect(allRef).toContain('http://localhost:4043/mobile/conversations/search?scope=pool&limit=10');
+    expect(claudeMd).not.toContain('/memory/search');
+    expect(allRef).not.toContain('/memory/search');
     expect(first.upgraded.some(u => u.startsWith('CLAUDE.md: moved'))).toBe(true);
   });
 

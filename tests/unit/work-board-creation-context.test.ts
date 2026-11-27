@@ -64,7 +64,7 @@ describe('Work Board immutable creation context', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-context-store-'));
     const store = new AppConversationStore({ stateDir: dir, machineId: () => 'm_origin' });
     try {
-      const m = machine({ sourceConversationKey: 'telegram:42\n', store }); m.create(); m.runtime.ensureConversation(CARD);
+      const m = machine({ sourceConversationKey: 'telegram:42\n', store }); m.create(); m.runtime.ensureConversation(CARD, true);
       expect(store.getConversation(cardConversationKey(CARD))).not.toBeNull();
       expect(store.getCreationRecord(cardConversationKey(CARD))?.creationContext?.source).toEqual({ kind: 'work-board-card', cardId: CARD, originMachineId: 'm_origin', projectKey: 'telegram:42' });
     } finally { store.close(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'test-wb-invalid-source-context' }); }
@@ -74,7 +74,7 @@ describe('Work Board immutable creation context', () => {
     const m = machine(); m.create();
     const edited = m.runtime.svc.edit(AGENT, CARD, { projectKey: 'telegram:99', title: 'A later title' });
     expect(edited.ok).toBe(true);
-    m.runtime.ensureConversation(CARD);
+    m.runtime.ensureConversation(CARD, true);
     expect(m.creates).toHaveLength(1);
     expect(m.creates[0]).toMatchObject({ cardId: CARD, key: cardConversationKey(CARD), title: 'A later title', context: {
       v: 1, source: { kind: 'work-board-card', cardId: CARD, originMachineId: 'm_origin', sourceConversationKey: 'telegram:42', projectKey: 'telegram:42' },
