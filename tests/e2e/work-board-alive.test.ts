@@ -130,7 +130,7 @@ describe('Work Board E2E (feature is alive)', () => {
       expect(inward.status, JSON.stringify(inward.body)).toBe(201);
       expect(inward.body.card.status).toBe('not-started');
       expect(inward.body.card.agentWork).toBe(true);
-      const created = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: false, recommendation: 'The lake house: closest for everyone.', whyYou: 'Only you know the budget.', covers: ['plan:INI-1'], source: { conversationKey: 'telegram:42', messageId: 'original-1' } });
+      const created = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: true, recommendation: 'The lake house: closest for everyone.', whyYou: 'Only you know the budget.', covers: ['plan:INI-1'], source: { conversationKey: 'telegram:42', messageId: 'original-1' } });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
       expect(created.body.card.whyYou).toBe('Only you know the budget.');
       expect(created.body.card.covers).toEqual(['plan:INI-1']);

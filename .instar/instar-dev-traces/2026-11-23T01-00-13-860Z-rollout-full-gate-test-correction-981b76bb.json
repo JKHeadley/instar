@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "rollout-full-gate-test-correction",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-23T01:00:13.860Z",
+  "artifactPath": "upgrades/side-effects/rollout-full-gate-test-correction.md",
+  "artifactSha256": "ef073cd9f44746687b061dd43ace5643570a1fa21bac66208fa62b75268ca027",
+  "coveredFiles": [
+    "docs/specs/rollout-full-gate-test-correction.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/featureRolloutScan.test.ts",
+    "upgrades/side-effects/rollout-full-gate-test-correction.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible test-only correction: require the actual asynchronous wiring and dispose real fixture lifecycle before closing windows. No production source, authority, runtime or configuration changes.",
+  "eli16Path": "docs/specs/rollout-full-gate-test-correction.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/rollout-full-gate-test-correction.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot test fixture and assertion correction; no production self-triggered action or controller is changed."
+  }
+}

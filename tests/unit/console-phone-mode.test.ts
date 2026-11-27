@@ -59,6 +59,7 @@ describe('pagePath', () => {
 // ── the shipped shell in jsdom ─────────────────────────────────────────────
 const NOW = new Date().toISOString();
 const ROUTES: Record<string, unknown> = {
+  '/needs': { schemaVersion: 2, count: 0, complete: true, items: [] },
   '/sessions': { sessions: [] },
   '/health': { project: { name: 'echo' } },
   '/queue-pace?scope=pool': { queues: [{ machine: 'm1', queue: 'prs', inflowPerDay: 3, outflowPerDay: 2, open: 4 }] },
@@ -82,8 +83,8 @@ async function boot(url: string) {
   dom.window.localStorage.setItem('instar_token', 't');
   g.fetch = async (u: string) => {
     const body = ROUTES[u];
-    if (body === undefined) return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
-    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)) } as unknown as Response;
+    if (body === undefined) return new Response('{}', { status: 404 });
+    return Response.json(body);
   };
   vi.resetModules();
   await import('../../dashboard/console/console.js');
@@ -128,7 +129,7 @@ describe('console phone mode (jsdom)', () => {
     dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
     for (let i = 0; i < 5; i++) await flush();
     hasNoChrome(doc);
-    expect(doc.querySelector('#card-needs')).not.toBeNull();
+    expect(doc.querySelector('#homeNeedsStrip')?.textContent).toContain('Nothing needs you right now.');
   });
 
   it('without phone=1 nothing changes: the bars are there and short names do not resolve', async () => {

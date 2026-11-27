@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-26T04:44:23.008Z",
+  "slug": "feedback-drain-generation-contention",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/feedback-factory/store/FeedbackSourceGenerations.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
