@@ -2064,6 +2064,8 @@ export function readTailTolerant(
       if (typeof obj.seq === 'number' && typeof obj.kind === 'string') result.entries.push(obj);
       else result.skippedCorrupt++;
     } catch {
+      // @silent-fallback-ok: not silent. A corrupt line is counted in skippedCorrupt and returned to
+      // the caller, exactly as the previous whole-window body did.
       result.skippedCorrupt++;
     }
   };

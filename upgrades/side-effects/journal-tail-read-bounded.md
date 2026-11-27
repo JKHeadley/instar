@@ -31,5 +31,8 @@ The read stays synchronous, but it is now bounded by the entries needed. Making 
 
 Results: the existing CoherenceJournal*, OwnershipApplier* and JournalSyncApplier tests pass (9 files, 131 tests), and tsc is clean.
 
+## Fallback ratchet
+The per-line parse catch carries an in-place `@silent-fallback-ok` reason: a corrupt line is counted in `skippedCorrupt` and returned, as before. Without it, `tests/unit/no-silent-fallbacks.test.ts` read 494 against its 493 baseline, because its 20-line window after the catch now reaches `let fd: number | null = null;`. The ratchet number is not raised. All 26 ratchet files pass on the final head.
+
 ## Rollback
 Revert this commit.
