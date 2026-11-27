@@ -1415,6 +1415,15 @@ export class TelegramAdapter implements MessagingAdapter {
   private topicTailCache = new Map<number, LogEntry[]>();
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
+  /**
+   * Newest logged entry per topic, built once in the background (latestTopicEntries) so the
+   * conversation list's previews never scan the log on the request path (2026-11-27 Laptop stall:
+   * GET /mobile/conversations scanned the whole 30 MB log once per cold topic). null until built.
+   */
+  private latestEntryIndex: Map<number, LogEntry> | null = null;
+  /** Entries logged while the index was being built; applied over it when the build finishes. */
+  private latestEntryPending: Map<number, LogEntry> | null = null;
+  private latestEntryBuild: Promise<void> | null = null;
   private static readonly TAIL_CACHE_LIMIT = 500;
 
   // Shared infrastructure modules (Phase 1 extraction)
@@ -1741,6 +1750,9 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   async start(): Promise<void> {
+    // Build the list-preview index in the background right away, so the first conversation list
+    // after a start rarely finds it missing (it yields between 1 MB chunks).
+    setImmediate(() => { void this.buildLatestEntryIndex(); });
     if (this.polling) return;
     // HARDENED (v1.3.270 incident): without a usable bot token (empty/normalized
     // placeholder), getUpdates 404s forever — a zombie poll loop that looks alive
@@ -4825,6 +4837,84 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * The newest logged entry for each topic, for list previews, without touching the log on the
+   * request path. A topic in the tail cache answers from it; otherwise from the background index.
+   * `undefined` = not known yet (the index is still building; it is started here if needed), `null`
+   * = the log holds no entry for that topic.
+   */
+  latestTopicEntries(topicIds: readonly number[]): Map<number, LogEntry | null | undefined> {
+    const out = new Map<number, LogEntry | null | undefined>();
+    let needIndex = false;
+    for (const id of topicIds) {
+      const tail = this.topicTailCache.get(id);
+      if (tail && tail.length) { out.set(id, tail[tail.length - 1]!); continue; }
+      if (this.latestEntryIndex) { out.set(id, this.latestEntryIndex.get(id) ?? null); continue; }
+      out.set(id, undefined);
+      needIndex = true;
+    }
+    if (needIndex) void this.buildLatestEntryIndex();
+    return out;
+  }
+
+  /**
+   * Build the per-topic newest-entry index with async 1 MB reads, yielding between chunks so the
+   * event loop keeps serving requests. One build per process; a failed build is retried on the
+   * next request. Appends during the build go to `latestEntryPending` and win over the file.
+   */
+  buildLatestEntryIndex(): Promise<void> {
+    if (this.latestEntryIndex) return Promise.resolve();
+    if (this.latestEntryBuild) return this.latestEntryBuild;
+    this.latestEntryPending = new Map();
+    const run = async () => {
+      const built = new Map<number, LogEntry>();
+      let handle: fs.promises.FileHandle | null = null;
+      try {
+        handle = await fs.promises.open(this.messageLogPath, 'r');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      if (handle) {
+        try {
+          const size = (await handle.stat()).size;
+          const CHUNK = 1024 * 1024;
+          const buf = Buffer.alloc(CHUNK);
+          let carry = Buffer.alloc(0);
+          for (let pos = 0; pos < size; pos += CHUNK) {
+            const { bytesRead } = await handle.read(buf, 0, Math.min(CHUNK, size - pos), pos);
+            if (bytesRead <= 0) break;
+            const joined = Buffer.concat([carry, buf.subarray(0, bytesRead)]);
+            const nl = joined.lastIndexOf(0x0a);
+            const complete = nl < 0 ? Buffer.alloc(0) : joined.subarray(0, nl);
+            carry = Buffer.from(nl < 0 ? joined : joined.subarray(nl + 1));
+            for (const line of complete.toString('utf-8').split('\n')) this.indexLogLine(built, line);
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+          if (carry.length) this.indexLogLine(built, carry.toString('utf-8'));
+        } finally {
+          await handle.close().catch(() => { /* @silent-fallback-ok: closing a read-only handle */ });
+        }
+      }
+      for (const [id, entry] of this.latestEntryPending ?? []) built.set(id, entry);
+      this.latestEntryIndex = built;
+      this.latestEntryPending = null;
+    };
+    this.latestEntryBuild = run().catch((err) => {
+      console.error(`[telegram] latest-entry index build failed: ${err}`);
+      this.latestEntryPending = null;
+    }).finally(() => { this.latestEntryBuild = null; });
+    return this.latestEntryBuild;
+  }
+
+  private indexLogLine(index: Map<number, LogEntry>, line: string): void {
+    if (!line) return;
+    try {
+      const entry: LogEntry = JSON.parse(line);
+      const topicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+      if (typeof topicId === 'number') index.set(topicId, entry);
+    } catch { /* @silent-fallback-ok — a malformed log line is skipped, as every log reader here does */ }
+  }
+
+  /**
    * Get recent messages for a topic (for thread history on respawn, the live-tail
    * streamer, and the handoff hash).
    *
@@ -5252,6 +5342,8 @@ export class TelegramAdapter implements MessagingAdapter {
   private rememberLoggedEntry(entry: LogEntry, dedupeKey: string): void {
     this.loggedMessageKeys.add(dedupeKey);
     if (typeof entry.topicId !== 'number') return;
+    if (this.latestEntryIndex) this.latestEntryIndex.set(entry.topicId, entry);
+    else if (this.latestEntryPending) this.latestEntryPending.set(entry.topicId, entry);
     this.topicContentVersion.set(entry.topicId, (this.topicContentVersion.get(entry.topicId) ?? 0) + 1);
     const tail = this.topicTailCache.get(entry.topicId);
     if (tail) {
