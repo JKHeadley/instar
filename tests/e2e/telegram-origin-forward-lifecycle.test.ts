@@ -74,8 +74,8 @@ describe('forward-to-holder lifecycle (production init path)', () => {
     const after = await status();
     expect(after.status).toBe(200);
     expect(after.body.held).toContainEqual(expect.objectContaining({ hold_reason: 'lease-not-held', durable: true, topicId: '42' }));
-    expect(after.body.heldForward).toMatchObject({ count: 1, topics: ['42'] });
-    expect((await health()).body.telegramOrigin?.heldForward).toMatchObject({ count: 1, topics: ['42'] });
+    expect(after.body.heldForward).toMatchObject({ count: 1, sessionReplies: 0, automaticMessages: 1, otherMessages: 0, topics: ['42'] });
+    expect((await health()).body.telegramOrigin?.heldForward).toMatchObject({ count: 1, sessionReplies: 0, automaticMessages: 1, otherMessages: 0, topics: ['42'] });
     // The durable row survives a runtime restart on the same state dir.
     await boot.close(); cleanup.pop();
     const again = await bootTelegramOrigin({ config: config as never, token: '123:forward-fixture', noticeOwner: true, workerUrl: worker,

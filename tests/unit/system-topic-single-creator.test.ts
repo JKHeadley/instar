@@ -45,7 +45,7 @@ function makeAdapter(config: Partial<TelegramConfig>): TelegramAdapter {
   adapters.push(a);
   return a;
 }
-const laneItem = (id: string) => ({ id, healthKey: id, lane: 'agent-health' as const, title: 'Heads-up', summary: 'maybe stuck', category: 'degradation', priority: 'HIGH' as const });
+const laneItem = (id: string) => ({ id, healthKey: id, lane: 'agent-health' as const, needsUser: true, title: 'Heads-up', summary: 'please decide', category: 'degradation', priority: 'HIGH' as const });
 
 describe('TelegramAdapter — a standby never mints a system topic', () => {
   it('standby, nothing adopted yet: an agent-health item creates NO topic', async () => {

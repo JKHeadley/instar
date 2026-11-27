@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-10T06:32:40.222Z",
+  "slug": "conversation-pinned-messages",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 714,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/ConversationPins.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/invisible-payload.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePinRoutes.ts",
+      "src/server/mobileSlackRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 699,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

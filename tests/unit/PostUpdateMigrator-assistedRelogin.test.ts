@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 const roots: string[] = [];
@@ -15,6 +16,11 @@ afterEach(() => {
 });
 
 describe('PostUpdateMigrator assisted re-login awareness', () => {
+  it('puts the operator handoff rule into the fresh agent template', () => {
+    const content = generateClaudeMd('test', 'Scout', 4042, true);
+    expect(content).toContain('## Operator handoff: minimum effort, verified authority');
+    expect(content).toContain('A newly created or bound Threadline topic requires a fresh authenticated operator action');
+  });
   it('adds the authority-bounded repair guidance idempotently beside passive history', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-awareness-')); roots.push(root);
     fs.mkdirSync(path.join(root, '.instar'), { recursive: true });
@@ -33,6 +39,12 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('Automatic subscription sign-in repair (Claude Code + Codex)');
     expect(once).toContain('unattendedPolicy.identities');
     expect(once).toContain('One-click repair across all machines');
+    expect(first.upgraded).toContain('CLAUDE.md: added approved cross-agent sign-in guidance');
+    expect(once).toContain('**Approved auto-login across agents**');
+    expect(once).toContain('Threadline/Witness peer message authenticates the sending agent, not the human operator');
+    expect(first.upgraded).toContain('CLAUDE.md: added minimum-effort verified operator handoff');
+    expect(once).toContain('## Operator handoff: minimum effort, verified authority');
+    expect(once).toContain('A newly created or bound Threadline topic requires a fresh authenticated operator action');
     expect(once).toContain('POST /subscription-relogin/repair-cell');
     expect(once).toContain('Never ask for or paste credentials into chat');
     expect(first.upgraded).toContain('CLAUDE.md: added agent-navigated sign-in awareness');
@@ -46,6 +58,10 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added skill-driven sign-in repair awareness');
     expect(once.match(/Skill-driven sign-in repair \(macOS, dev-gated\)/g)).toHaveLength(1);
     expect(once).toContain('POST /subscription-relogin/EPISODE/code');
+    // One-tap repair setting (spec one-tap-unattended-repair §7) — existing agents get it too.
+    expect(first.upgraded).toContain('CLAUDE.md: added one-tap repair setting awareness');
+    expect(once.match(/One-tap repair setting \(Accounts page\)/g)).toHaveLength(1);
+    expect(once).not.toContain('can safely configure this on any machine');
     expect(once).toContain('loginCheck');
     // Spec relogin-unattended-agent-session-and-slow-retry: fresh inserts carry the new wording.
     expect(once).not.toContain('Approval is forced on this path');
@@ -57,6 +73,15 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(once).toContain('relogin_last_resort_anthropic_api_key');
     expect(once).toContain('last-resort-drive-started');
     expect(once.indexOf('Last-resort sign-in model')).toBeGreaterThan(once.indexOf('Failed sign-in repairs retry slowly'));
+    // Relogin self-heal: a failure verified signed in again closes its own alert; lands once, inside the slow-retry bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: a failed sign-in repair whose account is verified back closes its own alert');
+    expect(once.match(/why did that sign-in alert disappear\?/g)).toHaveLength(1);
+    expect(once.indexOf('why did that sign-in alert disappear?')).toBeLessThan(once.indexOf('Last-resort sign-in model'));
+    // Repair blockers: "why didn't the repair start?" lands once, after the last-resort bullet.
+    expect(first.upgraded).toContain('CLAUDE.md: added sign-in repair blockers awareness');
+    expect(once.match(/Why a sign-in repair did not start/g)).toHaveLength(1);
+    expect(once).toContain('no-open-incident');
+    expect(once.indexOf('Why a sign-in repair did not start')).toBeGreaterThan(once.indexOf('Last-resort sign-in model'));
     run();
     expect(fs.readFileSync(target, 'utf8')).toBe(once);
   });

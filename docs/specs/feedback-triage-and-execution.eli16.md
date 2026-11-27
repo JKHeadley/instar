@@ -22,6 +22,7 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 
 ## Tradeoffs
 
+- For feedback review, critical or complex changes lead with GPT-6 Astra; ordinary changes lead with Claude Opus 5.5 and receive a Codex Sol cross-read. Both actual model replies must pass before an automatic merge can be considered. A serious concern from another available reviewer still blocks the change. Echo's Fable review remains stopped. If Opus is unavailable, the change waits for review rather than silently switching models.
 - It costs usage: the sorter is capped at 150 model calls a day, and build sessions at 2 running and 6 started per day.
 - The sorter can be wrong. That is why ignoring is limited to low-risk items, every decision is logged, and a wrongly ignored problem that comes back gets counted as a mistake so we can see how accurate it is.
 - It runs first on a throwaway test agent, then on Echo. Everyone else gets it only after two weeks of measured results on Echo.
@@ -29,3 +30,17 @@ A ranked list of what is being worked on, and counts of what was held or ignored
 ## Why this matters
 
 Instar has a rule that anything it accepts must reach a deliberate end. Feedback reports were being accepted and then left to pile up. This design gives every work item an end: worked on, held with a reason, or set aside with a reason.
+
+## November 2026 timeout amendment
+
+For a fix that changes a central source file, the worker's related-test check can touch much of Instar. That one check may now run for up to 45 minutes; other individual test and gate commands still have a 20-minute limit. A command that reaches its limit records a failure promptly, even if a child process keeps an output pipe open. This avoids a worker sitting indefinitely in verification. The full attempt still has a six-hour lease, and a timed-out check cannot publish a fix.
+
+Amendment, 2026-11-07: a fix's last check runs the existing tests related to its changed files, with a 45-minute limit. If that run times out with no failure printed, it now counts as "don't know", not as a failed attempt, and the pull request says so. The CI tests still have to pass before it can merge. This changed because a fix that had passed its own checks was thrown away by a slow run on a busy machine.
+
+Amendment, 2026-11-12: the locked-down sandbox the checks run in doesn't let a test open a local connection, so every test that starts a small web server fails there, whatever the fix does. That threw away most fixes on the 11th and 12th. Now, when the related tests fail, the same failing tests run again on the unchanged code. If every failure also happens there, the fix didn't cause any of them: it counts as "don't know", the pull request says so, and the full CI test run still has to pass before it can merge. Any failure that happens only with the fix still stops it.
+
+Amendment, 2026-11-07. The check for anything shaped like a secret now compares a changed file with its original and holds the fix only when a value is new. Before, one existing match anywhere in the file held every fix touching it, and 440 files here already match. New files and files whose original can't be read still hold on any match. The two reviewers' rules also changed: a test removing its own temporary folder is no longer a finding, and the Claude reviewer now signs in with the account a new session would get. The executor merges with the installed merge script.
+
+Amendment, 2026-11-12: when a worker can't reproduce a report because an earlier change already fixed it, it can now name that change. If the change really is in the code the worker started from, and was made after the bug was first reported, the report is set aside straight away instead of getting a second worker that finds the same thing. New reports about it still bring it back. On the 11th and 12th, three reports used two workers each just to name the same earlier fix twice.
+
+Amendment, 2026-11-13: two more ways good work was being lost. First, when the server restarts for an update while a worker's fix is in its final checks, the checks now run again up to three times instead of once. The worker itself doesn't run again, so this costs little. On a busy night, updates restarted the server about every hour. Second, if a worker lists an extra test file that doesn't contain its test, the checks now skip that file instead of failing the fix. Third, a worker's pull request was being skipped every time the server restarted, so on a night of frequent restarts it was never checked. Now it gets checked anyway.

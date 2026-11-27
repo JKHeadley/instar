@@ -11,10 +11,12 @@ const complete = `## Maturation plan
 `;
 
 describe('findMaturationPlanGaps', () => {
-  it('is cited by the live Maturation Path article as a gate, not a ratchet', () => {
+  it('the live Maturation Path article cites a real build-failing check', () => {
+    // A ratchet since the coverage test in src/data/feature-ladders.json's PR: it fails the build on a
+    // switched-off flag with no ladder entry. Before that, only the plan gate had teeth.
     const report = computeCoverage({ registryPath: 'docs/STANDARDS-REGISTRY.md', projectDir: process.cwd() });
     const standard = report.standards.find((entry) => entry.standard.startsWith('Maturation Path —'));
-    expect(standard?.enforcementKind).toBe('gate');
+    expect(standard?.enforcementKind).toBe('ratchet');
     expect(standard?.danglingRefs).toEqual([]);
   });
   it('accepts exactly one complete canonical plan', () => {

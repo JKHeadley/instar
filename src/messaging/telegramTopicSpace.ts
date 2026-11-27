@@ -1,3 +1,4 @@
+import { topicRef } from './shared/topicRef.js';
 /**
  * Telegram topic spaces — an optional second forum group for issue topics.
  *
@@ -78,7 +79,7 @@ export function normalizeInboundThread<T extends InboundMessageLike>(
 export class IssuesChatNotConfiguredError extends Error {
   constructor(topicId: number) {
     super(
-      `issues-chat-not-configured: topic ${topicId} belongs to the issues group, but this ` +
+      `issues-chat-not-configured: ${topicRef(topicId)} belongs to the issues group, but this ` +
       `process has no messaging config issuesChatId. Refusing to send it to the main group.`,
     );
     this.name = 'IssuesChatNotConfiguredError';

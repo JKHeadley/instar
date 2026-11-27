@@ -95,7 +95,7 @@ describe('subscriptions controller — follow-me card wiring', () => {
       calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
       const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
       if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [{
-        id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
+        id: 'adriana', label: 'Adriana subscription', kind: 'url-code-paste', machineId: 'm_mini', machineNickname: 'Mac Mini',
         verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true&client_id=x',
         ttlExpiresAt: '2999-01-01T00:00:00Z', reissueCount: 0,
       }] });
@@ -128,7 +128,7 @@ describe('subscriptions controller — follow-me card wiring', () => {
       calls.push({ url, method: o.method || 'GET', body: o.body ? JSON.parse(o.body) : undefined });
       const ok = (json, status = 200) => Promise.resolve({ ok: true, status, json: () => Promise.resolve(json) });
       if (url.startsWith('/subscription-pool/pending-logins')) return ok({ enabled: true, logins: [{
-        id: 'adriana', label: 'adriana', kind: 'url-code-paste', machineId: 'm_mini',
+        id: 'adriana', label: 'Adriana subscription', kind: 'url-code-paste', machineId: 'm_mini',
         verificationUrl: 'https://claude.com/cai/oauth/authorize?code=true', ttlExpiresAt: '2999-01-01T00:00:00Z', reissueCount: 0,
       }] });
       return ok({ enabled: true, accounts: [], logins: [], offered: [] });

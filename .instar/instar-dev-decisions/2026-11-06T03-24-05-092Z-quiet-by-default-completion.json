@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-06T03:24:05.092Z",
+  "slug": "quiet-by-default-completion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 163,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-notification-selectivity.mjs",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/server/mobileMediaSend.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 109,
+    "deletedLines": 54
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The broad source-stamp sweep classified authenticated human mobile copies as routine automation and media lacked the final gate. Actual admitted ingress now scopes a verified mirror capability; signed bookkeeping distinguishes it from an agent answer."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "evidence": "tests/unit/notification-selectivity.test.ts",
+    "howCaught": "Zero-stray media and signed-device HTTP regressions distinguish admitted human copies from routine producers; source lint prevents general helper minting. Pending-reply and partial quiet receipts settle without retries, following tests/unit/self-action-convergence conventions."
+  },
+  "verdict": "pass"
+}

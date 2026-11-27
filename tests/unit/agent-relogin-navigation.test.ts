@@ -185,6 +185,10 @@ describe('resolveReloginNavigation', () => {
     expect(resolveReloginNavigation('closed', { developmentAgent: true }, 'darwin')).toBe('closed');
     expect(resolveReloginNavigation('agent', {}, 'darwin')).toBe('agent');
     expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'darwin')).toBe('agent-session');
+    // On WSL it is honored only when set explicitly; plain Linux never gets it.
+    expect(resolveReloginNavigation('agent-session', {}, 'linux', true)).toBe('agent-session');
+    expect(resolveReloginNavigation(undefined, { developmentAgent: true }, 'linux', true)).toBe('agent');
+    expect(resolveReloginNavigation('agent-session', {}, 'linux', false)).toBe('closed');
   });
 });
 

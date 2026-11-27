@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "feature-evidence-recording",
+  "sessionId": "5d64ec71-904d-47d7-b933-ec981d537d0d",
+  "timestamp": "2026-11-04T06:27:38.159Z",
+  "artifactPath": "upgrades/side-effects/feature-evidence-recording.md",
+  "artifactSha256": "cce4ccf0fba58f1f1cc5cc80dc8297b6bd1ebe08ba618daa0fde9d1ae23f7404",
+  "specPath": "docs/specs/feature-maturation-ladder.md",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/feature-evidence-recording.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Additive calls with no behaviour change, spread over 85 files including load-bearing paths.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

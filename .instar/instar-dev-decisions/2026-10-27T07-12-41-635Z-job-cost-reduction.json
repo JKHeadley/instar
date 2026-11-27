@@ -1,0 +1,40 @@
+{
+  "ts": "2026-10-27T07:12:41.635Z",
+  "slug": "job-cost-reduction",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scheduler/AgentMdLockFile.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/server/scriptSupervisionRoutes.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+      "howCaught": "A disabled script-supervision rollout skips the new supervisor before session dispatch; unit and E2E boundaries verify no fallback session or run row."
+    },
+    "prNumber": 2391,
+    "component": "JobScheduler"
+  },
+  "verdict": "blocked"
+}

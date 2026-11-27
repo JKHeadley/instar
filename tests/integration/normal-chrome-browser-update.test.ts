@@ -10,13 +10,24 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PostUpdateMigrator, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_SKILL_MARKER } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2, NORMAL_CHROME_BROWSER_SKILL_APPENDIX_HEADING, NORMAL_CHROME_BROWSER_SKILL_MARKER, NORMAL_CHROME_BROWSER_SKILL_OLD_LINUX_HEADING } from '../../src/core/PostUpdateMigrator.js';
 import { BROWSER_SCRIPT_NAMES } from '../../src/commands/init.js';
 import { NORMAL_CHROME_BROWSER_SKILL_CONTENT } from '../../src/data/builtinSkillContent.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const V1_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v1.md');
+const V2_FIXTURE = path.resolve(process.cwd(), 'tests/fixtures/skills/normal-chrome-browser-v2.md');
 const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+// CLAUDE.md reference layout: an existing agent's CLAUDE.md is converted at the
+// end of migrate(), so its feature sections live in .instar/reference/.
+function readAwareness(projectDir: string, doc: string): string {
+  const own = fs.readFileSync(path.join(projectDir, doc), 'utf-8');
+  if (doc !== 'CLAUDE.md') return own;
+  const refDir = path.join(projectDir, '.instar', 'reference');
+  const refs = fs.existsSync(refDir) ? fs.readdirSync(refDir).map(f => fs.readFileSync(path.join(refDir, f), 'utf-8')) : [];
+  return [own, ...refs].join('\n');
+}
 
 describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Windows) reaches an existing agent', () => {
   let projectDir: string;
@@ -51,8 +62,10 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
       expect(fs.readFileSync(p, 'utf-8'), name).not.toBe('#!/bin/bash\necho v1\n');
     }
     for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
-      const md = fs.readFileSync(path.join(projectDir, doc), 'utf-8');
+      const md = readAwareness(projectDir, doc);
       expect(count(md, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(md, doc).toContain('### Account actions: read before acting');
+      expect(md, doc).toContain('Recovery and backup codes are break-glass credentials');
       expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1);
     }
 
@@ -62,7 +75,7 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
     expect(second.upgraded.filter(u => /Normal-Chrome browser section|normal-chrome-browser\/SKILL/.test(u))).toEqual([]);
     expect(fs.readFileSync(path.join(projectDir, '.instar', 'scripts', 'browser', 'ndrive.sh'), 'utf-8')).toContain('Register-ScheduledTask');
     for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
-      expect(count(fs.readFileSync(path.join(projectDir, doc), 'utf-8'), NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(count(readAwareness(projectDir, doc), NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
     }
   });
 
@@ -75,5 +88,41 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
     expect(skill).toContain('## My notes\n\nkeep this');
     expect(count(skill, NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(1);
     expect(fs.readFileSync(path.join(path.dirname(skillPath()), 'SKILL.shipped.md'), 'utf-8')).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+  });
+
+  describe('from the macOS + Windows release', () => {
+    const v2 = fs.readFileSync(V2_FIXTURE, 'utf-8');
+    const noAppendix = v2.slice(0, v2.indexOf(NORMAL_CHROME_BROWSER_SKILL_APPENDIX_HEADING));
+    const homes: Array<[string, string, boolean]> = [
+      ['the shipped v2 skill', v2, false],
+      ['an edited v2 skill with the appendix', `${v2}\n## My notes\n\nkeep this\n`, true],
+      ['an edited copy without the appendix', `${noAppendix}\n## My notes\n\nkeep this\n`, true],
+    ];
+
+    it.each(homes)('%s ends with the Linux text once and all the scripts, idempotently', (_name, skillText, edited) => {
+      fs.writeFileSync(skillPath(), skillText);
+      fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md — old agent\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2()}`);
+      fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), `# AGENTS.md — old agent\n${NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V2().trimEnd()}\n`);
+      const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: false, projectName: 'old-agent' });
+      expect(m.migrate().errors.filter(e => /browser|normal-chrome/i.test(e))).toEqual([]);
+      const skill = fs.readFileSync(skillPath(), 'utf-8');
+      if (edited) expect(skill).toContain('## My notes\n\nkeep this');
+      else expect(skill).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
+      expect(count(skill, NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(1);
+      expect(skill).not.toContain(NORMAL_CHROME_BROWSER_SKILL_OLD_LINUX_HEADING);
+      for (const name of ['xdrive.sh', 'x-drive.py', 'xdrive-provision.sh']) {
+        expect(fs.statSync(path.join(projectDir, '.instar', 'scripts', 'browser', name)).mode & 0o111, name).not.toBe(0);
+      }
+      for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
+        const md = readAwareness(projectDir, doc);
+        expect(count(md, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(md, doc).toContain('### Account actions: read before acting');
+      expect(md, doc).toContain('Recovery and backup codes are break-glass credentials');
+        expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2);
+      }
+      const settled = [fs.readFileSync(skillPath(), 'utf-8'), readAwareness(projectDir, 'CLAUDE.md')];
+      m.migrate();
+      expect([fs.readFileSync(skillPath(), 'utf-8'), readAwareness(projectDir, 'CLAUDE.md')]).toEqual(settled);
+    });
   });
 });

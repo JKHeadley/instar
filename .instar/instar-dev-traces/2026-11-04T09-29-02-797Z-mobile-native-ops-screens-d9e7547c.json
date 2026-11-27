@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "mobile-native-ops-screens",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T09:29:02.797Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-ops-screens.md",
+  "artifactSha256": "6a537c01a582b1612f43b46e1649af83f6c82ef70ff9342fa3513ebe5ffb5ac8",
+  "specPath": "docs/specs/mobile-native-ops-screens.md",
+  "coveredFiles": [
+    "tests/unit/mobile-session-terminal.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only: the session-terminal owner-only count now includes the three ops reads.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

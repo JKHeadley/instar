@@ -66,6 +66,36 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    // ContextBudgetSentinel (docs/specs/context-budget-layered-summaries.md §7.8, §9.3):
+    // reconciles quarantined context folds (verified termination before any release) and
+    // keeps containment on any unknown. Ships dark; its heartbeat is a fold precondition,
+    // so off ⇒ no fold can begin. Built and ticked only when on (no runtime registration).
+    key: 'contextBudget.sentinel', kind: 'config',
+    configPath: 'contextBudget.sentinel.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'ContextBudgetSentinel',
+    description: 'Context Budget sentinel: reconciles quarantined context folds and escalates torn fold records; off ⇒ no fold can begin.',
+  },
+  {
+    // Context Budget backfill lane (docs/specs/context-budget-layered-summaries.md §6.1, decision 9, S7):
+    // rebuilds existing topics' Anchor and ledger from TopicMemory on the topic's owner, at most 20 topics
+    // a day, entries backfilled-unconfirmed. Ships dark; built with the layers and ticked always, it does
+    // no work while off (no runtime registration).
+    key: 'contextBudget.backfill', kind: 'config',
+    configPath: 'contextBudget.backfill.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 600_000, process: 'server', expectRuntime: false, liveConfig: true,
+    component: 'BackfillLane',
+    description: 'Context Budget backfill lane: rebuilds existing conversations\' purpose and decisions from history as unconfirmed entries; off ⇒ no work.',
+  },
+  {
+    key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'JobCoverageMonitor',
+    description: 'Signed peer job-catalog observation and lease-handoff coverage alert on multi-machine agents.',
+  },
+  {
     key: 'multiMachine.identityReannounce.identityDivergenceMonitor',
     kind: 'config',
     configPath: 'multiMachine.identityReannounce.enabled',
@@ -570,6 +600,24 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Machine-coherence guard evaluator: compares version/resolved-flag/protocol/manifest across the agent\'s own ONLINE machines (the F4 skew class) and will raise ONE episode-scoped attention item from exactly ONE elected machine. Signal-only; MUTATES NOTHING.',
   },
   {
+    // Codex device-limit tripwire (codex-device-limit-tripwire §9). `enabled` is
+    // deliberately OMITTED from ConfigDefaults — the runtime resolves it through the
+    // developmentAgent dark-feature gate (live on a dev agent, off on the fleet until
+    // graduation), re-read live on every read and tick. defaultEnabled:false reflects the
+    // fleet default. expectRuntime:false — it registers no runtime getter; its state is the
+    // `deviceLimit` block on GET /subscription-pool. NOT loadBearing: it only reduces autonomy
+    // and nothing depends on it being on.
+    key: 'subscriptionPool.codexDeviceLimit.enabled',
+    kind: 'config',
+    configPath: 'subscriptionPool.codexDeviceLimit.enabled',
+    defaultEnabled: false,
+    liveConfig: true,
+    process: 'server',
+    expectRuntime: false,
+    component: 'CodexDeviceLimitTripwire',
+    description: 'Codex device-limit tripwire: Jev (Luna referee) judges the Codex app-server\'s own refusal; two separate fresh device_limit verdicts 5–60 min apart, with another account here reading clean, bench that account on this machine only (no placement, no repair, sessions moved). Reduces autonomy only; two clean reads release.',
+  },
+  {
     // `enabled` is deliberately OMITTED from ConfigDefaults — the runtime resolves
     // it through the developmentAgent dark-feature gate (dark on the fleet, live on
     // a dev agent). defaultEnabled:false reflects the fleet default. Constructed
@@ -702,6 +750,21 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Reaps orphaned MCP server processes.',
   },
   {
+    key: 'monitoring.codexArmSessionSweeper.enabled',
+    kind: 'config',
+    configPath: 'monitoring.codexArmSessionSweeper.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'monitoring.codexArmSessionSweeper.dryRun',
+    expectedTickMs: 600_000,
+    process: 'server',
+    // TRUE because server.ts registers a live getter (enabled/dryRun/lastTickAt), so the
+    // declared cadence is actually evaluated — a declared-but-inert expectedTickMs was
+    // the review's finding #5.
+    expectRuntime: true,
+    component: 'CodexArmSessionSweeper',
+    description: 'Closes orphaned instar-codex-arm-* tmux sessions codexHookArm leaks when its creator dies before teardown (an update restart). Reads tmux, not instar\'s session registry.',
+  },
+  {
     key: 'monitoring.staleBackstop.enabled',
     kind: 'config',
     configPath: 'monitoring.staleBackstop.enabled',
@@ -726,11 +789,11 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     key: 'monitoring.bootHealthBeacon.enabled',
     kind: 'config',
     configPath: 'monitoring.bootHealthBeacon.enabled',
-    defaultEnabled: false,
+    defaultEnabled: true,
     process: 'server',
     expectRuntime: false,
     component: 'BootHealthBeacon',
-    description: 'Boot-time health beacon endpoint (dev-gated, CMT-1438).',
+    description: 'Boot-time listener: opens the port at boot start and answers a typed starting state (on for every agent since 2026-11-16; enabled:false turns it off).',
   },
   {
     key: 'monitoring.blockerLifecycleLedger.enabled',
@@ -763,18 +826,6 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Detects provider rate-limit walls and schedules recovery.',
   },
   {
-    key: 'monitoring.proactiveAutonomousCompaction.enabled',
-    kind: 'config',
-    configPath: 'monitoring.proactiveAutonomousCompaction.enabled',
-    defaultEnabled: false,
-    dryRunConfigPath: 'monitoring.proactiveAutonomousCompaction.dryRun',
-    expectedTickMs: 60_000,
-    process: 'server',
-    expectRuntime: false,
-    component: 'ProactiveCompactionSentinel',
-    description: 'At an idle boundary, proactively compacts explicitly opted-in autonomous Claude sessions before they reach the context wall; ships dark and dry-run first.',
-  },
-  {
     key: 'monitoring.parallelWorkSentinel.enabled',
     kind: 'config',
     configPath: 'monitoring.parallelWorkSentinel.enabled',
@@ -800,6 +851,36 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     expectRuntime: false,
     component: 'ResourceLedger',
     description: 'CPU/memory sampling + rate-limit-event ledger (read-only observability).',
+  },
+  {
+    key: 'machineMaintenance.enabled',
+    kind: 'config',
+    configPath: 'machineMaintenance.enabled',
+    defaultEnabled: false, // dark on the fleet; ON for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'DrainRehearsal',
+    description: 'Machine self-maintenance, watch-only: a nightly paper drain records what a scheduled restart would have done. It cannot restart a machine or stop work.',
+  },
+  {
+    key: 'monitoring.workAdmission.enabled',
+    kind: 'config',
+    configPath: 'monitoring.workAdmission.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'WorkAdmission',
+    description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session; dry-run logs would-refuse only.',
+  },
+  {
+    key: 'monitoring.overloadShed.enabled',
+    kind: 'config',
+    configPath: 'monitoring.overloadShed.enabled',
+    defaultEnabled: false, // dark on the fleet; ON (dry-run) for dev agents via the developmentAgent gate
+    process: 'server',
+    expectRuntime: false,
+    component: 'OverloadShedPlanner',
+    description: 'Overload shed (trustworthy-machine-load Part D): moves existing conversations off a machine that has stayed overloaded, one at a time with a 2/hour breaker; dry-run logs would-move only.',
   },
   {
     key: 'monitoring.processFootprintMonitor.enabled',
@@ -1227,10 +1308,15 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'TrustRaiseGuard', reason: 'Pure classifiers and the OperatorProof check called inline by the trust owners (AdaptiveTrust, AutonomyProfileManager, TrustRecovery) and the setting routes (trust-journey stage 0). Always-on authority floor with no enable flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
+  { component: 'pipeErrorGuard', reason: 'Stateless stream helpers that attach error listeners so a closed pipe cannot become an uncaught exception. Always on, with no enable flag, no state to report, and no block or allow decision over agent behavior.' },
+  { component: 'WedgeMonitor', reason: 'Machine self-maintenance Part E wedge sampler, dry-run. It has no enable flag of its own: it is constructed inside the same machineMaintenance.enabled gate as DrainRehearsal, whose GUARD_MANIFEST row already reports that posture, and it can act on nothing (no rung exists). Its live state is GET /machine-maintenance -> wedge.' },
+  { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
   { component: 'AgentIdentityDivergenceDetector', reason: 'Pure decision function over injected peer observations (agree / disagree / cannot-tell). It IS wired at boot in AgentServer and raises one deduped Attention item on a real split, but it registers no runtime getter and carries no enabled flag, so there is nothing for the /guards inventory to report a posture FOR. It moves to GUARD_MANIFEST if it ever gains a config gate or a status surface.' },
   { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },
   { component: 'DeferralPatternSentinel', reason: 'Increment-1 core only: pure injected-deps detector over the existing judgment-provenance store; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. It moves to GUARD_MANIFEST when a later increment wires it at boot.' },
+  { component: 'promisedUpdateDetector', reason: 'Pure stateless parser (promise cue + concrete time → instant) feeding PromisedUpdateCapture, which only records a dated commitment; it blocks, edits or delays nothing and has no runtime getter, so there is no posture to report. The follow-through it feeds is the check-in reminder, gated by commitments.checkInReminder.' },
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
   { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },
@@ -1265,6 +1351,8 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'SpawnRequestManager', reason: 'Cross-session spawn coordination; session mechanics, not a guard.' },
   { component: 'SessionManager', reason: 'Core session lifecycle engine; the thing guards act ON, not a guard.' },
   { component: 'StateManager', reason: 'Core state persistence; storage layer.' },
+  { component: 'SigninProfileGuard', reason: 'Always-on profile ownership invariant and generated native hook; stateless boundary validation, no boot lifecycle or posture switch.' },
+  { component: 'BrowserMcpProfileGuard', reason: 'Stateless mandatory MCP startup preflight over registry ownership; not an independently scheduled runtime monitor or switch.' },
   { component: 'SourceTreeGuard', reason: 'Hard invariant on destructive ops against the source tree — always-on by design with NO off switch, so posture (on/off) is meaningless for it.' },
   { component: 'SafeGitExecutor', reason: 'Single-funnel for destructive git ops; hard invariant, no off switch, posture meaningless.' },
   { component: 'SafeFsExecutor', reason: 'Single-funnel for destructive fs ops; hard invariant, no off switch, posture meaningless.' },
@@ -1297,8 +1385,10 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'PromptGuard', reason: 'Prompt-injection defense helpers (filtering/output validation) for LLM conflict resolution; pure library, no boot lifecycle.' },
   { component: 'QuotaExhaustionDetector', reason: 'Post-mortem classifier of why a dead session died (pattern-matching over tmux output); pure library, no lifecycle or switch.' },
   { component: 'ReapGuard', reason: 'Stateless KEEP-check helper consulted by the single ReapAuthority before any terminate; precondition logic inside the reap path, not a posture guard itself.' },
+  { component: 'PlannedRestartVerifyGuard', reason: 'Shared file/PID precondition helper consulted by existing supervisor and foreground restart authorities; no independent boot lifecycle or switch.' },
   { component: 'RevertDetector', reason: 'Read-only git revert scan feeding the FailureLedger; failure-learning ingestion plumbing, fail-open, no operator switch.' },
   { component: 'SelfViolationDetector', reason: 'Observe-only detector arm of the correctionLearning.selfViolationSignal sub-guard, which IS declared in the manifest under component CorrectionLearningLoop.' },
+  { component: 'SkillLearningSentinel', reason: 'Skill-learning sentinel (docs/specs/skill-learning-sentinel.md): observes recurring operator requests and, in shadow, writes proposals under .instar/skill-learning/proposals; it never blocks, delays or rewrites a message and takes no protective action over agent behavior. Its kill switch (monitoring.skillLearning.enabled) and live state are reported by GET /skills/learned, not the /guards inventory.' },
   { component: 'SessionActivitySentinel', reason: 'Mid-session activity digests + completion synthesis; session observability/digest feature, takes no protective action.' },
   { component: 'SessionServerGuard', reason: 'Pure decision helper validating session-server actions; stateless validation logic, no boot lifecycle or enabled switch.' },
   { component: 'SessionSummarySentinel', reason: 'Real-time session summaries for intelligent message routing (session: "best"); routing-quality plumbing, not a protective guard.' },

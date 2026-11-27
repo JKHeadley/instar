@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-16T00:02:05.479Z",
+  "slug": "mac-qr-pairing",
+  "carriers": {
+    "CMT-1825": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Android app: add Pair a computer (scan the Mac QR, mint, seal, drop, approve) with the same design as docs/specs/mac-qr-pairing.md, after the iPhone + Mac build ships"
+    },
+    "CMT-1826": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Tell the trust-journey spec owner (worktree .worktrees/trust-journey-spec, docs/specs/trust-journey.md G9) that pairing codes become bearer- or owner-device-mintable (owner device mints a code bound to one computer key; no new approval path) once mac-qr-pairing merges, and check G9 is updated"
+    }
+  }
+}

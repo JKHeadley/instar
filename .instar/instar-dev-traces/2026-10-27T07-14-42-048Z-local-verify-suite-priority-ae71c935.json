@@ -1,0 +1,50 @@
+{
+  "version": 3,
+  "slug": "local-verify-suite-priority",
+  "sessionId": "2b2781fe-a0ae-4fac-96c1-86978e4139d8",
+  "timestamp": "2026-10-27T07:14:42.048Z",
+  "artifactPath": "upgrades/side-effects/local-verify-suite-priority.md",
+  "artifactSha256": "ab5ed109d92c94d690e78618d8df4f5124efed63ecc5f52a307d1300ee60dadb",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-10-27T07-13-33-224Z-local-verify-suite-priority.json",
+    "docs/specs/test-runner-concurrency-bound.eli16.md",
+    "docs/specs/test-runner-concurrency-bound.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/hostTestRunnerSemaphore.ts",
+    "src/data/state-coherence-registry.json",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/serviceSeams.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/e2e/test-runner-limiter-lifecycle.test.ts",
+    "tests/integration/test-runner-limiter-route.test.ts",
+    "tests/setup/test-runner-semaphore.globalSetup.ts",
+    "tests/unit/host-test-runner-semaphore.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/suiteSlotSeam.test.ts",
+    "tests/unit/test-runner-budget-awareness.test.ts",
+    "upgrades/side-effects/local-verify-suite-priority.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Host-wide resource admission changes, with bounded machine-local state and migration; reviewed under the approved limiter spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/test-runner-concurrency-bound-convergence.md",
+      "iterations": 10,
+      "verified": true
+    }
+  }
+}

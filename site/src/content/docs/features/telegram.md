@@ -78,6 +78,8 @@ Inbound voice messages are auto-transcribed via your configured voice provider. 
 
 ## API
 
+Sessions reply through `POST /telegram/reply/:topicId`:
+
 ```bash
 # List topic-session mappings
 curl localhost:4040/telegram/topics
@@ -106,6 +108,16 @@ curl 'localhost:4040/telegram/search?q=deploy&limit=20'
 # Outbound message audit log statistics
 curl localhost:4040/telegram/log-stats
 ```
+
+## Linking back to a message
+
+When an agent says it is still waiting on you for something, the message must carry the ask: a link to where it was asked (or to the Work Board card that holds it) and one plain line restating what is needed and the reply that settles it. To make that possible, every message an agent sends through `POST /telegram/reply/:topicId` comes back with its own link (`messageLink`), and the send script prints it: `Sent 212 chars to topic 4521 (message 90312) link: https://t.me/c/…`. Slack replies print their permalink the same way.
+
+For a message sent earlier, `GET /messages/link?platform=telegram&topicId=N&messageId=M` builds the link from its ids. The answer says whether this machine's message log holds that message (`verified: true` with the message's sender and text in `matched`, or `"not-in-local-history"`), so an agent can check that the link points at the ask it means. The same route builds Slack permalinks (`platform=slack&channel=…&ts=…`), Work Board card links (`platform=card&cardId=…`) and app conversation links (`platform=app&conversationKey=…`). `GET /telegram/search` rows carry `messageLink` too.
+
+Only a supergroup has links to single messages. In a private chat or a basic group the route answers `409 not-linkable` (`chat-not-linkable`) and the agent links the card instead, or restates the ask in full and says no link exists. Topics in the separate Issues group link into that group.
+
+On development agents the outbound reviewer checks this (`B26_WAITING_ASK_UNLINKED`): a reply that points back at an ask you still owe, without the link or the restatement, is handed back to the agent before it sends. It judges by meaning, and it is a nudge: the agent can send unchanged with a written reason. The switch is `toneGate.waitingAskLinks.enabled`.
 
 ## Telegram Web K drift
 

@@ -45,9 +45,7 @@ import {
   DP_PROJECT_DRIFT_CHECK,
   DP_INPUT_GUARD,
   DP_MESSAGE_SENTINEL_CLASSIFY,
-  DP_MOVE_INTENT_CLASSIFY,
   DP_HUB_INTENT_CLASSIFY,
-  DP_PROFILE_INTENT_CLASSIFY,
   DP_INPUT_CLASSIFY,
   DP_SESSION_SUMMARY_EXTRACT,
   DP_SLACK_STALL_CONFIRM,
@@ -56,7 +54,7 @@ import {
   DP_OPEN_CONVERSATION_BRIEF,
   DP_TOPIC_SUMMARIZE,
   DP_DASHBOARD_INSIGHT,
-  DP_PROMPT_INJECTION_DETECT,
+  DP_TERMINAL_PROMPT_DETECT,
   DP_WARRANTS_REPLY_GATE,
   DP_WATCHDOG_STUCK_JUDGE,
   DP_COMMITMENT_DETECT,
@@ -76,6 +74,7 @@ import {
   getRule,
   findWiredWithoutGraders,
   findGradingContradictions,
+  canonicalDecisionPoint,
 } from '../../src/data/provenanceCoverage.js';
 // eslint-disable-next-line import/no-relative-packages
 import { stripComments, isOutOfScope } from '../../scripts/lint-llm-attribution.js';
@@ -96,6 +95,17 @@ function walkSrc(): string[] {
   return out;
 }
 
+let sourceFiles: string[] | undefined;
+const getSourceFiles = () => sourceFiles ??= walkSrc();
+const sourceText = new Map<string, string>();
+function sourceWithoutComments(file: string): string {
+  const cached = sourceText.get(file);
+  if (cached !== undefined) return cached;
+  const text = stripComments(fs.readFileSync(file, 'utf-8'));
+  sourceText.set(file, text);
+  return text;
+}
+
 const baseOf = (component: string): string => component.split('/')[0].replace(/^server:/, '').trim();
 
 // ── Pinned baselines (2026-07-11, the census seed). SHRINK-ONLY: wiring an
@@ -109,21 +119,39 @@ const PENDING_BASELINE = [
   'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
   'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
+  // conversation-graph-suggestions (2026-11-13): advice-only groupings, graded by owner Accept/Reject until enrolled.
+  'conversation-graph-suggestions::ConversationGraphSuggestions::backlog:decision-quality-enrolment',
+  // never-silent-conversation: verdicts are logged per incident today; enrolment rides the same backlog (CMT-1781)
+  'never-silent-conversation-judge::ConversationSilenceJudge::backlog:decision-quality-enrolment',
+  // spec-approval-constitution-check (Echo Bugs topic 10000002750): the B24 Work Board card judge.
+  'work-board-spec-approval-judge::WorkBoardSpecApprovalJudge::backlog:decision-quality-enrolment',
+  // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
+  'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
+  // context-budget-layered-summaries Phase 1 S9 (2026-11-10): H3; enrolment queued with the Phase 2 fold probes.
+  'context-layer-h3::ContextLayerH3::backlog:decision-quality-enrolment',
+  // context-budget Phase 2 practice folds: counts-only rows today; enrolment queued with the same backlog.
+  'fold-audit::FoldAudit::backlog:decision-quality-enrolment',
+  'fold-probe::FoldProbe::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
+  'skill-learning-draft::skillLearning.drafter::backlog:decision-quality-enrolment',
+  'skill-learning-review::skillLearning.reviewer::backlog:decision-quality-enrolment',
   'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
+  'org-policy-judge::OrgPolicyJudge::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   // feedback-triage-and-execution Phase 1 (2026-10-08): dedicated cross-family provider bypasses the router seam.
   'feedback-triage-second-opinion::FeedbackTriageSecondOpinion::backlog:decision-quality-enrolment',
+  'ecosystem-idea-review::EcosystemIdeaReview::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
+  'script-job-supervision::ScriptJobSupervisor::backlog:decision-quality-enrolment',
+  'script-job-outage-backup::JobTriageBackupCheck::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
-  'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
@@ -136,6 +164,7 @@ const EXEMPT_BASELINE = [
   'input-detector-alias::InputDetector::deterministic-only',
   'integration-gate-delegate::IntegrationGate::deterministic-only',
   'interactive-pool-canary-judge::InteractivePoolCanaryJudge::no-decision-content',
+  'job-anomaly-narration::JobAnomalyNarrator::no-decision-content',
   'promise-beacon-status-line::PromiseBeacon::deterministic-only',
 ].sort();
 
@@ -426,35 +455,11 @@ describe('message-sentinel-classify — bounded interrupt-intent enrollment', ()
   });
 });
 
-describe('move-intent-classify — bounded relocation-intent enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_MOVE_INTENT_CLASSIFY);
-    expect(entry?.status).toBe('wired');
-    expect(entry?.component).toBe('MoveIntentClassifier');
-    expect(entry?.volumeClass).toBe('budget:250');
-    expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
-  });
-});
-
 describe('hub-intent-classify — bounded bind-intent enrollment', () => {
   it('is wired with a bounded valve and explicit measurement-only posture', () => {
     const entry = getCensusEntry(DP_HUB_INTENT_CLASSIFY);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('HubIntentClassifier');
-    expect(entry?.volumeClass).toBe('budget:250');
-    expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
-  });
-});
-
-describe('profile-intent-classify — bounded topic-profile enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_PROFILE_INTENT_CLASSIFY);
-    expect(entry?.status).toBe('wired');
-    expect(entry?.component).toBe('ProfileIntentClassifier');
     expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
@@ -549,15 +554,25 @@ describe('dashboard-insight — bounded awareness-authoring enrollment', () => {
   });
 });
 
-describe('prompt-injection-detect — bounded terminal-prompt enrollment', () => {
-  it('is wired with a bounded valve and explicit measurement-only posture', () => {
-    const entry = getCensusEntry(DP_PROMPT_INJECTION_DETECT);
+describe('terminal-prompt-detect — bounded terminal-prompt enrollment (CMT-1677)', () => {
+  it('is wired with a bounded valve and graded by the PromptGate pane-outcome rules', () => {
+    const entry = getCensusEntry(DP_TERMINAL_PROMPT_DETECT);
+    expect(DP_TERMINAL_PROMPT_DETECT).toBe('terminal-prompt-detect');
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('PromptGate');
     expect(entry?.volumeClass).toBe('budget:500');
     expect(entry?.contentClass).toBe('content-bearing');
-    expect(entry?.gradingPosture).toBe('measurement-only');
-    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+    expect(entry?.gradingPosture).toBeUndefined();
+    for (const id of ['terminal-prompt-progressed-v1', 'terminal-prompt-unresolved-v1']) {
+      expect(getRule(id)).toMatchObject({ decisionPoint: DP_TERMINAL_PROMPT_DETECT, owningComponent: 'PromptGate', windowMs: 15 * 60 * 1000 });
+    }
+  });
+
+  it('keeps the retired id readable as an alias, never as its own census entry', () => {
+    expect(canonicalDecisionPoint('prompt-injection-detect')).toBe(DP_TERMINAL_PROMPT_DETECT);
+    expect(canonicalDecisionPoint('messaging-tone-gate')).toBe('messaging-tone-gate');
+    expect(getCensusEntry('prompt-injection-detect')?.decisionPoint).toBe(DP_TERMINAL_PROMPT_DETECT);
+    expect(PROVENANCE_COVERAGE.some((e) => e.decisionPoint === 'prompt-injection-detect')).toBe(false);
   });
 });
 
@@ -868,20 +883,21 @@ describe('wired verification — static half (§5.6: typed registration, not tru
   });
 
   it('wired points not in WIRED_AWAITING_ENROLLMENT have an enrolling source importing the DP_* constant + referencing provenance enrollment', () => {
-    const files = walkSrc().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
+    const files = getSourceFiles().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
     for (const e of wiredEntries) {
       if (WIRED_AWAITING_ENROLLMENT.includes(e.decisionPoint)) continue;
       const constName = constNameFor(e.decisionPoint);
-      const enrolling = files.filter((f) => {
-        const text = stripComments(fs.readFileSync(f, 'utf-8'));
-        return new RegExp(`\\b${constName}\\b`).test(text) && /provenance\s*:/.test(text);
+      const reference = new RegExp(`\\b${constName}\\b`);
+      const enrolling = files.some((f) => {
+        const text = sourceWithoutComments(f);
+        return reference.test(text) && /provenance\s*:/.test(text);
       });
       expect(
-        enrolling.length,
+        enrolling,
         `${e.decisionPoint} is declared wired but NO src file imports ${constName} and references ` +
           "an options.provenance enrollment — a wired declaration is verified, not trusted (§5.6). " +
           'Either wire the callsite or move the point back to pending.',
-      ).toBeGreaterThan(0);
+      ).toBe(true);
     }
   });
 
@@ -893,11 +909,12 @@ describe('wired verification — static half (§5.6: typed registration, not tru
     // …and must still be genuinely un-enrolled: once the enrolling source lands
     // (build phases P7/P8), REMOVE the point from WIRED_AWAITING_ENROLLMENT so
     // the typed-import verification above starts enforcing for it.
-    const files = walkSrc().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
+    const files = getSourceFiles().filter((f) => path.relative(ROOT, f) !== CENSUS_REL);
     const stale: string[] = [];
     for (const dp of WIRED_AWAITING_ENROLLMENT) {
       const constName = constNameFor(dp);
-      const referenced = files.some((f) => new RegExp(`\\b${constName}\\b`).test(stripComments(fs.readFileSync(f, 'utf-8'))));
+      const reference = new RegExp(`\\b${constName}\\b`);
+      const referenced = files.some((f) => reference.test(sourceWithoutComments(f)));
       if (referenced) stale.push(dp);
     }
     expect(
@@ -914,10 +931,10 @@ describe('wired verification — static half (§5.6: typed registration, not tru
     // DuplicateSessionReconciler — direct provenance(...) CALLS, not router
     // enrollment) stay out of scope by construction.
     const offenders: string[] = [];
-    for (const f of walkSrc()) {
+    for (const f of getSourceFiles()) {
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
       if (rel === CENSUS_REL || isOutOfScope(rel)) continue;
-      const text = stripComments(fs.readFileSync(f, 'utf-8'));
+      const text = sourceWithoutComments(f);
       const re = /provenance\s*:\s*\{[\s\S]{0,300}?decisionPoint\s*:\s*(['"`])([^'"`]+)\1/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) offenders.push(`${rel}: '${m[2]}'`);
@@ -933,10 +950,10 @@ describe('wired verification — static half (§5.6: typed registration, not tru
 describe('informational — declared points vs discovered attribution callsites (codex r7: a drift hint for review, never a gate)', () => {
   it('logs per-component callsite-count vs declared-decision-point mismatches (non-blocking)', () => {
     const counts = new Map<string, number>();
-    for (const f of walkSrc()) {
+    for (const f of getSourceFiles()) {
       const rel = path.relative(ROOT, f).split(path.sep).join('/');
       if (isOutOfScope(rel)) continue;
-      const text = stripComments(fs.readFileSync(f, 'utf-8'));
+      const text = sourceWithoutComments(f);
       const re = /attribution[\s\S]{0,160}?component\s*:\s*(['"`])([^'"`]+)\1/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(text)) !== null) {

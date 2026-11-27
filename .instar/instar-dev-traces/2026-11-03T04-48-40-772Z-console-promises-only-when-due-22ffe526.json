@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "console-promises-only-when-due",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-03T04:48:40.772Z",
+  "artifactPath": "upgrades/side-effects/console-promises-only-when-due.md",
+  "artifactSha256": "90b654346dffca22e14a37280d8f8b8f3a0c2c9c2c9f9a5c8cb308b76206a353",
+  "coveredFiles": [
+    "dashboard/console/home-model.js",
+    "dashboard/console/promises-model.js",
+    "dashboard/console/promises.js",
+    "tests/unit/console-dom.test.ts",
+    "tests/unit/console-home-model.test.ts",
+    "tests/unit/console-promises.test.ts",
+    "upgrades/next/console-promises-only-when-due.md",
+    "upgrades/side-effects/console-promises-only-when-due.eli16.md",
+    "upgrades/side-effects/console-promises-only-when-due.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console display and a removed control; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-promises-only-when-due.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-promises-only-when-due.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

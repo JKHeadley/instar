@@ -1,3 +1,6 @@
+import { assertRecoveryBootstrapWrite, preserveRecoveryBootstrap, enrolledRecoveryBootstrapMode } from '../recovery/RecoveryBootstrapBindings.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { beginRecoveryAutostartUpdate, beginRecoveryAutostartBindingUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 /**
  * Interactive setup wizard — the one-line onboarding experience.
  *
@@ -16,7 +19,9 @@
  * No flags needed. No manual config editing. Just answers.
  */
 
+import { isBlankAgentHome, markNewAgent } from '../recommended/offerPrerequisites.js';
 import { execFileSync, execSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,6 +58,8 @@ import {
 } from './discovery.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { autoStartRefusalReason, setLastAutoStartRefusal, withTeardownLock } from '../core/ThrowawayAgentGuard.js';
+import { alwaysAvailableRefusal } from '../core/alwaysAvailable.js';
 
 /**
  * Try allocatePort from the registry, fall back to scanning for a free port.
@@ -798,17 +805,52 @@ export function autoStartNeedsLifeline(plistContent: string, hasTelegramConfigur
   return hasTelegramConfigured && !plistContent.includes('<string>lifeline</string>');
 }
 
-export function installAutoStart(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+export function installAutoStart(
+  projectName: string,
+  projectDir: string,
+  hasTelegram: boolean,
+  opts: { force?: boolean; noStart?: boolean } = {},
+): boolean {
   const platform = process.platform;
 
-  if (platform === 'darwin') {
-    return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
-  } else if (platform === 'linux') {
-    return installLinuxSystemdService(projectName, projectDir, hasTelegram);
-  } else {
+  // Test-agent leak guard (docs/specs/test-agent-leak-guard.md). EVERY writer of
+  // the autostart unit funnels through here — the CLI, the server and lifeline
+  // startup self-heals, and the PostUpdateMigrator regenerations — so this one
+  // check covers them all. A throwaway agent (temp-folder project, sandboxed
+  // HOME, or a recorded throwaway marker) must never load a keep-alive job into
+  // the REAL user launchd/systemd: the domain belongs to the account, not to
+  // $HOME, and launchd then runs the job with the account's real HOME and login.
+  // The check-and-write runs under the same per-agent lock as the expiry
+  // teardown, so an install can never cross a teardown in progress.
+  const locked = withTeardownLock(projectDir, () => {
+    // Always available (create-agent-accounts-and-always-on §B.5): while a LaunchDaemon runs this
+    // agent, its per-user LaunchAgent stays off. --force does not override this: two copies of one
+    // agent would fight over its state folder.
+    const aaRefusal = platform === 'darwin' ? alwaysAvailableRefusal(projectName) : null;
+    if (aaRefusal && opts.noStart) {
+      // An update refreshing the boot wrapper (noStart): the daemon runs that same wrapper, so it is
+      // refreshed; the per-user plist is left where the helper put it and nothing is loaded. Recovery
+      // bindings are restaged the next time the per-user start item is installed (after turn-off).
+      setLastAutoStartRefusal(null);
+      installBootWrapper(projectDir);
+      return true;
+    }
+    const refusal = aaRefusal ?? autoStartRefusalReason(projectDir, { force: opts.force });
+    setLastAutoStartRefusal(refusal);
+    if (refusal) return false;
+    if (platform === 'darwin') {
+      return installMacOSLaunchAgent(projectName, projectDir, hasTelegram, opts.noStart === true);
+    } else if (platform === 'linux') {
+      return installLinuxSystemdService(projectName, projectDir, hasTelegram, opts.noStart === true);
+    }
     // Windows or other — no auto-start support yet
     return false;
+  });
+  if (!locked.ran) {
+    setLastAutoStartRefusal('a throwaway-agent teardown is in progress for this agent');
+    return false;
   }
+  return locked.value;
 }
 
 /**
@@ -1021,7 +1063,9 @@ function pickDurableNodePath(candidates: string[], nativeModulePath?: string): s
  *
  * Returns the symlink path.
  */
-export function ensureStableNodeSymlink(projectDir: string): string {
+export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target:string)=>void): string {
+  if(!beforeWrite&&preserveRecoveryBootstrap(projectDir))return path.join(projectDir,'.instar','bin','node');
+  if(beforeWrite)assertRecoveryBootstrapWrite(projectDir);
   const binDir = path.join(projectDir, '.instar', 'bin');
   const symlinkPath = path.join(binDir, 'node');
 
@@ -1045,6 +1089,7 @@ export function ensureStableNodeSymlink(projectDir: string): string {
     throw new Error(`No real Node binary found outside managed symlink ${symlinkPath}`);
   }
 
+  beforeWrite?.(path.resolve(durablePath));
   // Check if symlink exists and already points to a valid target.
   try {
     const target = fs.readlinkSync(symlinkPath);
@@ -1082,52 +1127,6 @@ export function ensureStableNodeSymlink(projectDir: string): string {
   return symlinkPath;
 }
 
-function findInstarCli(): string {
-  // Find the actual instar CLI entry point
-  // CRITICAL: Never resolve to an npx cache path. When users run `npx instar setup`,
-  // import.meta.url points to the npx cache. If we bake that path into the launchd
-  // plist, `npm install -g` updates won't reach the running binary (the npx cache
-  // is a separate copy). This caused an infinite update→notify→restart loop (v0.12.12).
-  try {
-    const globalPath = execFileSync('which', ['instar'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    if (globalPath && !globalPath.includes('.npm/_npx')) {
-      return globalPath;
-    }
-  } catch { /* not global */ }
-
-  // Try resolving from npm's global prefix (works even when `which` fails)
-  try {
-    const prefix = execFileSync('npm', ['prefix', '-g'], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    const globalCli = path.join(prefix, 'lib', 'node_modules', 'instar', 'dist', 'cli.js');
-    if (fs.existsSync(globalCli)) {
-      return globalCli;
-    }
-  } catch { /* npm prefix failed */ }
-
-  // Fallback: use the dist/cli.js from the npm package — but ONLY if not in npx cache
-  const cliPath = path.resolve(__dirname, '../cli.js');
-  if (fs.existsSync(cliPath) && !cliPath.includes('.npm/_npx')) {
-    return cliPath;
-  }
-
-  // Last resort: if everything points to npx cache, warn and use bare command name.
-  // The plist will need PATH to resolve it, but at least it won't be pinned to a stale cache.
-  if (cliPath.includes('.npm/_npx')) {
-    console.warn(
-      '[setup] WARNING: Running from npx cache. The launchd plist will use bare "instar" command.\n' +
-      '  Auto-updates are handled via shadow installs — no global install needed.'
-    );
-  }
-
-  return 'instar';
-}
-
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -1155,7 +1154,7 @@ function escapeXml(str: string): string {
  * Using node directly as the plist entry point bypasses this because
  * user-installed binaries (homebrew, nvm) are not subject to TCC restrictions.
  */
-export function installBootWrapper(projectDir: string): { sh: string; js: string } {
+export function installBootWrapper(projectDir: string, beforeWrite?:(js:string,sh:string)=>void): { sh: string; js: string } {
   const stateDir = path.join(projectDir, '.instar');
   const shPath = path.join(stateDir, 'instar-boot.sh');
 
@@ -1191,6 +1190,11 @@ SHADOW="${shadowCli}"
 SHADOW_DIR="${shadowDir}"
 CRASH_FILE="${crashFile}"
 
+if [ ! -d "$SHADOW_DIR" ] && [ -f "$SHADOW_DIR.previous/node_modules/instar/dist/cli.js" ]; then
+  mv "$SHADOW_DIR.previous" "$SHADOW_DIR" || exit 1
+  echo "[instar-boot] Restored previous install after interrupted update" >&2
+fi
+
 if [ ! -f "$SHADOW" ]; then
   # Attempt one-shot reinstall before giving up. Debounced via marker file so
   # launchd KeepAlive throttling doesn't trigger 30+ reinstalls per minute.
@@ -1206,8 +1210,9 @@ if [ ! -f "$SHADOW" ]; then
     echo "[instar-boot] Shadow install missing — attempting one-shot reinstall" >&2
 
     # Resolve absolute node + npm (PATH may be empty under launchd).
-    NODE_BIN=""
-    for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
+    [ -n "$NODE_BIN" ] && [ ! -x "$NODE_BIN" ] && NODE_BIN=""
+    [ -z "$NODE_BIN" ] && for cand in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
       [ -x "$cand" ] && NODE_BIN="$cand" && break
     done
     NPM_BIN=""
@@ -1266,8 +1271,21 @@ fi
 # Crash loop protection: if node fails rapidly, back off before exiting.
 # Prevents launchd KeepAlive from spinning at max speed on persistent errors.
 mkdir -p "$(dirname "$CRASH_FILE")" 2>/dev/null
-node "$SHADOW" "$@"
+# Run node as a child and pass stop signals on. Under systemd this bash is the
+# unit's main process, and with KillMode=process a stop or restart signals it
+# alone: without the trap, bash exits and node keeps the port and the agent's
+# single-instance lock, so "restart" leaves the old server serving.
+node "$SHADOW" "$@" &
+CHILD=$!
+trap 'kill -TERM "$CHILD" 2>/dev/null' TERM INT HUP
+wait "$CHILD"
 EXIT_CODE=$?
+# A trapped signal interrupts wait early; wait again for node's own exit.
+while kill -0 "$CHILD" 2>/dev/null; do
+  wait "$CHILD"
+  EXIT_CODE=$?
+done
+trap - TERM INT HUP
 
 if [ $EXIT_CODE -ne 0 ]; then
   echo "$(date -u +%s)" >> "$CRASH_FILE"
@@ -1332,6 +1350,11 @@ const NODE_CANDIDATES_FILE = ${JSON.stringify(nodeCandidatesFile)};
 // NODE_MODULE_VERSION. Switching from v22 -> v25 (or any major bump) breaks
 // native modules and causes server crash-loops / event loop deadlocks.
 function selfHealNodeSymlink() {
+  // Enrolled recovery pins the interpreter and keeps its own validated copy.
+  // Runtime ABI candidate search must not rewrite that approved alias. Missing
+  // bindings restore through recovery/startup admission; legitimate changes use
+  // the trusted installer transaction before any alias bytes are replaced.
+  if (fs.existsSync(${JSON.stringify(path.join(stateDir,'recovery','host.json'))})) return;
   try {
     const currentNode = process.execPath;
     const symlinkDir = path.dirname(NODE_SYMLINK);
@@ -1439,6 +1462,11 @@ function selfHealNodeSymlink() {
     // Non-fatal — symlink update is best-effort
     process.stderr.write('[instar-boot] Node symlink self-heal failed (non-critical): ' + err.message + '\\n');
   }
+}
+
+if (!fs.existsSync(SHADOW_DIR) && fs.existsSync(SHADOW_DIR + '.previous')) {
+  fs.renameSync(SHADOW_DIR + '.previous', SHADOW_DIR);
+  process.stderr.write('[instar-boot] Restored previous install after interrupted update\\n');
 }
 
 selfHealNodeSymlink();
@@ -1585,9 +1613,18 @@ child.on('error', (err) => {
 });
 `;
 
+  if(!beforeWrite&&preserveRecoveryBootstrap(projectDir))return {sh:shPath,js:jsPath};
+  if(beforeWrite)assertRecoveryBootstrapWrite(projectDir);
+  beforeWrite?.(jsWrapper,bashWrapper);
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(shPath, bashWrapper, { mode: 0o755 });
-  fs.writeFileSync(jsPath, jsWrapper, { mode: 0o755 });
+  // A promotion can request this regeneration immediately before switching
+  // installs. Never leave a half-written launchd wrapper after interruption.
+  const shTemp = `${shPath}.tmp-${randomUUID()}`;
+  const jsTemp = `${jsPath}.tmp-${randomUUID()}`;
+  fs.writeFileSync(shTemp, bashWrapper, { mode: 0o755 });
+  fs.writeFileSync(jsTemp, jsWrapper, { mode: 0o755 });
+  fs.renameSync(shTemp, shPath);
+  fs.renameSync(jsTemp, jsPath);
   return { sh: shPath, js: jsPath };
 }
 
@@ -1614,7 +1651,10 @@ export function ensureBootWrapper(projectDir: string): boolean {
     `[setup] Boot wrapper(s) missing under ${stateDir} — regenerating. ` +
     `If the agent had been restarted by launchd in this state, it would have been permanently dead.`
   );
-  installBootWrapper(projectDir);
+  const enrolled=enrolledRecoveryBootstrapMode(projectDir);
+  if(enrolled){
+    if(!installAutoStart(enrolled.agentId,projectDir,enrolled.hasTelegram,{noStart:true}))throw new Error('recovery-bootstrap-owned-update-required');
+  }else installBootWrapper(projectDir);
   return true;
 }
 
@@ -1634,6 +1674,7 @@ export function ensureBootWrapper(projectDir: string): boolean {
  * Returns true if writes occurred, false if no-op.
  */
 export function installFleetWatchdog(): boolean {
+  let recoveryFleetUpdate:ReturnType<typeof beginRecoveryFleetUpdate>=null;
   if (process.platform !== 'darwin') return false;
 
   const scriptPath = path.join(os.homedir(), '.instar', 'instar-watchdog.sh');
@@ -1690,6 +1731,7 @@ export function installFleetWatchdog(): boolean {
   try {
     fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
     fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+    recoveryFleetUpdate=beginRecoveryFleetUpdate(scriptPath,plistPath,scriptBody,plistBody);
     fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
     fs.writeFileSync(plistPath, plistBody);
 
@@ -1699,9 +1741,12 @@ export function installFleetWatchdog(): boolean {
     } catch (err) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
       console.error(`[setup] CRITICAL: watchdog plist failed validation: ${stderr}`);
-      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:installFleetWatchdog' }); } catch { /* best effort */ }
+      if(recoveryFleetUpdate)recoveryFleetUpdate.rollback();
+      else try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:installFleetWatchdog' }); } catch { /* best effort */ }
       return false;
     }
+
+    recoveryFleetUpdate?.commit();
 
     // Reload (bootout if loaded; bootstrap fresh) — skipped under test.
     if (launchctlLoadAllowed()) {
@@ -1715,21 +1760,26 @@ export function installFleetWatchdog(): boolean {
 
     return true;
   } catch (err) {
+    if(recoveryFleetUpdate){try{recoveryFleetUpdate.rollback();}catch{console.error('[recovery] fleet watchdog rollback incomplete; bindings remain degraded');}}
     console.error(`[setup] installFleetWatchdog: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
 
-function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean, noStart = false): boolean {
+  let recoveryUpdate:ReturnType<typeof beginRecoveryAutostartUpdate>=null;
+  let bindingUpdate:ReturnType<typeof beginRecoveryAutostartBindingUpdate>=null;
   const label = `ai.instar.${projectName}`;
   const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
   const plistPath = path.join(launchAgentsDir, `${label}.plist`);
   const logDir = path.join(projectDir, '.instar', 'logs');
 
+  try {
+  bindingUpdate=beginRecoveryAutostartBindingUpdate(projectDir,plistPath);
   // Install boot wrappers that resolve shadow install at startup time.
   // This ensures machine reboots use the auto-updated version, not the version
   // that was global when setup ran. See: github issue / cluster-shadow-install-*
-  const wrappers = installBootWrapper(projectDir);
+  const wrappers = installBootWrapper(projectDir,(js,sh)=>bindingUpdate?.wrappers(js,sh));
 
   // Determine what to start: lifeline if Telegram configured, otherwise just the server
   const command = hasTelegram ? 'lifeline' : 'server';
@@ -1744,7 +1794,7 @@ function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTel
   //
   // We use a stable symlink (.instar/bin/node) so NVM/asdf version switches
   // don't break the plist. The symlink is updated by self-healing on every startup.
-  const nodeSymlink = ensureStableNodeSymlink(projectDir);
+  const nodeSymlink = ensureStableNodeSymlink(projectDir,target=>bindingUpdate?.node(target));
   const programArgs = [nodeSymlink, wrappers.js, ...args];
 
   // Build the plist XML
@@ -1816,7 +1866,6 @@ ${argsXml}
 </dict>
 </plist>`;
 
-  try {
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     fs.mkdirSync(logDir, { recursive: true });
     // RAISE-ONLY on the setup path too (docs/specs/launchd-process-ceiling-floor.md §1,
@@ -1824,7 +1873,10 @@ ${argsXml}
     // REGENERATES this file — so without this, a re-run would silently clobber an operator
     // who deliberately raised their ceiling for a heavy host, and the contract that their
     // change "sticks" would be false. Found in spec review before it shipped, not after.
-    fs.writeFileSync(plistPath, preserveHigherProcessCeiling(plist, readExistingPlist(plistPath)));
+    const nextPlist=preserveHigherProcessCeiling(plist, readExistingPlist(plistPath));
+    recoveryUpdate=bindingUpdate?bindingUpdate.stage(nextPlist):beginRecoveryAutostartUpdate(projectDir,plistPath,nextPlist);
+    const temporary=plistPath+'.'+randomUUID()+'.tmp';
+    fs.writeFileSync(temporary,nextPlist,{mode:0o600,flag:'wx'});fs.renameSync(temporary,plistPath);
 
     // Validate the plist is well-formed XML before loading.
     // A corrupted plist means launchd can't restart the agent after crashes,
@@ -1835,13 +1887,14 @@ ${argsXml}
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
       console.error(`[setup] CRITICAL: Generated plist failed validation: ${stderr}`);
       console.error(`[setup] Plist path: ${plistPath}`);
-      // Remove the invalid plist so we don't leave a landmine
-      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
+      if(recoveryUpdate)recoveryUpdate.rollback();
+      else try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
       return false;
     }
 
+    // A trusted promotion can stage bindings without killing its own parent.
     // Load the agent (skipped under test — see launchctlLoadAllowed).
-    if (launchctlLoadAllowed()) {
+    if (!noStart && launchctlLoadAllowed()) {
       const commands = macOSAutoStartLoadCommands(label, plistPath, process.getuid?.() ?? 501);
       try {
         // Unload first if already loaded
@@ -1855,6 +1908,9 @@ ${argsXml}
       execFileSync(commands[2][0], commands[2][1], { stdio: 'ignore' });
     }
 
+    // Admission stays fenced through the exact main-service OS transition.
+    recoveryUpdate?.commit();
+
     // Ensure the user-machine fleet watchdog is installed alongside this agent.
     // Singleton per machine — first agent setup creates it, subsequent setups
     // refresh it from the latest template. Non-fatal if it fails (returns false).
@@ -1862,6 +1918,7 @@ ${argsXml}
 
     return true;
   } catch {
+    if(recoveryUpdate??bindingUpdate){try{(recoveryUpdate??bindingUpdate)!.rollback();}catch{console.error('[recovery] owned service update rollback incomplete; previous recovery state retained');}}
     return false;
   }
 }
@@ -2005,38 +2062,85 @@ export function describeLingerOutcome(outcome: LingerOutcome, user: string): str
  * Linux the same behavior. Existing units get it from PostUpdateMigrator.
  */
 export const SYSTEMD_KILL_MODE_LINE = 'KillMode=process';
+/**
+ * Tells the lifeline systemd will start it again. The unit runs the bash boot wrapper, so the
+ * lifeline's parent is bash and the parent-name check cannot see systemd; the macOS plist sets
+ * the same variable for the same reason. Without it the watchdog's self-restart never runs.
+ */
+export const SYSTEMD_SUPERVISED_ENV_LINE = 'Environment=INSTAR_SUPERVISED=1';
 
-function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
-  const serviceName = `instar-${projectName}.service`;
-  const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
-  const servicePath = path.join(serviceDir, serviceName);
-  const nodePath = findNodePath();
-  const instarCli = findInstarCli();
+/**
+ * PATH entries that only make sense while `npx` runs: its cache, which npm may clear at any
+ * time, and the folders `npm exec` adds (`node_modules/.bin` up the tree, `node-gyp-bin`).
+ */
+export function withoutNpxCache(envPath: string): string {
+  return envPath.split(':')
+    .filter((dir) => dir && !/[\\/]_npx[\\/]/.test(dir) && !/(^|[\\/])node_modules[\\/]\.bin$/.test(dir) && !/[\\/]node-gyp-bin$/.test(dir))
+    .join(':');
+}
 
-  const command = hasTelegram ? 'lifeline' : 'server';
-  const args = hasTelegram
-    ? `${instarCli} lifeline start --dir ${projectDir}`
-    : `${instarCli} server start --foreground --dir ${projectDir}`;
+/**
+ * True when a systemd unit cannot start the agent on its own: its ExecStart is not an absolute
+ * path (systemd refuses a bare name with 203/EXEC), or it or its PATH points into the npx cache.
+ * Found on Cirrus, 2026-11-03: an install through npx wrote `ExecStart=instar server start ...`.
+ */
+export function systemdUnitNeedsStableStart(unit: string): boolean {
+  // systemd allows `-`, `@`, `+`, `!` and `:` before the path; they don't make it relative.
+  const exec = /^\s*ExecStart\s*=\s*[-@+!:]*(\S+)/m.exec(unit)?.[1];
+  if (!exec) return false;
+  if (!exec.startsWith('/')) return true;
+  if (/[\\/]_npx[\\/]/.test(exec)) return true;
+  const envPath = /^\s*Environment\s*=\s*"?PATH=([^"\n]*)/m.exec(unit)?.[1] ?? '';
+  return /[\\/]_npx[\\/]/.test(envPath);
+}
 
-  const isNodeScript = instarCli.endsWith('.js') || instarCli.endsWith('.mjs');
-  const execStart = isNodeScript ? `${nodePath} ${args}` : args;
-
-  const service = `[Unit]
-Description=Instar Agent - ${projectName}
+export function buildLinuxSystemdUnit(opts: {
+  projectName: string;
+  projectDir: string;
+  hasTelegram: boolean;
+  /** The agent's boot wrapper, which runs its own copy of instar (.instar/shadow-install). */
+  bootWrapper: string;
+  envPath: string;
+}): string {
+  const args = opts.hasTelegram
+    ? `lifeline start --dir ${opts.projectDir}`
+    : `server start --foreground --dir ${opts.projectDir}`;
+  // The same start as macOS: the boot wrapper runs the agent's own copy of instar, which the
+  // auto-updater keeps current, and reinstalls it if it is missing. Never a bare `instar` or a
+  // path in the npx cache (203/EXEC on every boot, Cirrus 2026-11-03).
+  return `[Unit]
+Description=Instar Agent - ${opts.projectName}
 After=network.target
 
 [Service]
 Type=simple
 ${SYSTEMD_KILL_MODE_LINE}
-ExecStart=${execStart}
-WorkingDirectory=${projectDir}
+ExecStart=/bin/bash ${opts.bootWrapper} ${args}
+WorkingDirectory=${opts.projectDir}
 Restart=always
 RestartSec=10
-Environment=PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}
+Environment=PATH=${withoutNpxCache(opts.envPath) || '/usr/local/bin:/usr/bin:/bin'}
+${SYSTEMD_SUPERVISED_ENV_LINE}
 
 [Install]
 WantedBy=default.target
 `;
+}
+
+function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean, noStart = false): boolean {
+  const serviceName = `instar-${projectName}.service`;
+  const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const servicePath = path.join(serviceDir, serviceName);
+  const nodeDir = path.dirname(process.execPath);
+  const envPath = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  const service = buildLinuxSystemdUnit({
+    projectName,
+    projectDir,
+    hasTelegram,
+    bootWrapper: installBootWrapper(projectDir).sh,
+    // The node running setup goes first, so the wrapper's `node` is one that exists.
+    envPath: envPath.split(':').includes(nodeDir) ? envPath : `${nodeDir}:${envPath}`,
+  });
 
   try {
     fs.mkdirSync(serviceDir, { recursive: true });
@@ -2044,7 +2148,9 @@ WantedBy=default.target
 
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'enable', serviceName], { stdio: 'ignore' });
-    execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'ignore' });
+    // noStart: the caller knows the agent is already running some other way, and a second
+    // start would only lose the single-instance lock and loop (PostUpdateMigrator).
+    if (!noStart) execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'ignore' });
     // Enabling the unit is not enough on Linux: without lingering, the user's
     // systemd manager exits at logout and an "enabled" service never starts at
     // boot. Attempted here; the OUTCOME is reported by the caller (see
@@ -2203,6 +2309,8 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
         phoneNumberId: opts.whatsappPhoneNumberId,
         accessToken: opts.whatsappAccessToken,
         webhookVerifyToken: opts.whatsappVerifyToken ?? '',
+        // SEC-086: with this secret set, only deliveries Meta signed with it are accepted.
+        ...(process.env.WHATSAPP_APP_SECRET ? { appSecret: process.env.WHATSAPP_APP_SECRET } : {}),
       };
     }
 
@@ -2236,6 +2344,8 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
     // Recovery key to stdout (single line for capture)
     console.log(key);
   }
+
+  if (isBlankAgentHome(stateDir)) markNewAgent(stateDir);
 
   // Write config
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify(config, null, 2));

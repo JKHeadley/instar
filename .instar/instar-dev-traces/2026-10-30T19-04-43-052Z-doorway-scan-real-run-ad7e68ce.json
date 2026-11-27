@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "doorway-scan-real-run",
+  "sessionId": "6eab2604-c8fa-4cd1-be51-9fbcb8d7e5ae",
+  "timestamp": "2026-10-30T19:04:43.052Z",
+  "artifactPath": "upgrades/side-effects/doorway-scan-real-run.md",
+  "artifactSha256": "08a0e37a78cdef82ecfaf4f7883ee9c208e42105dbddabe021200bcf82d04d2e",
+  "coveredFiles": [
+    "docs/specs/doorway-scan-real-run.eli16.md",
+    "docs/specs/doorway-scan-real-run.md",
+    "scripts/doorway-scan.mjs",
+    "src/scaffold/templates/jobs/instar/scripts/doorway-scan.mjs",
+    "src/scheduler/ScriptCanaryRunner.ts",
+    "tests/unit/ScriptCanaryRunner.test.ts",
+    "tests/unit/doorway-scan-prober.test.ts",
+    "tests/unit/doorway-scan-run.test.ts",
+    "tests/unit/job-scripts/doorway-scan.test.ts",
+    "tests/unit/job-scripts/harness.ts",
+    "upgrades/next/doorway-scan-real-run.md",
+    "upgrades/side-effects/doorway-scan-real-run.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Finishes an already approved job that ships off for the fleet; no migration or shared state, and a revert fully undoes it.",
+  "eli16Path": "docs/specs/doorway-scan-real-run.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/doorway-scan-real-run.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

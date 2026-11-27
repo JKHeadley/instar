@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-30T19:49:36.258Z",
+  "slug": "job-supervision-live-hold",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobScheduler.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/tunnel/TunnelManager.ts');
 /**
  * TunnelManager — single owner of the tunnel lifecycle.
  *
@@ -200,6 +202,7 @@ export class TunnelManager extends EventEmitter {
   private readonly reachabilityRetryDelaysMs: number[];
 
   private currentHandle: TunnelProviderHandle | null = null;
+  private _connectionGeneration = 0;
   private currentProviderName: ProviderName | null = null;
   private _legacyState: TunnelState;
   private _autoReconnect = true; // always-on under the new design
@@ -261,6 +264,9 @@ export class TunnelManager extends EventEmitter {
     // Route lifecycle transitions through the notifier.
     this.lifecycle.on('transition', (e: TransitionEvent) => {
       if (this.notifier) void this.notifier.onTransition(e);
+      // Consumers that depend on the tier (the locked-screen password box)
+      // re-read it here instead of polling.
+      this.emit('lifecycle', e);
     });
 
     // Restore persisted snapshot (rotation-pending flag + consent cooldown).
@@ -272,6 +278,9 @@ export class TunnelManager extends EventEmitter {
   get url(): string | null { return this._legacyState.url; }
 
   get isRunning(): boolean { return this.currentHandle !== null && !this._stopped; }
+
+  /** Changes whenever the owned connector changes, including same-URL replacement. */
+  get connectionGeneration(): number { return this._connectionGeneration; }
 
   get state(): TunnelState { return { ...this._legacyState }; }
 
@@ -307,6 +316,9 @@ export class TunnelManager extends EventEmitter {
     this._startPromise = null;
 
     if (this.currentHandle) {
+      // Invalidate in-flight wake probes as soon as shutdown begins, before
+      // the provider's asynchronous stop can wait on a hung connector.
+      this._connectionGeneration++;
       try { await this.currentHandle.stop(); } catch { /* handle may be dead */ }
       this.currentHandle = null;
     }
@@ -445,7 +457,7 @@ export class TunnelManager extends EventEmitter {
       sendGroup: async (text: string) => {
         const topicId = adapter.getDashboardTopicId() ?? adapter.getLifelineTopicId();
         if (typeof topicId !== 'number') return; // no group destination
-        await adapter.sendToTopic(topicId, text);
+        await withNotificationEnvelope(stampNotification(), async () => (adapter)!.sendToTopic(topicId, text));
       },
       sendOwnerDM: async (text: string) => {
         await adapter.sendToOwnerDM(text);
@@ -484,6 +496,7 @@ export class TunnelManager extends EventEmitter {
         token: config.token,
         configFile: config.configFile,
         hostname: config.hostname,
+        stateDir: config.stateDir,
       }));
     }
     pool.push(new CloudflareQuickProvider({ port: config.port, stateDir: config.stateDir }));
@@ -550,6 +563,7 @@ export class TunnelManager extends EventEmitter {
 
         // Success.
         this.currentHandle = handle;
+        this._connectionGeneration++;
         this.currentProviderName = provider.name;
         this._legacyState.url = handle.url;
         this._legacyState.startedAt = new Date().toISOString();
@@ -746,6 +760,7 @@ export class TunnelManager extends EventEmitter {
 
       // new-then-old: the new Tier-1 handle is already up + verified.
       this.currentHandle = newHandle;
+      this._connectionGeneration++;
       this.currentProviderName = provider.name;
       this._legacyState.url = newHandle.url;
       this._legacyState.startedAt = new Date().toISOString();
@@ -773,6 +788,7 @@ export class TunnelManager extends EventEmitter {
     } catch {
       // Switch failed — try to stay on the relay rather than go dark.
       this.currentHandle = oldHandle;
+      this._connectionGeneration++;
       this.currentProviderName = oldProviderName;
       this._legacyState.url = oldUrl;
       const stateNow: TunnelLifecycleState = this.lifecycle.state;
@@ -890,6 +906,7 @@ export class TunnelManager extends EventEmitter {
       }
 
       this.currentHandle = handle;
+      this._connectionGeneration++;
       this.currentProviderName = provider.name;
       this._legacyState.url = handle.url;
       this._legacyState.startedAt = new Date().toISOString();

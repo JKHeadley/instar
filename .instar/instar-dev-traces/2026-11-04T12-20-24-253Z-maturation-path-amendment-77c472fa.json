@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "maturation-path-amendment",
+  "sessionId": "0cb8273e-b636-4af0-9b44-222b82671266",
+  "timestamp": "2026-11-04T12:20:24.253Z",
+  "artifactPath": "upgrades/side-effects/maturation-path-amendment.md",
+  "artifactSha256": "3edc98e5ffc06420891b9a5c0a0d493210d00984c87c0aedf90d2512f3cac6ac",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/maturation-path-and-alignment-2026-11-04.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/maturation-path-amendment.eli16.md",
+    "docs/specs/maturation-path-amendment.md",
+    "docs/specs/reports/maturation-path-and-alignment-constitution-review-2026-11-04.md",
+    "docs/standards-registry-area-audits.json",
+    "scripts/safe-merge.mjs",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/feature-ladders-coverage.test.ts",
+    "tests/unit/feature-maturation-plan-gate.test.ts",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/maturation-path-amendment.md",
+    "upgrades/side-effects/maturation-path-amendment.eli16.md",
+    "upgrades/side-effects/maturation-path-amendment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text and audits, reversible by revert; operator sign-off required.",
+  "eli16Path": "upgrades/side-effects/maturation-path-amendment.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-path-amendment.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

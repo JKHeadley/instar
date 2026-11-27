@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-01T06:07:31.104Z",
+  "slug": "desktop-anydesk-gestures",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 216,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopHost.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/WindowsDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/native/remote-desktop/windows/InstarDesktopCompanion.cs",
+      "src/server/DesktopStreamManager.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 68
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

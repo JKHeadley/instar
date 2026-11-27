@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-04T19:22:02.524Z",
+  "slug": "memory-privacy-opt-in-existing-agents",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: the session end runs once per boot, only with privacy off, only for sessions still inside the boundary, and creates nothing that re-triggers it"
+  },
+  "verdict": "pass"
+}

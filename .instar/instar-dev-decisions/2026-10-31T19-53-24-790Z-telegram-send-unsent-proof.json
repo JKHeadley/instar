@@ -1,0 +1,26 @@
+{
+  "ts": "2026-10-31T19:53:24.790Z",
+  "slug": "telegram-send-unsent-proof",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-egress.ts",
+      "src/messaging/telegram-origin/OriginTransportCancellation.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

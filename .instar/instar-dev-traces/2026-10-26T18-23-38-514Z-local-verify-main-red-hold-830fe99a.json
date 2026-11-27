@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-main-red-hold",
+  "sessionId": "1511c699-95b2-4b48-8d62-a8f9fa3160cd",
+  "timestamp": "2026-10-26T18:23:38.514Z",
+  "artifactPath": "upgrades/side-effects/local-verify-main-red-hold.md",
+  "artifactSha256": "76aa7b12a296d372e108f89ca07b58e8b2a1a7ed67f6a7734d3e950b87de1744",
+  "coveredFiles": [
+    "upgrades/side-effects/local-verify-main-red-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Side-effects note for the release-note wording of the same Tier-1 change.",
+  "eli16Path": "docs/specs/local-verify-main-red-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-main-red-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

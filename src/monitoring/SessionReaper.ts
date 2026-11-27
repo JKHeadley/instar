@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Session } from '../core/types.js';
@@ -25,6 +26,7 @@ import { CONFIRMED_MOVE_ASSERTION_TTL_MS, validateConfirmedMoveAssertion } from 
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { TopicRef, topicRef } from '../messaging/shared/topicRef.js';
 
 export type PressureTier = 'normal' | 'moderate' | 'critical';
 export type Verdict = 'keep' | 'reap-eligible';
@@ -168,35 +170,106 @@ const MEM_MODERATE_FREE_PCT = 12;
 const MEM_CRITICAL_FREE_PCT = 5;
 
 const TIER_ORDER: Record<PressureTier, number> = { normal: 0, moderate: 1, critical: 2 };
+const worst = (a: PressureTier, b: PressureTier): PressureTier => (TIER_ORDER[a] >= TIER_ORDER[b] ? a : b);
+
+/** Which CPU signal decides `cpuTier`. `'busy'` (default) = sampled real CPU busy %; `'load'` = the legacy 1-min load ÷ cores (rollback lever). */
+export type CpuSignal = 'busy' | 'load';
+
+export interface PressureInputs {
+  freePct: number;
+  /** 1-min load ÷ cores. Still sampled and reported; decides cpuTier ONLY under cpuSignal 'load'. */
+  loadPerCore: number | null;
+  /** Real CPU busy % over the last interval (hostCpuBusySampler); null = unknown. */
+  cpuBusyPct?: number | null;
+  /** macOS compressor pages as % of total (OCCUPANCY); null = unmeasurable (non-macOS). */
+  compressorPct?: number | null;
+  /** Decompressions per second since the last sample (ACTIVITY, observable); null = unmeasurable / first sample. */
+  decompressionsPerSec?: number | null;
+  /** The kernel's own verdict: `kern.memorystatus_vm_pressure_level` 1 normal / 2 warn / 4 critical; null off-macOS. */
+  kernelMemoryPressureLevel?: number | null;
+}
+
+export interface PressureThresholds {
+  cpuModerateLoadPerCore: number;
+  cpuCriticalLoadPerCore: number;
+  /** Busy-% thresholds for the 'busy' signal. */
+  cpuModerateBusyPct?: number;
+  cpuCriticalBusyPct?: number;
+  cpuSignal?: CpuSignal;
+}
+
+export const DEFAULT_CPU_BUSY_THRESHOLDS = { cpuModerateBusyPct: 75, cpuCriticalBusyPct: 90 } as const;
 
 /**
  * Pure pressure classifier — the single source of truth for the reaper's tier.
- * tier = WORST of the memory tier (free %) and the CPU tier (1-min load ÷ cores).
- * `loadPerCore: null` (cores unknown) drops CPU out of the calc (memory-only),
- * preserving the pre-CPU behavior. Fully unit-testable (no `os` dependency).
+ * tier = WORST of the memory tier and the CPU tier.
+ *
+ * MEMORY: the available-memory tier (free %), UNCHANGED by this spec. The compressor
+ * readings (`compressorPct`, `decompressionsPerSec`, `kernelMemoryPressureLevel`) are
+ * REPORTED as observables and grade NOTHING. Two drafts graded them and round-2 review
+ * measured both into the ground: a healthy Studio reads 35% occupancy and 10k-94k
+ * decompressions/s at kernel pressure level 1, and `kern.memorystatus_level` (the continuous
+ * quantity behind that level, ~(phys - wired - compressor)/phys) reads 59 on that healthy
+ * machine while the 2026-10-25 laptop computes to ~67 — i.e. every candidate memory signal
+ * says that laptop's memory was FINE. So no memory grade is shipped here; the readings are
+ * collected as the evidence a future spec needs (see reaper-pressure-signals §3b).
+ *
+ * CPU: under `cpuSignal: 'busy'` (default) the tier comes from sampled real CPU busy %, and
+ * an UNKNOWN sample (`null` — the first tick after boot) yields `normal` so the tier is
+ * memory-only. It deliberately does NOT fall back to `loadPerCore`: on macOS the 1-min load
+ * average read 9.4/core at 36-44% idle (its macOS computation is poorly documented; the
+ * measured disagreement is the evidence, not a mechanism story). `cpuSignal: 'load'`
+ * restores the legacy grading exactly (the rollback lever). Fully unit-testable.
  */
 export function computePressure(
-  inputs: { freePct: number; loadPerCore: number | null },
-  thresholds: { cpuModerateLoadPerCore: number; cpuCriticalLoadPerCore: number },
+  inputs: PressureInputs,
+  thresholds: PressureThresholds,
 ): PressureReading {
-  const memTier: PressureTier =
+  const freeTier: PressureTier =
     inputs.freePct < MEM_CRITICAL_FREE_PCT ? 'critical'
       : inputs.freePct < MEM_MODERATE_FREE_PCT ? 'moderate'
         : 'normal';
+  // The compressor readings are OBSERVABLES ONLY — they grade nothing, so memTier is the
+  // available-memory tier exactly as before this spec. Withdrawn deliberately: every bar we
+  // tried (occupancy; occupancy AND decompression rate; finally the kernel's own
+  // `kern.memorystatus_vm_pressure_level`) was measured against real machines in review and
+  // none separated the 2026-10-25 laptop from a healthy one. Reporting them without a grade
+  // is the honest position AND the data a later spec needs; a dark grade nobody can show
+  // would fire on the incident it was built for is worse than none.
+  const compressorPct = inputs.compressorPct;
+  const activity = inputs.decompressionsPerSec;
+  const level = inputs.kernelMemoryPressureLevel;
+  const memTier = freeTier;
+
+  const cpuSignal: CpuSignal = thresholds.cpuSignal === 'load' ? 'load' : 'busy';
   let cpuTier: PressureTier = 'normal';
-  if (inputs.loadPerCore != null && Number.isFinite(inputs.loadPerCore)) {
-    cpuTier =
-      inputs.loadPerCore >= thresholds.cpuCriticalLoadPerCore ? 'critical'
-        : inputs.loadPerCore >= thresholds.cpuModerateLoadPerCore ? 'moderate'
-          : 'normal';
+  if (cpuSignal === 'load') {
+    if (inputs.loadPerCore != null && Number.isFinite(inputs.loadPerCore)) {
+      cpuTier =
+        inputs.loadPerCore >= thresholds.cpuCriticalLoadPerCore ? 'critical'
+          : inputs.loadPerCore >= thresholds.cpuModerateLoadPerCore ? 'moderate'
+            : 'normal';
+    }
+  } else {
+    const busy = inputs.cpuBusyPct;
+    if (busy != null && Number.isFinite(busy)) {
+      const mod = thresholds.cpuModerateBusyPct ?? DEFAULT_CPU_BUSY_THRESHOLDS.cpuModerateBusyPct;
+      const crit = thresholds.cpuCriticalBusyPct ?? DEFAULT_CPU_BUSY_THRESHOLDS.cpuCriticalBusyPct;
+      cpuTier = busy >= crit ? 'critical' : busy >= mod ? 'moderate' : 'normal';
+    }
   }
-  const tier = TIER_ORDER[cpuTier] >= TIER_ORDER[memTier] ? cpuTier : memTier;
+  const tier = worst(cpuTier, memTier);
   const round = (n: number): number => Math.round(n * 100) / 100;
   return {
     tier,
     inputs: {
       freePct: Math.round(inputs.freePct * 10) / 10,
       loadPerCore: inputs.loadPerCore == null ? null : round(inputs.loadPerCore),
+      cpuBusyPct: inputs.cpuBusyPct == null || !Number.isFinite(inputs.cpuBusyPct) ? null : round(inputs.cpuBusyPct),
+      compressorPct: compressorPct == null || !Number.isFinite(compressorPct) ? null : round(compressorPct),
+      decompressionsPerSec: activity == null || !Number.isFinite(activity) ? null : round(activity),
+      kernelMemoryPressureLevel: level == null ? null : level,
+      cpuSignal,
       memTier,
       cpuTier,
     },
@@ -357,7 +430,9 @@ export interface SessionReaperDeps {
   /** ONE deduped attention item for a stand-down escalation. Distinct from the
    *  existing `raiseAttention` (whose shape the busy-orphan path owns) so the
    *  stand-down's priority is explicit at the callsite. */
-  raiseStandDownAttention?: (item: { id: string; title: string; summary: string; description?: string; priority?: 'medium' | 'high' }) => void;
+  raiseStandDownAttention?: (item: { id: string; title: string; summary: string; description?: string; priority?: 'medium' | 'high'; conditionKey?: string }) => void;
+  /** attention-lifecycle-close-on-cause §3.3 — close a stand-down attention row whose condition ended. */
+  clearStandDownAttention?: (conditionKey: string, resolution: string) => void;
   /** Can this session's drain be PROVEN at all (framework capability)? False /
    *  absent ⇒ the entry takes the shorter TTL and rides the attention path
    *  rather than pretending it drained. Cheap by construction — no probing. */
@@ -1097,16 +1172,21 @@ export class SessionReaper extends EventEmitter {
     const contested = (() => {
       try { return this.#deps.contestedWork?.(session, topicId) ?? null; } catch { return null; /* @silent-fallback-ok — the composition root maps its own read failure to 'contested' already; a null here defers to the validated admission bar */ }
     })();
+    if (!contested) {
+      // The contested-work condition (if a row was raised for it) is over.
+      try { this.#deps.clearStandDownAttention?.(`standdown:contested:${topicId}`, 'cleared: the duplicate copy is no longer doing contested work'); } catch { /* @silent-fallback-ok — clearing is observability */ }
+    }
     if (contested) {
       this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: contested });
       this.#deps.raiseStandDownAttention?.({
         id: `standdown-contested:${topicId}:${contested}`,
+        conditionKey: `standdown:contested:${topicId}`,
         priority: 'high',
-        title: `Two machines are serving topic ${topicId} and this one is doing real work`,
+        title: `Two machines are serving ${topicRef(topicId)} and this one is doing real work`,
         summary: contested === 'autonomous-run'
           ? 'A duplicate copy on this machine is running an autonomous job — your call.'
           : 'A duplicate copy on this machine holds live work — your call.',
-        description: `The conversation for topic ${topicId} is being served on ${otherOwner}, but this machine also has a live session for it that is genuinely working (${contested}). Nothing has been stopped: stopping it is your decision, not mine. Either let this work finish and it will retire itself, or move/stop it deliberately.`,
+        description: `The conversation for ${topicRef(topicId)} is being served on ${otherOwner}, but this machine also has a live session for it that is genuinely working (${contested}). Nothing has been stopped: stopping it is your decision, not mine. Either let this work finish and it will retire itself, or move/stop it deliberately.`,
       });
       return;
     }
@@ -1297,9 +1377,9 @@ export class SessionReaper extends EventEmitter {
           this.#deps.raiseStandDownAttention?.({
             id: `standdown-expired:${entry.topicId}:${entry.sessionName}`,
             priority: 'high',
-            title: `A duplicate session for topic ${entry.topicId} never went quiet`,
+            title: `A duplicate session for ${topicRef(entry.topicId)} never went quiet`,
             summary: 'It has been asked to stand down for the full window and is now frozen, awaiting your call.',
-            description: `Topic ${entry.topicId} is being served on ${entry.ownerMachineId}. The duplicate copy on this machine (${entry.sessionName}) was asked to stand down but never finished what it was holding. It is now frozen — it cannot start work and cannot send — and nothing has been destroyed. Tell me to release it and it resumes, or close it from the dashboard.`,
+            description: `${TopicRef(entry.topicId)} is being served on ${entry.ownerMachineId}. The duplicate copy on this machine (${entry.sessionName}) was asked to stand down but never finished what it was holding. It is now frozen — it cannot start work and cannot send — and nothing has been destroyed. Tell me to release it and it resumes, or close it from the dashboard.`,
           });
         }
         continue;
@@ -1392,9 +1472,9 @@ export class SessionReaper extends EventEmitter {
           this.#deps.raiseStandDownAttention?.({
             id: `standdown-churn:${entry.topicId}`,
             priority: 'medium',
-            title: `Topic ${entry.topicId} keeps producing duplicate sessions`,
+            title: `${TopicRef(entry.topicId)} keeps producing duplicate sessions`,
             summary: `${churn} duplicate copies have been retired on this machine in the last day — each one cleanly, but something keeps creating them.`,
-            description: `A duplicate session for topic ${entry.topicId} has been stood down and retired ${churn} times in 24 hours. Each retirement worked correctly and nothing was lost, so this is not a failure of the retirement — it is a signal that whatever creates the duplicate has not been diagnosed. Worth looking at the creation cause rather than the cleanup.`,
+            description: `A duplicate session for ${topicRef(entry.topicId)} has been stood down and retired ${churn} times in 24 hours. Each retirement worked correctly and nothing was lost, so this is not a failure of the retirement — it is a signal that whatever creates the duplicate has not been diagnosed. Worth looking at the creation cause rather than the cleanup.`,
           });
         }
       }
@@ -1462,10 +1542,11 @@ export class SessionReaper extends EventEmitter {
           if (confirmed) {
             this.#deps.raiseStandDownAttention?.({
               id: `standdown-mutual-muzzle:${entry.topicId}`,
+              conditionKey: `standdown:mutual-muzzle:${entry.topicId}`,
               priority: 'high',
-              title: `Both machines went quiet on topic ${entry.topicId}`,
+              title: `Both machines went quiet on ${topicRef(entry.topicId)}`,
               summary: 'Each thought the other was serving it. I have resumed answering here so you are not left without a reply.',
-              description: `For topic ${entry.topicId}, this machine and ${entry.ownerMachineId} each recorded the OTHER as the owner, so both copies went quiet — which would have left you with no answer at all. I have resumed on this machine. The underlying disagreement about who owns that conversation is worth a look.`,
+              description: `For ${topicRef(entry.topicId)}, this machine and ${entry.ownerMachineId} each recorded the OTHER as the owner, so both copies went quiet — which would have left you with no answer at all. I have resumed on this machine. The underlying disagreement about who owns that conversation is worth a look.`,
             });
           } else {
             this.audit('standdown-released', { id: entry.sessionName, name: entry.sessionName, tmuxSession: entry.sessionName } as Session, {
@@ -1483,10 +1564,11 @@ export class SessionReaper extends EventEmitter {
     for (const latch of seam.claimLatchAttention()) {
       this.#deps.raiseStandDownAttention?.({
         id: `standdown-latched:${latch.topicId}`,
+        conditionKey: `standdown:latched:${latch.topicId}`,
         priority: 'high',
-        title: `Topic ${latch.topicId} keeps looking like a duplicate`,
+        title: `${TopicRef(latch.topicId)} keeps looking like a duplicate`,
         summary: `I've stopped re-asking that copy to stand down after ${latch.blockedAttempts} attempts — something keeps re-creating it.`,
-        description: `A session for topic ${latch.topicId} on this machine has repeatedly been judged a duplicate, but each stand-down was released or expired, so I stopped re-issuing it (that brake is deliberate — otherwise it would loop). The duplicate is likely still there. Worth looking at why the copy keeps being created.`,
+        description: `A session for ${topicRef(latch.topicId)} on this machine has repeatedly been judged a duplicate, but each stand-down was released or expired, so I stopped re-issuing it (that brake is deliberate — otherwise it would loop). The duplicate is likely still there. Worth looking at why the copy keeps being created.`,
       });
     }
 
@@ -1680,9 +1762,9 @@ export class SessionReaper extends EventEmitter {
         const topicId = this.#deps.topicBinding(session.tmuxSession);
         this.#deps.raiseAttention?.({
           id: `closeout-breaker:${session.id}`,
-          title: `Topic ${topicId ?? '?'} moved to ${otherOwner}, but the old session won't close`,
+          title: `${TopicRef(topicId ?? '?')} moved to ${otherOwner}, but the old session won't close`,
           summary: `Post-transfer closeout gave up after ${v} vetoed attempts (held by: ${res.skipped ?? 'keep-guard'}).`,
-          description: `The conversation for topic ${topicId ?? '?'} now lives on ${otherOwner}, but the leftover session on this machine (${session.tmuxSession}) refused to close ${v} times in a row — a KEEP-guard reports it is still working (${res.skipped ?? 'keep-guard'}). Closeout retries have stopped (P19 breaker); the session will close via the normal idle path when it finishes, or you can close it from the dashboard.`,
+          description: `The conversation for ${topicRef(topicId ?? '?')} now lives on ${otherOwner}, but the leftover session on this machine (${session.tmuxSession}) refused to close ${v} times in a row — a KEEP-guard reports it is still working (${res.skipped ?? 'keep-guard'}). Closeout retries have stopped (P19 breaker); the session will close via the normal idle path when it finishes, or you can close it from the dashboard.`,
         });
       }
     }
@@ -1926,8 +2008,16 @@ export class SessionReaper extends EventEmitter {
       // feature is live; it is bounded + fail-open internally.
       const workEvidence: string[] = [];
       if (this.#deps.dirtyCheck && session.cwd) {
-        try { if (this.#deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
-        catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
+        try {
+          const dirty = this.#deps.dirtyCheck(session.cwd);
+          if (dirty) workEvidence.push('uncommitted-worktree-work');
+          featureEvidence.record('monitoring.yieldSafety', {
+            kind: dirty ? 'fired' : 'held',
+            reason: dirty ? 'dirty-worktree-resume-eligible' : 'worktree-clean-at-reap',
+            context: { sessionName: session.tmuxSession, relaxedActiveProcess },
+          });
+        }
+        catch { featureEvidence.record('monitoring.yieldSafety', { kind: 'error', reason: 'dirty-check-threw', context: { sessionName: session.tmuxSession } }); /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
       // A session reaped while its own tool shell still runs (reachable only via
       // a relax at critical pressure) was mid-work: tag it so it is eligible for
@@ -2026,6 +2116,13 @@ export class SessionReaper extends EventEmitter {
       reapsLastHour: this.cfg.maxReapsPerHour - this.hourlyBudgetRemaining(),
       sessions,
     };
+  }
+
+  /** The ids the reaper is watching, with no per-session evaluation. snapshot() runs sync child
+   *  processes for every session, so a read that only needs the ids (the GET /sessions
+   *  discrepancy probe) must use this: that probe held the event loop on 2026-11-07. */
+  trackedSessionIds(): string[] {
+    return this.#deps.listRunningSessions().map(s => s.id);
   }
 
   /** Sync in-memory runtime read for the GuardRegistry (GET /guards).

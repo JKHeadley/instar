@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "install-live-fixes",
+  "sessionId": "aa5fb5e1-36c1-42fe-bd65-8305d8971a17",
+  "timestamp": "2026-11-03T07:37:16.476Z",
+  "artifactPath": "upgrades/side-effects/install-live-fixes.md",
+  "artifactSha256": "6e10438fa0974bb1729a2bc094717b654d554a1cd6fbc6fa6e568e34a9b36207",
+  "specPath": "docs/specs/install-experience.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/core/Config.ts",
+    "tests/unit/detectFrameworkBinary.test.ts",
+    "tests/unit/install-flow.test.ts",
+    "upgrades/next/install-live-fixes.md",
+    "upgrades/side-effects/install-live-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes framework binary detection used by every session spawn; reviewer concern on search order fixed, then concurred",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

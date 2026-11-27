@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "dashboard-chats-phone-layout",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T16:49:02.232Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "artifactSha256": "85c9431d880d646da898878266537b88903a7023d427243e28d05116fff96d12",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "docs/specs/dashboard-chats-phone-layout.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/side-effects/dashboard-chats-phone-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Client-only CSS and title-fill fixes to a shipped page; a revert fully undoes them.",
+  "eli16Path": "docs/specs/dashboard-chats-phone-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

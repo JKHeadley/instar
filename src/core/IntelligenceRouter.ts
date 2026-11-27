@@ -26,6 +26,7 @@
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   type ComponentCategory,
   isComponentCategory,
@@ -1356,6 +1357,29 @@ export class IntelligenceRouter implements IntelligenceProvider {
     options: IntelligenceOptions | undefined,
     decision: DecisionCallContext,
   ): Promise<string> {
+    // A spend-fenced caller must never enter category/nature routing or a failure tail.
+    // Resolve the named door before the first attempt; absence fails without model spend.
+    if (options?.requiredRoute) {
+      const { framework, modelId } = options.requiredRoute;
+      if (framework !== 'codex-cli' || !modelId || !options.strictModelPin) {
+        throw new Error('IntelligenceRouter: invalid required route');
+      }
+      const provider = this.resolveProvider(framework);
+      if (!provider) throw new Error(`IntelligenceRouter: required framework '${framework}' unavailable`);
+      if (provider.frameworkId !== framework) throw new Error('IntelligenceRouter: required provider identity unverified');
+      return this.runAttempt(provider, prompt, decision, {
+        extra: { model: modelId as IntelligenceOptions['model'], strictModelPin: true },
+      });
+    }
+    // Family-pinned content (context-budget §9): no routing, no swap, never another vendor.
+    if (options?.pinnedFramework) {
+      const framework = options.pinnedFramework;
+      const provider = this.resolveProvider(framework);
+      if (!provider) throw new Error(`IntelligenceRouter: pinned framework '${framework}' unavailable`);
+      // The default slot can hold a fallback from another vendor, so identity is checked there too.
+      if (provider.frameworkId !== framework) throw new Error('IntelligenceRouter: pinned provider identity unverified');
+      return this.runAttempt(provider, prompt, decision, {});
+    }
     const component = options?.attribution?.component;
     const explicitCategory = (options?.attribution as { category?: unknown } | undefined)?.category;
     const category: ComponentCategory = isComponentCategory(explicitCategory)
@@ -1640,20 +1664,26 @@ export class IntelligenceRouter implements IntelligenceProvider {
       // stops the backoff and proceeds to the swap.
       if (deferrable && ladder?.backoffEnabled && isRateLimitError(err)) {
         const b = ladder.backoff;
+        let backoffAttempts = 0;
+        let backoffWaitMs = 0;
         for (let attempt = 0; attempt < b.maxAttempts; attempt++) {
           const delay = Math.min(b.baseMs * Math.pow(b.factor, attempt), b.ceilingMs);
           const jittered = Math.min(Math.floor(delay * (0.5 + Math.random() * 0.5)), b.maxWaitMs);
+          backoffAttempts = attempt + 1;
+          backoffWaitMs += jittered;
           try {
             const boResult = await this.runAttempt(primary, prompt, decision, {
               extra: { rateLimitWaitMs: jittered },
             });
             this.opts.onResolved?.(component ?? '(none)', framework); // recovered on backoff → auto-resolve
+            featureEvidence.record('intelligence.degradationLadder.backoff', { kind: 'fired', reason: 'recovered on backoff', context: { component: component ?? '(none)', framework, attempts: backoffAttempts, maxAttempts: b.maxAttempts, waitBudgetMs: backoffWaitMs } });
             return boResult;
           } catch (retryErr) {
             err = retryErr;
             if (!isRateLimitError(retryErr)) break; // a hard error → stop backing off, go to swap
           }
         }
+        featureEvidence.record('intelligence.degradationLadder.backoff', { kind: 'error', reason: isRateLimitError(err) ? 'backoff exhausted: still rate limited' : 'backoff stopped: hard error', context: { component: component ?? '(none)', framework, attempts: backoffAttempts, maxAttempts: b.maxAttempts, waitBudgetMs: backoffWaitMs, stillRateLimited: isRateLimitError(err) } });
       }
       if (swapPositions.length === 0) {
         // NON-GATING bounded failure-swap: a non-gating call whose PRIMARY INVOCATION failed
@@ -1950,8 +1980,10 @@ export class IntelligenceRouter implements IntelligenceProvider {
         reason: 'queued: deferrable call waited for capacity in the LLM queue and was served',
       });
       this.opts.onResolved?.(component, framework); // a real answer via the queue → auto-resolve
+      featureEvidence.record('intelligence.degradationLadder.queue', { kind: 'fired', reason: 'queued call served', context: { component, framework, category, boundMs: bound } });
       return { ok: true, result };
     } catch {
+      featureEvidence.record('intelligence.degradationLadder.queue', { kind: 'error', reason: 'enqueue refused or queued call failed', context: { component, framework, category, boundMs: bound } });
       this.opts.onDegrade?.({
         component,
         category,

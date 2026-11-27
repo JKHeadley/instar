@@ -9,6 +9,7 @@
  * (specs/provider-portability/04-anthropic-path-constraints.md).
  */
 
+import { CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,8 @@ import { join } from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
+import { guardChildStdin } from './pipeErrorGuard.js';
+import { applyClaudeChildAuth, applyClaudeReviewerLogin, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -59,6 +62,7 @@ const REVIEWER_ENV_ALLOW_PREFIXES = ['LC_', 'ANTHROPIC_'] as const;
  */
 export function buildClaudeReviewerChildEnv(
   parentEnv: NodeJS.ProcessEnv = process.env,
+  structuredOutput = false,
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(parentEnv)) {
@@ -69,6 +73,9 @@ export function buildClaudeReviewerChildEnv(
   }
   delete out.CLAUDECODE;
   delete out.CLAUDE_SESSION_ID;
+  // The CLI can retry a schema-invalid answer internally. A single audited
+  // supervision call must represent a single model request.
+  if (structuredOutput) out.MAX_STRUCTURED_OUTPUT_RETRIES = '0';
   return out;
 }
 
@@ -80,19 +87,23 @@ export function buildClaudeReviewerChildEnv(
  * `--strict-mcp-config` refuses user MCP servers. `--setting-sources user`
  * excludes project/local CLAUDE.md (kept from the base door).
  */
-export function buildClaudeReviewerArgs(model: string): string[] {
+export function buildClaudeReviewerArgs(model: string, jsonSchema?: string, noTools = false): string[] {
   return [
     '--print',
+    // An empty allow-list still lets a model ATTEMPT a tool; --tools '' offers it none.
+    ...(noTools ? ['--tools', ''] : []),
     '--allowedTools', '',
     '--strict-mcp-config',
     '--model', model,
     '--max-turns', '1',
     '--output-format', 'json',
     '--setting-sources', 'user',
+    ...(jsonSchema ? ['--json-schema', jsonSchema] : []),
   ];
 }
 
 export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
+  readonly frameworkId = CLAUDE_CODE_FRAMEWORK;
   private claudePath: string;
 
   constructor(claudePath: string) {
@@ -120,7 +131,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
 
     return new Promise((resolve, reject) => {
       const args = hardened
-        ? buildClaudeReviewerArgs(model)
+        ? buildClaudeReviewerArgs(model, hardened.jsonSchema, hardened.noTools === true)
         : [
             '-p', prompt,
             '--model', model,
@@ -139,14 +150,16 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // Env: hardened calls use the ALLOWLIST-only env (agent secrets never
       // cross); the default path strips only the Claude Code session markers so a
       // nested session can't wedge it (unchanged behavior).
-      const childEnv = hardened
-        ? buildClaudeReviewerChildEnv(process.env)
+      // The configured sign-in key goes on after the allowlist: it is what `claude -p` itself needs
+      // on an agent with no stored login (spec cloud-key-internal-calls).
+      const childEnv = applyClaudeChildAuth(hardened
+        ? applyClaudeReviewerLogin(buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema)))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;
             delete e.CLAUDE_SESSION_ID;
             return e;
-          })();
+          })());
 
       const child = execFile(this.claudePath, args, {
         // Honor a caller-supplied per-call budget (IntelligenceOptions.timeoutMs);
@@ -166,13 +179,19 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // classifier (isRateLimitError) can see usage/limit language that
           // often appears past the first 200 chars. (Rate-limit detection reads
           // stderr, so the stdout text→json switch does not affect it.)
-          reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}`));
+          // The auth verdict is only in stdout. It is logged as a category, never as CLI text.
+          const authFailure = classifyClaudeAuthFailure(stdout);
+          if (authFailure) reportClaudeCallOutcome(authFailure);
+          if (isUsageLimitOutput(stdout)) reportClaudeUsageLimited();
+          reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}${authFailure ? ` — auth: ${authFailure}` : ''}`));
           return;
         }
 
-        resolve(parseJsonResult(stdout, options?.onUsage));
+        reportClaudeCallOutcome('ok');
+        resolve(parseJsonResult(stdout, options?.onUsage, Boolean(hardened?.jsonSchema), options?.onServedModel));
       });
 
+      guardChildStdin(child.stdin, 'claude-cli');
       // Hardened calls pass the prompt over STDIN (§1.4) so it never appears in
       // ps-visible argv; the default path already carries it as the `-p` arg.
       if (hardened) {
@@ -205,7 +224,9 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
  */
 export function parseJsonResult(
   stdout: string,
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
+  onUsage?: IntelligenceOptions['onUsage'],
+  preferStructuredOutput = false,
+  onServedModel?: (info: { model: string; framework?: string }) => void,
 ): string {
   const trimmed = stdout.trim();
   let parsed: unknown;
@@ -216,6 +237,14 @@ export function parseJsonResult(
     return trimmed;
   }
   const obj = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>) : null;
+  if (onServedModel && obj?.modelUsage && typeof obj.modelUsage === 'object'
+    && !Array.isArray(obj.modelUsage)) {
+    const models = Object.keys(obj.modelUsage as Record<string, unknown>);
+    if (models.length === 1) {
+      try { onServedModel({ model: models[0], framework: 'claude-code' }); }
+      catch { /* @silent-fallback-ok: model observation must not break the result path. */ }
+    }
+  }
   if (onUsage && obj && obj.usage && typeof obj.usage === 'object') {
     try {
       const u = obj.usage as Record<string, unknown>;
@@ -225,12 +254,34 @@ export function parseJsonResult(
       const outputTokens = num(u.output_tokens);
       const cachedTokens = num(u.cache_read_input_tokens);
       if (inputTokens > 0 || outputTokens > 0) {
-        onUsage({ inputTokens, outputTokens, cachedTokens });
+        // Unified usage ledger (Slice 2): the disjoint parts, the session id the
+        // ledger pairs with this call's transcript, and the metered dollars.
+        const part = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+        const usd = typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd) ? obj.total_cost_usd : null;
+        onUsage({
+          inputTokens, outputTokens, cachedTokens,
+          detail: {
+            sessionId: typeof obj.session_id === 'string' ? obj.session_id : null,
+            input: part(u.input_tokens),
+            cacheRead: part(u.cache_read_input_tokens),
+            cacheWrite: part(u.cache_creation_input_tokens),
+            output: part(u.output_tokens),
+            reasoning: null,
+            reportedUsd: usd,
+            reportedBasis: usd != null ? 'actual' : null,
+          },
+        });
       }
     } catch {
-      /* usage extraction must never break the result path */
+      /* @silent-fallback-ok — usage extraction must never break the result path. */
     }
   }
+  if (preferStructuredOutput && obj?.is_error === true) return '';
+  if (preferStructuredOutput && obj && obj.structured_output && typeof obj.structured_output === 'object'
+    && !Array.isArray(obj.structured_output)) {
+    return JSON.stringify(obj.structured_output);
+  }
+  if (preferStructuredOutput) return '';
   if (obj && typeof obj.result === 'string') {
     return obj.result.trim();
   }

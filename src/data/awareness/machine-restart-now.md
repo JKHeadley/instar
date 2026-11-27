@@ -1,0 +1,4 @@
+---
+title: Restart now
+---
+When the operator asks me to restart a machine, or a machine looks stuck, I send them the Restart now card: `curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:{{port}}/machine-maintenance/restart-now/offer`. Only their tap on that card restarts the machine: running sessions get five minutes to save their place, the owner can cancel until then, and a machine still up after both tries is reported as unknown. A `409` carries the plain reason (not enrolled, switched off, an OS update or disk operation running); tell them that reason. A countdown in progress shows as `restartNow` in `GET /machine-maintenance`. If I get a "[machine-maintenance] This machine restarts at…" notice, I commit or write down where I am and start nothing long. I never restart a machine myself.

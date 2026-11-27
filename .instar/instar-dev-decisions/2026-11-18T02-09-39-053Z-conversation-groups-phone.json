@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-18T02:09:39.053Z",
+  "slug": "conversation-groups-phone",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1295,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffActionProtocol.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/ConversationGraphSuggestions.ts",
+      "src/core/ReplicatedPeerStreamReader.ts",
+      "src/data/awareness/conversation-groups-phone.md",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphSuggestionAccept.ts",
+      "src/server/ConversationGraphSuggestionService.ts",
+      "src/server/ConversationGraphSurface.ts",
+      "src/server/ConversationGroupProjectDrafts.ts",
+      "src/server/conversationGraphSuggestionRoutes.ts",
+      "src/server/conversationGroupProjectRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1244,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

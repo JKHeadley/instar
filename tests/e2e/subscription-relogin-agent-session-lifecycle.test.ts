@@ -53,7 +53,7 @@ async function listen(server: AgentServer): Promise<string> {
 }
 
 describe('skill-driven sign-in repair through the production AgentServer', () => {
-  it('is alive: a helper posts the code with only its token, and the server verifies the repair to success', async () => {
+  it.each(['macos', 'windows'] as const)('is alive (%s): a helper posts the code with only its token, and the server verifies the repair to success', async (browserDriver) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-e2e-')); roots.push(root);
     const cfg = config(root);
     const userDataDir = path.join(root, 'browser-profile'); fs.mkdirSync(userDataDir);
@@ -77,8 +77,10 @@ describe('skill-driven sign-in repair through the production AgentServer', () =>
       configHome: accounts['acct-broken'].configHome, verificationUrl: 'https://claude.ai/oauth/authorize?code=true',
       ttlExpiresAt: new Date(Date.now() + 30 * 60_000).toISOString(), status: 'pending', reissueCount: 0,
       createdAt: '', updatedAt: '', version: 1 })) };
+    const windowsDir = 'C:\\Users\\Public\\profile-1';
+    let windowsUserDataDir: string | undefined;
     const profiles: any = { resolve: () => ({ profile: { id: 'profile-1' }, dirExists: true }), listProfiles: () => [{
-      id: 'profile-1', userDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
+      id: 'profile-1', userDataDir, windowsUserDataDir, description: '', isDefault: false, createdAt: '', dirExists: true,
       accounts: [{ service: 'google', identity: 'person@example.test', owner: 'operator', vaultRefs: [], loginMethod: 'password',
         lastAsserted: true, lastVerifiedAt: null, note: '', danglingRefs: [] }] }] };
     const pasteBack: any = { finish: vi.fn(async () => 'complete') };
@@ -105,9 +107,14 @@ describe('skill-driven sign-in repair through the production AgentServer', () =>
       supervise: async () => { throw new Error('no supervisor'); },
       navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(root, 'seat.json') }),
       helperSession: { spawn, isAlive: (t) => live.has(t), kill: (t) => { live.delete(t); }, listHelpers: () => [],
-        hasCapacity: () => true, serverPort: 4042, timing: { pollMs: 10, startGraceMs: 5_000 } },
+        hasCapacity: () => true, serverPort: 4042, browserDriver, timing: { pollMs: 10, startGraceMs: 5_000 } },
     });
     expect(runtime.helper).not.toBeNull();
+    if (browserDriver === 'windows') {
+      // Until the profile names its Windows folder the repair says why it cannot start.
+      expect(await runtime.blockers()).toEqual([expect.objectContaining({ accountId: 'acct-broken', reason: 'profile-directory-missing' })]);
+      windowsUserDataDir = windowsDir;
+    }
     const ctx = subscriptionReloginRouteContext(runtime);
     expect(typeof ctx.helperSubmit).toBe('function'); // wired, not a no-op
     const server = new AgentServer({ config: cfg, state: new StateManager(cfg.stateDir),
@@ -133,6 +140,11 @@ describe('skill-driven sign-in repair through the production AgentServer', () =>
     // episode can reach `succeeded` first; wait for the helper to see its 202.
     await vi.waitFor(() => expect(routeStatus).toBe(202), { timeout: 5_000 });
     expect(spawn.mock.calls[0]![0]).toMatchObject({ seat: { accountId: 'acct-helper' } });
+    if (browserDriver === 'windows') {
+      expect(spawn.mock.calls[0]![0].prompt).toContain(windowsDir);
+      expect(spawn.mock.calls[0]![0].prompt).toContain('ndrive.sh');
+      expect(spawn.mock.calls[0]![0].prompt).not.toContain(userDataDir);
+    }
     expect(pasteBack.finish).toHaveBeenCalledWith(expect.anything(), CODE, expect.any(AbortSignal));
     expect(live.size).toBe(0); // the helper was killed on exit from browser-driving
     const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)

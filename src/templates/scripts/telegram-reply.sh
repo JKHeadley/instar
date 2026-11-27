@@ -549,7 +549,18 @@ if [ "$HTTP_CODE" = "200" ]; then
     echo "NOT SENT — suppressed duplicate for topic $TOPIC_ID${DELIVERY_ID_DETAIL}; an identical message was already delivered to that topic recently"
     exit 1
   fi
-  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
+  # The message id and its link (when this chat has message links), so a later reminder can
+  # link this message. The line still starts "Sent N chars to topic T" for existing parsers.
+  SENT_DETAIL=$(printf '%s' "$BODY" | python3 -c 'import sys,json,re
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    d={}
+mid=d.get("messageId"); link=d.get("messageLink"); out=""
+if isinstance(mid,(int,str)) and str(mid).isdigit(): out+=" (message %s)" % mid
+if isinstance(link,str) and re.match(r"^https://[!-~]+$", link): out+=" link: "+link
+print(out)' 2>/dev/null || echo "")
+  echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID${SENT_DETAIL}"
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Telegram API)
   # exceeded the route's budget. The actual send may have completed anyway, because
@@ -566,6 +577,14 @@ elif [ "$HTTP_CODE" = "408" ]; then
   echo "AMBIGUOUS (HTTP 408): outcome unknown — hold pending authoritative receipt/outbox resolution"
   exit 0
 elif [ "$HTTP_CODE" = "422" ]; then
+  # Organization policy refusal (org-never-actions §C): the rule, who to ask, and the allow-once id.
+  if echo "$BODY" | grep -q '"error"[[:space:]]*:[[:space:]]*"org-policy"'; then
+    ORG_REASON=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null || echo "")
+    ORG_CHECK=$(echo "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("checkId") or "")' 2>/dev/null || echo "")
+    echo "BLOCKED by your organization's policy (not sent): ${ORG_REASON}" >&2
+    if [ -n "$ORG_CHECK" ]; then echo "If your person allows it once in the Instar app (check ${ORG_CHECK}), send the same message again." >&2; fi
+    exit 1
+  fi
   # The 422 class is no longer one thing. Branch on `error` so a NUDGE reads as
   # a nudge and the unoverridable wall reads as a wall — before the advisory
   # migration this branch printed "BLOCKED" for every 422, which would have made
@@ -615,6 +634,99 @@ elif [ "$HTTP_CODE" = "422" ]; then
   fi
   echo "  Revise the message (remove CLI commands, file paths, config syntax, API endpoints) and retry." >&2
   exit 1
+elif [ "$HTTP_CODE" = "409" ] && printf '%s' "$BODY" | python3 -c 'import sys,json; raise SystemExit(0 if json.load(sys.stdin).get("error") == "telegram-origin-held" else 1)' 2>/dev/null; then
+  # A held reply is never a plain failure: the server keeps the original
+  # message, and an outcome of accepted-unrecorded / outcome-unknown means it
+  # may ALREADY be in the chat. Printing "Failed" here made sessions resend and
+  # the user got duplicates (Echo Bugs topic 10000000967). Ask the server once,
+  # by operation id, and say plainly what is known.
+  HELD_FIELDS=$(printf '%s' "$BODY" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(d.get("operationId") or "")
+print(d.get("outcome") or "")
+print(d.get("reason") or "")
+print(d.get("messageId") or "")
+print(d.get("custody") or "")' 2>/dev/null)
+  HELD_OP=$(printf '%s\n' "$HELD_FIELDS" | sed -n '1p')
+  HELD_CUSTODY=$(printf '%s\n' "$HELD_FIELDS" | sed -n '5p')
+  HELD_OUTCOME=$(printf '%s\n' "$HELD_FIELDS" | sed -n '2p')
+  HELD_REASON=$(printf '%s\n' "$HELD_FIELDS" | sed -n '3p')
+  HELD_MSG_ID=$(printf '%s\n' "$HELD_FIELDS" | sed -n '4p')
+  CHECK_URL=""
+  [ -n "$HELD_OP" ] && CHECK_URL="http://localhost:${PORT}/telegram/origins/operations/${HELD_OP}/outcome"
+  VERDICT=""
+  VERDICT_DETAIL=""
+  if [ -n "$CHECK_URL" ] && [ -n "$AUTH_TOKEN" ]; then
+    CHECK_CURL=(-s --max-time 5 -H "Authorization: Bearer ${AUTH_TOKEN}" "$CHECK_URL")
+    [ -n "$AGENT_ID" ] && CHECK_CURL+=(-H "X-Instar-AgentId: ${AGENT_ID}")
+    CHECK_BODY=$(curl "${CHECK_CURL[@]}" 2>/dev/null || echo "")
+    VERDICT_FIELDS=$(printf '%s' "$CHECK_BODY" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(d.get("outcome") or "")
+print(d.get("detail") or "")
+ids=d.get("messageIds") or []
+print(",".join(str(i) for i in ids))
+print("yes" if d.get("safeToResend") is True else "no")' 2>/dev/null)
+    VERDICT=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '1p')
+    VERDICT_DETAIL=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '2p')
+    VERDICT_IDS=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '3p')
+    VERDICT_SAFE=$(printf '%s\n' "$VERDICT_FIELDS" | sed -n '4p')
+    # Only `safeToResend: true` permits a resend. A not-delivered reply that
+    # was ended on purpose (safeToResend false) must never be sent again.
+    [ "$VERDICT" = "not-delivered" ] && [ "$VERDICT_SAFE" != "yes" ] && VERDICT="ended-on-purpose"
+    [ -z "$HELD_MSG_ID" ] && HELD_MSG_ID="$VERDICT_IDS"
+  fi
+  [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "accepted-unrecorded" ] && VERDICT="delivered"
+  # No lookup answer, but Telegram definitely refused this attempt: it did not
+  # arrive. The server may still retry it (e.g. after a rate limit), so this is
+  # not a licence to resend either.
+  [ -z "$VERDICT" ] && [ "$HELD_OUTCOME" = "known-failed" ] && VERDICT="refused-attempt"
+  CHECK_LINE="  Check again: curl -s -H \"Authorization: Bearer \$INSTAR_AUTH_TOKEN\" -H \"X-Instar-AgentId: \$INSTAR_AGENT_ID\" ${CHECK_URL:-<no operation id returned>}"
+  case "$VERDICT" in
+    delivered|partially-delivered)
+      echo "DELIVERED — Telegram accepted this message${HELD_MSG_ID:+ (message id ${HELD_MSG_ID})}. Do NOT resend it." >&2
+      [ "$VERDICT" = "partially-delivered" ] && echo "  Only part of it reached Telegram. Check before sending the rest yourself." >&2
+      [ "$HELD_REASON" = "receipt-persistence-unavailable" ] && echo "  (The server could not save its delivery receipt; the receipt was kept in a fallback record.)" >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "Delivered to topic $TOPIC_ID${HELD_MSG_ID:+ (message id ${HELD_MSG_ID})}; receipt not fully recorded — do not resend"
+      exit 0
+      ;;
+    not-delivered)
+      echo "NOT SENT — this message never reached Telegram and the server will not retry it (operation ${HELD_OP:-unknown})." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  It is safe to send it again." >&2
+      exit 1
+      ;;
+    ended-on-purpose)
+      echo "NOT SENT — this message was ended on purpose and will not be sent (operation ${HELD_OP:-unknown}). Do NOT resend it." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      exit 1
+      ;;
+    refused-attempt)
+      echo "NOT DELIVERED — Telegram refused this attempt (${HELD_REASON:-unknown}, operation ${HELD_OP:-unknown})." >&2
+      echo "  The server may still retry it, so check before sending it again." >&2
+      echo "$CHECK_LINE" >&2
+      exit 1
+      ;;
+    pending)
+      echo "HELD — not delivered yet. The server kept the original message and will deliver it itself. Do NOT resend it." >&2
+      [ "$HELD_CUSTODY" = "this-machine-only" ] && echo "  Kept on this machine only until the sending machine is reachable; if this machine goes down first, the reply is lost." >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  Reason: ${HELD_REASON:-unknown} (operation ${HELD_OP:-unknown})" >&2
+      echo "$CHECK_LINE" >&2
+      exit 1
+      ;;
+    *)
+      echo "MAY ALREADY BE DELIVERED — the server could not confirm whether this message reached the chat. Do NOT resend it." >&2
+      echo "  Reason: ${HELD_REASON:-unknown}; outcome: ${HELD_OUTCOME:-unknown} (operation ${HELD_OP:-unknown})" >&2
+      [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
+      echo "  Absence from the conversation is not proof of non-delivery." >&2
+      echo "$CHECK_LINE" >&2
+      echo "  Resend only if that check answers \"safeToResend\": true." >&2
+      echo "AMBIGUOUS (HTTP 409 held): outcome unknown — do not resend; check the operation outcome"
+      exit 0
+      ;;
+  esac
 else
   # Recoverable-class detection (spec § Layer 2b).
   #
@@ -724,6 +836,19 @@ except Exception:
     # `now` (which a wedged/slept script would push arbitrarily late).
     NOW_EPOCH=$(date -u +%s)
 
+    # origin_session_digest — SHA-256 of this session's origin credential (never
+    # the credential itself). A reply queued while the server boots would
+    # otherwise recover as "unknown machine/harness/model"; the server matches
+    # this digest to the live session that held the credential and labels the
+    # recovered send with it. Empty when no credential is present.
+    ORIGIN_DIGEST=""
+    if [ -n "${INSTAR_ORIGIN_TOKEN:-}" ]; then
+      ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | shasum -a 256 2>/dev/null | awk '{print $1}')
+      [ -n "$ORIGIN_DIGEST" ] || ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | sha256sum 2>/dev/null | awk '{print $1}')
+      [ -n "$ORIGIN_DIGEST" ] || ORIGIN_DIGEST=$(printf '%s' "$INSTAR_ORIGIN_TOKEN" | python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())' 2>/dev/null)
+      printf '%s' "$ORIGIN_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || ORIGIN_DIGEST=""
+    fi
+
     # Run the queue write through python3's stdlib sqlite3 module — it
     # owns schema creation, the 5s dedup window, parameterized inserts,
     # and 0600-mode enforcement. python3 is already a hard dependency
@@ -749,6 +874,7 @@ except Exception:
       Q_ATTEMPTED_AT="$ATTEMPTED_AT" \
       Q_TRUNCATED="$TRUNCATED" \
       Q_METADATA="$METADATA_JSON" \
+      Q_ORIGIN_DIGEST="$ORIGIN_DIGEST" \
       Q_DB_PATH="$QUEUE_DB" \
       python3 -c '
 import os, sqlite3, sys, json, datetime
@@ -796,6 +922,12 @@ try:
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             raise
+    # origin_session_digest — lets recovery label the send with its session.
+    try:
+        conn.execute("ALTER TABLE entries ADD COLUMN origin_session_digest TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
     conn.execute("CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id)")
     # 5s dedup window (spec § 2b step 2).
@@ -819,8 +951,9 @@ try:
           delivery_id, topic_id, text_hash, text, format,
           http_code, error_body, attempted_port,
           attempted_at, attempts, next_attempt_at,
-          state, claimed_by, status_history, truncated, message_metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?, ?)""",
+          state, claimed_by, status_history, truncated, message_metadata,
+          origin_session_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, "queued", NULL, ?, ?, ?, ?)""",
         (
             os.environ["Q_DELIVERY_ID"],
             int(os.environ["Q_TOPIC_ID"]),
@@ -834,6 +967,7 @@ try:
             initial_history,
             int(os.environ.get("Q_TRUNCATED", "0")),
             os.environ.get("Q_METADATA") or None,
+            os.environ.get("Q_ORIGIN_DIGEST") or None,
         ),
     )
     conn.commit()
@@ -883,17 +1017,20 @@ CREATE TABLE IF NOT EXISTS entries (
   message_metadata TEXT
 );
 ALTER TABLE entries ADD COLUMN message_metadata TEXT;
+ALTER TABLE entries ADD COLUMN origin_session_digest TEXT;
 CREATE INDEX IF NOT EXISTS idx_state_next ON entries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_text_hash_topic ON entries(text_hash, topic_id);
 INSERT OR IGNORE INTO entries (
   delivery_id, topic_id, text_hash, text, format,
   http_code, error_body, attempted_port, attempted_at,
-  attempts, state, status_history, truncated, message_metadata
+  attempts, state, status_history, truncated, message_metadata,
+  origin_session_digest
 ) VALUES (
   '$DELIVERY_ID', $TOPIC_ID, '$TEXT_HASH',
   CAST(readfile('${QUEUE_DB}.tmp.text') AS BLOB), $( [ -n "$FORMAT" ] && printf "'%s'" "$FORMAT" || echo "NULL"),
   $HTTP_CODE, NULL, $PORT, '$ATTEMPTED_AT',
-  1, 'queued', '[]', $TRUNCATED, $META_SQL_VALUE
+  1, 'queued', '[]', $TRUNCATED, $META_SQL_VALUE,
+  $( [ -n "$ORIGIN_DIGEST" ] && printf "'%s'" "$ORIGIN_DIGEST" || echo "NULL")
 );
 SQL
       rm -f "${QUEUE_DB}.tmp.text" "${QUEUE_DB}.tmp.meta" 2>/dev/null

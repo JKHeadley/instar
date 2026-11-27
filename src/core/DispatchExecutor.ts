@@ -661,6 +661,7 @@ function deepMerge(
   const result = { ...target };
 
   for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     const sourceVal = source[key];
     const targetVal = result[key];
 

@@ -216,6 +216,56 @@ describe('SecretStore', () => {
     });
   });
 
+  // ── Key-path hardening: reserved segments never reach object machinery ──
+
+  describe('reserved key-path segments', () => {
+    afterEach(() => {
+      delete (Object.prototype as Record<string, unknown>).instarProbe;
+    });
+
+    for (const keyPath of ['__proto__.instarProbe', 'a.__proto__.instarProbe', 'constructor.prototype.instarProbe', 'prototype.instarProbe']) {
+      it(`set refuses "${keyPath}" and leaves the shared prototype untouched`, () => {
+        const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
+        store.write({ a: { keep: 'x' } });
+        expect(() => store.set(keyPath, true)).toThrow(/secret-key-path-reserved-segment/);
+        expect(({} as Record<string, unknown>).instarProbe).toBeUndefined();
+        expect(store.read()).toEqual({ a: { keep: 'x' } });
+      });
+    }
+
+    it('get reads reserved or inherited names as absent', () => {
+      const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
+      store.write({ telegram: { token: 'abc' } });
+      expect(store.get('constructor')).toBeUndefined();
+      expect(store.get('__proto__')).toBeUndefined();
+      expect(store.get('toString')).toBeUndefined();
+      expect(store.get('telegram.hasOwnProperty')).toBeUndefined();
+      expect(store.get('telegram.token')).toBe('abc');
+    });
+
+    it('delete with a reserved segment is a no-op', () => {
+      const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
+      store.write({ key: 'value' });
+      store.delete('__proto__.key');
+      store.delete('constructor');
+      expect(store.read()).toEqual({ key: 'value' });
+    });
+
+    it('set replaces a null or scalar intermediate instead of throwing', () => {
+      const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
+      store.write({ a: null, b: 'scalar' });
+      store.set('a.x', 1);
+      store.set('b.y', 2);
+      expect(store.read()).toEqual({ a: { x: 1 }, b: { y: 2 } });
+    });
+
+    it('ordinary names that merely contain a reserved word still work', () => {
+      const store = new SecretStore({ stateDir: tmpDir, forceFileKey: true });
+      store.set('prototypes.constructorKey', 'ok');
+      expect(store.get('prototypes.constructorKey')).toBe('ok');
+    });
+  });
+
   // ── MasterKeyManager ───────────────────────────────────────────
 
   describe('MasterKeyManager', () => {

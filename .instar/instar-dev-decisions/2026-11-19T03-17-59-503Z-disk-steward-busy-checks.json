@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T03:17:59.503Z",
+  "slug": "disk-steward-busy-checks",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 58,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/diskSteward/pruneCategories.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes only guard predicates inside the existing cache prune; adds no loop, retry or new self-triggered action"
+  },
+  "verdict": "pass"
+}

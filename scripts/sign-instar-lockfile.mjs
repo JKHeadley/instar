@@ -56,6 +56,13 @@ function hashBody(content) {
   return 'sha256:' + crypto.createHash('sha256').update(normalized).digest('hex');
 }
 
+const SCRIPT_FILE_RE = /^[a-z0-9-]+\.mjs$/;
+
+/** Raw-bytes hash for shipped job scripts (mirror of hashScriptBytes). */
+function hashScriptBytes(buf) {
+  return 'sha256:' + crypto.createHash('sha256').update(buf).digest('hex');
+}
+
 function hashFrontmatter(frontmatter) {
   const canonical = canonicalizeForHash(frontmatter);
   return hashBody(canonical);
@@ -161,11 +168,27 @@ function main() {
       process.exit(1);
     }
     const slug = slugFromFilename(f);
-    entries.push({
+    const entry = {
       slug,
       bodyHash: hashBody(parsed.body),
       frontmatterHash: hashFrontmatter(parsed.frontmatter),
-    });
+    };
+    // job-cost-reduction §5.1: a script-runner template's shipped script is
+    // hashed over its RAW bytes. Trust then requires body AND script to match.
+    if (parsed.frontmatter.runner === 'script') {
+      const scriptFile = parsed.frontmatter.script;
+      if (typeof scriptFile !== 'string' || !SCRIPT_FILE_RE.test(scriptFile)) {
+        console.error(`[sign-lockfile] FATAL: ${slug}: runner: script needs script: <slug>.mjs (got ${JSON.stringify(scriptFile)})`);
+        process.exit(1);
+      }
+      const scriptPath = path.join(TEMPLATES_DIR, 'scripts', scriptFile);
+      if (!fs.existsSync(scriptPath)) {
+        console.error(`[sign-lockfile] FATAL: ${slug}: script ${scriptPath} not found`);
+        process.exit(1);
+      }
+      entry.scriptHash = hashScriptBytes(fs.readFileSync(scriptPath));
+    }
+    entries.push(entry);
     log(`  hashed ${slug}`);
   }
 

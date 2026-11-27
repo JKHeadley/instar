@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "sandbox-node-install-read",
+  "sessionId": "3c3df589-c439-4d78-a99a-01ad51fcb5df",
+  "timestamp": "2026-11-08T02:25:32.628Z",
+  "artifactPath": "upgrades/side-effects/sandbox-node-install-read.md",
+  "artifactSha256": "e98cfa480f6e3987954b872e0545152b1ff934c4ca0eba574e61ec4d1338a9b4",
+  "coveredFiles": [
+    "docs/specs/sandbox-node-install-read.eli16.md",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/integration/feedback-execute-dns-sandbox.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/sandbox-node-install-read.md",
+    "upgrades/side-effects/sandbox-node-install-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One policy function plus tests; read-only allow of the Node install under home with guards; a revert fully undoes it",
+  "eli16Path": "docs/specs/sandbox-node-install-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sandbox-node-install-read.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

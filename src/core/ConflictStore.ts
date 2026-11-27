@@ -56,7 +56,7 @@ export interface ConflictLedgerEntry {
   /** Set when the operator resolves (§7.3) or the rollback auto-resolves (§7.4). */
   resolved: boolean;
   resolvedAt?: string;
-  resolution?: 'operator-winner' | 'operator-merged' | 'origin-dropped';
+  resolution?: 'operator-winner' | 'operator-merged' | 'origin-dropped' | 'identical-content';
   /** The origin the operator designated as winner (operator-winner only). */
   winnerOrigin?: string;
 }
@@ -284,6 +284,30 @@ export class ConflictStore {
       this.log('conflict-auto-resolved-origin-dropped', { droppedOrigin, closedCount: closed.length });
     }
     return closed;
+  }
+
+  /**
+   * Close an open conflict whose versions turned out to be identical (same op,
+   * byte-identical store fields). The union reader no longer treats such a set as a
+   * conflict, so an entry recorded before that rule existed would otherwise stay open
+   * forever. NOT an operator decision: no winner is recorded and the resolution is
+   * `identical-content`. The ledger holds only (origin, hlcKey) per version, so the
+   * caller passes the version set it verified identical; the entry closes ONLY when
+   * that set equals the ledger's exactly — a ledger entry with any other version
+   * stays open. Returns true when it closed the entry.
+   */
+  autoResolveIdenticalContent(conflictId: string, identicalVersions: { origin: string; hlcKey: string }[]): boolean {
+    const entry = this.doc.conflicts.find((c) => c.conflictId === conflictId);
+    if (!entry || entry.resolved) return false;
+    const key = (v: { origin: string; hlcKey: string }) => `${v.origin}\u0000${v.hlcKey}`;
+    const want = new Set(identicalVersions.map(key));
+    if (want.size !== entry.versions.length || !entry.versions.every((v) => want.has(key(v)))) return false;
+    entry.resolved = true;
+    entry.resolvedAt = this.now().toISOString();
+    entry.resolution = 'identical-content';
+    this.persist();
+    this.log('conflict-auto-resolved-identical-content', { conflictId });
+    return true;
   }
 
   /** Every open (unresolved) conflict (§7.3 dashboard surface). */

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-15T23:05:00.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-opus-fresh"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 0
+  },
+  "convergenceReport": "docs/specs/reports/security-ux-standard-interaction-review-2026-11-15.md",
+  "convergenceSha256": "dc6ef548aa40f84a57e2e5dcd831afce909d51bf9a882c21994d90dfbb2cc37c",
+  "areas": {
+    "Interaction": {
+      "areaSha256": "8801d52fac6f70db4d8163c5a581283edbc780cf9b02a8d3618d30dcb4933ccb",
+      "verdict": "accepted"
+    }
+  }
+}

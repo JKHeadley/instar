@@ -1,0 +1,31 @@
+{
+  "ts": "2026-10-26T13:07:49.750Z",
+  "slug": "trustworthy-machine-load-p2",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "WorkAdmission is registered as overload-admission-self-help in src/testing/selfActionRegistry.ts: under the pinned always-saturated fixture it closes once, emits the self-help notice once per closed episode (boundK 1, horizon-independent) and never reopens"
+    },
+    "component": "WorkAdmission"
+  },
+  "verdict": "pass"
+}

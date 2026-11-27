@@ -28,6 +28,11 @@ import type { PlaywrightProfileRegistry } from '../../src/core/PlaywrightProfile
 import type { ClaudePasteBackController } from '../../src/core/ClaudePasteBackController.js';
 import type { ReloginBrowserPort } from '../../src/core/AnthropicReloginBrowserDriver.js';
 
+// The episode runtime runs real timers and a spawned helper; under a loaded verify
+// machine the default 1 s vi.waitFor limit expires before the state lands (failed
+// PR 3072's run at line 545 on 2026-11-15 while the product behaved correctly).
+const WAIT = { timeout: 15_000, interval: 50 };
+
 const dirs: string[] = [];
 const servers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -44,7 +49,11 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
   /** Quiet hours for approval re-offers. Tests default to OFF so they never depend on the wall-clock time of day. */
   quietHours?: { startHour: number; endHour: number } | null;
   /** Spec relogin-last-resort-model: a last-resort model port whose availability the test controls. */
-  lastResort?: { available: boolean } } = {}) {
+  lastResort?: { available: boolean };
+  /** codex-device-limit-tripwire §4: the runtime's device-limit callback. */
+  onDeviceLimitStopped?: (accountId: string) => void;
+  deviceLimitHold?: (accountId: string) => boolean;
+  onTerminal?: (...args: unknown[]) => unknown } = {}) {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-agent-session-')); dirs.push(stateDir);
   const userDataDir = path.join(stateDir, 'browser-profile'); fs.mkdirSync(userDataDir);
   const accounts = new Map<string, SubscriptionAccount>();
@@ -139,6 +148,9 @@ function world(opts: { helperAccounts?: Array<Partial<SubscriptionAccount>>; mod
     navigate: async (input) => { navigateCalls.push(input.offered); return input.offered.includes('click:2') ? 'click:2' : (input.offered[0] ?? 'give-up'); },
     ...(opts.lastResort ? { lastResort: lastResortPort } : {}),
     ...(opts.codexLiveReadAvailable !== undefined ? { codexLiveReadAvailable: opts.codexLiveReadAvailable } : {}),
+    ...(opts.onDeviceLimitStopped ? { onDeviceLimitStopped: opts.onDeviceLimitStopped } : {}),
+    ...(opts.deviceLimitHold ? { deviceLimitHold: opts.deviceLimitHold } : {}),
+    ...(opts.onTerminal ? { onTerminal: opts.onTerminal as never } : {}),
     navigation: 'agent-session', seatLease: new PlaywrightSeatLease({ filePath: path.join(stateDir, 'seat-lease.json') }),
     helperSession: { spawn, kill, isAlive: (t) => tmux.get(t) === true, listHelpers: () => [], hasCapacity: () => true, serverPort: 4042,
       codexLoginStatus: async () => opts.codexCli ?? 'signed-in', timing: { pollMs: 10, startGraceMs: 0, exitSettleMs: 0 } },
@@ -154,7 +166,7 @@ describe('agent-session sign-in repair runtime', () => {
     const episode = w.runtime.store.list()[0]!;
     expect(episode.state).toBe('suggested');
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(w.spawn).toHaveBeenCalledTimes(1);
     expect(w.spawn.mock.calls[0]![0]).toMatchObject({ name: `relogin-${episode.id}`,
       seat: { accountId: 'acct-helper-0', framework: 'claude-code' } });
@@ -173,7 +185,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'), WAIT);
     // The operator signs the account in by hand. Pool says active, but no verified read yet ⇒ stays open.
     w.accounts.set('acct-broken', { ...w.accounts.get('acct-broken')!, status: 'active' });
     await w.runtime.service.tick();
@@ -191,7 +203,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     expect(episode.mode).toBe('unattended');
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(w.spawn).toHaveBeenCalledTimes(1);
     const events = w.runtime.store.listEvents(episode.id).map((e) => e.eventClass);
     expect(events).toContain('unattended-policy-approved');
@@ -206,7 +218,7 @@ describe('agent-session sign-in repair runtime', () => {
     const stale = w.runtime.store.suggest({ sourceEpisodeId: 81, accountId: 'acct-broken', machineId: 'machine-1', mode: 'approval',
       inputDigest: `sha256:${'f'.repeat(64)}`, profileId: 'profile-1', framework: 'claude-code', provider: 'anthropic', loginMethod: 'password' });
     await w.runtime.service.tick();
-    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'), WAIT);
     expect(w.runtime.store.get(stale.id)!.mode).toBe('unattended');
     expect(w.runtime.store.listEvents(stale.id).map((e) => e.eventClass)).toEqual(
       expect.arrayContaining(['candidate-readmitted-inputs-changed', 'unattended-policy-approved']));
@@ -219,7 +231,7 @@ describe('agent-session sign-in repair runtime', () => {
       inputDigest: `sha256:${'e'.repeat(64)}`, profileId: 'profile-1', framework: 'claude-code', provider: 'anthropic', loginMethod: 'password' });
     const approved = await w.runtime.service.approve(stale.id);
     expect(approved.state).toBe('approved');
-    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(stale.id)?.state).toBe('succeeded'), WAIT);
     w.runtime.close();
   });
 
@@ -236,7 +248,7 @@ describe('agent-session sign-in repair runtime', () => {
     const w = world({ mode: 'unattended', helperPostsCode: false, offsetMs: clock });
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
     expect(w.spawn).toHaveBeenCalledTimes(1);
     for (const [retry, hours] of [[1, 6], [2, 24], [3, 24]] as const) {
       await w.runtime.service.tick(); // records when the next try is due (visible on the dashboard)
@@ -247,8 +259,8 @@ describe('agent-session sign-in repair runtime', () => {
       expect(w.spawn).toHaveBeenCalledTimes(retry);
       clock.value = Date.parse(scheduled.nextAttemptAt!) - Date.now() + 1_000;
       await w.runtime.service.tick();
-      await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(retry + 1));
-      await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+      await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(retry + 1), WAIT);
+      await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
       expect(w.runtime.store.get(id)!.slowRetryCount).toBe(retry);
       expect(w.runtime.store.listEvents(id).map((e) => e.eventClass)).toContain('slow-retry-approved');
     }
@@ -267,7 +279,7 @@ describe('agent-session sign-in repair runtime', () => {
     const w = world({ mode: 'unattended', helperPostsCode: false, offsetMs: clock });
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
     expect(w.runtime.store.get(id)!.loginCreatedAt).not.toBeNull();
     await w.runtime.service.tick();
     const due = Date.parse(w.runtime.store.get(id)!.nextAttemptAt!);
@@ -283,12 +295,36 @@ describe('agent-session sign-in repair runtime', () => {
     w.runtime.close();
   });
 
+  it('a helper that reports a device-limit page ends the repair failed/device-limit: reported, not retried while suspected, no notice, not a hard line', async () => {
+    const clock = { value: 0 };
+    const onDeviceLimitStopped = vi.fn();
+    const onTerminal = vi.fn(async () => undefined);
+    const held = new Set<string>();
+    const w = world({ mode: 'unattended', hardLine: 'device-limit', offsetMs: clock, onDeviceLimitStopped, onTerminal,
+      deviceLimitHold: (accountId) => held.has(accountId) });
+    onDeviceLimitStopped.mockImplementation((accountId: string) => { held.add(accountId); });
+    await w.runtime.service.tick();
+    const id = w.runtime.store.list()[0]!.id;
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
+    expect(w.runtime.store.get(id)!.failureClass).toBe('device-limit');
+    expect(w.runtime.store.listEvents(id)[0]).toMatchObject({ eventClass: 'device-limit-stopped' });
+    expect(onDeviceLimitStopped).toHaveBeenCalledTimes(1);
+    expect(onDeviceLimitStopped).toHaveBeenCalledWith('acct-broken');
+    for (let i = 0; i < 4; i++) { clock.value += 30 * 60 * 60_000; await w.runtime.service.tick(); }
+    expect(w.runtime.store.get(id)).toMatchObject({ state: 'failed', slowRetryCount: 0, nextAttemptAt: null });
+    expect(w.spawn).toHaveBeenCalledTimes(1);
+    expect(onTerminal).not.toHaveBeenCalled();
+    const evidence = w.runtime.store.getUnattendedEvidence('acct-broken', 'machine-1', 'anthropic', 'claude-code', 'password');
+    expect(evidence.helperHardLines).toBe(0);
+    w.runtime.close();
+  });
+
   it('a helper that reports a CAPTCHA hands the repair to the operator, and no slow retry ever drives it again', async () => {
     const clock = { value: 0 };
     const w = world({ mode: 'unattended', hardLine: 'captcha', offsetMs: clock });
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('waiting-operator-only'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('waiting-operator-only'), WAIT);
     expect(w.runtime.store.get(id)!.failureClass).toBe('agent-hard-line');
     for (let i = 0; i < 4; i++) { clock.value += 30 * 60 * 60_000; await w.runtime.service.tick(); }
     expect(w.runtime.store.get(id)).toMatchObject({ state: 'waiting-operator-only', slowRetryCount: 0, nextAttemptAt: null });
@@ -322,7 +358,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
     await w.runtime.service.approve(id);
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
     // Simulate a row from before the column existed.
     const { default: Database } = await import('better-sqlite3');
     const db = new Database(w.runtime.store.dbPath);
@@ -344,7 +380,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
     await w.runtime.service.approve(id);
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
     await w.runtime.service.tick();
     const due = Date.parse(w.runtime.store.get(id)!.nextAttemptAt!);
     // Pin "now" to 01:00 local on the day after the due time (always past due, always inside the window).
@@ -367,7 +403,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const id = w.runtime.store.list()[0]!.id;
     await w.runtime.service.approve(id);
-    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(id)?.state).toBe('failed'), WAIT);
     await w.runtime.service.tick();
     const due = w.runtime.store.get(id)!.nextAttemptAt!;
     clock.value = Date.parse(due) - Date.now() + 1_000;
@@ -382,7 +418,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'), WAIT);
     expect(w.runtime.store.get(episode.id)).toMatchObject({ failureClass: 'no-healthy-seat', attemptCount: 0 });
     expect(w.spawn).not.toHaveBeenCalled();
     w.runtime.close();
@@ -394,7 +430,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(w.spawn).not.toHaveBeenCalled();
     expect(w.fallbackBrowser.open).toHaveBeenCalledWith('https://claude.ai/oauth/authorize?code=true');
     expect(w.lastResortPort.beginDrive).toHaveBeenCalledWith(episode.id);
@@ -418,7 +454,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'), WAIT);
     expect(w.runtime.store.get(episode.id)).toMatchObject({ failureClass: 'no-healthy-seat', attemptCount: 0 });
     expect(w.spawn).not.toHaveBeenCalled();
     expect(w.fallbackBrowser.open).not.toHaveBeenCalled();
@@ -431,7 +467,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(w.spawn).toHaveBeenCalledTimes(1);
     expect(w.fallbackBrowser.open).not.toHaveBeenCalled();
     expect(w.lastResortPort.beginDrive).not.toHaveBeenCalled();
@@ -459,7 +495,7 @@ describe('agent-session sign-in repair runtime', () => {
     const episode = w.runtime.store.list()[0]!;
     expect(episode).toMatchObject({ provider: 'anthropic', framework: 'claude-code' });
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(w.spawn.mock.calls[0]![0].seat).toMatchObject({ accountId: 'acct-helper-0', framework: 'codex-cli' });
     expect(w.spawn.mock.calls[0]![0].seat.accountId).not.toBe('acct-broken');
     w.runtime.close();
@@ -471,9 +507,9 @@ describe('agent-session sign-in repair runtime', () => {
     const episode = w.runtime.store.list()[0]!;
     expect(episode).toMatchObject({ provider: 'openai', framework: 'codex-cli' });
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(w.spawn).toHaveBeenCalledTimes(1), WAIT);
     expect(w.spawn.mock.calls[0]![0].seat).toMatchObject({ accountId: 'acct-helper-0', framework: 'claude-code' });
-    await vi.waitFor(() => expect(['succeeded', 'failed', 'waiting-operator-only']).toContain(w.runtime.store.get(episode.id)?.state));
+    await vi.waitFor(() => expect(['succeeded', 'failed', 'waiting-operator-only']).toContain(w.runtime.store.get(episode.id)?.state), WAIT);
     w.runtime.close();
   });
 
@@ -484,14 +520,14 @@ describe('agent-session sign-in repair runtime', () => {
       await w.runtime.service.tick();
       const episode = w.runtime.store.list()[0]!;
       await w.runtime.service.approve(episode.id);
-      await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'));
+      await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('waiting-operator-only'), WAIT);
       w.runtime.close();
     }
     const ok = world({ helperAccounts: codex, codexCli: 'signed-in', codexSource: 'codex-app-server' });
     await ok.runtime.service.tick();
     const episode = ok.runtime.store.list()[0]!;
     await ok.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(ok.runtime.store.get(episode.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(ok.runtime.store.get(episode.id)?.state).toBe('succeeded'), WAIT);
     expect(ok.spawn.mock.calls[0]![0].seat).toMatchObject({ framework: 'codex-cli' });
     ok.runtime.close();
   });
@@ -511,7 +547,7 @@ describe('agent-session sign-in repair runtime', () => {
     await w.runtime.service.tick();
     const episode = w.runtime.store.list()[0]!;
     await w.runtime.service.approve(episode.id);
-    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('failed'));
+    await vi.waitFor(() => expect(w.runtime.store.get(episode.id)?.state).toBe('failed'), WAIT);
     expect(w.runtime.store.get(episode.id)?.failureClass).toBe('agent-sign-in-unfinished');
     expect(w.pasteBack.finish).not.toHaveBeenCalled();
     expect(w.accounts.get('acct-broken')!.status).toBe('needs-reauth');

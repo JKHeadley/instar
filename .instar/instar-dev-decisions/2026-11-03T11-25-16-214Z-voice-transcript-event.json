@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-03T11:25:16.214Z",
+  "slug": "voice-transcript-event",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 427,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/AppMediaStore.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 387,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/app-voice-transcript-event.test.ts",
+      "howCaught": "one transcription and at most one follow-up line per attachment per machine; claimed before provider start, never retried; 3 concurrent provider calls"
+    }
+  },
+  "verdict": "pass"
+}

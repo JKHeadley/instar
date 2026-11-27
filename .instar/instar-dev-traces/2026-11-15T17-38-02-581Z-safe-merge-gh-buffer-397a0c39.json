@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "safe-merge-gh-buffer",
+  "sessionId": "c0d12928-cf85-4146-a56f-e4313af41416",
+  "timestamp": "2026-11-15T17:38:02.581Z",
+  "artifactPath": "upgrades/side-effects/safe-merge-gh-buffer.md",
+  "artifactSha256": "10ecfb768ac2c86b1d4d0fd9c04308c634eeda85e06350a41fd2aa93e6093f32",
+  "coveredFiles": [
+    "docs/specs/safe-merge-gh-buffer.eli16.md",
+    "scripts/safe-merge.mjs",
+    "tests/unit/safe-merge-gh-buffer.test.ts",
+    "upgrades/next/safe-merge-gh-buffer.md",
+    "upgrades/side-effects/safe-merge-gh-buffer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two-line resource-bound change in the merge script; no decision logic changes; a revert fully undoes it. Independent second pass concurred.",
+  "eli16Path": "docs/specs/safe-merge-gh-buffer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-merge-gh-buffer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

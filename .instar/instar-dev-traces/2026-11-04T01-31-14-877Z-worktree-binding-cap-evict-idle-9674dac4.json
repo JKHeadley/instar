@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "worktree-binding-cap-evict-idle",
+  "sessionId": "38c6bab8-117f-4db9-906f-c4fe9b22996e",
+  "timestamp": "2026-11-04T01:31:14.877Z",
+  "artifactPath": "upgrades/side-effects/worktree-binding-cap-evict-idle.md",
+  "artifactSha256": "64959f6acd2540cc949f39b6d95f45f51aa77d94dec3bbbb9db11437a356ff7e",
+  "coveredFiles": [
+    "docs/specs/worktree-binding-cap-evict-idle.eli16.md",
+    "src/core/WorktreeManager.ts",
+    "tests/unit/WorktreeManager-binding-cap.test.ts",
+    "upgrades/next/worktree-binding-cap-evict-idle.md",
+    "upgrades/side-effects/worktree-binding-cap-evict-idle.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One function, ~25 lines, fully reverted by a revert; no persisted-format change",
+  "eli16Path": "docs/specs/worktree-binding-cap-evict-idle.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-binding-cap-evict-idle.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

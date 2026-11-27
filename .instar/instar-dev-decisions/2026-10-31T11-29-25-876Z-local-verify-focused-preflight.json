@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-31T11:29:25.876Z",
+  "slug": "local-verify-focused-preflight",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/policy.ts",
+      "src/localVerify/preflight.ts",
+      "src/localVerify/preflightReplay.ts",
+      "src/localVerify/record.ts",
+      "src/localVerify/runFocusedPreflight.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 62,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

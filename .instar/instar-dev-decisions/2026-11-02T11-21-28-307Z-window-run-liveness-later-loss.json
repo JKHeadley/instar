@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-02T11:21:28.307Z",
+  "slug": "window-run-liveness-later-loss",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowRunLivenessAuthority.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

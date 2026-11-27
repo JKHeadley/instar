@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-capacity",
+  "sessionId": "c6c1f783-f738-4ca5-bfa0-2a96b7927729",
+  "timestamp": "2026-10-27T04:40:13.649Z",
+  "artifactPath": "upgrades/side-effects/local-verify-capacity.md",
+  "artifactSha256": "e937d419029d81101df48e27f8f00f892dfd861eb8871cce8f22e47c2fcab315",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "src/data/state-coherence-registry.json",
+    "upgrades/side-effects/local-verify-capacity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Corrects the retention classification for the peer verifier durable state after CI exposed a metadata mismatch; runtime behavior is unchanged.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

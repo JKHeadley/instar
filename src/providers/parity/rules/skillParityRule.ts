@@ -32,9 +32,9 @@
  *   - C3: render `allowed-tools` → Claude frontmatter + Codex
  *     `dependencies.tools`. Removed from canonical for v0.1 to avoid
  *     promise-without-delivery drift; will land with the Tool primitive.
- *   - C6: atomic-write tempfile+rename. Single-sentinel-pass + single-
- *     machine narrows the race window for v0.1; will add when sentinel
- *     ships.
+ *   - C6: atomic-write tempfile+rename — LANDED (skill-learning slice 0):
+ *     every rendered file is written temp + rename (`writeFileAtomic`),
+ *     so a crash mid-render leaves the previous rendering intact.
  *   - H2/H3: BackupManager defaults + CLAUDE.md template — separate PRs.
  *   - H4: git-sync conflict-marker detection — operator-facing; surfaced
  *     in this PR as fail-loud `canonical-parse-error`.
@@ -66,6 +66,8 @@ interface CanonicalSkill {
   bundledSubdirs: ReadonlyArray<'scripts' | 'references' | 'assets'>;
   /** sha256 of body — used for stamp tracking */
   bodyHash: string;
+  /** The canonical file as read (frontmatter + body) — the render hold reads its learned state. */
+  raw: string;
 }
 
 interface FrameworkRenderer {
@@ -110,6 +112,64 @@ function sanitizeDescription(raw: string): string {
 
 function sha256(s: string): string {
   return crypto.createHash('sha256').update(s, 'utf-8').digest('hex');
+}
+
+// ─── Learned-skill state (skill-learning-sentinel §3.5) ────────────────
+//
+// These live HERE (the leaf every renderer shares) so `remediate` — the ONE
+// funnel every render passes — can refuse a canonical the sentinel holds
+// unrendered, without a cycle through the reconciler.
+
+const LEARNED_ORIGIN_KEY = 'instar-learned-origin';
+const LEARNED_STATE_KEY = 'instar-learned-state';
+const MERGE_MARKER_RE = /^<{7} |^={7}$|^>{7} /m;
+
+function learnedMetadataOf(raw: string): Record<string, unknown> | null {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) return null;
+  let fm: unknown;
+  try {
+    fm = yaml.load(match[1], { schema: yaml.FAILSAFE_SCHEMA, json: false });
+  } catch { // @silent-fallback-ok — an unparseable frontmatter is "not learned": the parity read fails loud on its own path
+    return null;
+  }
+  if (fm === null || typeof fm !== 'object' || Array.isArray(fm)) return null;
+  const md = (fm as Record<string, unknown>).metadata;
+  if (!md || typeof md !== 'object' || Array.isArray(md)) return null;
+  return md as Record<string, unknown>;
+}
+
+/** Is this canonical SKILL.md owned by the skill-learning sentinel (`metadata.instar-learned-origin`)? */
+export function isLearnedCanonical(raw: string): boolean {
+  const origin = learnedMetadataOf(raw)?.[LEARNED_ORIGIN_KEY];
+  return typeof origin === 'string' && origin.trim().length > 0;
+}
+
+/** The frontmatter `metadata.instar-learned-state` of a canonical (null when absent or unparseable). */
+export function learnedStateOf(raw: string): string | null {
+  const state = learnedMetadataOf(raw)?.[LEARNED_STATE_KEY];
+  return typeof state === 'string' ? state.trim() : null;
+}
+
+/** Unresolved git merge-conflict markers — never rendered. */
+export function hasMergeMarkers(raw: string): boolean {
+  return MERGE_MARKER_RE.test(raw);
+}
+
+export type RenderHold = 'pending' | 'proposal' | 'retired' | 'operator-owned' | 'merge-markers';
+
+/**
+ * Why a learned canonical must NOT be rendered right now, or null when it may be. `pending` (awaiting
+ * the operator's confirm tap), `proposal` (a shadow draft or a rejected pending skill), `retired`, and
+ * `operator-owned` (locked after a conflict: fail-safe, unrendered, surfaced) stay unrendered; a file
+ * with merge markers is never rendered. A hand-written canonical (no learned origin) is never held.
+ */
+export function renderHold(raw: string): RenderHold | null {
+  if (hasMergeMarkers(raw)) return 'merge-markers';
+  if (!isLearnedCanonical(raw)) return null;
+  const state = learnedStateOf(raw);
+  if (state === 'pending' || state === 'proposal' || state === 'retired' || state === 'operator-owned') return state;
+  return null;
 }
 
 // ─── Canonical loader ──────────────────────────────────────────────────
@@ -207,6 +267,7 @@ async function readCanonicalSkill(projectRoot: string, dirName: string): Promise
     body,
     bundledSubdirs,
     bodyHash: sha256(body),
+    raw,
   };
 }
 
@@ -220,6 +281,29 @@ async function listCanonicalSkillNames(projectRoot: string): Promise<string[]> {
       .sort();
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+// ─── Atomic write (C6, landed with the skill-learning slice 0) ─────────
+
+/**
+ * Write a rendered file as temp + rename so a reader (a framework loading the
+ * skill, the every-machine reconciler hashing it) never sees a truncated file,
+ * and a crash mid-write leaves the previous rendering intact. The temp file
+ * lives beside the target (same directory ⇒ same filesystem ⇒ rename is atomic).
+ */
+async function writeFileAtomic(target: string, content: string | Buffer): Promise<void> {
+  const tmp = `${target}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    await fs.writeFile(tmp, content);
+    await fs.rename(tmp, target);
+  } catch (err) {
+    try {
+      await fs.rm(tmp, { force: true });
+    } catch {
+      /* @silent-fallback-ok — best-effort temp cleanup after a failed write */
+    }
     throw err;
   }
 }
@@ -240,7 +324,7 @@ async function mirrorSubdir(src: string, dest: string): Promise<void> {
       await mirrorSubdir(s, d);
     } else {
       const content = await fs.readFile(s);
-      await fs.writeFile(d, content);
+      await writeFileAtomic(d, content);
     }
   }
 }
@@ -330,7 +414,7 @@ const claudeCodeRenderer: FrameworkRenderer = {
       '---',
       '',
     ].join('\n');
-    await fs.writeFile(path.join(skillDir, 'SKILL.md'), fmLines + skill.body, 'utf-8');
+    await writeFileAtomic(path.join(skillDir, 'SKILL.md'), fmLines + skill.body);
     const canonicalDir = path.join(projectRoot, CANONICAL_ROOT, skill.name);
     for (const sub of skill.bundledSubdirs) {
       await mirrorSubdir(path.join(canonicalDir, sub), path.join(skillDir, sub));
@@ -453,15 +537,14 @@ const codexCliRenderer: FrameworkRenderer = {
     }
     fmObj[STAMP_KEY] = skill.bodyHash;
     const fmYaml = yaml.dump(fmObj, { lineWidth: 200, noRefs: true });
-    await fs.writeFile(
+    await writeFileAtomic(
       path.join(skillDir, 'SKILL.md'),
       `---\n${fmYaml}---\n${skill.body}`,
-      'utf-8',
     );
 
     const yamlDir = path.join(skillDir, 'agents');
     await fs.mkdir(yamlDir, { recursive: true });
-    await fs.writeFile(path.join(yamlDir, 'openai.yaml'), buildOpenAiYaml(skill), 'utf-8');
+    await writeFileAtomic(path.join(yamlDir, 'openai.yaml'), buildOpenAiYaml(skill));
 
     const canonicalDir = path.join(projectRoot, CANONICAL_ROOT, skill.name);
     for (const sub of skill.bundledSubdirs) {
@@ -688,6 +771,15 @@ export const skillParityRule: ParityRule = {
 
   async remediate(projectRoot, instanceName, framework) {
     const skill = await readCanonicalSkill(projectRoot, instanceName);
+    // skill-learning-sentinel §3.5: a learned canonical the sentinel holds unrendered (pending until
+    // the operator's confirm tap, a proposal, retired, operator-owned) never renders through ANY
+    // caller of this funnel — the migrator, the parity sentinel or the reconciler.
+    const held = renderHold(skill.raw);
+    if (held) {
+      throw new CanonicalSkillError(
+        `render-held:${held}: refused to render ${instanceName} on ${framework} — the learned canonical is ${held}; the skill-learning sentinel releases it`,
+      );
+    }
     const renderer = FRAMEWORK_RENDERERS[framework];
     // C7: refuse to overwrite if the current rendering is a user-edit-conflict.
     // Sentinel/operator must explicitly resolve before remediation proceeds.

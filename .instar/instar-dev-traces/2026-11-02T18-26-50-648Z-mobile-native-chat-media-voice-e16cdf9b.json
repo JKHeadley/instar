@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-voice",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T18:26:50.648Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-voice.md",
+  "artifactSha256": "82e3809b3ae9cc528d5a70cb1e5993aa47bcd4056d6d5677afbe323f6971a23e",
+  "coveredFiles": [
+    "docs/specs/reports/mobile-native-chat-media-voice.eli16.md",
+    "scripts/lint-no-direct-llm-http.js",
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/VoiceTranscription.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/app-voice-transcription.test.ts",
+    "tests/unit/PostUpdateMigrator-appMedia.test.ts",
+    "tests/unit/app-voice-transcription.test.ts",
+    "upgrades/next/mobile-native-chat-media-voice.md",
+    "upgrades/side-effects/mobile-native-chat-media-voice.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reuse: moves the existing Telegram transcriber into a shared module and calls it for app voice notes at dispatch; never blocks delivery; a revert fully undoes it.",
+  "eli16Path": "docs/specs/reports/mobile-native-chat-media-voice.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-native-chat-media-voice.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

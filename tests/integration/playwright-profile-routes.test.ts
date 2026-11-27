@@ -327,6 +327,20 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     expect(delCustom.status).toBe(200);
   });
 
+  it('refuses automation activation for registered Google sign-in profiles without changing MCP config', async () => {
+    seedPlaywrightSettings();
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    const app = appWith(projectDir, { developmentAgent: true });
+    await request(app).post('/playwright-profiles').set(auth()).send({ id: 'signin' });
+    const assigned = await request(app).post('/playwright-profiles/signin/accounts').set(auth())
+      .send({ service: 'google', identity: 'dawn@example.test', owner: 'agent', vaultRefs: [] });
+    expect(assigned.status).toBe(200);
+    const refused = await request(app).post('/playwright-profiles/signin/activate').set(auth());
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toContain('sign-in profile refuses automation');
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before);
+  });
+
   it('activate dry-run (default) performs NO write and NO refresh; reports wouldWriteFile', async () => {
     seedPlaywrightSettings(['@playwright/mcp@latest']);
     const before = fs.readFileSync(settingsPath, 'utf8');
@@ -405,5 +419,21 @@ describe('Playwright Profile Registry routes (integration, real createRoutes + a
     const audit = fs.readFileSync(auditPath, 'utf8');
     expect(audit).toContain('github_token');
     expect(audit).not.toContain('ghp_AUDITSECRET');
+  });
+
+  it('PATCH /:id records a Windows folder, refuses a bad one and any other field, and clears with null', async () => {
+    const app = appWith(projectDir, { developmentAgent: true });
+    await request(app).post('/playwright-profiles').set(auth()).send({ id: 'winp' }).expect(200);
+    const set = await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: 'C:\\Users\\Public\\winp' });
+    expect(set.status).toBe(200);
+    const listed = await request(app).get('/playwright-profiles').set(auth());
+    expect(listed.body.profiles.find((p: { id: string }) => p.id === 'winp').windowsUserDataDir).toBe('C:\\Users\\Public\\winp');
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: '/mnt/c/x' })).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({})).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: 'C:\\a\\b', userDataDir: '/x' })).status).toBe(400);
+    expect((await request(app).patch('/playwright-profiles/nope').set(auth()).send({ windowsUserDataDir: 'C:\\a\\b' })).status).toBe(404);
+    await request(app).patch('/playwright-profiles/winp').set(auth()).send({ windowsUserDataDir: null }).expect(200);
+    const cleared = await request(app).get('/playwright-profiles').set(auth());
+    expect(cleared.body.profiles.find((p: { id: string }) => p.id === 'winp').windowsUserDataDir).toBeUndefined();
   });
 });

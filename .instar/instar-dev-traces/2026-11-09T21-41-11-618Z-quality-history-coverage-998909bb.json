@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "quality-history-coverage",
+  "sessionId": "8e9e2742-87e9-40e2-ac7d-af55bba2defa",
+  "timestamp": "2026-11-09T21:41:11.618Z",
+  "artifactPath": "upgrades/side-effects/quality-history-coverage.md",
+  "artifactSha256": "cb0dd256987ece465cc4538ab651ed56f6111d9d3b69589349c91101823a3c30",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/quality-history.js",
+    "docs/specs/quality-history-coverage.eli16.md",
+    "src/server/measurementQualityGlance.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-quality-glance-route.test.ts",
+    "tests/unit/quality-history-glance.test.ts",
+    "upgrades/next/quality-history-coverage.md",
+    "upgrades/side-effects/quality-history-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only page wording plus read ordering in a read-only route; no state, no authority; a revert fully undoes it.",
+  "eli16Path": "docs/specs/quality-history-coverage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quality-history-coverage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

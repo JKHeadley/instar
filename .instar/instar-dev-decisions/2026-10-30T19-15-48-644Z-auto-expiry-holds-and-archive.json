@@ -1,0 +1,25 @@
+{
+  "ts": "2026-10-30T19:15:48.644Z",
+  "slug": "auto-expiry-holds-and-archive",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoExpiryLedger.ts",
+      "src/core/types.ts",
+      "src/monitoring/CommitmentTracker.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

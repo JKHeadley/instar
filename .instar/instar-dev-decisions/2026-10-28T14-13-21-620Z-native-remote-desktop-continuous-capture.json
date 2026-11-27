@@ -1,0 +1,33 @@
+{
+  "ts": "2026-10-28T14:13:21.620Z",
+  "slug": "native-remote-desktop-continuous-capture",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 253,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/server/DesktopStreamManager.ts"
+    ],
+    "addedLines": 244,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "The stream sends one bounded frame per active tick, caps consecutive capture failures at three, rechecks grants, and closes on revocation; tests verify the exact failure cap and release."
+    }
+  },
+  "verdict": "pass"
+}

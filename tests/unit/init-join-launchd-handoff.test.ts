@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// test-agent-leak-guard: this suite deliberately exercises the plist-writing
+// path from a temp-folder fixture, which the real guard refuses. Neutralise
+// ONLY the location refusal (no production bypass exists); the funnel's lock
+// and every other export stay real.
+vi.mock('../../src/core/ThrowawayAgentGuard.js', async (orig) => ({
+  ...(await orig<typeof import('../../src/core/ThrowawayAgentGuard.js')>()),
+  autoStartRefusalReason: () => null,
+}));
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

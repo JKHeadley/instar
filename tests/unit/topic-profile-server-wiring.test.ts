@@ -66,7 +66,22 @@ describe('server-boot wiring: Topic Profile orchestrator + carrier (TOPIC-PROFIL
 
     it('spawn port drives the real spawnSessionForTopic (not a stub)', () => {
       expect(depsBlock()).toMatch(/await spawnSessionForTopic\([\s\S]*?sessionManager,[\s\S]*?telegram,/);
-      expect(depsBlock()).toContain('{ awaitInitialInjection: true }');
+      expect(depsBlock()).toContain('{ awaitInitialInjection: true, ...(carriedBrief ? { carriedBrief } : {}) }');
+    });
+
+    it('spawn port carries the replaced session\'s direct-spawn brief into a CONTINUATION respawn only', () => {
+      const block = depsBlock();
+      expect(block).toContain("directive.method === 'continuation'");
+      expect(block).toContain('_topicSpawnBriefs.getForSession(n, directive.replacedSessionName)');
+      expect(block).toContain('_topicSpawnBriefs.rebind(n, directive.replacedSessionName, spawnedName)');
+      // The brief store is the SAME instance the routes record into.
+      expect(src).toContain('spawnBriefs: _topicSpawnBriefs,');
+      expect(src).toContain('const _topicSpawnBriefs = new TopicSpawnBriefStore(config.stateDir);');
+      expect(src).toContain('_topicSpawnBriefsRef = _topicSpawnBriefs;');
+    });
+
+    it('a spawn the orchestrator did not start clears the topic brief (no stale task on a reused session name)', () => {
+      expect(src).toMatch(/if \(_topicSpawnBriefsRef && !_orchestratorSpawnInFlight\.has\(String\(topicId\)\)\) \{\s*try \{ _topicSpawnBriefsRef\.clear\(topicId\); \}/);
     });
 
     it('a history-only handoff never fabricates a latest message, and resumes in-flight work via the shared helper', () => {

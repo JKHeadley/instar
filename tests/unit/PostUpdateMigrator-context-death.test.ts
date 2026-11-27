@@ -35,6 +35,8 @@ function makeAgentHome(): {
   const projectDir = path.join(tmp, 'agent');
   const stateDir = path.join(projectDir, '.instar');
   fs.mkdirSync(stateDir, { recursive: true });
+  // Tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts.
+  fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ claudeMd: { layout: 'full' } }));
   const claudeMd = path.join(projectDir, 'CLAUDE.md');
   const agentMd = path.join(stateDir, 'AGENT.md');
   const pinsPath = path.join(stateDir, 'identity-pins.json');

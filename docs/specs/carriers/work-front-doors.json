@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-15T06:55:35.196Z",
+  "slug": "work-front-doors",
+  "carriers": {
+    "CMT-1803": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Review and schedule stage 3 after stage 2 ships; owner Echo"
+    }
+  }
+}

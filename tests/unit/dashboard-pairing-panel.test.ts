@@ -70,6 +70,7 @@ describe('pairing card — rendering', () => {
 
   it('agents list: states in plain words, no 12-word controls, names escaped', () => {
     expect(renderPairing({ peerFp: FP, peerName: 'scout', state: 'mutual-verified' })).toContain('Paired');
+    expect(renderPairing({ peerFp: FP, peerName: FP, state: 'mutual-verified' })).toContain('<strong>Agent name unavailable</strong>');
     expect(renderPairing({ peerFp: FP, state: 'invite-accepted' })).toContain('Waiting for the other side');
     const old = renderPairing({ peerFp: FP, state: 'pending-verification' });
     expect(old).toContain('Pair by invite instead');
@@ -193,10 +194,11 @@ describe('pairing card — "It\'s one of my agents" (spec a2a-pairing-invite-lin
 
 describe('pairing card — inviting a known agent binds the invite to it (spec §4.1)', () => {
   it('lists known agents, keeps the choice across refreshes, and sends bindFp for a known agent only', async () => {
-    const server = { ...empty(), knownPeers: [{ fp: FP, name: 'carl', pairingState: null }] };
+    const unnamed = '237407fc58562c0f0a677f3da1d9c736';
+    const server = { ...empty(), knownPeers: [{ fp: FP, name: 'carl', pairingState: null }, { fp: unnamed, name: unnamed, pairingState: null }] };
     const { els, c, calls } = setup(server, () => ({ status: 200, body: { ok: true, iid: IID, exp: later(60), message: 'x tlinv1:a.b' } }));
     await c.load();
-    expect([...els.forPeer.options].map((o: any) => o.textContent)).toEqual(['Someone new', 'carl (ababab…)']);
+    expect([...els.forPeer.options].map((o: any) => o.textContent)).toEqual(['Someone new', 'carl']);
     els.forPeer.value = FP;
     await c.load();
     expect(els.forPeer.value).toBe(FP);

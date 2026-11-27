@@ -14,6 +14,7 @@ import { FeedbackDrainStore } from '../../../src/feedback-factory/drain/Feedback
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage, maxUsedPercent } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
+import { resolveTriageConfig } from '../../../src/feedback-factory/triage/FeedbackTriageService.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import type { FeedbackProcessingService } from '../../../src/feedback-factory/processing/FeedbackProcessingService.js';
 
@@ -36,6 +37,12 @@ function build(overrides: Record<string, unknown> = {}) {
 }
 
 describe('buildFeedbackTriage wiring', () => {
+  it('keeps account selection dark unless explicitly configured to observe or run', () => {
+    expect(resolveTriageConfig(undefined, undefined).accountSelectionMode).toBe('off');
+    expect(resolveTriageConfig({ accountSelectionMode: 'invalid' }, undefined).accountSelectionMode).toBe('off');
+    expect(resolveTriageConfig({ accountSelectionMode: 'observe' }, undefined).accountSelectionMode).toBe('observe');
+    expect(resolveTriageConfig({ accountSelectionMode: 'on' }, undefined).accountSelectionMode).toBe('on');
+  });
   it('shares the drain database and its owner fence; reads live config; the arbiter is real', async () => {
     const { ctx, drain } = build();
     ctx.store.ensure(3, { initiativeId: 'i1', clusterId: 'c1', feedbackWorkKey: 'feedback-work:c1:1', firstSeenAt: 0, reportCount: 1 });

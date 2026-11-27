@@ -248,10 +248,10 @@ describe('the wire format', () => {
     expect(decodePlaintextPayload(sent[0].payload)).toEqual({ text: DEFAULT_AUTO_ACK_MESSAGE, type: 'ack', resend: false });
   });
 
-  it('ThreadlineClient.sendPlaintext is unchanged: type "chat", caller id echoed, resend marked', () => {
+  it('ThreadlineClient.sendPlaintext keeps type "chat", the caller id and the resend mark, and now advertises kinded acks', () => {
     const { client, sent } = connectedClient();
     expect(client.sendPlaintext(PEER, 'hello', 'thread-9', 'my-id', true)).toBe('my-id');
-    expect(decodePlaintextPayload(sent[0].payload)).toEqual({ text: 'hello', type: 'chat', resend: true });
+    expect(decodePlaintextPayload(sent[0].payload)).toEqual({ text: 'hello', type: 'chat', resend: true, ackKinds: 1 });
   });
 
   it('sendAck refuses when not connected (the stage swallows it)', () => {

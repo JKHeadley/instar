@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "account-sign-in-face-id",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T11:53:37.785Z",
+  "artifactPath": "upgrades/side-effects/account-sign-in-face-id.md",
+  "artifactSha256": "d22ff35cb4dc6379bf534730c57d3d4ede1a6ae06a6fde3f1727c692604878c0",
+  "coveredFiles": [
+    "docs/specs/account-sign-in-face-id.eli16.md",
+    "src/server/mobilePairingRoutes.ts",
+    "upgrades/side-effects/account-sign-in-face-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rate-bucket name only: the sign-in route gets its own account-actions bucket instead of being the 13th rule in permission-actions",
+  "eli16Path": "docs/specs/account-sign-in-face-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/account-sign-in-face-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

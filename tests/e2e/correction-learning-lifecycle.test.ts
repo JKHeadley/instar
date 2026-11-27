@@ -73,7 +73,7 @@ describe('Correction & Preference Learning Sentinel E2E lifecycle', () => {
       const mk = (dir: string, enabled: boolean): InstarConfig => ({
         projectName: enabled ? 'corr-e2e-on' : 'corr-e2e-off',
         agentName: 'E2E', projectDir: dir, stateDir: path.join(dir, '.instar'), port: 0, authToken: AUTH,
-        ...(enabled ? { monitoring: { correctionLearning: { enabled: true } } } : {}),
+        monitoring: { correctionLearning: { enabled }, failureCallouts: { enabled } },
       } as InstarConfig);
       onServer = new AgentServer({ config: mk(onDir, true), sessionManager: createMockSessionManager() as any, state: new StateManager(path.join(onDir, '.instar')) });
       offServer = new AgentServer({ config: mk(offDir, false), sessionManager: createMockSessionManager() as any, state: new StateManager(path.join(offDir, '.instar')) });
@@ -86,6 +86,22 @@ describe('Correction & Preference Learning Sentinel E2E lifecycle', () => {
     it('returns 200 when enabled', async () => {
       const res = await request(onServer.getApp()).get('/corrections').set(auth());
       expect(res.status).toBe(200);
+    });
+    it('records the real Telegram handoff case on the production path and refuses premature closure', async () => {
+      const fixture = JSON.parse(fs.readFileSync(new URL('../fixtures/failure-callouts/telegram-group-handoff.json', import.meta.url), 'utf8'));
+      const created = await request(onServer.getApp()).post('/corrections').set(auth()).set('X-Instar-Request', '1')
+        .send({ kind: 'infra-gap', severity: 'failure-callout', learning: fixture.learning, topicId: fixture.topicId, failureContext: fixture.context });
+      expect(created.status).toBe(201);
+      expect(created.body.failureCase.state).toBe('captured');
+      const read = await request(onServer.getApp()).get(`/corrections/${created.body.id}`).set(auth());
+      expect(read.body.failureCase.context.instructions.join(' ')).toContain('Do NOT use');
+      expect(read.body.failureCase.context.decisions.join(' ')).toContain('explicitly overridden');
+      const closed = await request(onServer.getApp()).patch(`/corrections/${created.body.id}/failure-case`).set(auth()).set('X-Instar-Request', '1')
+        .send({ version: created.body.version, verification: { replayPassed: true } });
+      expect(closed.status).toBe(400);
+      const off = await request(offServer.getApp()).patch(`/corrections/${created.body.id}/failure-case`).set(auth()).set('X-Instar-Request', '1')
+        .send({ version: created.body.version, context: fixture.context });
+      expect(off.status).toBe(503);
     });
     it('returns 503 when disabled', async () => {
       const res = await request(offServer.getApp()).get('/corrections').set(auth());

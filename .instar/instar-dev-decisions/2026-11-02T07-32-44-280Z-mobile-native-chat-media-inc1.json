@@ -1,0 +1,68 @@
+{
+  "ts": "2026-11-02T07:32:44.280Z",
+  "slug": "mobile-native-chat-media-inc1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/AppReplyRelayInstaller.ts matches relay / delivery path",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 32,
+  "loc": 2355,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppConversationsReplicatedStore.ts",
+      "src/core/AppMediaStore.ts",
+      "src/core/AppRecordSignatures.ts",
+      "src/core/AppReplyRelayInstaller.ts",
+      "src/core/FileClassifier.ts",
+      "src/core/InstarWorktreeManager.ts",
+      "src/core/MobileChatRequests.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/appMediaReplyFiles.ts",
+      "src/core/appMediaTypes.ts",
+      "src/core/appMediaWorker.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/monitoring/templates-drift-verifier.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/app-media-path",
+      "src/templates/scripts/app-reply.sh",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 2279,
+    "deletedLines": 76
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-media-capacity-notice: under a store that stays full forever the notice is raised once per episode; the raisedNotices latch refuses every later raise and only the condition clearing re-arms it, so the action count is 1 at any horizon."
+    }
+  },
+  "verdict": "pass"
+}

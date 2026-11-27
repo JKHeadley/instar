@@ -25,6 +25,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 export interface PendingRemoteAck {
   /** Attention item id on the OWNING machine. */
@@ -102,6 +103,7 @@ export class RemoteAckStore {
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: 'error', reason: 'ack intent could not be written to disk', context: { targetMachineId: entry.targetMachineId, code: (err as NodeJS.ErrnoException).code ?? null, deleted: entry._deleted === true } });
     }
   }
 
@@ -122,6 +124,7 @@ export class RemoteAckStore {
     };
     this.pending.set(k, entry);
     this.append(entry);
+    featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: 'fired', reason: 'ack intent persisted for a peer-owned item', context: { itemId: intent.itemId, targetMachineId: intent.targetMachineId, status: intent.status, refreshed: !!existing, pendingCount: this.pending.size } });
     return entry;
   }
 
@@ -134,6 +137,7 @@ export class RemoteAckStore {
     entry.attempts += 1;
     entry.lastOutcome = outcome;
     this.append(entry);
+    featureEvidence.record('multiMachine.seamlessness.ws41DurableAck', { kind: outcome === 'rejected' || outcome === 'unreachable' ? 'error' : 'held', reason: `ack delivery attempt: ${outcome}`, context: { itemId, targetMachineId, attempts: entry.attempts, outcome: outcome ?? null } });
   }
 
   /** Remove a delivered (or owner-rejected-as-stale) intent — terminal. */

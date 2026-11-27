@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "job-alert-capacity-episode",
+  "sessionId": "960acda4-a670-45c1-839c-5359a41daab2",
+  "timestamp": "2026-11-04T04:58:26.912Z",
+  "artifactPath": "upgrades/side-effects/job-alert-capacity-episode.md",
+  "artifactSha256": "20edb9d5a2c93298eb03ad9e2b94b9acf270e661783e104ee4856ce048425979",
+  "coveredFiles": [
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/JobScheduler.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/scheduler-queue-edge.test.ts",
+    "upgrades/job-alert-capacity-episode.eli16.md",
+    "upgrades/next/job-alert-capacity-episode.md",
+    "upgrades/side-effects/job-alert-capacity-episode.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up correction to ordinary queue wakeup and existing test expectations, verified by 110 affected tests and independent review.",
+  "eli16Path": "upgrades/job-alert-capacity-episode.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/job-alert-capacity-episode.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The ordinary queue wakeup runs only after a spawn promise settles and only while the scheduler is running; capacity waits remain behind the 15-second poll. The episode alert is persisted and bounded to one send."
+    }
+  }
+}

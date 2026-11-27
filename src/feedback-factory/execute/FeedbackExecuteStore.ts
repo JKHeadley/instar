@@ -90,6 +90,20 @@ export interface ExecutionRow {
   reviewVerdict: string | null;
   reviewReason: string | null;
   reviewedAt: number | null;
+  /**
+   * Review-failed recovery (docs/specs/feedback-executor-review-failed-recovery.md): a recorded
+   * intent to close this PR at that head, and when; whether the closing comment was posted; the
+   * executor's own (scrubbed, bounded) reviewer findings; when the close grace started for a row
+   * that failed before this change; how many times an unparseable review was asked again; and the
+   * triage decision (sequence, as text) the close belongs to (its recovery episode).
+   */
+  closeIntentSha: string | null;
+  closeIntentAt: number | null;
+  closeCommentPosted: boolean;
+  reviewFindings: string | null;
+  reviewFailedGraceFrom: number | null;
+  reviewRetries: number;
+  episodeDecisionId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -106,10 +120,16 @@ const COLUMN: Record<keyof ExecutionPatch, string> = {
   releaseTag: 'release_tag', releasedAt: 'released_at', verifyState: 'verify_state', verifySession: 'verify_session',
   specConvergeSession: 'spec_converge_session', specConvergeState: 'spec_converge_state', gradedApproval: 'graded_approval',
   reviewSha: 'review_sha', reviewVerdict: 'review_verdict', reviewReason: 'review_reason', reviewedAt: 'reviewed_at',
+  closeIntentSha: 'close_intent_sha', closeIntentAt: 'close_intent_at', closeCommentPosted: 'close_comment_posted', reviewFindings: 'review_findings',
+  reviewFailedGraceFrom: 'review_failed_grace_from', reviewRetries: 'review_retries', episodeDecisionId: 'episode_decision_id',
 };
 
 /** Columns added after the table first shipped; an existing database gains them in place. */
-const ADDED_COLUMNS: ReadonlyArray<[string, string]> = [['review_sha', 'TEXT'], ['review_verdict', 'TEXT'], ['review_reason', 'TEXT'], ['reviewed_at', 'INTEGER']];
+const ADDED_COLUMNS: ReadonlyArray<[string, string]> = [
+  ['review_sha', 'TEXT'], ['review_verdict', 'TEXT'], ['review_reason', 'TEXT'], ['reviewed_at', 'INTEGER'],
+  ['close_intent_sha', 'TEXT'], ['close_intent_at', 'INTEGER'], ['close_comment_posted', 'INTEGER NOT NULL DEFAULT 0'], ['review_findings', 'TEXT'],
+  ['review_failed_grace_from', 'INTEGER'], ['review_retries', 'INTEGER NOT NULL DEFAULT 0'], ['episode_decision_id', 'TEXT'],
+];
 
 export class FeedbackExecuteStore {
   private readonly db: BetterSqliteDatabase;
@@ -241,6 +261,21 @@ export class FeedbackExecuteStore {
     });
   }
 
+  /**
+   * Finalize a review-failed close (docs/specs/feedback-executor-review-failed-recovery.md §1): the
+   * row's terminal state (`stopped`, `review-failed-closed`) and the intent's completion are ONE
+   * owner-fenced transaction. Only a row still in an open-PR state with a recorded intent moves;
+   * returns the updated row, or null when there was nothing to finalize.
+   */
+  finalizeReviewFailedClose(ownerEpoch: number, attemptIdValue: string): ExecutionRow | null {
+    return this.fenced(ownerEpoch, () => {
+      const changed = this.db.prepare(`UPDATE execution SET state='stopped', reason='review-failed-closed', lease_expires_at=NULL, merge_deadline_at=NULL,
+        close_intent_sha=NULL, close_intent_at=NULL, updated_at=? WHERE attempt_id=? AND state IN ('pr-open','spec-pr-open','merge-armed') AND close_intent_sha IS NOT NULL`)
+        .run(this.now(), attemptIdValue).changes;
+      return changed === 1 ? this.get(attemptIdValue) : null;
+    });
+  }
+
   /** Attempt episodes that ended `failed` / `not-reproducible` for the item (the loop terminator counts these). */
   failureEpisodes(initiativeId: string): { failed: number; notReproducible: number } {
     const rows = this.attemptsFor(initiativeId);
@@ -274,6 +309,9 @@ function fromRow(row: Record<string, unknown>): ExecutionRow {
     verifyState: str(row.verify_state), verifySession: str(row.verify_session), specConvergeSession: str(row.spec_converge_session),
     specConvergeState: str(row.spec_converge_state), gradedApproval: Number(row.graded_approval) === 1,
     reviewSha: str(row.review_sha), reviewVerdict: str(row.review_verdict), reviewReason: str(row.review_reason), reviewedAt: num(row.reviewed_at),
+    closeIntentSha: str(row.close_intent_sha), closeIntentAt: num(row.close_intent_at), closeCommentPosted: Number(row.close_comment_posted) === 1,
+    reviewFindings: str(row.review_findings), reviewFailedGraceFrom: num(row.review_failed_grace_from), reviewRetries: Number(row.review_retries ?? 0),
+    episodeDecisionId: str(row.episode_decision_id),
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
   };
 }

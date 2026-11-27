@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cb-layer-store",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T22:41:42.864Z",
+  "artifactPath": "upgrades/side-effects/cb-layer-store.md",
+  "artifactSha256": "bdda90bca8719655d7d869a04a285257ec3b3a6c9a818f87edb7ee93d66a1bb5",
+  "coveredFiles": [
+    "site/src/content/docs/features/memory.md",
+    "upgrades/side-effects/cb-layer-store.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "docs for the new route",
+  "eli16Path": "docs/specs/context-budget-layered-summaries.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cb-layer-store.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "docs"
+  }
+}

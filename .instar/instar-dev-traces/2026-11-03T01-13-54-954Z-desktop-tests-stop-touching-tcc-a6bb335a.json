@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "desktop-tests-stop-touching-tcc",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T01:13:54.954Z",
+  "artifactPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "artifactSha256": "f2e14862baeee508966bf461808845e7bbf701865bd1f613c0e9ec15dea13193",
+  "coveredFiles": [
+    "src/core/MacDesktopHost.ts",
+    "src/core/MachineLockStateReader.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/e2e/desktop-helper-retention-lifecycle.test.ts",
+    "tests/e2e/desktop-locked-lifecycle.test.ts",
+    "tests/e2e/desktop-own-identity.test.ts",
+    "tests/unit/desktop-helper-state-op.test.ts",
+    "tests/unit/desktop-real-helper-test-guard.test.ts",
+    "upgrades/next/desktop-tests-stop-touching-tcc.md",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+    "upgrades/side-effects/desktop-tests-stop-touching-tcc.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only guard plus opt-in gating and a 503 on an unreadable helper state; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/desktop-tests-stop-touching-tcc.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-tests-stop-touching-tcc.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

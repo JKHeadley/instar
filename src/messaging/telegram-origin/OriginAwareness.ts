@@ -15,7 +15,7 @@ export function telegramOriginCertificationAwareness(): string {
 }
 
 export function telegramOriginLeaseAwareness(): string {
-  return 'Origin lease renewal dependency: an enabled Telegram origin writer enrolls the existing current-holder renewal timer so ordinary installations keep a confirmed lease beyond its TTL. Explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` remains an opt-out; lease expiry still holds sends. Observe-only roles, higher-epoch holders and failed partition confirmations remain fenced. Without an origin writer, the standalone renewal feature keeps its development-agent default. Never change identity records or bypass `holdsLease` to clear a delivery hold.\n';
+  return 'Origin lease renewal dependency: an enabled Telegram origin writer enrolls the existing current-holder renewal timer so ordinary installations keep a confirmed lease beyond its TTL. Explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` remains an opt-out; lease expiry still holds sends. Observe-only roles, higher-epoch holders and failed partition confirmations remain fenced. Native app conversations enroll the same timer, so an agent without Telegram keeps its lease for the iPhone app; with neither, the standalone renewal feature keeps its development-agent default. Never change identity records or bypass `holdsLease` to clear a delivery hold.\n';
 }
 
 export function telegramOriginRecoveryAwareness(): string {
@@ -34,8 +34,47 @@ export function telegramOriginWorkerAwareness(): string {
   return 'Origin worker health: a slow or stuck recording worker never latches sends off for the life of the server. A request past its short deadline answers only that caller (held, outcome unknown) while the worker keeps serving; a request stuck past the stall deadline replaces the worker automatically with bounded backoff, and the recovery tick can hasten the next attempt. Sends hold (fail-closed) while it is down; a held write is never replayed blindly. Read the authenticated `GET /health` → `telegramOriginStorage.store` / `.spool` (`state`: ready, starting, restarting, exhausted or closed; `restarts`, `lastFailure`, `downSince`). One degradation report per outage. Only `exhausted` (restart cap reached) waits for the slower 15-minute recovery reopen; do not restart the server to clear `restarting`.\n';
 }
 
+export function telegramOriginHeldOutcomeAwareness(): string {
+  return `Held reply outcome: a reply answered \`409 telegram-origin-held\` is NEVER a plain failure, and never permission to resend. The relay script now asks the server itself and prints DELIVERED, HELD (server keeps it and delivers it), MAY ALREADY BE DELIVERED, or NOT SENT (the only case where resending is right). Outcome \`accepted-unrecorded\` means Telegram accepted it and returned a message id but the delivery record could not be saved: the message is in the chat, its id is kept in a fallback record that the recovery tick folds back in, and it is in message history. Check any held operation by its id: \`curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:PORT/telegram/origins/operations/OPERATION_ID/outcome\` (PORT = this agent's API port) → \`{ outcome: delivered | partially-delivered | pending | not-delivered | unknown, safeToResend, messageIds, detail }\`. Telegram's own receipt is the evidence; a request that reached Telegram with no recorded answer stays \`unknown\`. **When to use** (PROACTIVE): before resending anything after a held or ambiguous send, or when the user asks "did my message arrive / why did I get it twice?" → read this, and resend only on \`not-delivered\`.\n`;
+}
+
+/** native-conversation-base §3b — the outcome route gives the execution owner's verdict. Marker: `Outcome from the sending machine:`. */
+export const OWNER_READ_AWARENESS_MARKER = 'Outcome from the sending machine:';
+export function telegramOriginOwnerReadAwareness(): string {
+  return `${OWNER_READ_AWARENESS_MARKER} on an agent with more than one machine, the held-reply outcome route asks the machine that actually sends to Telegram (the execution owner) over the signed machine link, so any machine gives that machine's own verdict. The answer names who gave it (\`answeredBy\`, \`source\`, \`asOf\`, \`ownerAnswered\`). \`pending\` means wait: a machine still holds the reply and will deliver it. Only \`safeToResend: true\` permits a resend; \`not-delivered\` with \`safeToResend: false\` was ended on purpose. \`unknown\` always says which fact is missing in \`why\`: \`owner-unresolved\` (the owner's own send is unresolved), \`owner-no-record\`, \`author-unanswered\` (the machine that wrote it did not answer), \`timeout\`, \`refused\`, \`old-version\` (the owner runs an older release) or \`owner-read-off\`. A missing answer is never "did not arrive". The route answers within 4 s. \`messageOrigin.ownerRead.enabled: false\` stops this machine asking (answers only get more cautious); \`GET /telegram/origins/status\` → \`ownerRead\` shows ask counts and latency. **When to use** (PROACTIVE): before resending after a held or ambiguous send on a multi-machine agent → read the outcome and act only on \`safeToResend: true\`.\n`;
+}
+
+/** native-conversation-base §3a — held replies are delivered late and marked, never dropped on a timestamp. Marker: `Held replies are delivered late, not dropped:`. */
+export const HELD_REPLY_LATE_AWARENESS_MARKER = 'Held replies are delivered late, not dropped:';
+export function telegramOriginHeldLateAwareness(): string {
+  return `${HELD_REPLY_LATE_AWARENESS_MARKER} a reply that was held (the relay script said HELD) is delivered when it can be, even after newer messages; a later message never ends it. One sent more than 5 minutes after you wrote it starts with a plain first line saying it is late, and you get one line in your session saying so ("Your reply \`ID\` was delivered N minutes after you wrote it."). A reply is ended only when the user already has its text (\`duplicate-content\`). Every other ending names its reason (\`quiet-notification-recorded\`, \`historical-notice-retired\`, \`recorded-by-caller\`, \`suppressed-at-holder\`). If a reply could not be delivered you get one of two lines: **definite** ("was not delivered (CAUSE) and will not be retried") with one of three causes, "Telegram refused it", "it could not be sent before its attempts ran out" or "it passed its delivery deadline"; read its text at \`GET /telegram/origins/operations/ID/text\` and send it again yourself if it is still needed. Or **uncertain** ("could not be confirmed. It may have arrived."): do not send it again unless the user says it is missing. A line saying the sending machine "runs an older version and gave no reason" means the user may already have it: check the conversation before repeating. A reply the outbound check handed back while it was held gets one line, \"Your reply \`ID\` was not sent. The outbound check has a suggestion\", and waits for you until its deadline: to send a revised version, send it with \`--tone-complied RULE --tone-decision-ref REF\` as the line says; to send it as written, resend its text with \`--tone-ack RULE --tone-reason \"why\" --tone-decision-ref REF\`. A reply without that reference is a separate message and leaves the held one waiting; nothing else ever sends it. **When to use** (PROACTIVE): when one of these lines arrives, act on it as written. If you notice a late reply that was stale or wrong to send, file feedback tagged \`late-reply-stale\` with the operation id.\n`;
+}
+
+/** native-conversation-forwarded-advisory item 7 — the two sentences on the advisory line and its two answers,
+ * added to an already-installed held-reply paragraph (idempotent: sniffed by its own opening words). */
+export const HELD_REPLY_ADVISORY_AWARENESS_MARKER = 'A reply the outbound check handed back while it was held';
+export function refreshHeldReplyAdvisoryAwareness(content: string): string {
+  if (!content.includes(HELD_REPLY_LATE_AWARENESS_MARKER) || content.includes(HELD_REPLY_ADVISORY_AWARENESS_MARKER)) return content;
+  const current = telegramOriginHeldLateAwareness();
+  const start = current.indexOf(HELD_REPLY_ADVISORY_AWARENESS_MARKER);
+  const sentences = current.slice(start, current.indexOf(' **When to use** (PROACTIVE): when one of these lines arrives', start));
+  const anchor = ' **When to use** (PROACTIVE): when one of these lines arrives, act on it as written.';
+  const at = content.indexOf(anchor, content.indexOf(HELD_REPLY_LATE_AWARENESS_MARKER));
+  if (at < 0) return content;
+  return `${content.slice(0, at)} ${sentences}${content.slice(at)}`;
+}
+
 export function telegramOriginBrowserDriftAwareness(): string {
   return 'Telegram Web K updates: the typed browser routes run only on Web K builds that were reviewed against their source maps and enrolled. When Telegram ships a new build, the browser send/snapshot routes hold (409) and the failed build is recorded (`GET /telegram/origins/status` → browser recovery `failedBuilds`) with exactly one attention item per failed build; nothing is sent. That item is a maintainer task, not an operator chore: review the new build (record evidence under `docs/specs/reports/telegram-message-origin-evidence/`, add it to `ReviewedWebKBuilds.ts`), ship it, then run `instar telegram-origin enroll-browser <profile>` on the machine. It runs a read-only canary on the managed profile, refuses any build not on the reviewed list, and keeps one prior reviewed build; the running server picks it up at its next browser start without a restart. It is deliberately not an HTTP route. Never hand-edit the profile registry or drive the managed profile with generic browser tools to work around the hold.\n';
+}
+
+export function telegramOriginTestGroupsAwareness(): string {
+  return 'Telegram test groups: when a live proof needs a fresh Telegram forum group with a test bot as admin and the operator as the human member, create it through the broker, never by hand and never by asking the operator: `POST /telegram/browser/PROFILE/test-groups` with `{"title":"Instar test - <name>","bot":"<granted bot username>"}` (same API authentication and `X-Instar-Origin-Session` as send). It returns `chatId`, the Bot API chat id. List with `GET /telegram/browser/PROFILE/test-groups`; when the proof is done, delete with `POST /telegram/browser/PROFILE/test-groups/CHANNEL_ID/delete` and body `{}`. Create needs the agent-held grant `messageOrigin.testGroups` in the Telegram messaging config (profileId, accountId, bots with username and userId, decisionRef as one attribution source marker, expiresAt at most 30 days ahead); list and delete work without it and only touch groups whose title carries this agent\'s marker. A 429 means busy or a cap (5 live, 10 per day, Telegram flood wait): wait `retryAfterMs`. Never retry a `test-group-outcome-unknown` answer: list, then delete anything there you do not need.\n';
+}
+/** Name the test-group routes in the shipped "exposes only" sentence. */
+export function refreshOriginTestGroupsAwareness(content: string): string {
+  return content.split('`GET /telegram/browser/PROFILE/snapshot` and `POST /telegram/browser/PROFILE/send`.')
+    .join('`GET /telegram/browser/PROFILE/snapshot`, `POST /telegram/browser/PROFILE/send` and the test-group routes (Telegram test groups, below).');
 }
 
 /** Correct the shipped attention wording (one item per failed build, not per episode). */
@@ -67,11 +106,15 @@ ${telegramOriginTransportAwareness()}
 ${telegramOriginCapacityAwareness()}
 ${telegramOriginWorkerAwareness()}
 ${telegramOriginBrowserDriftAwareness()}
-Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
+${telegramOriginHeldOutcomeAwareness()}
+${telegramOriginOwnerReadAwareness()}
+${telegramOriginHeldLateAwareness()}
+${telegramOriginTestGroupsAwareness()}
+Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. A \`lease-freshness-lapsed\` result (this machine's own lease renewal ran past its lifetime) or \`lease-not-held-at-send\` result (the lease was not held at the moment of sending) is the same kind of hold: the reply is kept and sent again within seconds once the lease is held, one server log line names the lease verdict and the renewal gap, and the hold is counted under \`sendHolds\` in \`GET /never-silent/incidents\`; never resend it. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
 Claude and Codex tool hooks direct raw Telegram writes to the recorded relay or typed browser broker. Managed Telegram profiles belong to the broker; generic browser tools cannot use them. This cooperative hook is not an operating-system sandbox. Other enabled harnesses must prove equivalent enrollment before activation; a hook being installed is not proof of complete sender coverage.
 
-An enrolled operator Telegram browser profile exposes only typed operations: \`GET /telegram/browser/PROFILE/snapshot\` and \`POST /telegram/browser/PROFILE/send\`. Include ordinary API authentication plus \`X-Instar-Origin-Session: $INSTAR_ORIGIN_TOKEN\`. Send body: \`{"text":"Message","destination":{"kind":"channel","id":"123","topicId":42}}\`; add \`messageId\` for an edit. The server resolves account-specific peer credentials. Never pass JavaScript, access hashes or claimed model names. A 503 means that profile is not enrolled; a 409 is an explicit hold. Browser messages keep the agent-authorship signature even when the origin footer is hidden.
+An enrolled operator Telegram browser profile exposes only typed operations: \`GET /telegram/browser/PROFILE/snapshot\`, \`POST /telegram/browser/PROFILE/send\` and the test-group routes (Telegram test groups, below). Include ordinary API authentication plus \`X-Instar-Origin-Session: $INSTAR_ORIGIN_TOKEN\`. Send body: \`{"text":"Message","destination":{"kind":"channel","id":"123","topicId":42}}\`; add \`messageId\` for an edit. The server resolves account-specific peer credentials. Never pass JavaScript, access hashes or claimed model names. A 503 means that profile is not enrolled; a 409 is an explicit hold. Browser messages keep the agent-authorship signature even when the origin footer is hidden.
 
 Browser and cross-machine replies use the existing outbound content and tone authority, including its structured 422 advisory responses. Browser requests may carry only the four existing advisory-reaction metadata fields: \`toneAdvisoryAck\`, \`toneAdvisoryAckReason\`, \`toneAdvisoryDecisionRef\`, and \`toneAdvisoryComplied\`. A signature never exempts a message from policy. Missing send-policy wiring holds delivery; restart recovery checks the sealed original text against current policy before dispatch. Local stand-down ownership checks apply to browser sends and relay handoff too.
 
@@ -101,6 +144,14 @@ export function refreshOriginCanaryCleanupAwareness(content: string): string {
         'Owned contract checks have six seconds per attempt, followed by up to 30 seconds for verified cleanup. Health remains running during cleanup and cannot pass until the worker exits and its fixture is removed. A cleanup failure latches unavailable health and prevents further attempts in that instance. Successful checks grant no send or ownership permission.'));
 }
 
+/** The pre-app lease-dependency sentence, refreshed in place on update. Idempotent. */
+export const ORIGIN_LEASE_LEGACY_SENTENCE = 'Without an origin writer, the standalone renewal feature keeps its development-agent default.';
+export const ORIGIN_LEASE_APP_SENTENCE = 'Native app conversations enroll the same timer, so an agent without Telegram keeps its lease for the iPhone app; with neither, the standalone renewal feature keeps its development-agent default.';
+export function refreshOriginLeaseAwareness(content: string): string {
+  return content.replace(/^Origin lease renewal dependency:[^\r\n]*$/gm, paragraph =>
+    paragraph.split(ORIGIN_LEASE_LEGACY_SENTENCE).join(ORIGIN_LEASE_APP_SENTENCE));
+}
+
 /** Patch only the exact shipped sentence; retain custom instructions. */
 export function refreshOriginCapacityAwareness(content: string): string {
   return content.replace(/^Telegram capacity checks:[^\r\n]*$/gm, paragraph => paragraph.split('An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit.').join('A proven local capacity refusal retains the original message and its attempt audit without consuming a transport attempt. Retry pacing and the original deadline still bound recovery; a crash before that proof is recorded remains uncertain.'));
@@ -127,4 +178,19 @@ export function telegramIssuesGroupAwareness(port: number): string {
 
 export function telegramSystemTopicsAwareness(): string {
   return `**System topics (📢 Updates, 🔔 Attention, 🩺 Agent Health) are ONE record for the whole agent.** Only the machine holding the serving lease ever creates one; every other machine copies the holder's topic ids (on boot, then every 30 min) and never makes its own. Read a machine's record (authed): \`GET /telegram/system-topics\` → \`{ topics: { updates, attention, agentHealth }, holdsLease }\`. **When the user reports duplicate Updates/Attention/Agent Health topics** → compare this route on each machine (\`GET /pool\` lists them); a standby whose ids differ from the holder's converges on its next pass. Old duplicates already in Telegram stay until deleted — offer to delete the empty ones; never delete a topic with real messages without asking.\n`;
+}
+
+/** message-origin-all-platforms: app and Slack recording, the phone row and the setting. Every agent. */
+export const MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING = '### Message origin on app and Slack';
+export function messageOriginAllPlatformsAwareness(port: number): string {
+  return `${MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING}
+
+Every message I send to the user records which machine, harness and model wrote it, on every platform, whether or not it is shown. Telegram already did this; app conversations and Slack now do too, in the send path itself.
+- **App replies** (\`app-reply.sh\`): the reply is stored together with its origin. **Slack** (every post, edit and file share): an origin row is written to \`.instar/state/slack-origins.jsonl\` before the message leaves. If that row cannot be written, the Slack send is refused: \`slack-reply.sh\` prints \`NOT SENT\` (HTTP 503 \`origin-recording-unavailable\`), nothing reached Slack, and one fixed notice tells the conversation. Do not resend in a loop; check \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/health\` → \`messageOrigin\` first.
+- **How it is known:** my session's origin credential (observed harness and model), else my launch record (status \`configured\`), else \`unknown\`. My own Slack replies carry a one-line footer (\`agent · machine · harness · model\`) like Telegram's.
+- **The phone:** agent rows of the app's history reads (app, Slack, Telegram) carry \`origin: {recorded, machine, harness, model, display}\`. \`recorded: null\` means this machine cannot tell (another machine, not retained, lookup timeout), never "not recorded".
+- **When the user asks to hide or show it** (PROACTIVE): it is on by default. The agent-wide setting is \`messageOrigin.display\` (\`enabled\`, \`machine\`, \`harness\`, \`model\`) on the enabled Telegram messaging entry, or at the top level of \`.instar/config.json\` when there is no Telegram; I set those bits myself and they apply within seconds. App and Slack conversations follow the agent-wide setting, so hiding it there also hides the Telegram footer; a single Telegram topic can still be overridden with the topic profile's \`messageOriginDisplay\`. The app's own hide toggle affects only that phone. Hiding never stops recording.
+- **The Slack refusal's off switch** (\`messageOrigin.recording.slackFailClosed: false\`) is an operator exception: set it only on a verified operator's instruction, never on my own initiative.
+- WhatsApp and iMessage do not record origin yet.
+`;
 }

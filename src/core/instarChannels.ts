@@ -12,6 +12,10 @@ import type { ChannelDefinition, ChannelProbeResult } from './channelRegistry.js
 
 /** What the registry needs from the running server. Injected so the definitions stay testable. */
 export interface ChannelProbeContext {
+  /** Source-verified independent recovery routes, never socket construction. */
+  serverDownRecovery?: () => { ready: boolean; reason: string };
+  /** Whole-agent relay answer; local client state alone is not agent reachability. */
+  agentRelayStatus?: () => Promise<import('../threadline/agentRelayStatus.js').AgentRelayStatus>;
   /** Live relay state, or null when the threadline layer was never constructed. */
   relayStatus: () => { ready: boolean; connected: boolean } | null;
   /** True when the mutual-SSH runtime constructed successfully (it throws on some installs). */
@@ -44,6 +48,17 @@ export function buildChannelDefinitions(ctx: ChannelProbeContext): ChannelDefini
       whenPreferred: 'The default for peer work: fastest, and invisible to the operator, so it does not spend their attention.',
       cost: 'Requires the server process relay client to be connected, and another process can hold a different relay state. Invisible when it fails, which is its main hazard.',
       probe: async (): Promise<ChannelProbeResult> => {
+        if (ctx.agentRelayStatus) {
+          const agent = await ctx.agentRelayStatus();
+          if (agent.state === 'reachable') return {
+            state: 'working', direction: 'bidirectional',
+            detail: `Agent reachable through ${agent.throughMachine}; ${agent.ifMachineAway}`,
+          };
+          if (agent.state === 'unknown') return {
+            state: 'unknown', direction: 'none', detail: agent.reason,
+          };
+          return { state: 'broken', direction: 'none', detail: agent.reason };
+        }
         const s = ctx.relayStatus();
         if (s === null) {
           return { state: 'not-configured', direction: 'none', detail: 'threadline layer was never constructed on this agent' };
@@ -88,9 +103,21 @@ export function buildChannelDefinitions(ctx: ChannelProbeContext): ChannelDefini
         }
         // Constructed is not the same as reaching a peer, and the registry must not overstate it.
         return {
-          state: 'working', direction: 'bidirectional',
-          detail: 'runtime constructed and listening; NOTE this confirms initialisation, not a completed round-trip to a peer',
+          state: 'unknown', direction: 'none',
+          detail: 'runtime constructed; no source-verified server-down recovery proof is implied',
         };
+      },
+    },
+    {
+      id: 'server-down-recovery',
+      audience: 'peer',
+      purpose: 'Diagnose and repair a paired machine while its main server is stopped.',
+      whenPreferred: 'A paired machine cannot run its normal server or is in a restart loop.',
+      cost: 'Requires owner enrollment and two fresh independent source-verified recovery routes; host failures remain common dependencies.',
+      probe: async (): Promise<ChannelProbeResult> => {
+        const state = ctx.serverDownRecovery?.();
+        if (!state) return { state: 'unknown', direction: 'none', detail: 'recovery has not been observed on this source machine' };
+        return { state: state.ready ? 'working' : 'unknown', direction: state.ready ? 'bidirectional' : 'none', detail: state.reason };
       },
     },
     {

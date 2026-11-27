@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-04T15:34:28.541Z",
+  "slug": "recommended-services-runner",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 510,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/core/types.ts",
+      "src/data/state-coherence-registry.json",
+      "src/recommended/recipes.ts",
+      "src/recommended/setupRestart.ts",
+      "src/recommended/setupState.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 502,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as recommended-service-setup-restart: durable start count, growing waits, one notice, then a durable stop, proven under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

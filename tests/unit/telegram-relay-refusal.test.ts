@@ -97,3 +97,14 @@ describe('relay holder refusal', () => {
     expect(err).toBeInstanceOf(Error);
   });
 });
+
+describe('relay quiet receipts', () => {
+  it('returns recorded success without inventing a Telegram delivery id', async () => {
+    const r = await relayOutbound(42, 'routine', undefined, deps(vi.fn(async () => jsonResponse(200, {
+      ok: true, delivered: false, recorded: true, quietId: 'quiet-1',
+    })) as never));
+    expect(r).toEqual({ delivered: false, recorded: true, quietId: 'quiet-1', topicId: 42 });
+    expect(r).not.toHaveProperty('messageId');
+    expect(isRelayRefusal(r)).toBe(false);
+  });
+});

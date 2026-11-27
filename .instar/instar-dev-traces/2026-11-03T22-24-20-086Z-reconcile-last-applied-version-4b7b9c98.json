@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "reconcile-last-applied-version",
+  "sessionId": "d15eff6b-af2a-4465-b809-d710912311d3",
+  "timestamp": "2026-11-03T22:24:20.086Z",
+  "artifactPath": "upgrades/side-effects/reconcile-last-applied-version.md",
+  "artifactSha256": "0fea47f0080dda9e3022718e731cb37c8cf1d36abd5bd6c9ed97f552df8ad792",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/under-the-hood.md",
+    "site/src/content/docs/features/secure-agent-pairing.md",
+    "upgrades/next/reconcile-last-applied-version.md",
+    "upgrades/side-effects/reconcile-last-applied-version.eli16.md",
+    "upgrades/side-effects/reconcile-last-applied-version.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix to a state record plus docs; a revert fully undoes it, with no migration.",
+  "eli16Path": "upgrades/side-effects/reconcile-last-applied-version.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reconcile-last-applied-version.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,3 +1,6 @@
+import { isQuietReceipt, type OutboundEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/SessionMonitor.ts');
 /**
  * SessionMonitor — Proactive session health monitoring.
  *
@@ -22,6 +25,29 @@ import path from 'node:path';
 import type { SessionRecovery, RecoveryResult } from './SessionRecovery.js';
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
+import { isSystemOrProxyMessage } from '../messaging/shared/isSystemOrProxyMessage.js';
+
+/** A server-written row does not answer the person; recorded provenance beats text matching. */
+function isAgentAnswer(row: { fromUser: boolean; text: string; provenance?: string }): boolean {
+  if (row.fromUser || row.provenance === 'automation') return false;
+  return row.provenance === 'agent' || !isSystemOrProxyMessage(row.text);
+}
+
+export function isForeignTopicOwner(
+  record: Pick<SessionOwnershipRecord, 'ownerMachineId' | 'status'> | null | undefined,
+  selfMachineId: string | null | undefined,
+): boolean {
+  return !!record && !!selfMachineId && record.status !== 'released' && record.ownerMachineId !== selfMachineId;
+}
+
+/** A message older than this gets the failure notice, not another restart after a server boot. */
+export const DEAD_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** One automatic fresh restart per unanswered message, and only while that message is recent. */
+export function deadRecoveryDue(lastAttemptedUserMessageAt: number | undefined, userMessageAt: number, nowMs: number): boolean {
+  return lastAttemptedUserMessageAt !== userMessageAt && nowMs - userMessageAt < DEAD_RECOVERY_MAX_AGE_MS;
+}
 
 export interface SessionMonitorConfig {
   /** Enable the session monitor (default: true) */
@@ -42,6 +68,7 @@ interface SessionSnapshot {
   lastUserMessageAt: number;
   lastAgentMessageAt: number;
   notifiedAt: number | null;
+  recordedAt?: number;
   status: 'healthy' | 'idle' | 'unresponsive' | 'dead';
 }
 
@@ -52,7 +79,11 @@ export interface SessionMonitorEvents {
   'monitor:mechanical-recovery': { topicId: number; sessionName: string; result: RecoveryResult };
   'monitor:user-notified': { topicId: number; message: string };
   'monitor:recovery-deferred': { topicId: number; sessionName: string };
+  'monitor:liveness-indeterminate': { topicId: number; sessionName: string; polls: number };
 }
+
+/** Consecutive polls without a definite liveness answer before it is reported (once per run). */
+const INDETERMINATE_STREAK_REPORT = 5;
 
 export interface SessionMonitorDeps {
   /** Get all active topic-to-session mappings */
@@ -61,8 +92,21 @@ export interface SessionMonitorDeps {
   captureSessionOutput: (sessionName: string, lines: number) => string | null;
   /** Check if a session is alive */
   isSessionAlive: (sessionName: string) => boolean;
+  /**
+   * The same two reads without blocking the event loop, for the per-poll check
+   * of every session. When both are given the poll uses them; the synchronous
+   * pair stays in use for the rare re-checks inside a recovery decision.
+   * `'indeterminate'` (tmux too slow to answer, or a pane that ended
+   * ambiguously) is read as alive: a slow tmux is not a dead session.
+   */
+  isSessionAliveAsync?: (sessionName: string) => Promise<boolean | 'indeterminate'>;
+  captureSessionOutputAsync?: (sessionName: string, lines: number) => Promise<string | null>;
+  /** A replacement is being launched for this conversation. */
+  isSessionStarting?: (topicId: number) => boolean;
   /** Get recent messages for a topic */
-  getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string }>;
+  getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string; messageId?: string | number; provenance?: string }>;
+  /** Durable outbound log check; Slack's inbound ring may omit its bot replies. */
+  hasAgentRepliedSince?: (topicId: number, sinceMs: number) => boolean;
   /** Send a message to a topic */
   sendToTopic: (topicId: number, text: string) => Promise<any>;
   /** Trigger triage recovery for a session */
@@ -83,6 +127,22 @@ export interface SessionMonitorDeps {
    *  Studio told the operator to resend a message the Mama PC was already
    *  answering). A throw is treated as not-owned-elsewhere (today's behavior). */
   isTopicOwnedByPeer?: (topicId: number) => boolean;
+  /** Optional path to the persisted "session has stopped" notice ledger. When
+   *  set, the dead-session notice is once per death across server restarts:
+   *  a topic already told about a death is not told again until a newer user
+   *  message arrives. Without it, every boot forgot
+   *  the in-memory guards and re-posted the same death (2026-11-02: a Slack
+   *  agent re-posted the notice in one channel a dozen times in a morning). */
+  deadNoticeStatePath?: string;
+}
+
+interface DeadNoticeEntry {
+  /** The session whose death was announced. */
+  sessionName: string;
+  /** Timestamp (ms) of the newest user message the notice answered. */
+  userMessageAt: number;
+  /** When the notice was sent (ms) — used only for age pruning. */
+  at: number;
 }
 
 const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
@@ -93,11 +153,20 @@ const DEFAULT_CONFIG: Required<SessionMonitorConfig> = {
 };
 
 export class SessionMonitor extends EventEmitter {
+  private noticeEnvelope(topicId: number, servesInbound: boolean, category: 'message-loss-notice' | 'presence-standby' = 'message-loss-notice'): OutboundEnvelope {
+    const inbound = servesInbound ? this.deps.getTopicHistory(topicId, 50).filter(row => row.fromUser).at(-1) : undefined;
+    return inbound?.messageId !== undefined ? { origin: 'automated', category, sourceContext: 'session-monitor', inboundMessageId: String(inbound.messageId) } : stampNotification();
+  }
+
   private config: Required<SessionMonitorConfig>;
   private deps: SessionMonitorDeps;
   private snapshots = new Map<number, SessionSnapshot>();
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private pollStartedAt = 0;
+  private skippedPolls = 0;
+  /** Consecutive polls in which tmux gave no definite liveness answer, per topic. */
+  private readonly indeterminateStreaks = new Map<number, { sessionName: string; polls: number }>();
   /** Topic-level cooldown for context exhaustion — survives snapshot cleanup */
   private contextExhaustionCooldowns = new Map<number, number>();
   /** Topic-level notification cooldown — survives snapshot cleanup.
@@ -117,12 +186,73 @@ export class SessionMonitor extends EventEmitter {
   /** Entries older than this are pruned at load — a week-old dead-session
    *  episode is over by any reasonable measure, and pruning bounds the file. */
   private static readonly CTX_NOTIFIED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  /** topicId -> the last "session has stopped" notice. Persisted via
+   *  deps.deadNoticeStatePath so one death is announced once, not once per boot. */
+  private deadNotified = new Map<number, DeadNoticeEntry>();
+  private deadPersistWarned = false;
+  private deadRecoveryAttempts = new Map<number, number>();
 
   constructor(deps: SessionMonitorDeps, config?: Partial<SessionMonitorConfig>) {
     super();
     this.deps = deps;
     this.config = mergeDefaults(DEFAULT_CONFIG, config);
     this.loadCtxNotified();
+    this.loadDeadNotified();
+  }
+
+  /** Load the persisted dead-notice ledger (tolerant: missing/corrupt → empty). */
+  private loadDeadNotified(): void {
+    const file = this.deps.deadNoticeStatePath;
+    if (!file) return;
+    try {
+      if (!fs.existsSync(file)) return;
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, Partial<DeadNoticeEntry>>;
+      const cutoff = Date.now() - SessionMonitor.CTX_NOTIFIED_MAX_AGE_MS;
+      for (const [topic, entry] of Object.entries(raw)) {
+        const topicId = Number(topic);
+        if (!Number.isFinite(topicId) || !entry || typeof entry.sessionName !== 'string') continue;
+        if (typeof entry.at !== 'number' || entry.at < cutoff) continue; // pruned
+        if (typeof entry.userMessageAt !== 'number') continue;
+        this.deadNotified.set(topicId, { sessionName: entry.sessionName, userMessageAt: entry.userMessageAt, at: entry.at });
+      }
+    } catch (err) {
+      // A corrupt ledger must never break monitoring — start empty (worst case:
+      // one repeat notice per dead session, the pre-ledger behavior).
+      console.warn('[SessionMonitor] Could not load dead-notice ledger — starting empty:', err);
+    }
+  }
+
+  /** Persist the dead-notice ledger (atomic tmp+rename; failure-tolerant). */
+  private persistDeadNotified(): void {
+    const file = this.deps.deadNoticeStatePath;
+    if (!file) return;
+    try {
+      const obj: Record<string, DeadNoticeEntry> = {};
+      for (const [topicId, entry] of this.deadNotified) obj[String(topicId)] = entry;
+      const tmp = `${file}.tmp`;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      // @silent-fallback-ok — not silent: warns once. A failed save degrades
+      // to the pre-ledger in-memory guard (the old behaviour), never to extra
+      // notices within this process.
+      if (!this.deadPersistWarned) {
+        this.deadPersistWarned = true;
+        console.warn('[SessionMonitor] Could not persist dead-notice ledger (will not warn again):', err);
+      }
+    }
+  }
+
+  /** True when the topic was already told about a death and no user message
+   *  has arrived since the one that notice answered — re-announcing would be
+   *  a repeat, not news. Keyed on the user message, not the session name:
+   *  Telegram reuses a topic's session name across respawns, so a later,
+   *  genuinely new death in the same topic must still be announced. */
+  private deadAlreadyAnnounced(topicId: number, lastUserMessageAt: number): boolean {
+    const prior = this.deadNotified.get(topicId);
+    if (!prior) return false;
+    return lastUserMessageAt <= prior.userMessageAt;
   }
 
   /** Load the persisted notify ledger (tolerant: missing/corrupt → empty). */
@@ -213,8 +343,18 @@ export class SessionMonitor extends EventEmitter {
 
   // ── Core Polling ────────────────────────────────────────
   async poll(): Promise<void> {
-    if (!this.config.enabled || this.running) return;
+    if (!this.config.enabled) return;
+    if (this.running) {
+      // The reads await, so a poll can outlast its interval when tmux is slow.
+      // The skipped tick is said out loud: a monitor that has gone quiet for
+      // minutes must not look the same as one with nothing to report.
+      this.skippedPolls++;
+      console.warn(`[SessionMonitor] previous poll still running after ${Math.round((Date.now() - this.pollStartedAt) / 1000)} s; skipping this tick (${this.skippedPolls} skipped in a row)`);
+      return;
+    }
     this.running = true;
+    this.pollStartedAt = Date.now();
+    this.skippedPolls = 0;
 
     try {
       const activeTopics = this.deps.getActiveTopicSessions();
@@ -225,11 +365,15 @@ export class SessionMonitor extends EventEmitter {
           this.snapshots.delete(topicId);
         }
       }
+      for (const topicId of this.indeterminateStreaks.keys()) {
+        if (!activeTopics.has(topicId)) this.indeterminateStreaks.delete(topicId);
+      }
 
       // Check each active session
       for (const [topicId, sessionName] of activeTopics) {
         if (this.ownedByPeer(topicId)) {
           this.snapshots.delete(topicId);
+          this.indeterminateStreaks.delete(topicId);
           continue;
         }
         try {
@@ -254,9 +398,39 @@ export class SessionMonitor extends EventEmitter {
     }
   }
 
+  private stopIfOwnedByPeer(topicId: number): boolean {
+    if (!this.ownedByPeer(topicId)) return false;
+    this.snapshots.delete(topicId);
+    return true;
+  }
+
   private async checkSession(topicId: number, sessionName: string): Promise<void> {
     const now = Date.now();
-    const alive = this.deps.isSessionAlive(sessionName);
+    // Once a minute, for every session: with the synchronous pair this is three
+    // tmux subprocesses per session on the main thread, and on a saturated
+    // machine each can take seconds. The asynchronous pair asks the same
+    // questions without holding the loop.
+    const nonBlocking = !!this.deps.isSessionAliveAsync && !!this.deps.captureSessionOutputAsync;
+    const liveness = nonBlocking ? await this.deps.isSessionAliveAsync!(sessionName) : this.deps.isSessionAlive(sessionName);
+    // 'indeterminate' (tmux did not answer in time, or a pane that ended with
+    // no exit status to judge by) is not a dead session: it is read as alive and
+    // looked at again next poll. A run of them is reported once, so a tmux that
+    // has stopped answering does not go unnoticed.
+    const alive = liveness !== false;
+    if (liveness === 'indeterminate') {
+      const previous = this.indeterminateStreaks.get(topicId);
+      const streak = previous && previous.sessionName === sessionName ? previous.polls + 1 : 1;
+      this.indeterminateStreaks.set(topicId, { sessionName, polls: streak });
+      if (streak === INDETERMINATE_STREAK_REPORT) {
+        console.warn(`[SessionMonitor] the liveness of "${sessionName}" (topic ${topicId}) could not be determined for ${streak} polls in a row; it is being treated as alive`);
+        this.emit('monitor:liveness-indeterminate', { topicId, sessionName, polls: streak });
+      }
+    } else {
+      this.indeterminateStreaks.delete(topicId);
+    }
+    // A registry entry can still name the failed resume while its replacement
+    // is launching. Do not recover or announce the old name in that window.
+    if (!alive && this.deps.isSessionStarting?.(topicId)) return;
 
     // Get or create snapshot
     let snap = this.snapshots.get(topicId);
@@ -278,7 +452,12 @@ export class SessionMonitor extends EventEmitter {
     snap.sessionName = sessionName;
 
     // Capture current output
-    const currentOutput = alive ? (this.deps.captureSessionOutput(sessionName, 30) || '') : '';
+    // No screen read when the liveness read came back indeterminate: when the
+    // cause is a tmux that did not answer, the read would wait out a second
+    // timeout for nothing. (The other cause, a pane that ended with no exit
+    // status, is also skipped for that poll; the synchronous path read it.)
+    const currentOutput = !alive || liveness === 'indeterminate' ? ''
+      : ((nonBlocking ? await this.deps.captureSessionOutputAsync!(sessionName, 30) : this.deps.captureSessionOutput(sessionName, 30)) || '');
 
     // Check if output changed
     if (currentOutput !== snap.lastOutput && currentOutput.length > 0) {
@@ -292,7 +471,7 @@ export class SessionMonitor extends EventEmitter {
       const ts = new Date(msg.timestamp).getTime();
       if (msg.fromUser && ts > snap.lastUserMessageAt) {
         snap.lastUserMessageAt = ts;
-      } else if (!msg.fromUser && ts > snap.lastAgentMessageAt) {
+      } else if (isAgentAnswer(msg) && ts > snap.lastAgentMessageAt) {
         snap.lastAgentMessageAt = ts;
       }
     }
@@ -337,6 +516,7 @@ export class SessionMonitor extends EventEmitter {
           } catch (err) {
             console.error(`[SessionMonitor] Context exhaustion recovery error for topic ${topicId}:`, err);
           }
+          if (this.stopIfOwnedByPeer(topicId)) return;
           // DEFERRED ≠ dead. The work-check found the session alive and actively
           // producing work, so the kill was deferred — the session is FINE.
           // Telling the user it "hit conversation too long and can't continue"
@@ -355,14 +535,24 @@ export class SessionMonitor extends EventEmitter {
             console.log(`[SessionMonitor] Context-exhaustion already notified for topic ${topicId} session "${sessionName}" — suppressing duplicate`);
             return;
           }
+          const recent = this.deps.getTopicHistory(topicId, 5);
+          const latestUser = Math.max(0, ...recent.filter(m => m.fromUser).map(m => new Date(m.timestamp).getTime()));
+          const latestAgent = Math.max(0, ...recent.filter(isAgentAnswer).map(m => new Date(m.timestamp).getTime()));
+          const current = this.deps.getActiveTopicSessions().get(topicId);
+          if (latestUser === 0 || latestAgent > latestUser ||
+              this.deps.hasAgentRepliedSince?.(topicId, latestUser) ||
+              this.deps.isSessionStarting?.(topicId) ||
+              (current && this.deps.isSessionAlive(current))) return;
           snap.status = 'dead';
-          await this.deps.sendToTopic(topicId,
-            `Session hit "conversation too long" and can't continue. Send a new message to start a fresh session with your recent history.`
-          ).catch(() => {});
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, snap.lastUserMessageAt > snap.lastAgentMessageAt), async () => (this.deps)!.sendToTopic(topicId,
+            `I couldn't restore this conversation after it reached its context limit. Your message is saved.`
+          )).catch(() => false);
+          if (receipt !== false && !isQuietReceipt(receipt)) {
           this.emit('monitor:user-notified', { topicId, message: 'context_exhausted' });
           this.ctxNotifiedSessions.set(topicId, { sessionName, at: now });
           this.persistCtxNotified();
           snap.notifiedAt = now;
+          } else if (isQuietReceipt(receipt)) snap.recordedAt = now;
           this.notificationCooldowns.set(topicId, now);
           return;
         }
@@ -405,7 +595,8 @@ export class SessionMonitor extends EventEmitter {
     // A session sitting idle after the agent responded is NORMAL — the user
     // just hasn't sent a new message yet. "Recently active" is not a reason
     // to escalate; only an unanswered user message is.
-    const userExpectsResponse = snap.lastUserMessageAt > snap.lastAgentMessageAt;
+    const userExpectsResponse = snap.lastUserMessageAt > snap.lastAgentMessageAt &&
+      !this.deps.hasAgentRepliedSince?.(topicId, snap.lastUserMessageAt);
 
     if (!userExpectsResponse) return; // Session idle but no unanswered message — normal state
 
@@ -426,27 +617,60 @@ export class SessionMonitor extends EventEmitter {
       } catch (err) {
         console.error(`[SessionMonitor] Mechanical recovery error for topic ${topicId}:`, err);
       }
+      if (this.stopIfOwnedByPeer(topicId)) return;
     }
 
     switch (snap.status) {
       case 'dead': {
         this.emit('monitor:recovery-triggered', { topicId, sessionName, reason: 'session_dead' });
-        if (this.deps.triggerTriage) {
-          const result = await this.deps.triggerTriage(topicId, sessionName, 'Session died while user was waiting');
-          if (result.resolved) {
-            snap.status = 'healthy';
-            snap.notifiedAt = now;
-            return;
+        // Triage can itself publish a stopped-session notice and ask the user
+        // to act. For a dead process, use the quiet mechanical fresh restart
+        // directly, then report only its failure.
+        if (this.stopIfOwnedByPeer(topicId)) return;
+        const beforeRestart = this.deps.getActiveTopicSessions().get(topicId);
+        if (this.deps.isSessionStarting?.(topicId) ||
+            (beforeRestart && this.deps.isSessionAlive(beforeRestart)) ||
+            this.deps.hasAgentRepliedSince?.(topicId, snap.lastUserMessageAt)) {
+          snap.status = 'healthy';
+          return;
+        }
+        if (deadRecoveryDue(this.deadRecoveryAttempts.get(topicId), snap.lastUserMessageAt, now)) {
+          this.deadRecoveryAttempts.set(topicId, snap.lastUserMessageAt);
+          try {
+            await this.deps.sessionRecovery?.restartStoppedConversation?.(topicId, sessionName);
+          } catch (err) {
+            console.error(`[SessionMonitor] Fresh restart failed for topic ${topicId}:`, err);
           }
         }
-        // If triage didn't resolve or isn't available, notify user
-        if (userExpectsResponse) {
-          await this.deps.sendToTopic(topicId,
-            `The session has stopped. Send a new message to start a fresh session with full conversation context.`
-          ).catch(() => {});
-          this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
+        if (this.stopIfOwnedByPeer(topicId)) return;
+        const currentName = this.deps.getActiveTopicSessions().get(topicId);
+        const historyNow = this.deps.getTopicHistory(topicId, 5);
+        const latestUser = Math.max(0, ...historyNow.filter(m => m.fromUser).map(m => new Date(m.timestamp).getTime()));
+        const latestAgent = Math.max(0, ...historyNow.filter(isAgentAnswer).map(m => new Date(m.timestamp).getTime()));
+        if (this.deps.isSessionStarting?.(topicId) ||
+            (currentName && this.deps.isSessionAlive(currentName)) ||
+            latestAgent > latestUser ||
+            this.deps.hasAgentRepliedSince?.(topicId, latestUser) ||
+            this.ownedByPeer(topicId)) {
+          snap.status = 'healthy';
+          return;
         }
-        snap.notifiedAt = now;
+        // Only a failed self-recovery with an unanswered user message merits one notice.
+        if (userExpectsResponse && !this.deadAlreadyAnnounced(topicId, snap.lastUserMessageAt)) {
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, true), async () => (this.deps)!.sendToTopic(topicId,
+            `I couldn't restore this conversation. Your message is saved.`
+          )).catch(() => false);
+          const delivered = receipt !== false && !isQuietReceipt(receipt);
+          if (isQuietReceipt(receipt)) snap.recordedAt = now;
+          if (delivered) this.emit('monitor:user-notified', { topicId, message: 'session_dead' });
+          // Record only a notice that went out: a failed send must stay
+          // retryable (after the cooldown or a restart), never marked as told.
+          if (delivered) {
+            this.deadNotified.set(topicId, { sessionName, userMessageAt: snap.lastUserMessageAt, at: now });
+            this.persistDeadNotified();
+            snap.notifiedAt = now;
+          }
+        }
         this.notificationCooldowns.set(topicId, now);
         break;
       }
@@ -474,14 +698,14 @@ export class SessionMonitor extends EventEmitter {
         // For idle sessions, only notify if user is actively waiting
         if (userExpectsResponse) {
           const msg = `Session has been idle for ${idleMinutes} minutes. Checking if it needs attention...`;
-          await this.deps.sendToTopic(topicId, msg).catch(() => {});
-          this.emit('monitor:user-notified', { topicId, message: 'session_idle' });
+          const receipt = await withNotificationEnvelope(this.noticeEnvelope(topicId, true, 'presence-standby'), async () => (this.deps)!.sendToTopic(topicId, msg)).catch(() => false);
+          if (receipt !== false && !isQuietReceipt(receipt)) { this.emit('monitor:user-notified', { topicId, message: 'session_idle' }); snap.notifiedAt = now; }
+          else if (isQuietReceipt(receipt)) snap.recordedAt = now;
 
           if (this.deps.triggerTriage) {
             await this.deps.triggerTriage(topicId, sessionName, `Session idle for ${idleMinutes} minutes, user waiting`);
           }
         }
-        snap.notifiedAt = now;
         this.notificationCooldowns.set(topicId, now);
         break;
       }

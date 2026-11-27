@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "jobs-other-peoples-words",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T22:58:25.684Z",
+  "artifactPath": "upgrades/side-effects/jobs-other-peoples-words.md",
+  "artifactSha256": "af4188461d1966ef4617bdcffd4898515e835e5bc2450b571739a1f55457c4b0",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/core/appInboundDispatch.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

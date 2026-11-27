@@ -15,6 +15,10 @@ import { getInitDefaults } from '../../src/config/ConfigDefaults.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 
+// The drive settles in milliseconds alone; under the local verifier's parallel lanes
+// it can exceed vi.waitFor's 1 s default. Wait on the outcome, not a wall clock.
+const RELOGIN_SETTLE = { timeout: 30_000, interval: 50 };
+
 const roots: string[] = [];
 const servers: AgentServer[] = [];
 const appListeners: Array<() => Promise<void>> = [];
@@ -290,7 +294,7 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       .set('Authorization', 'Bearer relogin-api-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
     expect(approved.status).toBe(202);
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)
       .set('Authorization', 'Bearer relogin-api-token');
     expect(events.status).toBe(200);
@@ -364,7 +368,7 @@ describe('assisted subscription re-login production AgentServer lifecycle', () =
       .set('Authorization', 'Bearer relogin-api-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).send({});
     expect(approved.status).toBe(202);
-    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'));
+    await vi.waitFor(() => expect(runtime.store.get(suggested.id)?.state).toBe('succeeded'), RELOGIN_SETTLE);
     const events = await request(server.getApp()).get(`/subscription-relogin/${suggested.id}/events`)
       .set('Authorization', 'Bearer relogin-api-token');
     expect(events.status).toBe(200);

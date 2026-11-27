@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "model-registry-gemini4-1115",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-16T02:48:50.377Z",
+  "artifactPath": "upgrades/side-effects/model-registry-gemini4-1115.md",
+  "artifactSha256": "8dede4f62aae9cb610dec0a8e65c314d62f0f637c60c2528b08415853b228bf8",
+  "specPath": "docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md",
+  "coveredFiles": [
+    "scripts/model-registry-freshness.manifest.json",
+    "upgrades/next/model-registry-gemini4.md",
+    "upgrades/side-effects/model-registry-gemini4-1115.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

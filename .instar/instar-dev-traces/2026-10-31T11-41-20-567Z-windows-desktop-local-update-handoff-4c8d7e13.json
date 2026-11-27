@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "windows-desktop-local-update-handoff",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T11:41:20.567Z",
+  "artifactPath": "upgrades/side-effects/windows-desktop-local-update-handoff.md",
+  "artifactSha256": "d842a9f67e94ddc515449e6c3f1f3d85d96c6d28eef085bb0982930902de5d0d",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "docs/specs/native-remote-desktop-echo-mesh.eli16.md",
+    "docs/specs/native-remote-desktop-echo-mesh.md",
+    "scripts/install-windows-desktop-companion.mjs",
+    "scripts/install-windows-desktop-companion.ps1",
+    "src/core/WindowsDesktopBootstrapStatus.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/windows-desktop-bootstrap-status.test.ts",
+    "upgrades/next/windows-desktop-local-update-handoff.md",
+    "upgrades/side-effects/windows-desktop-local-update-handoff.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed Windows-local update requests preserve the one-use companion token and Task Scheduler stopped-state authority while fixing a WSL bridge timeout; Windows CI and live WSL proof gate rollout.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

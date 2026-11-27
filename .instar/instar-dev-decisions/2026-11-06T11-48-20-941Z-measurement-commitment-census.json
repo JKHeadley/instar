@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T11:48:20.941Z",
+  "slug": "measurement-commitment-census",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/measurementCoverageRead.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "release-install-retry",
+  "sessionId": "b9dbb2bd-d987-47b2-a538-5de71ea42e15",
+  "timestamp": "2026-11-23T19:14:43.818Z",
+  "artifactPath": "upgrades/side-effects/release-install-retry.md",
+  "artifactSha256": "01fe32bf857a8c5869d4597ee4d8cfcbcf346daa6683a3061552fe0e06c9a8bc",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "docs/specs/release-install-retry.eli16.md",
+    "tests/unit/release-install-retry.test.ts",
+    "upgrades/next/release-install-retry.md",
+    "upgrades/side-effects/release-install-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded dependency-install retry; reverting the workflow fully undoes the behavior without state repair.",
+  "eli16Path": "docs/specs/release-install-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/release-install-retry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-store-deadline-test-default",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-14T05:34:32.866Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-store-deadline-test-default.md",
+  "artifactSha256": "4135f210b48d3d257ada489dc21f02904925d5ba1bdd30f6d7c716ad8828692c",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-store-deadline-test-default.eli16.md",
+    "src/messaging/telegram-origin/OriginStageDeadlines.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "tests/helpers/telegramOriginStore.ts",
+    "tests/unit/telegram-origin/origin-store-request-default.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/telegram-origin-store-deadline-test-default.md",
+    "upgrades/side-effects/telegram-origin-store-deadline-test-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-harness default; production deadline and hold logic unchanged (pinned by a source scan); revert undoes it",
+  "eli16Path": "docs/specs/telegram-origin-store-deadline-test-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-store-deadline-test-default.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

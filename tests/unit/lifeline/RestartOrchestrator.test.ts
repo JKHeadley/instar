@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { RestartOrchestrator } from '../../../src/lifeline/RestartOrchestrator.js';
+import { RestartOrchestrator, restartKeepsServer } from '../../../src/lifeline/RestartOrchestrator.js';
 import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
 
 describe('RestartOrchestrator', () => {
@@ -114,5 +114,115 @@ describe('RestartOrchestrator', () => {
     await p;
     expect(exitFn).toHaveBeenCalledWith(0); // normal-exit path, budget expired
     vi.useRealTimers();
+  });
+});
+
+describe('RestartOrchestrator — keepServer reaches quiesce', () => {
+  const run = async (req: Parameters<RestartOrchestrator['requestRestart']>[0]) => {
+    let seen: boolean | undefined;
+    const o = new RestartOrchestrator({ quiesce: async (r) => { seen = r?.keepServer; }, persistAll: async () => {}, exitFn: () => {}, isSupervised: true });
+    await o.requestRestart(req);
+    return seen;
+  };
+  it('a lifeline-only bucket (versionSkew, plannedUpgrade) keeps the server by default; watchdog stops it', async () => {
+    expect(restartKeepsServer('versionSkew')).toBe(true);
+    expect(restartKeepsServer('plannedUpgrade')).toBe(true);
+    expect(restartKeepsServer('watchdog')).toBe(false);
+    expect(await run({ reason: 'drift-auto-promote', bucket: 'versionSkew', keepServer: true })).toBe(true);
+    expect(await run({ reason: 'version-skew', bucket: 'versionSkew' })).toBe(true);
+    expect(await run({ reason: 'migration', bucket: 'plannedUpgrade' })).toBe(true);
+    expect(await run({ reason: 'watchdog-trip', bucket: 'watchdog' })).toBe(false);
+    expect(await run({ reason: 'external-signal', bucket: 'watchdog' })).toBe(false);
+  });
+  it('an explicit keepServer on the request wins over the bucket default', async () => {
+    expect(await run({ reason: 'x', bucket: 'versionSkew', keepServer: false })).toBe(false);
+    expect(await run({ reason: 'y', bucket: 'watchdog', keepServer: true })).toBe(true);
+  });
+});
+
+describe('RestartOrchestrator — a competing stop request wins over a keep-server restart', () => {
+  const make = (stopServer = vi.fn(async () => {})) => {
+    let resolveQuiesce!: () => void;
+    const quiescing = new Promise<void>((r) => { resolveQuiesce = r; });
+    const seen: Array<boolean | undefined> = [];
+    const o = new RestartOrchestrator({
+      quiesce: async (req) => { seen.push(req?.keepServer); await quiescing; },
+      persistAll: async () => {}, exitFn: vi.fn(), isSupervised: true, stopServer,
+    });
+    return { o, seen, stopServer, resolveQuiesce };
+  };
+  it('drift first, then an external signal during quiesce: quiesce keeps the server, but it is stopped before exit', async () => {
+    const t = make();
+    const first = t.o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew', keepServer: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await t.o.requestRestart({ reason: 'external-signal', bucket: 'watchdog' })).toBe('suppressed');
+    t.resolveQuiesce();
+    expect(await first).toBe('proceeded');
+    expect(t.seen).toEqual([true]);
+    expect(t.stopServer).toHaveBeenCalledTimes(1);
+  });
+  it('a stop request first, then drift during its quiesce: the server is stopped once by quiesce, no extra stop', async () => {
+    const t = make();
+    const first = t.o.requestRestart({ reason: 'watchdog-trip', bucket: 'watchdog' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await t.o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew', keepServer: true })).toBe('suppressed');
+    t.resolveQuiesce();
+    await first;
+    expect(t.seen).toEqual([false]);
+    expect(t.stopServer).not.toHaveBeenCalled();
+  });
+  it('two keep-server requests: no stop', async () => {
+    const t = make();
+    const first = t.o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew' });
+    await new Promise((r) => setTimeout(r, 0));
+    await t.o.requestRestart({ reason: 'version-skew', bucket: 'plannedUpgrade' });
+    t.resolveQuiesce();
+    await first;
+    expect(t.stopServer).not.toHaveBeenCalled();
+  });
+  it('a stop arriving during the telemetry wait makes quiesce itself stop the server (no override phase needed)', async () => {
+    const seen: Array<boolean | undefined> = [];
+    const stopServer = vi.fn(async () => {});
+    let release!: () => void;
+    const reporter = { report: () => new Promise<void>((r) => { release = r; }) } as never;
+    const o = new RestartOrchestrator({ quiesce: async (r) => { seen.push(r?.keepServer); }, persistAll: async () => {}, exitFn: vi.fn(), isSupervised: true, stopServer, reporter });
+    const first = o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew', keepServer: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await o.requestRestart({ reason: 'external-signal', bucket: 'watchdog' })).toBe('suppressed');
+    release();
+    await first;
+    expect(seen).toEqual([false]); // quiesce stopped the server
+    expect(stopServer).not.toHaveBeenCalled();
+  });
+
+  it('the stop phase outlives the persist hard-kill timer: a slow stop finishes and the exit is clean (the 2026-10-26 round-2 P1)', async () => {
+    const exitFn = vi.fn();
+    const order: string[] = [];
+    const stopServer = vi.fn(async () => { await new Promise((r) => setTimeout(r, 120)); order.push('stopped'); });
+    const o = new RestartOrchestrator({
+      quiesce: async () => {}, persistAll: async () => { await new Promise((r) => setTimeout(r, 200)); }, // exhausts its budget
+      exitFn: (code) => { order.push(`exit${code}`); exitFn(code); }, isSupervised: true, stopServer,
+      persistBudgetMs: 20, hardKillMs: 60, stopPhaseMs: 2000,
+    });
+    const first = o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew' });
+    await new Promise((r) => setTimeout(r, 0));
+    await o.requestRestart({ reason: 'external-signal', bucket: 'watchdog' });
+    await first;
+    expect(order).toEqual(['stopped', 'exit0']); // never exit(1) from the persist timer, never exit before the stop
+    expect(exitFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stop arriving during persistence is honoured too', async () => {
+    let resolvePersist!: () => void;
+    const persisting = new Promise<void>((r) => { resolvePersist = r; });
+    const stopServer = vi.fn(async () => {});
+    const o = new RestartOrchestrator({ quiesce: async () => {}, persistAll: async () => { await persisting; }, exitFn: vi.fn(), isSupervised: true, stopServer });
+    const first = o.requestRestart({ reason: 'drift-auto-promote', bucket: 'versionSkew' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(o.state).toBe('persisting');
+    await o.requestRestart({ reason: 'external-signal', bucket: 'watchdog' });
+    resolvePersist();
+    await first;
+    expect(stopServer).toHaveBeenCalledTimes(1);
   });
 });

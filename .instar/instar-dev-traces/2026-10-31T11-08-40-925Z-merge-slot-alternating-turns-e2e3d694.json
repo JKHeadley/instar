@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "merge-slot-alternating-turns",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-31T11:08:40.925Z",
+  "artifactPath": "upgrades/side-effects/merge-slot-alternating-turns.md",
+  "artifactSha256": "9a0cbd32ac80720de7aedfc485b135d04cb6863a95f65d054508fb986b722870",
+  "specPath": "docs/specs/merge-slot-alternating-turns.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/hostTestRunnerSemaphore.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Host-wide suite admission changes scheduling authority, but stays opt-in and fail-open; all three test tiers and a staged rollout are required.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/merge-slot-alternating-turns-convergence.md",
+      "iterations": 7,
+      "verified": true
+    }
+  }
+}

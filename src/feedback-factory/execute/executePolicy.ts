@@ -16,18 +16,25 @@ import { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName } from '../../core
 export { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName };
 
 export const HOUR_MS = 60 * 60_000;
+/** Longest an update restart waits on one attempt in setup or verification: its checks can take 105 minutes in all. */
+export const ATTEMPT_RESTART_HOLD_MS = 2 * HOUR_MS;
+/** How long GitHub may stay unreachable before the stopped fixes are reported. */
+export const GITHUB_OUTAGE_NOTICE_MS = 2 * HOUR_MS;
 export const DAY_MS = 24 * HOUR_MS;
 /** Claim lease (§4 step 2). A session's wall clock never exceeds it. */
 export const EXECUTION_LEASE_MS = 6 * HOUR_MS;
 /** Each confined test or gate run (§4 step 4, resource limits). */
 export const CONFINED_COMMAND_TIMEOUT_MS = 20 * 60_000;
+/** Core modules can pull much of the unit suite into `vitest related`; keep it bounded
+ * while allowing the same breadth that the full unit gate already exercises. */
+export const CONFINED_RELATED_TIMEOUT_MS = 45 * 60_000;
 /** Captured output per confined command. */
 export const CONFINED_OUTPUT_CAP_BYTES = 5 * 1024 * 1024;
 /** Workspace plus temp directory, checked between steps. */
 export const WORKSPACE_DISK_CAP_BYTES = 2 * 1024 * 1024 * 1024;
-/** Change set caps (§4 step 8). */
+/** Change set caps (§4 step 8). server.ts and routes.ts together exceed 4 MiB. */
 export const CHANGESET_MAX_FILES = 200;
-export const CHANGESET_MAX_BYTES = 2 * 1024 * 1024;
+export const CHANGESET_MAX_BYTES = 5 * 1024 * 1024;
 /** Result file notes cap (§4 step 7). */
 export const RESULT_NOTES_MAX = 1_000;
 /** merge-armed confirmation deadline and the single merge retry delay (§4 step 9). */
@@ -130,11 +137,19 @@ export function clampProbeDetail(text: string): string {
 export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
-export const CANARY_VERSION = 'feedback-canary-v2';
+// A launch-path change must invalidate the full-gate stamp so deployed agents rehearse it.
+export const CANARY_VERSION = 'feedback-canary-v6';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
 export const EVIDENCE_FILE = '.feedback-evidence.json';
+/**
+ * The previous attempt's independent-review findings, written by trusted code as a read-only data
+ * file beside the evidence file when an attempt reworks a fix that failed review
+ * (docs/specs/feedback-executor-review-failed-recovery.md §2). Special-cased everywhere the
+ * evidence file is: never part of a change set, write-denied to the session.
+ */
+export const PREVIOUS_REVIEW_FILE = '.feedback-previous-review.json';
 export const RESULT_FILE = '.feedback-result.json';
 export const HOLD_LABEL = 'hold';
 /** Native modules built from the base SHA (the pinned allow-list, §4 step 3). */
@@ -174,6 +189,20 @@ export interface ExecuteLiveConfig {
    * paths always wait for their owner. `operator`: the original rule, the owner's approval only.
    */
   reviewGate: 'independent' | 'operator';
+  /**
+   * Hours a PR whose current head failed the independent review keeps its open-PR slot before the
+   * executor closes it and reworks the item once from the findings
+   * (docs/specs/feedback-executor-review-failed-recovery.md). 0 = never close (the old behaviour).
+   */
+  reviewFailedGraceHours: number;
+  /**
+   * What happens after a spec DRAFT (written from untrusted feedback) merges (SEC-096). The next step
+   * is a TRUSTED session (no confinement, auth kept) that converges the draft, so it never starts on
+   * the independent reviewers' word alone. `owner-approved` (the default): it starts only once the
+   * approver's own GitHub approval is on the merged head. `off`: it never starts; merged drafts wait
+   * for the owner by hand. There is deliberately no setting that starts it without the owner.
+   */
+  specFollowUp: 'owner-approved' | 'off';
   actionTopicId?: number;
 }
 
@@ -184,6 +213,7 @@ export const EXECUTE_CONFIG_DEFAULTS = {
   lintCommand: 'npm run lint',
   baseSmokeTests: ['tests/unit/feedback-factory/triage-floors.test.ts'],
   maxDurationMinutes: 300,
+  reviewFailedGraceHours: 24,
 } as const;
 
 export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, agentHome: string, isSourceCheckout: (dir: string) => boolean): ExecuteLiveConfig {
@@ -207,6 +237,9 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     maxDurationMinutes: int(raw?.maxDurationMinutes, EXECUTE_CONFIG_DEFAULTS.maxDurationMinutes, 10, EXECUTION_LEASE_MS / 60_000),
     publishRepo: publish,
     reviewGate: raw?.reviewGate === 'operator' ? 'operator' : 'independent',
+    reviewFailedGraceHours: int(raw?.reviewFailedGraceHours, EXECUTE_CONFIG_DEFAULTS.reviewFailedGraceHours, 0, 168),
+    // SEC-096: anything but the exact word `off` keeps the owner-approval requirement (fail closed).
+    specFollowUp: raw?.specFollowUp === 'off' ? 'off' : 'owner-approved',
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }
@@ -227,7 +260,15 @@ const TOOLING_PATTERNS = [
 
 /** True when a change to `relPath` must never reach a PR without the operator. */
 export function isToolingPath(relPath: string): boolean {
-  const p = relPath.replace(/\\/g, '/').replace(/^\.\//, '');
+  // On POSIX a backslash is a literal filename character. Rewriting it as a separator
+  // before checking the original path can normalize an actual .instar entry away.
+  if (path.sep !== '\\' && relPath.includes('\\')) return true;
+  const p = relPath.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  if (p.startsWith('/') || p.split('/').includes('..')) return true;
+  // The confined session must never supply repository audit or agent state bytes to the
+  // trusted publisher. Case-fold this prefix so a macOS checkout cannot alias it.
+  const folded = p.toLowerCase();
+  if (folded === '.instar' || folded.startsWith('.instar/')) return true;
   if (TOOLING_PREFIXES.some((prefix) => p === prefix.slice(0, -1) || p.startsWith(prefix))) return true;
   if (PROTECTED_PATH_PREFIXES.some((prefix) => (prefix.endsWith('/') ? p.startsWith(prefix) : p === prefix))) return true;
   const base = p.split('/').pop() ?? p;
@@ -252,6 +293,42 @@ export interface ConfinementPaths {
   testRunnerHoldersFile: string;
   /** The user's home directory (for credential paths). */
   homeDir?: string;
+  /** The Node binary confined commands run (defaults to this process's). Its install is re-allowed for reads when it lives under home. */
+  nodeExecPath?: string;
+}
+
+/**
+ * The Node install a confined command needs to read, when it lives under the read-denied home
+ * (nvm, fnm, volta and similar put it there; the M5 verifier has it at ~/.nvm/versions/node/vX).
+ * Without it, bash's PATH lookup cannot stat `node` or `npm` inside the sandbox and reports
+ * "command not found", although running the binary by its full path works (fb-c238c6c9-f0d).
+ *
+ * The install root is the parent of the binary's `bin` directory, else the binary's own directory.
+ * It is re-allowed only when it is inside home and is not, and does not contain, home, the agent
+ * home, the publish clone or a credential path, and is not inside the agent home or the publish
+ * clone. Anything else returns nothing, so the old behaviour stands. Both the given and the real
+ * path are returned, because PATH can name either spelling.
+ */
+export function nodeInstallReadAllows(p: Pick<ConfinementPaths, 'agentHome' | 'publishClone' | 'homeDir' | 'nodeExecPath'>): string[] {
+  const both = (target: string): string[] => {
+    const out = [path.resolve(target)];
+    try { out.push(fs.realpathSync(target)); } catch { /* @silent-fallback-ok: a missing path only loses its real-path spelling */ }
+    return [...new Set(out)];
+  };
+  const homes = both(p.homeDir ?? os.homedir());
+  const fenced = [...both(p.agentHome), ...both(p.publishClone)];
+  const denied = [...homes, ...fenced, ...homes.flatMap((h) => credentialReadDenies(h).map((c) => path.resolve(c)))];
+  const within = (child: string, parent: string) => child.startsWith(`${parent}${path.sep}`);
+  const out = new Set<string>();
+  for (const bin of both(p.nodeExecPath ?? process.execPath)) {
+    const dir = path.dirname(bin);
+    const root = path.basename(dir) === 'bin' ? path.dirname(dir) : dir;
+    if (!homes.some((h) => within(root, h))) continue; // outside home it is not denied in the first place
+    if (denied.some((d) => d === root || within(d, root))) continue; // would re-open a denied path
+    if (fenced.some((f) => within(root, f))) continue;
+    out.add(root);
+  }
+  return [...out];
 }
 
 /** Credential locations a confined process may never read. */
@@ -265,7 +342,7 @@ export function credentialReadDenies(homeDir: string = os.homedir()): string[] {
 }
 
 export interface SandboxRuntimeSettings {
-  network: { allowedDomains: string[]; deniedDomains: string[]; allowLocalBinding: boolean; allowUnixSockets: string[] };
+  network: { allowedDomains: string[]; deniedDomains: string[]; allowLocalBinding: boolean; allowUnixSockets: string[]; allowMachLookup?: string[] };
   filesystem: { denyRead: string[]; allowRead: string[]; allowWrite: string[]; denyWrite: string[] };
   enableWeakerNestedSandbox: false;
   enableWeakerNetworkIsolation: false;
@@ -278,25 +355,47 @@ export interface SandboxRuntimeSettings {
  * (sandbox-runtime gives allowRead precedence inside a denied region; the publish clone and
  * credential paths are more specific denies and stay denied). Writes: only the workspace, its
  * temp directory and the test-runner holders file, never its .git/ or the evidence file.
- * Network: empty allowlist (strict), unless the caller is the native-rebuild step.
+ * Network: empty allowlist (strict), unless the caller is the native-rebuild step. On macOS,
+ * Node's dns module needs the local DNSConfiguration Mach service even before any lookup. Without
+ * that exact service Vitest can hang in ares_init_options until the confined command times out.
+ * This permission reads resolver configuration; it does not allow outbound network traffic.
  */
-export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network?: readonly string[]; extraWrite?: string[] } = {}): SandboxRuntimeSettings {
+export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network?: readonly string[]; extraWrite?: string[]; platform?: NodeJS.Platform } = {}): SandboxRuntimeSettings {
   const workspaceGit = path.join(p.workspace, '.git');
+  const platform = opts.platform ?? process.platform;
+  const nodeInstall = nodeInstallReadAllows(p);
   return {
-    network: { allowedDomains: [...(opts.network ?? [])], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [] },
+    network: { allowedDomains: [...(opts.network ?? [])], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
+      ...(platform === 'darwin' ? { allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'] } : {}) },
     filesystem: {
       // The WHOLE home directory and the shared temp directories are read-denied (other agents'
       // homes, follow-me config homes, sign-in files, shell history, other users' temp files);
-      // only the attempt's own trees are re-allowed. The toolchain lives outside home.
-      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir)])],
-      allowRead: [p.workspace, p.depsCache, p.tmpDir],
+      // only the attempt's own trees are re-allowed, plus the Node install when it lives under home
+      // (its global npm config stays denied: it can carry a registry token).
+      // Reads use the UNFILTERED temp roots (SEC-098): allowRead wins inside a denied region, so the
+      // attempt's own temp directory under /private/tmp stays readable through allowRead. Filtering
+      // the ancestor out here (as the write side must) opened ALL of /private/tmp to reads:
+      // throwaway agents' configs with live bot and auth tokens, Claude scratchpads. The canary's
+      // `bash-read-system-temp` / `node-read-system-temp` must-fail probes prove it on every run.
+      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempRoots(), ...nodeInstall.map((r) => path.join(r, 'etc', 'npmrc'))])],
+      allowRead: [p.workspace, p.depsCache, p.tmpDir, ...nodeInstall],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
-      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, '.claude'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
+      denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
     },
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,
     allowAppleEvents: false,
   };
+}
+
+/**
+ * Every shared system temp root, unfiltered. The READ deny list uses this whole list (SEC-098);
+ * only the WRITE deny list needs the ancestor filtering of systemTempDenies below.
+ */
+export function systemTempRoots(): string[] {
+  const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
+  try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
+  return [...new Set(candidates)];
 }
 
 /**
@@ -312,14 +411,15 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
  * config resolution. Reads were unaffected, which is why only the smoke probe died and the lint gate
  * passed. Dropping the ancestor does NOT open the rest of the system temp: writes are allowlist-based
  * and the system temp itself is never in `allowWrite`, which the canary's `bash-write-system-temp`
- * must-fail probe proves on every run.
+ * must-fail probe proves on every run. This filtered list is for WRITES ONLY: the read deny list
+ * uses systemTempRoots() whole (SEC-098 — the filtered list once fed denyRead too and opened every
+ * other file in /private/tmp to reads).
  *
  * The workspace arm is the original one and still never fires in production, where the workspace
  * lives under the agent home.
  */
 export function systemTempDenies(workspace: string, attemptTmpDir?: string): string[] {
-  const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
-  try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
+  const candidates = systemTempRoots();
   // Compared by REAL path, because the two spellings differ per platform: `/tmp` is a symlink to
   // `/private/tmp` on macOS and `/private/tmp` resolves to `/tmp` on some Linux hosts. Resolving
   // only the leaf is not enough — an attempt temp directory that does not exist YET cannot be
@@ -401,10 +501,10 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
   // The dependency cache (and every cache beside it) is read-only, and the workspace's
   // node_modules link points into it: an Edit/Write through either path is denied explicitly, so a
   // file tool can never write into the shared cache even where it resolves the link.
-  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
+  for (const d of [path.join(p.workspace, '.git'), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), path.join(p.workspace, 'node_modules'), p.depsCache, path.dirname(p.depsCache)]) {
     deny.push(`Edit(${abs(d)}/**)`, `Edit(${abs(d)})`);
   }
-  deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`);
+  deny.push(`Edit(${abs(path.join(p.workspace, EVIDENCE_FILE))})`, `Edit(${abs(path.join(p.workspace, PREVIOUS_REVIEW_FILE))})`);
   const runtime = buildSandboxRuntimeSettings(p);
   // Claude Code keeps its own shell bookkeeping in its temp directory; the confined spawn points
   // that at the attempt's temp directory (CLAUDE_CODE_TMPDIR), which also takes the shared system
@@ -419,7 +519,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
       autoAllowBashIfSandboxed: true,
-      network: { allowedDomains: [], allowLocalBinding: false, allowUnixSockets: [] },
+      network: { ...runtime.network },
       filesystem,
     },
     permissions: {
@@ -451,7 +551,7 @@ export function buildClaudeSandboxSettings(input: ClaudeSettingsInput): Record<s
  * vitest, esbuild and npm all write caches next to the nearest package root or under HOME — both
  * denied by the confinement — so a healthy sandbox looks like a failing one (`EPERM … open
  * '<agentHome>/package.json'`, a denied `~/.npm`). ONE helper on purpose: the canary rehearses the
- * very commands `verifyFix` later runs (`cfg.lintCommand`, `cfg.baseSmokeTests`, `npx vitest`), so
+ * very commands `verifyFix` later runs (`cfg.lintCommand`, `cfg.baseSmokeTests`, the local Vitest executable), so
  * a redirect present in one and missing in the other would let the rehearsal pass on a condition
  * the real gate still hits — burning attempts under a misattributed reason instead of latching once
  * and honestly. Shared, they cannot drift.

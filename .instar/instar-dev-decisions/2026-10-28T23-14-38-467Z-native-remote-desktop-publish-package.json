@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-28T23:14:38.467Z",
+  "slug": "native-remote-desktop-publish-package",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/build-native-desktop-host.mjs"
+    ],
+    "addedLines": 3,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

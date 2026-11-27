@@ -17,6 +17,7 @@
  *                                 rate-limited; oracle-protected (uniform error response).
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import path from 'node:path';
@@ -122,7 +123,7 @@ export function createWorktreeRoutes(deps: {
       if (err.code === 'LOCK_HELD') {
         return res.status(409).json({ error: 'LockHeld', holder: err.holder });
       }
-      return res.status(500).json({ error: err.message ?? 'unknown' });
+      return res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) ?? 'unknown' });
     }
   });
 
@@ -153,7 +154,7 @@ export function createWorktreeRoutes(deps: {
       });
       return res.json(result);
     } catch (err: any) {
-      return res.status(500).json({ error: err.message ?? 'unknown' });
+      return res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) ?? 'unknown' });
     }
   });
 
@@ -166,7 +167,7 @@ export function createWorktreeRoutes(deps: {
       const rows = wm.reconcile();
       res.json({ rows });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -212,7 +213,7 @@ export function createWorktreeRoutes(deps: {
       const result = wm.signTrailer(parsed.data);
       return res.json(result);
     } catch (err: any) {
-      return res.status(403).json({ error: err.message });
+      return res.status(403).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 

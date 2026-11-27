@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T09:50:03.993Z",
+  "slug": "locked-proof-console-filter",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/locked-proof/driver.mjs"
+    ],
+    "addedLines": 4,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "feedback-origin-test-cache",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T03:24:26.981Z",
+  "artifactPath": "upgrades/side-effects/feedback-origin-test-cache.md",
+  "artifactSha256": "4ec8e49554e9165412d549476d3a336cd82f76190685205af8baab60f24d5c50",
+  "coveredFiles": [
+    "docs/specs/feedback-origin-test-cache.eli16.md",
+    "tests/helpers/telegramOriginStore.ts",
+    "upgrades/next/feedback-origin-test-cache.md",
+    "upgrades/side-effects/feedback-origin-test-cache.md",
+    "vitest.config.ts",
+    "vitest.contract.config.ts",
+    "vitest.e2e.config.ts",
+    "vitest.integration.config.ts",
+    "vitest.push.config.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Disposable test output paths and Vitest cache configuration only; no runtime source, durable state, or new authority. Revert is sufficient.",
+  "eli16Path": "docs/specs/feedback-origin-test-cache.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-origin-test-cache.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "feedback_test_harness_review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

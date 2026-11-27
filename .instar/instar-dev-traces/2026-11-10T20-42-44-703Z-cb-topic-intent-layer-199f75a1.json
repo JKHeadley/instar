@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "slug": "cb-topic-intent-layer",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T20:42:44.703Z",
+  "artifactPath": "upgrades/side-effects/cb-topic-intent-layer.md",
+  "artifactSha256": "29d130260a0fc974184a04af27862946ee5bb84c75884f5f1e3979578a1383f2",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/TopicIntent.ts",
+    "src/core/TopicIntentBriefing.ts",
+    "src/core/TopicIntentCapture.ts",
+    "src/core/TopicIntentExtractor.ts",
+    "src/memory/TopicMemory.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/layerCadence.ts",
+    "src/monitoring/contextLayers/layerCaptureWiring.ts",
+    "src/monitoring/contextLayers/layerProjection.ts",
+    "src/monitoring/contextLayers/layerTicker.ts",
+    "src/server/AgentServer.ts",
+    "src/server/topicIntentRoutes.ts",
+    "tests/e2e/context-layer-topic-intent-alive.test.ts",
+    "tests/integration/context-layer-topic-intent.test.ts",
+    "tests/unit/context-layer-cadence.test.ts",
+    "tests/unit/no-silent-llm-fallback.test.ts",
+    "upgrades/next/cb-topic-intent-layer.md",
+    "upgrades/side-effects/cb-topic-intent-layer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Topic-intent layer brakes, ticks and projection; dev-gated; Fable 5.2 re-check concurred after blocking fixes",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "New capability, not a defect fix"
+  }
+}

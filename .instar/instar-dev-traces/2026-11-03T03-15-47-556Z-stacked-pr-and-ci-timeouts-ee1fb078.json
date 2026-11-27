@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "stacked-pr-and-ci-timeouts",
+  "sessionId": "047c3829-64cc-45a1-a0fa-0e1638203083",
+  "timestamp": "2026-11-03T03:15:47.556Z",
+  "artifactPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "artifactSha256": "56390bd0ce94098e78158ec7adecc966ddb6ee1bdd0bb508efeb6d77996da1c6",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/stacked-pr-guard.yml",
+    "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+    "scripts/safe-merge.mjs",
+    "scripts/standards-coverage.mjs",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrLogic.ts",
+    "tests/integration/safe-merge-non-main-base.test.ts",
+    "tests/unit/ci-workflow-timeouts.test.ts",
+    "tests/unit/green-pr-logic.test.ts",
+    "tests/unit/green-pr-red-watchdog.test.ts",
+    "tests/unit/safe-merge-non-main-base.test.ts",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/next/stacked-pr-and-ci-timeouts.md",
+    "upgrades/side-effects/stacked-pr-and-ci-timeouts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds only refusals, skips and job time limits, plus the standards-coverage pin accepting the job timeout; one revert undoes it; no state, config or migration.",
+  "eli16Path": "docs/eli16/stacked-pr-and-ci-timeouts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/stacked-pr-and-ci-timeouts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

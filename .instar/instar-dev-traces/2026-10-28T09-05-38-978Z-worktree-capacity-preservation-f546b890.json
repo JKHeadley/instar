@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "worktree-capacity-preservation",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-28T09:05:38.978Z",
+  "artifactPath": "upgrades/side-effects/worktree-capacity-preservation.md",
+  "artifactSha256": "7e22db42c3f0261e66fb83b3b3cbb9c799caa3565ab5591748bef9e703026356",
+  "coveredFiles": [
+    "docs/specs/source-tree-guard-reaper-readtier.md",
+    "docs/specs/worktree-capacity-preservation.eli16.md",
+    "src/core/InstarWorktreeManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SafeGitExecutor.ts",
+    "src/monitoring/agentWorktreeGit.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/instar-worktree-create.test.ts",
+    "tests/unit/InstarWorktreeManager.test.ts",
+    "tests/unit/PostUpdateMigrator-worktreeCommitIdentity.test.ts",
+    "tests/unit/SafeGitExecutor-sourceTreeReadOk.test.ts",
+    "tests/unit/agent-worktree-reaper.test.ts",
+    "upgrades/next/worktree-capacity-preservation.md",
+    "upgrades/side-effects/worktree-capacity-preservation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible CLI capacity limit and a stricter preservation check; read-only ls-files is documented in the approved guard spec; no reaper owner wiring or enablement change.",
+  "eli16Path": "docs/specs/worktree-capacity-preservation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/worktree-capacity-preservation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

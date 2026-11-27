@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "typescript-7-native-compiler",
+  "sessionId": "fc503741-c2af-4512-96a9-3912ae9beb41",
+  "timestamp": "2026-10-27T23:05:11.062Z",
+  "artifactPath": "upgrades/side-effects/typescript-7-native-compiler.md",
+  "artifactSha256": "93406ea0ade8c0bdb54b93afe2152f23e389547c2a17c264a778488302481284",
+  "coveredFiles": [
+    "docs/specs/typescript-7-native-compiler.eli16.md",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "src/localVerify/harnessClassifier.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/next/typescript-7-native-compiler.md",
+    "upgrades/side-effects/typescript-7-native-compiler.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Final binding trace for the whole PR: every changed file at this head; independent second pass concurred across rounds 1-3.",
+  "eli16Path": "docs/specs/typescript-7-native-compiler.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/typescript-7-native-compiler.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

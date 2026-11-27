@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T13:05:47.957Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "fbe221ac6db5b1788af4b3ab9c999a14f7dbbaf5e11ad42b63d9e1f062f0bb82",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.css",
+    "dashboard/desktop.html",
+    "dashboard/desktop.js",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+    "docs/specs/native-remote-desktop-quality.md",
+    "src/core/DesktopHost.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/DesktopStreamManager.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/DesktopStreamManager.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts",
+    "upgrades/next/native-remote-desktop-first-mac.md",
+    "upgrades/side-effects/native-remote-desktop-first-mac.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Remote control and encrypted input are security-sensitive; this pass changes live stream behavior and target native input.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "Capture retries stop after three consecutive failures; the stream closes once, and the test proves the exact cap and release count."
+    }
+  }
+}

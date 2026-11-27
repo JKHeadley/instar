@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/lifeline/droppedMessages.ts');
 /**
  * droppedMessages — persistence + user-visible notification for messages
  * the lifeline could not deliver to the server.
@@ -21,6 +23,8 @@
  * process-boundary rationale.
  */
 
+import { maskInbound } from '../messaging/inboundCredentialMask.js';
+import { credentialScrubEnabledReader } from '../core/outputCredentialScrub.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -159,7 +163,11 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * when the primary feature is mid-cooldown.
  */
 export async function notifyMessageDropped(args: NotifyMessageDroppedArgs): Promise<void> {
-  const textPreview = args.text.slice(0, TEXT_PREVIEW_MAX);
+  // SEC-164 §3.5: the dropped-messages file and the notice never hold a key. Queue entries are masked
+  // already; this covers any other caller, and masking is the same every time.
+  let enabled = false;
+  try { enabled = credentialScrubEnabledReader(path.join(args.stateDir, '..'))(); } catch { enabled = false; } // @silent-fallback-ok — unreadable switch is off
+  const textPreview = maskInbound(args.text, { enabled }).text.slice(0, TEXT_PREVIEW_MAX);
 
   let persistError: unknown = null;
   try {
@@ -205,7 +213,7 @@ export async function notifyMessageDropped(args: NotifyMessageDroppedArgs): Prom
 
   try {
     await withTimeout(
-      Promise.resolve(args.sendToTopic(args.topicId, buildNotice(textPreview))),
+      Promise.resolve(withNotificationEnvelope(stampNotification(), async () => (args)!.sendToTopic(args.topicId, buildNotice(textPreview)))),
       NOTICE_SEND_TIMEOUT_MS,
       'sendToTopic notice',
     );

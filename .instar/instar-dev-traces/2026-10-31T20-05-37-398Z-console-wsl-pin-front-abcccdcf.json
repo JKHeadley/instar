@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-wsl-pin-front",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-10-31T20:05:37.398Z",
+  "artifactPath": "upgrades/side-effects/console-wsl-pin-front.md",
+  "artifactSha256": "716a3c921e00cdc7761069ed456f42288ee8fdadf241e88e45c741d8c01b3d43",
+  "coveredFiles": [
+    "src/core/desktopTransport.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/dashboard-unlock-refused.test.ts",
+    "upgrades/next/console-wsl-pin-front.md",
+    "upgrades/side-effects/console-wsl-pin-front.eli16.md",
+    "upgrades/side-effects/console-wsl-pin-front.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "WSL-only, evidence-based widening of the PIN unlock transport precondition; inert elsewhere; revert undoes it.",
+  "eli16Path": "upgrades/side-effects/console-wsl-pin-front.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-wsl-pin-front.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

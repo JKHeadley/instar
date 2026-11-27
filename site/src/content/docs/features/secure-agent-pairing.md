@@ -61,3 +61,9 @@ Earlier versions paired by comparing 12 words on both screens and typing the oth
 ## Safety posture
 
 The whole feature ships **dark** behind `threadline.verifiedPairing.*` (cross-machine replication behind `multiMachine.stateSync.threadlinePairing`). When disabled, behavior is unchanged. When enabled, the credential protection is fail-closed from the first moment. It is precise about scope: it guards the sanctioned credential-sharing path, not secrets pasted into ordinary messages. The Telegram approval boundary is cooperative: it stops an agent approving with the token it normally holds, not an agent that deliberately reads its own lifeline's secret file.
+
+## People and roles for paired phones
+
+Each paired phone belongs to one person from the agent's user registry and has a role with the agent: `owner` or `msp`. A phone paired before roles existed is treated as the owner's phone. The rules live in `MobilePeople` (`src/core/MobilePeople.ts`).
+
+By default an MSP phone cannot use the owner's own app conversations or Slack. Only the owner, signing from an owner phone, can open either one for a single MSP person. Those grants are stored by `MobileMspGrants` (`src/core/MobileMspGrants.ts`) in `state/mobile-msp-grants.json`, and they are off unless granted. Spec: `docs/specs/mobile-app-people-and-roles.md`.

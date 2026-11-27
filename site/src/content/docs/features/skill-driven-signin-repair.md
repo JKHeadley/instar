@@ -47,3 +47,11 @@ account's status:
 
 A repair that is still waiting after the account was signed in some other way is closed
 automatically as `resolved-elsewhere`, once the server has verified the account.
+
+## Reminder for a repair waiting on approval
+
+A repair in "asks you first" mode waits for the operator's tap. If it has waited longer than
+`approvalReminderHours` (default 4; 0 turns it off), `SubscriptionReloginApprovalReminder` sends
+one reminder for that wait, with a direct link to the Accounts page's "needs you" list. It updates
+the same attention item as the first notice, follows the quiet-by-default rules, is held overnight,
+and never approves anything itself.

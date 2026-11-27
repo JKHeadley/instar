@@ -30,7 +30,12 @@ export interface OriginSessionLifecycle {
 export type OriginTokenVerification =
   | { ok: true; binding: OriginSessionBinding }
   | { ok: false; reason: string };
-interface Entry { verifier: string; binding: OriginSessionBinding }
+/** `priorVerifiers` are the digests of credentials this same session held
+ * before a re-issue (server restart re-enrollment). They never authorize a
+ * send; they only let a reply the session queued with its earlier credential
+ * be attributed to it at recovery (see `attributeVerifier`). */
+interface Entry { verifier: string; binding: OriginSessionBinding; priorVerifiers?: string[] }
+const MAX_PRIOR_VERIFIERS = 4;
 const harnesses = new Set<string>(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli', 'grok-build']);
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -77,7 +82,9 @@ export class OriginSessionRegistry {
       if (!/^[a-f0-9]{64}$/.test(entry.verifier) || !b || b.agentId !== this.options.agentId ||
           b.machineId !== this.options.machineId || !b.sessionIncarnation || !b.sessionId ||
           (b.launchHookSettingsDigest !== undefined && !/^[a-f0-9]{64}$/.test(b.launchHookSettingsDigest)) ||
-          !harnesses.has(b.harnessId) || !path.isAbsolute(b.projectDir) || loaded.has(b.sessionId)) {
+          !harnesses.has(b.harnessId) || !path.isAbsolute(b.projectDir) || loaded.has(b.sessionId) ||
+          (entry.priorVerifiers !== undefined && (!Array.isArray(entry.priorVerifiers) ||
+            entry.priorVerifiers.length > MAX_PRIOR_VERIFIERS || entry.priorVerifiers.some(v => typeof v !== 'string' || !/^[a-f0-9]{64}$/.test(v))))) {
         throw new Error('Invalid origin session binding');
       }
       loaded.set(b.sessionId, entry);
@@ -102,10 +109,16 @@ export class OriginSessionRegistry {
     };
     const verifier = digest(token);
     this.hookChallenges.delete(launch.sessionId);
-    this.entries.set(launch.sessionId, { verifier, binding });
+    const previous = this.entries.get(launch.sessionId);
+    const priorVerifiers = previous
+      ? [previous.verifier, ...(previous.priorVerifiers ?? [])].slice(0, MAX_PRIOR_VERIFIERS) : [];
+    this.entries.set(launch.sessionId, { verifier, binding, ...(priorVerifiers.length ? { priorVerifiers } : {}) });
     try { await this.persist(); }
     catch (error) {
-      if (this.entries.get(launch.sessionId)?.verifier === verifier) this.entries.delete(launch.sessionId);
+      if (this.entries.get(launch.sessionId)?.verifier === verifier) {
+        if (previous) this.entries.set(launch.sessionId, previous);
+        else this.entries.delete(launch.sessionId);
+      }
       throw error;
     }
     return token;
@@ -126,6 +139,25 @@ export class OriginSessionRegistry {
       if (!this.options.isSessionLive({ ...matched.binding })) return { ok: false, reason: 'session-not-live' };
     } catch { return { ok: false, reason: 'session-liveness-unavailable' }; }
     return { ok: true, binding: { ...matched.binding } };
+  }
+
+  /** Attribution only, never authority: which LIVE session held the credential
+   * whose SHA-256 digest is `verifierHex` — its current credential or one it
+   * held before a restart re-issue. A reply queued during server boot carries
+   * this digest so recovery can label it with its real session instead of
+   * "unknown". A revoked or dead session resolves to nothing. */
+  attributeVerifier(verifierHex: string): OriginSessionBinding | undefined {
+    if (!this.ready || !/^[a-f0-9]{64}$/.test(verifierHex) || !this.options.isSessionLive) return;
+    const candidate = Buffer.from(verifierHex, 'hex');
+    let matched: Entry | undefined;
+    for (const entry of this.entries.values()) {
+      for (const known of [entry.verifier, ...(entry.priorVerifiers ?? [])]) {
+        if (timingSafeEqual(candidate, Buffer.from(known, 'hex'))) matched = entry;
+      }
+    }
+    if (!matched) return;
+    try { if (!this.options.isSessionLive({ ...matched.binding })) return; } catch { return; }
+    return { ...matched.binding };
   }
 
   getBinding(sessionId: string): OriginSessionBinding | undefined {

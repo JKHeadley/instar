@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "window-run-liveness-later-loss",
+  "sessionId": "fe73d863-f6e2-4dbf-9f8b-dc2bf1d50fd4",
+  "timestamp": "2026-11-02T11:21:12.541Z",
+  "artifactPath": "upgrades/side-effects/window-run-liveness-later-loss.md",
+  "artifactSha256": "b7c8d8eaf918c9742e57edea583b399ed7ce1f2343294de48a17f0b23b640c82",
+  "coveredFiles": [
+    "docs/specs/window-run-liveness-later-loss.eli16.md",
+    "src/core/WindowRunLivenessAuthority.ts",
+    "tests/e2e/window-run-liveness-production-wiring.test.ts",
+    "tests/integration/window-run-liveness-routes.test.ts",
+    "tests/unit/window-run-liveness-authority.test.ts",
+    "upgrades/next/window-run-liveness-later-loss.md",
+    "upgrades/side-effects/window-run-liveness-later-loss.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible timing fix: preserves the five-predicate gate and single recovery attempt, changes only the deadline used for a later at-risk episode; no schema or new capability.",
+  "eli16Path": "docs/specs/window-run-liveness-later-loss.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/window-run-liveness-later-loss.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "independent-read",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}

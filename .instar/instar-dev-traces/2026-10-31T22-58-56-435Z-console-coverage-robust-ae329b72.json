@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "console-coverage-robust",
+  "sessionId": "f3c70ff7-288e-43c2-8bb9-9cbcd6b86cda",
+  "timestamp": "2026-10-31T22:58:56.435Z",
+  "artifactPath": "upgrades/side-effects/console-coverage-robust.md",
+  "artifactSha256": "5ef9b5fd28a2a1510f28dd32384d3a6d71f7822367b681efd74613a30a966dd1",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/home-model.js",
+    "src/commands/server.ts",
+    "src/core/CommitmentsSync.ts",
+    "tests/unit/CommitmentsSync.test.ts",
+    "tests/unit/console-dom.test.ts",
+    "tests/unit/console-home-model.test.ts",
+    "tests/unit/console-sessions.test.ts",
+    "upgrades/next/console-coverage-robust.md",
+    "upgrades/side-effects/console-coverage-robust.eli16.md",
+    "upgrades/side-effects/console-coverage-robust.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Truthful staleness signal (in-memory confirmation), presentation policy, and console read retry; no gate, no persisted state; revert undoes it.",
+  "eli16Path": "upgrades/side-effects/console-coverage-robust.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-coverage-robust.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

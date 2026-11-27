@@ -81,8 +81,9 @@ export type MergeVerdict =
   | { state: 'merge-refused'; reason: string };
 
 /**
- * safe-merge exit codes: 0 merged · 1 refused · 2 usage/error · 3 already merged · 4 closed ·
- * 5 auto-merge armed. 0 and 3 → merged; 5 → merge-armed; everything else → merge-refused with
+ * safe-merge exit codes: 0 merged · 1 refused · 2 usage/error · 3 already merged · 4 closed.
+ * Legacy exit 5 means auto-merge armed and is still recognized for in-flight
+ * requests from an older binary. 0 and 3 → merged; 5 → merge-armed; everything else → merge-refused with
  * the classified slug from the final `safe-merge-result:` line when present.
  */
 export function mapSafeMergeExit(exitCode: number | null, stdout: string): MergeVerdict {

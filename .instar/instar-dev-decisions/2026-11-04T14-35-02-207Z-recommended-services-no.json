@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-04T14:35:02.207Z",
+  "slug": "recommended-services-no",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/recommended/confirmTokens.ts matches token handling"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 55,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/recommended/confirmTokens.ts",
+      "src/server/recommendedServiceRoutes.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Records a person's confirmation. The agent takes no action from these routes, and setup is not built."
+  },
+  "verdict": "pass"
+}

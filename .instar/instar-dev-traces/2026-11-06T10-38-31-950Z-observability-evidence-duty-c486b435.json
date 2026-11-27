@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "observability-evidence-duty",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T10:38:31.950Z",
+  "artifactPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "artifactSha256": "e533e3d537d6889b6095f2ebab1d5374b1431632c34c7dc01d98f0c754b32b30",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/side-effects/measurement-history-readback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Merge verified upstream runtime/history and release into existing documentation-only constitutional draft. Exact reviewed Building digest unchanged; zero src/test diff vs main; no new runtime authority or operator approval.",
+  "eli16Path": "docs/specs/observability-evidence-duty.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

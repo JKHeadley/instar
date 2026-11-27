@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "recommended-services-runner",
+  "sessionId": "58f67d35-e862-45fd-a8db-06c862c54056",
+  "timestamp": "2026-11-04T16:16:29.948Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-runner.md",
+  "artifactSha256": "0df4686bf6fc09d24358ea05e2785dd5d1ec9326c507d6796e5eaf39e58abf59",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/recommended-services-runner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Failure reporting on the setup runner, found by local verification.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as recommended-service-setup-restart."
+    }
+  }
+}

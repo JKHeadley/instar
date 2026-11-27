@@ -146,8 +146,9 @@ describe('friendlyMachine (D5 wording floor — never a raw machine id)', () => 
     expect(friendlyMachine(undefined, 'm_cc2ec651a91f03f85abb19bfe5e7e8f7')).toBe('');
     expect(friendlyMachine('', 'm_ab12cd34ef56')).toBe('');
   });
-  it('passes through a human-readable id when no nickname exists', () => {
-    expect(friendlyMachine(undefined, 'mac-mini')).toBe('mac-mini');
+  it('does not promote a routing id to a name even when it looks readable', () => {
+    expect(friendlyMachine(undefined, 'mac-mini')).toBe('');
+    expect(friendlyMachine('m_cc2ec651a91f03f85abb19bfe5e7e8f7', 'm_cc2ec651a91f03f85abb19bfe5e7e8f7')).toBe('');
   });
 });
 

@@ -77,6 +77,6 @@ describe('§5.2(d) — Session.model seeded at interactive spawn (Int-C3 pin)', 
 
   it('headless spawnSession seeds model from the resolved launch value', () => {
     const sm = fs.readFileSync(path.join(SRC, 'core', 'SessionManager.ts'), 'utf-8');
-    expect(sm).toMatch(/model:\s*resolveModelForFramework\(headlessFramework,\s*options\.model\)\s*\?\?\s*options\.model/);
+    expect(sm).toMatch(/model:\s*resolveModelForFramework\(headlessFramework,\s*launchModel\)\s*\?\?\s*launchModel/);
   });
 });

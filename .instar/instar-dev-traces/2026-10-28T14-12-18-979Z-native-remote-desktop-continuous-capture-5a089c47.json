@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "native-remote-desktop-continuous-capture",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T14:12:18.979Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-continuous-capture.md",
+  "artifactSha256": "9636370233ab30e87e4f58cdadf77abb7c98f4a82fc8163b2ca3409597bdd66a",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "docs/specs/blocker-handoff-across-machines-and-surfaces.eli16.md",
+    "docs/specs/native-remote-desktop-quality.md",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/server/DesktopStreamManager.ts",
+    "tests/unit/DesktopStreamManager.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "upgrades/next/native-remote-desktop-continuous-capture.md",
+    "upgrades/side-effects/native-remote-desktop-continuous-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Remote desktop frame transport and native host lifecycle are security sensitive even though this is a bounded Mac quality pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "astra_ux",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "The stream sends one bounded frame per active tick, caps consecutive capture failures at three, rechecks grants, and closes on revocation; tests verify the exact failure cap and release."
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-03T18:25:38.157Z",
+  "slug": "app-media-mirror-heic",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/telegramMedia.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one copy per operator send, unchanged; no new loop"
+  },
+  "verdict": "pass"
+}

@@ -22,7 +22,8 @@ vi.mock('../../src/core/IdentityRenderer.js', async (importOriginal) => ({
   ensureFrameworkIdentityFile: vi.fn(() => null),
 }));
 const fixture = vi.hoisted(() => ({ inboundDir: '' }));
-vi.mock('../../src/messaging/shared/telegramInboundFiles.js', () => ({
+vi.mock('../../src/messaging/shared/telegramInboundFiles.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/messaging/shared/telegramInboundFiles.js')>()),
   getTelegramInboundDir: () => {
     if (!fixture.inboundDir) throw new Error('test inbound fixture is not active');
     return fixture.inboundDir;
@@ -37,6 +38,7 @@ afterEach(() => {
 function harness() {
   const calls: Array<{ initialMessage: string | undefined; name: string; opts: Record<string, unknown> }> = [];
   const sessionManager = {
+    registerMemoryInboundFile: vi.fn(),
     spawnInteractiveSession: async (initialMessage: string | undefined, name: string, opts: Record<string, unknown>) => {
       calls.push({ initialMessage, name, opts });
       return `tmux-${name}`;

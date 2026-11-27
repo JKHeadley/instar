@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-01T06:51:20.808Z",
+  "slug": "desktop-readiness-reasons",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 32,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopProbeReadiness.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -66,6 +66,64 @@ describe('validateRecord', () => {
     }
   });
 
+  it('preserves bounded observe evidence but rejects an early red as green authority', () => {
+    const evidence = {
+      mode: 'observe' as const, outcome: 'red' as const, reason: 'stable-red-observed', elapsedMs: 1200,
+      changedFiles: 2, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 3,
+      headSha: H, baseSha: B, repeatedFailedFile: 'tests/unit/example.test.ts',
+    };
+    expect(validateRecord(rec({ preflight: evidence })).ok).toBe(true); // full lanes decide green
+    const enforced = { ...evidence, mode: 'enforce' as const, reason: 'preflight-red' };
+    expect(validateRecord(rec({ preflight: enforced })).ok).toBe(false);
+    expect(validateRecord(rec({ outcome: 'failure', lanes: [], preflight: enforced })).ok).toBe(true);
+    const malformed = validateRecord({ ...rec({ outcome: 'failure', preflight: enforced }), lanes: null });
+    expect(malformed.ok).toBe(false);
+    if (!malformed.ok) expect(malformed.errors).toContain('lanes');
+  });
+
+  it('refuses malformed or mismatched preflight evidence before peer import', () => {
+    const valid = {
+      mode: 'enforce' as const, outcome: 'red' as const, reason: 'preflight-red', elapsedMs: 1200,
+      changedFiles: 2, selectedFiles: ['tests/unit/example.test.ts'], selectedCases: 3,
+      headSha: H, baseSha: B, repeatedFailedFile: 'tests/unit/example.test.ts',
+    };
+    const base = rec({ outcome: 'failure', lanes: [] });
+    for (const bad of [
+      { ...valid, baseSha: T },
+      { ...valid, repeatedFailedFile: '../outside.test.ts' },
+      { ...valid, selectedFiles: ['/tmp/fake.test.ts'] },
+      { ...valid, selectedFiles: Array(6).fill('tests/unit/example.test.ts') },
+      { ...valid, elapsedMs: 90_001 },
+      { ...valid, selectedCases: 0 },
+    ]) {
+      const result = validateRecord({ ...base, preflight: bad });
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+      if (!result.ok) expect(result.errors).toContain('preflight');
+    }
+  });
+
+  it('accepts only a complete, bounded, sorted PR failed-file set', () => {
+    const files = ['tests/integration/b.test.ts', 'tests/unit/a.test.ts'];
+    expect(validateRecord(rec({ outcome: 'failure', failedFiles: files })).ok).toBe(true);
+    for (const bad of [
+      [], [...files].reverse(), [files[0], files[0]],
+      ['tests/unit/../fixtures/a.test.ts'], ['tests/unit/./a.test.ts'], ['src/outside.test.ts'],
+      ['tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/unit/c.test.ts', 'tests/unit/d.test.ts'],
+    ]) {
+      const v = validateRecord(rec({ outcome: 'failure', failedFiles: bad }));
+      expect(!v.ok && v.errors).toContain('failedFiles');
+    }
+    expect(validateRecord(rec({ failedFiles: [files[0]] })).ok).toBe(false);
+    expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, outcome: 'failure', failedFiles: [files[0]] })).ok).toBe(false);
+  });
+
+  it('a main record may carry the peer attempt it answers (a peer ran it for the coordinator); a malformed one is still refused', () => {
+    const attempt = { id: 'a'.repeat(32), coordinatorMachineId: 'coord', leaseEpoch: 7 };
+    expect(validateRecord(rec({ kind: 'main', pr: 0, headSha: B, attempt })).ok).toBe(true);
+    const bad = validateRecord(rec({ kind: 'main', pr: 0, headSha: B, attempt: { ...attempt, id: 'nope' } }));
+    expect(!bad.ok && bad.errors).toContain('attempt');
+  });
+
   it('rejects non-objects', () => {
     expect(validateRecord(null)).toEqual({ ok: false, errors: ['not-an-object'] });
   });
@@ -114,5 +172,129 @@ describe('statusDescription', () => {
   });
   it('hours are shown for long runs', () => {
     expect(statusDescription(rec({ finishedAt: '2026-10-21T12:05:00.000Z' }))).toMatch(/^verified · 2h5m · /);
+  });
+});
+
+// ── flakyRetried name fields (spec local-verify-import-related-rerun.md, Recording) ──
+
+describe('validateRecord — flakyRetried name fields', () => {
+  const HASH = 'ab'.repeat(32);
+  const entry = (over: Record<string, unknown> = {}) => ({ file: 'tests/unit/a.test.ts', lane: 'unit', firstMessage: 't: boom', ...over });
+  const withEntry = (e: Record<string, unknown>) => validateRecord(rec({ flakyRetried: [e as never] }));
+
+  it('caps named recovery across all files in a signed record', () => {
+    const named = (file: string, failedTests: string[]) => entry({
+      file, namedRetry: true, failedTests, failedTestsTotal: failedTests.length,
+      soloPassedByName: failedTests, testSetHash: HASH,
+    });
+    const first = named('tests/unit/first.test.ts', ['a', 'b']);
+    expect(validateRecord(rec({ flakyRetried: [first, named('tests/unit/second.test.ts', ['c'])] as never })).ok).toBe(true);
+    expect(validateRecord(rec({ flakyRetried: [first, named('tests/unit/second.test.ts', ['c', 'd'])] as never })).ok).toBe(false);
+  });
+  const ev = (test: string) => ({ test, mainAt: '2026-11-16T10:00:00.000Z', mainLine: 'Error: x', prLine: 'Error: x', mainRunLog: 'a'.repeat(32) + '.log' });
+  const clear = (over: Record<string, unknown> = {}) => entry({
+    importRelated: true, failedTests: ['s one', 's two'], failedTestsTotal: 2, soloPassedByName: ['s one', 's two'], testSetHash: HASH,
+    soloPasses: 3, soloSeconds: [1, 2, 3], evidence: [ev('s one'), ev('s two')], ...over,
+  });
+
+  it('shared fields: allowed on any entry, each with its refusals', () => {
+    expect(withEntry(entry({ failedTests: ['a', 'b'], failedTestsTotal: 3, soloPassedByName: ['b'], testSetHash: HASH })).ok).toBe(true);
+    expect(validateRecord(rec({ kind: 'main', pr: 0, baseSha: H, flakyRetried: [entry({ failedTests: ['a'], failedTestsTotal: 1, soloPassedByName: [], testSetHash: HASH }) as never] })).ok).toBe(true);
+    expect(withEntry(entry({ failedTests: [], failedTestsTotal: 2 })).ok).toBe(true); // every name was left out for length: disclosed by the total
+    const bad: Array<Record<string, unknown>> = [
+      { failedTests: Array.from({ length: 21 }, (_, i) => `t${i}`), failedTestsTotal: 21 },
+      { failedTests: ['x'.repeat(301)], failedTestsTotal: 1 },
+      { failedTests: [''], failedTestsTotal: 1 },
+      { failedTests: 'a' },
+      { failedTests: ['a', 'b'], failedTestsTotal: 1 }, // the total may not be below the list
+      { failedTests: ['a'], failedTestsTotal: 1.5 },
+      { failedTests: ['a'], failedTestsTotal: 1, soloPassedByName: ['b'] }, // not a subset
+      { soloPassedByName: ['a'] }, // nothing to be a subset of
+      { testSetHash: 'nope' },
+      { testSetHash: HASH.toUpperCase() },
+    ];
+    for (const b of bad) {
+      const v = withEntry(entry(b));
+      expect(v.ok, JSON.stringify(b).slice(0, 80)).toBe(false);
+      if (!v.ok) expect(v.errors).toContain('flakyRetried');
+    }
+  });
+
+  it('clearance fields: only with importRelated, and then complete, each with its refusals', () => {
+    expect(withEntry(clear()).ok).toBe(true);
+    expect(withEntry(clear({ evidence: [{ ...ev('s one'), mainLineCut: true, prLineCut: true }, ev('s two')] })).ok).toBe(true);
+    const { importRelated: _i, ...noFlag } = clear(); void _i;
+    const bad: Array<Record<string, unknown>> = [
+      noFlag, // clearance fields without importRelated
+      entry({ soloPasses: 3 }),
+      entry({ soloSeconds: [1, 2, 3] }),
+      entry({ evidence: [] }),
+      clear({ importRelated: false }),
+      clear({ soloPasses: 2 }),
+      clear({ soloSeconds: [1, 2] }),
+      clear({ soloSeconds: [1, 2, -1] }),
+      clear({ failedTestsTotal: 3 }), // a name was left out: not the whole truth
+      clear({ failedTests: [], failedTestsTotal: 0, soloPassedByName: [], evidence: [] }), // no vacuous clear
+      clear({ soloPassedByName: ['s one'] }),
+      clear({ evidence: [ev('s one')] }),
+      clear({ evidence: [ev('s one'), ev('other')] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), mainAt: 'yesterday' }] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), prLine: 'x'.repeat(401) }] }),
+      clear({ evidence: [ev('s one'), { ...ev('s two'), mainLineCut: false }] }),
+      clear({ testSetHash: undefined }),
+      entry({ importRelated: true }), // the flag alone
+    ];
+    for (const b of bad) {
+      const v = withEntry(b);
+      expect(v.ok, JSON.stringify(b).slice(0, 120)).toBe(false);
+      if (!v.ok) expect(v.errors).toContain('flakyRetried');
+    }
+  });
+});
+
+describe('validateRecord — the borrowed field (spec local-verify-borrowed-slices-count.md, F "The record")', () => {
+  const D = 'd'.repeat(64);
+  const good = { helper: 'm_laptop', assigned: 'counting', lanes: [{ lane: 'integration', files: 240, filesDigest: D }] };
+  const errs = (borrowed: unknown, over: Partial<LocalVerifyRecord> = {}) => {
+    const v = validateRecord({ ...rec(over), borrowed });
+    return v.ok ? [] : v.errors;
+  };
+
+  it('accepts a helper, an assignment, and up to three lanes with a count and a digest; a record without the field is unchanged', () => {
+    expect(errs(good)).toEqual([]);
+    expect(errs({ ...good, assigned: 'compare-only' })).toEqual([]);
+    expect(errs({ ...good, lanes: [] })).toEqual([]); // a helper that was asked and sent nothing
+    expect(errs({ ...good, lanes: [{ lane: 'unit', files: 0, filesDigest: D }, { lane: 'integration', files: 20_000, filesDigest: D }, { lane: 'e2e', files: 1, filesDigest: D }] })).toEqual([]);
+    expect(validateRecord(rec())).toMatchObject({ ok: true });
+    const v = validateRecord({ ...rec(), borrowed: good });
+    expect(v.ok && v.record.borrowed).toEqual(good); // carried as it is
+  });
+
+  it.each([
+    ['a helper id that is not a machine id by format', { ...good, helper: 'my laptop' }],
+    ['an empty helper id', { ...good, helper: '' }],
+    ['a helper id over 64 characters', { ...good, helper: 'm'.repeat(65) }],
+    ['a missing assignment', { helper: good.helper, lanes: good.lanes }],
+    ['an unknown assignment', { ...good, assigned: 'trusted' }],
+    ['more than three lanes', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D }, { lane: 'integration', files: 1, filesDigest: D }, { lane: 'e2e', files: 1, filesDigest: D }, { lane: 'unit', files: 1, filesDigest: D }] }],
+    ['a lane named twice', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D }, { lane: 'unit', files: 2, filesDigest: D }] }],
+    ['an unknown lane', { ...good, lanes: [{ lane: 'smoke', files: 1, filesDigest: D }] }],
+    ['20,001 files', { ...good, lanes: [{ lane: 'unit', files: 20_001, filesDigest: D }] }],
+    ['a count that is not a whole number', { ...good, lanes: [{ lane: 'unit', files: 1.5, filesDigest: D }] }],
+    ['a negative count', { ...good, lanes: [{ lane: 'unit', files: -1, filesDigest: D }] }],
+    ['a 63-character digest', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: 'd'.repeat(63) }] }],
+    ['an upper-case digest', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: 'D'.repeat(64) }] }],
+    ['a file list in place of a count', { ...good, lanes: [{ lane: 'unit', files: ['tests/unit/a.test.ts'], filesDigest: D }] }],
+    ['an extra key on a lane', { ...good, lanes: [{ lane: 'unit', files: 1, filesDigest: D, names: [] }] }],
+    ['an extra key', { ...good, url: 'http://x' }],
+    ['lanes that are not a list', { ...good, lanes: {} }],
+    ['a string', 'm_laptop'],
+    ['null', null],
+  ])('refuses %s', (_name, borrowed) => {
+    expect(errs(borrowed)).toEqual(['borrowed']);
+  });
+
+  it('never rides a main record: a main verify does not count a helper\'s results', () => {
+    expect(errs(good, { kind: 'main', pr: 0, baseSha: H })).toEqual(['borrowed']);
   });
 });

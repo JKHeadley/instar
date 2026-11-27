@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "job-supervision-live-hold",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-30T19:29:35.726Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-live-hold.md",
+  "artifactSha256": "adda24155d7ce40e48f4e220684438171d29a98cf90fc832af6971eb4077db06",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "docs/eli16/job-supervision-live-hold.eli16.md",
+    "docs/specs/job-result-supervision-v2-joined-test-agent-evidence.md",
+    "src/scheduler/JobScheduler.ts",
+    "src/scheduler/JobSupervisionStore.ts",
+    "tests/e2e/job-supervision-joined-test-agent.test.ts",
+    "tests/integration/job-supervision-routes.test.ts",
+    "tests/unit/job-fixed-result-certificate.test.ts",
+    "upgrades/next/job-supervision-live-hold.md",
+    "upgrades/side-effects/job-supervision-live-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This safety hold controls script admission and requires joined test-agent evidence and independent second pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

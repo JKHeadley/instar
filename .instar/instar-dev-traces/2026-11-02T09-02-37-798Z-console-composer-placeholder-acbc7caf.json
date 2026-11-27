@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "console-composer-placeholder",
+  "sessionId": "916956a4-f1bf-4a3b-89db-40a4ec492e50",
+  "timestamp": "2026-11-02T09:02:37.798Z",
+  "artifactPath": "upgrades/side-effects/console-composer-placeholder.md",
+  "artifactSha256": "a5e1dbeb079ef4951588eed19936d62cf54b4ee7023677bb6f01716e727f017f",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/sessions.js",
+    "upgrades/next/console-composer-placeholder.md",
+    "upgrades/side-effects/console-composer-placeholder.eli16.md",
+    "upgrades/side-effects/console-composer-placeholder.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "two-line display fix to the console composer placeholder; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-composer-placeholder.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-composer-placeholder.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

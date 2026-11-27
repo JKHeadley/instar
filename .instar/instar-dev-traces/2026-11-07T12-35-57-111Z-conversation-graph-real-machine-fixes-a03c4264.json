@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-real-machine-fixes",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T12:35:57.111Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-real-machine-fixes.md",
+  "artifactSha256": "4cee41de2e5b77a6ee7f7514498ff012fbb9a4fb40014a001fd3b7d67c946d90",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphReplicationTransfer.ts",
+    "src/core/ConversationGraphTransferCustody.ts",
+    "src/server/GraphOwnerMemberLossExecution.ts",
+    "tests/helpers/graph-member-loss-production-entry.ts",
+    "tests/integration/graph-member-loss-surface.test.ts",
+    "upgrades/side-effects/conversation-graph-real-machine-fixes.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-driven retry path; no new trigger."
+  }
+}

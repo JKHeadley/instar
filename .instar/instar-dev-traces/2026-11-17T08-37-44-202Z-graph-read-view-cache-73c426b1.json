@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "graph-read-view-cache",
+  "sessionId": "288c2c03-42b5-40f6-9657-139652cb2ede",
+  "timestamp": "2026-11-17T08:37:44.202Z",
+  "artifactPath": "upgrades/side-effects/graph-read-view-cache.md",
+  "artifactSha256": "683b1b34ede3760ce4c2350e53b121d16fc27700c7a4d80d08b8888e0a74134e",
+  "coveredFiles": [
+    "docs/specs/graph-read-view-cache.eli16.md",
+    "src/core/ConversationGraphIntake.ts",
+    "src/core/ConversationGraphReplication.ts",
+    "src/core/ConversationGraphSourceCoverage.ts",
+    "src/core/ConversationGraphSourceInventory.ts",
+    "src/core/ReplicatedPeerStreamReader.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphHeaderCustody.ts",
+    "src/server/ConversationGraphOwnerChanges.ts",
+    "src/server/ConversationGraphReadSource.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/integration/conversation-graph-native-tail-superseded.test.ts",
+    "tests/integration/conversation-graph-read-view-cache.test.ts",
+    "upgrades/next/graph-read-view-cache.md",
+    "upgrades/side-effects/graph-read-view-cache.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path cache, pin re-share timing and retirement of a provably superseded reservation inside the graph runtime; no route, wire or stored-format change; a revert fully undoes it",
+  "eli16Path": "docs/specs/graph-read-view-cache.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/graph-read-view-cache.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

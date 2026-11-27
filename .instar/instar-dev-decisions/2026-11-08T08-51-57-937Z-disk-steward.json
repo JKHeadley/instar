@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-08T08:51:57.937Z",
+  "slug": "disk-steward",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 179,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/runVerifyMain.ts",
+      "src/monitoring/DiskSteward.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/diskStewardMain.ts"
+    ],
+    "addedLines": 144,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

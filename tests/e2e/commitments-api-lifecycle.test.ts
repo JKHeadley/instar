@@ -66,6 +66,27 @@ describe('Commitments API lifecycle', () => {
 
   const auth = () => ({ Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'commitments-lifecycle-e2e' });
 
+  it('refuses a prose verification method through the live commitment route', async () => {
+    const before = tracker.getAll().length;
+    const res = await request(app).post('/commitments').set(auth()).send({
+      type: 'one-time-action', userRequest: 'Review the research', agentResponse: 'I will review it',
+      verificationMethod: 'Review documented evidence',
+      followThroughOptOutReason: 'The work awaits research.',
+    }).expect(400);
+    expect(res.body.error).toContain('verificationMethod');
+    expect(tracker.getAll()).toHaveLength(before);
+  });
+
+  it('refuses an unverifiable config-change through the live route', async () => {
+    const before = tracker.getAll().length;
+    const res = await request(app).post('/commitments').set(auth()).send({
+      type: 'config-change', userRequest: 'Remove the daily delay', agentResponse: 'I will remove it',
+      followThroughOptOutReason: 'legacy record without a deadline',
+    }).expect(400);
+    expect(res.body.error).toContain('configPath');
+    expect(tracker.getAll()).toHaveLength(before);
+  });
+
   it('opens, inspects, delivers, and closes a one-time follow-up commitment', async () => {
     const created = await request(app)
       .post('/commitments')

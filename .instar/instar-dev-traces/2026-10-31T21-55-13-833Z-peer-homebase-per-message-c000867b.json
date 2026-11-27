@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "peer-homebase-per-message",
+  "sessionId": "bc2c60e9-701a-4ead-9298-ca496c62ebd0",
+  "timestamp": "2026-10-31T21:55:13.833Z",
+  "artifactPath": "upgrades/side-effects/peer-homebase-per-message.md",
+  "artifactSha256": "6b6bf166a334ad479139d8632b322aaec71fa01283470c987bb3facc437d76e1",
+  "specPath": "docs/specs/peer-conversation-homebase-topic.md",
+  "coveredFiles": [
+    "tests/e2e/threadline/peer-homebase-user-routing-alive.test.ts",
+    "tests/integration/threadline/peer-homebase-per-message.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test-only follow-up: the stub model read the referee instructions as message text; it now reads only the quoted message.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test-only change"
+  }
+}

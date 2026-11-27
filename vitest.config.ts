@@ -1,11 +1,14 @@
 import { defineConfig } from 'vitest/config';
 
+import { supertestRetryAlias } from './tests/setup/supertest-alias.js';
+
 import { resolveUnitLaneWorkers } from './tests/setup/lane-workers.js';
 import { withTestRunnerBound } from './tests/setup/test-runner-bound.config-eval.js';
 
 const unitWorkers = resolveUnitLaneWorkers();
 
 export default defineConfig(withTestRunnerBound('unit', {
+  ...(process.env.VITEST_CACHE_DIR ? { cacheDir: process.env.VITEST_CACHE_DIR } : {}),
   // Inline (empty) PostCSS config: without it Vite searches parent directories for one and
   // aborts on the first unreadable package.json (EPERM). The feedback executor's sandbox
   // read-denies the agent home around its workspace, so every confined vitest run failed.
@@ -13,7 +16,7 @@ export default defineConfig(withTestRunnerBound('unit', {
   // threadline-core is a workspace package that threadline-mcp imports by its published name.
   // Tests resolve it to the live source so cross-implementation tests need no install or build
   // (spec threadline-standalone-pairing).
-  resolve: { alias: { '@sagemindai/threadline-core': new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname } },
+  resolve: { alias: [{ find: '@sagemindai/threadline-core', replacement: new URL('./packages/threadline-core/src/index.ts', import.meta.url).pathname }, supertestRetryAlias] },
   test: {
     // The unit lane only. Integration and e2e have their own configs and lanes
     // (`npm run test:all` runs all three, one after another); including them here
@@ -30,7 +33,7 @@ export default defineConfig(withTestRunnerBound('unit', {
     // that needs it, so the build runs once here, before any worker starts.
     // nativeModuleHealth is LAST in setup order, so its teardown runs FIRST —
     // teardowns run in reverse, and the banner belongs closest to the summary.
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/real-embedding-model.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
     // Includes the bounded Supertest connect-retry window used under macOS

@@ -16,7 +16,7 @@ import { FeedbackTriageAuditLog } from '../../src/feedback-factory/triage/Feedba
 import {
   FeedbackTriageArbiter, FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID,
 } from '../../src/feedback-factory/triage/FeedbackTriageArbiter.js';
-import { FeedbackTriageService, type AttentionInput, type TriageLiveConfig } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
+import { FeedbackTriageService, type AttentionInput, type FeedbackTriageServiceOptions, type TriageLiveConfig } from '../../src/feedback-factory/triage/FeedbackTriageService.js';
 import { TRIAGE_AUTHORITY_ID } from '../../src/feedback-factory/triage/triageAuthorityProposal.js';
 import type { Cluster, FeedbackItem } from '../../src/feedback-factory/processor/types.js';
 import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
@@ -64,15 +64,19 @@ export interface Harness {
   second: { verdict: boolean | null; framework: string; available: boolean; advanceMs: number };
   /** Simulated duration of each triage-authority call (advances the harness clock). */
   callAdvanceMs: { value: number };
+  ownerEpoch: { value: number };
   approve(action?: 'create' | 'replace' | 'revoke'): void;
   addItem(id: string, opts?: { reports?: number; title?: string; description?: string; createdAt?: number }): Promise<string>;
   cleanup(): void;
 }
 
-export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number } = {}): Promise<Harness> {
+export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; approve?: boolean; maxWallClockMs?: number;
+  primaryAccountAdmission?: FeedbackTriageServiceOptions['primaryAccountAdmission'];
+  paceTicks?: FeedbackTriageServiceOptions['paceTicks']; } = {}): Promise<Harness> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-triage-'));
   const now = { value: T0 };
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: KEY, clock: () => now.value });
+  drain.startRun({ ownerHost: 'm1', ownerEpoch: 1, leaseMs: 60_000 });
   const store = new FeedbackTriageStore(drain, { hmacKey: KEY, clock: () => now.value });
   const audit = new FeedbackTriageAuditLog(path.join(dir, 'logs'), path.join(dir, 'store', 'triage-packets'), () => now.value);
   const tracker = new InitiativeTracker(dir);
@@ -87,9 +91,11 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     decide: { fn: ((packets: TriagePacket[]) => packets.map((p) => decisionRow(p.clusterId))) as Decide },
     second: { verdict: true as boolean | null, framework: 'claude-code', available: true, advanceMs: 0 },
     callAdvanceMs: { value: 0 },
+    ownerEpoch: { value: 1 },
   } as Harness;
   const intelligence: IntelligenceProvider = {
     evaluate: async (prompt: string, options?: IntelligenceOptions) => {
+      if (options?.launchGuard && !options.launchGuard()) throw new Error('launch guard refused');
       h.calls.push(prompt);
       now.value += h.callAdvanceMs.value;
       options?.onModel?.({ model: h.model.model, framework: h.model.framework });
@@ -113,9 +119,10 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     initiatives: tracker,
     arbiter: new FeedbackTriageArbiter(intelligence),
     secondOpinion: () => (h.second.available ? secondProvider : null),
-    ownerHost: 'm1', ownerEpoch: () => 1, isCanonicalOwner: () => true,
+    ownerHost: 'm1', ownerEpoch: () => h.ownerEpoch.value, isCanonicalOwner: () => true,
     config: () => h.config,
     quotaUsedPercent: async () => h.quota.value,
+    ...(opts.primaryAccountAdmission ? { primaryAccountAdmission: opts.primaryAccountAdmission } : {}),
     listMergedPrs: async () => [],
     executorStatus: () => ({ available: false, reason: 'not-built' }),
     raiseAttention: async (item) => { h.attention.push(item); },
@@ -123,6 +130,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     sendToTopic: async (topicId, text) => { h.sent.push({ topicId, text }); },
     dashboardLink: () => 'https://agent.example/dashboard?tab=feedback-drain',
     ...(opts.maxWallClockMs ? { maxWallClockMs: opts.maxWallClockMs } : {}),
+    ...(opts.paceTicks ? { paceTicks: opts.paceTicks } : {}),
     clock: () => now.value,
   });
   h.approve = (action = 'create') => {

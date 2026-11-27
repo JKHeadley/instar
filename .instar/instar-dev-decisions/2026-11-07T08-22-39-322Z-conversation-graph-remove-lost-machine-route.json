@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-07T08:22:39.322Z",
+  "slug": "conversation-graph-remove-lost-machine-route",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 142,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphCustodyPeerFrontier.ts",
+      "src/core/GraphCustodyProfileAuthority.ts",
+      "src/server/ConversationGraphDefaultSurface.ts",
+      "src/server/ConversationGraphMemberLossSurface.ts"
+    ],
+    "addedLines": 140,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -279,7 +279,7 @@ export function computeGreenPrBlock(args: {
     return {
       pr: match.pr,
       variant: 'disarmed',
-      message: `PR #${match.pr} (your branch) is green, but the auto-merge watcher is disabled by operator rollback — do NOT merge it manually; confirm with the operator.`,
+      message: `PR #${match.pr} (your branch) is green, but the auto-merge watcher is stopped — do NOT merge it manually. If the stop is the agent's own, the watcher status names its marker and release condition; if it is the operator's, confirm with the operator.`,
     };
   }
   if (match.kind === 'code-owner-review') {

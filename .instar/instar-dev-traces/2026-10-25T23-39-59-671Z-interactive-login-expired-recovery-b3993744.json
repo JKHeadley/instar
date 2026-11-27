@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "slug": "interactive-login-expired-recovery",
+  "sessionId": "3a9ce9d9-0cad-4c45-95f6-270e56a03fdf",
+  "timestamp": "2026-10-25T23:39:59.671Z",
+  "artifactPath": "upgrades/side-effects/interactive-login-expired-recovery.md",
+  "artifactSha256": "819f78652ded550d69736e4d20c81310c2fbfc5107183de5387e0812c36271fc",
+  "coveredFiles": [
+    "docs/specs/interactive-login-expired-recovery.eli16.md",
+    "src/commands/server.ts",
+    "src/core/InteractiveLoginExpiredRecovery.ts",
+    "src/core/LoginExpiredSignature.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/QuotaPoller.ts",
+    "src/core/SessionManager.ts",
+    "src/core/SubscriptionLoginLedger.ts",
+    "src/scaffold/templates.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/interactive-login-expired-lifecycle.test.ts",
+    "tests/integration/interactive-login-expired-recovery.test.ts",
+    "tests/unit/InteractiveLoginExpiredRecovery.test.ts",
+    "tests/unit/LoginExpiredSignature.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/interactive-login-expired-awareness.test.ts",
+    "tests/unit/quota-poller-pane-login-authority.test.ts",
+    "upgrades/next/interactive-login-expired-recovery.md",
+    "upgrades/side-effects/interactive-login-expired-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reuses the existing swap funnel and pool authority; adds detection plus a bounded in-memory hold; live kill switch for the swap and a plain revert fully undoes it (no persisted schema/state).",
+  "eli16Path": "docs/specs/interactive-login-expired-recovery.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/interactive-login-expired-recovery.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered controller interactive-login-expired-swap drives the real decideLoginExpiredSwap brake: at most one swap per session per 10 min and 3 per session, so under a permanently refused swap the count settles at 3 (horizon-independent); successes are bounded by the pool size because each dead source account is marked needs-reauth and excluded."
+    }
+  }
+}

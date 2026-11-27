@@ -48,6 +48,7 @@
  */
 
 import type { SessionPoolE2EResultStore, StageE2EOutcome } from './SessionPoolE2EResultStore.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** The verdict of one in-agent failover check run. */
 export interface FailoverCheckResult {
@@ -107,6 +108,7 @@ export class SessionPoolFailoverRunner {
       // An infra/availability error is NOT a failover verdict — record nothing so
       // the stage is neither wrongly promoted (fabricated green) nor wrongly
       // demoted (fabricated red). The next tick re-runs the check.
+      featureEvidence.record('multiMachine.sessionPool.stage', { kind: 'held', reason: 'failover check inconclusive: no verdict recorded', context: { provenStage: stage, commitSha: sha.slice(0, 12), recorded: false } });
       this.d.audit?.('failover-check-errored', {
         provenStage: stage,
         commitSha: sha,
@@ -119,6 +121,7 @@ export class SessionPoolFailoverRunner {
       // A verdict proves the configuration that was exercised for the whole
       // check. If rollout moved while the subprocess was running, attaching the
       // result to either endpoint could later authorize the wrong transition.
+      featureEvidence.record('multiMachine.sessionPool.stage', { kind: 'held', reason: 'rollout moved during the check: no verdict recorded', context: { stageAtStart: stage, stageAfterCheck, outcome: result.outcome, recorded: false } });
       this.d.audit?.('failover-check-stage-changed', {
         stageAtStart: stage,
         stageAfterCheck,
@@ -129,6 +132,7 @@ export class SessionPoolFailoverRunner {
       return { ran: true, outcome: 'error', recorded: false };
     }
     this.d.resultStore.recordResult(stage, result.outcome, sha, result.evidenceRef);
+    featureEvidence.record('multiMachine.sessionPool.stage', { kind: result.outcome === 'green' ? 'fired' : 'error', reason: `signed failover result: ${result.outcome}`, context: { provenStage: stage, commitSha: sha.slice(0, 12), outcome: result.outcome, recorded: true } });
     this.d.audit?.('failover-result-recorded', {
       provenStage: stage,
       commitSha: sha,

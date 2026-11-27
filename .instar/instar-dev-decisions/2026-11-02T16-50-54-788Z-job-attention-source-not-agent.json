@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-02T16:50:54.788Z",
+  "slug": "job-attention-source-not-agent",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 7,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/attentionHubPolicy.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/bench-refresh.md",
+      "src/scaffold/templates/jobs/instar/evolution-overdue-check.md"
+    ],
+    "addedLines": 30,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,48 @@
+{
+  "ts": "2026-10-27T03:19:55.119Z",
+  "slug": "test-agent-leak-guard",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 1281,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/livetest-test-agent-leak-guard.mjs",
+      "src/cli.ts",
+      "src/commands/init.ts",
+      "src/commands/machine.ts",
+      "src/commands/server.ts",
+      "src/commands/setup.ts",
+      "src/core/Config.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ThrowawayAgentGuard.ts",
+      "src/core/types.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1264,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "control-loop edge: expiry check -> teardown -> exit, re-run on each launchd restart; steady-state bound: at most MAX_TEARDOWN_ATTEMPTS (5) unload attempts per agent ever (durable counter in the on-disk marker), then quarantined (terminal); settling brake: quarantined idles instead of exiting so KeepAlive cannot restart-loop, and complete/retryable starts exit before any subsystem. Registered as throwaway-expiry-teardown."
+    }
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "console-needs-you-links",
+  "sessionId": "d18b0bbf-d233-4b55-a0c0-df85292c7c41",
+  "timestamp": "2026-11-02T19:51:59.137Z",
+  "artifactPath": "upgrades/side-effects/console-needs-you-links.md",
+  "artifactSha256": "1eb32ebef3dda640cd81f8dfe24fab2144e030097ea65bebc20cd07d6c01a32b",
+  "coveredFiles": [
+    "dashboard/console/console.js",
+    "dashboard/console/home-model.js",
+    "tests/unit/console-home-model.test.ts",
+    "upgrades/next/console-needs-you-links.md",
+    "upgrades/side-effects/console-needs-you-links.eli16.md",
+    "upgrades/side-effects/console-needs-you-links.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "console links only; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/console-needs-you-links.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-needs-you-links.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

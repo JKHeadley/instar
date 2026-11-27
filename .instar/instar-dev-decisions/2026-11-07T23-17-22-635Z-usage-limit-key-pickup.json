@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-07T23:17:22.635Z",
+  "slug": "usage-limit-key-pickup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 47,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeKeyHealth.ts",
+      "src/core/Config.ts",
+      "src/core/UsageLimitWatch.ts"
+    ],
+    "addedLines": 47,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -12,8 +12,13 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'still-authfailed-after-refresh',
   'cli-signed-out-auth-refused',
   'cli-login-expired-observed',
+  'cli-auth-status-signed-out',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
+/** Whether the automatic repair supports this provider × framework at all. */
+export function isReloginSupportedPath(provider: string, framework: string): boolean {
+  return SUPPORTED_PROVIDER_PATHS.has(`${provider}:${framework}`);
+}
 const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password+totp', 'google-passkey']);
 
 /**
@@ -41,6 +46,7 @@ export type SubscriptionReloginRefusal =
   | 'feature-off'
   | 'pool-authority-not-ready'
   | 'account-not-needs-reauth'
+  | 'device-limit-benched'
   | 'source-episode-closed'
   | 'source-episode-wrong-cell'
   | 'source-not-exchange-corroborated'
@@ -78,6 +84,8 @@ export interface SubscriptionReloginAdmissionInput {
     framework: string;
     provider: string;
     identityHash: string;
+    /** codex-device-limit-tripwire §4: the pool record's cause (the authority for a bench). */
+    statusCause?: string | null;
   };
   sourceEpisode: SubscriptionLoginEpisode;
   hasLiveRepair: boolean;
@@ -128,6 +136,9 @@ export function evaluateSubscriptionReloginAdmission(
   if (input.configuredMode === 'off') return refuse('feature-off');
   if (input.poolAuthority !== 'ready') return refuse('pool-authority-not-ready');
   if (input.account.status !== 'needs-reauth') return refuse('account-not-needs-reauth');
+  // A bench on the pool record refuses repair before the ledger cause is even read: the ledger
+  // write is best-effort, so the pool record is the authority (codex-device-limit-tripwire §4).
+  if (input.account.statusCause === 'codex-device-limit') return refuse('device-limit-benched');
   if (input.sourceEpisode.closedAt !== null) return refuse('source-episode-closed');
   if (input.sourceEpisode.accountId !== input.account.id || input.sourceEpisode.machineId !== input.account.machineId)
     return refuse('source-episode-wrong-cell');

@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "failover-reanswer",
+  "sessionId": "cb043ed0-7e1c-4bb9-b855-1ca00ef9c5b7",
+  "timestamp": "2026-11-05T02:58:36.866Z",
+  "artifactPath": "upgrades/side-effects/failover-reanswer.md",
+  "artifactSha256": "cc3d3d230ac0795952bbc6142105784454efbaf4e06bb418182dfaedc06b35d3",
+  "coveredFiles": [
+    "docs/specs/failover-reanswer.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ForwardedTopicContext.ts",
+    "src/messaging/MessageProcessingLedger.ts",
+    "src/messaging/stuckMessageRecovery.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sessionpool-failover-two-node.test.ts",
+    "tests/integration/stuck-ledger-reconcile.test.ts",
+    "tests/support/twoNodeOwnershipHarness.ts",
+    "tests/unit/ForwardedTopicContext.test.ts",
+    "tests/unit/stuck-message-recovery.test.ts",
+    "upgrades/next/failover-reanswer.md",
+    "upgrades/side-effects/failover-reanswer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible incident fix.",
+  "eli16Path": "docs/specs/failover-reanswer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/failover-reanswer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

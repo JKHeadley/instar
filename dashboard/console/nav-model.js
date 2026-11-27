@@ -27,6 +27,7 @@ export const ICONS = {
   wallet: '<rect x="3" y="6" width="18" height="14" rx="2"/><path d="M16 13h2M3 10h18"/>',
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
   stamp: '<path d="M5 21h14M7 17h10l1-4H6l1 4zM12 13V8a3 3 0 1 0-3-3"/>',
+  phone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   toggle: '<rect x="2" y="7" width="20" height="10" rx="5"/><circle cx="16" cy="12" r="3"/>',
   sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
@@ -39,13 +40,16 @@ export const GROUPS = [
     id: 'work', label: 'Work', icon: 'work',
     question: 'What is being done, and what was promised?',
     tabs: [
-      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'Live sessions on every machine, with a terminal you can watch and type into.' },
-      { id: 'jobs', label: 'Jobs', icon: 'clock', desc: 'Scheduled work: what runs when, and what happened last time.' },
-      { id: 'commitments', label: 'Commitments', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
-      { id: 'projects', label: 'Projects', icon: 'layers', desc: 'Multi-step plans and whether each round passed its checks.' },
-      { id: 'initiatives', label: 'Initiatives', icon: 'flag', desc: 'Longer efforts in flight, and the items that need you.' },
-      { id: 'blockers', label: 'Blockers', icon: 'alert', desc: 'What looked like it stopped progress, and how sure that still is.' },
-      { id: 'dropzone', label: 'Send content', icon: 'send', desc: 'Paste text or files straight into a session.' },
+      { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, which one has gone quiet, and a live terminal you can watch and type into.' },
+      // Shown only when GET /mobile/browser-devices/status answers 200 (the switch is on): the probe.
+      { id: 'chats', label: 'Conversations', icon: 'chat', desc: 'Your app conversations, Telegram topics and Slack conversations, like the iPhone app: read, send, photos and files.', probe: '/mobile/browser-devices/status' },
+      // Shown only when GET /docs/health answers 200 (documents are switched on): the probe.
+      { id: 'documents', label: 'Documents', icon: 'folder', desc: 'Longer writing people comment on: open comments first, each opening on its own page.', probe: '/docs/health' },
+      { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
+      { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
+      { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
+      // Shown only when GET /work-board answers 200 (the work board is switched on): the probe.
+      { id: 'work-board', label: 'Work board', icon: 'check', desc: 'Cards you and the agent agreed on: what waits for your OK, an answer or a sign-off, and what the agent is doing.', probe: '/work-board' },
     ],
   },
   {
@@ -53,55 +57,246 @@ export const GROUPS = [
     question: 'What do I run on, and what does it cost?',
     tabs: [
       { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
+      { id: 'machine-care', label: 'Machine care', icon: 'heart', desc: 'Weekly clean restarts: sign a machine up, skip one, change the hours, or restart it now.' },
+      { id: 'repos', label: 'Repositories', icon: 'folder', desc: 'Every repository I work in, on every machine, and whether its work has a copy anywhere else.' },
       { id: 'systems', label: 'Health', icon: 'heart', desc: 'Whether each of my subsystems is working.' },
-      { id: 'subscriptions', label: 'Subscriptions', icon: 'key', desc: 'Accounts, usage left before reset, and sign-in repair.' },
+      { id: 'subscriptions', label: 'Accounts', icon: 'key', desc: 'Subscriptions and sign-ins: usage left before reset, and fixing a sign-in from your phone.' },
       { id: 'resources', label: 'Resource usage', icon: 'cpu', desc: 'CPU and memory for the server and every session.' },
-      { id: 'tokens', label: 'Tokens', icon: 'coins', desc: 'Token use across sessions in the last day.' },
-      { id: 'spend', label: 'Spend', icon: 'wallet', desc: 'What background AI calls cost, and the spending limits.' },
+      { id: 'spend', label: 'What thinking costs', icon: 'wallet', desc: 'Recorded AI cost on this machine: pay-per-use by model, background checks, what your conversations process, and the spending limits.' },
     ],
   },
   {
     id: 'people', label: 'People', icon: 'people',
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
-      { id: 'threadline', label: 'Threadline', icon: 'chat', desc: 'Conversations with other agents, and pairing new ones.' },
-      { id: 'origins', label: 'Message origins', icon: 'stamp', desc: 'Which machine and model wrote each message.' },
-      { id: 'mandates', label: 'Mandates', icon: 'stamp', desc: 'Permission slips you signed for agent-to-agent work.' },
-      { id: 'secrets', label: 'Secrets', icon: 'lock', desc: 'One-time links for handing over passwords and keys safely.' },
+      { id: 'reach', label: 'Who can reach me', icon: 'people', desc: 'Everyone who can reach this agent, how, and what each person can see.' },
+      { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
+      { id: 'notifications', label: 'Notifications', icon: 'chat', desc: 'Quiet reports and the categories you want pushed to you.' },
+      { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
+      { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: approve a waiting phone, or read its code, after your PIN (when there is no Telegram), and the phones already paired.' },
+      { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
   {
     id: 'settings', label: 'Settings', icon: 'settings',
     question: 'How is it set up, and what has it learned?',
     tabs: [
-      { id: 'features', label: 'Features', icon: 'toggle', desc: 'Switch features on and off, and set how independent I am.' },
-      { id: 'preferences-learning', label: 'Preferences', icon: 'sparkle', desc: 'What I have learned from your corrections.' },
-      { id: 'files', label: 'Files', icon: 'folder', desc: 'Browse and edit project files.' },
+      { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
+      { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
+      { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
+      { id: 'context', label: 'Context', icon: 'layers', desc: 'What each conversation’s running summary holds, how fresh it is, what it costs, and whether recovery after a long conversation is compressed works.' },
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
-      { id: 'pr-pipeline', label: 'PR pipeline', desc: 'Pull requests moving through review to merge.' },
-      { id: 'evidence', label: 'Evidence', desc: 'The sources behind a memory.' },
-      { id: 'routing-map', label: 'Routing map', desc: 'Which model each background job uses.' },
-      { id: 'llm-activity', label: 'LLM activity', desc: 'How often each automated AI check acted.' },
-      { id: 'throughput', label: 'Throughput', desc: 'Delivery and quality over time.' },
-      { id: 'integrated-being', label: 'Integrated-Being', desc: 'What other parts of me have been doing.' },
-      { id: 'process-health', label: 'Process health', desc: 'Failures caught and patterns found.' },
-      { id: 'feedback-drain', label: 'Feedback drain', desc: 'User feedback being turned into fixes.' },
+      { id: 'integrated-being', label: 'How I’m doing inside', desc: 'Conversation history, recurring problems, checks on my claims.' },
     ],
   },
 ];
 
-/** Every legacy tab id the console links to. */
+/**
+ * Legacy tabs whose content now lives inside another console page. They get
+ * no tile of their own (a tile that only says "now inside X" is clutter);
+ * their old links still land on the page that holds them (NATIVE_PAGES).
+ */
+export const MERGED = ['dropzone', 'initiatives', 'blockers', 'tokens', 'pr-pipeline', 'evidence', 'routing-map', 'llm-activity', 'throughput', 'process-health', 'feedback-drain'];
+
+/** Every legacy tab id the console links to, including the merged ones. */
 export function allTabIds() {
-  return GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id));
+  return [...GROUPS.flatMap((g) => [...g.tabs, ...(g.hood || [])].map((t) => t.id)), ...MERGED];
 }
+
+/** Features rebuilt natively in the console, by legacy tab id. */
+/** Tiles with no legacy dashboard tab: new pages are built in the console only. */
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'context', 'work-board', 'documents', 'machine-care', 'repos'];
+
+export const NATIVE_PAGES = {
+  commitments: '#/work/promises',
+  jobs: '#/work/schedule',
+  sessions: '#/work/sessions',
+  chats: '#/work/chats',
+  documents: '#/work/documents',
+  'work-board': '#/work/board',
+  // Sending text or files now happens in each session's own message box.
+  dropzone: '#/work/sessions',
+  projects: '#/work/plans',
+  initiatives: '#/work/plans',
+  blockers: '#/work/plans?s=in-the-way',
+  machines: '#/capacity/machines',
+  'machine-care': '#/capacity/machine-care',
+  repos: '#/capacity/repos',
+  systems: '#/capacity/health',
+  subscriptions: '#/capacity/accounts',
+  spend: '#/capacity/costs',
+  tokens: '#/capacity/costs',
+  'llm-activity': '#/capacity/costs',
+  'routing-map': '#/capacity/costs',
+  reach: '#/people/reach',
+  origins: '#/people/messages',
+  notifications: '#/people/notifications',
+  threadline: '#/people/agents',
+  mandates: '#/people/mandates',
+  secrets: '#/people/secrets',
+  features: '#/settings/allowed',
+  'preferences-learning': '#/settings/learned',
+  files: '#/settings/files',
+  context: '#/settings/context',
+  // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
+  phones: '/dashboard/pair',
+  'pr-pipeline': '#/work/development?s=shipping',
+  throughput: '#/work/development?s=pace',
+  'feedback-drain': '#/work/development?s=feedback',
+  'integrated-being': '#/settings/inside',
+  'process-health': '#/settings/inside?s=problems',
+  evidence: '#/settings/inside?s=lookup',
+};
+
+/** Where a tile goes: the native page when it exists, else the legacy tab. */
+export function tabHref(tabId) {
+  return NATIVE_PAGES[tabId] || legacyHref(tabId);
+}
+
+/** The legacy dashboard's own address (/dashboard itself opens this console). */
+export const LEGACY_DASHBOARD = '/dashboard/legacy';
 
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */
 export function legacyHref(tabId) {
-  return `/dashboard?tab=${encodeURIComponent(tabId)}`;
+  return `${LEGACY_DASHBOARD}?tab=${encodeURIComponent(tabId)}`;
 }
 
 export function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+}
+
+// ── Phone mode (the Instar iPhone app) ────────────────────────────────────
+// The app shows one console page inside its own frame:
+//   /dashboard/console/?phone=1#/<page>   (or #/<page>?phone=1)
+// shows only that page's content, with no top bar, nav or Legacy link.
+// Without phone=1 nothing changes.
+
+/** Short page names the app may use, by the console's own hash path. */
+export const PHONE_PAGE_ALIASES = {
+  promises: 'work/promises',
+  plans: 'work/plans',
+  schedule: 'work/schedule',
+  development: 'work/development',
+  maturation: 'work/maturation',
+  ideas: 'work/ideas',
+  board: 'work/board',
+  sessions: 'work/sessions',
+  chats: 'work/chats',
+  documents: 'work/documents',
+  pace: 'work/pace',
+  machines: 'capacity/machines',
+  'machine-care': 'capacity/machine-care',
+  repos: 'capacity/repos',
+  health: 'capacity/health',
+  accounts: 'capacity/accounts',
+  costs: 'capacity/costs',
+  reach: 'people/reach',
+  messages: 'people/messages',
+  agents: 'people/agents',
+  mandates: 'people/mandates',
+  secrets: 'people/secrets',
+  allowed: 'settings/allowed',
+  learned: 'settings/learned',
+  inside: 'settings/inside',
+  files: 'settings/files',
+  context: 'settings/context',
+};
+
+/** Pages that exist only in phone mode (the Pace card is a page of its own there). */
+export const PHONE_ONLY_PAGES = ['work/pace'];
+
+function queryHasPhone(query) {
+  if (typeof query !== 'string' || !query) return false;
+  try { return new URLSearchParams(query.replace(/^\?/, '')).get('phone') === '1'; } catch { return false; }
+}
+
+/**
+ * Is this load in phone mode? True when phone=1 is in the page's query
+ * (location.search) or in the hash's own query (#/accounts?phone=1).
+ */
+export function isPhoneMode(search, hash) {
+  if (queryHasPhone(search)) return true;
+  const h = typeof hash === 'string' ? hash : '';
+  const q = h.indexOf('?');
+  return q >= 0 && queryHasPhone(h.slice(q + 1));
+}
+
+/** The page path to render: in phone mode a short name resolves to its full path. */
+export function pagePath(path, phone) {
+  if (!phone) return path;
+  return Object.prototype.hasOwnProperty.call(PHONE_PAGE_ALIASES, path) ? PHONE_PAGE_ALIASES[path] : path;
+}
+
+// ── The three doors (docs/specs/work-front-doors.md §2.1, §2.3 web console) ─────────────────
+// Conversations, Work and Agent are the whole sidebar. The four groups above (Work, Capacity, People,
+// Settings) fold under Agent as sections, so every page keeps a home; every existing #/group/page
+// hash keeps resolving unchanged (resolveRoute below, tested over every route).
+
+export const DOORS = [
+  { id: 'conversations', label: 'Conversations', icon: 'chat' },
+  { id: 'work', label: 'Work', icon: 'work' },
+  { id: 'agent', label: 'Agent', icon: 'cpu' },
+];
+
+/** Where each door opens. `chats` / `board`: whether that page's own probe answered 200 on this agent. */
+export function doorHref(id, { chats = false, board = false } = {}) {
+  // The Conversations door opens the conversations hierarchy (Chief of Staff first, then All), on every agent
+  // (spec §7 stage 1: "conversations-model.js keeps its hierarchy"). The browser-device chat page stays one tap
+  // away inside it; opening the door on it showed "No conversations yet" on a real agent (2026-11-16).
+  void chats;
+  if (id === 'conversations') return '#/work/conversations';
+  // Feature off (spec §7 stage 1): with the board off, Work opens the Work section (Promises, Plans, …).
+  if (id === 'work') return board ? '#/work/board' : '#/work';
+  return '#/agent';
+}
+
+/** Which door a page belongs to. Conversations and the board are front doors; everything else is under Agent. */
+export function doorOf(path) {
+  const p = String(path || '').replace(/^#?\/?/, '').split('?')[0];
+  if (p === 'work/chats' || p === 'work/conversations' || p === 'home' || p === '') return 'conversations';
+  if (p === 'work/board' || p === 'work') return 'work';
+  return 'agent';
+}
+
+/** The pages the console renders natively, by hash path (console.js NATIVE; a unit test keeps them equal). */
+export const NATIVE_PATHS = [
+  'work/conversations', 'work/promises', 'work/plans', 'work/plans/in-the-way', 'work/schedule', 'work/development',
+  'work/maturation', 'work/ideas', 'work/board', 'work/sessions', 'work/chats', 'work/documents',
+  'capacity/machines', 'capacity/machine-care', 'capacity/repos', 'capacity/health', 'capacity/accounts', 'capacity/costs',
+  'people/messages', 'people/notifications', 'people/agents', 'people/reach', 'people/mandates', 'people/secrets',
+  'settings/allowed', 'settings/learned', 'settings/inside', 'settings/files', 'settings/context',
+];
+
+/** The Agent page's Fleet section: how this agent runs, across its machines and the agents it works with. */
+export const FLEET_TILES = [
+  { id: 'machines', label: 'Machines', icon: 'server', desc: 'Each machine’s health, which one leads, and how they reach each other.' },
+  { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, and a live terminal you can watch and type into.' },
+  { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'The agents I work with, whether each is actually there, and pairing new ones.' },
+];
+
+/**
+ * What a hash path shows. `page`: a native page; `group`: a section directory (still reachable,
+ * old links keep working); `agent`: the Agent door; `redirect`: an old address that now lands on a
+ * door (Home lands on Conversations with the Needs-you strip open, spec §2.1).
+ */
+export function resolveRoute(path, { phone = false, chats = false, board = false } = {}) {
+  const p = pagePath(String(path || '').replace(/^#?\/?/, '').split('?')[0], phone);
+  if (NATIVE_PATHS.includes(p) || (phone && PHONE_ONLY_PAGES.includes(p))) return { kind: 'page', path: p, door: doorOf(p) };
+  if (p === 'agent') return { kind: 'agent', path: p, door: 'agent' };
+  // The Work door is the board when the board is on (spec §3): its bare address opens the board, not the old menu.
+  if (p === 'work' && board) return { kind: 'redirect', path: p, door: 'work', to: '#/work/board' };
+  if (GROUPS.some((g) => g.id === p)) return { kind: 'group', path: p, door: doorOf(p) };
+  // An unknown page inside a known section (an old or mistyped link) opens that section, as before.
+  const head = p.split('/')[0];
+  if (p.includes('/') && GROUPS.some((g) => g.id === head)) return { kind: 'group', path: head, door: doorOf(head) };
+  // Home and an empty hash: the Conversations door. Anything unknown also lands there, never a blank page.
+  return { kind: 'redirect', path: p, door: 'conversations', to: doorHref('conversations', { chats, board }) };
+}
+
+/** The door the console opens on: the one used last, when it was one of the two front doors. */
+export function startDoor(remembered) {
+  return remembered === 'work' ? 'work' : 'conversations';
 }

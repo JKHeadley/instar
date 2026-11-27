@@ -6,6 +6,8 @@ export interface OriginPoolPage {
   records: OriginAuditRecord[];
   cursor: string | null;
   coverage: 'complete' | 'incomplete';
+  /** The newest audit horizon among the shards read: history before it may be gone. */
+  historyExpiredBefore?: number;
   unavailableShards: string[];
   conflictingOrigins: string[];
   snapshotAt: number;
@@ -14,7 +16,7 @@ type OrderKey = [number, string, string];
 interface Shard { id: string; cursor?: string; done: boolean; records: OriginAuditRecord[];
   seenCursors: string[]; upperSequence?: number; lastKey?: OrderKey; }
 interface Snapshot { shards: Shard[]; missing: string[]; conflicts: string[]; query: OriginListQuery; at: number;
-  emitted: Array<[string, string]>; }
+  emitted: Array<[string, string]>; historyExpiredBefore?: number; }
 const orderKey = (row: OriginAuditRecord): OrderKey => [row.record.createdAt, row.record.machineId, row.record.originId];
 // SQLite's default BINARY ordering compares UTF-8 bytes, not locale collation.
 const compareKeys = (a: OrderKey, b: OrderKey) => a[0] - b[0] || Buffer.compare(Buffer.from(a[1]), Buffer.from(b[1])) ||
@@ -126,6 +128,7 @@ export class OriginPoolAudit {
         (shard.upperSequence !== undefined && page.upperSequence !== shard.upperSequence) ||
         (page.cursor !== null && (typeof page.cursor !== 'string' || !page.cursor.length || page.cursor.length > 8192 ||
           shard.seenCursors.includes(page.cursor)))) throw new Error('origin-pool-invalid-shard-page');
+      if (page.historyExpiredBefore !== undefined) snapshot.historyExpiredBefore = Math.max(snapshot.historyExpiredBefore ?? 0, page.historyExpiredBefore);
       let previous = shard.lastKey;
       const ids = new Set<string>();
       const emittedIds = new Set(snapshot.emitted.map(([id]) => id));
@@ -198,7 +201,7 @@ export class OriginPoolAudit {
       cursor = randomBytes(24).toString('base64url');
       this.cursors.set(cursor, { snapshot });
     }
-    return { records, cursor, snapshotAt: snapshot.at, unavailableShards: [...snapshot.missing].sort(),
+    return { records, cursor, snapshotAt: snapshot.at, ...(snapshot.historyExpiredBefore ? { historyExpiredBefore: snapshot.historyExpiredBefore } : {}), unavailableShards: [...snapshot.missing].sort(),
       conflictingOrigins: [...new Set(snapshot.conflicts)], coverage: snapshot.missing.length || snapshot.conflicts.length ? 'incomplete' : 'complete' };
   }
 }

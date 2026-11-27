@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-05T08:15:33.020Z",
+  "slug": "normal-chrome-linux",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/templates/scripts/secret-drop-retrieve.mjs matches SecretDrop / never-on-disk invariant"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/blocking-decision-surfaces-baseline.json",
+      "src/templates/scripts/secret-drop-retrieve.mjs"
+    ],
+    "addedLines": 3,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

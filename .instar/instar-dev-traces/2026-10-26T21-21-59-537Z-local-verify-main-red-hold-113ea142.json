@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "local-verify-main-red-hold",
+  "sessionId": "a4d73c53-9392-4f7a-83d4-542d882d0b3a",
+  "timestamp": "2026-10-26T21:21:59.537Z",
+  "artifactPath": "upgrades/side-effects/local-verify-main-red-hold.md",
+  "artifactSha256": "45a6698231dabeab993918f067e9df91dc6f5989877dcfe591aab2874460cc1e",
+  "coveredFiles": [
+    "docs/specs/local-verify-main-red-hold.eli16.md",
+    "scripts/safe-merge.mjs",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/mainRedHold.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/localVerify/mainRedHold.test.ts",
+    "upgrades/side-effects/local-verify-main-red-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible queue-ordering change with a live kill switch; this round makes a revert PR a repair candidate so a red main can always be cleared; no merge decision changes.",
+  "eli16Path": "docs/specs/local-verify-main-red-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-main-red-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

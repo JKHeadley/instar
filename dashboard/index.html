@@ -2422,6 +2422,9 @@
     .job-state-card .state-row .state-val {
       color: var(--text);
       font-weight: 500;
+      text-align: right;
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     .job-state-card .state-row .state-val.error {
@@ -2593,6 +2596,15 @@
     /* ── Systems Tab ──────────────────────────────────────────── */
     /* Origin controls reuse shared action buttons and theme colors. */
     #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #phonesTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #phonesTab .phone-approval, #phonesTab .phone-row { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); margin-bottom: 10px; overflow-wrap: anywhere; }
+    #phonesTab .phone-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+    #phonesTab .phone-row-words { display: flex; flex-direction: column; min-width: 0; }
+    #phonesTab .phone-row-name { font-weight: 600; }
+    #phonesTab .phone-row-detail { color: var(--text-dim); font-size: 0.9em; }
+    #phonesTab .phone-row .action-btn { white-space: nowrap; }
+    #phonesTab .phone-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 8px 0; }
+    #phonesTab [role=status]:empty { display: none; }
     #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
     #originsTab .glance-drill-back { min-height: 44px; }
     #originsTab .origin-settings { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); display: flex; flex-direction: column; gap: 8px; }
@@ -3089,7 +3101,9 @@
             <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="notifications" onclick="switchTab('notifications')">Notifications</button>
             <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
+            <button class="tab" data-tab="phones" onclick="switchTab('phones')">Phones</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           </div>
           <div class="tab-group" role="group" aria-label="Work & Delivery">
@@ -3777,6 +3791,10 @@
           <button onclick="loadRoutingSpend()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <!-- gemini-payg §8 "Delivery": the setup card links HERE. Shown only while a proposal
+           waits on this machine; FIRST under the header so its lead line ("Gemini joins as a
+           reviewer and a second opinion. …") is on the first screen at 390x844. -->
+      <div id="geminiPaygSetup" class="spend-arm-root" style="display:none"></div>
       <div class="tab-purpose">
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
@@ -3919,6 +3937,18 @@
       .spend-arm-btn-commit { border-color:#16a34a; color:#22c55e; width:100%; margin-top:10px; }
       .spend-arm-plan { display:flex; flex-direction:column; gap:8px; }
       .spend-arm-plan-label { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; opacity:.6; }
+      .gp-setup-lead { font-size:16px; font-weight:600; line-height:1.4; margin:4px 0 10px; overflow-wrap:anywhere; }
+      /* The setup plan carries unbroken machine ids and a 64-hex key fingerprint: `anywhere`
+         lets them wrap inside a 390px phone screen (break-word alone still widened the
+         flex column to the longest token and pushed the page sideways). */
+      #geminiPaygSetup, #geminiPaygSetup .spend-arm-plan-text { min-width:0; overflow-wrap:anywhere; }
+      /* On a phone the dashboard's header is wider than the screen (its right-hand status
+         items do not wrap), and the single grid column grows to it — so every panel is
+         wider than a 390px screen and its text runs off the right edge. Pre-existing and
+         dashboard-wide; until the header is fixed, the setup panel is held to the screen
+         so the operator reads the whole plan, first line included, without scrolling
+         sideways (measured by the gemini-payg user-role live test at 390x844). */
+      #geminiPaygSetup { max-width: calc(100vw - 40px); box-sizing: border-box; }
       .spend-arm-plan-text { font-size:14px; line-height:1.5; padding:12px; border-radius:8px;
         border:1px solid var(--border,#2a2a2a); white-space:pre-wrap; word-break:break-word; }
       .spend-arm-plan-expiry, .spend-arm-note { font-size:12px; opacity:.7; }
@@ -3971,6 +4001,7 @@
       .sub-account-meta { font-size:12px; opacity:.6; margin:2px 0 2px; }
       .sub-account-email { font-size:12px; opacity:.5; margin:0 0 10px; }
       .sub-account-noquota { font-size:12px; opacity:.6; }
+      .sub-account-device-limit { font-size:12px; color:#f87171; margin-top:4px; }
       .sub-account-quota-age { font-size:11px; opacity:.5; margin-top:4px; }
       .sub-quota { margin:8px 0; }
       .sub-quota-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
@@ -4023,11 +4054,14 @@
       .sub-matrix-outcome { margin-top:6px; padding:7px 8px; border-radius:7px; text-align:left; font-size:12px; line-height:1.4; }
       .sub-matrix-outcome-done { color:#22c55e; background:rgba(22,163,74,.10); border:1px solid rgba(22,163,74,.35); }
       .sub-matrix-outcome-failed { color:#fca5a5; background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.30); }
-      .sub-matrix-cell.sub-matrix-held .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-expired .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-broken .sub-matrix-glyph { color:#f87171; }
+      .sub-matrix-cell.sub-matrix-held .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-expired .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-broken .sub-matrix-glyph, .sub-matrix-cell.sub-matrix-device-limit .sub-matrix-glyph { color:#f87171; }
       .sub-matrix-cell.sub-matrix-done .sub-matrix-glyph { color:#22c55e; font-weight:600; }
       .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
       @keyframes subVerifiedPulse { 0%,100% { box-shadow:none; } 50% { box-shadow:0 0 0 4px rgba(22,163,74,.28); } }
       .sub-pending.sub-pending-done { border-color:#16a34a; background:rgba(22,163,74,.08); }
+      .sub-pending.sub-pending-finishing { border-color:#0ea5e9; background:rgba(14,165,233,.08); }
+      .sub-pending.sub-pending-finishing .sub-pending-status { font-size:15px; font-weight:600; color:#38bdf8; }
+      .sub-matrix-cell.sub-matrix-finishing .sub-matrix-glyph { color:#38bdf8; font-weight:600; font-size:14px; }
       .sub-pending-done-head { color:#22c55e; font-weight:600; }
       .sub-pending.sub-pending-failed { border-color:#f87171; background:rgba(248,113,113,.06); }
       .sub-pending-failed-head { color:#f87171; font-weight:600; }
@@ -4366,6 +4400,8 @@
          The old ~390-word subsystem prose became a plain headline + tiles; each
          subsystem's full description / processes / metrics live one drill down.
          The shared component renders the headline + tiles + drill-down here. -->
+    <section class="systems-container" id="phonesTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Pair the Instar iPhone app and see paired phones.</p></section>
+    <section id="notificationsTab" style="display:none"><a href="/dashboard#/people/notifications">Open Notifications</a></section>
     <section class="systems-container" id="originsTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Inspect message authorship and choose which origin details appear.</p></section>
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
@@ -4447,6 +4483,17 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script>
+    function verifiedDashboardName(value, id) {
+      const name = typeof value === 'string' ? value.trim() : '';
+      if (!name || name === String(id ?? '')) return null;
+      if (/^\d+$/.test(name)) return null;
+      if (/^(?:\[deleted\]\s*)?(?:telegram\s+)?topic[-\s#]*\d+$/i.test(name)) return null;
+      if (/^[a-f0-9]{8,}(?:…|\.\.\.)?$/i.test(name) || /^m_[a-z0-9]{12,}$/i.test(name)) return null;
+      if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(name)) return null;
+      if (/^a2aproof-\d+$/i.test(name) || /^[CGD][A-Z0-9]{8,}$/.test(name)) return null;
+      if (/^(?:conversation|channel|agent|machine|account|session|topic) name unavailable$/i.test(name) || /^(?:an? )?unnamed (?:agent|machine|account|session|feature|person|part)$/i.test(name)) return null;
+      return name;
+    }
     // ── State ────────────────────────────────────────────────
     let ws = null;
     let token = '';
@@ -4454,6 +4501,63 @@
     // API token is intentionally insufficient for operator-only actions.
     let operatorSessionToken = '';
     let operatorSessionExpiresAt = '';
+    // SEC-002b: when the dashboard runs on a scoped session token (dst_), it expires and must be
+    // refreshed before it lapses; a revoked/expired session falls back to the PIN screen.
+    let sessionExpiresAt = '';
+    let sessionRefreshTimer = null;
+    function isScopedToken() { return typeof token === 'string' && token.startsWith('dst_'); }
+    function scheduleSessionRefresh() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      if (!isScopedToken() || !sessionExpiresAt) return; // master token / dark mode: nothing to refresh
+      const ms = new Date(sessionExpiresAt).getTime() - Date.now();
+      // refresh at ~75% of the remaining life, clamped so a short window still refreshes soon
+      const delay = Math.max(5000, Math.floor(ms * 0.75));
+      sessionRefreshTimer = setTimeout(refreshDashboardSession, delay);
+    }
+    async function refreshDashboardSession() {
+      if (!isScopedToken()) return;
+      try {
+        const r = await fetch('/dashboard/session/refresh', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) { handleSessionLost(); return; }
+        const d = await r.json();
+        if (!d.token) { handleSessionLost(); return; }
+        token = d.token; sessionExpiresAt = d.sessionExpiresAt || '';
+        try { localStorage.setItem('instar_token', token); } catch (_) {}
+        scheduleSessionRefresh();
+      } catch (_) { scheduleSessionRefresh(); } // transient network error: retry on schedule
+    }
+    // SEC-002b step-up: a credential operation (change PIN, read/rotate the API token) answers 403
+    // step-up-required when the browser holds a scoped token. Re-prove the live PIN, mint a one-time
+    // step-up proof, and retry with the X-Instar-Step-Up header. Credential-op call sites use this in
+    // place of a raw fetch; for the master token the first call already succeeds and no prompt shows.
+    async function fetchWithStepUp(path, opts) {
+      opts = opts || {};
+      const baseHeaders = Object.assign({ 'Authorization': 'Bearer ' + token }, opts.headers || {});
+      let r = await fetch(path, Object.assign({}, opts, { headers: baseHeaders }));
+      if (r.status !== 403) return r;
+      let body = {};
+      try { body = await r.clone().json(); } catch (_) { return r; }
+      if (!body || body.error !== 'step-up-required') return r;
+      const pin = window.prompt('For this security change, re-enter your dashboard PIN:');
+      if (!pin) return r; // cancelled → surface the 403
+      let su;
+      try { su = await fetch('/dashboard/session/step-up', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }); } catch (_) { return r; }
+      if (!su.ok) return su; // wrong PIN etc. → surface the step-up failure
+      const d = await su.json().catch(() => ({}));
+      if (!d.stepUpToken) return r;
+      const h2 = Object.assign({}, baseHeaders, { 'X-Instar-Step-Up': d.stepUpToken });
+      return fetch(path, Object.assign({}, opts, { headers: h2 }));
+    }
+    // A scoped session that the server no longer honors (expired past the absolute cap, or revoked):
+    // clear it and show the PIN screen. The master-token path never calls this.
+    function handleSessionLost() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      try { localStorage.removeItem('instar_token'); } catch (_) {}
+      token = ''; sessionExpiresAt = '';
+      const overlay = document.getElementById('authOverlay');
+      if (overlay) overlay.style.display = 'flex';
+      const app = document.getElementById('app'); if (app) app.style.display = 'none';
+    }
     let sessions = [];
     // Door + model controls (dashboard-door-model-controls §3.6).
     let topicProfileOptions = null;
@@ -4468,11 +4572,11 @@
     // per-machine empty-state strip. Populated only when the pool is enabled with
     // 2+ machines — single-machine agents never see the strip (strict no-op).
     let poolMachinesView = [];
-    // Session-listing hygiene (CMT-1936 part c): names of sessions the server
+    // Session-listing hygiene (CMT-1936 part c): conversations the server
     // flagged as GENUINE cross-machine duplicates (the SAME conversation live on
     // >=2 machines at once). Same recurring job on each machine is benign and is
     // never flagged. Fed by pool.duplicateTopics from /sessions?scope=pool.
-    let poolDuplicateSessionNames = new Set();
+    let poolDuplicateConversations = new Set();
     let selfMachineNickname = null;
     let activeSession = null;
     let activeMachineId = null; // non-null when the active session streams from a peer (§2.2)
@@ -4509,6 +4613,7 @@
             operatorSessionToken = typeof data.operatorSessionToken === 'string'
               ? data.operatorSessionToken : '';
             operatorSessionExpiresAt = typeof data.operatorSessionExpiresAt === 'string' ? data.operatorSessionExpiresAt : '';
+            sessionExpiresAt = typeof data.sessionExpiresAt === 'string' ? data.sessionExpiresAt : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -4519,6 +4624,7 @@
         .then(r => {
           if (r.ok) {
             localStorage.setItem('instar_token', token);
+            scheduleSessionRefresh(); // SEC-002b: keep a scoped session alive; no-op for the master token
             document.getElementById('authOverlay').style.display = 'none';
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
@@ -4556,6 +4662,12 @@
             startPoolSessionsPolling();
             if (typeof startPairingPanel === 'function') startPairingPanel();
             loadTopicProfileOptions();
+            // SEC-002b: a stored scoped token has an unknown expiry — exchange it for a fresh one to
+            // re-establish the refresh schedule (also detects a revoked/expired session → PIN screen).
+            if (isScopedToken()) refreshDashboardSession();
+          } else if (isScopedToken()) {
+            // A stored scoped token the server no longer honors → fall back to the PIN screen.
+            handleSessionLost();
           }
         })
         .catch(() => {});
@@ -4781,7 +4893,7 @@
           // Pool Dashboard Streaming (§2.2): remote sessions are now clickable —
           // selecting one streams it from its owning machine via the relay.
           el.title = session.remote
-            ? `Running on ${session.machineNickname || session.machineId || 'another machine'} — click to stream it here.`
+            ? `Running on ${verifiedDashboardName(session.machineNickname, session.machineId) || 'another machine'} — click to stream it here.`
             : '';
           el.onclick = () => selectSession(session.tmuxSession, session);
           list.appendChild(el);
@@ -4833,8 +4945,8 @@
             <span class="type-badge ${sType}" title="${sType === 'job' ? 'Job: a scheduled job run' : 'Interactive: a conversation session'}">${sType}</span>
             <span class="model-badge ${modelFamilyClass(model)}" title="${escapeHtml(modelBadgeTitle(model))}">${switchingModel.has(session.tmuxSession) && !session.remote ? 'switching…' : escapeHtml(friendlyModelName(model))}</span>
             <span class="platform-badge ${platform}" title="${escapeHtml(platformBadgeTitle(platform))}">${platformIcon}</span>
-            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(session.machineNickname)}</span>` : ''}
-            ${(session.duplicateTopic === true || poolDuplicateSessionNames.has(session.name)) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
+            ${session.machineNickname ? `<span class="machine-badge" title="Machine this session runs on">${escapeHtml(verifiedDashboardName(session.machineNickname, session.machineId) || 'Machine name unavailable')}</span>` : ''}
+            ${(session.duplicateTopic === true || (session.platform && session.platformId != null && poolDuplicateConversations.has(`${session.platform}:${String(session.platformId)}`))) ? `<span class="duplicate-badge" title="Genuine cross-machine duplicate: this conversation has a live session on more than one machine at once">⚠ duplicate</span>` : ''}
             <span title="Running for ${elapsed}">${elapsed}</span>
           </div>
           ${telemetryHtml}
@@ -4874,7 +4986,7 @@
       for (const m of poolMachinesView) {
         // A machine WITH sessions already names itself via its tiles' badges.
         if (m.sessionCount > 0) continue;
-        const label = m.nickname || m.machineId || 'unnamed machine';
+        const label = verifiedDashboardName(m.nickname, m.machineId) || 'another machine';
         const info = machineStatusInfo(m);
         const row = document.createElement('div');
         row.className = `machine-status-row ${info.cls}`;
@@ -4940,7 +5052,7 @@
       // Clear and subscribe (remote → carry machineId so the server relays).
       term.clear();
       if (activeMachineId) {
-        term.write(`\x1b[2m[streaming from ${session.machineNickname || activeMachineId}…]\x1b[0m\r\n`);
+        term.write(`\x1b[2m[streaming from ${verifiedDashboardName(session.machineNickname, activeMachineId) || 'another machine'}…]\x1b[0m\r\n`);
       }
       wsSend({ type: 'subscribe', session: tmuxSession, ...(activeMachineId ? { machineId: activeMachineId } : {}) });
 
@@ -5266,12 +5378,17 @@
       if (reqId !== newSessionMachinesReq || document.getElementById('newSessionModal').style.display === 'none') return;
       const machines = (data && Array.isArray(data.machines)) ? data.machines : [];
       if (machines.length < 2) return;
+      const nameCounts = new Map();
+      for (const m of machines) {
+        const name = m && verifiedDashboardName(m.nickname, m.machineId);
+        if (name) nameCounts.set(name.toLocaleLowerCase(), (nameCounts.get(name.toLocaleLowerCase()) || 0) + 1);
+      }
       newSessionSelfMachineId = data.selfMachineId || null;
       for (const m of machines) {
         if (!m || typeof m.machineId !== 'string') continue;
         const opt = document.createElement('option');
         opt.value = m.machineId;
-        let label = (typeof m.nickname === 'string' && m.nickname) ? m.nickname : m.machineId;
+        let label = verifiedDashboardName(m.nickname, m.machineId) || 'Machine name unavailable';
         const offline = m.online !== true;
         // Only the status placement itself removes; a once-seen divergence is still placeable.
         const clockOff = m.clockSkewStatus === 'suspect-clock-removed';
@@ -5285,7 +5402,8 @@
         else if (clockOff) label += ' (clock out of step)';
         else if (m.quotaState && m.quotaState.blocked === true) label += ' (at usage limit)';
         opt.text = label;
-        opt.disabled = offline || !!clockOff;
+        const verified = verifiedDashboardName(m.nickname, m.machineId);
+        opt.disabled = offline || !!clockOff || !verified || nameCounts.get(verified.toLocaleLowerCase()) !== 1;
         sel.appendChild(opt);
       }
       onNewSessionPlatformChange();
@@ -5821,7 +5939,7 @@
 
     async function closeSession(tmuxSession, sessionName, opts) {
       opts = opts || {}; // backward-compatible: local callers may pass (tmux, name) only
-      const nickname = opts.machineNickname || opts.machineId || 'another machine';
+      const nickname = verifiedDashboardName(opts.machineNickname, opts.machineId) || 'another machine';
 
       let prompt;
       if (opts.protected === true) {
@@ -5972,11 +6090,12 @@
           ? j.pool.machines
           : [];
         // Genuine cross-machine duplicates (server-computed): collect the flagged
-        // session NAMES so both local (WS-fed) and remote tiles can badge — the
+        // conversation pairs so both local (WS-fed) and remote tiles can badge — the
         // local row never carries the flag itself (it arrives via WebSocket).
-        poolDuplicateSessionNames = new Set(
+        poolDuplicateConversations = new Set(
           (j.pool && Array.isArray(j.pool.duplicateTopics) ? j.pool.duplicateTopics : [])
-            .flatMap(d => Array.isArray(d.sessions) ? d.sessions : [])
+            .filter(d => d && typeof d.platform === 'string' && d.platformId != null)
+            .map(d => `${d.platform}:${String(d.platformId)}`)
         );
         renderSessionList();
       } catch { /* best-effort — peers may be offline; next tick retries */ }
@@ -6179,8 +6298,13 @@
         onActivate: () => { if (!featuresLoaded) loadFeatures(); },
       },
       {
+        id: 'notifications', panels: ['notificationsTab'], display: ['flex'], onActivate: () => { location.href = '/dashboard#/people/notifications'; } },
+      {
         id: 'origins',
         panels: ['originsTab'], display: ['flex'], onActivate: () => startOrigins(), onDeactivate: () => originPanel?.stop() },
+      {
+        id: 'phones',
+        panels: ['phonesTab'], display: ['flex'], onActivate: () => startPhones(), onDeactivate: () => phonesPanel?.stop() },
       {
         id: 'systems',
         panels: ['systemsTab'],
@@ -7018,6 +7142,7 @@
       // gated calls would mean the one control that can fix a 503 disappears whenever the
       // 503 happens — which is exactly the state the operator is in when they need it.
       loadMoneyLayerEnable();
+      loadGeminiPaygSetup();
 
       const glance = await loadGlanceModule();
       if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
@@ -8064,7 +8189,9 @@
               const qs = p.toString();
               history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
             }
-          } else if (++attempts < 15) {
+          } else if (++attempts < 50) {
+            // ~10 s: a phone opening an "Open session" link over a tunnel can take a few
+            // seconds to receive the first session list after the PIN.
             setTimeout(waitForSessions, 200);
           }
         };
@@ -8266,10 +8393,15 @@
           serverDot.style.background = 'var(--accent)';
           serverText.textContent = h.uptimeHuman || 'Healthy';
           serverVital.className = 'vital';
+          serverVital.style.cursor = '';
+          serverVital.onclick = null;
         } else {
           serverDot.style.background = 'var(--orange)';
-          serverText.textContent = 'Degraded';
+          // /health says degraded for internal things too, so this says less and links to what it means.
+          serverText.textContent = 'See health ›';
           serverVital.className = 'vital warn';
+          serverVital.style.cursor = 'pointer';
+          serverVital.onclick = () => { location.href = '/dashboard#/capacity/health'; };
         }
 
         // Sessions
@@ -8754,7 +8886,11 @@
           + desc
           + '<div class="job-item-meta">'
           + '<span>' + esc(schedule) + '</span>'
-          + '<span class="model-badge">' + esc(j.model || '—') + '</span>'
+          + (j.runner === 'inactive'
+            ? '<span class="model-badge" title="Script supervisor is inactive on this agent" style="background:rgba(180,180,180,0.18)">inactive</span>'
+            : j.runner === 'script'
+            ? '<span class="model-badge" title="Runs as a small script with no AI session" style="background:rgba(150,200,220,0.18)">script</span>'
+            : '<span class="model-badge">' + esc(j.model || '—') + '</span>')
           + priorityBadge
           + nsBadge
           + trustWarn
@@ -8861,6 +8997,7 @@
         + (s.lastError ? '<div class="state-row"><span>Error</span><span class="state-val error" style="word-break:break-word">' + esc(s.lastError) + '</span></div>' : '')
         + '<div class="state-row"><span>Next Run</span><span class="state-val">' + esc(nextTimeAbs) + '</span></div>'
         + '</div>'
+        + '<div id="jobScriptCard" class="job-state-card" style="display:none"></div>'
         + '<div id="jobSparkline" class="job-sparkline"></div>'
         + '<div class="sparkline-legend"><div class="sparkline-legend-item"><div class="sparkline-legend-dot success"></div>Success</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot failure"></div>Failure</div><div class="sparkline-legend-item"><div class="sparkline-legend-dot skipped"></div>Skipped</div></div>'
         + '<div class="job-history-section"><h4>Run History</h4>'
@@ -8874,6 +9011,73 @@
 
       // Load history
       loadJobHistory(slug);
+      loadJobScriptCard(job);
+    }
+
+    // ─── Script-job card (job-cost-reduction §8 item 7) ──────────────
+    //
+    // Runner, last result, 7-day tokens vs the baseline (GET /jobs/cost) and
+    // the last day's triage decisions/sessions (GET /jobs/triage). Each read
+    // is optional: a 503/404 (feature dark, older server) just hides its row.
+    function jobCostRowFor(data, slug) {
+      if (!data) return null;
+      const list = Array.isArray(data) ? data : (data.jobs || data.slugs || data.rows || null);
+      if (Array.isArray(list)) return list.find(r => r && r.slug === slug) || null;
+      const keyed = data.bySlug || data.perSlug || data;
+      return (keyed && typeof keyed === 'object' && keyed[slug]) || null;
+    }
+    function jobTokensOf(row) {
+      if (!row) return null;
+      const v = row.weightedTokens ?? row.tokens?.weighted ?? (typeof row.tokens === 'number' ? row.tokens : null);
+      return typeof v === 'number' ? v : null;
+    }
+    function fmtTokens(n) {
+      if (n === null || n === undefined) return '—';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+      return String(Math.round(n));
+    }
+    function jobTriageSummaryFor(data, slug) {
+      const row = data && data.perSlug && data.perSlug[slug];
+      if (!row) return { decisions: 0, sessions: 0 };
+      return {
+        decisions: Number.isFinite(row.decisions) ? row.decisions : 0,
+        sessions: Number.isFinite(row.sessions) ? row.sessions : 0,
+      };
+    }
+    async function loadJobScriptCard(job) {
+      const card = document.getElementById('jobScriptCard');
+      if (!card || !['script', 'session-rollback', 'inactive'].includes(job.runner)) return;
+      const slug = job.slug;
+      const s = job.state || {};
+      const rows = [];
+      rows.push('<div class="state-row"><span>Runs as</span><span class="state-val">'
+        + esc(job.runner === 'script' ? 'A script (no AI session)'
+          : job.runner === 'inactive' ? 'Inactive' : 'An AI session') + '</span></div>');
+      rows.push('<div class="state-row"><span>Last result</span><span class="state-val">' + esc(s.lastResult || '—') + '</span></div>');
+      card.innerHTML = rows.join('');
+      card.style.display = '';
+      let cost = null, triage = null;
+      try { cost = await apiFetch('/jobs/cost?sinceDays=7'); } catch { cost = null; }
+      try { triage = await apiFetch('/jobs/triage?slug=' + encodeURIComponent(slug) + '&sinceHours=24'); } catch { triage = null; }
+      if (selectedJob !== slug) return;
+      const costRow = jobCostRowFor(cost, slug);
+      if (costRow) {
+        const now = jobTokensOf(costRow);
+        const base = costRow.baseline === null ? null : jobTokensOf(costRow.baseline);
+        const baseText = costRow.baseline === null ? 'no baseline yet' : (base === null ? '—' : fmtTokens(base));
+        rows.push('<div class="state-row"><span>Tokens, last 7 days</span><span class="state-val">'
+          + esc(fmtTokens(now)) + ' (before: ' + esc(baseText) + ')</span></div>');
+      }
+      if (triage) {
+        if (job.scriptSupervision === 'triage') {
+          const summary = jobTriageSummaryFor(triage, slug);
+          rows.push('<div class="state-row"><span>Triage, last day</span><span class="state-val">'
+            + esc(summary.decisions ? summary.decisions + ' decision' + (summary.decisions === 1 ? '' : 's') : 'no decisions') + '</span></div>');
+          rows.push('<div class="state-row"><span>Sessions it started</span><span class="state-val">' + summary.sessions + '</span></div>');
+        }
+      }
+      card.innerHTML = rows.join('');
     }
 
     function jobsGoBack() {
@@ -9977,6 +10181,115 @@
       }, 3000);
     }
 
+    // ── Spend tab — the Gemini pay-per-use setup plan (gemini-payg §8) ──
+    // The card links here. The plan is rendered FRESH by the server each time the tab
+    // opens (re-running its preconditions); the commit carries only the plan identity,
+    // the PIN and the proposal hash, and it schedules its own restart — the PIN approves
+    // that restart knowingly, so this screen never asks for a second PIN.
+    let __gpSetupPlan = null;
+    async function loadGeminiPaygSetup() {
+      const root = document.getElementById('geminiPaygSetup');
+      if (!root) return;
+      const M = await loadSpendArmModule();
+      if (!M || typeof M.geminiSetupShouldRender !== 'function') { root.style.display = 'none'; return; }
+      let proposal = null;
+      let release = null;
+      try {
+        proposal = await apiFetch('/routing-spend/gemini-payg/proposal');
+        release = await apiFetch('/routing-spend/gemini-payg/release');
+      } catch (err) {
+        root.style.display = 'none';
+        return;
+      }
+      if (!M.geminiSetupShouldRender(proposal, release)) { root.style.display = 'none'; root.replaceChildren(); return; }
+      root.style.display = '';
+      root.replaceChildren();
+      const h = document.createElement('h3');
+      h.className = 'spend-arm-h';
+      h.textContent = 'Gemini pay-per-use setup';
+      root.appendChild(h);
+      const planBox = document.createElement('div');
+      planBox.id = 'gpSetupPlan';
+      root.appendChild(planBox);
+      const st = document.createElement('div');
+      st.id = 'gpSetupStatus';
+      st.className = 'spend-arm-status';
+      __gpSetupPlan = null;
+      try {
+        const plan = await apiFetch('/routing-spend/plan-money-layer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'gemini-payg-setup', expectedProposalHash: proposal.proposalHash }),
+        });
+        M.renderGeminiSetupPlan(document, planBox, plan);
+        if (plan && plan.forwarded === true) {
+          // Rendered on the spending machine: it is approved THERE, not from this page.
+          st.textContent = plan.note ? String(plan.note) : 'This plan is approved on the machine that will spend, from its own Spend tab.';
+          root.appendChild(st);
+          return;
+        }
+        __gpSetupPlan = plan;
+        const row = document.createElement('div');
+        row.className = 'spend-arm-pin-row';
+        const pin = document.createElement('input');
+        pin.type = 'password';
+        pin.inputMode = 'numeric';
+        pin.id = 'gpSetupPin';
+        pin.className = 'spend-arm-pin';
+        pin.placeholder = 'Dashboard PIN';
+        pin.autocomplete = 'off';
+        const go = document.createElement('button');
+        go.id = 'gpSetupApprove';
+        go.className = 'spend-arm-btn spend-arm-btn-commit';
+        go.textContent = 'Approve with PIN';
+        go.addEventListener('click', () => gpSetupCommit((pin.value || '').trim()));
+        row.appendChild(pin);
+        row.appendChild(go);
+        root.appendChild(row);
+      } catch (err) {
+        planBox.replaceChildren();
+        st.textContent = M.geminiSetupRefusalWords(err);
+      }
+      root.appendChild(st);
+    }
+
+    async function gpSetupCommit(pinValue) {
+      const M = await loadSpendArmModule();
+      const st = document.getElementById('gpSetupStatus');
+      const say = (t) => { if (st) st.textContent = t || ''; };
+      if (!M || !__gpSetupPlan) { say('Open the plan first.'); return; }
+      if (!pinValue) { say('Enter your dashboard PIN to approve.'); return; }
+      const btn = document.getElementById('gpSetupApprove');
+      if (btn) btn.disabled = true;
+      try {
+        const out = await apiFetch('/routing-spend/money-layer/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.geminiSetupCommitRequest(__gpSetupPlan, pinValue)),
+        });
+        __gpSetupPlan = null;
+        const next = M.geminiSetupAfterCommit(out);
+        say(next.words);
+        if (next.state === 'restarting') gpSetupAwaitRestart(0);
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        say(M.geminiSetupRefusalWords(err, { duringCommit: true }));
+      }
+    }
+
+    // Wait for the server to go away and come back, then reload the tab's figures.
+    function gpSetupAwaitRestart(attempt) {
+      if (attempt > 80) return;
+      setTimeout(async () => {
+        try {
+          const r = await fetch('/health', { headers: { 'Authorization': `Bearer ${token}` } });
+          const h = r.ok ? await r.json() : null;
+          if (h && typeof h.uptime === 'number' && h.uptime < 120000 && attempt > 0) { loadRoutingSpend(); return; }
+        } catch (_) { /* restarting */ }
+        gpSetupAwaitRestart(attempt + 1);
+      }, 3000);
+    }
+
     // ── Spend tab — paid-door arming (Increment B UI) ──
     // Two PIN-committed steps (set both ceilings, then go live), each previewed as the
     // SERVER's rendered wording before the PIN box appears. The commit posts only the
@@ -10005,6 +10318,15 @@
       h.textContent = 'Paid doors';
       h.className = 'spend-arm-h';
       root.appendChild(h);
+
+      // gemini-payg §7: the monthly row (shown, never pushed at 50%/80%).
+      const monthly = typeof M.monthlyRowWords === 'function' ? M.monthlyRowWords(caps) : null;
+      if (monthly) {
+        const box = document.createElement('div');
+        box.className = 'spend-arm-note';
+        for (const line of monthly) { const d = document.createElement('div'); d.textContent = line; box.appendChild(d); }
+        root.appendChild(box);
+      }
 
       const rows = M.armableDoors(caps);
       if (rows.length === 0) {
@@ -10362,9 +10684,11 @@
           apiFetch('/shared-state/stats').catch(() => null),
         ]);
         const tbody = document.getElementById('ibEntriesTbody');
+        // A read missed by a background refresh keeps the rows on screen (Dashboard UX F12).
         if (!recentRes || !recentRes.entries) {
-          tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-dim);text-align:center">Integrated-Being disabled or unavailable</td></tr>';
+          if (!tbody.dataset.ibRows) tbody.innerHTML = '<tr><td colspan="7" style="padding:14px;color:var(--text-dim);text-align:center">Integrated-Being disabled or unavailable</td></tr>';
         } else {
+          tbody.dataset.ibRows = '1';
           let entries = recentRes.entries;
           if (kind) entries = entries.filter(e => e.kind === kind);
           if (entries.length === 0) {
@@ -10688,6 +11012,20 @@
       }
     }
 
+    // ── Phones tab (mobile-native-conversations §4.4): a no-Telegram agent's pairing codes,
+    // shown only after a PIN unlock (operator session), plus the paired-phones list.
+    let phonesPanel = null;
+    async function startPhones() {
+      try {
+        const { mountPhonesPanel } = await import('/dashboard/phones.js');
+        phonesPanel ??= mountPhonesPanel(document.getElementById('phonesTab'), {
+          request: (url, options = {}) => fetch(url, { ...options, headers: { Authorization: `Bearer ${token}`, ...(operatorSessionToken ? { 'X-Instar-Operator-Session': operatorSessionToken } : {}), ...(options.headers || {}) } }),
+          unlock: () => { document.getElementById('authOverlay').style.display = 'flex'; document.getElementById('pinInput').focus(); },
+        });
+        phonesPanel.start();
+      } catch { document.getElementById('phonesTab').textContent = 'Phones are unavailable. Refresh to try again.'; }
+    }
+
     let originPanel = null;
     async function startOrigins() {
       try {
@@ -10931,7 +11269,7 @@
           const response = await fetch('/feedback-factory/readiness-authorities', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
-            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef())),
+            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef(), proposal.proposal && proposal.proposal.modelFamily)),
           });
           const data = await response.json().catch(() => ({}));
           const note = M.resultNote(response.ok, data);
@@ -10966,7 +11304,7 @@
       };
       M.renderTriageSection(document, root, { summary, queue, proposal, execute }, {
         submitAuthority: async (action, pin) => {
-          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
+          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef(), proposal && proposal.proposal && proposal.proposal.modelFamily));
           const note = M.triageResultNote(r.ok, r.data);
           if (r.ok) await loadFeedbackTriage(note);
           return note;

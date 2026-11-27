@@ -7,7 +7,10 @@
  * inert (503) when disabled or off a source checkout.
  */
 
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
@@ -15,17 +18,27 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
+import { _resetHostTestRunnerSemaphoreForTest, getHostTestRunnerSemaphore, resolveCap, writeTuningFile } from '../../src/core/hostTestRunnerSemaphore.js';
+import { buildLocalVerifyService, buildStatusReconciler, installedSafeMergePath, loadSafeMergeFloor, wireLocalVerifyPeers, wireLocalVerifySwitches, wireMergeLine } from '../../src/localVerify/localVerifyWiring.js';
 import type { LocalVerifyServiceSeams } from '../../src/localVerify/LocalVerifyService.js';
+import { scrubbedEnv } from '../../src/localVerify/serviceSeams.js';
 import type { GhRunner } from '../../src/localVerify/reconcilerSeams.js';
 import { computeVerifierVersion } from '../../src/localVerify/verifierVersion.js';
+import { makeDiagnosisPeerClient } from '../../src/localVerify/failedFileDiagnosisClient.js';
+import { computePolicyHash } from '../../src/localVerify/policy.js';
+import { projectLocal } from '../../src/localVerify/statusProjection.js';
+import { validateRecord, type LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { PROTECTED_PATH_PREFIXES } from '../../src/monitoring/greenPrAutomergeWiring.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DIST_ENTRY = path.join(ROOT, 'dist', 'localVerify', 'runVerifyMain.js');
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'local-verify-lifecycle.test.ts' }); });
+const servers: http.Server[] = [];
+afterEach(async () => {
+  for (const s of servers.splice(0)) await new Promise((resolve) => s.close(resolve));
+  for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'local-verify-lifecycle.test.ts' });
+});
 
 function sourceCheckout(): { home: string; stateDir: string } {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvlife-')));
@@ -59,6 +72,21 @@ function serve(c: RouteContext) {
   return a;
 }
 
+/**
+ * SEC-113 D1: give the peer a real machine identity (renamed to the configured peer id) and pin it
+ * on the coordinator, the way pairing does, so the coordinator dispatches to it and verifies its
+ * signed answers through the production wiring.
+ */
+async function pairPeerIdentity(peerStateDir: string, coordStateDir: string, peerId: string): Promise<void> {
+  await new MachineIdentityManager(peerStateDir).generateIdentity({ name: 'lv e2e peer' });
+  const own = path.join(peerStateDir, 'machine', 'identity.json');
+  const identity = { ...JSON.parse(fs.readFileSync(own, 'utf-8')), machineId: peerId };
+  fs.writeFileSync(own, JSON.stringify(identity));
+  const pinned = path.join(coordStateDir, 'machines', peerId, 'identity.json');
+  fs.mkdirSync(path.dirname(pinned), { recursive: true });
+  fs.writeFileSync(pinned, JSON.stringify(identity));
+}
+
 describe('local-verify lifecycle (production wiring)', () => {
   it('loads safe-merge from the installed package, not the working checkout', async () => {
     expect(installedSafeMergePath()).toBe(path.join(ROOT, 'scripts', 'safe-merge.mjs'));
@@ -87,10 +115,199 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(typeof seams.installedVerifierVersion).toBe('function');
     expect(seams.installedVerifierVersion!()).toBe(computeVerifierVersion(path.dirname(DIST_ENTRY), undefined, { protectedList: PROTECTED_PATH_PREFIXES }));
     expect(seams.installedVerifierVersion!()).toMatch(/^vh\d+:[0-9a-f]{32}$/);
+    // Machine memory care wiring integrity: without explicit deps a test-built service never
+    // signals the test host; memory reads are live; the temp root is the verifier's real one.
+    expect(seams.reapLeftovers).toBeUndefined();
+    expect(seams.selfMemoryPressure!()).toBeNull();
+    expect(seams.tempRoot!()).toBe(fs.realpathSync(fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()));
     await built.service!.boot();
+    // The production server calls this same wiring after peer wiring. The default
+    // remains dark, but the read surface and installed child entry must be alive.
+    await built.service!.wireFailedFileDiagnosis(() => 'off', makeDiagnosisPeerClient('test-token', 'echo'));
+    expect(fs.existsSync(path.join(path.dirname(DIST_ENTRY), 'runFailedFileDiagnosisMain.js'))).toBe(true);
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
+    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0, waiting: [] });
+    expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
+    expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
+    built.service!.shutdown();
+  });
+
+  it('a stored oldestUnverifiedAt is restored after boot (spec local-verify-main-age-survives-restart)', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const GREEN = '9'.repeat(40);
+    const seenAt = Date.now() - 50 * 60_000; // an unverified merge first seen 50 minutes before this boot
+    const file = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      v: 1, machineId: 'm_e2e', state: 'healthy', redHead: null, lastGreenHead: GREEN, reason: 'green', updatedAt: new Date().toISOString(),
+      oldestUnverifiedAt: seenAt,
+    }));
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    await svc.boot();
+    // Restored through the production-built service: the age did not start again at this boot,
+    // it is a known age (not "at least"), and boot's own rewrite of the watermark kept it.
+    expect(svc.mainUnverifiedAge()).toEqual({ since: seenAt, atLeast: false });
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toMatchObject({ oldestUnverifiedAt: seenAt, lastGreenHead: GREEN, state: 'healthy' });
+    const log = path.join(stateDir, 'logs', 'local-verify.jsonl');
+    const lines = fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string }) : [];
+    expect(lines.map((l) => l.event)).not.toContain('main-age-unknown');
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
+    svc.shutdown();
+  });
+
+  it('production boot keeps an enabled peer diagnosis separate from a red PR record', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    const svc = built.service!;
+    expect(svc).not.toBeNull();
+    const head = 'a'.repeat(40), base = 'b'.repeat(40), file = 'tests/unit/localVerify/record.test.ts';
+    const seams = (svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    seams.prView = async () => ({ headRefOid: head, baseRefName: 'main', baseRefOid: base,
+      author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/proof' }) as never;
+    seams.baseHead = async () => base;
+    seams.isPrOpen = async () => true;
+    const finishedMs = Date.now();
+    const record: LocalVerifyRecord = {
+      repo: 'JKHeadley/instar', pr: 9, headSha: head, baseSha: base, baseRefName: 'main', mergeTree: 'd'.repeat(40),
+      lanes: [{ name: 'unit', gating: true, files: 1, tests: 1, passed: 0, failed: 1, skipped: 0, todo: 0, seconds: 1 }],
+      nodeVersion: process.version, machineId: 'm_e2e', startedAt: new Date(finishedMs - 60_000).toISOString(),
+      finishedAt: new Date(finishedMs).toISOString(), outcome: 'failure', harnessChanging: false,
+      protectedPath: false, skipsAdded: false, testsRemoved: false, verifierVersion: seams.installedVerifierVersion!(),
+      policyHash: computePolicyHash(), failedFiles: [file],
+    };
+    expect(validateRecord(record).ok).toBe(true);
+    fs.mkdirSync(path.dirname(svc.journalPath), { recursive: true });
+    fs.writeFileSync(svc.journalPath, JSON.stringify({ v: 1, writtenAt: new Date(finishedMs).toISOString(), record }) + '\n');
+    await svc.boot();
+    svc.setPeerWiring({ peers: () => [{ machineId: 'm_peer', url: 'http://peer:4042' }],
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_e2e' } });
+    await svc.wireFailedFileDiagnosis(() => 'auto', {
+      status: async () => ({ enabled: true, busy: false, verifierVersion: record.verifierVersion, policyHash: record.policyHash }),
+      diagnose: async () => ({ accepted: true }),
+      result: async (_peer, attemptId) => ({ state: 'done', answer: {
+        attemptId, identity: { repo: record.repo, pr: record.pr, headSha: head, baseSha: base,
+          baseRefName: 'main', verifierVersion: record.verifierVersion, policyHash: record.policyHash, failedFiles: [file] },
+        peerMachineId: 'm_peer', coordinatorMachineId: 'm_e2e', leaseEpoch: 7,
+        classification: 'machine-or-flake', files: [{ file, originalPr: 'assertion-fail', peerPr: 'pass', peerBase: 'pass' }],
+        machineMinutes: 0.5,
+      } }),
+    });
+    await svc.tick();
+    await svc.tick();
+    const r = await request(serve(ctx(stateDir, svc))).get(`/local-verify/record?pr=9&head=${head}&base=main`);
+    expect(r.status).toBe(200);
+    expect(r.body.record.outcome).toBe('failure');
+    expect(r.body.record).not.toHaveProperty('diagnosis');
+    expect(r.body.diagnosis.result.classification).toBe('machine-or-flake');
+    expect(svc.getRecord(9, head, 'main')?.outcome).toBe('failure');
+    // This is the same local-floor projection the production status loop uses
+    // for GitHub's required merge check. The advisory diagnosis cannot turn a
+    // failed full verification into merge authority.
+    expect(projectLocal({
+      pr: { number: 9, headSha: head, baseRefName: 'main', eligible: true, floor: 'local' },
+      repo: record.repo, record: svc.getRecord(9, head, 'main'), verifying: false,
+      mainHealth: { state: 'healthy', mainHeadSha: base },
+    })).toMatchObject({ state: 'failure', reason: 'verify-failed' });
+    svc.shutdown();
+  });
+
+  it('machine memory care: production wiring sweeps through the real reaper and reads memory live', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const sent: Array<[number, string]> = [];
+    let memory: string | null = null;
+    const runs = `${home}/.worktrees/.verify/runs/`;
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 501;
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      selfMemoryPressure: () => memory,
+      // A fake process table (never the test host's): one orphaned stopped worker in a run worktree,
+      // one agent session whose prompt names that path but still has its parent.
+      reapDeps: {
+        listProcesses: async () => `  4242     1   ${uid} T 18-00:00:00 node ${runs}abc/node_modules/vitest/w.js\n  4243  4000   ${uid} S 01:00:00 claude -p "look at ${runs}abc"\n`,
+        listTmuxSockets: async () => '',
+        kill: (pid, sig) => { sent.push([pid, sig]); },
+        selfPid: process.pid,
+        uid,
+      },
+    });
+    expect(built.service).not.toBeNull();
+    const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    memory = 'only 3% of memory available';
+    expect(seams.selfMemoryPressure!()).toBe('only 3% of memory available');
+    memory = null;
+    await built.service!.boot(); // the boot sweep runs through the real reapLeftovers
+    expect(sent).toEqual([[4242, 'SIGCONT'], [4242, 'SIGKILL']]);
+    const audit = fs.readFileSync(path.join(stateDir, 'logs', 'local-verify.jsonl'), 'utf-8');
+    expect(audit).toContain('"event":"leftovers-reaped"');
+    built.service!.shutdown();
+  });
+
+  it('production wiring publishes and clears a real host priority claim', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const previous = process.env.INSTAR_HOST_TEST_BASE_DIR;
+    const previousCap = process.env.INSTAR_HOST_TEST_MAX;
+    process.env.INSTAR_HOST_TEST_BASE_DIR = path.join(home, 'host-limiter');
+    process.env.INSTAR_HOST_TEST_MAX = '2';
+    _resetHostTestRunnerSemaphoreForTest();
+    try {
+      const built = buildLocalVerifyService({
+        config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+        repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      });
+      expect(built.service).not.toBeNull();
+      const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+      const semaphore = getHostTestRunnerSemaphore();
+      expect(semaphore.status().cap).toBe(2); // server process override
+      expect(scrubbedEnv().INSTAR_HOST_TEST_MAX).toBeUndefined();
+      expect(resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap).toBe(1); // verifier child
+      expect(seams.suiteCapacity?.()).toBe(1); // reserve the next slot across this mismatch
+      writeTuningFile(semaphore.paths, { v: 1, maxConcurrent: 2 });
+      expect(resolveCap('suite', scrubbedEnv(), semaphore.resolveContext().tuning.file).cap).toBe(2);
+      expect(seams.suiteCapacity?.()).toBe(2); // both processes can use a spare slot
+      expect(typeof seams.setSuitePriority).toBe('function');
+      seams.setSuitePriority!(true);
+      expect(getHostTestRunnerSemaphore().hasMergeGatePriority()).toBe(true);
+      seams.setSuitePriority!(false);
+      expect(getHostTestRunnerSemaphore().hasMergeGatePriority()).toBe(false);
+      built.service!.shutdown();
+    } finally {
+      _resetHostTestRunnerSemaphoreForTest();
+      if (previous === undefined) delete process.env.INSTAR_HOST_TEST_BASE_DIR;
+      else process.env.INSTAR_HOST_TEST_BASE_DIR = previous;
+      if (previousCap === undefined) delete process.env.INSTAR_HOST_TEST_MAX;
+      else process.env.INSTAR_HOST_TEST_MAX = previousCap;
+    }
+  });
+
+  it('the starved signal is wired through the production function to hooks.signal (it used to reach only the audit log)', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+      hooks: { signal: (key, detail) => { signals.push({ key, detail }); } },
+    });
+    expect(built.service).not.toBeNull();
+    // Wiring integrity: the production seam is a real delegate, not absent or a no-op.
+    const seams = (built.service as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    expect(typeof seams.onStarved).toBe('function');
+    seams.onStarved!({ pr: 2350, headSha: '7befdd680e8fe9bb88277881f109eeca33f4bf68', waitedMs: 150 * 60_000, interruptions: 2, reason: 'interrupted' });
+    expect(signals).toEqual([{
+      key: 'local-verify:starved:2350',
+      detail: { pr: 2350, headSha: '7befdd680e8fe9bb88277881f109eeca33f4bf68', waitedMinutes: 150, reason: 'interrupted', interruptions: 2 },
+    }]);
+    await built.service!.boot();
+    expect((await request(serve(ctx(stateDir, built.service))).get('/local-verify')).status).toBe(200);
     built.service!.shutdown();
   });
 
@@ -120,6 +337,334 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(wireMergeLine({ service: built.service!, watcher: null, status: null, enabled: () => true })).toEqual({ wired: false, reason: 'no-watcher' });
     expect((await request(a).get('/local-verify')).body.mergeLine.wired).toBe(false);
     built.service!.shutdown();
+  });
+
+  it('peer-only: off a source checkout with peer.enabled, built through the production function, alive over HTTP, never a coordinator', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(home);
+    const stateDir = path.join(home, '.instar');
+    fs.mkdirSync(stateDir);
+    const built = buildLocalVerifyService({
+      config: { enabled: true, peer: { enabled: true } }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_peer', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    expect(svc.isPeerOnly()).toBe(true);
+    const values: Record<string, unknown> = { 'monitoring.localVerify.peer.enabled': true };
+    wireLocalVerifyPeers(svc, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) },
+      authToken: 't', lease: { holdsLease: () => false, leaseEpoch: () => 3, holderMachineId: () => 'm_coord' },
+    });
+    values['monitoring.localVerify.failFast'] = false;
+    values['monitoring.localVerify.laneShards'] = { integration: 1, e2e: 2 };
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    const switches = svc as unknown as { failFastOn(): boolean; laneShards(): unknown };
+    expect(switches.failFastOn()).toBe(false);
+    expect(switches.laneShards()).toEqual({ integration: 1, e2e: 2 });
+    // A main verify handed to a peer (docs/specs/local-verify-main-on-peer.md): the production
+    // wiring reads the switch live, off unless set, and a peer-only service built by that wiring
+    // has the three reads its own "does main contain this head" check needs.
+    const mainOnPeers = svc as unknown as { mainOnPeersOn(): boolean; seams: LocalVerifyServiceSeams };
+    expect(mainOnPeers.mainOnPeersOn()).toBe(false);
+    values['monitoring.localVerify.mainOnPeers'] = true;
+    expect(mainOnPeers.mainOnPeersOn()).toBe(true);
+    values['monitoring.localVerify.mainOnPeers'] = 'yes';
+    expect(mainOnPeers.mainOnPeersOn()).toBe(false); // only a real boolean true turns it on
+    expect(typeof mainOnPeers.seams.baseHead).toBe('function');
+    expect(typeof mainOnPeers.seams.commitInfo).toBe('function');
+    expect(typeof mainOnPeers.seams.isAncestor).toBe('function');
+    await svc.boot();
+    const c = { ...ctx(stateDir, svc), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 3 }) } } as never;
+    const st = await request(serve(c)).get('/local-verify/peer-status');
+    expect(st.status).toBe(200);
+    expect(st.body).toMatchObject({ enabled: true, inFlight: null });
+    expect(typeof st.body.slotBusy).toBe('boolean'); // the real host test-runner bound decides (a suite may be running on this host)
+    expect(st.body.verifierVersion).toMatch(/^vh\d+:/);
+    expect(await svc.request(1)).toEqual({ ok: false, code: 'peer-only' });
+    values['monitoring.localVerify.peer.enabled'] = false;
+    expect((await request(serve(c)).get('/local-verify/peer-status')).body.enabled).toBe(false);
+    svc.shutdown();
+  });
+
+  it('main on a peer, production-built on both sides over real HTTP: handed out only with the switch on, a peer red makes main suspect, only the coordinator\'s own red turns it red', async () => {
+    const coord = sourceCheckout();
+    const peerHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(peerHome);
+    const peerStateDir = path.join(peerHome, '.instar');
+    fs.mkdirSync(peerStateDir);
+    // The coordinator starts from a known-healthy main (a fresh state dir reads as not loaded).
+    fs.mkdirSync(path.join(coord.stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(coord.stateDir, 'state', 'local-verify', 'main-health.json'), JSON.stringify({
+      v: 1, machineId: 'm_coord', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: new Date().toISOString(),
+    }));
+    const builtCoord = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: coord.home, stateDir: coord.stateDir, agentHome: coord.home, machineId: 'm_coord', mainEntry: DIST_ENTRY,
+    });
+    const builtPeer = buildLocalVerifyService({
+      config: { enabled: true, peer: { enabled: true } }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: peerHome, stateDir: peerStateDir, agentHome: peerHome, machineId: 'm_peer', mainEntry: DIST_ENTRY,
+    });
+    expect(builtCoord.reason).toBeNull();
+    expect(builtPeer.reason).toBeNull();
+    const coordinator = builtCoord.service!;
+    const peer = builtPeer.service!;
+    const HEAD = 'd'.repeat(40);
+    const coordSeams = (coordinator as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const peerSeams = (peer as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    let coordSlotTaken = true;
+    coordSeams.foreignSuiteHolders = () => (coordSlotTaken ? [{ pid: 9001 }] : []);
+    coordSeams.isPrOpen = async () => true;
+    coordSeams.commitInfo = undefined; // no release-collapse lookup: the observed head is the head to verify
+    peerSeams.foreignSuiteHolders = () => [];
+    peerSeams.baseHead = async () => HEAD; // the peer's own read of main
+    // A run child that ends at once with the given outcome, built from the input the service wrote.
+    const child = (machineId: string, outcome: 'success' | 'failure', starts: string[]) => (a: { args: string[] }) => {
+      const inputPath = a.args[a.args.indexOf('--input') + 1];
+      const resultPath = a.args[a.args.indexOf('--result') + 1];
+      const input = JSON.parse(fs.readFileSync(inputPath, 'utf-8'));
+      starts.push(`${input.kind ?? 'pr'}:${input.headSha}`);
+      const now = Date.now();
+      const record: LocalVerifyRecord = {
+        repo: input.repo, pr: input.pr, headSha: input.headSha, baseSha: input.baseSha, baseRefName: input.baseRefName, mergeTree: 'c'.repeat(40),
+        lanes: [{ name: 'unit', gating: true, files: 1, tests: 3, passed: outcome === 'success' ? 3 : 2, failed: outcome === 'success' ? 0 : 1, skipped: 0, todo: 0, seconds: 1 }],
+        nodeVersion: input.nodeVersion, machineId, startedAt: new Date(now).toISOString(), finishedAt: new Date(now + 1).toISOString(),
+        outcome, harnessChanging: false, protectedPath: false, skipsAdded: false, testsRemoved: false,
+        verifierVersion: input.verifierVersion, policyHash: input.policyHash, kind: 'main',
+        ...(input.attempt ? { attempt: input.attempt } : {}),
+      };
+      expect(validateRecord(record).ok).toBe(true);
+      fs.writeFileSync(resultPath, JSON.stringify({
+        kind: 'record', record, reasons: outcome === 'failure' ? ['lane-failed:unit:1'] : [], overlaps: [], keptWorktree: null,
+        ...(outcome === 'failure' ? { failures: [{ file: 'tests/unit/broken.test.ts', lane: 'unit', failed: 1, message: 'expected 1 to be 2' }] } : {}),
+      }));
+      return { pid: 9100 + starts.length, exited: Promise.resolve({ status: 0, signal: null }) };
+    };
+    const peerStarts: string[] = [];
+    const coordStarts: string[] = [];
+    peerSeams.spawnRun = child('m_peer', 'failure', peerStarts) as never;
+    coordSeams.spawnRun = child('m_coord', 'failure', coordStarts) as never;
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
+    // SEC-113 D2.3: this coordinator has run main itself before (a local anchor and ten measured runs),
+    // so a peer may serve main; a fresh holder would keep main local until it has its own green.
+    fs.mkdirSync(path.join(coord.stateDir, 'state', 'local-verify'), { recursive: true });
+    fs.writeFileSync(path.join(coord.stateDir, 'state', 'local-verify', 'peer-trust.json'), JSON.stringify({ v: 1, holding: { holder: 'm_coord', epoch: 7 },
+      anchor: { head: 'f'.repeat(40), finishedAt: new Date().toISOString() }, notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)],
+      peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
+    wireLocalVerifyPeers(peer, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
+      lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
+    const server = http.createServer(serve(peerContext));
+    servers.push(server);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const peerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const values: Record<string, unknown> = { 'monitoring.localVerify.peers': [{ machineId: 'm_peer', url: peerUrl }] };
+    wireLocalVerifyPeers(coordinator, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => (k in values ? values[k] as T : fb) },
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    await coordinator.boot();
+    await peer.boot();
+    const settle = async (until: () => boolean) => { for (let i = 0; i < 200 && !until(); i++) { await coordinator.tick(); await new Promise((r) => setTimeout(r, 10)); } };
+
+    // Switch off (the default): main waits for the coordinator's own slot; the peer is asked nothing.
+    coordinator.noteMainHead(HEAD);
+    await settle(() => false === true || peerStarts.length > 0 || coordinator.snapshot().queue.length > 0);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(peerStarts).toEqual([]);
+    expect(coordinator.mainHealth()).toMatchObject({ state: 'healthy', pendingMainHead: HEAD });
+
+    // Switch on: the same entry goes to the peer, which confirms the head by its own read and runs it.
+    values['monitoring.localVerify.mainOnPeers'] = true;
+    await settle(() => coordinator.mainHealth().state !== 'healthy');
+    expect(peerStarts).toEqual([`main:${HEAD}`]);
+    // The peer's red result: main is suspect (merging pauses), with the failing file kept; not red.
+    expect(coordinator.mainHealth().state).toBe('main-suspect');
+    const failure = JSON.parse(fs.readFileSync(path.join(coord.stateDir, 'state', 'local-verify', 'main-failure.json'), 'utf-8')) as { detail: { files: string[] } };
+    expect(failure.detail.files).toEqual(['tests/unit/broken.test.ts']);
+    // The peer itself judged nothing.
+    expect(peer.mainHealth().lastGreenHead).toBeNull();
+    // The confirming re-run is never handed out, however long the coordinator's slot stays taken.
+    for (let i = 0; i < 20; i++) { await coordinator.tick(); await new Promise((r) => setTimeout(r, 10)); }
+    expect(peerStarts).toHaveLength(1);
+    expect(coordStarts).toEqual([]);
+    expect(coordinator.mainHealth().state).toBe('main-suspect');
+
+    // The coordinator's slot frees: its own run of that head fails too, and only now is main red.
+    coordSlotTaken = false;
+    await settle(() => coordinator.mainHealth().state === 'main-red');
+    expect(coordStarts).toEqual([`main:${HEAD}`]);
+    expect(peerStarts).toHaveLength(1);
+    expect(coordinator.mainHealth()).toMatchObject({ state: 'main-red', redHead: HEAD });
+    coordinator.shutdown();
+    peer.shutdown();
+  });
+
+  it('production-built coordinator dispatches to a peer while its own suite slot is occupied', async () => {
+    const coord = sourceCheckout();
+    const peerHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(peerHome);
+    const peerStateDir = path.join(peerHome, '.instar');
+    fs.mkdirSync(peerStateDir);
+    const builtCoord = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: coord.home, stateDir: coord.stateDir, agentHome: coord.home, machineId: 'm_coord', mainEntry: DIST_ENTRY,
+    });
+    const builtPeer = buildLocalVerifyService({
+      config: { enabled: true, peer: { enabled: true } }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: peerHome, stateDir: peerStateDir, agentHome: peerHome, machineId: 'm_peer', mainEntry: DIST_ENTRY,
+    });
+    expect(builtCoord.reason).toBeNull();
+    expect(builtPeer.reason).toBeNull();
+    const coordinator = builtCoord.service!;
+    const peer = builtPeer.service!;
+    const prView = async () => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: 'a'.repeat(40), baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+    const coordSeams = (coordinator as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const peerSeams = (peer as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    coordSeams.prView = prView;
+    coordSeams.baseHead = async () => 'b'.repeat(40);
+    coordSeams.isPrOpen = async () => true;
+    coordSeams.foreignSuiteHolders = () => [{ pid: 9001 }];
+    peerSeams.prView = prView;
+    peerSeams.foreignSuiteHolders = () => [];
+    let peerStarts = 0;
+    peerSeams.spawnRun = () => { peerStarts++; return { pid: 9100, exited: new Promise(() => {}) }; };
+    await pairPeerIdentity(peerStateDir, coord.stateDir, 'm_peer');
+    wireLocalVerifyPeers(peer, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peer.enabled' ? true as T : fb },
+      authToken: 'test-token', agentId: 'echo', stateDir: peerStateDir,
+      lease: { holdsLease: () => false, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    const peerContext = { ...ctx(peerStateDir, peer), coordinator: { holdsLease: () => false, getSyncStatus: () => ({ leaseHolder: 'm_coord', leaseEpoch: 7 }) } } as never;
+    const server = http.createServer(serve(peerContext));
+    servers.push(server);
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const peerUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    wireLocalVerifyPeers(coordinator, {
+      liveConfig: { get: <T,>(k: string, fb: T): T => k === 'monitoring.localVerify.peers' ? [{ machineId: 'm_peer', url: peerUrl }] as T : fb },
+      authToken: 'test-token', agentId: 'echo', stateDir: coord.stateDir,
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'm_coord' },
+    });
+    await coordinator.boot();
+    await peer.boot();
+    expect((await coordinator.request(3)).ok).toBe(true);
+    for (let i = 0; i < 100 && peerStarts === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(peerStarts).toBe(1);
+    expect((await request(serve(ctx(coord.stateDir, coordinator))).get('/local-verify')).body.peers.reserved)
+      .toEqual([expect.objectContaining({ pr: 3, state: 'accepted' })]);
+    coordinator.shutdown();
+    peer.shutdown();
+  });
+
+  it('without peer.enabled, a machine with no source checkout still builds nothing', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-e2e-')));
+    dirs.push(home);
+    const built = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir: path.join(home, '.instar'), agentHome: home, machineId: 'm_x', mainEntry: DIST_ENTRY,
+    });
+    expect(built).toEqual({ service: null, reason: 'no-source-checkout' });
+  });
+
+  it('the live switches are wired through the production function: absent ⇒ on, false ⇒ off, read at each call', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    const svc = built.service!;
+    const values: Record<string, unknown> = {};
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    const on = svc as unknown as { failFastOn(): boolean; mainRedHoldOn(): boolean; laneShards(): unknown };
+    expect(on.laneShards()).toBeNull();
+    values['monitoring.localVerify.laneShards'] = { integration: 1, e2e: 2 };
+    expect(on.laneShards()).toEqual({ integration: 1, e2e: 2 });
+    expect(on.failFastOn()).toBe(true);
+    expect(on.mainRedHoldOn()).toBe(true);
+    values['monitoring.localVerify.failFast'] = false;
+    values['monitoring.localVerify.mainRedHold'] = false;
+    expect(on.failFastOn()).toBe(false);
+    expect(on.mainRedHoldOn()).toBe(false);
+    const a = serve(ctx(stateDir, svc));
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('off');
+    values['monitoring.localVerify.preflightMode'] = 'observe';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('observe');
+    values['monitoring.localVerify.preflightMode'] = 'enforce';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('enforce');
+    values['monitoring.localVerify.preflightMode'] = 'unknown';
+    expect((await request(a).get('/local-verify')).body.preflight.mode).toBe('off');
+    svc.shutdown();
+  });
+
+  it('import-related re-run: through the production wiring the live key and a list computed from a real history file reach the run child\'s input, with the key off and on', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const built = buildLocalVerifyService({
+      config: { enabled: true, operatorGhLogin: 'JKHeadley' }, expectedGhLogin: 'EchoOfDawn',
+      repo: 'JKHeadley/instar', repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    });
+    expect(built.reason).toBeNull();
+    const svc = built.service!;
+    const values: Record<string, unknown> = {};
+    wireLocalVerifySwitches(svc, { get: <T,>(k: string, fb: T): T => (k in values ? (values[k] as T) : fb) });
+    // Wiring integrity: the switch reader is the live config, absent ⇒ off, only a real true turns it on.
+    const sw = svc as unknown as { importRelatedRerunOn(): boolean; seams: LocalVerifyServiceSeams };
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    values['monitoring.localVerify.importRelatedRerun'] = 'yes';
+    expect(sw.importRelatedRerunOn()).toBe(false);
+    delete values['monitoring.localVerify.importRelatedRerun'];
+    // A real history file: this machine's own green main, and one test main saw fail and pass alone.
+    const at = new Date(Date.now() - 60 * 60_000).toISOString();
+    const evidence = { test: 'reaps a plain-mode child that ignores SIGTERM before releasing the call', at, line: 'AssertionError: expected false to be true', setHash: 'ab'.repeat(32), runLog: 'cd'.repeat(16) + '.log' };
+    const lvState = path.join(stateDir, 'state', 'local-verify');
+    fs.mkdirSync(lvState, { recursive: true });
+    fs.writeFileSync(path.join(lvState, 'flaky-history.json'), JSON.stringify({
+      v: 1, greenMain: { headSha: 'f'.repeat(40), finishedAt: at, notClean: [], origin: 'local' },
+      files: { 'tests/unit/CodexCliIntelligenceProvider.test.ts': { seen: [at], escalatedAt: null, mainSeen: [evidence] } },
+    }));
+    // The run child's input, read when the child is spawned (the file is removed when its run ends).
+    const inputs: Array<{ pr: number; isolation: unknown }> = [];
+    const heads: Record<number, string> = { 3: 'a'.repeat(40), 4: 'c'.repeat(40) };
+    sw.seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: 'echo/x', headRefOid: heads[pr], baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+    sw.seams.baseHead = async () => 'b'.repeat(40);
+    sw.seams.isPrOpen = async () => true;
+    sw.seams.foreignSuiteHolders = () => [];
+    const ends: Array<(x: { status: number | null; signal: string | null }) => void> = [];
+    sw.seams.spawnRun = (a) => {
+      inputs.push(JSON.parse(fs.readFileSync(a.args[a.args.indexOf('--input') + 1], 'utf-8')) as { pr: number; isolation: unknown });
+      return { pid: 9300 + inputs.length, exited: new Promise((r) => { ends.push(r); }) };
+    };
+    sw.seams.isGroupAlive = () => false;
+    sw.seams.killGroup = () => {};
+    await svc.boot();
+    /** The isolation block of the run child's input for a PR (a run that ended without a result is retried once: the newest input counts). */
+    const isolationOf = (pr: number) => inputs.filter((x) => x.pr === pr).at(-1)?.isolation;
+    const started = async (pr: number) => { for (let i = 0; i < 200 && isolationOf(pr) === undefined; i++) await new Promise((r) => setTimeout(r, 10)); };
+    // Key off (the default): the block says so and carries no list.
+    expect((await svc.request(3)).ok).toBe(true);
+    await started(3);
+    expect(isolationOf(3)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: false, flakyOnMain: [] });
+    // End every run of PR 3 (the one retry of an errored run included) so the slot is free.
+    // Wait on what can be observed, bounded at 5 s: every started run has been ended and nothing is in flight or queued.
+    const drained = () => ends.length === 0 && svc.snapshot().inFlight === null && svc.snapshot().queue.length === 0;
+    for (const until = Date.now() + 5000; Date.now() < until;) {
+      for (const end of ends.splice(0)) end({ status: 1, signal: null });
+      await new Promise((r) => setTimeout(r, 10));
+      if (drained()) break;
+    }
+    expect(drained()).toBe(true);
+    // Key on, read when the next run starts (no restart): the list from the history file rides along.
+    values['monitoring.localVerify.importRelatedRerun'] = true;
+    expect((await svc.request(4)).ok).toBe(true);
+    await started(4);
+    expect(isolationOf(4)).toEqual({ allowed: true, notCleanOnGreenMain: [], importRelatedRerun: true, flakyOnMain: [{ file: 'tests/unit/CodexCliIntelligenceProvider.test.ts', tests: [evidence] }] });
+    // Alive over HTTP with the feature on.
+    expect((await request(serve(ctx(stateDir, svc))).get('/local-verify')).status).toBe(200);
+    svc.shutdown();
   });
 
   it('disabled, off a source checkout, or with no GitHub login: not built, routes 503', async () => {
@@ -156,6 +701,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const gh: GhRunner = async (args) => {
       if (args.includes('POST')) { posted.push(args); return { ok: true, stdout: '{}' }; }
       if (args[0] === 'pr') return { ok: true, stdout: '[]' };
+      if (args[0] === 'api' && args[1] === 'graphql') return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [] } } } }]) };
       // The main head read fails here on purpose: a readable head would start a REAL verify child.
       return { ok: false, status: 404, stderr: 'HTTP 404' }; // settings unreadable ⇒ check treated as required, floor actions
     };

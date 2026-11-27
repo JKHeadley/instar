@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "pairing-owner-required",
+  "sessionId": "660e5b00-fda7-454d-b107-e1c4d47e305b",
+  "timestamp": "2026-10-31T08:10:08.881Z",
+  "artifactPath": "upgrades/side-effects/pairing-owner-required.md",
+  "artifactSha256": "633cd77f18bf973aaa3a1eee722c1775df9f7e4f16e0db7a32c9e0a1c71e77e2",
+  "coveredFiles": [
+    "docs/specs/pairing-owner-required.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "upgrades/side-effects/pairing-owner-required.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Formatting only: one import symbol per line, required by a unit test; no behaviour change",
+  "eli16Path": "docs/specs/pairing-owner-required.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pairing-owner-required.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

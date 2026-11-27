@@ -51,6 +51,7 @@ const COMPLETE_PLAN = [
   '- **fleet:** after operator review',
   '- **graduation criterion:** zero refusals attributable to the gate itself',
   '- **dark-window:** 14d',
+  '- **ladder:** monitoring.example',
   '',
 ].join('\n');
 
@@ -89,6 +90,15 @@ describe('write-convergence-tag maturation gate — refuses, does not warn', () 
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('MATURATION_PLAN_REFUSED');
     expect(r.stderr).toContain('duplicate-section');
+  });
+
+  it('REFUSES a plan with no ladder line, in the instar source tree', () => {
+    const { spec, report } = makeSpec(COMPLETE_PLAN.replace(/- \*\*ladder:\*\*.*\n/, ''));
+    const r = run(spec, report);
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('MATURATION_PLAN_REFUSED');
+    expect(r.stderr).toContain('missing=ladder');
   });
 
   it('A-CASE: STAMPS a spec whose only difference is a complete maturation plan', () => {

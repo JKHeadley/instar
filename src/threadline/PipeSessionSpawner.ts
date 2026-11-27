@@ -14,6 +14,7 @@
  * - 10-minute timeout with process-group kill
  */
 
+import { claudeAuthShellPrefix, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from '../core/claudeChildAuth.js';
 import crypto from 'node:crypto';
 import { execSync, spawn as childSpawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -25,6 +26,7 @@ import { buildHeadlessLaunch } from '../core/frameworkSessionLaunch.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { boundedHead, boundedTail } from '../core/boundedInput.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { THREAD_ID_RE } from './ThreadLog.js';
 
 /**
  * Bound on the joined thread history handed to the summarizer.
@@ -149,10 +151,13 @@ interface ActivePipeSession {
   sessionName: string;
   threadId: string;
   pid: number;
-  /** tmux's unique `#{session_id}` (e.g. `$12`) of the session this spawner
-   *  created. With `pid` it is the recorded incarnation: a later session that
-   *  reuses the name has a different id, so it is never killed as ours. */
+  /** tmux's `#{session_id}` (e.g. `$12`) of the session this spawner created.
+   *  The id can be reused after server restart, so cleanup also checks the
+   *  session-local nonce, and the live process path checks the pane pid. */
   tmuxId?: string;
+  /** Per-session proof kept in tmux's session options; survives a blank dead-pane PID
+   *  without trusting a session ID that could be reused after a server restart. */
+  tmuxNonce?: string;
   pgid?: number;
   startedAt: number;
   timeoutTimer: ReturnType<typeof setTimeout>;
@@ -291,6 +296,15 @@ ${boundedTail(historyText, THREAD_SUMMARY_MAX_CHARS)}`;
 
 // ── Pipe Session Spawner ──────────────────────────────────────────────
 
+/**
+ * SEC-126: a thread id is safe to build into a tmux shell command or a file
+ * name only when it matches the canonical thread-id allowlist. That allowlist
+ * admits lowercase letters, digits and dashes only.
+ */
+export function isPipeSafeThreadId(threadId: unknown): threadId is string {
+  return typeof threadId === 'string' && THREAD_ID_RE.test(threadId);
+}
+
 export class PipeSessionSpawner {
   private config: PipeSessionConfig;
   private activeSessions: Map<string, ActivePipeSession> = new Map();
@@ -315,6 +329,13 @@ export class PipeSessionSpawner {
    * Returns true if all eligibility checks pass.
    */
   shouldUsePipeMode(request: PipeSpawnRequest): { eligible: boolean; reason?: string } {
+    // SEC-126: the thread id comes from the peer's envelope and is built into
+    // tmux shell commands and the prompt file path below. Only the canonical
+    // minted shapes (no quotes, spaces, slashes or shell syntax) may go on.
+    if (!isPipeSafeThreadId(request.threadId)) {
+      return { eligible: false, reason: 'thread id is not in the canonical thread-id format' };
+    }
+
     // Trust check
     if (request.trustLevel !== 'trusted' && request.trustLevel !== 'autonomous') {
       return { eligible: false, reason: 'trust level below threshold' };
@@ -353,6 +374,11 @@ export class PipeSessionSpawner {
    * Spawn a pipe-mode session.
    */
   async spawn(request: PipeSpawnRequest, summarizedHistory?: string): Promise<PipeSpawnResult> {
+    // SEC-126: checked again here, not only in shouldUsePipeMode, because every
+    // shell string and the prompt file path below are built from this value.
+    if (!isPipeSafeThreadId(request.threadId)) {
+      return { spawned: false, reason: 'thread id is not in the canonical thread-id format; pipe mode refused' };
+    }
     const sessionName = `pipe-${request.threadId}`;
 
     // June-15 force-mode refusal (spec Class 7, finding S4): this path shells
@@ -445,6 +471,7 @@ export class PipeSessionSpawner {
     // Env scrub: clear BOTH frameworks' provider keys so neither leaks
     // into the spawned process. Spec 12 Rule 1a (Codex) and the legacy
     // ANTHROPIC_API_KEY hygiene both covered in one block.
+    const claudeAuthFile = this.config.framework === 'claude-code' ? writeClaudeAuthEnvFile(this.config.stateDir) : null;
     const shellCmd = [
       // ROUND-20: XAI_API_KEY and GROK_DEPLOYMENT_KEY added. This is the SIXTH
       // spawn site and it was invisible to the round-19 membership test on TWO
@@ -472,19 +499,34 @@ export class PipeSessionSpawner {
       ...Object.entries(launchSpec.envOverrides ?? {}).map(
         ([k, v]) => `export ${k}=${JSON.stringify(String(v))};`,
       ),
+      // The configured sign-in key, claude-code only and after the scrub above. A key-only agent
+      // has no stored login, so this lane answered "Not logged in" (spec cloud-key-internal-calls).
+      // Through a private file: this whole string is tmux argv.
+      ...(claudeAuthFile ? [claudeAuthShellPrefix(claudeAuthFile)] : []),
       `${quotedArgv}${allowedToolsFlag}`,
       `2>>"${path.join(this.config.stateDir, 'logs', 'pipe-sessions.log')}"`,
       `; rm -f "${promptFile}"`,
     ].join(' ');
 
     try {
-      // Spawn tmux session, recording its incarnation (session id + pane pid)
+      // Create and stamp in one tmux client command queue. A server restart
+      // cannot happen between a separate creation call and a nonce stamp that
+      // would accidentally be attached to a replacement with a reused id.
+      const tmuxNonce = crypto.randomBytes(16).toString('hex');
       const created = execSync(
-        `tmux new-session -d -P -F '#{session_id} #{pane_pid}' -s "${sessionName}" -x 200 -y 50 'bash -c "${shellCmd.replace(/"/g, '\\"')}"'`,
+        `tmux new-session -d -P -F '#{session_id} #{pane_pid}' -s "${sessionName}" -x 200 -y 50 'bash -c "${shellCmd.replace(/"/g, '\\"')}"' \\; set-option -t "=${sessionName}:" @instar_pipe_nonce '${tmuxNonce}'`,
         { timeout: 10_000, encoding: 'utf-8' },
       ).trim();
       const [tmuxId, panePid] = created.split(' ');
       const pid = parseInt(panePid, 10) || undefined;
+      if (tmuxId?.startsWith('$')) {
+        // The option belongs to this tmux session, not the server. A restarted
+        // server or a replacement session cannot inherit the proof.
+        const stamped = execSync(`tmux show-options -qv -t '${tmuxId}' @instar_pipe_nonce`, {
+          timeout: 10_000, encoding: 'utf-8',
+        }).trim();
+        if (stamped !== tmuxNonce) throw new Error('tmux session ownership stamp unreadable');
+      }
 
       // Wait for session to be created
       await new Promise(r => setTimeout(r, 2000));
@@ -494,6 +536,7 @@ export class PipeSessionSpawner {
         execSync(`tmux has-session -t "=${sessionName}" 2>/dev/null`);
       } catch {
         // Session failed to create
+        removeClaudeAuthEnvFile(claudeAuthFile);
         try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:296' }); } catch { /* ignore */ }
         return { spawned: false, reason: 'tmux session failed to create' };
       }
@@ -513,6 +556,7 @@ export class PipeSessionSpawner {
         threadId: request.threadId,
         pid: pid ?? 0,
         tmuxId: tmuxId?.startsWith('$') ? tmuxId : undefined,
+        tmuxNonce: tmuxId?.startsWith('$') ? tmuxNonce : undefined,
         startedAt: Date.now(),
         timeoutTimer,
         warningTimer,
@@ -526,6 +570,7 @@ export class PipeSessionSpawner {
       return { spawned: true, sessionName, pid };
     } catch (err) {
       // Clean up prompt file on failure
+      removeClaudeAuthEnvFile(claudeAuthFile);
       try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:339' }); } catch { /* ignore */ }
       return { spawned: false, reason: `spawn failed: ${err instanceof Error ? err.message : err}` };
     }
@@ -567,14 +612,29 @@ export class PipeSessionSpawner {
     //   - anything else (gone, replaced, unreadable) → signal nothing.
     let owned = false;
     let paneLive = false;
+    let blankDeadOwned = false;
     if (session.tmuxId && session.pid > 0) {
       try {
         const rows = execSync(`tmux list-panes -t "=${sessionName}:" -F '#{session_id} #{pane_pid} #{pane_dead}' 2>/dev/null`, {
           encoding: 'utf-8',
         }).trim().split('\n');
-        const row = rows.find((r) => r.startsWith(`${session.tmuxId} ${session.pid} `));
+        // tmux 3.7c may clear pane_pid after a pane dies. A session ID alone
+        // can be reused after server restart, so require the random option we
+        // set on this exact session before accepting its blank-PID dead row.
+        let nonceMatches = false;
+        if (session.tmuxNonce) {
+          try {
+            const nonce = execSync(`tmux show-options -qv -t '${session.tmuxId}' @instar_pipe_nonce 2>/dev/null`, {
+              encoding: 'utf-8',
+            }).trim();
+            nonceMatches = nonce === session.tmuxNonce;
+          } catch { /* absent proof fails closed */ }
+        }
+        const row = nonceMatches ? rows.find((r) => r.startsWith(`${session.tmuxId} ${session.pid} `)
+          || r === `${session.tmuxId}  1`) : undefined;
         owned = row !== undefined;
         paneLive = row === `${session.tmuxId} ${session.pid} 0`;
+        blankDeadOwned = row === `${session.tmuxId}  1`;
       } catch { /* session gone — the recorded incarnation is over */ }
     }
     if (!owned) {
@@ -597,9 +657,18 @@ export class PipeSessionSpawner {
         console.log(`[pipe] ${sessionName}: pane is dead or its state unreadable — removing the session only, no process signal`);
       }
 
-      // Kill the tmux session by its unique id, never by name
+      // Kill by id, never by name. Recheck the nonce inside the same tmux
+      // command as removal, so a server restart between our earlier reads
+      // and this command cannot kill a replacement that reused the id.
+      // A blank-PID pane must still be dead at that exact moment.
       try {
-        execSync(`tmux kill-session -t '${session.tmuxId}' 2>/dev/null`);
+        const nonceCondition = `#{==:#{@instar_pipe_nonce},${session.tmuxNonce}}`;
+        const condition = blankDeadOwned
+          ? `#{&&:${nonceCondition},#{==:#{pane_dead},1}}`
+          : nonceCondition;
+        // tmux IDs contain '$'. Keep the nested command in shell single quotes
+        // so /bin/sh cannot expand '$0' before tmux evaluates it.
+        execSync(`tmux if-shell -F -t '${session.tmuxId}' '${condition}' 'kill-session -t ${session.tmuxId}' 2>/dev/null`);
       } catch { /* ignore */ }
     }
 
@@ -649,11 +718,13 @@ export class PipeSessionSpawner {
   }
 
   /**
-   * Kill all active pipe sessions (for shutdown).
+   * Kill all active pipe sessions, returning their names. Used at shutdown and, by memory
+   * privacy, on the multi-person flip: a pipe session runs with owner reach
+   * (memory-privacy-agent-places §3).
    */
-  killAll(): void {
-    for (const [name] of this.activeSessions) {
-      this.killPipeSession(name, 'shutdown');
-    }
+  killAll(reason = 'shutdown'): string[] {
+    const names = [...this.activeSessions.keys()];
+    for (const name of names) this.killPipeSession(name, reason);
+    return names;
   }
 }

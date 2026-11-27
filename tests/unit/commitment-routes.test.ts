@@ -376,6 +376,37 @@ describe('Commitment API routes (enabled)', () => {
     });
   });
 
+  // ── POST /commitments/:id/decide (dashboard Approve / Decline) ─────
+
+  describe('POST /commitments/:id/decide', () => {
+    const waiting = () => tracker.record({
+      type: 'one-time-action', userRequest: 'run the real-Mac pass', agentResponse: 'I will run it once approved',
+      owner: 'user', blockedOn: 'user-authorization', actionClass: 'real-mac-pass', followThroughOptOutReason: 'test',
+    } as never);
+    it('approve hands the next step back to the agent', async () => {
+      const c = waiting();
+      expect(c.blockedOn).toBe('user-authorization');
+      const res = await request(app).post(`/commitments/${c.id}/decide`).send({ decision: 'approve' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, decision: 'approve' });
+      const after = tracker.get(c.id)!;
+      expect([after.owner, after.blockedOn, after.status]).toEqual(['agent', 'none', 'pending']);
+    });
+    it('decline withdraws it with the reason', async () => {
+      const c = waiting();
+      const res = await request(app).post(`/commitments/${c.id}/decide`).send({ decision: 'decline', note: 'not now' });
+      expect(res.status).toBe(200);
+      const after = tracker.get(c.id)!;
+      expect(after.status).toBe('withdrawn');
+    });
+    it('refuses a promise that is not waiting on the operator, and a bad decision', async () => {
+      const c = tracker.record({ type: 'one-time-action', userRequest: 'x', agentResponse: 'y', followThroughOptOutReason: 'test' } as never);
+      expect((await request(app).post(`/commitments/${c.id}/decide`).send({ decision: 'approve' })).status).toBe(409);
+      expect((await request(app).post(`/commitments/${c.id}/decide`).send({ decision: 'maybe' })).status).toBe(400);
+      expect((await request(app).post('/commitments/CMT-nope/decide').send({ decision: 'approve' })).status).toBe(404);
+    });
+  });
+
   // ── POST /commitments/:id/withdraw ─────────────────────
 
   describe('POST /commitments/:id/withdraw', () => {

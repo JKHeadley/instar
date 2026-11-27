@@ -417,15 +417,29 @@ describe('PlaywrightProfileRegistry — buildSessionContextBlock (D16/D21)', () 
         vaultRefs: [],
       });
     }
-    // Budget covers the fixed ~533-byte header/footer plus room for a profile line or two,
+    // Budget covers the fixed ~760-byte header/footer plus room for a profile line or two,
     // so truncation MUST drop most of the 11 profiles.
-    const { block } = reg.buildSessionContextBlock(700);
-    expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(700);
+    const { block } = reg.buildSessionContextBlock(950);
+    expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(950);
     // default first
     const firstProfileLine = block.split('\n').find((l) => l.startsWith('- '));
     expect(firstProfileLine).toContain('default');
     // counted truncation marker present
     expect(block).toMatch(/…\(\+\d+ more — GET \/playwright-profiles\)/);
+  });
+
+  it('tells the agent to use its own reach before handing the operator an errand, and fits a dozen profiles by default', () => {
+    const reg = makeRegistry(h);
+    for (let i = 0; i < 11; i++) {
+      reg.createProfile({ id: `profile-${i}` });
+      reg.assignAccount(`profile-${i}`, { service: 'google', identity: `someone-${i}@example.com`, owner: i === 10 ? 'operator' : 'agent', vaultRefs: [] });
+    }
+    const { block } = reg.buildSessionContextBlock();
+    expect(block).toContain('Before asking the operator to look at or check something');
+    expect(block).toContain("on <operator>'s behalf]");
+    // The last (operator) profile is still shown under the default budget — no truncation marker.
+    expect(block).toContain('someone-10@example.com');
+    expect(block).not.toMatch(/…\(\+\d+ more/);
   });
 
   it('full=1 bypasses the byte cap', () => {

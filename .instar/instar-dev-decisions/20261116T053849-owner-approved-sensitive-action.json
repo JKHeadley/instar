@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-11-16T05:38:49.000Z",
+  "slug": "owner-approved-sensitive-action",
+  "riskFloor": 2,
+  "decision": "implement",
+  "tier": 2,
+  "tierReasoning": "Adds an authorization gate on an irreversible action (threadline_delete) plus the owner-approval primitive four sensitive handlers will cite. Auth + irreversibility raise the floor to Tier 2 even though it ships dark.",
+  "scope": {
+    "summary": "Owner-approved-sensitive-action primitive: a Face-ID-gated device-signed owner-presence approval (new purposes thread-delete/trust-grant) authorizes a sensitive action; isLocal is demoted from authority to signal. OwnerApprovedActionStore (single-use, TTL, revision-bound) + PendingApprovalRegistry (server-written card text) + four /mobile/action-approval routes (challenge/approve/pending/decline) reusing the existing owner-presence gate + verifyPresenceSignature; the threadline_delete MCP handler consumes an approval when enabled (dark default = byte-identical). Shared store/registry wired through server.ts into both the MCP gate and the phone routes.",
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/OwnerApprovedActionStore.ts",
+      "src/server/PendingApprovalRegistry.ts",
+      "src/server/mobileOwnerPresenceRoutes.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/threadline/ThreadlineMCPServer.ts",
+      "src/threadline/ThreadlineMcpHttpService.ts",
+      "src/commands/server.ts",
+      "src/core/types.ts",
+      "src/data/awareness/owner-approved-sensitive-action.md"
+    ]
+  },
+  "evidence": {
+    "incident": "SEC-018: threadline_delete/_trust/_pair/_relay treated an isLocal (same-machine) call as the owner, but a local session can read the PIN and authToken off disk, so a peer-driven local session could irreversibly delete a conversation with no human action.",
+    "spec": "docs/specs/owner-approved-sensitive-action.md (review-convergence + approved:true, CoS f22e0066)",
+    "focusedTests": "tests/unit/owner-approved-action-store.test.ts (7), tests/unit/pending-approval-registry.test.ts (6), tests/unit/mobile-owner-presence.test.ts action-approval byte contract (3), tests/e2e/owner-approved-sensitive-action-alive.test.ts (routes mounted + dark-safe)",
+    "signalVsAuthority": "isLocal demoted to a signal; authority is a Face-ID-gated P256 owner-presence signature over a message binding {purpose, actionKey}, verified by the existing verifyPresenceSignature. Ships dark (security.ownerApprovedActions.enabled default false); dark path byte-identical.",
+    "darkFlag": "security.ownerApprovedActions.enabled (default false)"
+  }
+}

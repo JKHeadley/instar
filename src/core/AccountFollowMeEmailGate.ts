@@ -45,6 +45,16 @@ export type EmailValidationResult =
       attentionItem: EmailMismatchAttentionItem;
     };
 
+/**
+ * attention-lifecycle-close-on-cause §3.3 — every email-gate row for `accountId`
+ * starts with this delimiter-bounded prefix (`…:<accountId>:<machine nickname>`),
+ * so a clear by prefix closes the row without knowing the nickname it was
+ * raised under.
+ */
+export function emailMismatchAttentionIdPrefix(accountId: string): string {
+  return `agent:account-follow-me-email:${accountId}:`;
+}
+
 /** Normalize an email for comparison (trim + lowercase). Returns '' for nullish/non-string. */
 function normEmail(v: unknown): string {
   return typeof v === 'string' ? v.trim().toLowerCase() : '';
@@ -60,7 +70,7 @@ export function validateEnrolledAccountEmail(input: EmailValidationInput): Email
   const expected = normEmail(input.expectedEmail);
 
   const attention = (reason: string): EmailMismatchAttentionItem => ({
-    id: `agent:account-follow-me-email:${input.accountId}:${input.targetMachineNickname.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
+    id: `${emailMismatchAttentionIdPrefix(input.accountId)}${input.targetMachineNickname.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
     title: `Account enrollment needs your check on "${input.targetMachineNickname}"`,
     body:
       `An account-follow-me enrollment on "${input.targetMachineNickname}" ${reason}. ` +

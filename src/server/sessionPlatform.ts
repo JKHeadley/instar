@@ -9,6 +9,8 @@
  * correctly (2026-10-21, topic 112490). Both surfaces now call this.
  */
 
+import { verifiedChannelIdentity, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
+
 export interface SessionPlatformTelegram {
   getTopicForSession?: (tmuxSession: string) => number | null | undefined;
   getTopicName?: (topicId: number) => string | null | undefined;
@@ -25,6 +27,26 @@ export interface SessionPlatformInfo {
   platformName?: string;
 }
 
+/** Public session title; tmuxSession remains the internal routing key. */
+export function sessionDisplayName(name: unknown, platform: SessionPlatformInfo): string {
+  const raw = typeof name === 'string' ? name.trim() : '';
+  const savedName = /(?:^|-)topic--?\d+$/i.test(raw) ? null
+    : platform.platform === 'slack'
+      ? verifiedChannelIdentity('slack', String(platform.platformId ?? '').split(':')[0], raw)?.name
+      : verifiedEntityName(platform.platformId ?? '__session__', raw);
+  if (platform.platform === 'app') return verifiedEntityName(platform.platformId ?? '__app__', platform.platformName) ?? savedName ?? 'Conversation name unavailable';
+  if (platform.platform === 'telegram') {
+    return verifiedChannelIdentity('telegram', platform.platformId ?? '', platform.platformName)?.name
+      ?? savedName ?? 'Conversation name unavailable';
+  }
+  if (platform.platform === 'slack') {
+    return verifiedChannelIdentity('slack', String(platform.platformId ?? '').split(':')[0], platform.platformName)?.name
+      ?? savedName ?? 'Channel name unavailable';
+  }
+  if (/(?:^|-)topic--?\d+$/i.test(raw)) return 'Conversation name unavailable';
+  return verifiedEntityName('__session__', raw) ?? 'Session name unavailable';
+}
+
 export function resolveSessionPlatform(
   tmuxSession: string,
   telegram: SessionPlatformTelegram | null | undefined,
@@ -32,10 +54,11 @@ export function resolveSessionPlatform(
 ): SessionPlatformInfo {
   if (telegram) {
     const topicId = telegram.getTopicForSession?.(tmuxSession);
-    if (topicId) {
+    if (topicId && topicId > 0) {
       const info: SessionPlatformInfo = { platform: 'telegram', platformId: topicId };
       const topicName = telegram.getTopicName?.(topicId);
-      if (topicName && !/^topic-\d+$/.test(topicName)) info.platformName = topicName;
+      const identity = verifiedChannelIdentity('telegram', topicId, topicName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }
@@ -44,7 +67,8 @@ export function resolveSessionPlatform(
     if (channelId) {
       const info: SessionPlatformInfo = { platform: 'slack', platformId: channelId };
       const registry = slack.getChannelRegistry();
-      if (registry[channelId]?.channelName) info.platformName = registry[channelId]!.channelName;
+      const identity = verifiedChannelIdentity('slack', channelId.split(':')[0], registry[channelId]?.channelName ?? registry[channelId.split(':')[0]]?.channelName);
+      if (identity) info.platformName = identity.name;
       return info;
     }
   }

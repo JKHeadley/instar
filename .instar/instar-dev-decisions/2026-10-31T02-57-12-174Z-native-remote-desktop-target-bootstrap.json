@@ -1,0 +1,22 @@
+{
+  "ts": "2026-10-31T02:57:12.174Z",
+  "slug": "native-remote-desktop-target-bootstrap",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopProbeReadiness.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

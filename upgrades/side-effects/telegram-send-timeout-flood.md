@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Tier 1: 3 source files, about 30 lines, plus tests. `src/messaging/telegram-egress.ts` exports `TELEGRAM_API_CALL_TIMEOUT_MS = 60_000`; `TelegramAdapter.apiCall` and `TelegramLifeline.apiCall` use it for every non-`getUpdates` call (was 15 000 ms). `TelegramOriginService` writes one `console.warn` (via the new exported `describeTransportUnknown`) on the `transport-acceptance-unknown` branch, with method, operation id, error name/message/cause/code and elapsed network time. Effort: one review pass, first commit attempt pending at the time of writing.
+Tier 1: 3 source files, about 30 lines, plus tests. `src/messaging/telegram-egress.ts` exports `TELEGRAM_API_CALL_TIMEOUT_MS = 60_000`; `TelegramAdapter.apiCall` and `TelegramLifeline.apiCall` use it for every non-`getUpdates` call (was 15 000 ms). `TelegramOriginService` already writes one `console.warn` on the `transport-acceptance-unknown` branch on main (its `describeTransportFailure` line, added after this PR was opened); this change adds the method and the elapsed network time to that line. Effort: one review pass, then a merge of main on 2026-11-26.
 
 ## Decision-point inventory
 
@@ -46,14 +46,14 @@ No competing-signals decision point added; a timeout value is a floor, not a jud
 ## 5. Interactions
 
 - `transport-deadlines.test.ts` already proves the clock starts only after origin review, claim and capacity consumption; unchanged, so the 60 s is network time only.
-- Callers awaiting a send: `telegram-reply.sh` allows 125 s (`--max-time 125`), so it still gets the server's answer. Internal callers that await `apiCall` (topic creation, edits) now wait up to 60 s on a stalled Telegram instead of 15 s; they were failing in that case anyway.
+- Callers awaiting a send: the binding budget is the server's `/telegram/reply` route timeout, `OUTBOUND_MESSAGING_TIMEOUT_MS` = 120 s (`telegram-reply.sh` allows 125 s outside it). One send's 60 s network wait plus the tone-gate review and the origin send-policy review (each bounded by `OUTBOUND_GATE_REVIEW_BUDGET_MS` = 20 s) is at most 100 s; `transport-deadlines.test.ts` asserts the inequality. Known limit: a reply split into several Telegram messages sends them one after another, so if Telegram is slow on each (for example three parts at 40 s), the route can answer 408 while later parts are still in flight. The relay script reports that as ambiguous and says to check the conversation; each part is a recorded origin child, so a part already accepted is not resent. Before this change the same reply's worst case was about 4 x 15 s. Internal callers that await `apiCall` (topic creation, edits) now wait up to 60 s on a stalled Telegram instead of 15 s; they were failing in that case anyway.
 - The credential-capacity grant is consumed before the network starts, so a longer network wait does not hold a capacity reservation.
 
 ---
 
 ## 6. External surfaces
 
-Telegram sees no difference except that the client waits for its answer. Users see messages delivered (or retried) during throttling instead of silently lost. Logs gain one line per outcome-unknown send; the line excludes the URL and redacts token-shaped text.
+Telegram sees no difference except that the client waits for its answer. Users see messages delivered (or retried) during throttling instead of silently lost. The existing outcome-unknown log line gains the method and the network wait; it still excludes the URL and redacts token-shaped text.
 
 ## 6b. Operator-surface quality
 
@@ -69,7 +69,7 @@ Machine-local by design: each machine's server and lifeline time their own reque
 
 ## 8. Rollback cost
 
-Revert the commit; the next release restores 15 s and removes the log line. No state, migration or config involved.
+Revert the commit; the next release restores 15 s and main's shorter log line. No state, migration or config involved.
 
 ---
 
@@ -84,7 +84,14 @@ Not required.
 ## Evidence pointers
 
 - Live probe on the running Studio server, 2026-10-26: `sendMessage` aborted at 15.0 s; same bot's chat reads returned 429 after 28-33 s; other bots answered the same chat at once; with a 90 s wait a real origin-recorded send returned 200 after 14.4 s (message 130522 recorded).
-- `tests/unit/telegram-origin/transport-deadlines.test.ts` (log line via the real origin runtime fails without the `console.warn`; timeout bound; redaction).
+- `tests/unit/telegram-origin/transport-deadlines.test.ts` (the log line's exact shape through the real origin runtime, including method and wait; the timeout bound).
+- `tests/integration/telegram-origin-routes.test.ts` now asserts the shared constant instead of the old 15 s value.
+
+## Merge of main, 2026-11-26
+
+An independent Claude Opus 5.5 reviewer subagent read the merged diff on 2026-11-26 and concurred, with one fix: the 60 s had been justified against the relay script's 125 s instead of the server's 120 s route budget. The test, the constant's comment and these notes now use the server budget, and the multi-part limit is stated in section 5.
+
+Main had changed the same files: PR 3966 made the held-retry and connect checks deterministic, and main added its own outcome-unknown log line. The merge keeps main's log line and its wording ("send outcome unknown for <operation>", which main's connect-failure tests search for) and adds the method and the network wait to it. The PR's own helper `describeTransportUnknown` and its separate redaction test were removed as duplicates of main's `describeTransportFailure`. The 60 s timeout stays: main's 15 s expectations were pins of the old value with no recorded reason, while the 60 s comes from the measured 14 to 33 s throttled answers.
 
 ## Class-Closure Declaration (display-only mirror)
 

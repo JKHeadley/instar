@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-16T16:29:27.571Z",
+  "slug": "cos-done-item-all-prs",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffEvidence.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

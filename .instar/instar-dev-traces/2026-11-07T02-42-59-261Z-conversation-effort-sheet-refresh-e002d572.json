@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-effort-sheet-refresh",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T02:42:59.261Z",
+  "artifactPath": "upgrades/side-effects/conversation-effort-sheet-refresh.md",
+  "artifactSha256": "27b94d226054b0f9ddc6342110e4708f31489802a7a6bfad3c29b2dab006f1fd",
+  "coveredFiles": [
+    "dashboard/console/conversation-effort-actions.js",
+    "tests/unit/console-conversation-effort-actions.test.ts",
+    "upgrades/conversation-effort-sheet-refresh.eli16.md",
+    "upgrades/side-effects/conversation-effort-sheet-refresh.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One dashboard view refresh; a revert fully undoes it.",
+  "eli16Path": "upgrades/conversation-effort-sheet-refresh.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-effort-sheet-refresh.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

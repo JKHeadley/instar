@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cb-user-corpus",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T16:47:37.055Z",
+  "artifactPath": "upgrades/side-effects/cb-user-corpus.md",
+  "artifactSha256": "a0d8a8a81336147162a2fc95dd4d36383f13ed0710610f2de46adc7fc740182d",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "tests/e2e/context-layer-user-corpus-alive.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "merge of main (S12/S13 merged); the U wiring e2e assertion string-matched the whole captureDeps line, which S13's onLayerOutcome legitimately extends; now asserts the U spread is present (positive and negative control checked)",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "test assertion follows a sibling slice's legitimate wiring addition; no runtime change"
+  }
+}

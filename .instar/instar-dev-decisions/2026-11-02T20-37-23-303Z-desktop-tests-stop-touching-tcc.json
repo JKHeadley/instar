@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-02T20:37:23.303Z",
+  "slug": "desktop-tests-stop-touching-tcc",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MacDesktopHost.ts",
+      "src/core/MachineLockStateReader.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "flaky-batch-1119",
+  "sessionId": "47ece098-4d9b-4dba-b665-7b2dbb95fdc5",
+  "timestamp": "2026-11-19T21:34:19.564Z",
+  "artifactPath": "upgrades/side-effects/flaky-batch-1119.md",
+  "artifactSha256": "e6ced1dfaa596f8b901bc39f9d170d3d4e92ad4588feba60e3ee1184bc1117db",
+  "coveredFiles": [
+    "docs/specs/flaky-batch-1119.eli16.md",
+    "tests/integration/graph-witness-chunks.test.ts",
+    "upgrades/next/flaky-batch-1119.md",
+    "upgrades/side-effects/flaky-batch-1119.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: a corruption step that was a no-op one run in 64 now always changes the data; no source change",
+  "eli16Path": "docs/specs/flaky-batch-1119.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/flaky-batch-1119.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

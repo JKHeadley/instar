@@ -220,6 +220,18 @@ CREATE TABLE IF NOT EXISTS authority_daily_usage (
   committed_usd REAL NOT NULL DEFAULT 0 CHECK(committed_usd >= 0), decisions INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL, PRIMARY KEY(authority_id,generation,utc_day)
 );
+CREATE TABLE IF NOT EXISTS triage_daily_usage (
+  utc_day TEXT NOT NULL, kind TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(utc_day,kind)
+);
+CREATE TABLE IF NOT EXISTS triage_call_reservations (
+  token TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, account_id TEXT NOT NULL,
+  limit_family TEXT NOT NULL, used_percent REAL NOT NULL, acquired_at INTEGER NOT NULL,
+  authority_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  owner_host TEXT NOT NULL, owner_epoch INTEGER NOT NULL, utc_day TEXT NOT NULL,
+  subcap_kind TEXT, state TEXT NOT NULL CHECK(state IN ('reserved','launched','released','completed')),
+  created_at INTEGER NOT NULL, launched_at INTEGER, finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_triage_call_reservations_state ON triage_call_reservations(state,created_at);
 CREATE TABLE IF NOT EXISTS authority_posture (
   authority_id TEXT NOT NULL, generation INTEGER NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('active','proposal-only')),
   reason TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(authority_id,generation)
@@ -668,11 +680,15 @@ export class FeedbackDrainStore {
     return Boolean(this.db.prepare('SELECT 1 found FROM work_tombstones WHERE idempotency_key=?').get(key));
   }
 
-  claimNext(input: { consumerId: string; ownerAuthorityEpoch: number; leaseMs: number; now?: number }): Claim | null {
+  claimNext(input: { consumerId: string; ownerAuthorityEpoch: number; leaseMs: number; now?: number; onlyWorkIds?: readonly string[] }): Claim | null {
     const claim = this.db.transaction(() => {
       this.advanceOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
       const now = input.now ?? this.now();
-      const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
+      const only = input.onlyWorkIds ? [...new Set(input.onlyWorkIds)].slice(0, 50) : null;
+      if (only && only.length === 0) return null;
+      const row = (only
+        ? this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) AND work_id IN (${only.map(() => '?').join(',')}) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now, ...only)
+        : this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now)) as { work_id: string } | undefined;
       if (!row) return null;
       const token = this.tokenFactory();
       const tokenHash = this.hashToken(token);
@@ -686,6 +702,34 @@ export class FeedbackDrainStore {
     }).immediate();
     this.inject('claim-after-commit');
     return claim;
+  }
+
+  /**
+   * Approved ids still owed exclusivity: not yet attempted under this approval (attempt
+   * count equals the baseline recorded at approval; no clocks, so failover clock skew
+   * cannot blur it) and not finished. A held item still counts: while any approved item
+   * is outstanding, the consumer claims only approved items, even if none is claimable
+   * this run, so a hold can never let unseen work take the approved batch's place.
+   * `claimable` is the subset the consumer may claim right now.
+   */
+  outstandingApprovedWork(baselines: Readonly<Record<string, number>>, now = this.now()): { outstanding: string[]; claimable: string[] } {
+    const only = Object.keys(baselines).slice(0, 50);
+    if (only.length === 0) return { outstanding: [], claimable: [] };
+    const rows = this.db.prepare(`SELECT work_id, attempts, state, next_attempt_at FROM work WHERE state IN ('queued','retryable','held') AND work_id IN (${only.map(() => '?').join(',')})`)
+      .all(...only) as Array<{ work_id: string; attempts: number; state: string; next_attempt_at: number | null }>;
+    const outstanding = rows.filter((row) => Number(row.attempts) === baselines[row.work_id]);
+    return {
+      outstanding: outstanding.map((row) => row.work_id),
+      claimable: outstanding.filter((row) => row.state !== 'held' && (row.next_attempt_at === null || Number(row.next_attempt_at) <= now)).map((row) => row.work_id),
+    };
+  }
+
+  /** Work the consumer would claim next, in claimNext's exact order (read-only; for the promotion proposal). */
+  claimableWork(limit: number, now = this.now()): FeedbackWork[] {
+    const bounded = Math.max(0, Math.min(50, Math.trunc(limit)));
+    const rows = this.db.prepare(`SELECT * FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT ?`)
+      .all(now, bounded) as Record<string, unknown>[];
+    return rows.map((row) => this.workFromRow(row));
   }
 
   /** Exercise the real claim/link/ack FSM in an isolated ephemeral database. */
@@ -916,6 +960,7 @@ export class FeedbackDrainStore {
     return this.db.transaction(() => {
       const active = this.db.prepare(`SELECT run_id,state FROM drain_runs WHERE state IN ('accepted','running') LIMIT 1`).get() as { run_id: string; state: RunState } | undefined;
       if (active) return { runId: active.run_id, state: active.state, acquired: false };
+      this.advanceOwnerAuthorityEpoch(input.ownerEpoch);
       const now = this.now(); const runId = `run:${randomUUID()}`;
       this.db.prepare(`INSERT INTO drain_runs(run_id,state,owner_host,owner_epoch,lease_expires_at,reason,created_at,updated_at) VALUES (?,'accepted',?,?,?,?,?,?)`).run(runId, clamp(input.ownerHost, 200), input.ownerEpoch, now + input.leaseMs, '', now, now);
       this.noteDrainOwner(clamp(input.ownerHost, 200), input.ownerEpoch);
@@ -1043,6 +1088,19 @@ export class FeedbackDrainStore {
       reason: String(row.reason), createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
       durationMs: Math.max(0, Number(row.updated_at) - Number(row.created_at)),
     };
+  }
+
+  /**
+   * Finished drain runs created since `sinceMs`, from the durable run table (it survives
+   * restarts, unlike any in-memory counter). `succeeded` counts `succeeded` and `no-op`;
+   * `degraded`, `failed` and `abandoned` count against it. Runs still in flight are left out.
+   */
+  runOutcomes(sinceMs: number): { succeeded: number; finished: number } {
+    const row = this.db.prepare(`SELECT
+        SUM(CASE WHEN state IN ('succeeded','no-op') THEN 1 ELSE 0 END) ok,
+        COUNT(*) total
+      FROM drain_runs WHERE created_at>=? AND state NOT IN ('accepted','running')`).get(sinceMs) as { ok: number | null; total: number };
+    return { succeeded: Number(row.ok ?? 0), finished: Number(row.total ?? 0) };
   }
 
   mutateAuthority(input: Omit<AuthorityRecord, 'generation' | 'revoked'> & { action: 'create' | 'replace' | 'revoke' | 'restore'; operatorDecisionRef: string }): AuthorityRecord {
@@ -1265,6 +1323,128 @@ export class FeedbackDrainStore {
         .run(authority.authorityId, authority.generation, day, calls, now);
       return true;
     }).immediate();
+  }
+
+  /** One owner-fenced primary triage call, with its daily and retriage debits in one transaction. */
+  reserveTriageCall(input: {
+    authority: AuthorityRecord; ownerHost: string; ownerEpoch: number;
+    accountId: string; limitFamily: 'codex'; usedPercent: number; acquiredAt: number;
+    maxCallsPerDay: number; subcap?: { kind: 'retriage'; maxCallsPerDay: number };
+    now?: number;
+  }): string | null {
+    const { authority, ownerHost, ownerEpoch, maxCallsPerDay, subcap } = input;
+    const now = input.now ?? this.now();
+    if (!Number.isSafeInteger(maxCallsPerDay) || maxCallsPerDay < 1 ||
+      !Number.isSafeInteger(ownerEpoch) || ownerEpoch < 1 ||
+      !input.accountId || input.accountId.length > 200 || input.limitFamily !== 'codex' ||
+      !Number.isFinite(input.usedPercent) || input.usedPercent < 0 || input.usedPercent >= 75 ||
+      !Number.isFinite(input.acquiredAt) || now - input.acquiredAt > 60_000 || input.acquiredAt - now > 60_000 ||
+      (subcap && (!Number.isSafeInteger(subcap.maxCallsPerDay) || subcap.maxCallsPerDay < 1))) return null;
+    const day = new Date(now).toISOString().slice(0, 10);
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      const tenure = this.drainOwnerContinuity();
+      const storedEpoch = this.ownerAuthorityEpoch();
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
+        current.provider !== authority.provider || current.modelFamily !== authority.modelFamily ||
+        !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
+        (storedEpoch === null || ownerEpoch < storedEpoch) ||
+        !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return null;
+      const used = this.authorityCallsToday(authority, now);
+      if (used >= maxCallsPerDay) return null;
+      if (subcap) {
+        const row = this.db.prepare('SELECT calls FROM triage_daily_usage WHERE utc_day=? AND kind=?')
+          .get(day, subcap.kind) as { calls: number } | undefined;
+        if (Number(row?.calls ?? 0) >= subcap.maxCallsPerDay) return null;
+      }
+      // The lease moves on every restart while this durable copy waits for its next writer.
+      // A current owner with unbroken tenure carries it forward, as starting a drain run does.
+      this.advanceOwnerAuthorityEpoch(ownerEpoch);
+      const token = randomUUID();
+      const attemptId = randomUUID();
+      this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)
+        VALUES (?,?,?,0,1,?) ON CONFLICT(authority_id,generation,utc_day) DO UPDATE SET
+        decisions=authority_daily_usage.decisions+1,updated_at=excluded.updated_at`)
+        .run(authority.authorityId, authority.generation, day, now);
+      if (subcap) this.db.prepare(`INSERT INTO triage_daily_usage(utc_day,kind,calls) VALUES (?,?,1)
+        ON CONFLICT(utc_day,kind) DO UPDATE SET calls=calls+1`).run(day, subcap.kind);
+      this.db.prepare(`INSERT INTO triage_call_reservations(token,attempt_id,account_id,limit_family,used_percent,acquired_at,
+        authority_id,generation,owner_host,owner_epoch,utc_day,subcap_kind,state,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'reserved',?)`).run(token, attemptId, input.accountId, input.limitFamily,
+        input.usedPercent, input.acquiredAt, authority.authorityId, authority.generation, ownerHost, ownerEpoch,
+        day, subcap?.kind ?? null, now);
+      this.auditTriageCall(token, null, 'reserved');
+      return token;
+    }).immediate();
+  }
+
+  /** A launch and a competing release have one transactional winner. */
+  launchTriageCall(token: string, authority: AuthorityRecord, ownerHost: string, ownerEpoch: number, now = this.now()): boolean {
+    return this.db.transaction(() => {
+      const current = this.getAuthority(authority.authorityId, authority.generation);
+      const tenure = this.drainOwnerContinuity();
+      if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
+        !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
+        this.ownerAuthorityEpoch() !== ownerEpoch ||
+        !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return false;
+      const changed = this.db.prepare(`UPDATE triage_call_reservations SET state='launched',launched_at=?
+        WHERE token=? AND state='reserved' AND authority_id=? AND generation=? AND owner_host=? AND owner_epoch=?`)
+        .run(now, token, authority.authorityId, authority.generation, ownerHost, ownerEpoch);
+      if (changed.changes === 1) this.auditTriageCall(token, 'reserved', 'launched');
+      return changed.changes === 1;
+    }).immediate();
+  }
+
+  /** Refund only the original UTC-day debits of this exact unlaunched token, once. */
+  releaseTriageCall(token: string, now = this.now()): boolean {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT authority_id,generation,utc_day,subcap_kind FROM triage_call_reservations
+        WHERE token=? AND state='reserved'`).get(token) as { authority_id: string; generation: number; utc_day: string; subcap_kind: string | null } | undefined;
+      if (!row) return false;
+      const changed = this.db.prepare(`UPDATE triage_call_reservations SET state='released',finished_at=? WHERE token=? AND state='reserved'`)
+        .run(now, token);
+      if (changed.changes !== 1) return false;
+      const daily = this.db.prepare(`UPDATE authority_daily_usage SET decisions=decisions-1,updated_at=?
+        WHERE authority_id=? AND generation=? AND utc_day=? AND decisions>=1`)
+        .run(now, row.authority_id, row.generation, row.utc_day);
+      if (daily.changes !== 1) throw new Error('triage call daily debit missing');
+      if (row.subcap_kind) {
+        const subcap = this.db.prepare(`UPDATE triage_daily_usage SET calls=calls-1 WHERE utc_day=? AND kind=? AND calls>=1`)
+          .run(row.utc_day, row.subcap_kind);
+        if (subcap.changes !== 1) throw new Error('triage call subcap debit missing');
+      }
+      this.auditTriageCall(token, 'reserved', 'released');
+      return true;
+    }).immediate();
+  }
+
+  completeTriageCall(token: string, outcome: 'succeeded' | 'failed' | 'execution-identity-unverified',
+    now = this.now(), observer?: { host: string; epoch: number }): boolean {
+    return this.db.transaction(() => {
+      const completed = this.db.prepare(`UPDATE triage_call_reservations SET state='completed',finished_at=? WHERE token=? AND state='launched'`)
+        .run(now, token).changes === 1;
+      if (completed) this.auditTriageCall(token, 'launched', 'completed', outcome, observer);
+      return completed;
+    }).immediate();
+  }
+
+  /** Replicated projection: opaque IDs and bounded quota evidence only. */
+  private auditTriageCall(token: string, from: string | null, to: string,
+    outcome?: 'succeeded' | 'failed' | 'execution-identity-unverified',
+    observer?: { host: string; epoch: number }): void {
+    const row = this.db.prepare(`SELECT attempt_id,account_id,limit_family,used_percent,acquired_at,generation,owner_host,owner_epoch
+      FROM triage_call_reservations WHERE token=?`).get(token) as Record<string, unknown>;
+    this.audit('triage-call', token, from, to, JSON.stringify({
+      accountId: row.account_id,
+      attemptId: row.attempt_id, reservationId: token,
+      ownerHost: row.owner_host, ownerEpoch: row.owner_epoch,
+      limitFamily: row.limit_family, source: 'codex-app-server', usedPercent: row.used_percent,
+      acquiredAt: row.acquired_at, ageMs: Math.max(0, this.now() - Number(row.acquired_at)),
+      generation: row.generation,
+      ...(outcome ? { outcome } : {}),
+      ...(observer ? { observerHost: observer.host, observerEpoch: observer.epoch,
+        handoffObserved: observer.host !== row.owner_host || observer.epoch !== row.owner_epoch } : {}),
+    }), 1200);
   }
 
   /** Model calls reserved today (UTC) for this authority generation. */

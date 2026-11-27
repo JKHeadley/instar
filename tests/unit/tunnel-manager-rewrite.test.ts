@@ -126,6 +126,21 @@ describe('TunnelManager (rewrite) — Tier-1 happy path', () => {
   });
 });
 
+describe('TunnelManager (rewrite) — lifecycle event', () => {
+  it('re-emits each lifecycle transition, so the desktop viewer can re-read the tunnel tier', async () => {
+    const quick = mockProvider({ name: 'cloudflare-quick', url: 'https://quick.example' });
+    const mgr = new TunnelManager(
+      { ...baseConfig, stateDir },
+      { providers: [quick], fetch: vi.fn(async () => okResponse()) },
+    );
+    const seen: string[] = [];
+    mgr.on('lifecycle', (event: { to: string }) => seen.push(event.to));
+    await mgr.start();
+    expect(seen).toContain('active');
+    expect(mgr.lifecycleState.lastState).toBe('active');
+  });
+});
+
 describe('TunnelManager (rewrite) — reachability probe', () => {
   it('rejects a provider whose URL does not pass /health and falls through', async () => {
     const named = mockProvider({ name: 'cloudflare-named', url: 'https://broken.example' });

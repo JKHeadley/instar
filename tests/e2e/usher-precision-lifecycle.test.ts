@@ -59,7 +59,7 @@ describe('E2E: Usher precision loop lifecycle', () => {
       config: { projectName: 'usher-prec-e2e', projectDir, stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
       sessionManager: { listRunningSessions: () => [], clearInjectionTracker: () => {} } as any,
       state: { getJobState: () => null, getSession: () => null } as any,
-      telegram: { sendToTopic: async () => { sent++; } } as any,
+      telegram: { sendToTopic: async () => { sent++;  return { messageId: 1, topicId: 1 }; } } as any,
       usherSignalStore: store,
       // Null gate → checkOutboundMessage passes through (the reply isn't blocked).
       messagingToneGate: null, outboundDedupGate: null, topicIntentArcCheck: null,

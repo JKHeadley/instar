@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-06T19:52:15.170Z",
+  "slug": "mobile-pairing-introducer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 560,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/machine.ts",
+      "src/commands/mobileIntroducer.ts",
+      "src/core/MobileDeviceKeys.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/mobilePairingIntroducer.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 553,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

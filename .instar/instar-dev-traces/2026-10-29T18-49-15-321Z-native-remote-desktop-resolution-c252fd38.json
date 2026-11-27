@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-resolution",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-29T18:49:15.321Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-resolution.md",
+  "artifactSha256": "39413bfec9cc39934e0a6ba3d2f0b774675f9b3de4c5c16a3b6440edaf569c2e",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "docs/specs/native-remote-desktop-quality.md",
+    "scripts/desktop-public-browser-smoke.mjs",
+    "site/src/content/docs/guides/remote-desktop.md",
+    "src/core/DesktopVideo.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/server/DesktopStreamManager.ts",
+    "tests/e2e/desktop-boot-lifecycle.test.ts",
+    "tests/unit/DesktopStreamManager.test.ts",
+    "tests/unit/DesktopVideo.test.ts",
+    "tests/unit/DirectDesktopAccess.test.ts",
+    "tests/unit/MacDesktopHostCapture.test.ts",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "upgrades/next/native-remote-desktop-resolution.md",
+    "upgrades/side-effects/native-remote-desktop-resolution.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

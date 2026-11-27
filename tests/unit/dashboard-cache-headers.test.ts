@@ -1,5 +1,5 @@
 /**
- * #1441 — dashboard static assets must revalidate every load (unit tier).
+ * #1441 — dashboard static assets must never outlive a release (unit tier).
  *
  * Before this fix, express.static served `Cache-Control: public, max-age=0`, which
  * Cloudflare's edge overrode with a multi-hour TTL; a warm-cache browser then paired
@@ -22,19 +22,24 @@ function mockRes(): { res: Response; headers: Record<string, string> } {
   return { res, headers };
 }
 
-describe('#1441 dashboardCacheControl — revalidate-always header', () => {
-  it('stamps Cache-Control: no-cache (revalidate, not no-store)', () => {
-    const { res, headers } = mockRes();
-    dashboardCacheControl(res);
-    expect(headers['Cache-Control']).toBe('no-cache');
+describe('#1441 dashboardCacheControl — pages revalidate, scripts and styles are never stored', () => {
+  it('stamps no-cache on pages (and when no path is known), keeping 304 revalidation', () => {
+    for (const p of [undefined, '/x/dashboard/index.html', '/x/dashboard/console/index.html', '/x/dashboard/logo.png']) {
+      const { res, headers } = mockRes();
+      dashboardCacheControl(res, p);
+      expect(headers['Cache-Control'], String(p)).toBe('no-cache');
+    }
   });
 
-  it('is no-cache, NOT no-store — keeps 304 revalidation efficient', () => {
-    const { res, headers } = mockRes();
-    dashboardCacheControl(res);
-    // no-store would kill ETag 304s and re-download every asset every load; the fix
-    // deliberately uses no-cache so unchanged assets 304 instead.
-    expect(headers['Cache-Control']).not.toContain('no-store');
+  it('stamps no-store on .js, .mjs and .css — the only directive Cloudflare passes through for them', () => {
+    // Measured 2026-10-30 via the named tunnel: Cloudflare rewrote `no-cache` on .js/.css
+    // to max-age=14400 (a release then reached the phone up to 4h late) and passed
+    // `no-store` through untouched.
+    for (const p of ['/x/dashboard/glance.js', '/x/dashboard/console/console.css', '/x/dashboard/a.mjs', '/x/dashboard/STYLE.CSS']) {
+      const { res, headers } = mockRes();
+      dashboardCacheControl(res, p);
+      expect(headers['Cache-Control'], p).toBe('no-store');
+    }
   });
 });
 
@@ -48,11 +53,10 @@ describe('#1441 DASHBOARD_STATIC_OPTIONS — the wiring contract', () => {
     expect(DASHBOARD_STATIC_OPTIONS.lastModified).toBe(true);
   });
 
-  it('setHeaders applied to a served response yields no-cache', () => {
-    const { res, headers } = mockRes();
-    // serve-static calls setHeaders(res, path, stat) after it would set its own
-    // Cache-Control; our helper overrides it to no-cache.
-    (DASHBOARD_STATIC_OPTIONS.setHeaders as (r: Response) => void)(res);
-    expect(headers['Cache-Control']).toBe('no-cache');
+  it('setHeaders uses the served path: no-store for a module, no-cache for a page', () => {
+    // serve-static calls setHeaders(res, path, stat) after it would set its own Cache-Control.
+    const set = DASHBOARD_STATIC_OPTIONS.setHeaders as (r: Response, p: string) => void;
+    const a = mockRes(); set(a.res, '/x/dashboard/glance.js'); expect(a.headers['Cache-Control']).toBe('no-store');
+    const b = mockRes(); set(b.res, '/x/dashboard/index.html'); expect(b.headers['Cache-Control']).toBe('no-cache');
   });
 });

@@ -464,7 +464,9 @@ describe('wiring integrity — the deps are real, not placeholders', () => {
   });
 
   it('AgentServer injects a real durable registry, machine-scoped', () => {
-    expect(AGENT_SERVER_SRC).toContain('darkFlagRegistry: new DarkFlagMaturationRegistry({');
+    // The analyst gets a real instance; maturation-board hoists the SAME instance
+    // onto a field so the read-only board can load() it (docs/specs/maturation-board.md §6).
+    expect(AGENT_SERVER_SRC).toContain('darkFlagRegistry: (this.darkFlagRegistry = new DarkFlagMaturationRegistry({');
     expect(AGENT_SERVER_SRC).toMatch(/machineId:\s*options\.meshSelfId/);
   });
 

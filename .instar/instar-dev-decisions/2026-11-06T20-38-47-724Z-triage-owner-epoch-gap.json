@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T20:38:47.724Z",
+  "slug": "triage-owner-epoch-gap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainStore.ts",
+      "src/feedback-factory/triage/FeedbackTriageService.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "standards-single-provider-floor-and-cadence-well",
+  "sessionId": "edcbd517-85db-467a-bd2f-2d48f0d27c0f",
+  "timestamp": "2026-10-30T13:45:29.894Z",
+  "artifactPath": "upgrades/side-effects/standards-single-provider-floor-and-cadence-well.md",
+  "artifactSha256": "6f1758e26b82c5a432078fbdbe064ae8c135243481e93991c951b80e997316e9",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/standards-single-provider-floor-and-cadence-well-2026-10-26.json",
+    "docs/specs/reports/standards-single-provider-floor-and-cadence-well-2026-10-26.md",
+    "docs/specs/standards-single-provider-floor-and-cadence-well.eli16.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/side-effects/standards-single-provider-floor-and-cadence-well.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Docs-only constitution wording with a stamped audit chain; no runtime effect.",
+  "eli16Path": "docs/specs/standards-single-provider-floor-and-cadence-well.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/standards-single-provider-floor-and-cadence-well.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

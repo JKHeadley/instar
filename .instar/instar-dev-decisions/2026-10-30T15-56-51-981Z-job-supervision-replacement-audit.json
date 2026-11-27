@@ -1,0 +1,28 @@
+{
+  "ts": "2026-10-30T15:56:51.981Z",
+  "slug": "job-supervision-replacement-audit",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 178,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/bench-job-supervision-replacement.mjs",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/types.ts",
+      "src/scheduler/JobSupervisionReplacementPrompt.ts",
+      "src/scheduler/JobSupervisionStore.ts",
+      "src/scheduler/JobSupervisionWorker.ts"
+    ],
+    "addedLines": 152,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

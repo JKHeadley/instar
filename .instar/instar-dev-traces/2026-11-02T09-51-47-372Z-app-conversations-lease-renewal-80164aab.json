@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "app-conversations-lease-renewal",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T09:51:47.372Z",
+  "artifactPath": "upgrades/side-effects/app-conversations-lease-renewal.md",
+  "artifactSha256": "2f3d225b7e91caf61d86063cfab0abf8e6f28ca74628d78171d7cb91a9b22a1e",
+  "coveredFiles": [
+    "docs/specs/app-conversations-lease-renewal.eli16.md",
+    "docs/specs/multimachine-lease-poll-robustness.md",
+    "src/commands/server.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/telegram-origin/OriginAwareness.ts",
+    "src/server/leaseRenewalDependencies.ts",
+    "tests/e2e/app-conversations-lease-renewal.test.ts",
+    "tests/helpers/originLeaseDependency.ts",
+    "tests/integration/mobile-native-conversations.test.ts",
+    "tests/unit/lease-renewal-app-dependency.test.ts",
+    "upgrades/next/app-conversations-lease-renewal.md",
+    "upgrades/side-effects/app-conversations-lease-renewal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "enrolls an existing holder-only renewal timer for one more surface; the migrator change is an in-place prose refresh; revert restores",
+  "eli16Path": "docs/specs/app-conversations-lease-renewal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-conversations-lease-renewal.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

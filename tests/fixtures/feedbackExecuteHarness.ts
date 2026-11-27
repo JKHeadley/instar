@@ -32,24 +32,38 @@ export interface ExecHarness extends Harness {
   cfg: ExecuteLiveConfig;
   enabled: { value: boolean };
   epoch: { value: number };
-  repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
+  canonical: { value: boolean };
+  repo: { createdBodies: string[]; info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
+  /** Local Verify's answer to "does queued work need a restart?" (the attempt hold yields while true). */
+  localVerifyNeedsRestart: { fn: () => boolean };
+  /** Called inside the publish push (the attempt is `verifying` / `publishing` at that moment). */
+  onPush: { fn: () => void };
   /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
   spawnError: { value: Error | null };
   pushes: PushRecord[];
-  prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; labels: string[]; title: string; body: string }>;
+  /** `createHead` is the `--head` createPr was given (`owner:branch` for a fork PR); `headRefName` is the branch, as GitHub reports it. */
+  prs: Map<number, { state: string; mergedAt: string | null; headRefOid: string; mergeCommit: string | null; author: string | null; headRefName: string; createHead: string; labels: string[]; title: string; body: string }>;
   reviews: Map<number, PrReview[]>;
   /** The diff `prDiff` answers (null = gh error) and every comment left on a PR. */
   prDiff: { value: string | null };
   prFiles: { value: string[] | null };
   comments: Array<{ pr: number; body: string }>;
+  /** PRs closed through `closePr`, and whether the next closes fail (a gh error). */
+  closed: number[];
+  closeFails: { value: number };
+  commentFails: { value: number };
   /** The independent reviewers' outcomes (default: none installed → the owner-approval route alone, as before) and each prompt they were asked. */
-  review: { outcomes: ReviewerOutcome[] | null; calls: string[] };
+  /** `verbatim`: bodies are returned as written; otherwise a body's leading `Verdict:` is written the
+   *  way the prompt asks, with this review's verdict code (SEC-097), as a reviewer following it would. */
+  review: { outcomes: ReviewerOutcome[] | null; calls: string[]; leads: Array<'astra' | 'opus' | undefined>; verbatim?: boolean };
   disarmed: number[];
   merges: Array<{ pr: number; sha: string }>;
   safeMergeExit: { code: number | null; stdout: string };
   release: { value: { tag: string; taggedAt: number } | 'none' | null };
+  /** The git port's commitInBase answer for a claimed commit (default: never in base). */
+  commitInBase: { fn: (commit: string, baseSha: string) => { sha: string; committedAt: number } | null };
   runs: ConfinedCommand[];
   runScript: { fn: (cmd: ConfinedCommand) => Partial<ConfinedResult> | null };
   runnerAvailable: { value: boolean };
@@ -77,10 +91,11 @@ export function defaultRun(cmd: ConfinedCommand): Partial<ConfinedResult> {
   if (/^git /.test(c)) return { exitCode: 0 };
   if (/^(cat |ls |echo |security |ln )/.test(c) || /^node -e/.test(c)) return { exitCode: 1, stderr: 'Operation not permitted' };
   if (/vitest run/.test(c) && isBaseState(cmd.cwd)) return { exitCode: 1, stdout: ' FAIL  tests/fix.test.ts > fixes it\nAssertionError: expected 1 to be 2\n Test Files  1 failed (1)' };
+  if (/vitest run/.test(c)) return { exitCode: 0, stdout: ' Test Files  1 passed (1)\n      Tests  1 passed (1)' };
   return { exitCode: 0, stdout: 'ok' };
 }
 
-export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConfig> } = {}): Promise<ExecHarness> {
+export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConfig>; paceTicks?: { append(row: { source: 'executor'; kind: 'admission'; admission: string | null }): void } } = {}): Promise<ExecHarness> {
   const base = await createHarness();
   const h = base as ExecHarness;
   h.agentHome = path.join(base.dir, 'agent');
@@ -95,12 +110,14 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   fs.writeFileSync(path.join(h.sourceRepo, 'package.json'), '{"name":"fixture"}\n');
   fs.writeFileSync(path.join(h.sourceRepo, 'src', 'thing.ts'), 'export const thing = 1;\n');
   fs.writeFileSync(path.join(h.sourceRepo, '.claude', 'settings.json'), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"evil"}]}]}}');
-  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', ...(opts.config ?? {}) };
+  h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
   h.enabled = { value: true };
-  h.epoch = { value: 1 };
-  h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
+  h.epoch = { value: 1 }; h.canonical = { value: true };
+  h.repo = { createdBodies: [], info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
+  h.localVerifyNeedsRestart = { fn: () => false };
+  h.onPush = { fn: () => {} };
   h.spawnError = { value: null };
   h.pushes = [];
   h.prs = new Map();
@@ -108,11 +125,15 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.prDiff = { value: 'diff --git a/src/thing.ts b/src/thing.ts\n+++ b/src/thing.ts\n+x\n' };
   h.prFiles = { value: ['src/thing.ts', 'tests/fix.test.ts'] };
   h.comments = [];
-  h.review = { outcomes: [], calls: [] };
+  h.closed = [];
+  h.closeFails = { value: 0 };
+  h.commentFails = { value: 0 };
+  h.review = { outcomes: [], calls: [], leads: [] };
   h.disarmed = [];
   h.merges = [];
   h.safeMergeExit = { code: 5, stdout: 'safe-merge-result: {"result":"armed"}' };
   h.release = { value: 'none' };
+  h.commitInBase = { fn: () => null };
   h.runs = [];
   h.runScript = { fn: () => null };
   h.runnerAvailable = { value: true };
@@ -139,11 +160,13 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
         }
       };
       walk(clone);
+      h.onPush.fn();
       h.pushes.push({ branch: input.branch, message: input.message, remoteUrl: input.remoteUrl, files, credentialHelper: input.credentialHelper });
       return HEAD_SHA;
     },
     githubRemote: async () => ({ slug: 'owner/repo', url: 'https://github.com/owner/repo.git' }),
     firstReleaseContaining: async () => h.release.value,
+    commitInBase: async (_src, commit, baseSha) => h.commitInBase.fn(commit, baseSha),
   };
   let nextPr = 100;
   const github: GitHubGateway = {
@@ -151,18 +174,27 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     viewerLogin: async () => h.repo.viewer,
     authAccounts: async () => h.repo.accounts,
     createPr: async (input) => {
+      h.repo.createdBodies.push(input.body);
       const number = nextPr++;
-      h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head, labels: [input.label], title: input.title, body: input.body });
+      h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head.replace(/^[^:]+:/, ''), createHead: input.head, labels: [input.label], title: input.title, body: input.body });
       return { number };
     },
-    prState: async (_slug, pr) => { const p = h.prs.get(pr); return p ? { ...p } : null; },
+    prState: async (_slug, pr) => { const p = h.prs.get(pr); if (!p) return null; const { createHead: _head, ...view } = p; return view; },
     reviews: async (_slug, pr) => h.reviews.get(pr) ?? [],
     removeLabel: async (_slug, pr, label) => { const p = h.prs.get(pr); if (p) p.labels = p.labels.filter((l) => l !== label); return true; },
     disableAuto: async (_slug, pr) => { h.disarmed.push(pr); return true; },
     safeMerge: async (_slug, pr, sha) => { h.merges.push({ pr, sha }); return { exitCode: h.safeMergeExit.code, stdout: h.safeMergeExit.stdout }; },
     prDiff: async () => h.prDiff.value,
     prFiles: async () => h.prFiles.value,
-    comment: async (_slug, pr, body) => { h.comments.push({ pr, body }); return true; },
+    comment: async (_slug, pr, body) => { if (h.commentFails.value > 0) { h.commentFails.value--; return false; } h.comments.push({ pr, body }); return true; },
+    closePr: async (_slug, pr) => {
+      if (h.closeFails.value > 0) { h.closeFails.value--; return 'failed'; }
+      const p = h.prs.get(pr);
+      if (p && p.state === 'MERGED') return 'merged';
+      if (p && p.state === 'OPEN') p.state = 'CLOSED';
+      h.closed.push(pr);
+      return 'closed';
+    },
   };
   const runner: ConfinedRunner = {
     available: () => (h.runnerAvailable.value ? { ok: true, version: '0.0.77' } : { ok: false, reason: 'sandbox-runtime-not-installed' }),
@@ -230,22 +262,30 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.execStore = new FeedbackExecuteStore(h.drain, h.store, { clock: () => h.now.value });
   h.exec = new FeedbackExecutorService({
     triageStore: h.store, store: h.execStore, audit: h.audit,
-    review: { run: async ({ prompt }) => { h.review.calls.push(prompt); if (h.review.outcomes === null) throw new Error('reviewers-down'); return h.review.outcomes; } },
+    review: { run: async ({ prompt, lead }) => {
+      h.review.calls.push(prompt); h.review.leads.push(lead);
+      if (h.review.outcomes === null) throw new Error('reviewers-down');
+      const code = /VERDICT ([0-9a-f]{16}): CLEAN/.exec(prompt)?.[1];
+      if (h.review.verbatim || !code) return h.review.outcomes;
+      return h.review.outcomes.map((o) => (o.body ? { ...o, body: o.body.replace(/^Verdict:/, `VERDICT ${code}:`) } : o));
+    } },
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },
+    localVerifyNeedsRestart: () => h.localVerifyNeedsRestart.fn(),
     identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
     rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
     enabled: () => h.enabled.value,
     config: () => h.cfg,
     paths: { agentHome: h.agentHome, stateDir: path.join(h.agentHome, '.instar'), configPath: path.join(h.agentHome, '.instar', 'config.json'), testRunnerHoldersFile: path.join(base.dir, 'holders.json'), homeDir: base.dir },
-    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => true,
+    selfMachineId: 'm1', ownerMachineId: () => 'm1', ownerEpoch: () => h.epoch.value, isCanonicalOwner: () => h.canonical.value,
     commitIdentity: () => ({ name: 'Echo', email: 'echo@example.com' }),
     ghCredentialHelper: '!gh auth git-credential',
     raiseAttention: async (item) => { h.attentionExec.push(item); },
     reportDegradation: (event) => { h.degradations.push(event.feature); },
     dashboardLink: () => 'https://agent.example/dashboard?tab=feedback-drain',
     sleep: async () => {}, sessionWaitMs: 1_000,
+    ...(opts.paceTicks ? { paceTicks: opts.paceTicks } : {}),
     clock: () => h.now.value,
   });
   h.service.attachExecutor({ status: () => h.exec.status(), executionStateFor: (id) => h.exec.executionStateFor(id), actionItems: () => h.exec.actionItems(), holdsItem: (id) => h.exec.holdsItem(id) });

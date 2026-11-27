@@ -19,6 +19,9 @@ routes return `503` until it graduates.
 | `POST /topic-profile/:topicId/undo` | Revert the topic to its previous pinned profile. |
 | `POST /topic-profile/:topicId/clear` | Clear the topic's pin (fall back to defaults / policy). |
 | `POST /topic-profile/:topicId/reapply` | Re-apply the current pin (e.g. after a cooldown), reconciling the live session. |
+| `GET /topic-profile/options` | Show the frameworks and models this machine can offer. `?machine=<id>` asks for a reachable peer's options while retaining the local new-topic default. |
+| `POST /topic-profile/validate-choice` | Check a proposed framework and model against the target machine's available doors before creating a topic; requires the intent header and does not write a profile. |
+| `POST /topic-profile/new-topic-default` | Set or clear the local default for dashboard-created topics; requires the intent header. |
 
 Examples:
 
@@ -46,10 +49,6 @@ curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" \
   none-loss (the symmetric counterpart to the Claude resume map).
 - **`TopicProfileTransferCarrier`** — carries a topic's profile across machines via the mesh
   `topic-profile-pull` verb, so when another machine acquires the topic, the pin follows.
-- **`ProfileIntentClassifier`** — the conversational ingress: an LLM-with-context recognizer that
-  decides whether a message like "use codex here" is genuinely a profile-change command (vs a
-  question or commentary), with the closed framework/model/thinking sets used only as an output
-  guardrail, never as input keyword triggers.
 
 ## Resolution & swap
 

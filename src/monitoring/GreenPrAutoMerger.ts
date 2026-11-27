@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   type PrSummary,
@@ -27,7 +28,7 @@ import {
   holdReasonOf,
   agentOwnership,
   stuckRedChecks,
-  selectOldest,
+  isStackedPr,
   debounceHoldRelease,
   applyOutcome,
   maybeRearm,
@@ -149,6 +150,11 @@ export interface CodeOwnedPathsVerdict {
   /** The code-owned files the PR changes (empty when none). */
   files: string[];
   /**
+   * GitHub gave no review decision and a named code owner of every owned file approved
+   * this head (a ruleset leaves reviewDecision empty). Absent = not established.
+   */
+  ownerApproved?: boolean;
+  /**
    * The changed files on the verifier's protected list (absent = not computed).
    * On the actions floor there is no local-verify record to carry the independent
    * review, so the watcher checks it itself for these (same judge, same rule).
@@ -170,6 +176,8 @@ export interface GreenPrAutoMergerDeps {
   leaseEpoch(): number;
   /** The single oldest-first GraphQL list call. Throws → tick-failed canary. */
   listOpenPrs(): Promise<PrSummary[]>;
+  /** One current authenticated-author open/main candidate; exact handoffs never depend on discovery limits. */
+  refetchHandoffPr?(pr: number): Promise<PrSummary | null>;
   /** Which code-owned files this PR's diff touches (enumerated to exhaustion). */
   codeOwnedPaths(pr: PrSummary): Promise<CodeOwnedPathsVerdict>;
   /**
@@ -379,6 +387,17 @@ export function freshState(): GreenPrState {
   };
 }
 
+/** Outcomes that rule out only THIS PR this tick, so the next-oldest gets a turn. */
+// 'refused:main-red' is here too: that refusal is about main, and a newer PR verified against the
+// current main head (often the one fixing main) can still merge, so the oldest refused PR must not
+// end the tick (independent review of #2981, 2026-11-08).
+const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending', 'refused:main-red']);
+
+/** Oldest (lowest number) first, as `selectOldest` picks. */
+export function orderOldestFirst<T extends { number: number }>(prs: T[]): T[] {
+  return [...prs].sort((a, b) => a.number - b.number);
+}
+
 export class GreenPrAutoMerger extends EventEmitter {
   private readonly cfg: ResolvedConfig;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
@@ -584,8 +603,8 @@ export class GreenPrAutoMerger extends EventEmitter {
    * gate a normal tick applies (lease, latches, breaker, warm-up, floor, holds, code
    * owners, independent review, safe-merge), instead of the oldest candidate at the
    * next interval. A hand-off waits for an attempt in flight rather than feeding the
-   * busy-skip breaker, requests no verifies, and never retries: a refusal is left to
-   * the regular ticks.
+   * busy-skip breaker and requests no verifies. It retries only an unknown
+   * mergeability read for the same head before candidate evaluation.
    */
   async tick(opts: { manual?: boolean; handoff?: { pr: number; head: string } } = {}): Promise<{ acted: boolean; reason: string }> {
     this.tickCount += 1;
@@ -683,27 +702,50 @@ export class GreenPrAutoMerger extends EventEmitter {
     await this.reconcileArmed(state);
 
     // Warm-up (R10): the first tick of a new lease tenure is OBSERVE-ONLY.
-    const epoch = safeNum(() => this.deps.leaseEpoch());
+    const exactHandoffRead = !!opts.handoff && !!this.deps.refetchHandoffPr;
+    const epoch = safeNum(() => this.deps.leaseEpoch(), exactHandoffRead ? NaN : 0);
     const isWarmup = state.lastActingEpoch !== epoch;
-
+    const leaseCurrent = () => safeBool(() => this.deps.holdsLease())
+      && safeNum(() => this.deps.leaseEpoch(), NaN) === epoch;
     let candidates: PrSummary[];
     try {
-      candidates = await this.deps.listOpenPrs();
-      state.lastSuccessfulListAt = this.deps.now();
+      if (opts.handoff && this.deps.refetchHandoffPr) {
+        const { pr, head } = opts.handoff;
+        if (!leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
+        let target = await this.deps.refetchHandoffPr(pr);
+        for (const backoffMs of [250, 750]) {
+          if (isWarmup || target?.number !== pr || target.headRefOid !== head || target.mergeable !== 'UNKNOWN' || !leaseCurrent()) break;
+          await delay(backoffMs);
+          if (!leaseCurrent()) break;
+          target = await this.deps.refetchHandoffPr(pr);
+        }
+        if (!leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
+        candidates = target && target.number === pr ? [target] : [];
+        this.deps.audit({ kind: 'green-pr-automerge', event: 'handoff-read', pr, found: candidates.length === 1, mergeable: target?.mergeable });
+      } else {
+        candidates = await this.deps.listOpenPrs();
+        state.lastSuccessfulListAt = this.deps.now();
+      }
       state.breaker = feedBreaker(state.breaker, 'reset', this.deps.now(), this.breakerCfg());
     } catch (e) { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */
+      if (exactHandoffRead && !leaseCurrent()) return { acted: false, reason: 'not-lease-holder' };
       // Tick-failed canary (L5(b)): a failed/unparseable list call feeds the breaker.
       state.breaker = feedBreaker(state.breaker, 'tick-failed', this.deps.now(), this.breakerCfg());
-      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: 'list', detail: String((e as Error)?.message).slice(0, 200) });
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'tick-failed', class: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read' : 'list', detail: String((e as Error)?.message).slice(0, 200) });
       this.deps.saveState(state);
-      return { acted: false, reason: 'list-failed' };
+      return { acted: false, reason: opts.handoff && this.deps.refetchHandoffPr ? 'handoff-read-failed' : 'list-failed' };
     }
 
     // Build the candidate set (cheap fields) + the Layer-2 snapshot.
     const { eligible, snapshotEntries } = await this.gather(candidates, state, floor);
-    state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
-    const namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
-    this.observeNotAgentOwned(candidates, state);
+    // A direct target is not a discovery snapshot: its absent neighbors were not
+    // re-read, so it cannot clear their ownership/red alerts or refresh list state.
+    let namespaceMismatch = false;
+    if (!exactHandoffRead) {
+      state.snapshot = { at: this.deps.now(), entries: snapshotEntries };
+      namespaceMismatch = await this.observeNamespaceMismatch(candidates, state);
+      this.observeNotAgentOwned(candidates, state);
+    }
 
     // Red-PR watchdog (red-pr-watchdog): surface my own PRs stuck RED past the
     // threshold. Runs on every acting/warm-up tick that got a fresh PR list —
@@ -711,7 +753,7 @@ export class GreenPrAutoMerger extends EventEmitter {
     // attention (mutations here are persisted by the saveState below, whichever
     // branch returns). Placed AFTER the merge-candidate gather so a stuck-red PR
     // is surfaced even on a lease-flap warm-up tenure.
-    this.redPrWatchdogPass(candidates, state);
+    if (!exactHandoffRead) this.redPrWatchdogPass(candidates, state);
 
     if (isWarmup) {
       // Seed hold memory + snapshot + reap any orphan; begin merges next tick.
@@ -763,25 +805,36 @@ export class GreenPrAutoMerger extends EventEmitter {
     // in dryRun too.
     await this.requestVerifies(candidates, state);
 
-    const target = selectOldest(eligible);
-    if (!target) {
+    // Oldest first, but a PR this tick cannot act on (its episode gave up, or is
+    // backing off) must not block the ones behind it: on 2026-11-02 a PR in
+    // 'gave-up' from Oct 26 was the oldest eligible, every tick picked it and
+    // skipped, and no later green PR that missed its hand-off ever merged.
+    const ordered = orderOldestFirst(eligible);
+    if (ordered.length === 0) {
       this.deps.saveState(state);
       return { acted: false, reason: namespaceMismatch ? 'namespace-mismatch' : 'no-candidate' };
     }
 
     // Act (Step 4 engine). dryRun observes only.
     if (this.cfg.dryRun) {
+      const target = ordered[0];
       this.deps.audit({ kind: 'green-pr-automerge', event: 'would-merge', pr: target.number, head: target.headRefOid });
       this.deps.saveState(state);
       return { acted: false, reason: 'dry-run' };
     }
 
     let r: ActResult = { acted: false, outcome: null };
-    try {
-      r = await this.act(target, state, floor);
-      this.deps.saveState(state);
-    } finally {
-      r.settle?.(); // only an attempt THIS call spawned has a settle: released after the save
+    for (const target of ordered) {
+      try {
+        r = await this.act(target, state, floor);
+        this.deps.saveState(state);
+      } finally {
+        r.settle?.(); // only an attempt THIS call spawned has a settle: released after the save
+      }
+      // Only a PR whose own episode rules it out this tick passes the turn on;
+      // any real attempt (or a reason that applies to every PR) ends the tick.
+      if (!PASS_ON.has(r.outcome ?? '')) break;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'skipped:episode', pr: target.number, outcome: r.outcome });
     }
     return { acted: r.acted, reason: r.acted ? 'acted' : 'skipped' };
   }
@@ -825,6 +878,16 @@ export class GreenPrAutoMerger extends EventEmitter {
           // Say so: zero GitHub Actions checks on this head is NOT green.
           this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'no-checks-ran', pr: pr.number, head: pr.headRefOid });
         }
+        // GitHub answers UNKNOWN mergeability in list results until something reads the PR
+        // itself, and every merge resets it for the others: a verified PR could sit unseen
+        // tick after tick (2026-11-02). One direct read makes GitHub compute it, so the next
+        // tick sees MERGEABLE. Only for verified heads (a passing local record, or green checks
+        // under the actions floor), so this costs one read per ready PR. The read also asks for
+        // `mergeable` (REFETCH_PR_JSON_FIELDS), belt-and-braces: a direct read alone was seen to do it.
+        if (verdict.skip === 'not-mergeable' && pr.mergeable === 'UNKNOWN' && (floor === 'local' ? this.recordFor(pr) : pr.statusRollup === 'SUCCESS')) {
+          this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'mergeability-unknown', pr: pr.number, head: pr.headRefOid });
+          try { await this.deps.refetchPr(pr.number); } catch { /* @silent-fallback-ok: the read only nudges GitHub to compute mergeability; the next tick lists the result either way */ }
+        }
         continue;
       }
       // verdict.eligible but the hold debounce may still hold it back this tick.
@@ -852,7 +915,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
         continue;
       }
-      if (co.touches && pr.reviewDecision !== 'APPROVED') {
+      if (co.touches && pr.reviewDecision !== 'APPROVED' && co.ownerApproved !== true) {
         // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
         snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
         this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });
@@ -1120,6 +1183,16 @@ export class GreenPrAutoMerger extends EventEmitter {
   }
 
   private recordOutcome(state: GreenPrState, target: PrSummary, outcome: string, armedHead?: string): void {
+    // A queued CI floor is ordinary backpressure, not a failed merge attempt.
+    // The next watcher tick rechecks this immutable head.
+    if (outcome === 'deferred:checks-pending') {
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.nextEligibleAt = this.deps.now() + 5 * 60_000;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
+      return;
+    }
     // An earlier attempt's safe-merge may still be alive and its identity could
     // not be confirmed, so the runner refused to start a second one. Not this
     // PR's failure: no ladder attempt, no breaker feed. ONE attention line
@@ -1161,6 +1234,18 @@ export class GreenPrAutoMerger extends EventEmitter {
       ep.lastAttemptAt = this.deps.now();
       state.episodes[target.number] = ep;
       this.deps.audit({ kind: 'green-pr-automerge', event: 'needs-independent-review', pr: target.number, head: target.headRefOid });
+      return;
+    }
+
+    if (outcome === 'refused:constitution-counterpart') {
+      // Waiting on a line in the PR body, or on a read that failed. Neither moves
+      // a head or needs the ladder, so this re-reads every 15 minutes.
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      ep.nextEligibleAt = this.deps.now() + 15 * 60_000;
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: outcome, pr: target.number });
       return;
     }
 
@@ -1433,7 +1518,10 @@ export class GreenPrAutoMerger extends EventEmitter {
     for (const pr of prs) {
       // Only my own PRs (namespace or same-repo author — merge-line-author-eligibility).
       if (!this.ownership(pr).owned) continue;
-      const stuck = stuckRedChecks(pr, now, thresholdMs);
+      // A stacked PR (base is a feature branch) is red BY DESIGN — the
+      // stacked-pr-guard check says "retarget to main" (ACT-053) and no suite
+      // runs for it — so it is not "stuck". Judged again once retargeted.
+      const stuck = isStackedPr(pr) ? [] : stuckRedChecks(pr, now, thresholdMs);
       if (stuck.length === 0) {
         // Green / recovered / not-yet-stuck → clear any prior raise.
         if (raised[pr.number]) {
@@ -1521,6 +1609,6 @@ function summarize(r: unknown): string {
 function safeBool(fn: () => boolean): boolean {
   try { return !!fn(); } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return false; }
 }
-function safeNum(fn: () => number): number {
-  try { const n = fn(); return Number.isFinite(n) ? n : 0; } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return 0; }
+function safeNum(fn: () => number, fallback = 0): number {
+  try { const n = fn(); return Number.isFinite(n) ? n : fallback; } catch { /* @silent-fallback-ok: green-pr-automerge fail-safe — skip/refuse, never over-merge; safe-merge is the act-time authority */ return fallback; }
 }

@@ -471,3 +471,18 @@ export class CapabilityRegistryWriter {
     }
   }
 }
+
+/** Canonical local definition inventory for measurement census. This reads the
+ * producer's validated projection (or known doorway sources), not the receiver's
+ * advisory availability/placement classification. No probe or state write. */
+export function readLocalCapabilityInventory(projectDir: string, stateDir: string, machineId: string, now = Date.now()): CapabilityProjection {
+  const retained = new CapabilityRegistryWriter(path.join(stateDir, 'capability-registry.json'), machineId).read();
+  if (retained) {
+    // The existing producer uses the literal local alias on standalone agents.
+    if (retained.machineId !== machineId && retained.machineId !== 'local') throw new Error('capability-inventory-origin-mismatch');
+    return retained;
+  }
+  const source = readDoorwaySources(projectDir, stateDir, new Date(now).toISOString(), machineId);
+  return validateProjection({ schemaVersion: CAPABILITY_REGISTRY_SCHEMA_VERSION, machineId, machineEpoch: 0,
+    projectionSeq: 0, ...source, truncated: false });
+}

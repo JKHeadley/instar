@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-04T10:36:20.665Z",
+  "slug": "memory-privacy",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 2,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: a session is ended only when a person's inbound message reaches a place whose live session has a different audience; the respawned session records the new audience, so the next message matches and nothing repeats until the audience itself changes"
+  },
+  "verdict": "pass"
+}

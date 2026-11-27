@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-generated-output",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-30T17:28:30.389Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-generated-output.md",
+  "artifactSha256": "24dd994d9580719dc89577aceeaaef99a074851e01c8d6f3a67b99a1183daa8d",
+  "coveredFiles": [
+    "docs/specs/feedback-executor-generated-output.eli16.md",
+    "src/core/standardsRegistryPath.ts",
+    "src/feedback-factory/execute/changeSet.ts",
+    "upgrades/next/feedback-executor-generated-output.md",
+    "upgrades/side-effects/feedback-executor-generated-output.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible exact generated-output exemption; tracked files, special files, and review gates remain enforced.",
+  "eli16Path": "docs/specs/feedback-executor-generated-output.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-executor-generated-output.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -48,6 +48,26 @@ ends, and what happened during it does not un-happen. A contested tag you reject
 **MATERIAL finding that blocks convergence** — same authority as any other material
 issue.
 
+<!-- FIXED_LIMIT_CONTEST -->
+**Fixed-limit contest (Judgment Within Floors).** Inventory EVERY fixed limit on
+what/how much an agent may do, anywhere in the spec: rates, counts, sizes, growth
+ceilings, retirement thresholds and qualitative quotas. Each is a
+**judgment-candidate by default**. For each, report: location + boundary, claimed
+basis, independent evidence, a legitimate counterexample it rejects (or explicitly
+"no legitimate counterexample found" for a genuine floor), and verdict.
+An `invariant` row must declare `basis: irreversible-consequence`,
+`basis: enumerable-domain`, or `basis: external-constraint`, followed by
+`; evidence: <specific consequence, domain or source>`. Independently verify why
+this exact boundary follows from that evidence. The fields alone prove nothing.
+"Deterministic counts", "fixed cap", "bounded by design", or repeating the limit
+is a circular justification: REJECT it as **MATERIAL / DESIGN**, blocking
+convergence until resolved. If evidence does not establish a real floor, require
+intelligent assessment inside a deterministic floor (bounded action space,
+conservative default, fallback ladder ending deterministically), with the arbiter
+named. Do not invent replacement caps. Preserve evidenced safety/protocol/type
+constraints; measurements, examples and advisory defaults are not caps unless
+they actually gate behavior. Explicitly report `fixed-limits: none` when absent.
+
 Specifically check:
 
 1. **Buried decisions** — sentences like "the implementer can decide", "TBD", "we
@@ -75,6 +95,19 @@ Specifically check:
 6. **Open-questions hygiene** — does `## Open questions` exist, and is every entry a
    genuine user decision (not a design question the author should answer)? An
    author-answerable question parked on the user is a deferral, not a decision.
+
+<!-- CROSS_BOUNDARY_OWNER -->
+7. **Cross-boundary work with no route** — judge by MEANING: any place the spec says
+   the goal NEEDS work outside what this spec builds — another repo, the app, another
+   machine, another session, team or "owner" ("X will need a small button added to the
+   app", "outside this repository, recorded for the app's owner", "the owner will need
+   to…"). Each such piece must name (a) who builds it — this run after pulling the code,
+   or a SPECIFIC owning session / agent / person — (b) the handoff (a brief sent, a
+   tracked commitment, how the builder checks it landed) and (c) where it sits in the
+   run's completion condition. A claim of what is needed with none of these is a
+   deferral dressed as a scope fact: a **DESIGN finding that blocks convergence**, even
+   when it sits under `## Open questions`. Resolution: name the route and add it to the
+   completion condition, or bring the work into this spec.
 
 Produce a SHORT report (under 400 words):
 

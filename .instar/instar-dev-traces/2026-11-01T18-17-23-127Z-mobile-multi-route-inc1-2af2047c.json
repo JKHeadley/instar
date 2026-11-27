@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-multi-route-inc1",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T18:17:23.127Z",
+  "artifactPath": "upgrades/side-effects/mobile-multi-route-inc1.md",
+  "artifactSha256": "bec6574ed8cdaed4af6a1f5e76e1e828587bdabacf0e5db52c207b1a3e763650",
+  "specPath": "docs/specs/mobile-multi-route.md",
+  "coveredFiles": [
+    "src/core/MobileOwnNames.ts",
+    "upgrades/side-effects/mobile-multi-route-inc1.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the device-authentication change: annotates two already-reported catches for the silent-fallback ratchet; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,4 +1,36 @@
 import { DEFAULT_ORIGIN_DISPLAY } from './OriginPresentation.js';
+import type { OriginDestination } from './types.js';
+
+export interface BrowserSendAllowance {
+  readonly profileId: string; readonly accountId: string; readonly chatId: string;
+  readonly topicId: string | null; readonly decisionRef: string;
+}
+
+/** A singular, exact destination from operator-owned config, including its decision reference. Malformed or broad
+ * grants fail closed for the browser path without disabling ordinary bot sends. */
+export function readBrowserSendAllowance(origin: unknown): BrowserSendAllowance | null {
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
+  const value = (origin as { browserSendAllowance?: unknown }).browserSendAllowance;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const grant = value as Record<string, unknown>;
+  const keys = ['profileId', 'accountId', 'chatId', 'topicId', 'decisionRef'];
+  if (Object.keys(grant).length !== keys.length || keys.some(key => !Object.hasOwn(grant, key)) ||
+    typeof grant.profileId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(grant.profileId) ||
+    typeof grant.accountId !== 'string' || !/^[1-9][0-9]*$/.test(grant.accountId) ||
+    typeof grant.chatId !== 'string' || !/^channel:[1-9][0-9]*$/.test(grant.chatId) ||
+    !(grant.topicId === null || (typeof grant.topicId === 'string' && /^[1-9][0-9]*$/.test(grant.topicId))) ||
+    typeof grant.decisionRef !== 'string' || grant.decisionRef.length < 8 || grant.decisionRef.length > 160) return null;
+  return Object.freeze({ profileId: grant.profileId, accountId: grant.accountId,
+    chatId: grant.chatId, topicId: grant.topicId, decisionRef: grant.decisionRef });
+}
+
+export function browserSendAllowanceMatches(grant: BrowserSendAllowance | null, profileId: string,
+  enrolledAccountId: string, destination: OriginDestination): boolean {
+  return !!grant && profileId === grant.profileId && enrolledAccountId === grant.accountId &&
+    destination.transport === 'telegram-web' && destination.accountId === grant.accountId &&
+    destination.chatId === grant.chatId && destination.topicId === grant.topicId &&
+    destination.messageId === null && destination.inlineMessageId === null && destination.scheduledMessageId === null;
+}
 
 export const ORIGIN_DETECTOR_CANARY_INTERVAL_MS = 3_600_000;
 export function originDetectorCanaryInterval(origin: unknown): number {
@@ -36,6 +68,25 @@ export function originForwardToHolderEnabled(origin: unknown): boolean {
   const enabled = (forward as { enabled?: unknown }).enabled;
   if (enabled !== undefined && typeof enabled !== 'boolean') throw new Error('invalid-origin-forward-config');
   return enabled ?? true;
+}
+
+/** native-conversation-base §3b — the outcome route's owner read. Read inline,
+ * never written: omitted means on. `false` only stops THIS machine asking (its
+ * answers fall to row 11, more cautious only). Invalid values read as the
+ * defaults rather than throwing, because the switch can only make answers more
+ * cautious and an unreadable one must not take the route down. */
+export interface OriginOwnerReadConfig { enabled: boolean; budgetMs: number; cacheEntries: number }
+export function originOwnerReadConfig(origin: unknown): OriginOwnerReadConfig {
+  const defaults: OriginOwnerReadConfig = { enabled: true, budgetMs: 2000, cacheEntries: 1024 };
+  if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return defaults;
+  const read = (origin as { ownerRead?: unknown }).ownerRead;
+  if (!read || typeof read !== 'object' || Array.isArray(read)) return defaults;
+  const r = read as { enabled?: unknown; budgetMs?: unknown; cacheEntries?: unknown };
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : true,
+    budgetMs: Number.isSafeInteger(r.budgetMs) && Number(r.budgetMs) >= 100 && Number(r.budgetMs) <= 4000 ? Number(r.budgetMs) : defaults.budgetMs,
+    cacheEntries: Number.isSafeInteger(r.cacheEntries) && Number(r.cacheEntries) >= 0 && Number(r.cacheEntries) <= 100_000 ? Number(r.cacheEntries) : defaults.cacheEntries,
+  };
 }
 
 /** Add only missing presentation/notice defaults. Never changes an operator's false,

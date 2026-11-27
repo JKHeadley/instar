@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "maturation-board-sort",
+  "sessionId": "abbd2c0b-8fe5-4204-a8e2-47f3e8dceba1",
+  "timestamp": "2026-10-31T02:43:38.213Z",
+  "artifactPath": "upgrades/side-effects/maturation-board-sort.md",
+  "artifactSha256": "c4f2cf3cd80648555888636d4fadb7a826ab2e96b59c260eeb6441ab466f43e6",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/maturation-board-model.js",
+    "dashboard/console/maturation-board.js",
+    "docs/specs/maturation-board-sort.eli16.md",
+    "tests/unit/console-maturation-board.test.ts",
+    "upgrades/next/maturation-board-sort.md",
+    "upgrades/side-effects/maturation-board-sort.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard-only sort control and one sentence; revert fully undoes it.",
+  "eli16Path": "docs/specs/maturation-board-sort.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-board-sort.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -102,6 +102,31 @@ describe('Commitment auto-expiry API lifecycle', () => {
       .set(auth())
       .expect(200);
     expect(lookup.body.status).toBe('expired');
-    expect(lookup.body.resolution).toBe('auto-expired: aged out >21d, presumed completed-but-unclosed');
+    expect(lookup.body.resolution).toBe('auto-expired after 30 days with no recorded activity; outcome unknown (not confirmed completed). Re-open it if it still matters.');
+    // CMT-1118: the sweep's ids are on the durable review ledger.
+    const ledgerRows = fs.readFileSync(path.join(stateDir, 'logs', 'commitments-auto-expiry.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(ledgerRows.at(-1)).toMatchObject({ dryRun: false, expired: 1, items: [{ id, class: 'no-activity' }] });
+  });
+
+  it('CMT-1132: a hold set over the API keeps a row out of the sweep until it is cleared', async () => {
+    const created = await request(app)
+      .post('/commitments')
+      .set(auth())
+      .send({ type: 'one-time-action', userRequest: 'Rotate token in 2027', agentResponse: 'I will', followThroughOptOutReason: 'long-range duty' })
+      .expect(201);
+    const id = created.body.id;
+    // A hold-only PATCH works even on a row whose beacon shape a beacon PATCH would refuse.
+    await tracker.mutate(id, c => ({ ...c, beaconEnabled: true, topicId: undefined }));
+    await tracker.mutate(id, c => ({ ...c, createdAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString() }));
+
+    await request(app).patch(`/commitments/${id}`).set(auth()).send({ autoExpiryHold: 'yes' }).expect(400);
+    await request(app).patch(`/commitments/${id}`).set(auth()).send({ autoExpiryHold: { reason: '   ' } }).expect(400);
+    const held = await request(app).patch(`/commitments/${id}`).set(auth()).send({ autoExpiryHold: { reason: 'due 2027-09' } }).expect(200);
+    expect(held.body.autoExpiryHold).toMatchObject({ reason: 'due 2027-09', setAt: expect.any(String) });
+    expect(tracker.sweepAutoExpiry(now).expired).toBe(0);
+    expect((await request(app).get(`/commitments/${id}`).set(auth()).expect(200)).body.autoExpiryHold.reason).toBe('due 2027-09');
+
+    await request(app).patch(`/commitments/${id}`).set(auth()).send({ autoExpiryHold: null }).expect(200);
+    expect(tracker.sweepAutoExpiry(now).expired).toBe(1);
   });
 });

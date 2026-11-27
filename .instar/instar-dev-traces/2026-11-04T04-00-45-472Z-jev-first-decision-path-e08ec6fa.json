@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "jev-first-decision-path",
+  "sessionId": "7e05d7cf-8435-4094-932d-2fa6c3f19f66",
+  "timestamp": "2026-11-04T04:00:45.472Z",
+  "artifactPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "artifactSha256": "49294cb0e9b5aedbea60e010f2c047bb3e596689c0de9f2d7ed4f770bcb4691e",
+  "coveredFiles": [
+    "docs/research/jev/jev-first-inventory.md",
+    "docs/specs/jev-first-decision-path.eli16.md",
+    "docs/specs/jev-first-decision-path.md",
+    "src/core/JevFirstCommitment.ts",
+    "src/core/JevFirstDecision.ts",
+    "upgrades/side-effects/jev-first-decision-path.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Shadow-only production behavior, read-only summary, and clarification of existing one-question scope; no Jev settlement authority is enabled.",
+  "eli16Path": "docs/specs/jev-first-decision-path.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-decision-path.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

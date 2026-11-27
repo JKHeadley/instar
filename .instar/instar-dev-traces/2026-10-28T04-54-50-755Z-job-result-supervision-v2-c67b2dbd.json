@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "job-result-supervision-v2",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T04:54:50.755Z",
+  "artifactPath": "upgrades/side-effects/job-result-supervision-v2.md",
+  "artifactSha256": "99612a9031b74ffc3e7426759c07598b3fca175c1da364c726f8c762c68d0dc4",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/scheduler/JobSupervisionStore.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/job-result-supervision-v2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The new durable SQLite journal participates in process shutdown; a missed close can crash exit or lose state, so this lifecycle fix is reviewed at Tier 2.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "supervision_side_effects_review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-result-supervision-v2-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

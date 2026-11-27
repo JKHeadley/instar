@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-10T05:41:16.923Z",
+  "slug": "cb-post-compact",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 326,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/PostCompactStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/hooks/settings-template.json"
+    ],
+    "addedLines": 323,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

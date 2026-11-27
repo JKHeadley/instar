@@ -210,6 +210,10 @@ export interface ProvenanceCoverageEntry {
 // string (the census is the single source of truth).
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Attribution judge — does this text credit a person, and do the logged words support it?
+ * (AttributionJudge; docs/specs/attribution-paper-trail.md section 4). */
+export const DP_ATTRIBUTION_JUDGE = 'attribution-judge';
+
 /** External-hog kill/leave decision point — the classifier verdict inside the
  * scan-tick decision loop (ExternalHogScanTick; spec §5.3 first customer). */
 export const DP_EXTERNAL_HOG_KILL_LEAVE = 'external-hog-kill-leave';
@@ -267,14 +271,11 @@ export const DP_INPUT_GUARD = 'input-guard';
 /** Ambiguous inbound user message → interrupt category. */
 export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
 
-/** Inbound message + bounded conversation → machine relocation intent. */
-export const DP_MOVE_INTENT_CLASSIFY = 'move-intent-classify';
-
 /** Hub message + bounded conversation/topic enum → bind intent. */
 export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
 
-/** Inbound message + bounded conversation/profile enums → topic profile intent. */
-export const DP_PROFILE_INTENT_CLASSIFY = 'profile-intent-classify';
+/** Chief of Staff (docs/specs/chief-of-staff-topic.md §2.5): deterministic evidence + bounded conversation tail → project verdict (a SIGNAL; the loop's floors hold authority). */
+export const DP_COS_PROJECT_VERDICT = 'cos-project-verdict';
 
 /** Ambiguous interactive terminal prompt → approve or relay. */
 export const DP_INPUT_CLASSIFY = 'input-classify';
@@ -300,14 +301,38 @@ export const DP_TOPIC_SUMMARIZE = 'topic-summarize';
 /** Bounded dashboard page facts → awareness-only insight strip. */
 export const DP_DASHBOARD_INSIGHT = 'dashboard-insight';
 
-/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt. */
-export const DP_PROMPT_INJECTION_DETECT = 'prompt-injection-detect';
+/** Ambiguous bounded terminal output → blocking-prompt kind or no prompt
+ * (PromptGate's terminal-input detector — NOT the security prompt-injection
+ * check; CMT-1677 renamed it from 'prompt-injection-detect'). */
+export const DP_TERMINAL_PROMPT_DETECT = 'terminal-prompt-detect';
+
+/**
+ * Retired decision-point ids → their current id. Rows recorded before a
+ * rename keep their stored id; readers canonicalize through this map so the
+ * history is repartitioned under the current identity instead of being lost
+ * or pooled under a misleading name. Never a census entry of its own.
+ */
+export const DECISION_POINT_ALIASES: Readonly<Record<string, string>> = {
+  // Before CMT-1677 the terminal blocking-prompt detector recorded under a
+  // name that reads like the security prompt-injection audit (SyncOrchestrator).
+  'prompt-injection-detect': DP_TERMINAL_PROMPT_DETECT,
+};
+
+/** The current decision-point id for a stored one (identity for current ids). */
+export function canonicalDecisionPoint(decisionPoint: string): string {
+  return Object.prototype.hasOwnProperty.call(DECISION_POINT_ALIASES, decisionPoint)
+    ? DECISION_POINT_ALIASES[decisionPoint]
+    : decisionPoint;
+}
 
 /** Ambiguous A2A message → reply or suppress. */
 export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
 
 /** Long-running command evidence → stuck or legitimate. */
 export const DP_WATCHDOG_STUCK_JUDGE = 'watchdog-stuck-judge';
+
+/** Structured wedge evidence → a proposed ladder entry point (machine self-maintenance, Part E). */
+export const DP_MACHINE_WEDGE_JUDGE = 'machine-wedge-judge';
 
 /** User/agent exchange set → detected durable commitment kinds. */
 export const DP_COMMITMENT_DETECT = 'commitment-detect';
@@ -341,6 +366,10 @@ export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
 
 /** Redacted closed browser snapshot → one action from the deterministic allowlist. */
 export const DP_SUBSCRIPTION_RELOGIN_ACTION = 'subscription-relogin-action';
+
+/** Skill-learning batch classifier — repeatable? procedureKey (fold by meaning), outcomeOfPrevRun
+ * (skillLearning.classifier; docs/specs/skill-learning-sentinel.md §3.1, §3.6, §4). */
+export const DP_SKILL_LEARNING_CLASSIFY = 'skill-learning-classify';
 
 // ───────────────────────────────────────────────────────────────────────────
 // The census
@@ -443,12 +472,56 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
   },
   {
+    decisionPoint: 'conversation-graph-suggestions',
+    component: 'ConversationGraphSuggestions',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Advice-only grouping of the owner\'s unassigned conversations into proposed efforts. Deterministic floors drop invalid groups; every surviving group is graded by the owner\'s own Accept or Reject before anything moves.',
+  },
+  {
+    decisionPoint: 'work-board-spec-approval-judge',
+    component: 'WorkBoardSpecApprovalJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Judges whether an agent-written Work Board card asks the owner to approve a spec or design without its constitution check result (rule B25). Low volume (agent card writes only); a hold returns the write to the agent with the way through, and every hold or judge outage is logged by name.',
+  },
+  {
+    decisionPoint: 'never-silent-conversation-judge',
+    component: 'ConversationSilenceJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Names why a conversation that owes an answer went silent, from scrubbed screen text and structured login and pool facts. It decides nothing alone: a deterministic table behind floors decides, the person is told either way, and every verdict is logged per incident (logs/never-silent.jsonl) for the held-out measurement that gates actions.',
+  },
+  {
+    decisionPoint: 'ecosystem-idea-review',
+    component: 'EcosystemIdeaReview',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Advisory reads of ideas from other projects: gap verdict, goal review and effect class. They decide nothing alone; the ledger records each read, a monthly sampled audit counts overturned verdicts, and adoption predictions are graded.',
+  },
+  {
     decisionPoint: 'feedback-triage-second-opinion',
     component: 'FeedbackTriageSecondOpinion',
     status: 'pending:backlog:decision-quality-enrolment',
     contentClass: 'content-bearing',
     reason:
       'Cross-family second opinion for the triage never-ignore floor; it runs on a dedicated per-framework provider outside the shared router (so the seam cannot mint its row yet). Its verdicts are recorded triage-side as floor outcomes and medium-strength grades; router enrollment is queued in the uniform-provenance backlog.',
+  },
+  {
+    decisionPoint: DP_ATTRIBUTION_JUDGE,
+    component: 'AttributionJudge',
+    status: 'wired',
+    volumeClass: 'budget:500',
+    contentClass: 'content-bearing',
+    reason:
+      'Rules on what a note or message credits to a person. Provenance stores only hashes and bounds of the text; the claim text lives in the feature\'s own scrubbed ledger.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The shadow step compares verdicts against a labelled set by hand; an outcome rule needs those labels first (docs/specs/attribution-paper-trail.md, maturation plan).',
   },
   {
     decisionPoint: DP_GOAL_PRIORITY_EXTRACT,
@@ -510,6 +583,38 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'review or recurrence evidence can grade real cases without archiving inbound text.',
     reason:
       'Input-coherence verdict over an inbound prompt and recent topic context; provenance stores only bounded identities and shape.',
+  },
+  {
+    decisionPoint: 'context-layer-chunk',
+    component: 'ContextLayerChunk',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Chunk and range summaries of an archived transcript span (context-budget §6.5). Derived layers for later lookup only; they decide nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade summaries against the raw span.',
+  },
+  {
+    decisionPoint: 'context-layer-h3',
+    component: 'ContextLayerH3',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'The long-term view (H3) rebuilt from a bounded selection of chunk and range summaries (context-budget §6, §6.5), and the topic summary table\'s single writer. A derived layer; it decides nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade it.',
+  },
+  {
+    decisionPoint: 'fold-audit',
+    component: 'FoldAudit',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Checks a session handoff note in a practice fold (context-budget §7.4). It can decline a practice fold or trigger one fixed-text send-back to the session; its free-text questions are never forwarded. Each fold writes a counts-only row.',
+  },
+  {
+    decisionPoint: 'fold-probe',
+    component: 'FoldProbe',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Writes and grades the held-out quiz of a practice fold (context-budget §10). Its grades are the measurement and decide nothing live; each fold writes a counts-only row.',
   },
   {
     decisionPoint: 'session-activity-digest',
@@ -606,6 +711,21 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Stuck-command judgment over bounded command and terminal evidence; identity-only context stores exact prompt and constituent digests, never terminal text.',
   },
   {
+    decisionPoint: DP_MACHINE_WEDGE_JUDGE,
+    component: 'MachineWedgeJudge',
+    status: 'wired',
+    // At most one call per wedge candidate and six per 24 hours, on the host maintainer only.
+    volumeClass: 'budget:20',
+    contentClass: 'metadata',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Dry-run: the proposal acts on nothing, so no outcome follows from it. The spec grades a restart right only when ' +
+      'gentle rungs had already failed and evidence was still present before it; until rungs exist, rows bank the ' +
+      'proposal beside its structured evidence for the graduation benchmark.',
+    reason:
+      'Wedge judge over structured family results, ages, uptime and a session count; never window titles, dialog text or command output.',
+  },
+  {
     decisionPoint: DP_RESUME_SANITY_CHECK,
     component: 'ResumeQueueDrainer',
     status: 'wired',
@@ -650,18 +770,22 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Gates —
   {
-    decisionPoint: DP_PROMPT_INJECTION_DETECT,
+    decisionPoint: DP_TERMINAL_PROMPT_DETECT,
     component: 'PromptGate',
     status: 'wired',
     volumeClass: 'budget:500',
     contentClass: 'content-bearing',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'JSON/type validation and the no-prompt cache establish parser and spend behavior, not whether terminal ' +
-      'output truly contained a blocking system prompt. Identity-only provenance enables later comparison with ' +
-      'actual prompt responses without storing terminal bodies.',
     reason:
-      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text.',
+      'Blocking-prompt detection over bounded terminal output; exact prompt and terminal-context identities are stored without terminal text. ' +
+      'Outcomes come from the bounded pane observer (terminal-prompt-* rules): only progressed-without-input is tool evidence; the rest grade unknown.',
+  },
+  {
+    decisionPoint: 'org-policy-judge',
+    component: 'OrgPolicyJudge',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      "An organization's never rules judged against one action of a joined agent (org-never-actions); enrollment queued in the ACT-1193 retrofit backlog.",
   },
   {
     decisionPoint: 'external-operation-gate',
@@ -726,18 +850,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
   },
   {
-    decisionPoint: DP_MOVE_INTENT_CLASSIFY,
-    component: 'MoveIntentClassifier',
+    decisionPoint: DP_COS_PROJECT_VERDICT,
+    component: 'ChiefOfStaffLoop',
     status: 'wired',
-    volumeClass: 'budget:250',
+    volumeClass: 'budget:200',
     contentClass: 'content-bearing',
     gradingPosture: 'measurement-only',
     gradingReason:
-      'A transfer or pin may succeed even when the classifier misunderstood the user, while pass-through has no ' +
-      'independent correctness label. Until downstream command disposition and authenticated review carry this ' +
-      'correlation, identity-only cases are recorded for later grading.',
+      'The loop grades a restart verdict by whether artifact progress follows within one cadence and a done ' +
+      'verdict by whether the closure stays closed for 14 days (spec §5); those outcomes land in a later tick, so ' +
+      'identity-only rows are recorded now and settled by the loop, never by the judge itself.',
     reason:
-      'Move or pin command-versus-discussion intent over an inbound message and bounded conversation context; provenance stores identity and shape only.',
+      'Project check-in verdict (moving/stalled/drifting/waiting/claims-done/unknown) over deterministic evidence and a bounded untrusted conversation tail; provenance stores evidence ids and the tail bound, never the text.',
   },
   {
     decisionPoint: DP_HUB_INTENT_CLASSIFY,
@@ -752,20 +876,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'identity-only rows are collected for later grading.',
     reason:
       'Hub open or tie intent over an inbound message, bounded conversation, and bindable-topic enum; provenance stores identity and shape only.',
-  },
-  {
-    decisionPoint: DP_PROFILE_INTENT_CLASSIFY,
-    component: 'ProfileIntentClassifier',
-    status: 'wired',
-    volumeClass: 'budget:250',
-    contentClass: 'content-bearing',
-    gradingPosture: 'measurement-only',
-    gradingReason:
-      'A profile write applying successfully proves enum validity, not that the user intended the change, while ' +
-      'pass-through has no independent label. Identity-only cases are collected until profile-write disposition ' +
-      'and authenticated correction evidence carry this correlation.',
-    reason:
-      'Topic framework, model, or thinking-mode intent over an inbound message, bounded context, and allowed enums; provenance stores identity and shape only.',
   },
   {
     decisionPoint: 'llm-sanitize',
@@ -808,6 +918,30 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Cross-model spec-document review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+  },
+  {
+    decisionPoint: 'script-job-supervision',
+    component: 'ScriptJobSupervisor',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Daily review of every machine\'s recent script-job outputs (job-cost-reduction §5.6.5); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+  },
+  {
+    decisionPoint: 'script-job-outage-backup',
+    component: 'JobTriageBackupCheck',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Outage-only model decision over sampled script-result evidence (job-cost-reduction §5.6.3); enrollment is queued in the uniform-provenance retrofit backlog.',
+  },
+  {
+    decisionPoint: 'job-anomaly-narration',
+    component: 'JobAnomalyNarrator',
+    status: 'exempt:no-decision-content',
+    contentClass: 'content-bearing', // the operator-authored job body is bounded but still prompt content
+    reason:
+      'Wording-only (job-cost-reduction §5.4): one plain sentence beside a verbatim evidence block; the push, its reasons and its timing are decided deterministically before the model is called, and nothing parses its reply.',
   },
   {
     decisionPoint: 'self-knowledge-extract',
@@ -924,14 +1058,6 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'operator-reviewed labels can grade real committed-source summaries without a cold start.',
     reason:
       'Doc-tree summary authoring over untrusted committed code; identity-only context records node and input shape, never source or child-summary bodies.',
-  },
-  {
-    decisionPoint: 'standards-coverage-enrich',
-    component: 'StandardsCoverageEnrichment',
-    status: 'pending:backlog:decision-quality-enrolment',
-    contentClass: 'content-bearing',
-    reason:
-      'Standards-coverage row enrichment over repo content (dark LLM path); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
 
   // — Previously-uncategorized callsites (LLM Routing Registry audit set) —
@@ -1106,6 +1232,24 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
+    decisionPoint: 'skill-learning-draft',
+    component: 'skillLearning.drafter',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Skill-learning arbiter (draft/wait/never) and drafter (covered-by/patch/new) over operator requests and tool-call outlines; ' +
+      'the sentinel records each call directly through JudgmentProvenanceLog (arbiter: true) pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
+    decisionPoint: 'skill-learning-review',
+    component: 'skillLearning.reviewer',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Cross-family v1 review of a skill draft (follows / clear-or-strike each flagged line); recorded directly through ' +
+      'JudgmentProvenanceLog by the sentinel pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
     decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
     component: 'mentor-stage-b',
     status: 'wired',
@@ -1118,6 +1262,21 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'settlement, so provenance is collected without treating persistence as truth.',
     reason:
       'Mentor-signal classification over bounded mentee output; context stores exact signal and prompt identities without log or session text.',
+  },
+  {
+    decisionPoint: DP_SKILL_LEARNING_CLASSIFY,
+    component: 'skillLearning.classifier',
+    status: 'wired',
+    volumeClass: 'budget:200',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A verdict (repeatable / procedureKey / outcomeOfPrevRun) is graded by the sentinel\'s own §3.6 corroboration ' +
+      'and the weekly operator label sample, which are not correlation-bound to each settlement yet; provenance is the ' +
+      'precondition of every verdict (§4: no record, no action) and is collected before an outcome rule exists.',
+    reason:
+      'Batch classification of operator request rows; context stores source and prompt identities (hashes), counts and ' +
+      'booleans — never message text (the ledger holds only the pointer and the scrubbed paraphrase).',
   },
 
   // ── Argued exemptions (closed taxonomy; pinned shrink-only) ──────────────
@@ -1246,6 +1405,8 @@ export interface EvidenceRule {
 /** Default hog evidence window (§5.4.5 "bounded window (default 6h)"). */
 const HOG_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
 export const DECISION_POINT_EVIDENCE_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** PromptGate pane-outcome horizon H (CMT-1677): 15 minutes from the snapshot. */
+export const TERMINAL_PROMPT_OUTCOME_HORIZON_MS = 15 * 60 * 1000;
 
 export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
   // A kill graded `wrong` ONLY IF a same-commandHash candidate respawns in-window
@@ -1359,6 +1520,26 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
     owningComponent: 'DecisionGrading', windowMs: DECISION_POINT_EVIDENCE_WINDOW_MS,
   },
+  // ── Terminal blocking-prompt outcomes (CMT-1677) ──────────────────────
+  // PromptGate's bounded pane observer watches the bottom of the pane for
+  // 15 minutes after a detector snapshot. The pane CHANGING with no input sent
+  // is tool evidence that the pane was not blocking: the detector's "no
+  // prompt" grades right, its "blocking" grades wrong. Negative evidence, not
+  // proof (a blocking modal with a live clock would also change).
+  'terminal-prompt-progressed-v1': {
+    ruleId: 'terminal-prompt-progressed-v1', decisionPoint: DP_TERMINAL_PROMPT_DETECT,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'PromptGate', windowMs: TERMINAL_PROMPT_OUTCOME_HORIZON_MS,
+  },
+  // Every other observed ending — input sent while the bottom was unchanged
+  // (candidate evidence it WAS blocking, not proof), nothing within the
+  // horizon, the session ending, or the observer losing track — records the
+  // outcome kind with the honest `unknown` grade. Missing is never a pass.
+  'terminal-prompt-unresolved-v1': {
+    ruleId: 'terminal-prompt-unresolved-v1', decisionPoint: DP_TERMINAL_PROMPT_DETECT,
+    rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
+    owningComponent: 'PromptGate', windowMs: TERMINAL_PROMPT_OUTCOME_HORIZON_MS,
+  },
   'feedback-readiness-window-unknown-v1': {
     ruleId: 'feedback-readiness-window-unknown-v1', decisionPoint: DP_FEEDBACK_READINESS,
     rung: 'deterministic-ground-truth', evidenceStrength: 'negative-evidence',
@@ -1430,7 +1611,7 @@ const CENSUS_BY_COMPONENT: ReadonlyMap<string, ProvenanceCoverageEntry> = new Ma
 /** The census entry for a decision point, or undefined (an unknown decision
  * point at the settlement write is counted, never thrown — §5.6). */
 export function getCensusEntry(decisionPoint: string): ProvenanceCoverageEntry | undefined {
-  return CENSUS_BY_POINT.get(decisionPoint);
+  return CENSUS_BY_POINT.get(decisionPoint) ?? CENSUS_BY_POINT.get(canonicalDecisionPoint(decisionPoint));
 }
 
 /** The census entry keyed by the 1:1 `attribution.component` enrollment key

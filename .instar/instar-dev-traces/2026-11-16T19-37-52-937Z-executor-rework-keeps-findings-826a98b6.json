@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "executor-rework-keeps-findings",
+  "sessionId": "aabaebfd-0115-4359-abd2-5d0924162e2b",
+  "timestamp": "2026-11-16T19:37:52.937Z",
+  "artifactPath": "upgrades/side-effects/executor-rework-keeps-findings.md",
+  "artifactSha256": "43f0cf3ba7aa9db6b2f61bd9c1f35d4fa904f0a21b58a76813ad5ca236ddc32b",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-review-failed-recovery.test.ts",
+    "upgrades/eli16/executor-rework-keeps-findings.md",
+    "upgrades/next/executor-rework-keeps-findings.md",
+    "upgrades/side-effects/executor-rework-keeps-findings.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-line selection change in the rework findings lookup plus a test; no gate or authority change; a revert fully undoes it",
+  "eli16Path": "upgrades/eli16/executor-rework-keeps-findings.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-rework-keeps-findings.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

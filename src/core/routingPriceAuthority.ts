@@ -42,12 +42,30 @@ export interface RoutingPricePoint {
   outPerMtok: number;
   /** OPTIONAL cache-read rate; absent ⇒ cached bills as full input (the over-booking safe direction, FD-19). */
   cachedInPerMtok?: number;
+  /** OPTIONAL cache-write rate (unified usage ledger, list-equivalent doors). */
+  cacheWritePerMtok?: number;
+  /** Where a list-equivalent price was copied from, and when (unified usage ledger, Slice 3). */
+  sourceUrl?: string;
+  retrievedAt?: string;
   /** UTC-day-aligned ISO (T00:00:00Z), ALWAYS (FD-18). */
   effectiveAt: string;
   recordedAt?: string;
   source?: string;
   /** Only a human/PIN write may set this (a correction supersede). */
   corrects?: string | null;
+  /**
+   * Whether the price was read and verified on the provider's own page
+   * (gemini-payg §3). `false` is treated EXACTLY like stale (`priceStale`).
+   * Absent ⇒ legacy point, treated as verified (pre-change behaviour).
+   */
+  verified?: boolean;
+  /**
+   * The largest request input (tokens) this point's rate covers — the tier
+   * range (gemini-payg §3). Absent ⇒ the point claims no tier range.
+   */
+  maxInputTokens?: number;
+  /** Optional explicit id; otherwise `pricePointId()` derives a stable one. */
+  id?: string;
   /**
    * REPORTING-ONLY per-token subsidy/discount (Layer 1b). NEVER reaches a money gate.
    * `discount-frac` value ∈ [0,1); `flat-per-mtok` inPerMtok/outPerMtok ≥ 0.
@@ -62,6 +80,11 @@ export interface RoutingDoorMeta {
   freshnessSlaDays?: number;
   staleMode?: 'fail-closed' | 'book-conservative-max';
   conservativeMax?: { inPerMtok: number; outPerMtok: number };
+  /**
+   * gemini-payg §3: admission requires a VERIFIED point whose `maxInputTokens`
+   * range covers the counted input. No assumed coverage.
+   */
+  requireVerifiedTier?: boolean;
 }
 
 export interface RoutingPriceManifest {
@@ -69,6 +92,12 @@ export interface RoutingPriceManifest {
   version?: number;
   doors?: Record<string, RoutingDoorMeta>;
   points?: RoutingPricePoint[];
+  /**
+   * Unified usage ledger (Slice 3): maps a REPORTED model id to its list-equivalent
+   * door and priced model id by longest prefix, so a corrected mapping applies to all
+   * history (pricing happens on read).
+   */
+  modelFamilies?: Array<{ prefix: string; door: string; modelId: string }>;
 }
 
 /** Global default freshness SLA when a door declares none (spec Layer 1). */
@@ -81,7 +110,8 @@ export type PriceBasis =
   | 'no-matching-point'
   | 'subscription-zero';
 
-export type DoorClass = 'cli' | 'metered' | 'unknown';
+/** list-equivalent: a provider's published list price, used only to value usage as if bought by the token (unified usage ledger). */
+export type DoorClass = 'cli' | 'metered' | 'list-equivalent' | 'unknown';
 
 export interface PriceResolution {
   door: string;
@@ -95,6 +125,21 @@ export interface PriceResolution {
   /** Age (days) of the newest canonical point for the door; null when none. */
   newestPointAgeDays: number | null;
   staleMode?: RoutingDoorMeta['staleMode'];
+  /** The resolved point carries `verified: false` (folded into priceStale). */
+  priceUnverified?: boolean;
+  /** The door's newest point is past its freshness SLA (age-staleness alone). */
+  priceAgeStale?: boolean;
+}
+
+/** Result of tier selection for a counted input (gemini-payg §3 / §5 step 4). */
+export type TierSelection =
+  | { ok: true; point: RoutingPricePoint; pointId: string; verified: boolean }
+  | { ok: false; reason: 'unknown-price' | 'outside-verified-tier'; detail: string };
+
+/** Stable id of a price point: explicit `id`, else door|model|effectiveAt|tier. */
+export function pricePointId(p: RoutingPricePoint): string {
+  if (typeof p.id === 'string' && p.id.trim()) return p.id;
+  return `${p.door}|${canonicalModelId(p.modelId)}|${p.effectiveAt}|${p.maxInputTokens ?? 'any'}`;
 }
 
 /** Reporting cost for a usage tuple, GROSS and net-of-subsidy (credits are a rollup-level line, applied by the composer). */
@@ -124,9 +169,15 @@ export function canonicalModelId(modelId: string): string {
 }
 
 function doorClassOf(door: string): DoorClass {
+  if (isListEquivalentDoor(door)) return 'list-equivalent';
   if (CLI_ROUTING_DOORS.has(door as never)) return 'cli';
   if (METERED_ROUTING_DOORS.has(door as never)) return 'metered';
   return 'unknown';
+}
+
+/** A list-equivalent door is named `<provider>-list` (e.g. `anthropic-list`, `openai-list`). */
+export function isListEquivalentDoor(door: string): boolean {
+  return /^[a-z0-9]+-list$/.test(door);
 }
 
 /** Fail-closed point validation (spec A-M5/S-F1): a violating point is DROPPED from the index. */
@@ -144,12 +195,22 @@ export function isValidPricePoint(p: unknown): p is RoutingPricePoint {
     // cachedInPerMtok ≥ 0 AND ≤ inPerMtok (so a typo can never make cost exceed the full-input rate).
     if (typeof c !== 'number' || !Number.isFinite(c) || c < 0 || c > inP) return false;
   }
+  if (pt.cacheWritePerMtok !== undefined) {
+    const w = pt.cacheWritePerMtok;
+    if (typeof w !== 'number' || !Number.isFinite(w) || w < 0) return false;
+  }
   if (typeof pt.effectiveAt !== 'string') return false;
   const ms = Date.parse(pt.effectiveAt);
   if (!Number.isFinite(ms)) return false;
   // Day-alignment (FD-18): effectiveAt must be a UTC day boundary.
   if (new Date(ms).toISOString() !== dayAlignedIso(ms)) return false;
   if (pt.subsidy !== undefined && !isValidSubsidy(pt.subsidy)) return false;
+  if (pt.verified !== undefined && typeof pt.verified !== 'boolean') return false;
+  if (pt.maxInputTokens !== undefined) {
+    const m = pt.maxInputTokens;
+    if (typeof m !== 'number' || !Number.isInteger(m) || m <= 0) return false;
+  }
+  if (pt.id !== undefined && (typeof pt.id !== 'string' || !pt.id.trim())) return false;
   return true;
 }
 
@@ -255,6 +316,7 @@ export class RoutingPriceAuthority {
   private loadManifest(): void {
     this.canonicalIndex = new Map();
     this.doorMeta = {};
+    this.modelFamilies = [];
     this.manifestPresent = false;
     let raw: unknown;
     try {
@@ -282,6 +344,39 @@ export class RoutingPriceAuthority {
       this.canonicalIndex.set(key, arr);
     }
     for (const arr of this.canonicalIndex.values()) arr.sort(cmpPoint);
+    for (const f of Array.isArray(m.modelFamilies) ? m.modelFamilies : []) {
+      if (f && typeof f.prefix === 'string' && f.prefix.trim() && typeof f.door === 'string' && typeof f.modelId === 'string') {
+        this.modelFamilies.push({ prefix: canonicalModelId(f.prefix), door: f.door, modelId: canonicalModelId(f.modelId) });
+      }
+    }
+    this.modelFamilies.sort((a, b) => b.prefix.length - a.prefix.length);
+  }
+
+  private modelFamilies: Array<{ prefix: string; door: string; modelId: string }> = [];
+
+  /**
+   * Unified usage ledger (Slice 3): the list-equivalent door and priced model for a
+   * reported model id (longest manifest prefix wins); null when no family matches.
+   */
+  listEquivalentFor(reportedModel: string | null | undefined): { door: string; modelId: string } | null {
+    if (!reportedModel) return null;
+    this.reloadIfChanged();
+    const m = canonicalModelId(reportedModel);
+    const f = this.modelFamilies.find(x => m.startsWith(x.prefix));
+    return f ? { door: f.door, modelId: f.modelId } : null;
+  }
+
+  /**
+   * The CANONICAL manifest point in force at `ms` for a door+model — never the overlay
+   * or the observed cache, so the same usage is valued identically on every machine.
+   */
+  canonicalPointAt(door: string, modelId: string, ms: number): RoutingPricePoint | null {
+    this.reloadIfChanged();
+    const arr = this.canonicalIndex.get(RoutingPriceAuthority.key(door, canonicalModelId(modelId)));
+    if (!arr) return null;
+    let best: RoutingPricePoint | null = null;
+    for (const p of arr) if (Date.parse(p.effectiveAt) <= ms) best = p;
+    return best;
   }
 
   private loadObserved(): void {
@@ -395,7 +490,20 @@ export class RoutingPriceAuthority {
 
     const canonical = asOf(this.canonicalIndex.get(key), tsMs);
     if (canonical) {
-      return { door, modelId: canonicalModelId(modelId), doorClass: cls, priceBasis: 'canonical', point: canonical, priceStale, newestPointAgeDays: newestAgeDays, staleMode };
+      // gemini-payg §3: `verified: false` is treated exactly like stale.
+      const unverified = canonical.verified === false;
+      return {
+        door,
+        modelId: canonicalModelId(modelId),
+        doorClass: cls,
+        priceBasis: 'canonical',
+        point: canonical,
+        priceStale: priceStale || unverified,
+        newestPointAgeDays: newestAgeDays,
+        staleMode,
+        priceUnverified: unverified,
+        priceAgeStale: priceStale,
+      };
     }
     const observed = asOf(this.observedIndex.get(key), tsMs);
     if (observed) {
@@ -407,6 +515,62 @@ export class RoutingPriceAuthority {
     }
     // A metered door with no matching point → loud, never $0.
     return { door, modelId: canonicalModelId(modelId), doorClass: cls, priceBasis: 'no-matching-point', priceStale, newestPointAgeDays: newestAgeDays, staleMode };
+  }
+
+  /**
+   * Tier selection by COUNTED input (gemini-payg §3 / §5 step 4). Points are
+   * grouped by their `maxInputTokens` range; within each range the as-of
+   * resolution applies (corrections supersede within a tier). The chosen
+   * point is the one with the SMALLEST range that contains the input,
+   * independent of manifest insertion order.
+   *
+   * `allowUnverified` is the release-proof path only: it may select an
+   * unverified point (booked by the gate at conservativeMax). Otherwise only
+   * verified points with a declared range are candidates, and an input above
+   * the highest verified range refuses `outside-verified-tier` — no assumed
+   * coverage.
+   */
+  selectTier(door: string, modelId: string, tsMs: number, inputTokens: number, opts?: { allowUnverified?: boolean }): TierSelection {
+    this.reloadIfChanged();
+    const arr = this.canonicalIndex.get(RoutingPriceAuthority.key(door, modelId));
+    const effective = (arr ?? []).filter((p) => Date.parse(p.effectiveAt) <= tsMs);
+    if (effective.length === 0) {
+      return { ok: false, reason: 'unknown-price', detail: `no canonical price point for (${door}, ${canonicalModelId(modelId)})` };
+    }
+    const byTier = new Map<string, RoutingPricePoint[]>();
+    for (const p of effective) {
+      const k = String(p.maxInputTokens ?? 'any');
+      const list = byTier.get(k) ?? [];
+      list.push(p);
+      byTier.set(k, list);
+    }
+    const candidates: RoutingPricePoint[] = [];
+    for (const list of byTier.values()) {
+      list.sort(cmpPoint);
+      const latest = list[list.length - 1];
+      if (latest) candidates.push(latest);
+    }
+    if (opts?.allowUnverified) {
+      // Release-proof: the fixed tiny input; prefer a covering range, else the newest point.
+      const covering = candidates
+        .filter((p) => p.maxInputTokens === undefined || inputTokens <= p.maxInputTokens)
+        .sort((a, b) => (a.maxInputTokens ?? Infinity) - (b.maxInputTokens ?? Infinity));
+      const pick = covering[0];
+      if (pick) return { ok: true, point: pick, pointId: pricePointId(pick), verified: pick.verified === true };
+      return { ok: false, reason: 'outside-verified-tier', detail: `input ${inputTokens} exceeds every declared tier for (${door}, ${canonicalModelId(modelId)})` };
+    }
+    const verified = candidates
+      .filter((p) => p.verified === true && typeof p.maxInputTokens === 'number')
+      .sort((a, b) => (a.maxInputTokens as number) - (b.maxInputTokens as number));
+    if (verified.length === 0) {
+      return { ok: false, reason: 'outside-verified-tier', detail: `no verified price tier for (${door}, ${canonicalModelId(modelId)}) — nothing is admitted until the price is verified` };
+    }
+    const pick = verified.find((p) => inputTokens <= (p.maxInputTokens as number));
+    if (!pick) {
+      const top = verified[verified.length - 1]!.maxInputTokens;
+      return { ok: false, reason: 'outside-verified-tier', detail: `input ${inputTokens} tokens exceeds the highest verified tier (${top}) for (${door}, ${canonicalModelId(modelId)})` };
+    }
+    return { ok: true, point: pick, pointId: pricePointId(pick), verified: true };
   }
 
   /** Newest canonical point's age in days for a door (across all its models), relative to `atMs`. */

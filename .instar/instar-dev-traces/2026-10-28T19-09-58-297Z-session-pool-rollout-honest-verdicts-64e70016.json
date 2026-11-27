@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "session-pool-rollout-honest-verdicts",
+  "sessionId": "552fe6f8-7244-4b8a-960c-9f7b7646f3ec",
+  "timestamp": "2026-10-28T19:09:58.297Z",
+  "artifactPath": "upgrades/side-effects/session-pool-rollout-honest-verdicts.md",
+  "artifactSha256": "16fc24b7e6cc14b8241b728c79c5df4e24696404d260f3d21e5b6fcf20f0bc70",
+  "coveredFiles": [
+    "docs/eli16/session-pool-rollout-honest-verdicts.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionPoolRolloutDriver.ts",
+    "src/core/StageAdvancer.ts",
+    "src/core/inboundQueueConfig.ts",
+    "src/core/sessionPoolFailoverCheck.ts",
+    "src/core/testRunnerRunClassifier.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/SessionPoolRolloutDriver.test.ts",
+    "tests/unit/StageAdvancer.test.ts",
+    "tests/unit/inbound-queue-boot-order.test.ts",
+    "tests/unit/resolve-session-pool-stage.test.ts",
+    "tests/unit/sessionPoolFailoverCheck.test.ts",
+    "tests/unit/test-runner-run-classifier.test.ts",
+    "upgrades/next/session-pool-rollout-honest-verdicts.md",
+    "upgrades/side-effects/session-pool-rollout-honest-verdicts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Code-only change to how failover E2E evidence is read, a bounded reconcile/advance rule pair, an audit line, a lane-classifier flag, and the queue gate input; a revert fully undoes it, no state or config migration.",
+  "eli16Path": "docs/eli16/session-pool-rollout-honest-verdicts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-pool-rollout-honest-verdicts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "session-pool-stage-promotion model: real StageAdvancer + driver under a target-only regression; promotion needs a green newer than the target's latest red and stops after MAX_TARGET_REDS_PER_COMMIT (2) reds per build, so 600 ticks yield exactly 2 promotions, restart-surviving"
+    }
+  }
+}

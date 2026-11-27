@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "preauth-page-headers",
+  "sessionId": "1251b1e8-8c50-4f64-9c79-779ccdf36f8e",
+  "timestamp": "2026-11-20T23:58:30.354Z",
+  "artifactPath": "upgrades/side-effects/preauth-page-headers.md",
+  "artifactSha256": "e7d3624f241e483645a14020fbf8eafdfa62ea59797ec49359790c8009928859",
+  "coveredFiles": [
+    "docs/specs/preauth-page-headers.eli16.md",
+    "src/server/middleware.ts",
+    "tests/unit/sec-124-preauth-page-headers.test.ts",
+    "upgrades/next/preauth-page-headers.md",
+    "upgrades/side-effects/preauth-page-headers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small hardening (SEC-124): anti-framing, no-store and no-referrer headers on the three pre-auth capability pages via the existing header middleware; headers only, reversible by revert.",
+  "eli16Path": "docs/specs/preauth-page-headers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/preauth-page-headers.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

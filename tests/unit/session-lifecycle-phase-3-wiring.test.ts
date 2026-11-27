@@ -97,7 +97,11 @@ describe('Phase 3 — per-killer routing contracts', () => {
       expect(telegramSource).toContain('setTopicRenamedHandler');
       // The fire site is gated on isRename, which requires forum_topic_edited
       // (rename event) AND name != currentName.
-      expect(telegramSource).toMatch(/isRename\s*=\s*!!msg\.forum_topic_edited\?\.name\s*&&\s*currentName\s*!==\s*detectedName/);
+      // (Shared by the poller and the lifeline forward via captureTopicName; behaviour is
+      // covered in tests/unit/topic-names-through-lifeline.test.ts.)
+      // `held` is the name kept after topic-name replication (a newer replicated rename can win).
+      expect(telegramSource).toMatch(/isRename\s*=\s*isEditEvent\s*&&\s*currentName\s*!==\s*held/);
+      expect(telegramSource).toMatch(/captureTopicName\(numericTopicId,\s*detectedName,\s*!!msg\.forum_topic_edited\?\.name,/);
       expect(telegramSource).toMatch(/if\s*\(isRename\s*&&\s*this\.topicRenamedHandler\)/);
     });
 

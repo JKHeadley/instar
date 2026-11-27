@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-13T11:08:16.334Z",
+  "slug": "usage-ledger-async-scan",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 318,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/usageLedgerTick.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 299,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

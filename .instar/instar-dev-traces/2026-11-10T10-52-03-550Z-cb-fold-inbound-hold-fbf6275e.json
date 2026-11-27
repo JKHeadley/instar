@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "cb-fold-inbound-hold",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T10:52:03.550Z",
+  "artifactPath": "upgrades/side-effects/cb-fold-inbound-hold.md",
+  "artifactSha256": "f39cdddd0101abd12ddee89d925932fd5309d3807ccd9f0a5a09a82f7756a2d7",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PendingInboundStore.ts",
+    "src/core/QueueDrainLoop.ts",
+    "src/core/inboundQueueBootSweep.ts",
+    "src/monitoring/foldInboundHold.ts",
+    "tests/e2e/fold-inbound-hold-crash-lifecycle.test.ts",
+    "tests/integration/fold-inbound-hold-wiring.test.ts",
+    "tests/unit/inbound-queue-boot-sweep.test.ts",
+    "tests/unit/pending-inbound-fold-hold.test.ts",
+    "upgrades/next/cb-fold-inbound-hold.md",
+    "upgrades/side-effects/cb-fold-inbound-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Additive schema change and a new custody rule on the durable inbound queue (spec §9.3 Held inbound); inert until a fold holds a session.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -48,7 +48,14 @@ function makeConfig(stateDir: string, overrides?: Partial<CommitmentTrackerConfi
 }
 
 function makeTracker(stateDir: string, overrides?: Partial<CommitmentTrackerConfig>): CommitmentTracker {
-  return new CommitmentTracker(makeConfig(stateDir, overrides));
+  return allowAllConfigWrites(new CommitmentTracker(makeConfig(stateDir, overrides)));
+}
+
+/** These tests exercise the auto-correction mechanics; the write authority check (SEC-075) is
+ *  tested on its own below and in bearer-config-write.test.ts. */
+function allowAllConfigWrites(t: CommitmentTracker): CommitmentTracker {
+  t.setConfigWriteGuard(() => null);
+  return t;
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -74,7 +81,7 @@ describe('CommitmentTracker', () => {
       // Set config to match expected value so immediate verification passes
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const commitment = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -274,7 +281,7 @@ describe('CommitmentTracker', () => {
     it('triggers immediate verification for config-change commitments', () => {
       const liveConfig = new LiveConfig(stateDir);
       // autoApply is true in the config, but commitment expects false
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -340,7 +347,7 @@ describe('CommitmentTracker', () => {
 
     it('getActive() includes violated commitments (they need attention)', () => {
       const liveConfig = new LiveConfig(stateDir);
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
 
       // Config says autoApply=true, commitment expects false → violation
       tracker.record({
@@ -426,13 +433,50 @@ describe('CommitmentTracker', () => {
 
   // ── Verification: Config Change ────────────────────────
 
+  // SEC-075: auto-correction writes config on a bearer caller's behalf, so it writes only what
+  // PATCH /config would accept from that caller. The drift is still reported either way.
+  describe('auto-correction write authority', () => {
+    function drifted(guard?: (p: string, v: unknown) => string | null) {
+      const liveConfig = new LiveConfig(stateDir);
+      liveConfig.set('updates.autoApply', false);
+      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      if (guard) tracker.setConfigWriteGuard(guard);
+      const c = tracker.record({ type: 'config-change', userRequest: 'keep it off', agentResponse: 'ok', configPath: 'updates.autoApply', configExpectedValue: false });
+      liveConfig.set('updates.autoApply', true);
+      const report = tracker.verify();
+      return { liveConfig, report, id: c.id };
+    }
+    it('with no guard wired, nothing is written (fail closed) and the drift is reported', () => {
+      const { liveConfig, report } = drifted();
+      expect(liveConfig.get('updates.autoApply', null)).toBe(true);
+      expect(report.violations[0].autoCorrected).toBe(false);
+    });
+    it('a refused path is never written, and the drift is reported', () => {
+      const seen: string[] = [];
+      const { liveConfig, report } = drifted((p) => { seen.push(p); return 'not allowed'; });
+      expect(seen).toEqual(['updates.autoApply']);
+      expect(liveConfig.get('updates.autoApply', null)).toBe(true);
+      expect(report.violations[0].autoCorrected).toBe(false);
+    });
+    it('a guard that throws counts as a refusal and does not stop the sweep', () => {
+      const { liveConfig, report } = drifted(() => { throw new Error('boom'); });
+      expect(liveConfig.get('updates.autoApply', null)).toBe(true);
+      expect(report.violations[0].autoCorrected).toBe(false);
+    });
+    it('an allowed path is written as before', () => {
+      const { liveConfig, report } = drifted(() => null);
+      expect(liveConfig.get('updates.autoApply', null)).toBe(false);
+      expect(report.violations[0].autoCorrected).toBe(true);
+    });
+  });
+
   describe('verification — config-change', () => {
     it('verifies when config matches expected value', () => {
       const liveConfig = new LiveConfig(stateDir);
       // Set config to false (matching what commitment expects)
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -451,7 +495,7 @@ describe('CommitmentTracker', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -475,7 +519,7 @@ describe('CommitmentTracker', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const correctedHandler = vi.fn();
       tracker.on('corrected', correctedHandler);
 
@@ -501,6 +545,7 @@ describe('CommitmentTracker', () => {
 
       const onViolation = vi.fn();
       const tracker = new CommitmentTracker({ stateDir, liveConfig, onViolation });
+      tracker.setConfigWriteGuard(() => null);
 
       const c = tracker.record({
         type: 'config-change',
@@ -528,19 +573,20 @@ describe('CommitmentTracker', () => {
       expect(report.violations[0].autoCorrected).toBe(true);
     });
 
-    it('handles missing configPath gracefully', () => {
+    it('handles a historical missing configPath without a false violation', async () => {
       const tracker = makeTracker(stateDir);
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'req',
         agentResponse: 'resp',
-        // Missing configPath!
+        configPath: 'updates.autoApply',
+        configExpectedValue: false,
       });
-
+      await tracker.mutate(c.id, prev => ({ ...prev, configPath: undefined }));
+      const before = tracker.get(c.id)!.violationCount;
       const result = tracker.verifyOne(c.id);
-      expect(result).not.toBeNull();
-      expect(result!.passed).toBe(false);
-      expect(result!.detail).toContain('Missing configPath');
+      expect(result).toBeNull();
+      expect(tracker.get(c.id)?.violationCount).toBe(before);
     });
   });
 
@@ -686,7 +732,7 @@ describe('CommitmentTracker', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('feature.enabled', true);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker.record({
         type: 'one-time-action',
         userRequest: 'Enable the feature',
@@ -718,6 +764,26 @@ describe('CommitmentTracker', () => {
       // Explicit closure still works — the intended path.
       tracker.deliver(c.id);
       expect(tracker.get(c.id)!.status).toBe('delivered');
+    });
+
+    it('rejects prose in verificationMethod before storing a new promise', () => {
+      const tracker = makeTracker(stateDir);
+      expect(() => tracker.record({ type: 'one-time-action', userRequest: 'Review the research',
+        agentResponse: 'I will review it', verificationMethod: 'Review the research evidence' as 'manual' })).toThrow('verificationMethod must be');
+      expect(tracker.getAll()).toHaveLength(0);
+    });
+
+    it('stops verification ticks on a legacy unsupported method without marking it delivered', () => {
+      const storePath = path.join(stateDir, 'state', 'commitments.json');
+      fs.writeFileSync(storePath, JSON.stringify({ version: 1, commitments: [{
+        id: 'CMT-LEGACY-UNSUPPORTED', type: 'one-time-action', status: 'violated',
+        userRequest: 'Review the research', agentResponse: 'I will review it',
+        createdAt: '2026-10-27T18:03:07.914Z', verificationMethod: 'Review the research evidence',
+        verificationCount: 0, violationCount: 4563, correctionCount: 0, correctionHistory: [], escalated: false, version: 4563,
+      }] }));
+      const tracker = makeTracker(stateDir);
+      for (let i = 0; i < 10; i++) expect(tracker.verifyOne('CMT-LEGACY-UNSUPPORTED')).toBeNull();
+      expect(tracker.get('CMT-LEGACY-UNSUPPORTED')).toMatchObject({ status: 'violated', violationCount: 4563 });
     });
 
     it('one-time-action with no verificationMethod stays PENDING across sweeps with zero violations (#76 spam + CMT-1101 evaporation both dead)', () => {
@@ -841,11 +907,22 @@ describe('CommitmentTracker', () => {
   // ── Full Verification Cycle ────────────────────────────
 
   describe('verify() — full cycle', () => {
+    it('does not count missing check coordinates as repeated failed verifications', async () => {
+      const tracker = makeTracker(stateDir);
+      expect(() => tracker.record({ type: 'config-change', userRequest: 'Change the schedule', agentResponse: 'I will do it' })).toThrow('config-change requires configPath');
+      const recorded = tracker.record({ type: 'config-change', userRequest: 'Change the schedule', agentResponse: 'I will do it',
+        configPath: 'updates.autoApply', configExpectedValue: false });
+      await tracker.mutate(recorded.id, prev => ({ ...prev, status: 'violated', violationCount: 23161,
+        configPath: undefined, configExpectedValue: undefined }));
+      tracker.verify();
+      tracker.verify();
+      expect(tracker.get(recorded.id)).toMatchObject({ status: 'violated', violationCount: 23161 });
+    });
     it('returns comprehensive report', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
 
       // One passing config-change
       tracker.record({
@@ -1003,7 +1080,7 @@ describe('CommitmentTracker', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       tracker.record({
         type: 'config-change',
         userRequest: 'Turn off',
@@ -1020,7 +1097,7 @@ describe('CommitmentTracker', () => {
     it('reports degraded when commitments are violated', () => {
       const liveConfig = new LiveConfig(stateDir);
       // Config has autoApply=true, but commitment expects false → violation
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       tracker.record({
         type: 'config-change',
         userRequest: 'Turn off',
@@ -1103,7 +1180,7 @@ describe('CommitmentTracker', () => {
       const liveConfig = new LiveConfig(stateDir);
       liveConfig.set('updates.autoApply', false);
 
-      const tracker = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -1134,6 +1211,7 @@ describe('CommitmentTracker', () => {
         escalationThreshold: 3,
         escalationWindowMs: 3_600_000,
       });
+      tracker.setConfigWriteGuard(() => null);
       const c = tracker.record({
         type: 'config-change',
         userRequest: 'Turn off auto-updates',
@@ -1163,6 +1241,7 @@ describe('CommitmentTracker', () => {
         stateDir, liveConfig,
         escalationThreshold: 2,
       });
+      tracker.setConfigWriteGuard(() => null);
       const escalationHandler = vi.fn();
       tracker.on('escalation', escalationHandler);
 
@@ -1192,6 +1271,7 @@ describe('CommitmentTracker', () => {
         stateDir, liveConfig, onEscalation,
         escalationThreshold: 2,
       });
+      tracker.setConfigWriteGuard(() => null);
 
       tracker.record({
         type: 'config-change',
@@ -1220,6 +1300,7 @@ describe('CommitmentTracker', () => {
         escalationThreshold: 3,
         escalationWindowMs: 60_000, // 1 minute window
       });
+      tracker.setConfigWriteGuard(() => null);
 
       const c = tracker.record({
         type: 'config-change',
@@ -1253,6 +1334,7 @@ describe('CommitmentTracker', () => {
         stateDir, liveConfig,
         escalationThreshold: 2,
       });
+      tracker1.setConfigWriteGuard(() => null);
 
       tracker1.record({
         type: 'config-change',
@@ -1269,7 +1351,7 @@ describe('CommitmentTracker', () => {
       tracker1.verify();
 
       // Restart — new tracker instance
-      const tracker2 = new CommitmentTracker({ stateDir, liveConfig });
+      const tracker2 = allowAllConfigWrites(new CommitmentTracker({ stateDir, liveConfig }));
       const c = tracker2.getAll()[0];
       expect(c.escalated).toBe(true);
       expect(c.correctionCount).toBe(2);

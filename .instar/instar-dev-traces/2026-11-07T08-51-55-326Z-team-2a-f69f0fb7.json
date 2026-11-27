@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "slug": "team-2a",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T08:51:55.326Z",
+  "artifactPath": "upgrades/side-effects/team-2a.md",
+  "artifactSha256": "6cff79e73cc4ff405c7e35e93710fd147287c858093627f763536e8d0489eb8e",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "tests/unit/team-access-log.test.ts",
+    "upgrades/side-effects/team-2a.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

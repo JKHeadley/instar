@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "feedback-changeset-byte-cap-calibration",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T19:53:32.807Z",
+  "artifactPath": "upgrades/side-effects/feedback-changeset-byte-cap-calibration.md",
+  "artifactSha256": "10ba3b9b792120f054a7edd3090ec99e99ee9cc7fb828011e297a945863a8111",
+  "coveredFiles": [
+    "docs/specs/feedback-changeset-byte-cap-calibration.eli16.md",
+    "docs/specs/feedback-changeset-byte-cap-calibration.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "docs/specs/reports/feedback-changeset-byte-cap-calibration-review.md",
+    "src/feedback-factory/execute/changeSet.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-changeset-byte-cap-calibration.md",
+    "upgrades/side-effects/feedback-changeset-byte-cap-calibration.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow, reversible 1 MiB executor payload calibration with no new authority, state, API, or migration; revert restores the old limit.",
+  "eli16Path": "docs/specs/feedback-changeset-byte-cap-calibration.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-changeset-byte-cap-calibration.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "security",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      },
+      {
+        "name": "integration",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      },
+      {
+        "name": "decision-completeness",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/feedback-changeset-byte-cap-calibration-review.md",
+      "iterations": 2,
+      "verified": true
+    }
+  }
+}

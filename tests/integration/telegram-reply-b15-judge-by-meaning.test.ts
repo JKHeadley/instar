@@ -59,7 +59,7 @@ function buildApp(toneGate: MessagingToneGate, sent: Array<{ topicId: number; te
   const ctx: any = {
     config: { authToken: 'test', stateDir: tmpStateDir, port: 0, projectName: 'echo' },
     messagingToneGate: toneGate,
-    telegram: { sendToTopic: async (topicId: number, text: string) => { sent.push({ topicId, text }); } },
+    telegram: { sendToTopic: async (topicId: number, text: string) => { sent.push({ topicId, text });  return { messageId: 1, topicId: Number(topicId) }; } },
     sessionManager: { clearInjectionTracker: () => {} },
   };
   app.use(createRoutes(ctx));

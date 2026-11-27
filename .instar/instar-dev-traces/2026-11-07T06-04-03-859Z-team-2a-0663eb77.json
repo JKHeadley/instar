@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "team-2a",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T06:04:03.859Z",
+  "artifactPath": "upgrades/side-effects/team-2a.md",
+  "artifactSha256": "6928686a917b3cd6be74d799e1ebdf657fc437897170fc4bc6650be332496f65",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/SessionManager.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/server/memorySessionGuard.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/routes.ts",
+    "src/users/MemoryAudience.ts",
+    "src/users/MemoryInboundTracker.ts",
+    "src/users/MemoryPrivacy.ts",
+    "src/users/TeamConfinement.ts",
+    "src/users/wireMemoryPrivacy.ts",
+    "tests/unit/team-confinement.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

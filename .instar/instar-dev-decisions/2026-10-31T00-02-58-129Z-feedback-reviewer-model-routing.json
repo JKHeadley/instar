@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-31T00:02:58.129Z",
+  "slug": "feedback-reviewer-model-routing",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 112,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/feedback-factory/execute/independentReview.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

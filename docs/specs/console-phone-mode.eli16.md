@@ -1,0 +1,9 @@
+The Instar iPhone app is getting a new design. In it, the app shows one of the dashboard's pages (for example Accounts, Pace or Files) inside its own screen, with the app's own title bar at the top and its own buttons for moving around. The app does this by opening the agent's web dashboard inside the app.
+
+The problem is that the web dashboard always draws its own bars: a strip at the top with the Instar name and a "Legacy" button, and a row of section buttons at the bottom (a sidebar on a wide screen). Inside the app that means two title bars and two sets of navigation stacked on each other, which looks broken and wastes most of a phone screen.
+
+This change adds a "phone mode" to the dashboard. When the address carries phone=1, the dashboard draws only the page itself: no top strip, no bottom row, no Legacy button or link. The app can put phone=1 either in the normal part of the address or after the # mark, because one of the app's sign-in paths can only change the part after the #. Once a page is opened in phone mode it stays that way while you tap around inside it. The app can also use short page names such as #/accounts, #/files or #/pace; Pace gets a small page of its own because before it only lived as a card on the Work page.
+
+Everything else works exactly as before: the numbers load and refresh, the pop-up sheets and buttons work, and signing in (by PIN or from a paired phone) is unchanged. The page leaves room for the phone's notch and home bar but no longer leaves empty room where the dashboard's own bars used to be.
+
+Without phone=1 in the address nothing at all changes, so the dashboard in a normal browser looks and works as it does today. Nothing is stored and nothing is decided on the server; it is purely how the page is drawn. If it turned out wrong, undoing the change brings back exactly today's dashboard.

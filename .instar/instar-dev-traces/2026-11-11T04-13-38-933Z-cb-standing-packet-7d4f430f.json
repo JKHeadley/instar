@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "cb-standing-packet",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T04:13:38.933Z",
+  "artifactPath": "upgrades/side-effects/cb-standing-packet.md",
+  "artifactSha256": "c88ad3a804d685d8187863c975371418dc0253dff91b1356a40c4bfe4b7bc23a",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/BackupManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/memory/TopicMemory.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/standingPacket.ts",
+    "src/monitoring/contextLayers/standingPacketBoot.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-layer-standing-packet-alive.test.ts",
+    "tests/integration/context-layer-standing-packet.test.ts",
+    "tests/unit/context-layer-standing-packet.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/migrate-context-budget-standing-packet-row.test.ts",
+    "tests/unit/standing-packet-hook.test.ts",
+    "upgrades/next/cb-standing-packet.md",
+    "upgrades/side-effects/cb-standing-packet.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Compaction/recovery lifecycle: changes what a topic session receives after a compaction and at spawn (standing packet behind contextBudget.enabled, dev-gated), plus always-overwritten hook scripts; fallback to today's block on any verification failure; independent Fable second pass concurred after two fix rounds",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "New feature (the context-budget standing packet and its verifier), not a fix to an agent-authored artifact; adds no self-triggered controller (the debounced restage is a bounded reaction to a layer write, never a retry, respawn or notification loop)"
+  }
+}

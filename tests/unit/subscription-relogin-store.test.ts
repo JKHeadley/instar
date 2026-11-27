@@ -6,6 +6,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   SubscriptionReloginConflictError,
   SubscriptionReloginStore,
+  isSlowRetryEligible,
   reloginReasonToken,
 } from '../../src/core/SubscriptionReloginStore.js';
 import Database from 'better-sqlite3';
@@ -317,5 +318,67 @@ describe('SubscriptionReloginStore', () => {
     const events = reopened.listEvents(moved.id);
     expect(events.find((e) => e.eventClass === 'cli-starting')?.reason).toBe('chrome-launch-timeout');
     reopened.close();
+  });
+});
+
+describe('SubscriptionReloginStore: device-limit endings (codex-device-limit-tripwire §4)', () => {
+  function toDriving(store: SubscriptionReloginStore, id: string) {
+    const ep = store.get(id)!;
+    const approved = store.approve(ep.id, { inputDigest: ep.inputDigest });
+    const starting = store.transition(approved.id, { expectedVersion: approved.version, to: 'cli-starting', eventClass: 'cli-starting', incrementAttempt: true });
+    const ready = store.transition(starting.id, { expectedVersion: starting.version, to: 'artifact-ready', eventClass: 'artifact-ready' });
+    return store.transition(ready.id, { expectedVersion: ready.version, to: 'browser-driving', eventClass: 'browser-driving' });
+  }
+
+  it('accepts failureClass device-limit; a failed device-limit episode is slow-retry eligible (the service gate and admission hold a real lockout)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended' }).id);
+    const failed = store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+    expect(failed).toMatchObject({ state: 'failed', failureClass: 'device-limit' });
+    expect(isSlowRetryEligible(failed)).toBe(true);
+    // The operator's "don't retry" still wins.
+    expect(isSlowRetryEligible({ ...failed, slowRetryHeld: true })).toBe(false);
+    store.close();
+  });
+
+  it('enqueues no terminal notification for an episode ending device-limit (failed or refused)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 1 }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit' });
+    const suggested = suggest({ mode: 'unattended', sourceEpisodeId: 2 });
+    store.transition(suggested.id, { expectedVersion: suggested.version, to: 'refused',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'device-limit-benched' });
+    expect(store.claimNotifications(10)).toEqual([]);
+    // Positive control: an ordinary failure on the same path does notify.
+    const other = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 3 }).id);
+    store.transition(other.id, { expectedVersion: other.version, to: 'failed',
+      eventClass: 'provider-rejected', failureClass: 'provider-rejected' });
+    expect(store.claimNotifications(10).map((n) => [n.episodeId, n.kind])).toEqual([[other.id, 'terminal']]);
+    store.close();
+  });
+
+  it('a device-limit ending is not counted in helperHardLines (unattended graduation untouched)', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 1 }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit', reason: 'agent-reported-device-limit' });
+    expect(store.getUnattendedEvidence('acct-1', 'machine-1', 'anthropic', 'claude-code').helperHardLines).toBe(0);
+    // Positive control: a real helper hard line on the same cell counts.
+    const hard = toDriving(store, suggest({ mode: 'unattended', sourceEpisodeId: 2 }).id);
+    store.transition(hard.id, { expectedVersion: hard.version, to: 'waiting-operator-only',
+      eventClass: 'operator-only', failureClass: 'agent-hard-line', reason: 'agent-hard-line-captcha' });
+    expect(store.getUnattendedEvidence('acct-1', 'machine-1', 'anthropic', 'claude-code').helperHardLines).toBe(1);
+    store.close();
+  });
+
+  it('does not open the security breaker on a single device-limit ending', () => {
+    const { store, suggest } = fixture();
+    const driving = toDriving(store, suggest({ mode: 'unattended' }).id);
+    store.transition(driving.id, { expectedVersion: driving.version, to: 'failed',
+      eventClass: 'device-limit-stopped', failureClass: 'device-limit' });
+    expect(store.isBreakerOpen('acct-1', 'anthropic')).toBe(false);
+    store.close();
   });
 });

@@ -1,0 +1,38 @@
+{
+  "ts": "2026-10-31T16:31:36.728Z",
+  "slug": "windows-desktop-loopback",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 50,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/install-windows-desktop-companion.mjs",
+      "src/core/WindowsDesktopBridgeAddress.ts",
+      "src/core/WindowsDesktopCompanionDiscovery.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 15
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2498
+    ],
+    "notes": "The prior transport repair proved a live Windows frame and Stop but exposed a Windows Firewall permission dialog from the legacy gateway listener. The first review found a repeat-install loopback handshake regression, fixed before this trace."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "scripts/install-windows-desktop-companion.mjs",
+      "howCaught": "Installer binds the companion only to Windows loopback; the signed local transport connects there. The live browser test must show the Firewall dialog is gone before normal control is called ready."
+    }
+  },
+  "verdict": "blocked"
+}

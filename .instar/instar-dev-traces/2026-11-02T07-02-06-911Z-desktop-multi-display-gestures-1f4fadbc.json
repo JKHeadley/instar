@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "desktop-multi-display-gestures",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T07:02:06.911Z",
+  "artifactPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "artifactSha256": "4f22110071c2279217b81ec58d0dcfca92d593d52e0ce9a820f9509c97c8109e",
+  "coveredFiles": [
+    "docs/specs/desktop-multi-display-gestures.eli16.md",
+    "scripts/windows-desktop-local-transport.ps1",
+    "src/core/DirectDesktopAccess.ts",
+    "tests/e2e/desktop-displays-boot-lifecycle.test.ts",
+    "tests/unit/desktop-displays.test.ts",
+    "tests/unit/windows-desktop-local-transport.test.ts",
+    "upgrades/side-effects/desktop-multi-display-gestures.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Nine-line fix on a reviewed feature: one relay allowlist word and a resume check; a revert fully undoes it.",
+  "eli16Path": "docs/specs/desktop-multi-display-gestures.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-multi-display-gestures.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

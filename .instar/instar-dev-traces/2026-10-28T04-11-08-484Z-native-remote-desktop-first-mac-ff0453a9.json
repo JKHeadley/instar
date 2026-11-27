@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-first-mac",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-28T04:11:08.484Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-first-mac.md",
+  "artifactSha256": "bfe241e5f44bc68c863288b0dd475b5668586b427fd4d178705e602a8622867c",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Remote desktop adds operator input authority and authenticated host access; it is security-sensitive despite a dark first-Mac gate.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

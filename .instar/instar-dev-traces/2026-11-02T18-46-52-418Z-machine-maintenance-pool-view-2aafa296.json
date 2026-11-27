@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "machine-maintenance-pool-view",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T18:46:52.418Z",
+  "artifactPath": "upgrades/side-effects/machine-maintenance-pool-view.md",
+  "artifactSha256": "837fcbe4e4b6e76e393d174b0b1a6bf20dbcd84e0f03da7fe1b56a5987f0be1d",
+  "coveredFiles": [
+    "dashboard/console/machines-model.js",
+    "dashboard/console/machines.js",
+    "docs/specs/machine-maintenance-pool-view.eli16.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/machineMaintenancePool.ts",
+    "src/server/routes.ts",
+    "tests/integration/machine-maintenance-pool-route.test.ts",
+    "tests/unit/console-machines.test.ts",
+    "tests/unit/machine-maintenance-pool-claude-md-awareness.test.ts",
+    "tests/unit/machine-maintenance-pool.test.ts",
+    "upgrades/next/machine-maintenance-pool-view.md",
+    "upgrades/side-effects/machine-maintenance-pool-view.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only ?scope=pool view over existing watch-only routes plus a console display change; no decision point, no write route, fully undone by a revert.",
+  "eli16Path": "docs/specs/machine-maintenance-pool-view.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/machine-maintenance-pool-view.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

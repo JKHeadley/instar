@@ -112,10 +112,31 @@ describe('GET /metrics/features (integration)', () => {
     ]);
   });
 
+  it('CMT-2289: /metrics/features and /health name WHY a component fails (error classes, no text)', async () => {
+    ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
+    for (let i = 0; i < 20; i++) ledger.record({ feature: 'UnjustifiedStopGate', outcome: 'error', errorClass: 'auth' });
+    for (let i = 0; i < 3; i++) ledger.record({ feature: 'UnjustifiedStopGate', outcome: 'error' });
+    ledger.record({ feature: 'UnjustifiedStopGate', outcome: 'unclassified' });
+
+    const metrics = await request(appWith(ledger)).get('/metrics/features');
+    expect(metrics.status).toBe(200);
+    const row = (metrics.body.features as Array<{ feature: string; errorClasses: Record<string, number> }>)
+      .find((f) => f.feature === 'UnjustifiedStopGate');
+    expect(row?.errorClasses).toEqual({ auth: 20, unrecorded: 3 });
+    expect(metrics.body.reliability.components[0]).toMatchObject({
+      feature: 'UnjustifiedStopGate', errors: 23, realCalls: 24, errorClasses: { auth: 20, unrecorded: 3 },
+    });
+
+    const health = await request(appWith(ledger)).get('/health');
+    expect(health.body.llmReliability.components[0]).toMatchObject({
+      feature: 'UnjustifiedStopGate', errorClasses: { auth: 20, unrecorded: 3 },
+    });
+  });
+
   it('marks /health degraded with the failing component and denominator', async () => {
     ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
-    for (let i = 0; i < 15; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'error' });
-    for (let i = 0; i < 5; i++) ledger.record({ feature: 'ProfileIntentClassifier', outcome: 'noop' });
+    for (let i = 0; i < 15; i++) ledger.record({ feature: 'FailingGate', outcome: 'error' });
+    for (let i = 0; i < 5; i++) ledger.record({ feature: 'FailingGate', outcome: 'noop' });
     for (let i = 0; i < 300; i++) ledger.record({ feature: 'HealthyGate', outcome: 'noop' });
     const fullSummary = vi.spyOn(ledger, 'summary');
 
@@ -128,7 +149,7 @@ describe('GET /metrics/features (integration)', () => {
       status: 'failing',
       components: [
         {
-          feature: 'ProfileIntentClassifier',
+          feature: 'FailingGate',
           errors: 15,
           realCalls: 20,
           errorRate: 0.75,

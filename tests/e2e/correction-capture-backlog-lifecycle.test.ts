@@ -123,5 +123,41 @@ describe('Correction capture-backlog with retry — E2E lifecycle', () => {
       expect(JSON.stringify(res.body)).not.toContain('stop apologizing repeatedly');
       expect(res.body.records[0].scrubbedSummary).toContain('single brief correction');
     });
+
+    it('a correction detected during load shedding reaches the production read surface after draining', async () => {
+      const shedDir = path.join(dir, 'shed');
+      fs.mkdirSync(path.join(shedDir, '.instar', 'state', 'sessions'), { recursive: true });
+      fs.mkdirSync(path.join(shedDir, '.instar', 'state', 'jobs'), { recursive: true });
+      const shedState = path.join(shedDir, '.instar');
+      const shedLedger = new CorrectionLedger({ dbPath: path.join(shedState, 'correction-ledger.db'), machineId: 'e2e-shed' });
+      const shedBacklog = new CorrectionCaptureBacklog({ dbPath: path.join(shedState, 'correction-capture-backlog.db') });
+      try {
+        const ring = new CaptureRing({ captureContextTurns: 6, captureTopicMapMax: 10, topicTtlMs: 600_000 });
+        const distill = async () => JSON.stringify({ learning: 'inspect logs before asking the user',
+          kind: 'user-preference', llm_confidence: 0.95,
+          scrubbed_summary: 'The agent should inspect logs itself and provide direct links.' });
+        const decision = await captureAndDistill(
+          { ring, ledger: shedLedger, backlog: shedBacklog, shouldShed: () => true, distill },
+          { topicId: 130715, text: 'Do not ask me to check logs; send the direct link', fromUser: true,
+            deterministicWeight: 3, isLearningSignal: true },
+        );
+        expect(decision).toBe('shed-backlogged');
+        expect(shedBacklog.count()).toBe(1);
+        expect((await drainBacklog({ backlog: shedBacklog, ledger: shedLedger,
+          distill, llmAvailable: () => true }, 5)).recorded).toBe(1);
+        shedLedger.close();
+        const config = { projectName: 'ccb-e2e-shed', agentName: 'E2E', projectDir: shedDir,
+          stateDir: shedState, port: 0, authToken: AUTH,
+          monitoring: { correctionLearning: { enabled: true } } } as InstarConfig;
+        const shedServer = new AgentServer({ config, sessionManager: createMockSessionManager() as any,
+          state: new StateManager(shedState) });
+        const res = await request(shedServer.getApp()).get('/corrections').set(auth());
+        expect(res.status).toBe(200);
+        expect(res.body.records).toContainEqual(expect.objectContaining({ topicId: 130715,
+          scrubbedSummary: 'The agent should inspect logs itself and provide direct links.' }));
+      } finally {
+        shedBacklog.close();
+      }
+    });
   });
 });

@@ -1,0 +1,36 @@
+{
+  "ts": "2026-10-26T07:43:40.674Z",
+  "slug": "local-verify-survives-restart",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 411,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/lifeline/RestartOrchestrator.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 365,
+    "deletedLines": 46
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "control-loop edge: a server stop increments a PERSISTED interruptions count and sets resumeFirst on the killed entry; steady-state bound: the starved notify fires at most once per entry per queue stay (starvedRaised, persisted the moment it flips) and the entry jumps the line at most once per interruption (resumeFirst consumed on start) - registry entry local-verify-interrupted-resume drives 48 restarts and proves <= 1 notify per entry with attempts never decremented; settling brake: the keep-server restart removes a kill and adds no spawn, and the orchestrator stop-phase override fires at most once per process (the process exits)"
+    }
+  },
+  "verdict": "pass"
+}

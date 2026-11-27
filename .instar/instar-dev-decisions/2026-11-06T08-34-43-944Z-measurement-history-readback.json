@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T08:34:43.944Z",
+  "slug": "measurement-history-readback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 129,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 123,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

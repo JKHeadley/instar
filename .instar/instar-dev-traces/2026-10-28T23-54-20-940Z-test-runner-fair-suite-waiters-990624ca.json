@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "test-runner-fair-suite-waiters",
+  "sessionId": "b87f298f-3c2d-4340-9e2a-fe9dfaf527f3",
+  "timestamp": "2026-10-28T23:54:20.940Z",
+  "artifactPath": "upgrades/side-effects/test-runner-fair-suite-waiters.md",
+  "artifactSha256": "1493bbf46eca11d1197bcf71ab57a35536891a43406e90d1c622e701460cf9ca",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "src/core/hostTestRunnerSemaphore.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the same limiter change: marks one intended fallback with the silent-fallback exemption (no behavior change).",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

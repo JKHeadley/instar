@@ -185,6 +185,36 @@ describe('anthropic-headless credential-probe model', () => {
     await injection.probe(apiKeyCredential);
     expect(bodies[0].model).toBe(ANTHROPIC_MODELS.haiku);
   });
+
+  it('refuses a subscription token without sending any request', async () => {
+    const { bodies } = captureProbeBody();
+    const injection = createAuthCredentialInjection(baseConfig);
+    await expect(
+      injection.probe({ kind: 'oauth-subscription', token: 'sk-ant-oat-test' }),
+    ).rejects.toThrow(/API keys only/);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it('still rejects a malformed subscription token on format, without a request', async () => {
+    const { bodies } = captureProbeBody();
+    const injection = createAuthCredentialInjection(baseConfig);
+    await expect(
+      injection.probe({ kind: 'oauth-subscription', token: 'not-a-token' }),
+    ).rejects.toThrow(/sk-ant-oat/);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it('sends an API key in x-api-key and no Authorization header', async () => {
+    const seen: Array<Record<string, string>> = [];
+    globalThis.fetch = (async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers ?? {});
+      return { ok: true, text: async () => '' } as Response;
+    }) as typeof fetch;
+    const injection = createAuthCredentialInjection(baseConfig);
+    await injection.probe(apiKeyCredential);
+    expect(seen[0]['x-api-key']).toBe('sk-ant-api-test');
+    expect(seen[0].Authorization).toBeUndefined();
+  });
 });
 
 // ── Wiring canaries (server.ts threads config → construction sites) ───

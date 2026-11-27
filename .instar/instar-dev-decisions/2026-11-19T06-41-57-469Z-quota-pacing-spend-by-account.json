@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-19T06:41:57.469Z",
+  "slug": "quota-pacing-spend-by-account",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 14,
+  "loc": 1145,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/QuotaPoller.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/awareness/usage-served-account.md",
+      "src/data/feature-ladders.json",
+      "src/monitoring/IdentityCheckLog.ts",
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/servedAccount.ts",
+      "src/monitoring/servedAccountReport.ts",
+      "src/monitoring/usageReadModel.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/usageAccountRoutes.ts",
+      "src/server/usageRoutes.ts"
+    ],
+    "addedLines": 1136,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

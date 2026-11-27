@@ -49,6 +49,17 @@ function isLegacyDecisionFile(change) {
   return change.file === '.instar/instar-dev-decisions.jsonl';
 }
 
+// The pre-commit gate left deleted paths out of a record's scope until it began
+// writing a different basis. A deleted file under one of these older records
+// could never be covered, so it is excused. Records written since must list the
+// path. A PR that touches any old record gets the excuse too; this check spots a
+// skipped gate and is not a security boundary.
+const SCOPE_BASIS_WITHOUT_DELETED_PATHS = 'staged-in-scope-additions-plus-deletions';
+
+function isRecordWithoutDeletedPaths(record) {
+  return record?.scope?.basis === SCOPE_BASIS_WITHOUT_DELETED_PATHS && Array.isArray(record?.scope?.files);
+}
+
 function recordScopeFiles(record) {
   const files = record?.scope?.files;
   return Array.isArray(files) ? files.filter((file) => typeof file === 'string') : [];
@@ -110,7 +121,10 @@ export function evaluateDecisionAuditPresence(input) {
   }
 
   const covered = coverageFiles(input?.records);
-  const uncoveredFiles = inScopeFiles.filter((file) => !covered.has(file));
+  const deletedExcused = Array.isArray(input?.records) && input.records.some(isRecordWithoutDeletedPaths);
+  const uncoveredFiles = changes
+    .filter((c) => isInScopeFile(c.file) && !covered.has(c.file) && !(deletedExcused && c.status === 'D'))
+    .map((c) => c.file);
   if (uncoveredFiles.length === 0) {
     return { ok: true, reason: 'decision-audit scope covers in-scope changes', inScopeFiles };
   }

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "feedback-executor-changeset-cap",
+  "sessionId": "71dde707-5cc5-4874-82e9-90badb3df899",
+  "timestamp": "2026-10-28T07:58:04.804Z",
+  "artifactPath": "upgrades/side-effects/feedback-executor-changeset-cap.md",
+  "artifactSha256": "cb838726f963d0866254adf60e2e4d6e76f9d88748d263d545111aafc7162a7a",
+  "coveredFiles": [
+    "docs/specs/feedback-executor-changeset-cap.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/changeSet.ts",
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-executor-changeset-cap.md",
+    "upgrades/side-effects/feedback-executor-changeset-cap.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded numeric cap change is fully reversible and preserves the separate independent review and owner approval gates.",
+  "eli16Path": "docs/specs/feedback-executor-changeset-cap.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-executor-changeset-cap.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

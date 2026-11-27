@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-18T04:15:20.195Z",
+  "slug": "restart-proof-boot-ready",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/machineMaintenance/PostRestartProof.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "watch-only import allowlist in tests/unit/machine-maintenance-watch-only.test.ts; boot check injected, not imported"
+    }
+  },
+  "verdict": "pass"
+}

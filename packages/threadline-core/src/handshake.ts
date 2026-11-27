@@ -79,9 +79,16 @@ export const HANDSHAKE_TIMINGS: HandshakeTimings = {
   replyPerMinute: 10,
 };
 
-export type RefusalReason = 'unknown-invite' | 'expired' | 'revoked' | 'bound-elsewhere' | 'key-mismatch' | 'not-them' | 'cannot-finish';
+export const OWNER_REQUIRED_REASON = 'this agent does not know its owner\'s name yet, so it cannot pair. '
+  + 'Set threadline.ownerName, or have the owner send it one message in Telegram, then try again';
+export const INVITE_OWNER_MISSING_REASON = 'this invite does not say who owns the other agent, so it was refused. '
+  + 'Ask them to update their agent and send a new invite';
+/** Inbound accept with no owner. `refusalFor` maps this exact text to the `owner-required` refusal. */
+const ACCEPT_OWNER_MISSING_REASON = 'accept does not name an owner';
+
+export type RefusalReason = 'unknown-invite' | 'expired' | 'revoked' | 'bound-elsewhere' | 'key-mismatch' | 'not-them' | 'cannot-finish' | 'owner-required';
 export const REFUSAL_REASONS: ReadonlySet<string> = new Set<RefusalReason>([
-  'unknown-invite', 'expired', 'revoked', 'bound-elsewhere', 'key-mismatch', 'not-them', 'cannot-finish',
+  'unknown-invite', 'expired', 'revoked', 'bound-elsewhere', 'key-mismatch', 'not-them', 'cannot-finish', 'owner-required',
 ]);
 export type ReceiptState = 'awaiting-operator' | 'finishing';
 export type HandshakeRole = 'inviter' | 'recipient';
@@ -141,6 +148,15 @@ export interface HandshakeDeps {
   sendToKey: (toFp: string, keyHex: string, op: string, payload: Record<string, unknown>) => string | void;
   /** The relay's verdict on a sent message, or null when none came in time. */
   awaitDelivery?: (messageId: string) => Promise<{ status: string; reason?: string } | null>;
+  /** Owner info is required when set: a blank name on either side refuses the pairing. */
+  ownerPolicy?: {
+    /** The name this agent states as its owner. */
+    ownName: () => string;
+    /** The owner an invite names ('' when none), or null when the text is not a valid invite. */
+    inviteOwner: (text: string) => string | null;
+    /** The label an accept's owner field cleans to. */
+    clean: (value: unknown) => string;
+  };
   /** Operator notices. */
   notice: (n: PairingNotice) => void;
   /** The engine's own events, passed through unchanged except finish prompts the owner pre-authorized. */
@@ -213,6 +229,7 @@ export function handshakeMessage(f: {
 /** Map an engine refusal to a reason the acceptor is told (§11.5), or null for one that stays silent on the wire. */
 export function refusalFor(reason: string): RefusalReason | null {
   if (reason === 'unknown invite') return 'unknown-invite';
+  if (reason === ACCEPT_OWNER_MISSING_REASON) return 'owner-required';
   if (reason === 'invite is bound to another agent') return 'bound-elsewhere';
   if (reason === 'acceptor key differs from the relay-presented key') return 'key-mismatch';
   const m = /^invite not open \((\w+)\)$/.exec(reason);
@@ -230,6 +247,7 @@ const REASON_TEXT: Record<RefusalReason, string> = {
   'key-mismatch': 'the relay showed it a different key for me than the one I sent, so it refused, as it should; tell the other person and don\'t retry',
   'not-them': 'its person said I\'m not the agent they meant',
   'cannot-finish': 'it already has a different key saved for me; its person needs to unpair me first',
+  'owner-required': 'I sent no owner name; this agent needs to know its owner\'s name before it can pair',
 };
 
 const REASON_TEXT_INVITER: Record<RefusalReason, string> = {
@@ -240,10 +258,15 @@ const REASON_TEXT_INVITER: Record<RefusalReason, string> = {
   'key-mismatch': 'the relay shows a different key for that agent than the one it sent, which can mean someone in between',
   'not-them': 'you said it isn\'t the agent you meant',
   'cannot-finish': 'I already have a different key saved for that agent; unpair it first if you want to pair again',
+  'owner-required': 'it did not say who owns it, so I refused it; ask them to update their agent and use a new invite',
 };
 
-/** The plain sentence the operator sees for a notice (§11.7). Host-neutral: no buttons, no commands. */
-export function pairingNoticeText(n: PairingNotice): string {
+/**
+ * The plain sentence the operator sees for a notice (§11.7). Host-neutral: no buttons, no commands.
+ * `unpairLine` lets a host put its own "where to unpair" sentence (with a direct link) in the
+ * one notice that sends the operator elsewhere.
+ */
+export function pairingNoticeText(n: PairingNotice, opts: { unpairLine?: string } = {}): string {
   const peer = quoted('peerName' in n ? n.peerName : '');
   switch (n.kind) {
     case 'approved':
@@ -262,7 +285,7 @@ export function pairingNoticeText(n: PairingNotice): string {
         : `An agent that calls itself ${peer} tried to use your invite, and I turned it down: ${REASON_TEXT_INVITER[n.reason]}.${n.told === false ? ' It runs an older version, so I couldn\'t tell it why.' : ' I told it why.'}`;
     case 'finishing':
       return n.auto
-        ? `${peer} accepted your invite. You said it's one of your own agents, so I'm finishing by myself and checking we can talk… If that isn't your agent, unpair it on the dashboard's Threadline tab.`
+        ? `${peer} accepted your invite. You said it's one of your own agents, so I'm finishing by myself and checking we can talk… If that isn't your agent, ${opts.unpairLine ?? 'unpair it on the dashboard\'s Threadline tab.'}`
         : `Finishing — checking we can talk with ${peer}…`;
     case 'finish-received':
       return `${peer} finished its side. Checking we can talk…`;
@@ -452,6 +475,7 @@ export class PairingHandshake {
   // ── Operator acts ────────────────────────────────────────────────────────────
 
   createInvite(opts: { ttlMs?: number; bindFp?: string } = {}): HandshakeResult {
+    if (!this.hasOwnerName()) return { ok: false, reason: OWNER_REQUIRED_REASON };
     const r = this.engine().createInvite(opts);
     if (r.ok) this.scheduleInviterExpiry(String(r.iid), String(r.exp));
     return r;
@@ -468,7 +492,14 @@ export class PairingHandshake {
     }));
   }
 
+  private hasOwnerName(): boolean {
+    const policy = this.deps.ownerPolicy;
+    return !policy || policy.clean(policy.ownName()) !== '';
+  }
+
   async receiveInvite(text: string): Promise<HandshakeResult> {
+    // Before the engine: it posts the Approve prompt as soon as it accepts an invite.
+    if (this.deps.ownerPolicy?.inviteOwner(text) === '') return { ok: false, reason: INVITE_OWNER_MISSING_REASON };
     const r = await this.engine().receiveInvite(text);
     if (r.ok) {
       const iid = String(r.iid);
@@ -488,6 +519,7 @@ export class PairingHandshake {
   }
 
   approveAccept(iid: string): HandshakeResult {
+    if (!this.hasOwnerName()) return { ok: false, reason: OWNER_REQUIRED_REASON };
     const id = lower(iid);
     const p = this.engine().listPendingAccepts().find((x) => x.iid === id);
     this.approving = p ? { iid: id, inviterFp: p.inviterFp, claimedAgent: p.claimedAgent, exp: p.exp } : null;
@@ -703,7 +735,10 @@ export class PairingHandshake {
     const peerHs = p.hs === 1 || p.hs === '1' || p.hs === true;
     const attributable = peerHs && isHex(iid, 16) && isHex(idB, 32) && lower(p.fpB) === idB.slice(0, 32) && idB.slice(0, 32) === from;
     const before = isHex(iid, 16) ? this.deps.store.getInternal(iid) : undefined;
-    const r = await this.engine().handleControl(OP_ACCEPT, from, p);
+    // Before the engine: a valid accept uses the invite up and posts the Finish prompt.
+    const r: HandshakeResult = this.deps.ownerPolicy && !this.deps.ownerPolicy.clean(p.owner)
+      ? { ok: false, reason: ACCEPT_OWNER_MISSING_REASON }
+      : await this.engine().handleControl(OP_ACCEPT, from, p);
     if (!r.ok) {
       const reason = refusalFor(r.reason);
       this.log(`accept from ${from.slice(0, 12)} for ${iid.slice(0, 8)} refused: ${r.reason}${reason ? (attributable ? ` (told it: ${reason})` : ' (it does not speak the handshake; not told)') : ' (silent on the wire)'}`);

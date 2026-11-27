@@ -17,11 +17,13 @@ it('serves real fresh detector health through the operator HTTP boundary without
   expect((await request(app).get('/telegram/origins/status')).status).toBe(403);
   const get = () => request(app).get('/telegram/origins/status').set('X-Instar-Operator-Session', 'operator-proof');
   expect((await get()).body.detectorHealth.canaries.ownedContracts.state).toBe('pending');
-  // Startup 60s + two attempts of 6s checks and 30s cleanup, with scheduling margin.
+  // Startup 60s + two attempts of 6s checks and 30s cleanup. Leave room for
+  // worker scheduling under the full integration suite, while still requiring
+  // the real detector to report pass before accepting its HTTP response.
   await vi.waitFor(async () => expect((await get()).body.detectorHealth).toMatchObject({
     sources: { config: { state: 'healthy' }, noticePolicy: { state: 'healthy' } },
     canaries: { ownedContracts: { state: 'pass' } },
-  }), { timeout: 145_000 });
+  }), { timeout: 195_000, interval: 500 });
   const response = await get(); expect(response.status).toBe(200);
   expect(response.body.detectorHealth.canaries.nativeModels).toMatchObject({ state: 'unavailable', providerExecutionVerified: false });
   expect(JSON.stringify(response.body.detectorHealth)).not.toMatch(/detector-fixture|\/tmp\//);
@@ -32,4 +34,4 @@ it('serves real fresh detector health through the operator HTTP boundary without
   // bounded two-second source read, without manually invoking either reader.
   await vi.waitFor(async () => expect((await get()).body.detectorHealth.sources.config.state).toBe('unavailable'), { timeout: 8000 });
   expect((await boot.runtime.store.listOrigins()).records).toEqual(originsBefore);
-}, 180_000);
+}, 240_000);

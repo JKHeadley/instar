@@ -31,9 +31,11 @@
  */
 
 import crypto from 'node:crypto';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { APP_CONVERSATION_KEY_PATTERN } from './appConversationText.js';
 import { coerceHlc, serializeHlcKey } from './HybridLogicalClock.js';
 import {
   validateReplicatedEnvelope,
@@ -42,9 +44,25 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-list-pin' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record' | 'work-card-record' | 'trust-grant-record' | 'trust-outcome-record' | 'session-transcript-checkpoint' | 'context-layer-record' | 'conversation-graph-event' | 'project-app-record' | 'project-app-blob' | 'conversation-graph-suggestion-record' | 'telegram-topic-name-record' | 'owned-repo';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record'];
+/**
+ * What happened to one `emit` call. Every branch of the private `emit` already
+ * existed and dropped silently; it now says which one ran so a caller that must
+ * know whether a record was accepted (the replicated-store reconciler) can tell.
+ * `accepted` means ENQUEUED for the flusher, not yet fsynced.
+ */
+export type JournalEmitOutcome =
+  | 'accepted'
+  | 'locked-out'
+  | 'rate-limited'
+  | 'schema-rejected'
+  | 'deduped'
+  | 'oversize'
+  | 'not-replicated-kind'
+  | 'error';
+
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-list-pin', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record', 'work-card-record', 'trust-grant-record', 'trust-outcome-record', 'session-transcript-checkpoint', 'context-layer-record', 'conversation-graph-event', 'project-app-record', 'project-app-blob', 'conversation-graph-suggestion-record', 'telegram-topic-name-record', 'owned-repo'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -171,7 +189,14 @@ export interface PlacementData {
   timestamp?: number;
   /** Whether a SessionDrainRunner is still draining the source (drain-grace input). */
   drainInFlight?: boolean;
+  /** App conversations (app-conversations-in-the-pool §2.7): the row's key. Such a row has no numeric topic. */
+  sessionKey?: string;
+  /** The row was written by the operator's "bring it back here"; it wins an equal-epoch tie. */
+  takeover?: boolean;
 }
+
+/** The ownership key grammar an app placement row may carry. */
+export const APP_PLACEMENT_KEY = new RegExp(`^app:${APP_CONVERSATION_KEY_PATTERN}$`);
 
 export interface SessionLifecycleData {
   sessionId: string;
@@ -294,6 +319,74 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // Terminal-retained class-review lifecycle stream; journal archives are
   // bounded while the folded store retains every resolvable row.
   'class-review-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  'failure-callout-chunk': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  // app-conversation-event (mobile-native-conversations §4.8): one immutable record per
+  // conversation event. The conversation store's JSONL files are the source of truth (never
+  // rotated); the journal stream is only the transport, so a bounded rotating window suffices.
+  'app-conversation-event': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 8 },
+  // mobile-device-key-ledger-row (mobile-native-conversations §4.8): one immutable, machine-signed
+  // row per phone-key activation or revocation. The ledger file is the source of truth (never
+  // pruned); the journal stream is only the transport. Rows are few, so a small window suffices.
+  'mobile-device-key-ledger-row': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
+  // conversation-read-marker (mobile-unread-messages §3.3): one current record per reader × conversation,
+  // forward-only. The marker state file on every machine is the source of truth and the boot catch-up
+  // refills a machine from any peer; the journal carries LIVE advances only, so the ordinary bounded
+  // rotating window suffices.
+  'conversation-read-marker': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
+  // email-outbox-record (backup-email-sending, A durable outbox): a delivery queue that carries report content
+  // (topicText), so never rotateKeep 0. Three 16 MB archives plus the live file hold about five days at the
+  // Resend cap; the holder's hourly checkpoint re-emits every live row, so no live row is ever only in a rotated file.
+  'email-outbox-record': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 3 },
+  // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): tree/binding/lifecycle/
+  // check-event/intent/outcome/renewal records — immutable event records whose derived
+  // views (brakes, lease, open/closed) are folded from the WHOLE stream, so retention is
+  // NEVER-DELETE (rotateKeep 0, the topic-placement posture); a dropped archive would
+  // erase a binding or the breaker window. Volume is tiny (≈1 check-event/project/day).
+  // Per-key compaction is tracked as CMT-1415 (trigger: live file > 4 MiB).
+  'chief-of-staff-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 0 },
+  // Work Board (docs/specs/work-board-asks.md §3): approval, evidence and the carrier trail fold from
+  // the WHOLE stream, so rotate at 8 MB and never delete an archive.
+  'work-card-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 0 },
+  // Trust journey authority records: never deleted (the change log and consumptions fold from the whole stream).
+  'trust-grant-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 0 },
+  // Trust journey outcomes: bounded (spec section 4, Cost); the record keeps checkpoints forward.
+  'trust-outcome-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 4 },
+  // Context Budget layers (docs/specs/context-budget-layered-summaries.md §14): per-entry
+  // layer records (anchor, ledger entries, chunks, C2, H1–H3, U stubs, fold records and
+  // sidecars, backoff/breaker state, fold holds); readers take the HLC-latest record per key.
+  // FINITE retention by design (§3). Rotation prunes by FILE AGE, not by key, so a live record
+  // that is never re-emitted ages out of the reader after rotateKeep files: the Phase 1 layer
+  // store must re-emit every LIVE record (not only ledger blobs) on rotation. Inert until then.
+  // <!-- tracked: CMT-1536 (Phase 1: layer store re-emits every live context-layer record on rotation) -->
+  'context-layer-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 8 },
+  // native-conversation-any-machine-access §3f: transcript checkpoints. The journal is the carrier,
+  // not the store: each machine lands them in its own copy store on commit, so a bounded window of
+  // archives is enough. A peer asleep past the window sees a gap, and its copy says how far it reaches.
+  'session-transcript-checkpoint': { maxFileBytes: 32 * 1024 * 1024, rotateKeep: 2 },
+  'ecosystem-idea-event': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
+  // A person's yes and no: never pruned, so compaction can't drop a refusal.
+  'recommended-service-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
+  // conversation-list-pin (docs/specs/conversation-list-pins.md): immutable pin/unpin rows per person, few and
+  // small; never pruned, so a machine that joins later still receives every pin from the journal.
+  'conversation-list-pin': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
+  // owned-repo (docs/specs/no-data-loss-on-machine-death.md §1.2): one small record per (machine, repository),
+  // latest per key, emitted only on a change in a replicated field (at most once per key per 5 minutes, except
+  // the unsafe direction). Archives are kept (rotateKeep 0) so a live key never ages out of its peers' copies.
+  'owned-repo': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
+  // Graph transport is bounded; the independently fsynced immutable source repairs
+  // any retained-stream gap. Transport rotation never deletes graph knowledge.
+  'conversation-graph-event': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 8 },
+  // Project apps (docs/specs/project-apps.md §5): offers, owner answers and pin steps; small, never deleted.
+  'project-app-record': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 0 },
+  // Project apps part 2 (docs/specs/project-apps-sandbox.md §3.2): encrypted chunks + revisions of
+  // custom apps. rotateKeep 0: never silently deleted; erasure destroys keys, never journal lines.
+  'project-app-blob': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 0 },
+  // conversation-graph-suggestion-record (docs/specs/conversation-graph-suggestions-replicated-decisions.md): the owner's
+  // immutable decisions on Conversations suggestions, one row per owner tap; rotate, never delete.
+  'conversation-graph-suggestion-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
+  // telegram-topic-name-record (docs/specs/topic-name-replication.md): immutable Telegram topic-name rows,
+  // one per creation or rename (and once per machine when carried); rotate, never delete.
+  'telegram-topic-name-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
   // evolution-action-record (WS2.5): a memory-family store — NEVER rotateKeep:0 (rotate-but-
   // never-delete would be a compliance defect). Actions are FEW + bounded (the
   // EvolutionManager prunes to maxActions=300), so a small window with a few archives mirrors
@@ -538,7 +631,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-list-pin': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 , 'work-card-record': 1, 'trust-grant-record': 1, 'trust-outcome-record': 1, 'session-transcript-checkpoint': 1 , 'context-layer-record': 1 , 'conversation-graph-event': 1, 'project-app-record': 1, 'project-app-blob': 1, 'conversation-graph-suggestion-record': 1, 'telegram-topic-name-record': 1, 'owned-repo': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -560,6 +653,26 @@ export class CoherenceJournal {
     'topic-claim-annotation': 0,
     'working-set-artifact': 0,
     'class-review-record': 0,
+    'failure-callout-chunk': 0,
+    'app-conversation-event': 0,
+    'mobile-device-key-ledger-row': 0,
+    'ecosystem-idea-event': 0,
+    'recommended-service-record': 0,
+    'conversation-list-pin': 0,
+    'owned-repo': 0,
+    'conversation-graph-event': 0,
+    'project-app-record': 0,
+    'project-app-blob': 0,
+    'conversation-graph-suggestion-record': 0,
+    'telegram-topic-name-record': 0,
+    'conversation-read-marker': 0,
+    'email-outbox-record': 0,
+    'chief-of-staff-record': 0,
+    'work-card-record': 0,
+    'trust-grant-record': 0,
+    'trust-outcome-record': 0,
+    'context-layer-record': 0,
+    'session-transcript-checkpoint': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -584,6 +697,26 @@ export class CoherenceJournal {
     'topic-claim-annotation': new Set(),
     'working-set-artifact': new Set(),
     'class-review-record': new Set(),
+    'failure-callout-chunk': new Set(),
+    'app-conversation-event': new Set(),
+    'mobile-device-key-ledger-row': new Set(),
+    'ecosystem-idea-event': new Set(),
+    'recommended-service-record': new Set(),
+    'conversation-list-pin': new Set(),
+    'owned-repo': new Set(),
+    'conversation-graph-event': new Set(),
+    'project-app-record': new Set(),
+    'project-app-blob': new Set(),
+    'conversation-graph-suggestion-record': new Set(),
+    'telegram-topic-name-record': new Set(),
+    'conversation-read-marker': new Set(),
+    'email-outbox-record': new Set(),
+    'chief-of-staff-record': new Set(),
+    'work-card-record': new Set(),
+    'trust-grant-record': new Set(),
+    'trust-outcome-record': new Set(),
+    'context-layer-record': new Set(),
+    'session-transcript-checkpoint': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -638,6 +771,26 @@ export class CoherenceJournal {
       'topic-claim-annotation': config.retention?.['topic-claim-annotation'] ?? DEFAULT_RETENTION['topic-claim-annotation'],
       'working-set-artifact': config.retention?.['working-set-artifact'] ?? DEFAULT_RETENTION['working-set-artifact'],
       'class-review-record': config.retention?.['class-review-record'] ?? DEFAULT_RETENTION['class-review-record'],
+      'failure-callout-chunk': config.retention?.['failure-callout-chunk'] ?? DEFAULT_RETENTION['failure-callout-chunk'],
+      'app-conversation-event': config.retention?.['app-conversation-event'] ?? DEFAULT_RETENTION['app-conversation-event'],
+      'mobile-device-key-ledger-row': config.retention?.['mobile-device-key-ledger-row'] ?? DEFAULT_RETENTION['mobile-device-key-ledger-row'],
+      'ecosystem-idea-event': config.retention?.['ecosystem-idea-event'] ?? DEFAULT_RETENTION['ecosystem-idea-event'],
+      'recommended-service-record': config.retention?.['recommended-service-record'] ?? DEFAULT_RETENTION['recommended-service-record'],
+      'conversation-list-pin': config.retention?.['conversation-list-pin'] ?? DEFAULT_RETENTION['conversation-list-pin'],
+      'owned-repo': config.retention?.['owned-repo'] ?? DEFAULT_RETENTION['owned-repo'],
+      'conversation-graph-event': config.retention?.['conversation-graph-event'] ?? DEFAULT_RETENTION['conversation-graph-event'],
+      'project-app-record': config.retention?.['project-app-record'] ?? DEFAULT_RETENTION['project-app-record'],
+      'project-app-blob': config.retention?.['project-app-blob'] ?? DEFAULT_RETENTION['project-app-blob'],
+      'conversation-graph-suggestion-record': config.retention?.['conversation-graph-suggestion-record'] ?? DEFAULT_RETENTION['conversation-graph-suggestion-record'],
+      'telegram-topic-name-record': config.retention?.['telegram-topic-name-record'] ?? DEFAULT_RETENTION['telegram-topic-name-record'],
+      'conversation-read-marker': config.retention?.['conversation-read-marker'] ?? DEFAULT_RETENTION['conversation-read-marker'],
+      'email-outbox-record': config.retention?.['email-outbox-record'] ?? DEFAULT_RETENTION['email-outbox-record'],
+      'chief-of-staff-record': config.retention?.['chief-of-staff-record'] ?? DEFAULT_RETENTION['chief-of-staff-record'],
+      'work-card-record': config.retention?.['work-card-record'] ?? DEFAULT_RETENTION['work-card-record'],
+      'trust-grant-record': config.retention?.['trust-grant-record'] ?? DEFAULT_RETENTION['trust-grant-record'],
+      'trust-outcome-record': config.retention?.['trust-outcome-record'] ?? DEFAULT_RETENTION['trust-outcome-record'],
+      'context-layer-record': config.retention?.['context-layer-record'] ?? DEFAULT_RETENTION['context-layer-record'],
+      'session-transcript-checkpoint': config.retention?.['session-transcript-checkpoint'] ?? DEFAULT_RETENTION['session-transcript-checkpoint'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -676,6 +829,26 @@ export class CoherenceJournal {
       'topic-claim-annotation': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'working-set-artifact': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'class-review-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'failure-callout-chunk': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'app-conversation-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'mobile-device-key-ledger-row': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'ecosystem-idea-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'recommended-service-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'conversation-list-pin': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'owned-repo': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'conversation-graph-event': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'project-app-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'project-app-blob': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'conversation-graph-suggestion-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'telegram-topic-name-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'conversation-read-marker': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'email-outbox-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'chief-of-staff-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'work-card-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'trust-grant-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'trust-outcome-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'context-layer-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'session-transcript-checkpoint': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -799,6 +972,14 @@ export class CoherenceJournal {
     this.emit('topic-placement', topic, data as unknown as Record<string, unknown>, `${topic}:${data?.epoch}`);
   }
 
+  /**
+   * The key-typed form for an app conversation (app-conversations-in-the-pool §2.7): topic absent,
+   * `data.sessionKey` the key, op key `<sessionKey>:<epoch>`. Older readers skip it (no numeric topic).
+   */
+  emitAppPlacement(sessionKey: string, data: PlacementData): void {
+    this.emit('topic-placement', undefined, { ...data, sessionKey } as unknown as Record<string, unknown>, `${sessionKey}:${data?.epoch}`);
+  }
+
   /** session-lifecycle (§3.2). Op key: (sessionId, status). topic optional. */
   emitLifecycle(data: SessionLifecycleData, topic?: number): void {
     this.emit(
@@ -878,14 +1059,61 @@ export class CoherenceJournal {
    * into the caller (the manager emit hooks are best-effort). A no-op when the
    * kind is not a registered replicated kind (the registry is the authority).
    */
-  emitReplicatedRecord(kind: JournalKind, data: Record<string, unknown>): void {
+  emitReplicatedRecord(kind: JournalKind, data: Record<string, unknown>): JournalEmitOutcome {
     try {
-      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return; // not a registered replicated kind ⇒ no-op
+      if (!this.replicatedRegistry?.isReplicatedKind(kind)) return 'not-replicated-kind'; // not a registered replicated kind ⇒ no-op
       const opKey = this.replicatedOpKey(data);
-      this.emit(kind, undefined, data, opKey);
+      return this.emit(kind, undefined, data, opKey);
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.log('emit-record', `[coherence-journal] emitReplicatedRecord failed (swallowed): ${(e as Error)?.message}`);
+      return 'error';
     }
+  }
+
+  /**
+   * `emitReplicatedRecord` plus the assigned seq, for a caller that must WAIT for
+   * durability before taking a side effect (docs/specs/chief-of-staff-topic.md §2.4
+   * step 3: an `executing` record must be on disk before a spawn). `seq` is present
+   * only when the outcome is `accepted`. Never throws into the caller.
+   */
+  emitReplicatedRecordWithSeq(kind: JournalKind, data: Record<string, unknown>): { outcome: JournalEmitOutcome; seq?: number } {
+    const before = this.nextSeq[kind];
+    const outcome = this.emitReplicatedRecord(kind, data);
+    // `emit` assigns `seq = nextSeq[kind]` and bumps the counter ONLY on 'accepted',
+    // so the accepted record's seq is exactly the counter value before the call.
+    return outcome === 'accepted' ? { outcome, seq: before } : { outcome };
+  }
+
+  /**
+   * Resolve once `seq` for `kind` is DURABLE (meta.highWaterSeq advanced after
+   * fdatasync — the same value `getOwnAdvert()` advertises), or reject: on timeout,
+   * on a flush error observed while waiting, or when the journal is not active.
+   * `accepted` from emit means "enqueued", never "on disk"; this is the one call
+   * that closes that gap. Triggers one `flush()` up front, then polls every
+   * `pollMs` (default 25 ms). Pure wait: it never re-emits and never mutates state.
+   */
+  awaitDurableSeq(kind: JournalKind, seq: number, timeoutMs = 5_000, pollMs = 25): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (!Number.isFinite(seq) || seq <= 0) { reject(new Error(`awaitDurableSeq: invalid seq ${String(seq)}`)); return; }
+      if (this.state !== 'active') { reject(new Error(`awaitDurableSeq: journal not active (${this.state})`)); return; }
+      const errorsBefore = this.degradation.flushErrors;
+      const deadline = Date.now() + Math.max(0, timeoutMs);
+      const check = (): boolean => {
+        if (this.highWaterSeq[kind] >= seq) { resolve(); return true; }
+        if (this.degradation.flushErrors > errorsBefore) { reject(new Error(`awaitDurableSeq: flush error while waiting for ${kind}#${seq}`)); return true; }
+        if (this.state !== 'active') { reject(new Error(`awaitDurableSeq: journal left active state while waiting for ${kind}#${seq}`)); return true; }
+        if (Date.now() >= deadline) { reject(new Error(`awaitDurableSeq: timeout waiting for ${kind}#${seq} (highWater=${this.highWaterSeq[kind]})`)); return true; }
+        return false;
+      };
+      this.flush();
+      if (check()) return;
+      const timer = setInterval(() => {
+        if (!(this.highWaterSeq[kind] >= seq)) this.flush();
+        if (check()) clearInterval(timer);
+      }, Math.max(1, pollMs));
+      // Never keep the process alive for a wait nobody else needs.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
   }
 
   /** Derive the restart-proof op-key for a replicated record: `recordKey:hlcKey`.
@@ -915,14 +1143,14 @@ export class CoherenceJournal {
    * assign a seq, enqueue, and RETURN. No synchronous file I/O on this stack —
    * the flusher does all of it. Never throws into the caller.
    */
-  private emit(kind: JournalKind, topic: number | undefined, rawData: Record<string, unknown>, opKey: string): void {
+  private emit(kind: JournalKind, topic: number | undefined, rawData: Record<string, unknown>, opKey: string): JournalEmitOutcome {
     try {
-      if (this.state !== 'active') return; // locked-out or closed: silent no-op (never block)
+      if (this.state !== 'active') return 'locked-out'; // locked-out or closed: silent no-op (never block)
 
       // Rate cap (token bucket) — over-cap emits drop + count.
       if (!this.takeToken(kind)) {
         this.degradation.rateLimited++;
-        return;
+        return 'rate-limited';
       }
 
       // Typed-schema validation: rejects free text, coerces enums, DROPS unknown
@@ -930,13 +1158,13 @@ export class CoherenceJournal {
       const validated = this.validate(kind, rawData);
       if (!validated) {
         this.degradation.schemaRejects++;
-        return;
+        return 'schema-rejected';
       }
 
       // Op-key idempotency (restart-proof — the index is reconstructed on open).
       if (this.opKeys[kind].has(opKey)) {
         this.degradation.dedupeHits++;
-        return;
+        return 'deduped';
       }
 
       const seq = this.nextSeq[kind];
@@ -953,7 +1181,7 @@ export class CoherenceJournal {
       // Per-entry size cap (8KB lifecycle / 80KB replicated record) — over-cap drop + count.
       if (Buffer.byteLength(line, 'utf-8') > this.maxEntryBytesForKind(kind)) {
         this.degradation.oversize++;
-        return;
+        return 'oversize';
       }
 
       // Commit to in-memory state: bump the counter, mark the op key, enqueue.
@@ -961,9 +1189,11 @@ export class CoherenceJournal {
       this.opKeys[kind].add(opKey);
       this.trimOpKeys(kind);
       this.queue.push({ kind, line, seq });
+      return 'accepted';
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       // The journal never throws into its caller (§3.1).
       this.log('emit', `[coherence-journal] emit failed (swallowed): ${(e as Error)?.message}`);
+      return 'error';
     }
   }
 
@@ -1013,7 +1243,15 @@ export class CoherenceJournal {
       const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof reason !== 'string' || !reasons.includes(reason as PlacementReason)) return null;
       out = { owner, epoch, reason };
-      known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
+      known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight', 'sessionKey', 'takeover'];
+      if (raw.sessionKey !== undefined) {
+        if (typeof raw.sessionKey !== 'string' || !APP_PLACEMENT_KEY.test(raw.sessionKey)) return null;
+        out.sessionKey = raw.sessionKey;
+      }
+      if (raw.takeover !== undefined) {
+        if (raw.takeover !== true) return null;
+        out.takeover = true;
+      }
       if (raw.prevOwner !== undefined) {
         if (typeof raw.prevOwner !== 'string') return null;
         out.prevOwner = raw.prevOwner;
@@ -1261,6 +1499,7 @@ export class CoherenceJournal {
           this.io.fdatasyncSync(fd);
         } catch (e) {
           this.degradation.flushErrors++;
+          featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `flush-append:${kind}`, 3_600_000, { kind: 'error', reason: 'flush-append-failed', context: { journalKind: kind, entries: items.length, partial: bytesWritten, flushErrors: this.degradation.flushErrors } });
           this.log('flush', `[coherence-journal] append/fsync failed for ${kind}: ${(e as Error)?.message}`);
           if (!bytesWritten) {
             // Open failed (or threw before any write): zero bytes hit the file,
@@ -1294,6 +1533,7 @@ export class CoherenceJournal {
       }
     } catch (e) { /* @silent-fallback-ok: journal observability must never endanger the observed operation (COHERENCE-JOURNAL-SPEC §3.1) */
       this.degradation.flushErrors++;
+      featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', 'flush', 3_600_000, { kind: 'error', reason: 'flush-failed', context: { flushErrors: this.degradation.flushErrors } });
       this.log('flush', `[coherence-journal] flush failed (swallowed): ${(e as Error)?.message}`);
     } finally {
       this.flushing = false;
@@ -1469,6 +1709,7 @@ export class CoherenceJournal {
   private opKeyOf(kind: JournalKind, entry: JournalEntry): string | null {
     const d = entry.data as Record<string, unknown>;
     if (kind === 'topic-placement') {
+      if (typeof d.sessionKey === 'string' && typeof d.epoch === 'number') return `${d.sessionKey}:${d.epoch}`;
       if (typeof entry.topic !== 'number' || typeof d.epoch !== 'number') return null;
       return `${entry.topic}:${d.epoch}`;
     }
@@ -1595,6 +1836,53 @@ export class CoherenceJournal {
       }
     }
     return out;
+  }
+
+  /**
+   * Read EVERY entry of a kind this writer holds: its archives (oldest first) and the current file, each in full.
+   * For rare decisions that must not infer "absent" from a partial read (conversation-groups-phone §3: "is this
+   * conversation already a project?"). `complete` is false when any file could not be read, the total passed
+   * `maxTotalBytes`, or a line other than a torn final line of the current file failed to parse. Never throws.
+   */
+  readKindComplete(kind: JournalKind, maxTotalBytes = 64 * 1024 * 1024): { entries: JournalEntry[]; complete: boolean } {
+    // Its own directory read: an unreadable directory is an incomplete read, never "no archives".
+    const listed = (): string[] | null => {
+      try {
+        const prefix = `${this.safeMachineId}.${kind}.`;
+        const re = new RegExp(`^${escapeRegExp(prefix)}(\\d+)\\.jsonl$`);
+        return (this.io.readdirSync(this.dirPath()) as string[]).filter((n) => re.test(n)).sort((a, b) => Number(re.exec(a)![1]) - Number(re.exec(b)![1]));
+      } catch { /* @silent-fallback-ok: answered as complete:false, which refuses */ return null; }
+    };
+    const archives = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (archives === null) return { entries: [], complete: false };
+    const files = [...archives.map((a) => ({ file: path.join(this.dirPath(), a), current: false })), { file: this.currentFilePath(kind), current: true }];
+    const entries: JournalEntry[] = [];
+    let complete = true, total = 0;
+    for (const f of files) {
+      if (!this.io.existsSync(f.file)) { if (!f.current) complete = false; continue; }
+      let text: string;
+      try {
+        total += this.io.statSync(f.file).size;
+        if (total > maxTotalBytes) return { entries, complete: false };
+        text = this.io.readFileSync(f.file, 'utf-8') as string;
+      } catch { /* @silent-fallback-ok: reported to the caller as complete:false, which refuses */ return { entries, complete: false }; }
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        if (!ln) continue;
+        try {
+          const obj = JSON.parse(ln) as JournalEntry;
+          if (typeof obj.seq === 'number' && typeof obj.kind === 'string') { entries.push(obj); continue; }
+        } catch { /* counted below */ }
+        // A torn final line of the current file (a write in progress, or cut by a crash) is not a lost record.
+        const tornTail = f.current && i === lines.length - 1;
+        if (!tornTail) complete = false;
+      }
+    }
+    // A rotation between listing and reading would leave a whole archive unread: list again and compare.
+    const after = this.io.existsSync(this.dirPath()) ? listed() : [];
+    if (after === null || after.join('|') !== archives.join('|')) complete = false;
+    return { entries, complete };
   }
 
   /**

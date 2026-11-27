@@ -15,8 +15,9 @@
  *   - emergency-stop with no live session → acknowledges, does not route
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
+import { NotificationSelectivityGate, notificationContext } from '../../src/messaging/NotificationSelectivityGate.js';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +26,8 @@ import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { MessageSentinel } from '../../src/core/MessageSentinel.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
 
 const AUTH_TOKEN = 'test-auth-token-deadbeef';
 const TOPIC = 11838;
@@ -41,7 +44,7 @@ interface Spies {
 
 function buildContext(
   stateDir: string,
-  decideImpl: (msg: string) => Promise<{ disposition: 'kill' | 'pause' | 'route-through'; category: SentinelCategory; reason?: string }>,
+  decideImpl: (msg: string, topicId?: number, messageKey?: string) => Promise<{ disposition: 'kill' | 'pause' | 'route-through'; category: SentinelCategory; reason?: string }>,
   spies: Spies,
   opts: { withSession: boolean; killOutcome?: boolean } = { withSession: true },
 ): RouteContext {
@@ -82,7 +85,7 @@ function buildContext(
       getSessionForTopic: (_t: number) => (opts.withSession ? SESSION : null),
       onSentinelKillSession: (name: string) => { spies.killed.push(name); return opts.killOutcome ?? true; },
       onSentinelPauseSession: (name: string) => { spies.paused.push(name); },
-      sendToTopic: async (_t: number, msg: string) => { spies.sent.push(msg); },
+      sendToTopic: async (_t: number, msg: string) => { spies.sent.push(msg);  return { messageId: 1, topicId: Number(_t) }; },
     } as never,
     relationships: null,
     feedback: null,
@@ -155,6 +158,25 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     // The thing a person reads: a kill that landed is reported as terminated.
     expect(spies.sent).toHaveLength(1);
     expect(spies.sent[0]).toMatch(/^Session terminated\./);
+  });
+
+  it('keeps the emergency-stop acknowledgment under enforced quiet routing', async () => {
+    const ctx = buildContext(stateDir, async () => ({ disposition: 'kill', category: 'emergency-stop' }), spies);
+    const gate = new NotificationSelectivityGate(stateDir, 'test', () => ({ enabled: true, dryRun: false }));
+    const telegram = ctx.telegram!;
+    telegram.selectivity = gate; telegram.isAuthorizedSender = () => true;
+    telegram.sendToTopic = async (topic, text) => {
+      const result = await gate.route(topic, text, notificationContext.getStore());
+      if (!result.receipt) spies.sent.push(text);
+      return result.receipt ?? { messageId: 123, topicId: topic, delivered: true };
+    };
+    try {
+      const res = await forward(makeApp(ctx), 'stop everything');
+      expect(res.body.sentinel).toBe('emergency-stop');
+      await vi.waitFor(() => expect(spies.sent).toHaveLength(1));
+      expect(spies.sent[0]).toMatch(/^Session terminated/);
+      expect(gate.store.counters().total).toBe(0);
+    } finally { await gate.close(); }
   });
 
   // ── MUST-FAIL ARM 2: a false killed:true ────────────────────────────────
@@ -254,6 +276,30 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     // not "still running").
     expect(spies.sent).toEqual(['No active session to stop.']);
   });
+
+  // 2026-11-18, topic 144201: the lifeline re-sent one correction after its 10s
+  // forward timeout, every re-send asked the model again, and the one
+  // 'emergency-stop' among six 'redirect' answers killed the session. A re-sent
+  // forward of the same Telegram message must get the first verdict.
+  it('a re-sent forward of the same message reuses its first verdict (no second model call, no kill)', async () => {
+    const answers = ['redirect', 'emergency-stop'];
+    let calls = 0;
+    const sentinel = new MessageSentinel({
+      intelligence: { evaluate: async () => answers[Math.min(calls++, answers.length - 1)] } as unknown as IntelligenceProvider,
+    });
+    const ctx = buildContext(stateDir, (m: string, t?: number, k?: string) => sentinel.decideInboundDisposition(m, t, k) as never, spies);
+    const app = makeApp(ctx);
+    const text = 'This plan is NOT working. the wrong account is growing: dawn and NOT healdey.justin';
+
+    const first = await forward(app, text);
+    const resent = await forward(app, text);
+
+    expect(first.status).toBe(200);
+    expect(resent.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(spies.killed).toHaveLength(0);
+    expect(resent.body.sentinel).toBeUndefined();
+  });
 });
 
 /**
@@ -268,7 +314,8 @@ describe('/internal/telegram-forward — wiring integrity', () => {
       path.join(__dirname, '..', '..', 'src', 'server', 'routes.ts'),
       'utf-8',
     );
-    const fwdIdx = src.indexOf("router.post('/internal/telegram-forward'");
+    // The forward route's body is the shared inbound handler (mobile-operator-chat §2.2).
+    const fwdIdx = src.indexOf('const telegramForwardHandler = async');
     expect(fwdIdx).toBeGreaterThan(-1);
     // The onTopicMessage routing call marks "message handed to session".
     const routeIdx = src.indexOf('ctx.telegram.onTopicMessage(message)', fwdIdx);

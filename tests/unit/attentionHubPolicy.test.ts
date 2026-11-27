@@ -36,6 +36,13 @@ describe('attentionHubPolicy — items', () => {
     expect(admitItemToHub(item({ sourceContext: 'feedback-triage:action-list' }), 'signal').admit).toBe(true);
   });
 
+  it('holds the evolution-overdue-check row; admits the bench-refresh routing diff only', () => {
+    // operator report 2026-11-02: the overdue check posted as "agent" every few hours
+    expect(admitItemToHub(item({ id: 'evolution-overdue', sourceContext: 'evolution-overdue-check' }), 'signal')).toEqual({ admit: false, reason: 'automated-status' });
+    expect(admitItemToHub(item({ id: 'bench-refresh:routing-diff', sourceContext: 'bench-refresh' }), 'signal')).toEqual({ admit: true, reason: 'needs-user-source' });
+    expect(admitItemToHub(item({ id: 'bench-refresh:run-crashed', sourceContext: 'bench-refresh' }), 'signal').admit).toBe(false);
+  });
+
   it("mode 'all' admits everything (rollback)", () => {
     expect(admitItemToHub(item(), 'all').admit).toBe(true);
   });

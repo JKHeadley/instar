@@ -24,8 +24,10 @@ const IDLE = `reaper-shell-idle-${tag}`;
 
 /** `ps -eo pid,ppid,command` descendants of `root` (throws if ps cannot run). */
 function descendants(root: string): Array<{ pid: string; command: string }> {
-  const ps = spawnSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf-8' });
-  if (ps.status !== 0) throw new Error(`ps failed: ${ps.stderr}`);
+  // A busy host's full process list can pass node's 1 MiB default buffer
+  // (ENOBUFS: status null, empty stderr), so allow 64 MiB and name the error.
+  const ps = spawnSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+  if (ps.status !== 0) throw new Error(`ps failed: ${ps.error?.message ?? ''} ${ps.stderr ?? ''}`.trim());
   const rows = ps.stdout.split('\n').slice(1)
     .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/))
     .filter((m): m is RegExpMatchArray => m !== null);

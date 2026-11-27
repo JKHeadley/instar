@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "boot-queued-reply-origin-label",
+  "sessionId": "35051f22-5687-4dfb-b6db-0589232f1a0b",
+  "timestamp": "2026-11-03T02:16:19.638Z",
+  "artifactPath": "upgrades/side-effects/boot-queued-reply-origin-label.md",
+  "artifactSha256": "21d9e00b3a09860254e10dae680ec4c0dfe3271edc5e2a144778f849bec7fa6a",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/pending-relay-store.ts",
+    "src/messaging/telegram-origin/OriginAttestation.ts",
+    "src/messaging/telegram-origin/OriginLegacy.ts",
+    "src/messaging/telegram-origin/OriginSessionRegistry.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "src/templates/scripts/telegram-reply.sh",
+    "tests/e2e/telegram-origin-production-boot.test.ts",
+    "tests/integration/telegram-origin-routes.test.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "tests/unit/telegram-origin/origin-session-registry.test.ts",
+    "tests/unit/telegram-reply-recoverable-classification.test.ts",
+    "upgrades/next/boot-queued-reply-origin-label.md",
+    "upgrades/side-effects/boot-queued-reply-origin-label.eli16.md",
+    "upgrades/side-effects/boot-queued-reply-origin-label.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fix to the label on recovered boot-time replies; a revert restores the old behaviour, and the new queue column and registry field are inert to older code (one in-flight caveat documented in the artifact).",
+  "eli16Path": "upgrades/side-effects/boot-queued-reply-origin-label.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/boot-queued-reply-origin-label.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: the existing recovery tick's legacy import gains a read-only label lookup (registry digest match + observer refresh, the same calls a direct session send makes); no restart, spawn, notify, retry or re-drive is added or changed."
+  }
+}

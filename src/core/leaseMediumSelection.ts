@@ -104,3 +104,20 @@ export function selectLeaseMedium(options: SelectLeaseMediumOptions): LeaseMediu
     return { medium: 'git', reason: `check-error:${checkErrorKind(err)}` };
   }
 }
+
+/**
+ * Takeover on a git lease needs somewhere to push. With no remote the commit lands, the push
+ * fails, and the store reads its own candidate back as a lost race, so a standby never takes
+ * over (fb-29bc773f-713). Only the negative is provable here: a remote that exists says
+ * nothing about a real takeover. Read once at boot and by the pair and join commands; never
+ * from /health, where a slow read makes the lifeline restart the server.
+ */
+export function gitLeaseHasNoRemote(projectDir: string, readGit?: GitRead): boolean | null {
+  const read = readGit ?? ((args, opts) => SafeGitExecutor.readSync(args, opts));
+  try {
+    return read(['remote'], { cwd: projectDir, timeout: 2_000, operation: 'lease-remote-check' }).trim() === '';
+  } catch {
+    // @silent-fallback-ok: an unreadable remote list is unknown, never a claim about takeover.
+    return null;
+  }
+}

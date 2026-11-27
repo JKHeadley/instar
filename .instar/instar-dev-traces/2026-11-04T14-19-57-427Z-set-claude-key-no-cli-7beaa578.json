@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "set-claude-key-no-cli",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T14:19:57.427Z",
+  "artifactPath": "upgrades/side-effects/set-claude-key-no-cli.md",
+  "artifactSha256": "81047c7425ec384e584c8c086b2b7e1f28e9e97f6b2912f93214dcdceb7b6533",
+  "coveredFiles": [
+    "docs/specs/set-claude-key-no-cli.eli16.md",
+    "src/commands/setClaudeKey.ts",
+    "upgrades/side-effects/set-claude-key-no-cli.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A narrow reversible CLI prerequisite fix; the existing key storage path and validation are unchanged.",
+  "eli16Path": "docs/specs/set-claude-key-no-cli.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/set-claude-key-no-cli.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

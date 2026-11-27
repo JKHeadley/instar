@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "mac-desktop-own-permission",
+  "sessionId": "99cb318d-f6f4-4ef5-b3d8-f16394ccccb5",
+  "timestamp": "2026-11-01T08:07:08.196Z",
+  "artifactPath": "upgrades/side-effects/mac-desktop-own-permission.md",
+  "artifactSha256": "449fc30d67d45c3ad677acf9f38e0de906380eb5ca538e0fd0289dd37f4c5d93",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    "docs/specs/mac-desktop-own-permission-identity.eli16.md",
+    "docs/specs/mac-desktop-own-permission-identity.md",
+    "scripts/build-native-desktop-host.mjs",
+    "scripts/check-native-desktop-release.mjs",
+    "src/core/DesktopHost.ts",
+    "src/core/DesktopProbeReadiness.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/desktop-own-identity.test.ts",
+    "tests/integration/desktop-routes.test.ts",
+    "tests/unit/MacDesktopHostIdentity.test.ts",
+    "tests/unit/desktop-probe-readiness.test.ts",
+    "upgrades/next/mac-desktop-own-permission.md",
+    "upgrades/side-effects/mac-desktop-own-permission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Additive: inherited identity stays the default and a revert fully undoes it",
+  "eli16Path": "docs/specs/mac-desktop-own-permission-identity.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mac-desktop-own-permission.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot process start and a route rate-limited to once a minute, not a self-triggered loop"
+  }
+}

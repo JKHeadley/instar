@@ -1,0 +1,5 @@
+# Plain overview: test instructions no longer name the Laptop
+
+The locked-screen test for Remote Desktop has a script that tells the person at the computer what to do, such as "unlock the test account at the Laptop now". The test has moved from the Laptop to the Mac Mini, so those instructions would have pointed to the wrong machine. They now say "at the test Mac", which is right whichever Mac runs the test. Nothing else about the test changes: the same cases, the same timings and the same pass rules. Only the words the person reads are different.
+
+Why it matters: during the sitting, Justin follows these lines one at a time, often from his phone while standing at the machine. A line that names the wrong computer could send him to the Laptop he now needs for his own work, or make him wonder whether he set up the wrong machine. What already exists is unchanged: the same 36 cases, the driver that times each one, and the expected-results table recorded before any run. The only new thing is the wording. There is nothing for anyone to decide; if the wording turned out wrong, undoing this change puts the old text back.

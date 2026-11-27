@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "lifeline-lock-heartbeat",
+  "sessionId": "18604a86-3b10-4658-ba57-581bcce3d6ca",
+  "timestamp": "2026-11-02T00:17:23.998Z",
+  "artifactPath": "upgrades/side-effects/lifeline-lock-heartbeat.md",
+  "artifactSha256": "b7e7bea94689aa952cf76c24cc76d7abffba6e2db13bc1ce517ec769e04d5da2",
+  "coveredFiles": [
+    "docs/specs/lifeline-lock-heartbeat.eli16.md",
+    "docs/specs/lifeline-version-skew-recovery.md",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/lifelineLock.ts",
+    "tests/unit/lifeline/lifeline-lock-identity.test.ts",
+    "upgrades/next/lifeline-lock-heartbeat.md",
+    "upgrades/side-effects/lifeline-lock-heartbeat.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A narrow bug fix in one lock module that a revert fully undoes: old code ignores the added field and mtime. Touches a kill decision, so it got second-pass review.",
+  "eli16Path": "docs/specs/lifeline-lock-heartbeat.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifeline-lock-heartbeat.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

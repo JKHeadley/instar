@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-07T06:04:18.977Z",
+  "slug": "team-2a",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 228,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/SessionManager.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/server/memorySessionGuard.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts",
+      "src/users/MemoryAudience.ts",
+      "src/users/MemoryInboundTracker.ts",
+      "src/users/MemoryPrivacy.ts",
+      "src/users/TeamConfinement.ts",
+      "src/users/wireMemoryPrivacy.ts"
+    ],
+    "addedLines": 205,
+    "deletedLines": 23
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

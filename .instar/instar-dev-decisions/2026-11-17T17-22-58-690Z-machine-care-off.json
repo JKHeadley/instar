@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-17T17:22:58.690Z",
+  "slug": "machine-care-off",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/awareness/machine-care-page.md",
+      "src/monitoring/machineMaintenance/EnrolmentController.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 55,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Off adds no self-action; it removes the record and permission the machine-restart Eternal Sentinel path requires, and the in-lock check refuses without the record."
+    }
+  },
+  "verdict": "pass"
+}

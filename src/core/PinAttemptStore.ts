@@ -13,15 +13,30 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 interface AttemptEntry {
   count: number;
   resetAt: number;
 }
 
+/** One cap across every source address, shared by every route that takes a PIN with no bearer token. */
+export const GLOBAL_PIN_KEY = '__dashboard_unlock_global__';
+export const GLOBAL_PIN_MAX_ATTEMPTS = 20;
+
+/** identity-security-piece1c: the store never holds more rows than this (oldest unlocked rows go first). */
+export const PIN_ATTEMPT_MAX_ROWS = 4096;
+
 export class PinAttemptStore {
   private readonly filePath: string;
   private entries = new Map<string, AttemptEntry>();
+  /**
+   * identity-security-piece1c: set when the file on disk was empty, corrupt or invalid at load. The
+   * file was moved aside; until this time the GLOBAL key reads as saturated (one window), so a
+   * damaged file never hands a guesser a fresh budget, and nobody has to repair anything.
+   */
+  private saturatedUntil = 0;
+  private writeFailureReported = false;
   private readonly maxAttempts: number;
   private readonly windowMs: number;
   private readonly now: () => number;
@@ -37,22 +52,47 @@ export class PinAttemptStore {
   }
 
   /** True when the IP is currently locked out. */
-  blocked(ip: string): boolean {
+  blocked(ip: string, maxAttempts = this.maxAttempts): boolean {
+    if (ip === GLOBAL_PIN_KEY && this.now() < this.saturatedUntil) return true;
     const e = this.current(ip);
-    return e !== undefined && e.count >= this.maxAttempts;
+    return e !== undefined && e.count >= maxAttempts;
   }
 
+  /** Whether the load found a damaged file and the global budget is held saturated for one window. */
+  get pausedAfterCorruptLoad(): boolean { return this.now() < this.saturatedUntil; }
+
   /** Record a FAILED attempt; returns attempts remaining (≥ 0). */
-  recordFailure(ip: string): number {
-    let e = this.current(ip);
-    if (!e) {
-      e = { count: 0, resetAt: this.now() + this.windowMs };
-      this.entries.set(ip, e);
-    }
-    e.count++;
-    this.persist();
-    return Math.max(0, this.maxAttempts - e.count);
+  recordFailure(ip: string, maxAttempts = this.maxAttempts): number {
+    return this.recordFailures([{ key: ip, max: maxAttempts }]).get(ip) ?? 0;
   }
+
+  /**
+   * SEC-135: charge one wrong PIN to several keys with ONE write, so a wrong guess costs one
+   * persist whatever budgets it counts against. Returns each key's attempts remaining (≥ 0), keyed
+   * by the key. A failed write keeps the counters in memory (see persist), so the limits still hold.
+   */
+  recordFailures(keys: ReadonlyArray<{ key: string; max?: number }>): Map<string, number> {
+    const remaining = new Map<string, number>();
+    if (keys.length === 0) return remaining;
+    let dirty = false;
+    for (const { key, max } of keys) {
+      let e = this.entries.get(key);
+      if (e && this.now() > e.resetAt) { this.entries.delete(key); e = undefined; }
+      if (!e) {
+        e = { count: 0, resetAt: this.now() + this.windowMs };
+        this.entries.set(key, e);
+      }
+      e.count++;
+      dirty = true;
+      remaining.set(key, Math.max(0, (max ?? this.maxAttempts) - e.count));
+    }
+    this.prune();
+    if (dirty) this.persist();
+    return remaining;
+  }
+
+  /** The counting window, in whole seconds (a durable block lasts at most this long). */
+  get windowSeconds(): number { return Math.ceil(this.windowMs / 1000); }
 
   /** Clear an IP's counter on a successful PIN entry. */
   recordSuccess(ip: string): void {
@@ -69,16 +109,63 @@ export class PinAttemptStore {
     return e;
   }
 
-  private load(): void {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Record<string, AttemptEntry>;
-      for (const [ip, e] of Object.entries(raw)) {
-        if (e && Number.isInteger(e.count) && Number.isFinite(e.resetAt)) this.entries.set(ip, e);
-      }
-    } catch {
-      // @silent-fallback-ok: absent/corrupt attempt file — start empty. The lockout
-      // is defence-in-depth; an unreadable file must not brick PIN auth entirely.
+  /** Drop expired rows; above the cap, drop the oldest rows that are not locked out. */
+  private prune(): void {
+    const now = this.now();
+    for (const [k, e] of this.entries) if (now > e.resetAt) this.entries.delete(k);
+    if (this.entries.size <= PIN_ATTEMPT_MAX_ROWS) return;
+    const unlocked = [...this.entries].filter(([k, e]) => k !== GLOBAL_PIN_KEY && e.count < this.maxAttempts)
+      .sort((a, b) => a[1].resetAt - b[1].resetAt);
+    for (const [k] of unlocked) {
+      if (this.entries.size <= PIN_ATTEMPT_MAX_ROWS) break;
+      this.entries.delete(k);
     }
+  }
+
+  /**
+   * identity-security-piece1c. A missing file starts fresh (first boot, a restore). An empty,
+   * corrupt or invalid file (a negative, non-integer or non-finite count) is moved aside and the
+   * global budget is held saturated for one window, then counting resumes — never the fail-open
+   * reset to empty, and no operator step.
+   */
+  private load(): void {
+    let text: string;
+    try {
+      text = fs.readFileSync(this.filePath, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return; // @silent-fallback-ok: no file yet = nothing counted yet
+      this.quarantine('unreadable', err);
+      return;
+    }
+    try {
+      const raw = JSON.parse(text) as Record<string, AttemptEntry>;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
+      const loaded = new Map<string, AttemptEntry>();
+      for (const [ip, e] of Object.entries(raw)) {
+        if (!e || !Number.isInteger(e.count) || e.count < 0 || !Number.isFinite(e.resetAt)) throw new Error(`invalid row ${ip.slice(0, 40)}`);
+        loaded.set(ip, e);
+      }
+      this.entries = loaded;
+      this.prune();
+    } catch (err) {
+      this.quarantine('corrupt', err);
+    }
+  }
+
+  private quarantine(kind: string, err: unknown): void {
+    this.entries = new Map();
+    this.saturatedUntil = this.now() + this.windowMs;
+    try {
+      if (fs.existsSync(this.filePath)) fs.renameSync(this.filePath, `${this.filePath.replace(/\.json$/, '')}.corrupt-${this.now()}.json`);
+    } catch { /* @silent-fallback-ok: the in-memory saturation below holds regardless */ }
+    // Write the paused window back as a valid file, so a restart during the pause sees the global
+    // budget used up instead of a missing file (which would start fresh).
+    this.entries.set(GLOBAL_PIN_KEY, { count: Number.MAX_SAFE_INTEGER, resetAt: this.saturatedUntil });
+    this.persist();
+    DegradationReporter.getInstance().report({ feature: 'PinAttemptStore.load',
+      primary: 'PIN guess counters loaded from disk', fallback: 'Damaged file set aside; unmarked PIN sign-in paused for one window, then counting resumes',
+      reason: `${kind}: ${err instanceof Error ? err.message : String(err)}`,
+      impact: 'For up to five minutes, PIN sign-in from a browser that never signed in before is refused; known browsers, the phone and this computer still work.' });
   }
 
   private persist(): void {
@@ -86,9 +173,17 @@ export class PinAttemptStore {
       const tmp = this.filePath + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.entries)), { mode: 0o600 });
       fs.renameSync(tmp, this.filePath);
-    } catch {
-      // @silent-fallback-ok: a failed persist degrades to in-memory-only counters
-      // (today's behavior) — never blocks the auth decision itself.
+      this.writeFailureReported = false;
+    } catch (err) {
+      // A failed write keeps enforcing the in-memory counters (still correct in this process) and is
+      // reported once per failure episode; it never pauses anyone's sign-in.
+      if (!this.writeFailureReported) {
+        this.writeFailureReported = true;
+        DegradationReporter.getInstance().report({ feature: 'PinAttemptStore.persist',
+          primary: 'PIN guess counters written to disk', fallback: 'Counters keep enforcing in memory',
+          reason: err instanceof Error ? err.message : String(err),
+          impact: 'A restart during this episode would lose at most the current five-minute window of counted guesses.' });
+      }
     }
   }
 }

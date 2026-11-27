@@ -6,9 +6,8 @@
  * Regression for the 2026-06-04 incident: StaleSessionBackstop raised one HIGH
  * "Session topic-X is stale but unkillable" attention item per stall episode, and
  * because HIGH bypasses the flood guard, each spawned a brand-new forum topic → a
- * wall of "stale but unkillable" topics. The lane routes self-health notices into
- * ONE named topic from the first item, regardless of priority, and suppression-
- * dedups same-entity re-escalations.
+ * wall of "stale but unkillable" topics. Routine notices now stay in the
+ * attention record. Only notices marked needsUser use the one named lane topic.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -62,7 +61,7 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'agent-health-lane cleanup' });
   });
 
-  it('routes N self-health notices into exactly ONE named lane topic (never topic-after-topic)', async () => {
+  it('records N routine self-health notices without a Telegram topic or message', async () => {
     const rec = installApiStub(adapter);
 
     const N = 8;
@@ -70,7 +69,7 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     for (let i = 0; i < N; i++) {
       items.push(await adapter.createAttentionItem({
         id: `stale-sess-${i}-1`,
-        healthKey: `stale-sess-${i}`,         // distinct entities → all post, none suppressed
+        healthKey: `stale-sess-${i}`,
         lane: 'agent-health',
         title: `Heads-up on the "Session ${i}" session`,
         summary: `It hasn't shown progress. Reply "check Session ${i}".`,
@@ -79,26 +78,24 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
       }));
     }
 
-    // Exactly ONE forum topic for all N notices — the lane — not N.
-    expect(rec.forumTopicsCreated).toBe(1);
-    expect(rec.topicTitles[0]).toContain('Agent Health');
-    // Every item shares the one lane topic and is flagged coalesced.
-    const laneTopicIds = new Set(items.map(a => a.topicId));
-    expect(laneTopicIds.size).toBe(1);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(rec.messagesByThread.size).toBe(0);
+    expect(items.every(a => a.topicId === undefined)).toBe(true);
     expect(items.every(a => a.coalesced === true)).toBe(true);
     // No item dropped — all recorded in the store.
     expect(adapter.getAttentionItems().filter(a => a.lane === 'agent-health').length).toBe(N);
   });
 
-  it('a HIGH-priority self-health notice STILL goes to the lane (never its own topic)', async () => {
+  it('HIGH priority alone does not make a self-health notice user-actionable', async () => {
     const rec = installApiStub(adapter);
     const item = await adapter.createAttentionItem({
       id: 'stale-x-1', healthKey: 'stale-x', lane: 'agent-health',
       title: 'Heads-up on the "X" session', summary: 'maybe stuck. Reply "check X".',
-      category: 'degradation', priority: 'HIGH',   // mis-tagged HIGH — lane wins
+      category: 'degradation', priority: 'HIGH',
     });
-    expect(rec.forumTopicsCreated).toBe(1);
-    expect(rec.topicTitles[0]).toContain('Agent Health');
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(rec.messagesByThread.size).toBe(0);
+    expect(item.topicId).toBeUndefined();
     expect(item.coalesced).toBe(true);
   });
 
@@ -107,7 +104,7 @@ describe('Agent-Health lane (integration with real TelegramAdapter)', () => {
     const laneOf = async (episode: number) => adapter.createAttentionItem({
       id: `stale-dup-${episode}`, healthKey: 'stale-dup', lane: 'agent-health',
       title: 'Heads-up on the "Dup" session', summary: 'still maybe stuck. Reply "check Dup".',
-      category: 'degradation', priority: 'NORMAL',
+      category: 'degradation', priority: 'NORMAL', needsUser: true,
     });
     await laneOf(1);
     await laneOf(2);

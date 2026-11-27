@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "locked-proof-next-grant",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T01:22:48.285Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-next-grant.md",
+  "artifactSha256": "e9c3192c21c2976dd528a8828f4de4b47ad36afcb4ca9701a4f5dfd136c82387",
+  "coveredFiles": [
+    "docs/specs/locked-proof-next-grant.eli16.md",
+    "scripts/locked-proof/driver.mjs",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/next/locked-proof-next-grant.md",
+    "upgrades/side-effects/locked-proof-next-grant.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible test-harness correction; no runtime policy or native-helper change.",
+  "eli16Path": "docs/specs/locked-proof-next-grant.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-next-grant.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  }
+}

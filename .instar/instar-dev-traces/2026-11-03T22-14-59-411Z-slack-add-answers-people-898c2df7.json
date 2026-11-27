@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "slack-add-answers-people",
+  "sessionId": "69e02116-7a51-4709-aee8-ec7bcc7ed7b9",
+  "timestamp": "2026-11-03T22:14:59.411Z",
+  "artifactPath": "upgrades/side-effects/slack-add-answers-people.md",
+  "artifactSha256": "4d02704e36a9c6ea2a570053dad615bb4177d73141d907046dfefe4d79ace9eb",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/commands/slack-cli.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "tests/unit/slack-cli-authorized-users.test.ts",
+    "upgrades/side-effects/slack-add-answers-people.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in the add-slack command plus a signal-only start-time warning; a revert fully undoes it; proven live on a fresh server",
+  "eli16Path": "docs/specs/slack-add-answers-people.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-add-answers-people.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "feature-maturation-ladder",
+  "sessionId": "5d64ec71-904d-47d7-b933-ec981d537d0d",
+  "timestamp": "2026-11-04T03:24:32.111Z",
+  "artifactPath": "upgrades/side-effects/feature-maturation-ladder.md",
+  "artifactSha256": "03d0e43b84828afb686ede55510c57f8a3270df0c3c3244873646528a1c2a976",
+  "specPath": "docs/specs/feature-maturation-ladder.md",
+  "coveredFiles": [
+    "src/monitoring/MaturationLadderService.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/unit/capabilities-discoverability.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "upgrades/side-effects/feature-maturation-ladder.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New published routes, dev-gated, touches the scorer and the spec gate.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

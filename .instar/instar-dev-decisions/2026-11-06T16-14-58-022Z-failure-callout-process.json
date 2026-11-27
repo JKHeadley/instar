@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-06T16:14:58.022Z",
+  "slug": "failure-callout-process",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

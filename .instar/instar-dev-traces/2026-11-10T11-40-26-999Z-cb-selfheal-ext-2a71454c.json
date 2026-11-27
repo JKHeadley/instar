@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "cb-selfheal-ext",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T11:40:26.999Z",
+  "artifactPath": "upgrades/side-effects/cb-selfheal-ext.md",
+  "artifactSha256": "46d7fd769f7ce9434098d7a91d6f3b3bf3e80257f0dce2dfd764fb1d31b02284",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/SelfHealGate.ts",
+    "tests/e2e/self-heal-gate-async-crash.test.ts",
+    "tests/integration/self-heal-gate-pool-ladder.test.ts",
+    "tests/unit/SelfHealGate-extensions.test.ts",
+    "upgrades/next/cb-selfheal-ext.md",
+    "upgrades/side-effects/cb-selfheal-ext.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Extends a production self-heal gate with three consumers; all extensions opt-in and unused until the sentinel slice",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

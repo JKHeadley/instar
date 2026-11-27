@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "package-pack-macos-helper-race",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-11-01T02:23:32.444Z",
+  "artifactPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "artifactSha256": "b2d78fa49b6498b77cd8183622e60bff084deaa714fe159e19d8c8cf5e7d1fee",
+  "coveredFiles": [
+    "docs/specs/package-pack-macos-helper-race.eli16.md",
+    "src/threadline/PipeSessionSpawner.ts",
+    "tests/integration/foreign-process-survives-test-instance.test.ts",
+    "upgrades/next/package-pack-macos-helper-race.md",
+    "upgrades/side-effects/package-pack-macos-helper-race.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded packaging-test retry and narrowly scoped tmux ownership repair are reversible; an independent safety review verified nonce stamping and removal guards.",
+  "eli16Path": "docs/specs/package-pack-macos-helper-race.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/package-pack-macos-helper-race.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 3
+      }
+    ]
+  }
+}

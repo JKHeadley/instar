@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-03T22:14:48.446Z",
+  "slug": "slack-add-answers-people",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 116,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/slack-cli.ts",
+      "src/messaging/slack/SlackAdapter.ts"
+    ],
+    "addedLines": 113,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

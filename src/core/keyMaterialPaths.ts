@@ -42,6 +42,9 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   'machine-ssh/',
   // Inbound-delivery observer HMAC key.
   'state/inbound-delivery.hmac-key',
+  // Always available's record of the earlier Claude sign-in (the credential itself, kept to restore
+  // on turn-off) and its temp files (create-agent-accounts-and-always-on §B.4).
+  'state/always-available-token',
   // Relay session tokens handed out by handshakes.
   'relay-tokens.json',
   // Headless worktree key vault (`local-state/keys.enc`) and its siblings.
@@ -50,8 +53,19 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // ORIGIN_LOCAL_PREFIXES for gitignore + backup; listed here so the file
   // routes refuse it by the same list.
   'origin-sessions-',
+  // Telegram test-group marker key (32-byte HMAC key, 0600): it decides which groups on
+  // the operator's account this agent may delete (docs/specs/telegram-test-groups.md).
+  'state/telegram-test-groups.key',
   // Conversation-bind token secret (32-byte HMAC key).
   'state/conversation-bind-token.secret',
+  // Fold locks (context-budget-layered-summaries §14 "Fold lock"): the
+  // single-machine fold signing key (`.local-key.pem`) and the lock and
+  // monotonic floor files a bearer edit could lower or forge.
+  'state/fold-leases/',
+  // The owner record (identity-security piece 2b): signed entries whose files a bearer edit could swap or
+  // trim. Never served, backed up, committed or git-synced: machines exchange it only over signed mesh
+  // commands, and each judges every entry itself (owner-authentication §6).
+  'state/owner-record/',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,
   // generated at init, 0600). Found by the §5.4 walk: a key the parent lists
   // never named.
@@ -86,6 +100,21 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // request are on a persisted budget; a file-editor write would step around
   // it and spend the lifeline's shared daily restart cap.
   'state/lifeline-restart-requested.json',
+  // Threadline MCP local secret (32 random bytes, hex, 0600): the credential the
+  // agent's own sessions present on POST /mcp/threadline. Covers the creator's
+  // temp names (`local-mcp-secret.<pid>.<rand>.tmp`) too.
+  // docs/specs/threadline-mcp-local-http.md D2
+  'state/local-mcp-secret',
+  // The same-network listener's TLS private key (identity A4, 0600): the key a phone at home pins.
+  // Covers the writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md
+  'state/same-network-tls.key',
+  // Whether the same-network listener is open and on which networks. Not a key, but only the owner at
+  // the computer may open the listener; a file-editor write would be a way round that from outside.
+  'state/same-network.json',
+  // The app's one-time ceremony credential (identity A5, 0600, its hash only). Never written over HTTP:
+  // a file-editor write would mint a credential from outside the agent's own system. Covers the
+  // writer's temp names too. docs/specs/identity-security-piece3e-same-network-first-phone.md §4.6
+  'state/ceremony-credential.json',
 ]);
 
 /**
@@ -114,6 +143,10 @@ export const KEY_MATERIAL_FILES: readonly string[] = Object.freeze([
   'remediation-keys.age',
   'telemetry/local-secret',
   'state/lifeline-ingress-secret',
+  'state/local-mcp-secret',
+  'state/same-network-tls.key',
+  'state/ceremony-credential.json',
+  'state/always-available-token.json',
   'config.json',
 ]);
 

@@ -637,7 +637,12 @@ function validateRootSelfWiring() {
     // silent one. The guard caught exactly that when this key was introduced.
     STANDARDS_DIRECTION_REVIEW_FILE: '${{ runner.temp }}/standards-direction-review.json',
   };
-  if (!exactKeys(job, ['name', 'runs-on', 'permissions', 'steps']) ||
+  // ACT-059 (2026-11-02): every CI job declares timeout-minutes so a hang fails
+  // within the hour instead of holding a PR for GitHub's 6-hour default. The key
+  // is part of the pinned shape and must be a positive whole number of minutes.
+  const timeout = job?.['timeout-minutes'];
+  if (!exactKeys(job, ['name', 'runs-on', 'permissions', 'timeout-minutes', 'steps']) ||
+    !Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 60 ||
     // Second-pass finding 2: the token scope path B needs is now EXPLICIT and
     // pinned, not inherited from the repository's default workflow permission —
     // a tightened org default would otherwise 403 the association call and

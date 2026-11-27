@@ -1,3 +1,7 @@
+import {NativeDecommissionLeasePermit} from './NativeDecommissionLeasePermit.js';
+import {LocalLeaseStore} from './LocalLeaseStore.js';
+import {GitLeaseStore} from './GitLeaseStore.js';
+import { evaluateStallReconfirm, stallGapMsFor, awakeGapMs, lostInGapMs, lostWithinMs, AWAKE_STAMP_INTERVAL_MS, type StallReconfirmSettings, type StallReconfirmVerdict } from './StallReconfirm.js';
 /**
  * LeaseCoordinator — drives the FencedLease over the durable (git) and fast
  * (tunnel) media, and owns the lifecycle of acquisition / renewal / fencing /
@@ -22,6 +26,32 @@
 
 import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import {
+  resolveWindowMs, pendingCadenceMs, evaluateEpisodeEnd, bootDurationMs, silenceIsEvidence, ASK_DEADLINE_MS, EPISODE_CAP_MS,
+  type ContinuityFile, type ContinuityMeta, type LeaseContinuityStore,
+} from './LeaseContinuity.js';
+import type { RestartAnnounce, RestartAnnounceOutcome } from './restartRequestSignal.js';
+import type { RestartRequestFind } from './restartRequestAttribution.js';
+import {
+  evaluateBootHold,
+  classifyPeer,
+  unsignedAnswerWindowMs,
+  UNSIGNED_WINDOW_CEILING_MS,
+  DEFAULT_BOOT_HOLD_SETTINGS,
+  type BootHoldVerdict,
+  type PeerProbeRecord,
+  type ProbeAnswer,
+} from './BootClaimHold.js';
+
+/** takeover-ready-pool R1 — the boot claim safety switch and its values, read live. */
+export interface BootClaimSafetySettings {
+  enabled: boolean;
+  /** The named preferred machine (`leaseSelfHeal.preferredAwakeMachineId`), or null. */
+  preferredMachineId: string | null;
+  silentProbes?: number;
+  silentSpanMs?: number;
+}
 
 /** Durable (git-backed) view + CAS write of the lease. */
 export interface LeaseStore {
@@ -52,6 +82,20 @@ export interface LeaseStore {
    * CAS instead, so this is a no-op there.
    */
   forceLocalExpiry?(): void;
+  /**
+   * True when this store is only this machine's own copy, so nothing durable tells it what a
+   * peer did while it was down. A takeover made meanwhile can then only be learned by asking.
+   */
+  hasNoSharedMedium?(): boolean;
+  /**
+   * planned-restart-keeps-lead §1 step 4 — the pending marker on this machine's own stored record (a
+   * local store only): set with every pending renewal, cleared by the confirmed boot renewal, by
+   * relinquish and at an episode's end. Optional: a git store carries no marker (the continuity file
+   * is the only local copy there).
+   */
+  readPendingEpisodeId?(): string | null;
+  refreshWithPending?(lease: LeaseRecord, pendingEpisodeId: string | null): boolean;
+  clearPendingEpisodeId?(): void;
   /**
    * Pull the latest durable state into the local view WITHOUT writing.
    * Used to prime a freshly-booted/joined machine with fresh data before its
@@ -97,7 +141,20 @@ export interface LeaseTransport {
    * superseded and fenced (holdsLease, renew and solo hold all refuse it).
    */
   higherEpochEvidence?(): number;
+  /** takeover-ready-pool R1 — per-peer probe records of lease pulls since boot. Optional. */
+  probeHistory?(): Map<string, PeerProbeRecord>;
+  /** takeover-ready-pool R1 — the peers this transport can dial (excludes self). Optional. */
+  knownPeerIds?(): string[];
+  /** planned-restart-keeps-lead §2 — per-peer identity-verified pull answers (copies). Optional. */
+  verifiedAnswers?(): Map<string, { lease: LeaseRecord | null; atMs: number; round: number }>;
+  /** planned-restart-keeps-lead §2 — the current pull round and its start. Optional. */
+  currentPullRound?(): { round: number; startedAtMs: number };
+  /** planned-restart-keeps-lead §2 — be told when a probe lands. Optional; returns a detach. */
+  attachProbeListener?(listener: (peerId: string, answer: ProbeAnswer, round: number) => void): () => void;
 }
+
+/** lease-freshness-lapse-retry — which of `holdsLease()`'s checks answered, in its order; `holding` when all pass. */
+export type LeaseHoldVerdict = 'holding' | 'suspended' | 'not-current-holder' | 'renewal-lapsed' | 'superseded';
 
 export interface LeaseCoordinatorDeps {
   lease: FencedLease;
@@ -177,8 +234,96 @@ export interface LeaseCoordinatorDeps {
   isPreferredAwakeAgreed?: () => boolean;
   /** True iff EVERY peer is presumed-gone by liveness-silence (Layer 3 gate). */
   allPeersPresumedGone?: () => boolean;
+  /**
+   * lease-takeover-no-shared-medium: true when this machine has a peer and no machine is
+   * named preferred, read live. Absent or false keeps today's behaviour exactly, so a
+   * single machine and a pool with a named captain are untouched.
+   */
+  survivorMayHold?: () => boolean;
+  /**
+   * session-pool-takeover-at-pairing: a joined machine that has not yet proved a lasting link to
+   * its peer. It cannot tell a dead peer from a lost one, so it does not take the lease at all.
+   */
+  acquireHeldBack?: () => boolean;
+  /**
+   * stall-wake-lease-reconfirm (fb-fdb55c1c-a79) — read live. Off or absent keeps today's
+   * acquisition exactly. On: after a gap in this machine's awake clock, a claim on a lease
+   * another machine holds waits for evidence gathered after the gap (StallReconfirm.ts).
+   */
+  stallReconfirm?: () => StallReconfirmSettings | null;
+  /**
+   * takeover-ready-pool R1 (boot claim safety, fb-2bf6ccd0-705) — read live. Off or absent
+   * keeps today's acquisition exactly. On: an own-lapsed or empty lease always asks the peers
+   * first, whatever survivorMayHold/soloCaptainHold/preferred say, and no claim is made until
+   * the boot hold ends (BootClaimHold.ts).
+   */
+  bootClaimSafety?: () => BootClaimSafetySettings | null;
+  /**
+   * takeover-ready-pool R5 seam — a peer's published restart time (p95 ms), which bounds how
+   * long its unsigned answers count. Absent or null ⇒ the interim window.
+   */
+  peerRestartBudgetMs?: (machineId: string) => number | null;
+  /**
+   * planned-restart-keeps-lead — read live. Off or absent keeps today's renewal exactly; the boot
+   * side (rule 1b) is keyed on the disk state whatever this says. `windowMs` replaces the measured
+   * base of the window.
+   */
+  plannedRestartContinuity?: () => { enabled: boolean; windowMs: number | null } | null;
+  /** planned-restart-keeps-lead — this machine's continuity file and restart budget. */
+  continuity?: LeaseContinuityStore;
+  /** The renew tick's normal cadence (the pending cadence derives from it). */
+  renewIntervalMs?: () => number;
+  /** The transport's resolved broadcast deadline (8 s with default settings). */
+  broadcastDeadlineMs?: () => number;
+  /** The resolved shutdown deadline, for the consumed-but-alive exit of the episode rule. */
+  shutdownDeadlineMs?: () => number;
+  /** Whether `state/restart-requested.json` exists, and what it says. */
+  readRequestFile?: () => { present: boolean; requestedBy?: string | null; reason?: string | null; requestedAt?: string | null };
+  /** The restart ledger's by-request lookup (findRestartRequestRecord bound to the state dir). */
+  findConsumption?: (lookup: { requestedAt: string | null; sinceMs: number }) => RestartRequestFind;
+  /** The role this machine booted with (null until known): a role-change request on a standby boot marks a late promotion. */
+  bootRoleAwake?: () => boolean | null;
+  /** Fired when a pending episode opens or ends, so the coordinator can re-arm the renew cadence. */
+  onEpisodeChange?: (pending: boolean) => void;
   logger?: (msg: string) => void;
 }
+
+/** planned-restart-keeps-lead §1 step 3 — one open restart episode on this holder. */
+interface PendingEpisode {
+  id: string;
+  openedAtMs: number;
+  requestedBy: string;
+  reason: string;
+  requestedAt: string | null;
+  windowMs: number;
+  windowClampLogged: boolean;
+  fileLastSeenMs: number | null;
+  filePresent: boolean;
+  consumptionAtMs: number | null;
+  ledgerLookedUp: boolean;
+  /** The last ledger read's coverage, latched: a cut or unreadable read is retried, never promoted to full. */
+  ledgerCoverage: 'full' | 'cut' | 'unreadable' | null;
+  extendLogged: boolean;
+  lastWindowLease: LeaseRecord | null;
+  confirmed: boolean;
+  heldRowWritten: boolean;
+  lastHourlyLogMs: number;
+  afterLatePromotion: boolean;
+  announcedAtMs: number | null;
+  publishSettledAtMs: number | null;
+}
+
+/** planned-restart-keeps-lead §2 — the window lease found on disk at construction, until its verdict. */
+interface BootReclaim {
+  lease: LeaseRecord;
+  file: ContinuityFile | null;
+  storeEpisodeId: string | null;
+  startedAtMono: number;
+  unconfirmedLogged: boolean;
+  verdict: 'confirmed' | 'superseded' | 'survivor-hold' | 'lapsed' | null;
+}
+
+export type ReclaimVerdict = 'confirmed' | 'superseded' | 'survivor-hold' | 'lapsed' | 'timeout';
 
 export class LeaseCoordinator {
   private readonly d: LeaseCoordinatorDeps;
@@ -191,7 +336,18 @@ export class LeaseCoordinator {
    * clock-chaotic holder still goes quiet on its own monotonic reading before
    * the TTL elapses. (Wall-clock is used only for the display `expiresAt`.)
    */
-  private lastRenewOkMonoMs = 0;
+  private lastRenewOkMonoMs: number | null = 0;
+  /** The nonce of the last renewal a peer confirmed in this process (the exit stamp names it). */
+  private lastConfirmedNonce: number | null = null;
+  /** planned-restart-keeps-lead — the open restart episode, if any. */
+  private episode: PendingEpisode | null = null;
+  /** A request that reached the four-hour cap opens nothing until the file changes. */
+  private cappedRequest: { requestedAt: string | null; requestedBy: string } | null = null;
+  /** planned-restart-keeps-lead §2 — the window lease found at construction, awaiting its verdict. */
+  private bootReclaim: BootReclaim | null = null;
+  private reclaimWaiters: Array<(v: ReclaimVerdict) => void> = [];
+  /** Peers logged once as alive-and-unknown (every route refused on this machine's side). */
+  private reclaimUnknownLogged = new Set<string>();
   private lastObservedEpoch = 0;
   private suspended = false;
   /**
@@ -239,11 +395,106 @@ export class LeaseCoordinator {
   private lastObservedNonceEpoch = new Map<string, number>();
   private unconfirmedWriteCount = 0;
   private unconfirmedWriteReported = false;
+  /** Evidence only: the open solo-captain hold episode, so a hold records once, not per renew. */
+  private soloHoldEvidenceEpoch: number | null = null;
+  /** Evidence only: the last stale-holder takeover, to notice that holder renewing soon after. */
+  private staleTakeoverEvidence: { holder: string; epoch: number; atMono: number } | null = null;
+
+  /** takeover-ready-pool R1 — the boot hold, latched off once it ends (process-local). */
+  private bootHoldEnded = false;
+  private bootHoldLastLogged: string | null = null;
+  /** This machine's own lease record as read at construction (before any pull): rule 1/4. */
+  private readonly bootOwnRecord: { heldLast: boolean; epoch: number };
+
+  /** stall-wake-lease-reconfirm — the last awake-clock stamp (null until the switch is first read on). */
+  private awakeStamp: { wallMs: number; monoMs: number } | null = null;
+  private awakeTimer: ReturnType<typeof setInterval> | null = null;
+  /** The open stall episode: claims on another machine's lease need post-gap evidence. */
+  private stallEpisode: { openedAtMs: number; chainStartedAtMono: number; chainStartedAtMs: number; gapMs: number; heldRecorded: boolean; longHoldRecorded: boolean; lostSinceOpenMs: number; lastLostAtMs: number; extraPullAttempted: boolean } | null = null;
+  /** Start time of the latest pull round whose dials have all ended (replies folded). */
+  private lastCompletedRoundStartedAtMs = 0;
+  /** Evidence only: the last claim confirmed after a stall, to notice that holder renewing soon after. */
+  private stallClaimEvidence: { holder: string; epoch: number; atMono: number } | null = null;
+  /** Running time lost in recent gaps (within one TTL), for bursts of shorter stalls. */
+  private lostSamples: Array<{ atMs: number; lostMs: number }> = [];
+  private stallLastLogged: string | null = null;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
     this.fl = deps.lease;
-    this.markRenewOk();
+    let boot = { heldLast: false, epoch: 0 };
+    try {
+      const own = deps.store.read();
+      boot = { heldLast: own.lease?.holder === deps.lease.selfMachineId, epoch: own.epoch ?? 0 };
+    } catch {
+      // @silent-fallback-ok: an unreadable own record means epoch 0, so any peer epoch is newer and nothing is claimed from it
+    }
+    this.bootOwnRecord = boot;
+    // planned-restart-keeps-lead §2 — a window lease on disk (a continuity file, or a local store
+    // record bearing the pending marker) is not held until a peer confirms: leave the fence "never
+    // confirmed" (null; a zero would pass whenever process.hrtime reads under one TTL) and remember
+    // the lease for rule 1b. Keyed on the disk state whatever the switches say, so a rollback cannot
+    // reopen the hole. An ordinary unexpired record primes the fence as today.
+    const reclaim = this.readWindowLeaseAtBoot(deps);
+    if (reclaim) {
+      this.bootReclaim = reclaim;
+      this.lastRenewOkMonoMs = null;
+      if (reclaim.file) {
+        // The fold (§2): the file's renewal is this machine's freshest own record, so the view sees its
+        // window expiry (a git store only holds the acquisition) and the nonce floor starts above it.
+        this.selfIssued = reclaim.lease;
+        if (Number.isSafeInteger(reclaim.lease.nonce) && reclaim.lease.nonce <= Math.floor((deps.now ?? Date.now)()) + LeaseCoordinator.NONCE_SEED_MAX_AHEAD_MS) {
+          this.nonceCounter = Math.max(this.nonceCounter, reclaim.lease.nonce);
+        }
+      }
+    } else {
+      this.markRenewOk();
+    }
+  }
+
+  /** The fold (§2 "The fold"): the continuity file's lease over the store's own record, when it verifies. */
+  private readWindowLeaseAtBoot(deps: LeaseCoordinatorDeps): BootReclaim | null {
+    let stored: LeaseRecord | null = null;
+    try { stored = deps.store.read().lease; } catch { stored = null; } // @silent-fallback-ok: an unreadable store is no window lease
+    const self = deps.lease.selfMachineId;
+    const storeEpisodeId = deps.store.readPendingEpisodeId?.() ?? null;
+    const storeIsSelf = !!stored && stored.holder === self && !stored.released;
+    const storeVerifies = storeIsSelf && deps.lease.verifyLease(stored!);
+    const now = (deps.now ?? Date.now)();
+    let file: ContinuityFile | null = null;
+    if (deps.continuity) {
+      const r = deps.continuity.read();
+      if (r.verdict === 'ok' && r.file) {
+        const f = r.file;
+        // Folds only when the store's own record verifies (a relinquished local record has its expiry
+        // rewritten under the signature) and the file names the store's epoch at a higher nonce — or
+        // the same nonce with an identical record, the local store having the same renewal.
+        const sameEpoch = !!stored && f.lease.epoch === stored.epoch;
+        const higherNonce = !!stored && f.lease.nonce > stored.nonce;
+        const identical = !!stored && f.lease.nonce === stored.nonce && JSON.stringify(f.lease) === JSON.stringify(stored);
+        if (storeVerifies && sameEpoch && (higherNonce || identical)) file = f;
+        else this.discardContinuity(deps, f, !storeVerifies ? 'the stored record does not verify or was relinquished' : !sameEpoch ? 'the stored epoch moved past it' : 'its nonce is not newer than the stored record');
+      } else if (r.file || r.verdict === 'unreadable') {
+        this.discardContinuity(deps, r.file, r.verdict);
+      }
+    }
+    const lease = file ? file.lease : (storeVerifies && storeEpisodeId ? stored : null);
+    if (!lease || deps.lease.isExpired(lease, now)) {
+      // No usable window lease: a marker left on the store must not make the NEXT boot a planned one.
+      if (storeEpisodeId) { try { deps.store.clearPendingEpisodeId?.(); } catch { /* @silent-fallback-ok: cleared by the next ordinary write */ } }
+      return null;
+    }
+    return { lease, file, storeEpisodeId, startedAtMono: 0, unconfirmedLogged: false, verdict: null };
+  }
+
+  /** Measure what can be measured, then delete and say why (§2 "The fold"). */
+  private discardContinuity(deps: LeaseCoordinatorDeps, file: ContinuityFile | null, reason: string): void {
+    if (file?.meta && deps.continuity) {
+      const ms = bootDurationMs({ nowMs: (deps.now ?? Date.now)(), exitedAt: file.meta.exitedAt, renewedAt: file.meta.renewedAt, consumptionAtMs: null });
+      if (ms !== null) deps.continuity.appendBootSample(ms, 'discarded', 'none');
+    }
+    deps.continuity?.delete();
+    deps.logger?.(`[lease] lease-continuity: the continuity record left by the last restart is not usable here (${reason}); the record is discarded.`);
   }
 
   private now(): number {
@@ -263,8 +514,9 @@ export class LeaseCoordinator {
    * Record a CONFIRMED renewal/acquisition on the monotonic self-fence clock.
    * Called wherever a renewal/acquisition/broadcast is confirmed over a medium.
    */
-  private markRenewOk(): void {
+  private markRenewOk(confirmedNonce: number | null = null): void {
     this.lastRenewOkMonoMs = this.monotonicNow();
+    if (confirmedNonce !== null) this.lastConfirmedNonce = confirmedNonce;
   }
   /**
    * ACT-1308 — milliseconds since the last CONFIRMED renewal/acquisition on the
@@ -272,8 +524,38 @@ export class LeaseCoordinator {
    * when the broadcast went unconfirmed, so a caller that wants to retry an
    * unconfirmed renewal before the fence lapses reads this instead.
    */
-  msSinceConfirmedRenewal(): number {
+  msSinceConfirmedRenewal(): number | null {
+    if (this.lastRenewOkMonoMs === null) return null;
     return this.monotonicNow() - this.lastRenewOkMonoMs;
+  }
+  /**
+   * lease-freshness-lapse-retry — what a send refused for the lease at the network boundary
+   * needs to name its cause: which of `holdsLease()`'s checks answered (`holdVerdict()`, the
+   * same checks in the same order, each clock sampled once), how long since the last
+   * CONFIRMED renewal, and the lifetime that renewal is good for. `renewal-lapsed` is the
+   * monotonic self-fence; any other non-holding verdict means the lease was lost another
+   * way. Read-only; never changes the fence.
+   */
+  renewalFreshness(): { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict } {
+    return { msSinceConfirmedRenewal: this.msSinceConfirmedRenewal(), ttlMs: this.fl.ttlMs, verdict: this.holdVerdict() };
+  }
+  /**
+   * The first check of `holdsLease()` that answers, in its order; `holding` when all pass. The
+   * wall-clock expiry of our OWN current-epoch lease and the monotonic gap past the lifetime
+   * are both `renewal-lapsed`: each means no renewal was confirmed in time (the ordinary late
+   * renewal trips the wall clock a hair before the monotonic fence). `not-current-holder` is
+   * another holder, a stale epoch, or a record that does not verify.
+   */
+  holdVerdict(): LeaseHoldVerdict {
+    if (this.suspended) return 'suspended';
+    const view = this.effectiveView();
+    const lease = view.lease;
+    if (!lease || lease.holder !== this.selfMachineId || lease.epoch !== view.epoch || !this.fl.verifyLease(lease)) return 'not-current-holder';
+    if (this.fl.isExpired(lease, this.now())) return 'renewal-lapsed';
+    if (this.lastRenewOkMonoMs === null) return 'not-current-holder'; // planned boot has not confirmed ownership in this process
+    if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return 'renewal-lapsed';
+    if (this.higherEpochEvidence() > view.epoch) return 'superseded';
+    return 'holding';
   }
   private log(m: string): void {
     this.d.logger?.(`[lease] ${m}`);
@@ -378,6 +660,20 @@ export class LeaseCoordinator {
   }
 
   /**
+   * On a store holding only this machine's copy, nothing durable says what a peer did meanwhile,
+   * so one number can be reached by both machines. Our copy at that number, once expired, says
+   * nothing: a peer's later-expiring lease there is the truth. Without this the machine would
+   * keep naming itself, serve its dead copy to the live holder, and read as a tie.
+   */
+  private peerOutranksLapsedSelf(peer: LeaseRecord, stored: LeaseRecord | null): boolean {
+    if (!this.d.store.hasNoSharedMedium?.()) return false;
+    if (peer.holder === this.selfMachineId || peer.released) return false;
+    const own = this.selfIssued?.epoch === peer.epoch ? this.selfIssued : stored;
+    if (!own || own.holder !== this.selfMachineId || !this.fl.isExpired(own, this.now())) return false;
+    return new Date(peer.expiresAt).getTime() > new Date(own.expiresAt).getTime();
+  }
+
+  /**
    * Compute the current effective epoch = max(tunnel-observed accepted, git).
    * A tunnel lease is folded in only if acceptTunnelLease passes (valid sig,
    * ≥ git floor, fresh nonce).
@@ -386,6 +682,7 @@ export class LeaseCoordinator {
     const git = this.d.store.read();
     let bestLease = git.lease;
     let epoch = git.epoch;
+    let peerOutranksSelf = false;
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
@@ -413,10 +710,36 @@ export class LeaseCoordinator {
             this.lastObservedNonceEpoch.set(obs.lease.holder, obs.lease.epoch);
             this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
             this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
+            if (this.staleTakeoverEvidence?.holder === obs.lease.holder) {
+              const sinceMs = this.monotonicNow() - this.staleTakeoverEvidence.atMono;
+              if (sinceMs <= 10 * 60_000) {
+                featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+                  kind: 'error',
+                  reason: 'taken-over holder was alive: its signed nonce advanced after the takeover',
+                  context: { holder: obs.lease.holder, takeoverEpoch: this.staleTakeoverEvidence.epoch, holderEpoch: obs.lease.epoch, msSinceTakeover: sinceMs },
+                });
+              }
+              this.staleTakeoverEvidence = null;
+            }
+            if (this.stallClaimEvidence?.holder === obs.lease.holder) {
+              // stall-wake-lease-reconfirm outcome check: the holder taken over after a stall was alive.
+              const sinceMs = this.monotonicNow() - this.stallClaimEvidence.atMono;
+              if (sinceMs <= 10 * 60_000) {
+                featureEvidence.record('multiMachine.takeoverReadyPool', {
+                  kind: 'error',
+                  reason: 'stall reconfirm: suspected overlap — the holder taken over after a stall signed a newer renewal soon after',
+                  context: { holder: obs.lease.holder, takeoverEpoch: this.stallClaimEvidence.epoch, holderEpoch: obs.lease.epoch, msSinceTakeover: sinceMs },
+                });
+              }
+              this.stallClaimEvidence = null;
+            }
           }
           if (obs.lease.epoch > epoch) {
             bestLease = obs.lease;
             epoch = obs.lease.epoch;
+          } else if (obs.lease.epoch === epoch && this.peerOutranksLapsedSelf(obs.lease, bestLease)) {
+            bestLease = obs.lease;
+            peerOutranksSelf = true;
           }
         }
       }
@@ -431,7 +754,10 @@ export class LeaseCoordinator {
     }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
-    if (this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch) {
+    if (
+      this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch &&
+      !(peerOutranksSelf && this.selfIssued.epoch === epoch)
+    ) {
       bestLease = this.selfIssued;
       epoch = this.selfIssued.epoch;
     }
@@ -450,6 +776,7 @@ export class LeaseCoordinator {
     // wall-clock check into believing a lapsed lease is still live. The
     // wall-clock `isExpired` check above is retained as a conservative second
     // gate (either gate may fence; both must pass to hold).
+    if (this.lastRenewOkMonoMs === null) return false; // never confirmed in this process (rule 1b)
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) return false;
     // A peer's verified ack reported a higher epoch than ours: we are superseded,
     // even before its signed holder lease reaches our observed view.
@@ -459,6 +786,12 @@ export class LeaseCoordinator {
 
   private higherEpochEvidence(): number {
     return this.d.tunnel?.higherEpochEvidence?.() ?? 0;
+  }
+
+  /** No new native owner step can claim durable storage from an arbitrary
+   * injected callback or from LocalLeaseStore's in-memory cache. */
+  syncOwnerDecommissionDurably():string{
+    const store=this.d.store;if(!(store instanceof LocalLeaseStore)&&!(store instanceof GitLeaseStore))throw new Error('native-decommission-store-durability-unavailable');store.syncDurably();return store.durabilityPath;
   }
 
   /** The current effective epoch (for stamping writes/sends). */
@@ -511,9 +844,14 @@ export class LeaseCoordinator {
   private soloCaptainHoldEligible(ourEpoch: number): boolean {
     const cfg = this.d.soloCaptainHold?.();
     if (!cfg?.enabled) return false;
-    if (!this.d.isPreferredAwakeAgreed?.()) return false;
-    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
-    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    // With nobody named preferred, a dead peer and a cut link look the same and there is no
+    // captain to defer to, so the holder keeps its epoch and only a higher one ends that. A
+    // pool that names a captain keeps its rule whole, takeovers included.
+    if (!this.d.survivorMayHold?.()) {
+      if (!this.d.isPreferredAwakeAgreed?.()) return false;
+      const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+      if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    }
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
@@ -551,6 +889,10 @@ export class LeaseCoordinator {
    * win after we relinquish.
    */
   relinquish(why = 'contested tie-break loser — winner may now advance to N+1'): void {
+    // planned-restart-keeps-lead: a conceded epoch is never renewed from the continuity file at the next boot.
+    this.d.continuity?.delete();
+    this.d.store.clearPendingEpisodeId?.();
+    this.bootReclaim = null;
     this.relinquishGeneration++;
     this.selfIssued = null;
     this.d.store.forceLocalExpiry?.();
@@ -635,6 +977,19 @@ export class LeaseCoordinator {
     return res.observed.lease?.holder === this.selfMachineId;
   }
 
+  private static readonly OWN_LAPSE_PULL_DEADLINE_MS = 10_000;
+
+  /** A pull that cannot hold up acquisition: an unreachable peer is the expected case here. */
+  private async pullWithin(deadlineMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); timer.unref?.(); });
+    try {
+      await Promise.race([this.pullFromPeers().catch(() => undefined), deadline]); // @silent-fallback-ok: no answer means re-acquire, which is this path's purpose
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * Whether the attached transport can actively PULL peer leases (Cross-Machine
    * Coherence). False on a git-only mesh — the standby pull loop is then a no-op.
@@ -650,7 +1005,211 @@ export class LeaseCoordinator {
    * observedPeerLease() reflects whatever a peer just disclosed.
    */
   async pullFromPeers(): Promise<void> {
+    const startedAt = this.now();
+    this.stampAwakeIfOn();
     if (this.d.tunnel?.pullAllPeers) await this.d.tunnel.pullAllPeers();
+    // Every dial of this round has ended and its reply (if any) is folded.
+    if (startedAt > this.lastCompletedRoundStartedAtMs) this.lastCompletedRoundStartedAtMs = startedAt;
+  }
+
+  // ── stall-wake-lease-reconfirm (docs/specs/stall-wake-lease-reconfirm.md) ──
+
+  private stallReconfirmSettings(): StallReconfirmSettings | null {
+    try {
+      const s = this.d.stallReconfirm?.();
+      return s?.enabled ? s : null;
+    } catch {
+      return null; // @silent-fallback-ok: an unreadable switch keeps today's acquisition, which is the shipped default
+    }
+  }
+
+  /** Whether the stall reconfirm switch is on right now. */
+  stallReconfirmEnabled(): boolean {
+    return this.stallReconfirmSettings() !== null;
+  }
+
+  /** The open stall episode, for diagnostics and tests (null = none). */
+  stallEpisodeOpen(): { openedAtMs: number; gapMs: number } | null {
+    return this.stallEpisode ? { openedAtMs: this.stallEpisode.openedAtMs, gapMs: this.stallEpisode.gapMs } : null;
+  }
+
+  private stampAwakeIfOn(): void {
+    const s = this.stallReconfirmSettings();
+    if (s) this.stampAwake(s);
+  }
+
+  /**
+   * Stamp the awake clock; a gap above the threshold opens (or re-opens) an episode. Called on
+   * a 2 s timer and at every acquire and pull, so whichever runs first after a stall sees the
+   * gap — libuv's timer order at wake decides nothing here.
+   */
+  private stampAwake(s: StallReconfirmSettings): void {
+    const next = { wallMs: this.now(), monoMs: this.monotonicNow() };
+    const prev = this.awakeStamp;
+    this.awakeStamp = next;
+    if (!this.awakeTimer) {
+      this.awakeTimer = setInterval(() => {
+        const live = this.stallReconfirmSettings();
+        if (live) { this.stampAwake(live); return; }
+        // Switched off: stop stamping and forget the clock, so a later switch-on starts clean.
+        if (this.awakeTimer) clearInterval(this.awakeTimer);
+        this.awakeTimer = null;
+        this.awakeStamp = null;
+        this.stallEpisode = null;
+        this.lostSamples = [];
+      }, AWAKE_STAMP_INTERVAL_MS);
+      this.awakeTimer.unref?.();
+    }
+    if (!prev) return;
+    const gap = awakeGapMs(prev, next);
+    const lost = lostInGapMs(gap);
+    if (lost <= 0) { this.ageOutStallEpisode(); return; }
+    const ttl = this.fl.ttlMs;
+    this.lostSamples = this.lostSamples.filter((x) => next.wallMs - x.atMs <= ttl);
+    this.lostSamples.push({ atMs: next.wallMs, lostMs: lost });
+    // A prior episode already past rule C's conditions (judged BEFORE this loss is applied) is over
+    // in substance: a new loss starts a new chain rather than extending the old one.
+    const stale = !!this.stallEpisode && this.freshRoundCompletedSinceStall()
+      && prev.wallMs - this.stallEpisode.openedAtMs - this.stallEpisode.lostSinceOpenMs >= this.fl.ttlMs;
+    if (stale) this.stallEpisode = null;
+    if (this.stallEpisode) {
+      // A smaller loss inside an open episode: C counts awake time only, and needs a round after it.
+      this.stallEpisode.lostSinceOpenMs += lost;
+      this.stallEpisode.lastLostAtMs = next.wallMs;
+    }
+    const lostInTtl = lostWithinMs(this.lostSamples, next.wallMs, ttl);
+    const threshold = stallGapMsFor(ttl, s.stallGapMs);
+    if (lostInTtl <= threshold) return;
+    // The losses that opened this episode are spent; only new ones re-open it.
+    this.lostSamples = [];
+    // A re-open inside an open episode keeps the chain's start and its once-per-chain records, so a
+    // sustained starvation that keeps re-opening is still visible as one long hold.
+    const prior = this.stallEpisode;
+    this.stallEpisode = {
+      openedAtMs: next.wallMs,
+      chainStartedAtMono: prior?.chainStartedAtMono ?? next.monoMs,
+      chainStartedAtMs: prior?.chainStartedAtMs ?? next.wallMs,
+      gapMs: lostInTtl,
+      heldRecorded: prior?.heldRecorded ?? false,
+      longHoldRecorded: prior?.longHoldRecorded ?? false,
+      lostSinceOpenMs: 0,
+      lastLostAtMs: next.wallMs,
+      extraPullAttempted: false,
+    };
+    this.stallLastLogged = null;
+    this.log(`stall-reconfirm: opened — this machine lost ${Math.round(lostInTtl / 1000)} s of running time in the last ${Math.round(ttl / 1000)} s (largest gap ${Math.round(gap / 1000)} s; threshold ${Math.round(threshold / 1000)} s); a claim on another machine's lease now needs a fresh answer`);
+  }
+
+  /**
+   * An episode whose holder stayed live (every claim refused by canAcquire before the rule) ends
+   * quietly once rule C's conditions hold: the view is then measured on an awake clock again, and
+   * a later ordinary takeover is not mistaken for a stall-confirmed one.
+   */
+  private ageOutStallEpisode(): void {
+    const ep = this.stallEpisode;
+    if (!ep || !this.freshRoundCompletedSinceStall()) return;
+    // Only when the view shows a live lease (the holder stayed live, or this machine holds it);
+    // otherwise the claim path decides, so a claim rule C allows is recorded as stall-confirmed.
+    const v = this.effectiveView();
+    if (!v.lease || v.lease.released || this.fl.isExpired(v.lease, this.now())) return;
+    if (this.now() - ep.openedAtMs - ep.lostSinceOpenMs >= this.fl.ttlMs) this.closeStallEpisode('aged out: one lease lifetime awake with a completed pull round');
+  }
+
+  /** Stop the awake-clock timer (tests, and a coordinator being replaced). */
+  dispose(): void {
+    if (this.awakeTimer) clearInterval(this.awakeTimer);
+    this.awakeTimer = null;
+    this.awakeStamp = null;
+    this.stallEpisode = null;
+    this.lostSamples = [];
+  }
+
+  private closeStallEpisode(why: string): void {
+    if (!this.stallEpisode) return;
+    this.stallEpisode = null;
+    this.stallLastLogged = null;
+    this.log(`stall-reconfirm: closed — ${why}`);
+  }
+
+  /** A pull round that started at or after the open stall episode has completed. */
+  private freshRoundCompletedSinceStall(): boolean {
+    return !!this.stallEpisode && this.lastCompletedRoundStartedAtMs >= Math.max(this.stallEpisode.openedAtMs, this.stallEpisode.lastLostAtMs);
+  }
+
+  /**
+   * The stall rule for one claim on `lease` (held by another machine). Null = no rule applies
+   * (switch off, no episode, nothing can be asked); otherwise the verdict, logged once per change.
+   * The episode is NOT closed here: it closes only when a claim it allowed actually lands, so a
+   * CAS loss that re-evaluates against another holder is judged on that holder's own evidence.
+   */
+  private evaluateStallReconfirmNow(holderId: string, epoch: number): StallReconfirmVerdict | null {
+    const lease = { holder: holderId || '(none)', epoch };
+    const s = this.stallReconfirmSettings();
+    if (!s) return null;
+    this.stampAwake(s);
+    const ep = this.stallEpisode;
+    if (!ep) return null;
+    if (!this.canPullPeers()) {
+      // A git-only mesh: nothing can be asked over a pull, so today's rule applies.
+      this.closeStallEpisode('no pull-capable transport; today\'s rule applies');
+      return null;
+    }
+    let verdict: StallReconfirmVerdict;
+    try {
+      verdict = evaluateStallReconfirm({
+        nowMs: this.now(),
+        episodeOpenedAtMs: ep.openedAtMs,
+        ttlMs: this.fl.ttlMs,
+        holderId,
+        freshRoundCompleted: this.freshRoundCompletedSinceStall(),
+        lostSinceOpenMs: ep.lostSinceOpenMs,
+        // The chain cap on the monotonic clock: a wall-clock step cannot age it.
+        chainAwakeMs: Math.max(0, this.monotonicNow() - ep.chainStartedAtMono),
+      });
+    } catch (err) {
+      // A fault reading the evidence holds the claim (the safe side) and says why; the next tick retries.
+      verdict = { claim: false, rule: 'waiting', reason: `evidence unreadable: ${err instanceof Error ? err.message.slice(0, 120) : 'unknown'}` };
+    }
+    const key = `${lease.holder}:${verdict.rule}:${verdict.claim ? 'claim' : 'hold'}`;
+    if (key !== this.stallLastLogged) {
+      this.stallLastLogged = key;
+      this.log(`stall-reconfirm: ${verdict.claim ? 'claim allowed' : 'claim held'} (${verdict.rule}) — ${verdict.reason}`);
+    }
+    const waitedMs = Math.max(0, this.now() - ep.chainStartedAtMs);
+    if (!verdict.claim && !ep.heldRecorded) {
+      ep.heldRecorded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'held',
+        reason: 'stall reconfirm: a claim on an aged view was held after a stall',
+        context: { holder: lease.holder, epoch: lease.epoch, lostMs: ep.gapMs },
+      });
+    }
+    if (!verdict.claim && !ep.longHoldRecorded && waitedMs > 2 * this.fl.ttlMs) {
+      // Rule C allows a claim after one TTL awake with a completed round; still holding at two
+      // means no pull round has completed since the stall, so the pool may be without a lead.
+      ep.longHoldRecorded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'error',
+        reason: 'stall reconfirm: a claim is still held two lease lifetimes after a stall (no pull round completed, or this machine keeps stalling)',
+        context: { holder: lease.holder, epoch: lease.epoch, waitedMs, lostMs: ep.gapMs },
+      });
+    }
+    return verdict;
+  }
+
+  /** A claim the stall rule allowed has landed: record it, watch the old holder, close the episode. */
+  private noteStallConfirmedClaim(verdict: StallReconfirmVerdict, from: { holder: string; epoch: number }, epoch: number): void {
+    const ep = this.stallEpisode;
+    featureEvidence.record('multiMachine.takeoverReadyPool', {
+      kind: 'fired',
+      reason: 'stall reconfirm: a claim after a stall was confirmed by fresh evidence',
+      context: { rule: verdict.rule, holder: from.holder, fromEpoch: from.epoch, toEpoch: epoch, lostMs: ep?.gapMs ?? null, waitedMs: ep ? Math.max(0, this.now() - ep.openedAtMs) : null },
+    });
+    // The overlap watch only for another machine's lease (never this machine's own, or none).
+    if (from.holder !== this.selfMachineId && from.holder !== '(none)') {
+      this.stallClaimEvidence = { holder: from.holder, epoch, atMono: this.monotonicNow() };
+    }
+    this.closeStallEpisode(`claim confirmed (${verdict.rule}) and taken at epoch ${epoch}`);
   }
 
   /**
@@ -749,6 +1308,17 @@ export class LeaseCoordinator {
     return peer.epoch > ourEpoch;
   }
 
+  /** The store is only this machine's copy: see LeaseStore.hasNoSharedMedium. */
+  hasNoSharedMedium(): boolean {
+    return !!this.d.store.hasNoSharedMedium?.();
+  }
+
+  /** A peer's expired or released record proves nothing is being held, so it cannot be a tie. */
+  observedPeerLeaseLive(): boolean {
+    const peer = this.observedPeerLease();
+    return !!peer && !peer.released && !this.fl.isExpired(peer, this.now());
+  }
+
   /**
    * Whether the current peer-held effective lease is takeable by the normal
    * fenced acquisition rules right now. This is a scheduling hint only: callers
@@ -787,7 +1357,96 @@ export class LeaseCoordinator {
     }
   }
 
+  private bootClaimSafetySettings(): BootClaimSafetySettings | null {
+    try {
+      const s = this.d.bootClaimSafety?.();
+      return s?.enabled ? s : null;
+    } catch {
+      return null; // @silent-fallback-ok: an unreadable switch keeps today's acquisition, which is the shipped default
+    }
+  }
+
+  /** takeover-ready-pool R1 — whether the boot claim safety switch is on right now. */
+  bootClaimSafetyEnabled(): boolean {
+    return this.bootClaimSafetySettings() !== null;
+  }
+
+  /**
+   * takeover-ready-pool R1 — is the boot hold still in force? False when the switch is off or
+   * the hold has ended (it latches off for the life of the process). Evaluating it may end it.
+   */
+  bootHoldActive(): boolean {
+    const safety = this.bootClaimSafetySettings();
+    if (!safety) return false;
+    return this.evaluateBootHoldNow(safety).hold;
+  }
+
+  /**
+   * Rule 4's end evidence, from peers only: a lease a peer sent (signature, git floor and
+   * replay checked exactly as effectiveView folds it) that names a live holder or an epoch
+   * strictly newer than this machine's own boot record; or, on a store with a shared medium
+   * (a git remote), a durable epoch newer than the boot record, which only a fetch can bring
+   * since nothing is written during the hold. This machine's own copy never counts: a local
+   * file or a git store with no remote proves nothing about a peer.
+   */
+  private newerViewThanBootRecord(): boolean {
+    const boot = this.bootOwnRecord.epoch;
+    const git = this.d.store.read();
+    const obs = this.d.tunnel?.observed();
+    if (obs?.lease) {
+      const { [obs.lease.holder]: _own, ...nonceFloor } = obs.lastNonceByHolder;
+      void _own;
+      if (this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor).accept) {
+        const l = obs.lease;
+        if (l.epoch > boot) return true;
+        if (l.holder !== this.selfMachineId && !l.released && !this.fl.isExpired(l, this.now())) return true;
+      }
+    }
+    if (!this.d.store.hasNoSharedMedium?.() && git.epoch > boot) return true;
+    return false;
+  }
+
+  private evaluateBootHoldNow(safety: BootClaimSafetySettings): BootHoldVerdict {
+    if (this.bootHoldEnded) return { hold: false, rule: 'ended', reason: 'boot hold already ended' };
+    let verdict: BootHoldVerdict;
+    try {
+      const transport = this.d.tunnel;
+      verdict = evaluateBootHold({
+        nowMs: this.now(),
+        selfMachineId: this.selfMachineId,
+        preferredMachineId: safety.preferredMachineId,
+        knownPeers: transport?.knownPeerIds?.() ?? [],
+        probes: transport?.probeHistory?.() ?? new Map(),
+        newerViewSeen: this.newerViewThanBootRecord(),
+        windowMsFor: (id) => unsignedAnswerWindowMs(this.d.peerRestartBudgetMs?.(id) ?? null),
+        settings: {
+          silentProbes: safety.silentProbes ?? DEFAULT_BOOT_HOLD_SETTINGS.silentProbes,
+          silentSpanMs: safety.silentSpanMs ?? DEFAULT_BOOT_HOLD_SETTINGS.silentSpanMs,
+        },
+      });
+    } catch (err) {
+      // A fault reading the probes holds the claim (the safe side) and says why; the next tick retries.
+      verdict = { hold: true, rule: 'error', reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown' };
+    }
+    const key = `${verdict.rule}:${verdict.hold ? 'defer' : 'end'}`;
+    if (key !== this.bootHoldLastLogged) {
+      this.bootHoldLastLogged = key;
+      this.log(`boot-hold: ${verdict.rule} ${verdict.hold ? 'defer' : 'end'} — ${verdict.reason}`
+        + (this.bootOwnRecord.heldLast ? ` (own record: held epoch ${this.bootOwnRecord.epoch} last)` : ''));
+    }
+    if (!verdict.hold) {
+      this.bootHoldEnded = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'fired',
+        reason: 'boot hold ended',
+        context: { rule: verdict.rule, reason: verdict.reason.slice(0, 160), ownHeldLast: this.bootOwnRecord.heldLast, ownEpoch: this.bootOwnRecord.epoch },
+      });
+    }
+    return verdict;
+  }
+
   private identityIneligibleLogged = false;
+  private heldBackLogged = false;
 
   async acquireIfEligible(): Promise<boolean> {
     // §1.1 lease rule: an unprovisioned machine that can see a live provisioned sibling does
@@ -806,6 +1465,12 @@ export class LeaseCoordinator {
       return false;
     }
     this.identityIneligibleLogged = false;
+    if (this.d.acquireHeldBack?.()) {
+      if (!this.heldBackLogged) this.log('acquire skipped: no lasting link to the other machine has been proved yet');
+      this.heldBackLogged = true;
+      return false;
+    }
+    this.heldBackLogged = false;
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
@@ -814,23 +1479,101 @@ export class LeaseCoordinator {
     const liveness = this.d.getLivenessEnabled?.() ?? true;
     const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
+    let askedPeers = false;
+    let askedAfterStall = false;
+    this.stampAwakeIfOn();
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
       const dead = legacyDead ?? this.d.presumedDeadHolders({ liveness });
-      // Already hold it at the current epoch → just renew.
+      // Already hold it at the current epoch → just renew. planned-restart-keeps-lead rule 1b: a window
+      // lease found at construction is confirmed with a peer first (evaluateReclaim), never renewed
+      // from the local file.
       if (view.lease && view.lease.holder === this.selfMachineId && !this.fl.isExpired(view.lease, this.now())) {
+        if (this.bootReclaim && this.bootReclaim.verdict === null) return this.evaluateReclaim(view);
         return this.renew();
+      }
+      // Rule 1b, lapsed: the window ran out before a verdict; today's lapsed path (rule 1) applies and
+      // the reclaim is closed as such, never as a takeover.
+      if (this.bootReclaim && this.bootReclaim.verdict === null && view.lease
+          && view.lease.holder === this.selfMachineId && view.epoch <= this.bootReclaim.lease.epoch) {
+        this.finishReclaim('lapsed', 'none', null);
+      }
+      // Rule 1b, superseded: the view already names another holder or a newer epoch than the window
+      // lease on disk. Record the verdict (measure, evidence, clean-up) and go on as today's code does.
+      if (this.bootReclaim && this.bootReclaim.verdict === null && view.lease
+          && (view.lease.holder !== this.selfMachineId || view.epoch > this.bootReclaim.lease.epoch)) {
+        this.finishReclaim('superseded', 'none', null);
       }
       const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease));
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
       }
+      // Taking back our own lapsed lease (restart, wake): ask the peers first, once, so a
+      // takeover that happened meanwhile is seen rather than tied at the same epoch. A store
+      // holding only this machine's copy always asks: its lease says nothing about the peer,
+      // and claiming without asking is what made a pair restart each other for good. What the
+      // ask brings back lands in the view, so the check above refuses the claim on the next pass.
+      const ownLapse = view.lease?.holder === this.selfMachineId;
+      const safety = this.bootClaimSafetySettings();
+      if (safety) {
+        // takeover-ready-pool R1 rule 1: an own lapsed lease (or none) always asks the peers
+        // first. Its own lapsed lease is never permission to re-take it, and a named preferred
+        // machine no longer switches the ask off (the survivorMayHold conjunct is gone here).
+        // While the boot hold is in force every claim asks first, whoever the stale view names.
+        if (!askedPeers && (ownLapse || !view.lease || !this.bootHoldEnded) && this.canPullPeers()) {
+          askedPeers = true;
+          await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+          continue;
+        }
+        const hold = this.evaluateBootHoldNow(safety);
+        if (hold.hold) return false;
+      } else if (
+        !askedPeers &&
+        (ownLapse || !view.lease) &&
+        ((ownLapse && this.d.soloCaptainHold?.()?.enabled) || this.d.store.hasNoSharedMedium?.()) &&
+        this.d.survivorMayHold?.() &&
+        this.canPullPeers()
+      ) {
+        askedPeers = true;
+        await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+        continue;
+      }
+      // stall-wake-lease-reconfirm: after a stall, a lapsed-looking lease (another machine's, or
+      // this machine's own, which a peer may have taken over meanwhile) is re-asked over every
+      // route before any claim; what the pull brings back lands in the view, so a live holder or
+      // a newer epoch is refused by the check above on the next pass.
+      let stallVerdict: StallReconfirmVerdict | null = null;
+      // Every view is gated while an episode is open: another machine's lease, this machine's own
+      // lapsed one, or a released / empty view (a third machine may have taken a newer epoch during
+      // the stall). There is no holder to probe for the latter two, so rule C decides.
+      stallVerdict = this.evaluateStallReconfirmNow(view.lease && !view.lease.released ? view.lease.holder : '', view.lease?.epoch ?? view.epoch);
+      if (stallVerdict && !stallVerdict.claim) {
+        // One fresh round per episode from here; afterwards the 5 s pull loop supplies them,
+        // so a starved machine nudged every tick does not double its pull rate.
+        if (!askedPeers && !askedAfterStall && this.stallEpisode && !this.stallEpisode.extraPullAttempted
+            && !this.freshRoundCompletedSinceStall() && this.canPullPeers()) {
+          askedAfterStall = true;
+          this.stallEpisode.extraPullAttempted = true;
+          await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+          continue;
+        }
+        return false;
+      }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (stallVerdict?.claim) this.noteStallConfirmedClaim(stallVerdict, { holder: view.lease && !view.lease.released ? view.lease.holder : '(none)', epoch: view.epoch }, candidate.epoch);
+        if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+          this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };
+          featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+            kind: 'fired',
+            reason: 'took over a holder that stopped renewing',
+            context: { decision: decision.reason, holder: view.lease.holder, fromEpoch: view.lease.epoch, toEpoch: candidate.epoch },
+          });
+        }
         if (
           view.lease &&
           view.lease.holder !== this.selfMachineId &&
@@ -846,10 +1589,18 @@ export class LeaseCoordinator {
         this.markRenewOk();
         this.emitEpoch(candidate.epoch);
         this.log(`acquired lease at epoch ${candidate.epoch}`);
+        if (this.episode) this.persistPending(candidate, false); // a casWrite during an open episode rewrites the file at once
         return true;
       }
       // CAS lost — someone advanced. Re-evaluate against the observed state.
       const observedEpoch = res.observed.epoch;
+      if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+          kind: 'held',
+          reason: 'stale-holder takeover lost the epoch compare-and-set',
+          context: { decision: decision.reason, holder: view.lease.holder, candidateEpoch: candidate.epoch, observedEpoch, retries },
+        });
+      }
       if (observedEpoch >= candidate.epoch) {
         this.log(`CAS lost to epoch ${observedEpoch} (our candidate ${candidate.epoch}) — yielding`);
         this.emitEpoch(observedEpoch);
@@ -877,6 +1628,15 @@ export class LeaseCoordinator {
    * A yield from any non-holder is refused, so a forged/misdirected yield cannot
    * trigger a takeover. On success: CAS to epoch+1, broadcast, emit the new epoch.
    */
+  /** Explicit owner decommission continuation. No liveness timeout, fabricated
+   * yield or synthetic lease is substituted for actual native administration. */
+  async acquireOnOwnerDecommission(permit:NativeDecommissionLeasePermit):Promise<boolean>{
+    if(!(permit instanceof NativeDecommissionLeasePermit))throw new Error('native-decommission-permit-required');permit.assertCurrent(this,this.selfMachineId);this.syncOwnerDecommissionDurably();if(this.d.isLeaseEligible&&!this.d.isLeaseEligible())return false;
+    const prior=permit.priorAcquisition(this),view=this.effectiveView();if(prior&&view.lease?.holder===this.selfMachineId&&view.epoch>=prior.epoch&&this.holdsLease()){this.syncOwnerDecommissionDurably();/* A real server takes a new epoch every boot. Keep the durable record on the epoch this machine actually holds, so an interrupted removal can finish. */if(view.epoch>prior.epoch)await permit.recordAcquisition(this,view.lease);return true;}if(this.higherEpochEvidence()>view.epoch)throw new Error('native-decommission-higher-native-evidence-unresolved');const base=permit.acquisitionBase(view.lease,view.epoch),candidate=this.fl.buildAcquisition(base,this.now(),this.nextNonce());permit.assertCurrent(this,this.selfMachineId);
+    const result=this.casWrite(candidate);if(!result.ok){this.emitEpoch(result.observed.epoch);return false;}this.syncOwnerDecommissionDurably();this.selfIssued=candidate;if(base.holder!==this.selfMachineId)this.peerTakeoverAuthorizedEpoch=candidate.epoch;this.suspended=false;this.suspendedByRenewal=null;
+    await this.broadcast(candidate);permit.assertCurrent(this,this.selfMachineId);this.syncOwnerDecommissionDurably();this.markRenewOk();this.emitEpoch(candidate.epoch);if(!this.holdsLease())return false;await permit.recordAcquisition(this,candidate);return true;
+  }
+
   async acquireOnConsent(yieldFromMachineId: string): Promise<boolean> {
     const view = this.effectiveView();
     const holder = view.lease?.holder ?? null;
@@ -977,19 +1737,68 @@ export class LeaseCoordinator {
    * Returns false (and self-suspends) if the tunnel medium is configured but
    * has been unreachable for longer than the lease TTL.
    */
+  /**
+   * On a store holding only this machine's copy, a peer that just reached us over signed RPC and
+   * is reading this lease proves the link as well as a push would. It also covers the case a push
+   * cannot: a peer that is booting pulls long before it listens, and if our lease ran out in that
+   * window it would claim, swap the roles, and restart a machine. A peer that is really gone sends
+   * no pulls, so this never keeps a lease alive past a dead link. Re-signs only in the second half
+   * of the lease, so a steady 5-second pull does not churn nonces.
+   */
+  confirmHoldOnPeerPull(): void {
+    if (!this.hasNoSharedMedium() || !this.holdsLease()) return;
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) return;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return;
+    if (new Date(view.lease.expiresAt).getTime() - this.now() > this.fl.ttlMs / 2) return;
+    const pendingWindow = this.pendingWindowMs();
+    this.selfIssued = this.fl.signLease(
+      view.epoch,
+      view.lease.acquiredAt,
+      new Date(this.now() + (pendingWindow ?? this.fl.ttlMs)).toISOString(),
+      this.nextNonce(),
+    );
+    this.markRenewOk();
+    if (pendingWindow !== null) { this.persistPending(this.selfIssued, false); if (this.episode) this.noteFirstExtension(this.episode, view.epoch); }
+  }
+
+  /** A slow broadcast must not replace a newer lease signed while it waited (a peer's pull). */
+  private installRenewal(renewed: LeaseRecord): void {
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce > renewed.nonce) return;
+    this.selfIssued = renewed;
+  }
+
   async renew(): Promise<boolean> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
+    // A holder never reaches acquireIfEligible's release once something keeps renewing it.
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
+      await this.relinquishAndBroadcast('identity-not-provisioned: a live sibling holds the agent identity');
+      return false;
+    }
     // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
-    if (this.higherEpochEvidence() > view.epoch) return false;
+    if (this.higherEpochEvidence() > view.epoch) {
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'error',
+          reason: 'a healthy peer advanced the epoch while the sole captain was holding',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, higherEpoch: this.higherEpochEvidence() },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
+      return false;
+    }
 
-    // Re-sign with a fresh expiry (same epoch — renewal never advances it).
+    // Re-sign with a fresh expiry (same epoch — renewal never advances it). While a restart is
+    // pending the expiry is the window, so the lease outlives the boot (planned-restart-keeps-lead §1).
+    const pendingWindow = this.pendingWindowMs();
     const renewed = this.fl.signLease(
       view.epoch,
       view.lease.acquiredAt,
-      new Date(this.now() + this.fl.ttlMs).toISOString(),
+      new Date(this.now() + (pendingWindow ?? this.fl.ttlMs)).toISOString(),
       this.nextNonce(),
     );
+    if (pendingWindow !== null) { this.persistPending(renewed, false); if (this.episode) this.noteFirstExtension(this.episode, view.epoch); }
 
     // Medium-agnostic renewal requirement: the renewal must be CONFIRMED over a
     // shared medium — the tunnel (reachable broadcast) when configured, else a
@@ -1009,8 +1818,17 @@ export class LeaseCoordinator {
     }
 
     if (confirmed) {
-      this.selfIssued = renewed;
-      this.markRenewOk();
+      this.installRenewal(renewed);
+      this.markRenewOk(renewed.nonce);
+      if (pendingWindow !== null) this.persistPending(renewed, true);
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'hold ended: renewal confirmed over a medium again',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, epoch: view.epoch },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
       return true;
     }
 
@@ -1023,14 +1841,44 @@ export class LeaseCoordinator {
     // peer's lease, so even a wrongly-presumed-gone live peer cannot double-write
     // (the intact epoch-CAS + signature fence remains the authority). The monotonic
     // self-fence stays armed whenever the presumed-gone gate is NOT satisfied.
+    // Exception, by design (lease-takeover-no-shared-medium): a pool with no named captain
+    // skips the preferred and presumed-gone gates, so during a cut both machines may believe
+    // they hold until reconnect, when the higher epoch wins.
     if (this.soloCaptainHoldEligible(view.epoch)) {
-      this.selfIssued = renewed;
+      this.installRenewal(renewed);
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
-      this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+      if (this.soloHoldEvidenceEpoch !== view.epoch) {
+        // Once per hold, not once per 30-second renewal: a machine can hold for days.
+        this.log(this.d.survivorMayHold?.()
+          ? 'solo-captain hold: unnamed pool, no higher epoch — held lease without medium confirm'
+          : 'solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+        this.soloHoldEvidenceEpoch = view.epoch;
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'fired',
+          reason: 'held the lease without medium confirmation',
+          context: { epoch: view.epoch, hasTunnel: !!this.d.tunnel, peerTakeoverAuthorized: this.peerTakeoverAuthorizedEpoch === view.epoch },
+        });
+      }
       return true;
     }
 
+    if (this.lastRenewOkMonoMs === null) {
+      // Rule 1b: a boot renewal that did not confirm is not a lapse — nothing was ever confirmed in
+      // this process. The machine stays standby; the pull tick's nudge retries. One sentence per boot.
+      if (this.bootReclaim && !this.bootReclaim.unconfirmedLogged) {
+        this.bootReclaim.unconfirmedLogged = true;
+        this.log(`lease-continuity: the renewal of epoch ${view.epoch} after this machine's planned restart has not been confirmed by a peer yet; this machine stays standby until it is.`);
+      }
+      return false;
+    }
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
+      if (this.d.soloCaptainHold?.()?.enabled) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'not eligible to hold: self-suspending on lapsed renewal',
+          context: { epoch: view.epoch },
+        });
+      }
       this.suspended = true;
       // Only the tunnel's early deadline is provisional; a git refresh result is final.
       this.suspendedByRenewal = this.d.tunnel ? renewed : null;
@@ -1073,8 +1921,10 @@ export class LeaseCoordinator {
       this.log(`late confirmation of the renewal that timed out lifts its provisional suspension (epoch ${renewed.epoch})`);
     }
     this.selfIssued = renewed;
-    this.markRenewOk();
+    this.markRenewOk(renewed.nonce);
     this.log(`late renewal confirmation adopted (epoch ${renewed.epoch}, nonce ${renewed.nonce})`);
+    if (this.episode) this.persistPending(renewed, true);
+    if (this.bootReclaim && this.bootReclaim.verdict === null) this.finishReclaim('confirmed', 'peer-confirmed', renewed);
   }
 
   private async broadcast(lease: LeaseRecord): Promise<void> {
@@ -1085,6 +1935,588 @@ export class LeaseCoordinator {
     } catch (err) {
       this.log(`broadcast failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ── planned-restart-keeps-lead: pending episodes, window renewals, the boot reclaim ──────────
+  // @self-action-controller: planned-restart-lease-continuity (one window renewal per pending cadence while
+  // an episode is open; the episode rule and its four-hour cap are the give-up; modeled in
+  // src/testing/selfActionRegistry.ts)
+
+  private continuitySettings(): { enabled: boolean; windowMs: number | null } | null {
+    try {
+      const v = this.d.plannedRestartContinuity?.();
+      return v?.enabled ? v : null;
+    } catch {
+      return null; // @silent-fallback-ok: an unreadable switch keeps today's renewal
+    }
+  }
+
+  /** The window an open episode's renewals carry, or null when nothing is pending or the switch is off. */
+  private pendingWindowMs(): number | null {
+    if (!this.episode) return null;
+    if (!this.continuitySettings()) return null;
+    return this.episode.windowMs;
+  }
+
+  /** Whether a restart episode is open on this holder (the renew tick runs at the pending cadence). */
+  isPendingRestart(): boolean {
+    return this.episode !== null && this.continuitySettings() !== null;
+  }
+
+  /** For `/health` `multiMachine.syncStatus.pendingRestart` (machine-local, in-memory). */
+  pendingRestartStatus(): { requestedBy: string; since: string; windowMs: number } | null {
+    if (!this.episode) return null;
+    return { requestedBy: this.episode.requestedBy, since: new Date(this.episode.openedAtMs).toISOString(), windowMs: this.episode.windowMs };
+  }
+
+  private resolveWindow(settings: { windowMs: number | null }): { windowMs: number; note: string | null } {
+    const renewInterval = this.d.renewIntervalMs?.() ?? Math.max(5_000, Math.min(60_000, Math.round(this.fl.ttlMs * 0.5)));
+    const v = resolveWindowMs({
+      ttlMs: this.fl.ttlMs,
+      pendingRenewIntervalMs: pendingCadenceMs(renewInterval, !!this.d.tunnel),
+      broadcastDeadlineMs: this.d.broadcastDeadlineMs?.() ?? 8_000,
+      bootSamplesMs: this.d.continuity?.bootSamplesMs() ?? [],
+      windowMsOverride: settings.windowMs,
+      ownNonRenewalMissedObservations: this.d.staleHolderTakeover?.()?.nonRenewalMissedObservations ?? null,
+      failoverThresholdMs: this.fl.failoverThreshold,
+      unsignedCeilingMs: UNSIGNED_WINDOW_CEILING_MS,
+    });
+    const note = v.clamped
+      ? `the window was clamped to its ${v.clamped} (${v.windowMs} ms; ${v.clamped === 'ceiling' ? `the ${v.ceilingSource} cap` : 'the lease TTL plus the margin'}) from a base of ${v.baseMs} ms`
+      : null;
+    return { windowMs: v.windowMs, note };
+  }
+
+  /** The pending cadence's renewal interval for the coordinator's timer (null = the normal cadence). */
+  pendingRenewIntervalMs(): number | null {
+    if (!this.isPendingRestart()) return null;
+    const renewInterval = this.d.renewIntervalMs?.() ?? Math.max(5_000, Math.min(60_000, Math.round(this.fl.ttlMs * 0.5)));
+    return pendingCadenceMs(renewInterval, !!this.d.tunnel);
+  }
+
+  /** Write the window renewal beside the lease: the continuity file and, on a local store, the record with its pending marker. */
+  private persistPending(lease: LeaseRecord, confirmed: boolean): void {
+    const ep = this.episode;
+    if (!ep || !this.d.continuity) return;
+    ep.lastWindowLease = lease;
+    if (confirmed) ep.confirmed = true;
+    const meta: ContinuityMeta = {
+      requestedBy: ep.requestedBy,
+      reason: ep.reason,
+      requestedAt: ep.requestedAt,
+      episodeOpenedAt: new Date(ep.openedAtMs).toISOString(),
+      renewedAt: new Date(this.now()).toISOString(),
+      windowMs: ep.windowMs,
+      confirmed: ep.confirmed,
+      exitedAt: null,
+      ...(ep.afterLatePromotion ? { afterLatePromotion: true } : {}),
+    };
+    this.d.continuity.write(this.d.continuity.sign({ v: 1, episodeId: ep.id, lease, meta }));
+    try {
+      this.d.store.refreshWithPending?.(lease, ep.id);
+    } catch (err) {
+      // @silent-fallback-ok: logged; the signed continuity file written just above carries the renewal
+      this.log(`lease-continuity: the local lease store could not take the window renewal (${err instanceof Error ? err.message : String(err)}); the continuity file carries it.`);
+    }
+  }
+
+  /**
+   * §1 step 2 — the announce subscriber: open the episode; then, only as a holder with a known peer,
+   * sign the window renewal, persist it and broadcast that exact renewal outside the tick guard.
+   * Returns null when nothing was signed (the writer publishes at once).
+   */
+  beginPendingRestart(announce: RestartAnnounce): Promise<RestartAnnounceOutcome> | null {
+    const settings = this.continuitySettings();
+    if (!settings) return null;
+    const ep = this.openEpisode({ requestedBy: announce.requestedBy, reason: announce.reason ?? '', requestedAt: announce.requestedAt ?? null }, 'announce');
+    if (!ep) return null;
+    ep.announcedAtMs = this.now();
+    return this.extendForEpisode(ep);
+  }
+
+  /**
+   * §1 step 2 — sign the window renewal for an open episode, persist it (synchronously, before this
+   * returns) and broadcast that exact renewal. Null when this machine is not the holder or has no
+   * peer to extend against.
+   */
+  private extendForEpisode(ep: PendingEpisode): Promise<RestartAnnounceOutcome> | null {
+    if (!this.holdsLease()) return null;
+    const peers = this.d.tunnel?.knownPeerIds?.() ?? [];
+    if (peers.length === 0 && this.d.tunnel) return null; // nobody to extend against: inert
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return null;
+    const renewed = this.fl.signLease(view.epoch, view.lease.acquiredAt, new Date(this.now() + ep.windowMs).toISOString(), this.nextNonce());
+    this.installRenewal(renewed);
+    this.persistPending(renewed, false);
+    this.noteFirstExtension(ep, view.epoch);
+    if (!this.d.tunnel) {
+      // Test-only in production terms: a git-only mesh pushes its renewals on the renew tick; the announce resolves at once.
+      return null;
+    }
+    const generation = this.relinquishGeneration;
+    return this.d.tunnel.broadcast(renewed, () => this.adoptLateRenewal(renewed, generation)).then((ok) => {
+      if (ok && generation === this.relinquishGeneration) {
+        this.installRenewal(renewed);
+        this.markRenewOk(renewed.nonce);
+        this.persistPending(renewed, true);
+        return 'confirmed' as const;
+      }
+      return 'unconfirmed' as const;
+    }, () => 'unconfirmed' as const);
+  }
+
+  /**
+   * §1 step 3 — the in-process consumer asks, once per request, for the holder's window renewal
+   * before it acts. Null when there is nothing to extend (switch off, not the holder, no peer).
+   * Resolves when that renewal is confirmed, or after the broadcast deadline passes.
+   */
+  awaitWindowRenewalForConsumer(req: { requestedBy?: string; reason?: string; requestedAt?: string }): Promise<unknown> | null {
+    if (!this.continuitySettings()) return null;
+    if (!this.holdsLease()) return null;
+    const ep = this.openEpisode({ requestedBy: req.requestedBy ?? 'unattributed', reason: req.reason ?? '', requestedAt: req.requestedAt ?? null }, 'sighting');
+    if (!ep) return null;
+    ep.fileLastSeenMs = this.now();
+    ep.filePresent = true;
+    if (ep.confirmed && ep.lastWindowLease && Date.parse(ep.lastWindowLease.expiresAt) - this.now() > ep.windowMs / 2) return null;
+    const p = this.extendForEpisode(ep);
+    if (!p) return null;
+    const deadline = (this.d.broadcastDeadlineMs?.() ?? 8_000) + 2_000;
+    return Promise.race([p, new Promise((r) => { const t = setTimeout(r, deadline); (t as { unref?: () => void }).unref?.(); })]);
+  }
+
+  /** §1 step 3 — open an episode (or re-read an open one). Returns null when the request is a capped one. */
+  private openEpisode(req: { requestedBy: string; reason: string; requestedAt: string | null }, source: 'announce' | 'sighting'): PendingEpisode | null {
+    const settings = this.continuitySettings();
+    if (!settings) return null;
+    if (this.episode) return this.episode;
+    if (this.cappedRequest && this.cappedRequest.requestedBy === req.requestedBy && this.cappedRequest.requestedAt === req.requestedAt) return null;
+    const { windowMs, note } = this.resolveWindow(settings);
+    const ep: PendingEpisode = {
+      id: this.d.continuity?.newEpisodeId() ?? `${Date.now()}`,
+      openedAtMs: this.now(),
+      requestedBy: req.requestedBy,
+      reason: req.reason,
+      requestedAt: req.requestedAt,
+      windowMs,
+      windowClampLogged: false,
+      fileLastSeenMs: source === 'sighting' ? this.now() : null,
+      filePresent: source === 'sighting',
+      consumptionAtMs: null,
+      ledgerLookedUp: false,
+      ledgerCoverage: null,
+      extendLogged: false,
+      lastWindowLease: null,
+      confirmed: false,
+      heldRowWritten: false,
+      lastHourlyLogMs: this.now(),
+      afterLatePromotion: req.requestedBy === 'role-change' && this.d.bootRoleAwake?.() === false,
+      announcedAtMs: null,
+      publishSettledAtMs: null,
+    };
+    this.episode = ep;
+    if (note) { ep.windowClampLogged = true; this.log(`lease-continuity: ${note}.`); }
+    try { this.d.onEpisodeChange?.(true); } catch { /* @silent-fallback-ok: a cadence re-arm fault never stops the renewal */ }
+    return ep;
+  }
+
+  /** The first pending renewal of an episode: the sentence and the evidence row belong to it, not to the announce. */
+  private noteFirstExtension(ep: PendingEpisode, epoch: number): void {
+    if (ep.extendLogged) return;
+    ep.extendLogged = true;
+    this.log(`lease-continuity: a restart is pending (${ep.requestedBy}: ${ep.reason || 'no reason given'}); epoch ${epoch} is being renewed with a ${ep.windowMs} ms expiry so the lead survives the restart.`);
+    featureEvidence.record('multiMachine.takeoverReadyPool', {
+      kind: 'fired',
+      reason: 'pending restart renewal extended the lease',
+      context: { epoch, windowMs: ep.windowMs, requestedBy: ep.requestedBy.slice(0, 120) },
+    });
+  }
+
+  /**
+   * §1 step 1 — the 2 s poll while holder (and the renew tick): read the request file through the
+   * dep and feed the episode. Backs off on a read error (the caller doubles its interval on false).
+   */
+  pollRequestFile(): boolean {
+    if (!this.d.readRequestFile) return true;
+    if (!this.continuitySettings()) return true;
+    // Only a holder, a machine with an open episode, or a boot still confirming its window lease
+    // (an episode open at confirmation makes the boot renewal a window renewal) reads the file.
+    if (!this.holdsLease() && !this.episode && !this.bootReclaimPending()) return true;
+    let file: ReturnType<NonNullable<LeaseCoordinatorDeps['readRequestFile']>>;
+    try {
+      file = this.d.readRequestFile();
+    } catch (err) {
+      // @silent-fallback-ok: logged; false backs the poll off and the next tick reads the file again
+      this.log(`lease-continuity: the restart request file could not be read (${err instanceof Error ? err.message : String(err)}); polling backs off.`);
+      return false;
+    }
+    this.noteRequestFile(file);
+    if (this.episode) this.evaluateEpisode();
+    return true;
+  }
+
+  /** §2 step 2 — the transport's probe events, for the coordinator's reclaim nudge. Returns a detach. */
+  attachProbeListenerForReclaim(listener: () => void): () => void {
+    if (!this.d.tunnel?.attachProbeListener) return () => {};
+    return this.d.tunnel.attachProbeListener(() => { if (this.bootReclaimPending()) listener(); });
+  }
+
+  /** §2 — whether a known peer is answering unsigned right now (the boot wait extends while one does). */
+  reclaimHasUnsignedPeer(): boolean {
+    const probes = this.d.tunnel?.probeHistory?.();
+    if (!probes) return false;
+    for (const rec of probes.values()) {
+      const last = rec.probes[rec.probes.length - 1];
+      if (last && last.answer === 'unsigned') return true;
+    }
+    return false;
+  }
+
+  /** §1 step 1 — this process withdrew its request (withdrawRoleRestart). */
+  noteRestartWithdrawn(): void {
+    if (!this.episode) return;
+    this.endEpisode('withdrawn');
+  }
+
+  /**
+   * The poll and the renew tick report the request file's state here (§1 steps 1 and 3): a present
+   * file opens an episode; an absent one is judged by the episode rule (never ended by a consumer's
+   * deletion alone).
+   */
+  noteRequestFile(file: { present: boolean; requestedBy?: string | null; reason?: string | null; requestedAt?: string | null }): void {
+    const settings = this.continuitySettings();
+    if (!settings) return;
+    const now = this.now();
+    if (file.present) {
+      if (this.cappedRequest && (this.cappedRequest.requestedBy !== (file.requestedBy ?? 'unattributed') || this.cappedRequest.requestedAt !== (file.requestedAt ?? null))) {
+        this.cappedRequest = null; // the file changed: a new request may extend again
+      }
+      const hadEpisode = this.episode !== null;
+      const ep = this.openEpisode({ requestedBy: file.requestedBy ?? 'unattributed', reason: file.reason ?? '', requestedAt: file.requestedAt ?? null }, 'sighting');
+      if (ep) {
+        ep.fileLastSeenMs = now;
+        ep.filePresent = true;
+        // A request written outside this process (the supervisor's consumers poll every 10 s): the
+        // window renewal is signed, persisted and broadcast now rather than at the next renew tick.
+        if (!hadEpisode) void this.extendForEpisode(ep);
+      }
+      return;
+    }
+    if (this.cappedRequest) this.cappedRequest = null; // the capped request is gone
+    const ep = this.episode;
+    if (!ep) return;
+    ep.filePresent = false;
+    // An announced episode whose file never appeared: closed one poll after the announce settled, unless a consumer took it.
+    if (ep.fileLastSeenMs === null && ep.announcedAtMs !== null) {
+      const settled = ep.publishSettledAtMs ?? (ep.announcedAtMs + (this.d.broadcastDeadlineMs?.() ?? 8_000));
+      if (now - settled >= 2_000) {
+        this.lookupConsumption(ep);
+        if (ep.consumptionAtMs === null && ep.ledgerLookedUp) {
+          this.log(`lease-continuity: the announced restart request (${ep.requestedBy}) never appeared on disk; the writer failed to publish and the episode is closed.`);
+          this.endEpisode('withdrawn');
+        }
+      }
+      return;
+    }
+    this.evaluateEpisode();
+  }
+
+  private lookupConsumption(ep: PendingEpisode): 'full' | 'cut' | 'unreadable' {
+    if (!this.d.findConsumption) { ep.ledgerLookedUp = true; return 'unreadable'; }
+    const r = this.d.findConsumption({ requestedAt: ep.requestedAt, sinceMs: ep.openedAtMs });
+    ep.ledgerLookedUp = true;
+    ep.ledgerCoverage = r.coverage;
+    if (r.record) {
+      const at = Date.parse(r.record.at);
+      ep.consumptionAtMs = Number.isFinite(at) ? at : this.now();
+    }
+    return r.coverage;
+  }
+
+  /** Called from the renew tick and the poll: the episode rule, the hourly line and the held row. */
+  evaluateEpisode(): void {
+    const ep = this.episode;
+    if (!ep) return;
+    const now = this.now();
+    const absentFor = ep.filePresent ? 0 : now - (ep.fileLastSeenMs ?? ep.openedAtMs);
+    // A cut or unreadable read is retried on every evaluation and never promoted to "full" on its own.
+    if (!ep.filePresent && absentFor >= 60_000 && ep.consumptionAtMs === null && (!ep.ledgerLookedUp || ep.ledgerCoverage !== 'full')) this.lookupConsumption(ep);
+    const coverage: 'full' | 'cut' | 'unreadable' = ep.ledgerLookedUp ? (ep.ledgerCoverage ?? 'unreadable') : 'cut';
+    const verdict = evaluateEpisodeEnd({
+      nowMs: now,
+      openedAtMs: ep.openedAtMs,
+      fileLastSeenMs: ep.fileLastSeenMs,
+      filePresent: ep.filePresent,
+      consumptionAtMs: ep.consumptionAtMs,
+      ledgerCoverage: coverage,
+      withdrawn: false,
+      shutdownDeadlineMs: this.d.shutdownDeadlineMs?.(),
+    });
+    if (verdict.ended) { this.endEpisode(verdict.cause); return; }
+    if (!ep.heldRowWritten && now - ep.openedAtMs >= 60 * 60_000) {
+      ep.heldRowWritten = true;
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'held',
+        reason: 'a restart has been pending for an hour',
+        context: { pendingForMs: now - ep.openedAtMs, requestedBy: ep.requestedBy.slice(0, 120) },
+      });
+    }
+    if (now - ep.lastHourlyLogMs >= 60 * 60_000) {
+      ep.lastHourlyLogMs = now;
+      this.log(`lease-continuity: a restart (${ep.requestedBy}) has been pending for ${Math.round((now - ep.openedAtMs) / 60_000)} minutes; the lease keeps its ${ep.windowMs} ms expiry until a consumer acts.`);
+    }
+  }
+
+  private endEpisode(cause: 'withdrawn' | 'removed-without-consumption' | 'consumed-process-alive' | 'cap'): void {
+    const ep = this.episode;
+    if (!ep) return;
+    this.episode = null;
+    if (cause === 'cap') {
+      this.cappedRequest = { requestedAt: ep.requestedAt, requestedBy: ep.requestedBy };
+      this.log(`lease-continuity: a restart request (${ep.requestedBy}) has been pending for four hours and no consumer acted on it; renewals return to the lease TTL.`);
+    } else if (cause === 'removed-without-consumption') {
+      this.log(`lease-continuity: the restart request (${ep.requestedBy}) was removed without being acted on; renewals return to the lease TTL.`);
+    } else if (cause === 'consumed-process-alive') {
+      this.log(`lease-continuity: the restart request (${ep.requestedBy}) was consumed but this process is still running; renewals return to the lease TTL.`);
+      featureEvidence.record('multiMachine.takeoverReadyPool', { kind: 'error', reason: 'a consumed restart request did not end this process', context: { requestedBy: ep.requestedBy.slice(0, 120) } });
+    }
+    this.d.continuity?.delete();
+    // One TTL renewal follows at once, so the store never holds an unmarked long-expiry record (a
+    // crash in the next minutes must boot on today's path with today's expiry, not the window's).
+    if (!this.renewToTtlNow()) {
+      try { this.d.store.clearPendingEpisodeId?.(); } catch { /* @silent-fallback-ok: the marker is cleared again by the next ordinary renewal */ }
+    }
+    try { this.d.onEpisodeChange?.(false); } catch { /* @silent-fallback-ok */ }
+  }
+
+  /** Sign a TTL renewal now, write it to the local store without the marker, and broadcast it. False when not the holder. */
+  private renewToTtlNow(): boolean {
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId || this.fl.isExpired(view.lease, this.now()) || this.lastRenewOkMonoMs === null) return false;
+    const ttl = this.fl.signLease(view.epoch, view.lease.acquiredAt, new Date(this.now() + this.fl.ttlMs).toISOString(), this.nextNonce());
+    this.installRenewal(ttl);
+    try {
+      if (this.d.store.refreshWithPending) this.d.store.refreshWithPending(ttl, null);
+      else if (!this.d.tunnel) this.d.store.refresh(ttl);
+    } catch (err) {
+      this.log(`lease-continuity: the local lease store could not take the TTL renewal (${err instanceof Error ? err.message : String(err)}).`);
+    }
+    if (this.d.tunnel) {
+      const generation = this.relinquishGeneration;
+      void this.d.tunnel.broadcast(ttl, () => this.adoptLateRenewal(ttl, generation)).then((ok) => {
+        if (ok && generation === this.relinquishGeneration) { this.installRenewal(ttl); this.markRenewOk(ttl.nonce); }
+      }, () => { /* @silent-fallback-ok: the renew tick retries at its cadence */ });
+    }
+    return true;
+  }
+
+  /** §1 step 5 — the shutdown handler's one synchronous action. */
+  stampContinuityExit(): boolean {
+    return this.d.continuity?.stampExit(this.lastConfirmedNonce) ?? false;
+  }
+
+  // ── Rule 1b ──────────────────────────────────────────────────────
+
+  /** Whether a window lease found at construction still awaits its verdict. */
+  bootReclaimPending(): boolean {
+    return this.bootReclaim !== null && this.bootReclaim.verdict === null;
+  }
+
+  /** The record left by the last restart said that boot followed a late promotion (the wait is the full window). */
+  reclaimAfterLatePromotion(): boolean {
+    return this.bootReclaim?.file?.meta.afterLatePromotion === true;
+  }
+
+  /** The window lease's remaining time at boot, for the coordinator's wait bound (clamped to its own window). */
+  reclaimRemainingWindowMs(): number {
+    const r = this.bootReclaim;
+    if (!r) return 0;
+    const exp = Date.parse(r.lease.expiresAt);
+    const windowMs = r.file?.meta.windowMs ?? Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.min(Number.isFinite(exp) ? exp - this.now() : 0, windowMs));
+  }
+
+  /** Resolves with the reclaim's verdict, or `timeout` after `maxMs`. Resolves at once when nothing is pending. */
+  awaitReclaimVerdict(maxMs: number): Promise<ReclaimVerdict> {
+    if (!this.bootReclaimPending()) return Promise.resolve(this.bootReclaim?.verdict ?? 'timeout');
+    return new Promise<ReclaimVerdict>((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => { if (!done) { done = true; resolve('timeout'); } }, Math.max(0, maxMs));
+      timer.unref?.();
+      this.reclaimWaiters.push((v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } });
+    });
+  }
+
+  private settleReclaimWaiters(v: ReclaimVerdict): void {
+    const waiters = this.reclaimWaiters.splice(0);
+    for (const w of waiters) { try { w(v); } catch { /* @silent-fallback-ok */ } }
+  }
+
+  /**
+   * §2 steps 3–6 — one evaluation of the window lease against the latest evaluable round: adopt a
+   * newer epoch or live other holder; renew after a qualifying answer from a live peer; renew as a
+   * survivor hold when every known peer is presumed dead or settled silent; otherwise wait.
+   */
+  private async evaluateReclaim(view: { lease: LeaseRecord | null; epoch: number }): Promise<boolean> {
+    const r = this.bootReclaim;
+    if (!r || r.verdict !== null || !view.lease) return false;
+    const transport = this.d.tunnel;
+    // Superseded: a newer epoch, or a live lease at this epoch held by another machine (effectiveView masks it).
+    if (this.newerViewThanBootRecord() || this.liveOtherHolderAtSameEpoch(view.epoch)) {
+      this.finishReclaim('superseded', 'none', null);
+      return false;
+    }
+    const known = transport?.knownPeerIds?.() ?? [];
+    if (known.length === 0 || !transport) {
+      // Nobody to ask: a medium confirms (zero peers → broadcast resolves true), as today.
+      return this.renewForReclaim('peer-confirmed', [], []);
+    }
+    let round = transport.currentPullRound?.() ?? { round: 0, startedAtMs: 0 };
+    if (round.round === 0) {
+      // No round yet (the pull loop's first tick is still ahead): ask now rather than wait for it,
+      // so a peer that answers at once confirms the lead inside the boot's own lease initialisation.
+      try { await this.pullFromPeers(); } catch { /* @silent-fallback-ok: an unreachable peer is judged by the round rule below */ }
+      round = transport.currentPullRound?.() ?? { round: 0, startedAtMs: 0 };
+      if (round.round === 0) return false;
+    }
+    const probes = transport.probeHistory?.() ?? new Map<string, PeerProbeRecord>();
+    const answers = transport.verifiedAnswers?.() ?? new Map<string, { lease: LeaseRecord | null; atMs: number; round: number }>();
+    // With the liveness derivation off, "live peer" means every known peer not settled silent (a stale
+    // registry must never count as death here).
+    const dead = (this.d.getLivenessEnabled?.() ?? true) ? this.d.presumedDeadHolders({ liveness: true }) : new Set<string>();
+    const settings = { silentProbes: this.bootClaimSafetySettings()?.silentProbes ?? DEFAULT_BOOT_HOLD_SETTINGS.silentProbes, silentSpanMs: this.bootClaimSafetySettings()?.silentSpanMs ?? DEFAULT_BOOT_HOLD_SETTINGS.silentSpanMs };
+    const settledSilent = (p: string) => classifyPeer(probes.get(p), unsignedAnswerWindowMs(this.d.peerRestartBudgetMs?.(p) ?? null), settings) === 'silent-enough';
+    // A peer whose last probes were all silent for THIS machine's reasons (every route refused here, or
+    // nothing dialable) is alive-and-unknown: it stays in the live set whatever the registry or the
+    // probe count says, so no survivor hold is taken on our own blindness. The window bounds the wait.
+    const unknownHere = (p: string) => {
+      const rec = probes.get(p);
+      if (!rec || rec.probes.length < settings.silentProbes || silenceIsEvidence(rec, settings.silentProbes)) return false;
+      if (!this.reclaimUnknownLogged.has(p)) {
+        this.reclaimUnknownLogged.add(p);
+        const cause = rec.probes[rec.probes.length - 1]?.cause ?? 'local-refusal';
+        this.log(`lease-continuity: ${p} cannot be dialed from this machine (${cause === 'no-route' ? 'it advertises no route this machine may dial' : 'every route is refused on this machine\'s side: no route to host or a network permission'}); it is treated as alive and unknown, never as dead, so no survivor hold is taken while this lasts.`);
+      }
+      return true;
+    };
+    const live = known.filter((p) => unknownHere(p) || (!dead.has(p) && !settledSilent(p)));
+    const roundOutcome = (p: string) => (probes.get(p)?.probes ?? []).some((pr) => pr.atMs >= round.startedAtMs);
+    const evaluable = known.every(roundOutcome) || this.now() - round.startedAtMs >= ASK_DEADLINE_MS;
+    if (!evaluable) return false;
+    const answered = live.filter((p) => { const a = answers.get(p); return !!a && a.round === round.round; });
+    if (live.length === 0) {
+      return this.renewForReclaim('survivor-hold', known, []);
+    }
+    if (answered.length > 0) {
+      return this.renewForReclaim('peer-confirmed', known, answered);
+    }
+    return false; // live peers that have not answered yet: wait for the next round
+  }
+
+  private liveOtherHolderAtSameEpoch(epoch: number): boolean {
+    for (const [peerId, rec] of this.peerLeaseObservations()) {
+      const l = rec.lease;
+      if (!l || l.holder === this.selfMachineId || l.holder !== peerId || l.released) continue;
+      if (l.epoch === epoch && !this.fl.isExpired(l, this.now()) && this.fl.verifyLease(l)) return true;
+    }
+    return false;
+  }
+
+  /** The reclaim's renewal: TTL expiry (or the window if an episode is already open), confirmed by a medium or as a survivor hold. */
+  private async renewForReclaim(basis: 'peer-confirmed' | 'survivor-hold', known: string[], answered: string[]): Promise<boolean> {
+    const r = this.bootReclaim;
+    const view = this.effectiveView();
+    if (!r || !view.lease || view.lease.holder !== this.selfMachineId) return false;
+    if (this.fl.isExpired(view.lease, this.now())) return false; // straddled the expiry: the lapsed path applies
+    const pendingWindow = this.pendingWindowMs();
+    const renewed = this.fl.signLease(view.epoch, view.lease.acquiredAt, new Date(this.now() + (pendingWindow ?? this.fl.ttlMs)).toISOString(), this.nextNonce());
+    const generation = this.relinquishGeneration;
+    let confirmed: boolean;
+    if (this.d.tunnel) {
+      confirmed = await this.d.tunnel.broadcast(renewed, () => this.adoptLateRenewal(renewed, generation)).catch(() => false); // @silent-fallback-ok: an unanswered broadcast is an unconfirmed renewal; the caller treats false as not renewed
+      if (generation !== this.relinquishGeneration) return false;
+    } else {
+      confirmed = this.d.store.refresh(renewed);
+    }
+    if (basis === 'survivor-hold') {
+      // §2 step 5 — every known peer is presumed dead or settled silent: the same evidence R1 accepts
+      // for a claim of the next epoch; keep this one instead, and prime the fence.
+      this.installRenewal(renewed);
+      this.markRenewOk(confirmed ? renewed.nonce : null);
+      const silent = known.join(', ') || 'none';
+      this.log(`lease-continuity: every known peer (${silent}) has been silent for at least the boot hold's span; this machine keeps its own epoch ${view.epoch} as a survivor hold, as boot claim safety would let it renew its own epoch now.`);
+      this.finishReclaim('survivor-hold', 'survivor-hold', renewed, { known, answered });
+      return true;
+    }
+    if (confirmed) {
+      this.installRenewal(renewed);
+      this.markRenewOk(renewed.nonce);
+      this.finishReclaim('confirmed', 'peer-confirmed', renewed, { known, answered });
+      return true;
+    }
+    if (!r.unconfirmedLogged) {
+      r.unconfirmedLogged = true;
+      this.log(`lease-continuity: the renewal of epoch ${view.epoch} after this machine's planned restart has not been confirmed by a peer yet; this machine stays standby until it is.`);
+    }
+    return false;
+  }
+
+  /** §2 steps 4, 6 and 7 — measure, record, clean up, and settle the waiters. */
+  private finishReclaim(verdict: 'confirmed' | 'superseded' | 'survivor-hold' | 'lapsed', basis: 'peer-confirmed' | 'survivor-hold' | 'none', renewed: LeaseRecord | null, peers?: { known: string[]; answered: string[] }): void {
+    const r = this.bootReclaim;
+    if (!r || r.verdict !== null) return;
+    r.verdict = verdict;
+    const meta = r.file?.meta ?? null;
+    const consumption = this.d.findConsumption && meta ? this.d.findConsumption({ requestedAt: meta.requestedAt, sinceMs: Date.parse(meta.episodeOpenedAt) || 0 }).record : null;
+    const consumptionAtMs = consumption ? Date.parse(consumption.at) : null;
+    const renewedAt = meta?.renewedAt ?? r.lease.expiresAt; // without a file the lease's own stamps are all we have
+    const ms = bootDurationMs({ nowMs: this.now(), exitedAt: meta?.exitedAt ?? null, renewedAt, consumptionAtMs: Number.isFinite(consumptionAtMs ?? NaN) ? consumptionAtMs : null });
+    const outcome = meta ? (meta.exitedAt ? 'planned' : 'exit-unstamped') : 'no-record';
+    const requestedBy = (meta?.requestedBy ?? 'unknown').slice(0, 120);
+    if (ms !== null && this.d.continuity) {
+      const { previousSlowestMs } = this.d.continuity.appendBootSample(ms, verdict === 'superseded' || verdict === 'lapsed' ? verdict : outcome, basis);
+      if (previousSlowestMs !== null && ms > previousSlowestMs) {
+        this.log(`lease-continuity: this boot took ${ms} ms, longer than the slowest measured so far (${previousSlowestMs} ms); the next window will cover it.`);
+      }
+    }
+    const silent = peers ? peers.known.filter((p) => !peers.answered.includes(p)) : [];
+    if (verdict === 'lapsed') {
+      this.log(`lease-continuity: the window of the lease this machine held before its planned restart ran out (boot ${ms ?? 'unknown'} ms against a ${meta?.windowMs ?? 'unknown'} ms window) before a peer answered; today's lapsed path applies.`);
+    } else if (verdict === 'superseded') {
+      const view = this.effectiveView();
+      const holder = view.lease?.holder ?? 'unknown';
+      this.log(`lease-continuity: the lease this machine held before its planned restart was superseded by epoch ${view.epoch}, now held by ${holder}; this machine adopts it and discards its continuity record.`);
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'fired',
+        reason: 'taken over during a planned-restart boot',
+        context: { epoch: r.lease.epoch, newEpoch: view.epoch, holder, bootMs: ms ?? -1, windowMs: meta?.windowMs ?? -1, requestedBy },
+      });
+    } else {
+      this.bootHoldEnded = true;
+      this.log(`lease-continuity: this machine renewed its own epoch ${r.lease.epoch} after its planned restart (${requestedBy}; boot ${ms ?? 'unknown'} ms; ${peers?.known.length ?? 0} peers asked, ${peers?.answered.length ?? 0} answered${silent.length ? `, ${silent.join(', ')} silent` : ''}); it keeps the lead.`);
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'fired',
+        reason: 'kept the lead through a planned restart',
+        context: { epoch: r.lease.epoch, bootMs: ms ?? -1, windowMs: meta?.windowMs ?? -1, requestedBy, confirmedAtExit: meta?.confirmed ?? false, peersAsked: peers?.known.length ?? 0, peersAnswered: peers?.answered.length ?? 0, outcome, basis },
+      });
+      if (renewed && !this.episode) {
+        try { this.d.store.refreshWithPending?.(renewed, null); } catch { /* @silent-fallback-ok: the marker is cleared by the next renewal */ }
+      }
+    }
+    // The record left by the last restart is spent either way; an episode already open writes the
+    // next one from the confirmed renewal at once (§1 step 4).
+    this.d.continuity?.delete();
+    if (verdict === 'superseded') {
+      // The store's own window record is spent: force-expire it (epoch floor kept, marker cleared) so a
+      // crash before the next write never boots it as a live lease.
+      let stored: LeaseRecord | null = null;
+      try { stored = this.d.store.read().lease; } catch { stored = null; } // @silent-fallback-ok
+      try {
+        if (stored && stored.holder === this.selfMachineId && stored.epoch === r.lease.epoch && this.d.store.forceLocalExpiry) this.d.store.forceLocalExpiry();
+        else this.d.store.clearPendingEpisodeId?.();
+      } catch { /* @silent-fallback-ok */ }
+    } else if (!this.episode) { try { this.d.store.clearPendingEpisodeId?.(); } catch { /* @silent-fallback-ok */ } }
+    else if (renewed) this.persistPending(renewed, true);
+    this.settleReclaimWaiters(verdict);
   }
 
   private emitEpoch(epoch: number): void {

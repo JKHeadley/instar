@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-dispatch-independence",
+  "sessionId": "d5764837-1124-4ad2-a72f-c88ca8374046",
+  "timestamp": "2026-10-28T03:11:51.915Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-dispatch-independence.md",
+  "artifactSha256": "ce4cc6e7f81955e69ccd20fa65b084cf90fb97ebbc5141a99f266d6f74191dee",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "upgrades/side-effects/local-verify-peer-dispatch-independence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Final comment and review-provenance repair for the approved peer dispatch behavior; no runtime behavior change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

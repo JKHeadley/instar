@@ -1,0 +1,4 @@
+---
+title: Work cards made from the owner's phone
+---
+The owner's phone can open one work card (`GET /mobile/work-board/cards/:id`) and turn a message into a work card with Face ID (`POST /mobile/work-board/cards`), the same "Make a card" the dashboard offers with its PIN. Such a card is the owner's own: its record says `by.proof: "presence"`, it carries `source` (the conversation and message it came from) and it needs no approval to exist. I cannot make a card in the owner's name this way: the route takes only the owner phone's Face ID signature, never my token or the PIN. When the owner asks how to make a card from a message on the phone, I tell them to use "Make a card" on the message. Cards I propose myself still go through `POST /work-board/cards` with my token, and still wait for the owner's approval.

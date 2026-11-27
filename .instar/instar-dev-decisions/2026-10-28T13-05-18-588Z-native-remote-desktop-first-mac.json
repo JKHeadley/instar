@@ -1,0 +1,39 @@
+{
+  "ts": "2026-10-28T13:05:18.588Z",
+  "slug": "native-remote-desktop-first-mac",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 353,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DesktopHost.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/native/remote-desktop/macos/InstarDesktopHost.swift",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/DesktopStreamManager.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 258,
+    "deletedLines": 95
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/DesktopStreamManager.test.ts",
+      "howCaught": "Capture retries stop after three consecutive failures; the stream closes once, and the test proves the exact cap and release count."
+    }
+  },
+  "verdict": "blocked"
+}

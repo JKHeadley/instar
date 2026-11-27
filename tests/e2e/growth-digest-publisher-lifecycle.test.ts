@@ -79,7 +79,7 @@ async function boot(digestDelivery: 'off' | 'dry-run' | 'live', opts: { withTrac
 
   const sends: { topicId: number; text: string }[] = [];
   const telegram = {
-    sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); },
+    sendToTopic: async (topicId: number, text: string) => { sends.push({ topicId, text }); return { messageId: sends.length, topicId }; },
     sendMessage: async () => ({}),
     getTopicHistory: () => [],
     on: () => {},

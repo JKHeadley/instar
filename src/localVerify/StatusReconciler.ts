@@ -144,6 +144,8 @@ export interface StatusReconcilerConfig {
   /** The agent's own GitHub login (the only expected creator of the status). */
   agentLogin: string;
   operatorGhLogin: string | null;
+  /** `monitoring.localVerify.operatorGhLogin`, read live; wins over `operatorGhLogin` when wired. */
+  liveOperatorGhLogin?: () => string | null;
   machineId: string;
   /** `monitoring.localVerify.postStatuses`, read live (default false = dry-run). */
   postStatuses(): boolean;
@@ -209,6 +211,8 @@ export class StatusReconciler {
   private readonly lastPostSeq = new Map<string, number>();
   /** The last state THIS server successfully posted on each head. */
   private readonly selfPosted = new Map<string, ProjectedState>();
+  /** The description THIS server last posted on each head: a changed reason under an unchanged state is re-posted, so GitHub never keeps showing a stale "verifying". */
+  private readonly selfPostedDescription = new Map<string, string>();
   /** Heads that left the listing while holding a server-posted success: withdrawn next. */
   private readonly droppedPending = new Set<string>();
   private readonly postTimes: number[] = [];
@@ -459,7 +463,7 @@ export class StatusReconciler {
       if ((this.lastPostSeq.get(head) ?? 0) > listSeq && this.observed.get(head)?.by === 'self') {
         const o = this.observed.get(head)!;
         this.canaries(head, group, desiredNow, o.state, now, enabled);
-        if (desiredNow.state !== o.state && !this.retryNotDue(head, now)) toSubmit.push({ head, trigger: 'pass', withdraw: o.state === 'success' });
+        if (this.needsPost(head, desiredNow, o.state) && !this.retryNotDue(head, now)) toSubmit.push({ head, trigger: 'pass', withdraw: o.state === 'success' && desiredNow.state !== 'success' });
         continue;
       }
 
@@ -488,7 +492,7 @@ export class StatusReconciler {
       const seen = this.observed.get(head)!.state;
 
       this.canaries(head, group, desired, seen, now, enabled);
-      if (desired.state !== seen && !this.retryNotDue(head, now)) toSubmit.push({ head, trigger: 'pass', withdraw: seen === 'success' });
+      if (this.needsPost(head, desired, seen) && !this.retryNotDue(head, now)) toSubmit.push({ head, trigger: 'pass', withdraw: seen === 'success' && desired.state !== 'success' });
     }
     // Withdrawals (away from success) go first; the per-minute cap never delays them.
     for (const t of orderSubmissions(toSubmit)) { void this.submit(t.head, t.trigger); submitted++; }
@@ -554,7 +558,7 @@ export class StatusReconciler {
   private floorOf(pr: OpenPr, enabled: boolean): { eligible: boolean; floor: FloorMode; hold: string | null } {
     const eligible = checkEligibility(
       { author: pr.author ? { login: pr.author } : null, isCrossRepository: pr.isCrossRepository, headRefName: pr.headRefName, headRefOid: pr.headSha, baseRefName: pr.baseRefName, baseRefOid: '' },
-      { expectedGhLogin: this.cfg.agentLogin, operatorGhLogin: this.cfg.operatorGhLogin },
+      { expectedGhLogin: this.cfg.agentLogin, operatorGhLogin: this.cfg.liveOperatorGhLogin ? this.cfg.liveOperatorGhLogin() : this.cfg.operatorGhLogin },
     ).eligible;
     // The CONFIGURED floor decides which authority may say success. A disabled or
     // not-yet-effective local verifier is a HOLD on the local floor (pending, named),
@@ -663,6 +667,13 @@ export class StatusReconciler {
     return next;
   }
 
+  /** A post is due when the state differs, or when the state matches but the reason this server last posted no longer does. */
+  private needsPost(head: string, desired: Projection, seen: ObservedState | undefined): boolean {
+    if (desired.state !== seen) return true;
+    const posted = this.selfPostedDescription.get(head);
+    return posted !== undefined && posted !== desired.description;
+  }
+
   private async send(head: string, trigger: string): Promise<void> {
     let d: Projection;
     let o: Observed | undefined;
@@ -674,7 +685,7 @@ export class StatusReconciler {
     } else {
       d = this.reproject(head); // re-projected immediately before the send
       o = this.observed.get(head);
-      if (o && o.state === d.state) { this.retries.delete(head); return; }
+      if (o && !this.needsPost(head, d, o.state)) { this.retries.delete(head); return; }
     }
     const epoch = this.safeEpoch();
     if (!this.safeHolds() || epoch === null || epoch !== this.acquiredEpoch) {
@@ -706,6 +717,7 @@ export class StatusReconciler {
       this.postSeq++;
       this.lastPostSeq.set(head, this.postSeq);
       this.selfPosted.set(head, d.state);
+      this.selfPostedDescription.set(head, d.description);
       if (this.contexts.has(head)) this.observed.set(head, { state: d.state, by: 'self' });
       else this.droppedPending.delete(head);
       this.retries.delete(head);

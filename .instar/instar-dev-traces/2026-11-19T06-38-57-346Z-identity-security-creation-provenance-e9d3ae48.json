@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "identity-security-creation-provenance",
+  "sessionId": "2f010dce-ecf3-404e-b88a-b952c212e86e",
+  "timestamp": "2026-11-19T06:38:57.346Z",
+  "artifactPath": "upgrades/side-effects/identity-security-creation-provenance.md",
+  "artifactSha256": "0d21dd2328087118be9e706cf75e2350950f94fb569b6907e8e2e6a2ccd09d52",
+  "specPath": "docs/specs/identity-security-creation-provenance.md",
+  "coveredFiles": [
+    "docs/specs/identity-security-creation-provenance.eli16.md",
+    "docs/specs/identity-security-creation-provenance.md",
+    "src/core/topicProfileIngress.ts",
+    "src/core/topicProfileWriteSurface.ts",
+    "src/data/feature-ladders.json",
+    "src/server/CapabilityIndex.ts",
+    "upgrades/side-effects/identity-security-creation-provenance.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Guard fixes on the approved change: route classification, ladder entry, and a fixed audit marker the ladder reads.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

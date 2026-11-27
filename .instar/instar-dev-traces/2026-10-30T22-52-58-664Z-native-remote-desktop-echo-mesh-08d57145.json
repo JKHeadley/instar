@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-echo-mesh",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T22:52:58.664Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-echo-mesh.md",
+  "artifactSha256": "da28018b04b38a61f415fffc552213db3ce540cc7100829c01e2bda082af6d96",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    ".github/workflows/ci.yml",
+    "upgrades/side-effects/native-remote-desktop-echo-mesh.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Install Windows CI package dependencies so npm pack can run the repo prepare script; no runtime authority change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -57,6 +57,45 @@ describe('PeerAuthorizedKeys', () => {
     expect(content).toContain(':peer-b:');
   });
 
+  it('atomically replaces a legacy bare managed grant with a restricted forced command', () => {
+    const root = home();
+    const store = new PeerAuthorizedKeys(root, false);
+    const peer = key();
+    store.reconcile(peer);
+    const unrestricted = fs.readFileSync(store.file, 'utf8');
+    expect(unrestricted).toMatch(/^ssh-ed25519 /);
+
+    const restricted = { ...peer, forcedCommand: '/opt/instar/recovery-wrapper' };
+    expect(store.reconcile(restricted)).toEqual({ changed: true, dryRun: false });
+    const content = fs.readFileSync(store.file, 'utf8');
+    expect(content).toBe(`restrict,command="/opt/instar/recovery-wrapper" ${unrestricted}`);
+    expect(content.split('\n').filter(Boolean)).toHaveLength(1);
+    expect(store.has(restricted)).toBe(true);
+    expect(store.has(peer)).toBe(false);
+    expect(store.revoke('agent', 'peer-a').changed).toBe(true);
+    expect(fs.readFileSync(store.file, 'utf8')).toBe('');
+  });
+
+  it('keeps checkpoint-owned recovery keys independent from main-server revocation', () => {
+    const root = home();
+    const main = new PeerAuthorizedKeys(root, false);
+    const recovery = new PeerAuthorizedKeys(root, false, 'instar-recovery-access');
+    const restricted = { ...key(), forcedCommand: '/opt/instar/recovery-wrapper' };
+    main.reconcile(key());
+    recovery.reconcile(restricted);
+    main.revokeUnknown('agent', new Set());
+    expect(recovery.has(restricted)).toBe(true);
+    expect(main.has(key())).toBe(false);
+    recovery.revoke('agent', 'peer-a');
+    expect(fs.readFileSync(recovery.file, 'utf8')).toBe('');
+  });
+
+  it('refuses an unsafe forced-command path', () => {
+    const store = new PeerAuthorizedKeys(home(), true);
+    expect(() => store.reconcile({ ...key(), forcedCommand: 'relative/path' })).toThrow('peer-authorized-key-forced-command-invalid');
+    expect(() => store.reconcile({ ...key(), forcedCommand: '/tmp/a,b' })).toThrow('peer-authorized-key-forced-command-invalid');
+  });
+
   it('dry-run reports the intended change without touching disk', () => {
     const store = new PeerAuthorizedKeys(home(), true);
     expect(store.reconcile(key())).toEqual({ changed: true, dryRun: true });

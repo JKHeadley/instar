@@ -51,8 +51,62 @@ function computeHeadHash(filePath: string, size: number): string {
   } catch {
     return 'unreadable';
   } finally {
-    if (fd != null) try { fs.closeSync(fd); } catch { /* ignore */ }
+    if (fd != null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only fd; nothing to recover */ }
   }
+}
+
+const TOOL_HASH_SALT_KEY = 'tool-input-hash-salt';
+/** Two compaction entries closer than this are one compaction (a boundary line and its summary line). */
+const COMPACTION_COLLAPSE_MS = 60_000;
+/** Yield the event loop after this many parsed bytes within one async scan. */
+const SCAN_YIELD_BYTES = 4 * 1024 * 1024;
+/** A transcript file named for its session (a uuid-shaped id). */
+const SESSION_FILE_ID = /^[A-Za-z0-9][A-Za-z0-9-]{7,127}$/;
+/** An operator message relayed into a session: `[telegram:<topic> …`. */
+const TELEGRAM_PROMPT_TAG = /^\s*\[telegram:(\d{1,15})\b/;
+
+/** The text of a user prompt entry, or null for a tool result / non-text entry. */
+function promptText(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  let out = '';
+  for (const b of content as Array<Record<string, unknown>>) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.type === 'tool_result') return null;
+    if (b.type === 'text' && typeof b.text === 'string') out += b.text;
+  }
+  return out || null;
+}
+
+/**
+ * The rework key of a tool call (context budget §11): the same Read path or the
+ * same Bash command, normalized. Read: the file path, normalized (offset and
+ * limit ignored — a re-read of another range is still a re-read). Bash: the
+ * command with surrounding whitespace trimmed and internal runs collapsed.
+ * Other tools are not counted. Only a hash leaves this function.
+ */
+export function reworkKey(name: unknown, input: unknown, salt = ''): { tool: 'Read' | 'Bash'; hash: string } | null {
+  if (!input || typeof input !== 'object') return null;
+  const i = input as Record<string, unknown>;
+  let tool: 'Read' | 'Bash';
+  let norm: string;
+  if (name === 'Read' && typeof i.file_path === 'string' && i.file_path.trim()) {
+    tool = 'Read';
+    norm = path.posix.normalize(i.file_path.trim().replace(/\\/g, '/')).replace(/\/+$/, '');
+  } else if (name === 'Bash' && typeof i.command === 'string' && i.command.trim()) {
+    tool = 'Bash';
+    norm = i.command.trim().replace(/\s+/g, ' ');
+  } else {
+    return null;
+  }
+  // Salted per ledger DB, so the DB alone cannot confirm a guessed path or command.
+  return { tool, hash: crypto.createHash('sha256').update(`${salt}\0${tool}\0${norm}`).digest('hex').slice(0, 32) };
+}
+
+/** Clamp a job-session key/label: trimmed, bounded, '' when absent. */
+function clampKey(v: string): string {
+  const t = String(v ?? '').trim();
+  return t.length > 200 ? t.slice(0, 200) : t;
 }
 
 // ── Schema ────────────────────────────────────────────────────────────
@@ -134,6 +188,75 @@ const SCHEMA = [
   // Small key/value table for one-shot maintenance markers (e.g. the
   // attribution backfill). Keeps idempotent migrations from re-running on
   // every boot without needing an external migration framework.
+  // Job-cost attribution (docs/specs/job-cost-reduction.md §9.1). token_events rows
+  // are keyed by the CLAUDE TRANSCRIPT session id, which a job session only learns
+  // after its first hook event. So a job is recorded at spawn under the id the
+  // spawner has (its tmux session name — the id JobRunHistory records), and a second
+  // row keyed by the transcript id is added when the hook bridge binds it
+  // (bindJobSessionTranscript), carrying `alias_of` = the spawn-time key. Only rows
+  // whose session_id matches a token_events/codex session ever join; the spawn-time
+  // row is the "was this job session ever bound?" evidence (unbound = unmapped).
+  `CREATE TABLE IF NOT EXISTS job_sessions (
+     session_id TEXT PRIMARY KEY,
+     job_slug   TEXT NOT NULL,
+     machine_id TEXT,
+     started_at INTEGER NOT NULL,
+     origin     TEXT NOT NULL DEFAULT 'job',
+     alias_of   TEXT
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_job_sessions_started ON job_sessions(started_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_job_sessions_alias ON job_sessions(alias_of)`,
+  // Context budget §11 (Phase 1 S13). The 1-hour share of cache_creation_tokens
+  // (usage.cache_creation.ephemeral_1h_input_tokens), so the cost weighting can
+  // price 1 h writes (2.0×) apart from 5 min writes (1.25×). NULL on rows
+  // ingested before this column existed (the split is then unknown and is
+  // reported as such). Additive; nothing else reads it.
+  `ALTER TABLE token_events ADD COLUMN cache_write_1h_tokens INTEGER`,
+  // Rework (§11): one row per Read / Bash tool call, keyed by the engine's
+  // tool_use id so a transcript copied into another config home dedupes. Only a
+  // hash of the normalized input is kept (a command can carry a secret; the
+  // ledger never stores tool inputs).
+  `CREATE TABLE IF NOT EXISTS tool_inputs (
+     tool_use_id TEXT PRIMARY KEY,
+     session_id  TEXT NOT NULL,
+     request_id  TEXT,
+     ts          INTEGER NOT NULL,
+     tool        TEXT NOT NULL,
+     input_hash  TEXT NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_tool_inputs_session_ts ON tool_inputs(session_id, ts)`,
+  `CREATE INDEX IF NOT EXISTS idx_tool_inputs_ts ON tool_inputs(ts)`,
+  // Operator prompts delivered into a session (a user entry tagged
+  // `[telegram:N`), keyed by the entry uuid (dedupes across config-home
+  // copies). No text: the topic, the time and the session only. This is the
+  // session → topic map and the "operator messages verbatim in context" input.
+  `CREATE TABLE IF NOT EXISTS session_prompts (
+     uuid       TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL,
+     topic_id   INTEGER,
+     ts         INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_session_prompts_session ON session_prompts(session_id, ts)`,
+  `CREATE INDEX IF NOT EXISTS idx_session_prompts_topic ON session_prompts(topic_id, ts)`,
+  // Compaction boundaries per session (system compact_boundary or a compact
+  // summary entry): what came before the latest one is no longer verbatim in context.
+  `CREATE TABLE IF NOT EXISTS compact_boundaries (
+     uuid       TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL,
+     ts         INTEGER NOT NULL
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_compact_boundaries_session ON compact_boundaries(session_id, ts)`,
+  // Which transcript files hold a session (one per config home it was copied
+  // into), so a reader can tell whether the poller has caught up on it.
+  // side_from_offset: the byte offset the side records started from. Non-zero
+  // means the file was part-read before this build, so its earlier tool inputs,
+  // prompts and compactions were never recorded (the session reads `partial`).
+  `CREATE TABLE IF NOT EXISTS session_files (
+     file_path        TEXT PRIMARY KEY,
+     session_id       TEXT NOT NULL,
+     side_from_offset INTEGER NOT NULL DEFAULT 0
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id)`,
   `CREATE TABLE IF NOT EXISTS ledger_meta (
      key        TEXT PRIMARY KEY,
      value      TEXT,
@@ -143,6 +266,74 @@ const SCHEMA = [
 
 // ── Types ─────────────────────────────────────────────────────────────
 
+/** Origin of a job session (job-cost-reduction §9.1): a normal run, or a triage session. */
+export type JobSessionOrigin = 'job' | 'triage' | 'rollback';
+
+/** Per-job token totals from the job_sessions ⋈ token_events (+ codex) join. */
+export interface JobTokenTotalsRow {
+  jobSlug: string;
+  origin: string;
+  framework: 'claude-code' | 'codex-cli';
+  model: string;
+  /** Distinct transcript sessions that carried usage in the window. */
+  sessions: number;
+  /** Model calls: one per token_events row (one per API request); codex = token_count events. */
+  modelCalls: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** Cache-read tokens. Claude: separate from tokensIn. Codex: a subset of its raw input, already removed from tokensIn here. */
+  cacheRead: number;
+  /** Cache-creation tokens (Claude only; 0 for codex). */
+  cacheWrite: number;
+}
+
+/** Recorded job sessions per slug/origin in a window, and how many never bound to a transcript. */
+export interface JobSessionCountRow {
+  jobSlug: string;
+  origin: string;
+  /** Spawn-time rows recorded in the window (alias_of IS NULL). */
+  recorded: number;
+  /** Of those, how many have neither a bound transcript row nor any usage under their own id. */
+  unbound: number;
+}
+
+/** A transcript session's usage in a window, with its transcript path when the ledger read it. */
+export interface SessionUsageRow {
+  sessionId: string;
+  filePath: string | null;
+  modelCalls: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Per-session request totals for the cost weighting (context budget §11). */
+export interface SessionRequestTotalsRow {
+  sessionId: string;
+  requests: number;
+  uncached: number;
+  cacheRead: number;
+  /** All cache-creation tokens. */
+  cacheWrite: number;
+  /** The part of cacheWrite known to be 1 h writes (rows with the split). */
+  cacheWrite1hKnown: number;
+  /** Cache-creation tokens on rows ingested before the 1 h split was recorded. */
+  cacheWriteSplitUnknown: number;
+  writeSplitUnknownRequests: number;
+  output: number;
+  firstTs: number;
+  lastTs: number;
+}
+
+/** Rework counts for one session (context budget §11). */
+export interface ReworkRow {
+  toolInputs: number;
+  repeats: number;
+  byTool: { Read: { inputs: number; repeats: number }; Bash: { inputs: number; repeats: number } };
+  windowTurns: number;
+}
+
 export interface IngestLineResult {
   inserted: boolean;
   reason?: string;
@@ -151,6 +342,10 @@ export interface IngestLineResult {
 export interface IngestFileResult {
   inserted: number;
   skipped: number;
+  /** Bytes read by this call. */
+  bytesRead?: number;
+  /** False when the per-call byte cap stopped the read before the end of the file (the next call resumes). */
+  complete?: boolean;
 }
 
 export interface ScanAllResult {
@@ -247,7 +442,16 @@ export interface TokenLedgerOptions {
   /** SQLite DB path. Use `:memory:` for tests. */
   dbPath: string;
   /** Root directory of Claude Code project transcripts (e.g. `~/.claude/projects`). */
-  claudeProjectsDir: string;
+  claudeProjectsDir?: string;
+  /**
+   * Every transcript root to scan (one `<config home>/projects` per Claude
+   * login the agent can route a session to). Re-read on every scan when a
+   * function, so a login enrolled after boot is picked up. Unioned with
+   * `claudeProjectsDir`; roots and project folders are de-duplicated by real
+   * path. The same session copied into two homes is one session: every row is
+   * keyed by an engine id (request id, tool_use id, entry uuid).
+   */
+  claudeProjectsDirs?: readonly string[] | (() => readonly string[]);
   /**
    * Skip JSONL files whose mtime is older than this many ms when scanning.
    * Bounds the work the ledger does on agents with deep history (Echo had
@@ -261,6 +465,14 @@ export interface TokenLedgerOptions {
    * single tick from monopolising the event loop. Default 500.
    */
   maxFilesPerScan?: number;
+  /**
+   * Per-call read cap for one transcript (default 8 MB). A larger file is read
+   * in pieces across calls from its stored offset, so a 40 MB backlog never
+   * runs as one synchronous parse (the all-homes backfill, fb-7e0b2088-ae5).
+   */
+  maxBytesPerFileRead?: number;
+  /** Per-scan byte budget across files (default 64 MB); the scan resumes from its cursor next tick. */
+  maxBytesPerScan?: number;
   /**
    * Bounded Accumulation retention (Increment 2). When `enabled`, token_events older
    * than `maxAgeMs` are pruned in bounded batches off the hot path (driven by the
@@ -319,18 +531,28 @@ interface AssistantLine {
       output_tokens?: number;
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
+      cache_creation?: { ephemeral_1h_input_tokens?: number; ephemeral_5m_input_tokens?: number };
       service_tier?: string;
     };
+    content?: unknown;
   };
+  isMeta?: boolean;
+  isCompactSummary?: boolean;
+  subtype?: string;
 }
 
 // ── TokenLedger ───────────────────────────────────────────────────────
 
 export class TokenLedger {
   private db: BetterSqliteDatabase;
-  private claudeProjectsDir: string;
+  private claudeProjectsDir: string | null;
+  /** Per-DB random salt for tool-input hashes (ledger_meta `tool-input-hash-salt`). */
+  private hashSalt = '';
+  private claudeProjectsDirsOpt: TokenLedgerOptions['claudeProjectsDirs'];
   private maxFileAgeMs: number;
   private maxFilesPerScan: number;
+  private maxBytesPerFileRead: number;
+  private maxBytesPerScan: number;
   private retentionEnabled: boolean;
   private retentionMaxAgeMs: number;
   private yieldEveryNFiles: number;
@@ -352,12 +574,19 @@ export class TokenLedger {
     getOffset: ReturnType<BetterSqliteDatabase['prepare']>;
     upsertOffset: ReturnType<BetterSqliteDatabase['prepare']>;
     upsertCodexSession: ReturnType<BetterSqliteDatabase['prepare']>;
+    insertToolInput: ReturnType<BetterSqliteDatabase['prepare']>;
+    insertPrompt: ReturnType<BetterSqliteDatabase['prepare']>;
+    insertBoundary: ReturnType<BetterSqliteDatabase['prepare']>;
+    insertSessionFile: ReturnType<BetterSqliteDatabase['prepare']>;
   };
 
   constructor(opts: TokenLedgerOptions) {
-    this.claudeProjectsDir = opts.claudeProjectsDir;
+    this.claudeProjectsDir = opts.claudeProjectsDir ?? null;
+    this.claudeProjectsDirsOpt = opts.claudeProjectsDirs;
     this.maxFileAgeMs = opts.maxFileAgeMs && opts.maxFileAgeMs > 0 ? opts.maxFileAgeMs : 0;
     this.maxFilesPerScan = opts.maxFilesPerScan && opts.maxFilesPerScan > 0 ? opts.maxFilesPerScan : 500;
+    this.maxBytesPerFileRead = opts.maxBytesPerFileRead && opts.maxBytesPerFileRead > 0 ? opts.maxBytesPerFileRead : 8 * 1024 * 1024;
+    this.maxBytesPerScan = opts.maxBytesPerScan && opts.maxBytesPerScan > 0 ? opts.maxBytesPerScan : 64 * 1024 * 1024;
     this.retentionEnabled = opts.retention?.enabled === true;
     this.retentionMaxAgeMs =
       opts.retention?.maxAgeMs && opts.retention.maxAgeMs > 0
@@ -410,6 +639,11 @@ export class TokenLedger {
       }
     }
     this.prepareStatements();
+    // Context budget §11: the per-DB salt for tool-input hashes, created once.
+    try {
+      this.hashSalt = this.getMeta(TOOL_HASH_SALT_KEY) ?? '';
+      if (!this.hashSalt) { this.hashSalt = crypto.randomBytes(16).toString('hex'); this.setMeta(TOOL_HASH_SALT_KEY, this.hashSalt); }
+    } catch { this.hashSalt = ''; /* @silent-fallback-ok — an unsalted hash still stores no text; rework counting is unaffected */ }
     // One-time: convert legacy rows written before Phase 2 attribution was
     // wired (all under the PRE_ATTRIBUTION_KEY sentinel) into resolved keys.
     // Marker-guarded so it runs exactly once per DB, even across restarts.
@@ -611,12 +845,24 @@ export class TokenLedger {
         INSERT OR IGNORE INTO token_events
           (request_id, uuid, session_id, project_path, ts, model,
            input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-           service_tier, attribution_key)
+           service_tier, attribution_key, cache_write_1h_tokens)
         VALUES
           (@requestId, @uuid, @sessionId, @projectPath, @ts, @model,
            @inputTokens, @outputTokens, @cacheCreationTokens, @cacheReadTokens,
-           @serviceTier, @attributionKey)
+           @serviceTier, @attributionKey, @cacheWrite1h)
       `),
+      insertToolInput: this.db.prepare(
+        `INSERT OR IGNORE INTO tool_inputs (tool_use_id, session_id, request_id, ts, tool, input_hash) VALUES (@id, @sessionId, @requestId, @ts, @tool, @hash)`,
+      ),
+      insertPrompt: this.db.prepare(
+        `INSERT OR IGNORE INTO session_prompts (uuid, session_id, topic_id, ts) VALUES (@uuid, @sessionId, @topicId, @ts)`,
+      ),
+      insertBoundary: this.db.prepare(
+        `INSERT OR IGNORE INTO compact_boundaries (uuid, session_id, ts) VALUES (@uuid, @sessionId, @ts)`,
+      ),
+      insertSessionFile: this.db.prepare(
+        `INSERT OR IGNORE INTO session_files (file_path, session_id, side_from_offset) VALUES (@filePath, @sessionId, @sideFromOffset)`,
+      ),
       getOffset: this.db.prepare(
         `SELECT offset, inode, size, head_hash FROM file_offsets WHERE file_path = ?`
       ),
@@ -676,6 +922,9 @@ export class TokenLedger {
     } catch {
       return { inserted: false, reason: 'malformed' };
     }
+    // Context budget §11 side records (rework, operator prompts, compactions).
+    // Additive and keyed by engine ids; a failure here never affects the event row.
+    this.ingestSideRecords(obj);
     if (obj.type !== 'assistant') return { inserted: false, reason: 'not-assistant' };
     const usage = obj.message?.usage;
     if (!usage) return { inserted: false, reason: 'no-usage' };
@@ -699,6 +948,7 @@ export class TokenLedger {
         cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
         cacheReadTokens: usage.cache_read_input_tokens ?? 0,
         serviceTier: usage.service_tier ?? null,
+        cacheWrite1h: typeof usage.cache_creation?.ephemeral_1h_input_tokens === 'number' ? usage.cache_creation.ephemeral_1h_input_tokens : null,
         // Phase 2 (now wired): resolve the attribution key at ingest from the
         // signals the JSONL line carries — sessionId, cwd, and model. The
         // Claude-CLI JSONL trail has no user prompt on the assistant line, so
@@ -765,6 +1015,7 @@ export class TokenLedger {
         attributionKey: event.attributionKey && event.attributionKey.length > 0
           ? event.attributionKey
           : 'unknown::direct-api',
+        cacheWrite1h: null,
       });
       return { inserted: result.changes > 0, reason: result.changes > 0 ? undefined : 'duplicate' };
     } catch {
@@ -815,15 +1066,21 @@ export class TokenLedger {
       return { inserted: 0, skipped: 0 };
     }
 
+    const base = path.basename(filePath, '.jsonl');
+    if (SESSION_FILE_ID.test(base)) {
+      try { this.stmts.insertSessionFile.run({ filePath, sessionId: base, sideFromOffset: startOffset }); } catch { /* @silent-fallback-ok — the session→file map only feeds the "pending" read; the scan proceeds */ }
+    }
+
     let inserted = 0;
     let skipped = 0;
     let buffer = '';
     let bytesRead = 0;
+    let consumedLine = false;
+    let pos = startOffset;
     const fd = fs.openSync(filePath, 'r');
     try {
       const chunkSize = 64 * 1024;
       const buf = Buffer.alloc(chunkSize);
-      let pos = startOffset;
       // Use a transaction for batch insert speed
       const txn = this.db.transaction(() => {
         // no-op: filled by closure below
@@ -833,8 +1090,13 @@ export class TokenLedger {
       // whole loop in BEGIN/COMMIT manually for performance.
       this.db.exec('BEGIN');
       try {
-        while (pos < stat.size) {
-          const n = fs.readSync(fd, buf, 0, Math.min(chunkSize, stat.size - pos), pos);
+        // Stop at the per-call byte cap once at least one whole line was consumed
+        // (a single line longer than the cap is still read through, never stuck).
+        while (pos < stat.size && (bytesRead < this.maxBytesPerFileRead || !consumedLine)) {
+          // Never read past the per-call cap in one chunk (a long line still reads through in full chunks).
+          const room = this.maxBytesPerFileRead - bytesRead;
+          const want = Math.min(chunkSize, stat.size - pos, room > 0 ? room : chunkSize);
+          const n = fs.readSync(fd, buf, 0, want, pos);
           if (n <= 0) break;
           bytesRead += n;
           pos += n;
@@ -843,6 +1105,7 @@ export class TokenLedger {
           while (nl !== -1) {
             const line = buffer.slice(0, nl);
             buffer = buffer.slice(nl + 1);
+            consumedLine = true;
             const r = this.ingestLine(line);
             if (r.inserted) inserted++;
             else skipped++;
@@ -872,7 +1135,7 @@ export class TokenLedger {
       try { fs.closeSync(fd); } catch { /* ignore */ }
     }
 
-    return { inserted, skipped };
+    return { inserted, skipped, bytesRead, complete: pos >= stat.size };
   }
 
   /**
@@ -985,13 +1248,8 @@ export class TokenLedger {
   private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult;
   private scanInternal(opts: { yieldFn: () => Promise<void> }): Promise<ScanAllResult>;
   private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult | Promise<ScanAllResult> {
-    let projectDirs: string[];
-    try {
-      projectDirs = fs.readdirSync(this.claudeProjectsDir, { withFileTypes: true })
-        .filter(e => e.isDirectory())
-        .map(e => path.join(this.claudeProjectsDir, e.name))
-        .sort();
-    } catch {
+    const projectDirs = this.listProjectDirs();
+    if (projectDirs.length === 0) {
       this.scanCursor = { dirIdx: 0, fileIdx: 0 };
       return opts.yieldFn ? Promise.resolve({ filesScanned: 0, inserted: 0 }) : { filesScanned: 0, inserted: 0 };
     }
@@ -1012,16 +1270,19 @@ export class TokenLedger {
   private scanLoopSync(projectDirs: string[], ageCutoff: number): ScanAllResult {
     let filesScanned = 0;
     let inserted = 0;
-    while (this.scanCursor.dirIdx < projectDirs.length && filesScanned < this.maxFilesPerScan) {
+    let bytes = 0;
+    while (this.scanCursor.dirIdx < projectDirs.length && filesScanned < this.maxFilesPerScan && bytes < this.maxBytesPerScan) {
       const dir = projectDirs[this.scanCursor.dirIdx];
       const files = this.listJsonlFiles(dir);
-      while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan) {
+      while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan && bytes < this.maxBytesPerScan) {
         const fp = files[this.scanCursor.fileIdx];
-        this.scanCursor.fileIdx++;
-        if (!this.shouldScanFile(fp, ageCutoff)) continue;
+        if (!this.shouldScanFile(fp, ageCutoff)) { this.scanCursor.fileIdx++; continue; }
         const r = this.ingestFile(fp);
+        // A file cut by the per-call cap keeps the cursor: the next call resumes it.
+        if (r.complete !== false) this.scanCursor.fileIdx++;
         filesScanned++;
         inserted += r.inserted;
+        bytes += r.bytesRead ?? 0;
       }
       if (this.scanCursor.fileIdx >= files.length) {
         this.scanCursor.dirIdx++;
@@ -1042,22 +1303,29 @@ export class TokenLedger {
   ): Promise<ScanAllResult> {
     let filesScanned = 0;
     let inserted = 0;
-    while (this.scanCursor.dirIdx < projectDirs.length && filesScanned < this.maxFilesPerScan) {
+    let bytes = 0;
+    let bytesSinceYield = 0;
+    while (this.scanCursor.dirIdx < projectDirs.length && filesScanned < this.maxFilesPerScan && bytes < this.maxBytesPerScan) {
       // close() may have run while we were suspended at an `await yieldFn()`
       // below. Bail before any further DB/fs work so a resumed scan never
       // touches a closed connection ("database connection is not open").
       if (this.closed) return { filesScanned, inserted };
       const dir = projectDirs[this.scanCursor.dirIdx];
       const files = this.listJsonlFiles(dir);
-      while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan) {
+      while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan && bytes < this.maxBytesPerScan) {
         if (this.closed) return { filesScanned, inserted };
         const fp = files[this.scanCursor.fileIdx];
-        this.scanCursor.fileIdx++;
-        if (!this.shouldScanFile(fp, ageCutoff)) continue;
+        if (!this.shouldScanFile(fp, ageCutoff)) { this.scanCursor.fileIdx++; continue; }
         const r = this.ingestFile(fp);
+        // A file cut by the per-call cap keeps the cursor: the next call resumes it.
+        if (r.complete !== false) this.scanCursor.fileIdx++;
         filesScanned++;
         inserted += r.inserted;
-        if (filesScanned % this.yieldEveryNFiles === 0) {
+        bytes += r.bytesRead ?? 0;
+        bytesSinceYield += r.bytesRead ?? 0;
+        // Yield by file count AND by bytes parsed (one large backlog file must not starve the loop).
+        if (filesScanned % this.yieldEveryNFiles === 0 || bytesSinceYield >= SCAN_YIELD_BYTES) {
+          bytesSinceYield = 0;
           await yieldFn();
         }
       }
@@ -1071,6 +1339,92 @@ export class TokenLedger {
       this.scanCursor = { dirIdx: 0, fileIdx: 0 };
     }
     return { filesScanned, inserted };
+  }
+
+  /**
+   * The transcript roots this ledger scans: `claudeProjectsDir` plus every
+   * `claudeProjectsDirs` entry, de-duplicated by real path, in a stable order.
+   * A root that does not exist is skipped (a login with no sessions yet).
+   */
+  projectRoots(): string[] {
+    const raw: string[] = [];
+    if (this.claudeProjectsDir) raw.push(this.claudeProjectsDir);
+    let extra: readonly string[] = [];
+    try {
+      const o = this.claudeProjectsDirsOpt;
+      extra = typeof o === 'function' ? o() : (o ?? []);
+    } catch (err) {
+      // Not silent: a resolver failure narrows the scan to the fixed root and says so.
+      console.warn(`[token-ledger] transcript-root resolver failed; scanning the fixed root only: ${(err as Error).message}`);
+    }
+    for (const r of extra) if (typeof r === 'string' && r) raw.push(r);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of raw) {
+      let real: string;
+      try { real = fs.realpathSync(r); } catch { continue; /* @silent-fallback-ok — a root that does not exist has nothing to scan */ }
+      if (seen.has(real)) continue;
+      seen.add(real);
+      out.push(r);
+    }
+    return out.sort();
+  }
+
+  /** Every project folder under every root (roots de-duplicated by real path). */
+  private listProjectDirs(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const root of this.projectRoots()) {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; /* @silent-fallback-ok — an unreadable root is skipped this pass */ }
+      // Roots are already de-duplicated by real path; a symlinked project
+      // folder is not a directory Dirent and is not followed.
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        const p = path.join(root, e.name);
+        if (seen.has(p)) continue;
+        seen.add(p);
+        out.push(p);
+      }
+    }
+    return out.sort();
+  }
+
+  /**
+   * Context budget §11 side records from one transcript entry: Read/Bash tool
+   * inputs (rework), `[telegram:N` operator prompts (session → topic, verbatim
+   * share) and compaction boundaries. Never throws; never stores text.
+   */
+  private ingestSideRecords(obj: AssistantLine): void {
+    try {
+      const sessionId = obj.sessionId;
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (!sessionId || !Number.isFinite(ts)) return;
+      if (obj.type === 'assistant') {
+        const content = obj.message?.content;
+        if (!Array.isArray(content)) return;
+        for (const c of content as Array<Record<string, unknown>>) {
+          if (!c || c.type !== 'tool_use' || typeof c.id !== 'string') continue;
+          const key = reworkKey(c.name, c.input, this.hashSalt);
+          if (!key) continue;
+          this.stmts.insertToolInput.run({ id: c.id, sessionId, requestId: obj.requestId ?? null, ts, tool: key.tool, hash: key.hash });
+        }
+        return;
+      }
+      if (obj.type === 'system' && obj.subtype === 'compact_boundary' && obj.uuid) {
+        this.stmts.insertBoundary.run({ uuid: obj.uuid, sessionId, ts });
+        return;
+      }
+      if (obj.type !== 'user' || obj.isMeta || !obj.uuid) return;
+      if (obj.isCompactSummary) { this.stmts.insertBoundary.run({ uuid: obj.uuid, sessionId, ts }); return; }
+      const text = promptText(obj.message?.content);
+      if (text === null) return;
+      const m = TELEGRAM_PROMPT_TAG.exec(text);
+      if (m) this.stmts.insertPrompt.run({ uuid: obj.uuid, sessionId, topicId: Number(m[1]), ts });
+    } catch {
+      // @silent-fallback-ok — side records are eventually-consistent observability;
+      // the token event row and the scan never depend on them.
+    }
   }
 
   private listJsonlFiles(dir: string): string[] {
@@ -1094,6 +1448,262 @@ export class TokenLedger {
     } catch {
       return false;
     }
+  }
+
+  // ── Context budget measurement (§11, Phase 1 S13) ──────────────────
+
+  /**
+   * Per-session request totals in a window, split the way the cost weighting
+   * needs them: uncached input, cache read, cache write (with its known 1 h
+   * share), output. `writeSplitUnknown` counts requests ingested before the
+   * 1 h column existed. Highest raw volume first, bounded.
+   */
+  sessionRequestTotals(opts: { sinceMs: number; untilMs?: number; limit?: number; sessionIds?: readonly string[] }): SessionRequestTotalsRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 50)), 500);
+    const ids = (opts.sessionIds ?? []).slice(0, 500); // bounded-input-reviewed: SQL bind-parameter list for an IN (...) filter, never a prompt; bounds the statement's parameter count
+    const filter = ids.length ? `AND session_id IN (${ids.map(() => '?').join(',')})` : '';
+    try {
+      const rows = this.db.prepare(
+        `SELECT session_id AS sessionId, COUNT(*) AS requests,
+           COALESCE(SUM(input_tokens), 0) AS uncached,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheRead,
+           COALESCE(SUM(cache_creation_tokens), 0) AS cacheWrite,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL THEN 0 ELSE cache_write_1h_tokens END), 0) AS cacheWrite1hKnown,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL THEN cache_creation_tokens ELSE 0 END), 0) AS cacheWriteSplitUnknown,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL AND cache_creation_tokens > 0 THEN 1 ELSE 0 END), 0) AS writeSplitUnknownRequests,
+           COALESCE(SUM(output_tokens), 0) AS output,
+           MIN(ts) AS firstTs, MAX(ts) AS lastTs
+         FROM token_events WHERE ts >= ? AND ts < ? ${filter}
+         GROUP BY session_id
+         ORDER BY SUM(input_tokens + cache_read_tokens + cache_creation_tokens + output_tokens) DESC
+         LIMIT ?`,
+      ).all(opts.sinceMs, until, ...ids, limit) as Array<Record<string, number | string>>;
+      return rows.map((r) => ({
+        sessionId: String(r.sessionId),
+        requests: Number(r.requests) || 0,
+        uncached: Number(r.uncached) || 0,
+        cacheRead: Number(r.cacheRead) || 0,
+        cacheWrite: Number(r.cacheWrite) || 0,
+        cacheWrite1hKnown: Number(r.cacheWrite1hKnown) || 0,
+        cacheWriteSplitUnknown: Number(r.cacheWriteSplitUnknown) || 0,
+        writeSplitUnknownRequests: Number(r.writeSplitUnknownRequests) || 0,
+        output: Number(r.output) || 0,
+        firstTs: Number(r.firstTs) || 0,
+        lastTs: Number(r.lastTs) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok — read path of an observability surface; the caller reports an empty window.
+      return [];
+    }
+  }
+
+  /**
+   * Live context size over time for one session: each request's full input
+   * (uncached + cache read + cache write), downsampled to at most `maxPoints`
+   * time buckets (the largest request in each bucket). Reads at most the
+   * newest 20,000 requests in the window.
+   */
+  contextSizeSeries(sessionId: string, opts: { sinceMs: number; maxPoints?: number }): { points: Array<{ ts: number; tokens: number }>; latest: number | null; max: number | null; requests: number } {
+    const empty = { points: [], latest: null, max: null, requests: 0 };
+    if (this.closed) return empty;
+    const maxPoints = Math.min(Math.max(1, Math.floor(opts.maxPoints ?? 48)), 500);
+    let rows: Array<{ ts: number; tokens: number }>;
+    try {
+      rows = (this.db.prepare(
+        `SELECT ts, (input_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
+           FROM token_events WHERE session_id = ? AND ts >= ? ORDER BY ts DESC LIMIT 20000`,
+      ).all(sessionId, opts.sinceMs) as Array<{ ts: number; tokens: number }>).reverse();
+    } catch {
+      return empty; // @silent-fallback-ok — read path of an observability surface
+    }
+    if (rows.length === 0) return empty;
+    const first = rows[0].ts;
+    const span = Math.max(1, rows[rows.length - 1].ts - first + 1);
+    const buckets = new Map<number, { ts: number; tokens: number }>();
+    for (const r of rows) {
+      const b = Math.min(maxPoints - 1, Math.floor(((r.ts - first) / span) * maxPoints));
+      const cur = buckets.get(b);
+      if (!cur || Number(r.tokens) >= cur.tokens) buckets.set(b, { ts: Number(r.ts), tokens: Number(r.tokens) || 0 });
+    }
+    const points = [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+    return {
+      points,
+      latest: Number(rows[rows.length - 1].tokens) || 0,
+      max: rows.reduce((m, r) => Math.max(m, Number(r.tokens) || 0), 0),
+      requests: rows.length,
+    };
+  }
+
+  /**
+   * Rework for one session (§11): a Read of a path or a Bash command that
+   * already ran in one of the previous `windowTurns` requests of the same
+   * session. A turn is one request (the Phase 0 baseline's unit). Repeats
+   * inside one request (parallel calls) are not rework. Reads at most the
+   * newest 20,000 tool inputs in the window.
+   */
+  reworkForSession(sessionId: string, opts: { sinceMs: number; windowTurns?: number }): ReworkRow {
+    const windowTurns = Math.min(Math.max(1, Math.floor(opts.windowTurns ?? 30)), 1000);
+    const out: ReworkRow = { toolInputs: 0, repeats: 0, byTool: { Read: { inputs: 0, repeats: 0 }, Bash: { inputs: 0, repeats: 0 } }, windowTurns };
+    if (this.closed) return out;
+    let rows: Array<{ requestId: string | null; ts: number; tool: string; inputHash: string; toolUseId: string }>;
+    try {
+      rows = (this.db.prepare(
+        `SELECT tool_use_id AS toolUseId, request_id AS requestId, ts, tool, input_hash AS inputHash
+           FROM tool_inputs WHERE session_id = ? AND ts >= ? ORDER BY ts DESC, tool_use_id DESC LIMIT 20000`,
+      ).all(sessionId, opts.sinceMs) as typeof rows).reverse();
+    } catch {
+      return out; // @silent-fallback-ok — read path of an observability surface
+    }
+    // Turn ordinals: one per request of the session (token_events), in time
+    // order — a request with no tool call is still a turn. A tool input whose
+    // request row is missing takes the ordinal of the last request at or
+    // before it.
+    let reqs: Array<{ requestId: string; ts: number }> = [];
+    try {
+      reqs = (this.db.prepare(
+        `SELECT request_id AS requestId, ts FROM token_events WHERE session_id = ? AND ts >= ? ORDER BY ts DESC, request_id DESC LIMIT 50000`,
+      ).all(sessionId, opts.sinceMs) as typeof reqs).reverse();
+    } catch { reqs = []; /* @silent-fallback-ok — ordinals then fall back to the tool rows' own requests */ }
+    const ordinal = new Map<string, number>();
+    reqs.forEach((q, i) => { if (!ordinal.has(q.requestId)) ordinal.set(q.requestId, i); });
+    const ordinalAt = (ts: number): number => {
+      let lo = 0; let hi = reqs.length - 1; let ans = -1;
+      while (lo <= hi) { const mid = (lo + hi) >> 1; if (reqs[mid].ts <= ts) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+      return ans;
+    };
+    const synthetic = new Map<string, number>();
+    const lastSeen = new Map<string, number>();
+    for (const r of rows) {
+      let turn: number;
+      if (r.requestId && ordinal.has(r.requestId)) turn = ordinal.get(r.requestId)!;
+      else if (reqs.length > 0) turn = ordinalAt(r.ts);
+      else {
+        const rk = r.requestId ?? `tool:${r.toolUseId}`;
+        if (!synthetic.has(rk)) synthetic.set(rk, synthetic.size);
+        turn = synthetic.get(rk)!;
+      }
+      const key = `${r.tool}:${r.inputHash}`;
+      const tool = r.tool === 'Read' ? 'Read' : 'Bash';
+      out.toolInputs++;
+      out.byTool[tool].inputs++;
+      const prev = lastSeen.get(key);
+      if (prev !== undefined && turn - prev >= 1 && turn - prev <= windowTurns) {
+        out.repeats++;
+        out.byTool[tool].repeats++;
+      }
+      lastSeen.set(key, turn);
+    }
+    return out;
+  }
+
+  /**
+   * How far the scan is behind on a session: for each transcript file that
+   * holds it (one per config home), the bytes on disk the ledger has not read
+   * and when it last read the file. At most 20 files.
+   */
+  sessionScanLag(sessionId: string, opts: { now?: number; toleranceMs?: number } = {}): { files: number; unreadBytes: number; laggingFiles: number; oldestReadAt: number | null; partialSideRecords: boolean } {
+    const out = { files: 0, unreadBytes: 0, laggingFiles: 0, oldestReadAt: null as number | null, partialSideRecords: false };
+    if (this.closed) return out;
+    const now = opts.now ?? Date.now();
+    const tol = opts.toleranceMs ?? 6 * 60_000;
+    let rows: Array<{ filePath: string; offset: number | null; lastRead: number | null; sideFrom: number | null }>;
+    try {
+      rows = this.db.prepare(
+        `SELECT sf.file_path AS filePath, fo.offset AS offset, fo.last_read AS lastRead, sf.side_from_offset AS sideFrom
+           FROM session_files sf LEFT JOIN file_offsets fo ON fo.file_path = sf.file_path
+          WHERE sf.session_id = ? LIMIT 20`,
+      ).all(sessionId) as typeof rows;
+    } catch {
+      return out; // @silent-fallback-ok — read path of an observability surface
+    }
+    for (const r of rows) {
+      if ((r.sideFrom ?? 0) > 0) out.partialSideRecords = true;
+      let size: number;
+      try { size = fs.statSync(r.filePath).size; } catch { continue; /* @silent-fallback-ok — a removed copy has nothing left to read */ }
+      out.files++;
+      const unread = Math.max(0, size - (r.offset ?? 0));
+      out.unreadBytes += unread;
+      // Lag is judged per file: a copy with unread bytes that the poller has not read recently.
+      if (unread > 0 && (r.lastRead === null || now - r.lastRead > tol)) out.laggingFiles++;
+      if (r.lastRead !== null && (out.oldestReadAt === null || r.lastRead < out.oldestReadAt)) out.oldestReadAt = r.lastRead;
+    }
+    return out;
+  }
+
+  /**
+   * Window totals across EVERY session (uncapped aggregate), optionally for a
+   * set of sessions: the "overall" numbers never depend on the per-session list's bound.
+   */
+  windowTotals(opts: { sinceMs: number; sessionIds?: readonly string[] }): Omit<SessionRequestTotalsRow, 'sessionId' | 'firstTs' | 'lastTs'> & { sessions: number } {
+    const zero = { sessions: 0, requests: 0, uncached: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1hKnown: 0, cacheWriteSplitUnknown: 0, writeSplitUnknownRequests: 0, output: 0 };
+    if (this.closed) return zero;
+    const ids = (opts.sessionIds ?? []).slice(0, 2000); // bounded-input-reviewed: SQL bind-parameter list for an IN (...) filter, never a prompt; bounds the statement's parameter count
+    if (opts.sessionIds && ids.length === 0) return zero;
+    const filter = ids.length ? `AND session_id IN (${ids.map(() => '?').join(',')})` : '';
+    try {
+      const r = this.db.prepare(
+        `SELECT COUNT(DISTINCT session_id) AS sessions, COUNT(*) AS requests,
+           COALESCE(SUM(input_tokens), 0) AS uncached,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheRead,
+           COALESCE(SUM(cache_creation_tokens), 0) AS cacheWrite,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL THEN 0 ELSE cache_write_1h_tokens END), 0) AS cacheWrite1hKnown,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL THEN cache_creation_tokens ELSE 0 END), 0) AS cacheWriteSplitUnknown,
+           COALESCE(SUM(CASE WHEN cache_write_1h_tokens IS NULL AND cache_creation_tokens > 0 THEN 1 ELSE 0 END), 0) AS writeSplitUnknownRequests,
+           COALESCE(SUM(output_tokens), 0) AS output
+         FROM token_events WHERE ts >= ? ${filter}`,
+      ).get(opts.sinceMs, ...ids) as Record<string, number>;
+      return Object.fromEntries(Object.keys(zero).map((k) => [k, Number(r?.[k]) || 0])) as typeof zero;
+    } catch {
+      return zero; // @silent-fallback-ok — read path of an observability surface
+    }
+  }
+
+  /**
+   * Sessions that received operator prompts, by topic, in a window (the
+   * session → topic map; a session is placed on the topic most of its prompts
+   * came from). Bounded.
+   */
+  sessionTopics(opts: { sinceMs: number; topicId?: number; limit?: number }): Array<{ sessionId: string; topicId: number; prompts: number; firstTs: number; lastTs: number }> {
+    if (this.closed) return [];
+    const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? 200)), 5000);
+    try {
+      const rows = this.db.prepare(
+        `SELECT session_id AS sessionId, topic_id AS topicId, COUNT(*) AS prompts, MIN(ts) AS firstTs, MAX(ts) AS lastTs
+           FROM session_prompts WHERE ts >= ? AND topic_id IS NOT NULL ${opts.topicId !== undefined ? 'AND topic_id = ?' : ''}
+          GROUP BY session_id, topic_id ORDER BY MAX(ts) DESC LIMIT ?`,
+      ).all(...[opts.sinceMs, ...(opts.topicId !== undefined ? [opts.topicId] : []), limit]) as Array<Record<string, number | string>>;
+      return rows.map((r) => ({ sessionId: String(r.sessionId), topicId: Number(r.topicId), prompts: Number(r.prompts) || 0, firstTs: Number(r.firstTs) || 0, lastTs: Number(r.lastTs) || 0 }));
+    } catch {
+      return []; // @silent-fallback-ok — read path of an observability surface
+    }
+  }
+
+  /**
+   * Operator prompts delivered to a session and how many of them came after its
+   * latest compaction boundary (still verbatim in its context; §11
+   * user-content retention).
+   */
+  promptsInContext(sessionId: string): { prompts: number; inContext: number; lastCompactionAt: number | null; compactions: number } {
+    const out = { prompts: 0, inContext: 0, lastCompactionAt: null as number | null, compactions: 0 };
+    if (this.closed) return out;
+    try {
+      // A compaction writes a boundary line AND a summary line; entries within a
+      // minute of each other are one compaction.
+      const ts = (this.db.prepare(`SELECT ts FROM compact_boundaries WHERE session_id = ? ORDER BY ts LIMIT 10000`).all(sessionId) as Array<{ ts: number }>).map((r) => Number(r.ts));
+      let prev = -Infinity;
+      for (const t of ts) { if (t - prev > COMPACTION_COLLAPSE_MS) out.compactions++; prev = t; }
+      out.lastCompactionAt = ts.length ? ts[ts.length - 1] : null;
+      const p = this.db.prepare(
+        `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ts > ? THEN 1 ELSE 0 END), 0) AS after FROM session_prompts WHERE session_id = ?`,
+      ).get(out.lastCompactionAt ?? -1, sessionId) as { total: number; after: number };
+      out.prompts = Number(p?.total) || 0;
+      out.inContext = Number(p?.after) || 0;
+    } catch {
+      // @silent-fallback-ok — read path of an observability surface; zero prompts reads as "no share" upstream
+    }
+    return out;
   }
 
   /** Aggregate totals (optionally restricted to events ≥ sinceMs). */
@@ -1449,12 +2059,264 @@ export class TokenLedger {
         if (n < batchSize) { more = false; break; }
         more = true; // hit a full batch — more may remain for the next call
       }
+      this.pruneJobSessionsOlderThan(cutoffMs, { batchSize, maxBatches });
+      // session_files rows for transcripts the scan has not read since the cutoff
+      // (aged out). Never by "no events": a file read before its first request
+      // would be re-inserted at a non-zero offset and read partial forever.
+      try {
+        this.db.prepare(`DELETE FROM session_files WHERE file_path IN (SELECT sf.file_path FROM session_files sf LEFT JOIN file_offsets fo ON fo.file_path = sf.file_path WHERE fo.file_path IS NULL OR fo.last_read < ? LIMIT ?)`).run(cutoffMs, batchSize);
+      } catch { /* @silent-fallback-ok: retention prune is best-effort, as above */ }
+      // Context budget §11 side tables age out on the same schedule.
+      for (const [table, key] of [['tool_inputs', 'tool_use_id'], ['session_prompts', 'uuid'], ['compact_boundaries', 'uuid']] as const) {
+        try {
+          const d = this.db.prepare(`DELETE FROM ${table} WHERE ${key} IN (SELECT ${key} FROM ${table} WHERE ts < ? LIMIT ?)`);
+          for (let b = 0; b < maxBatches; b++) if (Number(d.run(cutoffMs, batchSize).changes ?? 0) < batchSize) break;
+        } catch { /* @silent-fallback-ok: retention prune is best-effort, as above */ }
+      }
       return { deleted, more };
     } catch {
       // @silent-fallback-ok: retention prune is best-effort. A failed prune leaves
       // older rows for the next tick; it must never throw into the poller's cadence.
       return { deleted, more };
     }
+  }
+
+  // ── Job-cost attribution (docs/specs/job-cost-reduction.md §9.1) ─────
+
+  /**
+   * Record that `sessionId` is a job session for `slug`. Idempotent (INSERT OR
+   * IGNORE on the session id — the first record wins). `sessionId` is whatever id the
+   * spawner has: the Claude transcript id when known, otherwise the spawn-time key
+   * (the tmux session name) to be bound later via {@link bindJobSessionTranscript}.
+   * Returns true when a new row was written. Fail-open (observability).
+   */
+  recordJobSession(
+    sessionId: string,
+    slug: string,
+    machineId: string | null,
+    startedAt: string | number,
+    origin: JobSessionOrigin | string = 'job',
+  ): boolean {
+    if (this.closed) return false;
+    const id = clampKey(sessionId);
+    const jobSlug = clampKey(slug);
+    if (!id || !jobSlug) return false;
+    const ts = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt);
+    const started = Number.isFinite(ts) ? ts : Date.now();
+    try {
+      const r = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO job_sessions (session_id, job_slug, machine_id, started_at, origin, alias_of)
+           VALUES (?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(id, jobSlug, clampKey(machineId ?? '') || null, started, clampKey(String(origin)) || 'job');
+      return Number(r.changes ?? 0) > 0;
+    } catch {
+      // @silent-fallback-ok: attribution is observability; a failed write leaves the
+      // session unmapped (reported as such), it must never break a job spawn.
+      return false;
+    }
+  }
+
+  /**
+   * Bind a spawn-time job-session key to the Claude transcript session id the hook
+   * bridge learned (SessionManager.setClaudeSessionId). Adds a row keyed by the
+   * transcript id that copies the slug/machine/origin/started_at of the spawn-time row
+   * and points back at it (`alias_of`). A respawn/--resume that rotates the transcript
+   * id binds again, so every transcript a job run produced joins. No-op (false) when
+   * the alias is unknown — the session was not a job — or already bound to that id.
+   */
+  bindJobSessionTranscript(aliasId: string, transcriptSessionId: string): boolean {
+    if (this.closed) return false;
+    const alias = clampKey(aliasId);
+    const tid = clampKey(transcriptSessionId);
+    if (!alias || !tid || alias === tid) return false;
+    try {
+      const r = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO job_sessions (session_id, job_slug, machine_id, started_at, origin, alias_of)
+           SELECT ?, job_slug, machine_id, started_at, origin, session_id
+             FROM job_sessions WHERE session_id = ?`,
+        )
+        .run(tid, alias);
+      return Number(r.changes ?? 0) > 0;
+    } catch {
+      // @silent-fallback-ok: same envelope as recordJobSession.
+      return false;
+    }
+  }
+
+  /**
+   * Per-job token totals in [sinceMs, untilMs): job_sessions joined to token_events
+   * (Claude, per request) and to codex_token_sessions (Codex, cumulative per session,
+   * attributed by its last_ts). Rows with `machineId` given keep only that machine's
+   * job sessions (and rows recorded without a machine). Degrades to [] on failure.
+   */
+  jobTokenTotals(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): JobTokenTotalsRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const claude = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COALESCE(te.model, 'unknown') AS model,
+             COUNT(DISTINCT te.session_id) AS sessions,
+             COUNT(*) AS modelCalls,
+             COALESCE(SUM(te.input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(te.output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(te.cache_read_tokens), 0) AS cacheRead,
+             COALESCE(SUM(te.cache_creation_tokens), 0) AS cacheWrite
+           FROM token_events te JOIN job_sessions js ON js.session_id = te.session_id
+           WHERE te.ts >= ? AND te.ts < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin, COALESCE(te.model, 'unknown')`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      const codex = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COALESCE(cs.model, 'unknown') AS model,
+             COUNT(*) AS sessions,
+             COALESCE(SUM(cs.token_count_events), 0) AS modelCalls,
+             COALESCE(SUM(cs.input_tokens - cs.cached_input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(cs.output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(cs.cached_input_tokens), 0) AS cacheRead
+           FROM codex_token_sessions cs JOIN job_sessions js ON js.session_id = cs.session_id
+           WHERE cs.last_ts >= ? AND cs.last_ts < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin, COALESCE(cs.model, 'unknown')`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      const toRow = (r: Record<string, number | string>, framework: JobTokenTotalsRow['framework']): JobTokenTotalsRow => ({
+        jobSlug: String(r.jobSlug),
+        origin: String(r.origin),
+        framework,
+        model: String(r.model),
+        sessions: Number(r.sessions) || 0,
+        modelCalls: Number(r.modelCalls) || 0,
+        tokensIn: Math.max(0, Number(r.tokensIn) || 0),
+        tokensOut: Number(r.tokensOut) || 0,
+        cacheRead: Number(r.cacheRead) || 0,
+        cacheWrite: Number(r.cacheWrite ?? 0) || 0,
+      });
+      return [...claude.map((r) => toRow(r, 'claude-code')), ...codex.map((r) => toRow(r, 'codex-cli'))];
+    } catch {
+      // @silent-fallback-ok: the cost report states "no attributed usage", never throws.
+      return [];
+    }
+  }
+
+  /**
+   * Spawn-time job sessions recorded in [sinceMs, untilMs) per slug/origin, and how
+   * many are UNBOUND: no transcript row was ever bound to them and no usage sits under
+   * their own id. An unbound session is reported, never dropped (§9.2 `unmapped`).
+   */
+  jobSessionCounts(opts: { sinceMs: number; untilMs?: number; machineId?: string | null }): JobSessionCountRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const machine = opts.machineId ?? null;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT js.job_slug AS jobSlug, js.origin AS origin, COUNT(*) AS recorded,
+             SUM(CASE WHEN NOT EXISTS (SELECT 1 FROM job_sessions b WHERE b.alias_of = js.session_id)
+                       AND NOT EXISTS (SELECT 1 FROM token_events te WHERE te.session_id = js.session_id)
+                       AND NOT EXISTS (SELECT 1 FROM codex_token_sessions cs WHERE cs.session_id = js.session_id)
+                  THEN 1 ELSE 0 END) AS unbound
+           FROM job_sessions js
+           WHERE js.alias_of IS NULL AND js.started_at >= ? AND js.started_at < ?
+             AND (? IS NULL OR js.machine_id IS NULL OR js.machine_id = ?)
+           GROUP BY js.job_slug, js.origin`,
+        )
+        .all(opts.sinceMs, until, machine, machine) as Array<Record<string, number | string>>;
+      return rows.map((r) => ({
+        jobSlug: String(r.jobSlug),
+        origin: String(r.origin),
+        recorded: Number(r.recorded) || 0,
+        unbound: Number(r.unbound) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: same envelope as jobTokenTotals.
+      return [];
+    }
+  }
+
+  /**
+   * Usage per Claude transcript session with events in [sinceMs, untilMs), with the
+   * transcript path the ledger read it from (file_offsets, matched by basename) — the
+   * input to the §9.2 best-effort backfill, which reads only each file's head to map
+   * its first prompt to a job. Bounded by `limit`. Degrades to [] on failure.
+   */
+  sessionUsageInWindow(opts: { sinceMs: number; untilMs?: number; limit?: number }): SessionUsageRow[] {
+    if (this.closed) return [];
+    const until = opts.untilMs ?? Number.MAX_SAFE_INTEGER;
+    const limit = opts.limit && opts.limit > 0 ? Math.floor(opts.limit) : 20_000;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT session_id AS sessionId, COUNT(*) AS modelCalls,
+             COALESCE(SUM(input_tokens), 0) AS tokensIn,
+             COALESCE(SUM(output_tokens), 0) AS tokensOut,
+             COALESCE(SUM(cache_read_tokens), 0) AS cacheRead,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cacheWrite
+           FROM token_events WHERE ts >= ? AND ts < ?
+           GROUP BY session_id LIMIT ?`,
+        )
+        .all(opts.sinceMs, until, limit) as Array<Record<string, number | string>>;
+      if (rows.length === 0) return [];
+      // Transcript paths: file_offsets rows read since the window opened (a file with
+      // events in the window was read at or after its first event).
+      const files = this.db
+        .prepare(`SELECT file_path AS filePath FROM file_offsets WHERE last_read >= ?`)
+        .all(opts.sinceMs) as Array<{ filePath: string }>;
+      const byId = new Map<string, string>();
+      for (const f of files) {
+        const base = path.basename(f.filePath);
+        if (base.endsWith('.jsonl')) byId.set(base.slice(0, -'.jsonl'.length), f.filePath);
+      }
+      return rows.map((r) => ({
+        sessionId: String(r.sessionId),
+        filePath: byId.get(String(r.sessionId)) ?? null,
+        modelCalls: Number(r.modelCalls) || 0,
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        cacheRead: Number(r.cacheRead) || 0,
+        cacheWrite: Number(r.cacheWrite) || 0,
+      }));
+    } catch {
+      // @silent-fallback-ok: the backfill is comparison-only; [] reads as "nothing to backfill".
+      return [];
+    }
+  }
+
+  /**
+   * Prune job_sessions on the token_events schedule: rows that started before
+   * `cutoffMs` AND carry no remaining token_events under their id (a long session
+   * that still has in-retention events keeps its attribution until they age out).
+   * Spawn-time rows have no events of their own and so age out at the cutoff.
+   * Bounded batches; fail-open.
+   */
+  pruneJobSessionsOlderThan(cutoffMs: number, opts?: { batchSize?: number; maxBatches?: number }): number {
+    if (this.closed) return 0;
+    const batchSize = opts?.batchSize && opts.batchSize > 0 ? opts.batchSize : 5000;
+    const maxBatches = opts?.maxBatches && opts.maxBatches > 0 ? opts.maxBatches : 20;
+    let deleted = 0;
+    try {
+      const del = this.db.prepare(
+        `DELETE FROM job_sessions WHERE session_id IN (
+           SELECT js.session_id FROM job_sessions js
+            WHERE js.started_at < ?
+              AND NOT EXISTS (SELECT 1 FROM token_events te WHERE te.session_id = js.session_id)
+            LIMIT ?)`,
+      );
+      for (let b = 0; b < maxBatches; b++) {
+        const n = Number(del.run(cutoffMs, batchSize).changes ?? 0);
+        deleted += n;
+        if (n < batchSize) break;
+      }
+    } catch {
+      // @silent-fallback-ok: retention prune is best-effort (same envelope as pruneOlderThan).
+    }
+    return deleted;
   }
 
   /** Reclaim up to `pages` freed pages (no-op unless auto_vacuum=INCREMENTAL is active). Fail-open. */

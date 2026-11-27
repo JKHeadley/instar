@@ -198,14 +198,15 @@ describe('ThreadlineMCPServer', () => {
   // ── Server Lifecycle ─────────────────────────────────────────────
 
   describe('lifecycle', () => {
-    it('creates server and lists 9 tools', async () => {
+    it('creates server and lists 10 tools', async () => {
       const { client, close } = await connectClientServer({}, deps);
       try {
         const tools = await client.listTools();
-        expect(tools.tools).toHaveLength(9);
+        expect(tools.tools).toHaveLength(10);
 
         const names = tools.tools.map(t => t.name).sort();
         expect(names).toEqual([
+          'threadline_ack',
           'threadline_agents',
           'threadline_delete',
           'threadline_discover',

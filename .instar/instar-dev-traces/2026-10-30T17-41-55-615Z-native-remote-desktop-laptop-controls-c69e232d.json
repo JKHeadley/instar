@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-laptop-controls",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-30T17:41:55.615Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-laptop-controls.md",
+  "artifactSha256": "65029c9be4a461efc6c06bbac08b726d4958dd461a3d28bff99f5561280388fc",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "tests/unit/console-inside.test.ts",
+    "tests/unit/package-completeness.test.ts",
+    "upgrades/side-effects/native-remote-desktop-laptop-controls.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preview release test-harness repair plus reviewed native cleanup gate; preserve approved desktop security scope",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "topic-name-replication",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T11:27:01.608Z",
+  "artifactPath": "upgrades/side-effects/topic-name-replication.md",
+  "artifactSha256": "823f1060f92f7be1a243db175803279006065c09b378dcc32151066802947e58",
+  "specPath": "docs/specs/topic-name-replication.md",
+  "coveredFiles": [
+    "src/messaging/TelegramTopicNameReplication.ts",
+    "upgrades/side-effects/topic-name-replication.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the converged Tier-2 topic-name-replication spec: one report line now renders the topic through topicRef so the topic-id ratchet passes; same spec, same artifact, extended.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

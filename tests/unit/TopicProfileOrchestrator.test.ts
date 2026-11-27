@@ -68,8 +68,10 @@ async function waitForBreakerTrip(h: Harness): Promise<void> {
 }
 
 interface Harness {
+  deps: TopicProfileOrchestratorDeps;
   orch: TopicProfileOrchestrator;
   store: TopicProfileStore;
+  pendingStoreOperations: Set<Promise<unknown>>;
   cfg: OrchestratorConfig;
   tmpDir: string;
   disclosures: Array<{ topic: string; text: string; auditSeq: number }>;
@@ -78,6 +80,7 @@ interface Harness {
   /** Controls what the kill deps RETURN — a failed kill must abort the respawn. */
   killResult: { value: boolean };
   spawns: Array<{
+    replacedSessionName?: string;
     topicKey: string;
     framework: IntelligenceFramework;
     model: string | undefined;
@@ -120,6 +123,20 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
   const store = new TopicProfileStore({
     stateFilePath: path.join(tmpDir, 'topic-profiles.json'),
   });
+
+  const pendingStoreOperations = new Set<Promise<unknown>>();
+  const withTopicLock = store.withTopicLock.bind(store);
+  store.withTopicLock = function <T>(
+    topicKey: number | string,
+    fn: () => Promise<T> | T,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const operation = withTopicLock(topicKey, fn, timeoutMs);
+    pendingStoreOperations.add(operation);
+    const settled = () => pendingStoreOperations.delete(operation);
+    void operation.then(settled, settled);
+    return operation;
+  };
 
   const cfg: OrchestratorConfig = {
     enabled: true,
@@ -202,6 +219,7 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
           model: resolved.model,
           method: directive.method,
           resumeId: directive.resumeId,
+          replacedSessionName: directive.replacedSessionName,
         });
         return outcome;
       },
@@ -246,8 +264,10 @@ function makeHarness(cfgOverrides: Partial<OrchestratorConfig> = {}): Harness {
 
   const orch = new TopicProfileOrchestrator(deps);
   const h: Harness = {
+    deps,
     orch,
     store,
+    pendingStoreOperations,
     cfg,
     tmpDir,
     disclosures,
@@ -278,10 +298,17 @@ function liveSession(h: Harness, key = '7', name = 'sess-7'): void {
 
 const OP = { updatedBy: 'telegram:111', origin: 'conversational' as const };
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   for (const h of harnesses.splice(0)) {
     h.orch.dispose();
+    // Breaker updates can outlive the assertion that observes their in-memory state.
+    // Let their durable writes and follow-up operations finish before deleting the fixture.
+    while (h.pendingStoreOperations.size > 0) {
+      await Promise.allSettled(h.pendingStoreOperations);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      h.orch.dispose();
+    }
     SafeFsExecutor.safeRmSync(h.tmpDir, {
       recursive: true,
       force: true,
@@ -629,6 +656,9 @@ describe('kill-path precision', () => {
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false);
     expect(h.orch.claudeResumeWriteGate(7).reason).toBe('mid-framework-switch');
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(false);
+    // session-swap-any-conversation §3.1: the engine-aware gate the Slack writers use.
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build')).toEqual({ allowed: false, reason: 'mid-framework-switch' });
     // Successful spawn clears suppression; gates then follow the resolved framework.
     h.spawnImpl.fn = null;
     h.orch.recordSpawnSuccess('7', {
@@ -639,6 +669,9 @@ describe('kill-path precision', () => {
     });
     expect(h.orch.suppressionActive('7')).toBe(false);
     expect(h.orch.codexResumeWriteGate(7).allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'codex-cli').allowed).toBe(true);
+    expect(h.orch.resumeWriteGateFor(7, 'claude-code').allowed).toBe(false);
+    expect(h.orch.resumeWriteGateFor(7, 'grok-build').allowed).toBe(true);
     expect(h.orch.claudeResumeWriteGate(7).allowed).toBe(false); // framework mismatch
   });
 
@@ -942,6 +975,97 @@ describe('global respawn stagger', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('boot reconcile sweep', () => {
+  it('a deferred speaker election does not consume the notice and tick retries once', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.orch.recordSpawnSuccess('7', { framework: 'claude-code', model: null, modelTier: null, thinkingMode: null, effort: null });
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    h.idle.value = 'busy';
+    let speak = false;
+    h.deps.canDiscloseReconciliation = () => speak;
+    h.orch.bootReconcileSweep();
+    await sleep(100);
+    h.orch.tick();
+    await sleep(30);
+    expect(h.disclosures).toEqual([]);
+    speak = true;
+    for (let i = 0; i < 5; i++) h.orch.tick();
+    await sleep(30);
+    expect(h.disclosures.filter((d) => d.text.includes("didn't take effect"))).toHaveLength(1);
+    expect(h.disclosures.some((d) => d.text.includes('mid-task'))).toBe(false);
+    expect(h.kills).toEqual([]);
+  });
+
+  it('accepting an explicit model does not hide an unapplied thinking setting', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', thinkingMode: 'high', updatedBy: OP.updatedBy });
+    const baseline = { framework: 'claude-code' as const, model: 'claude-fable-5', modelTier: null, thinkingMode: 'high' as const, effort: null };
+    const expected = { ...baseline, model: 'claude-opus-5-5' };
+    h.orch.recordSpawnSuccess('7', { ...expected, thinkingMode: null }, { launchExpectation: { baseline, expected } });
+    h.idle.value = 'busy';
+    h.orch.bootReconcileSweep();
+    await sleep(100);
+    expect(h.disclosures.filter((d) => d.text.includes("didn't take effect"))).toHaveLength(1);
+  });
+
+  it('an accepted profile write ends a launch override even when net pin axes return to the baseline', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    const baseline = { framework: 'claude-code' as const, model: 'claude-fable-5', modelTier: null, thinkingMode: null, effort: null };
+    const expected = { ...baseline, model: 'claude-opus-5-5' };
+    h.orch.recordSpawnSuccess('7', expected, { launchExpectation: { baseline, expected } });
+    h.idle.value = 'busy';
+    h.orch.bootReconcileSweep();
+    expect(h.disclosures).toEqual([]);
+    await h.store.mutate('7', { model: 'claude-opus-5-5', updatedBy: OP.updatedBy });
+    h.orch.onProfileWrite('7', { frameworkChanged: false, origin: 'http' });
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    h.orch.onProfileWrite('7', { frameworkChanged: false, origin: 'http' });
+    h.orch.bootReconcileSweep();
+    expect(h.disclosures.filter((d) => d.text.includes("didn't take effect"))).toHaveLength(1);
+  });
+
+  it('inherited default drift on an existing unpinned session is not failed application', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.orch.recordSpawnSuccess('7', { framework: 'codex-cli', model: 'gpt-6-sol', modelTier: null, thinkingMode: null, effort: null });
+    h.orch.bootReconcileSweep();
+    await sleep(100);
+    expect(h.disclosures).toEqual([]);
+    expect(h.kills).toEqual([]);
+  });
+
+  it('topic-specific config mismatch still reconciles without a store pin', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.orch.recordSpawnSuccess('7', { framework: 'claude-code', model: null, modelTier: null, thinkingMode: null, effort: null });
+    const originalResolve = h.deps.resolveProfile;
+    h.deps.resolveProfile = (k) => ({ ...originalResolve(k), model: 'claude-fable-5', sources: { ...originalResolve(k).sources, model: 'topicProfiles-config-default' } });
+    h.orch.bootReconcileSweep();
+    await waitUntil(() => h.spawns.length === 1);
+    expect(h.disclosures.filter((d) => d.text.includes("didn't take effect"))).toHaveLength(1);
+  });
+
+  it('a resolved mismatch can be reported again if it recurs after successful recovery', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    const old = { framework: 'claude-code' as const, model: null, modelTier: null, thinkingMode: null, effort: null };
+    h.orch.recordSpawnSuccess('7', old);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    h.idle.value = 'busy';
+    h.orch.bootReconcileSweep();
+    await sleep(100);
+    h.orch.recordSpawnSuccess('7', { ...old, model: 'claude-fable-5' });
+    h.orch.recordSpawnSuccess('7', old);
+    h.orch.bootReconcileSweep();
+    await sleep(100);
+    expect(h.disclosures.filter((d) => d.text.includes("didn't take effect"))).toHaveLength(2);
+    expect(h.disclosures.some((d) => d.text.includes('mid-task'))).toBe(false);
+    expect(h.kills).toEqual([]);
+  });
+
   it('detects store-vs-live divergence and arms the normal debounced respawn (fully-live)', async () => {
     const h = makeHarness();
     liveSession(h);
@@ -955,9 +1079,58 @@ describe('boot reconcile sweep', () => {
     });
     await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
     h.orch.bootReconcileSweep();
-    expect(h.disclosures.some((d) => d.text.includes("wasn't applied before my last restart"))).toBe(true);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(true);
     await waitUntil(() => h.spawns.length === 1);
     expect(h.spawns[0].model).toBe('claude-fable-5');
+  });
+
+  it('a live session with NO record of its launch profile is left alone — unknown is not divergence', async () => {
+    // Regression (Echo Bugs topic 10000001430): sessions started by the direct
+    // spawn route recorded nothing, so every server restart read them as
+    // "pin not applied" and restarted them, losing their in-flight prompt.
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
+    h.orch.bootReconcileSweep();
+    await sleep(120);
+    expect(h.disclosures.some((d) => d.text.includes("didn't take effect when I last restarted"))).toBe(false);
+    expect(h.spawns.length).toBe(0);
+    expect(h.kills.length).toBe(0);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-unknown-applied' && a.topic === '7')).toBe(true);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-armed')).toBe(false);
+  });
+
+  it('a session whose recorded launch matches the pin is not restarted', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy });
+    h.orch.recordSpawnSuccess('7', {
+      framework: 'claude-code',
+      model: 'claude-fable-5',
+      modelTier: null,
+      thinkingMode: null,
+      effort: null,
+    });
+    h.orch.bootReconcileSweep();
+    await sleep(120);
+    expect(h.spawns.length).toBe(0);
+    expect(h.audits.some((a) => a.type === 'boot-sweep-armed')).toBe(false);
+  });
+
+  it('a profile respawn tells the spawn port which session it replaces (brief carry)', async () => {
+    const h = makeHarness();
+    liveSession(h);
+    h.orch.recordSpawnSuccess('7', {
+      framework: 'claude-code',
+      model: null,
+      modelTier: null,
+      thinkingMode: null,
+    });
+    await h.store.mutate('7', { model: 'claude-fable-5', updatedBy: OP.updatedBy }, { shiftPrevious: true });
+    h.orch.bootReconcileSweep();
+    await waitUntil(() => h.spawns.length === 1);
+    expect(h.spawns[0].replacedSessionName).toBe(h.kills[0].name);
+    expect(h.spawns[0].replacedSessionName).toBeTruthy();
   });
 
   it('clears a STALE escalation marker (session gone) before computing expected-live', () => {

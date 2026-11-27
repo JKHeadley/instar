@@ -1,3 +1,4 @@
+import { generationProofId } from '../messaging/peerMessageTarget.js';
 /**
  * Multi-machine API routes.
  *
@@ -15,31 +16,82 @@
  * Part of Phases 4-5 of the multi-machine spec.
  */
 
-import { Router } from 'express';
+import { operatorError } from '../core/storageMachineName.js';
+import { belowFence } from '../core/identityBuildFence.js';
+import { ownerRecordFence } from '../core/ownerRecordWiring.js';
+import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
+import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
+import { Router, type Request, type Response } from 'express';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
+import { ensureAgentIdentityForPairing, type AgentIdentityAbsence } from '../core/firstPairAgentIdentity.js';
+import {
+  decideInviterPairActivation, finishInviterPairActivation, requestPairActivationRestart,
+} from '../core/sessionPoolPairActivation.js';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { sign, verify } from '../core/MachineIdentity.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
 import type { HeartbeatManager, Heartbeat } from '../core/HeartbeatManager.js';
 import type { SecurityLog } from '../core/SecurityLog.js';
 import type { MachineAuthContext, MachineAuthDeps } from './machineAuth.js';
-import { machineAuthMiddleware, ChallengeStore, signLeaseAck } from './machineAuth.js';
+import { machineAuthMiddleware, ChallengeStore, signLeaseAck, signRelayAnswer } from './machineAuth.js';
+import { MESSAGE_GENERATION_PATH, GENERATION_RELAY_MACHINE_PATH, RELAY_MACHINE_PATH, RELAY_MACHINE_LEGACY_PATH } from '../messaging/types.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import { PairingSessionStore } from '../core/PairingSessionStore.js';
 import { validatePairingCode } from '../core/PairingProtocol.js';
 import type { PairingSession } from '../core/PairingProtocol.js';
 import type { IdentityReannounceService, ReannounceEvaluationContext } from '../core/IdentityReannounce.js';
 import { encryptForSync } from '../core/SecretStore.js';
+import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { IdentityStore, IdentityStoreRefusal } from '../core/IdentityStore.js';
 import { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 import { identityProjectionBatchMessage } from '../core/IdentityProjectionEnvelope.js';
 import { identityPropagationReceiptMessage, type IdentityPropagationReceiptUnsigned } from '../core/IdentityPropagationReceipt.js';
 import { recoveryRootDelegationHash, signingAckDelegationHash } from '../core/MachineOperatorDelegation.js';
+
+/**
+ * `mobilePairing.ownerIntroducers` from this machine's own config file, for a joining machine
+ * (docs/specs/mobile-pairing-introducer.md §6). Public keys and names only; nothing when absent.
+ */
+export function ownerIntroducersForJoin(stateDir: string | undefined): { ownerIntroducers?: Array<{ name: string; publicKey: string }> } {
+  if (!stateDir) return {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf8')) as { mobilePairing?: { ownerIntroducers?: unknown } };
+    const list = cfg.mobilePairing?.ownerIntroducers;
+    if (!Array.isArray(list)) return {};
+    const clean = list.slice(0, 8).filter((e): e is { name: string; publicKey: string } =>
+      !!e && typeof (e as { name?: unknown }).name === 'string' && typeof (e as { publicKey?: unknown }).publicKey === 'string'
+      && /^[A-Za-z0-9_-]{43}$/.test((e as { publicKey: string }).publicKey))
+      .map((e) => ({ name: e.name.slice(0, 40), publicKey: e.publicKey }));
+    return clean.length ? { ownerIntroducers: clean } : {};
+  } catch { /* @silent-fallback-ok — no readable list means the joiner simply has none (it falls back to the code) */ return {}; }
+}
 export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface MachineRouteContext {
+  /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
+  /** A joiner on this version would not understand the team here. */
+  teamJoinBlocked?: (enforcement: number) => boolean;
+  /** A reason this agent home may never be paired with another machine (a throwaway that ran the stand-in owner chat), or null. */
+  pairBlocked?: () => string | null;
+  /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
+  teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number> };
+  /**
+   * Another machine of this agent asks this one to turn a team setting on (team-switches-agent-wide).
+   * Only `memory-privacy` or `app-conversations`, only ever on, then this machine's own supervised restart.
+   */
+  teamSwitchOn?: (setting: TeamSwitchSetting, senderId: string, requestedBy: string | null) => Promise<{ changed: boolean; restarting: boolean }> | { changed: boolean; restarting: boolean };
+  /** A peer sent rows this machine lacks. */
+  teamAccessPush?: (rows: unknown[], senderId: string) => Promise<{ added: number; refused: number }>;
+  /** Instar Documents (instar-document-viewer §5.1): a page of rows and blobs beyond a peer's vector. */
+  documentsPage?: (have: Record<string, number>, senderId: string) => unknown;
+  /** A machine that can't be dialled sends its document rows and blobs out here. */
+  documentsPush?: (page: unknown, senderId: string) => { applied: number; pending: number; ignored: number; blobs: number };
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -52,6 +104,15 @@ export interface MachineRouteContext {
   localMachineId: string;
   /** This machine's signing private key (PEM) */
   localSigningKeyPem: string;
+  /** Target-local desktop admission. The callback verifies the signed,
+   * browser-bound operator assertion before it creates a grant. */
+  onDesktopOperatorBegin?: (body: unknown, authenticatedFrontId: string) => Promise<{ requestId: string; targetSessionToken: string }>;
+  onDesktopOperatorKeepAlive?: (body: unknown, authenticatedFrontId: string) => boolean;
+  onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  onDesktopOperatorCommand?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
+  /** Guided setup from the front. Reachable while desktop is off: this is how it comes on. */
+  onDesktopSetup?: (body: unknown, authenticatedSenderId: string) => Promise<unknown>;
+  onDesktopOperatorLocked?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
   /**
    * Agent state dir + agent name, for the agent-identity handover on pairing
    * (docs/specs/agent-identity-continuity-on-expansion.md §1). Optional so an
@@ -60,6 +121,8 @@ export interface MachineRouteContext {
    */
   stateDir?: string;
   agentName?: string;
+  /** The bot token and chat id for a first pairing's handover; null when there is no Telegram. */
+  getTelegramHandoverSource?: () => ({ botToken: string; chatId: string } & TelegramHandoverPeople) | null;
   /** Callback when this machine should demote to standby */
   onDemote?: () => void;
   /** Callback when this machine should promote to awake */
@@ -137,6 +200,7 @@ export interface MachineRouteContext {
    * ropes. Absent / returns undefined ⇒ the field is omitted (un-upgraded behavior).
    */
   getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
+  getFreshLastingEndpoints?: () => Promise<import('../core/types.js').MeshEndpoint[]>;
   /** Bearer-authenticated recovery protocol. Mounted before the ordinary bearer
    * middleware because the rest of this router uses machine authentication. */
   identityReannounce?: IdentityReannounceService;
@@ -153,6 +217,22 @@ export interface MachineRouteContext {
 
 // ── Route Factory ──────────────────────────────────────────────────
 
+/** Read fresh: this machine's registry entry is written only at boot, so a network joined since is missing. */
+async function selfLastingEndpointsForPairing(ctx: MachineRouteContext): Promise<unknown> {
+  const fallback = lastingEndpoints(ctx.identityManager.getMachineEndpoints(ctx.localMachineId));
+  if (!ctx.getFreshLastingEndpoints) return fallback;
+  try {
+    const fresh = await Promise.race([
+      ctx.getFreshLastingEndpoints(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref()),
+    ]);
+    return fresh ? mergeEndpoints(fallback, fresh) : fallback;
+  } catch (err) {
+    console.warn('[pair] could not read this machine\'s addresses:', err);
+    return fallback; // @silent-fallback-ok: the boot-time addresses, reported on the line above.
+  }
+}
+
 export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const router = Router();
   const authMiddleware = machineAuthMiddleware(ctx.authDeps);
@@ -161,6 +241,106 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Code-authenticated pool join: the active pairing session (written by
   // `instar pair`) is the shared secret that authorizes a non-interactive join.
   const pairingStore = new PairingSessionStore(ctx.identityManager.baseDir);
+
+  router.post('/api/desktop/availability', authMiddleware, async (_req, res) => {
+    if (!ctx.onDesktopAvailability) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopAvailability()); }
+    catch { res.status(503).json({ error: 'Remote desktop is unavailable on this machine' }); }
+  });
+
+  router.post('/api/team-access/rows', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.teamAccessRows) { res.status(503).json({ error: 'team-access-unavailable' }); return; }
+    const body = req.body as { have?: unknown; heads?: unknown } | undefined;
+    const have: Record<string, number> = {};
+    const heads: Record<string, string> = {};
+    if (body?.have && typeof body.have === 'object') for (const [k, v] of Object.entries(body.have)) if (typeof v === 'number') have[k] = v;
+    if (body?.heads && typeof body.heads === 'object') for (const [k, v] of Object.entries(body.heads)) if (typeof v === 'string') heads[k] = v;
+    res.json(ctx.teamAccessRows(have, heads, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId));
+  });
+
+  // A machine that cannot be dialled gets its rows out here. Rows verify themselves on arrival.
+  router.post('/api/team-access/push', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const rows = (req.body as { rows?: unknown } | undefined)?.rows;
+    if (!ctx.teamAccessPush) { res.status(503).json({ error: 'team-access-unavailable' }); return; }
+    if (!Array.isArray(rows) || rows.length > 500) { res.status(400).json({ error: 'bad-rows' }); return; }
+    try { res.json(await ctx.teamAccessPush(rows, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
+    catch { res.status(500).json({ error: 'team-access-push-failed' }); } // @silent-fallback-ok — the sender keeps the rows and retries
+  });
+
+  // Instar Documents (instar-document-viewer §5.1): rows verify themselves on arrival.
+  router.post('/api/documents/rows', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.documentsPage) { res.status(503).json({ error: 'documents-unavailable' }); return; }
+    const have: Record<string, number> = {};
+    const body = req.body as { have?: unknown } | undefined;
+    if (body?.have && typeof body.have === 'object') for (const [k, v] of Object.entries(body.have)) if (typeof v === 'number' && k.length <= 200) have[k] = v;
+    res.json(ctx.documentsPage(have, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId));
+  });
+  router.post('/api/documents/push', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.documentsPush) { res.status(503).json({ error: 'documents-unavailable' }); return; }
+    try { res.json(ctx.documentsPush(req.body, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
+    catch { res.status(500).json({ error: 'documents-push-failed' }); } // @silent-fallback-ok — the sender keeps its rows and pushes again
+  });
+
+  // The owner turned a team setting on for the whole agent; the machine that took the tap asks each peer here.
+  // Narrow on purpose: three named settings (TEAM_SWITCH_SETTINGS), only ever on, so a machine of this agent can never use it to loosen anything.
+  router.post('/api/team-access/switch-on', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.teamSwitchOn) { res.status(503).json({ error: 'team-switches-unavailable' }); return; }
+    const body = (req.body ?? {}) as { setting?: unknown; requestedBy?: unknown };
+    if (!isTeamSwitchSetting(body.setting)) { res.status(400).json({ error: 'bad-setting' }); return; }
+    const requestedBy = typeof body.requestedBy === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.requestedBy) ? body.requestedBy : null;
+    try { res.json({ ok: true, ...(await ctx.teamSwitchOn(body.setting, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId, requestedBy)) }); }
+    catch { res.status(500).json({ error: 'team-switch-failed' }); } // @silent-fallback-ok — the sender records it and tries again
+  });
+
+  // E2E-PAIRING: tests/e2e/desktop-setup-boot-lifecycle.test.ts
+  router.post('/api/desktop/setup', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.onDesktopSetup) { res.status(503).json({ error: 'Remote desktop setup is unavailable on this machine' }); return; }
+    const senderId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.json(await ctx.onDesktopSetup(req.body, senderId)); }
+    catch (error) {
+      const { httpStatus, code } = error as { httpStatus?: unknown; code?: unknown };
+      res.status(typeof httpStatus === 'number' ? httpStatus : 403).json({ error: 'Desktop setup refused',
+        ...(typeof code === 'string' ? { code } : {}) });
+    }
+  });
+
+  router.post('/api/desktop/operator-begin', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorBegin) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.status(201).json(await ctx.onDesktopOperatorBegin(req.body, frontId)); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'desktop access refused' }); }
+  });
+
+  router.post('/api/desktop/operator-keepalive', authMiddleware, (req, res) => {
+    if (!ctx.onDesktopOperatorKeepAlive) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    if (!ctx.onDesktopOperatorKeepAlive(req.body, frontId)) { res.status(403).json({ error: 'desktop operator session unavailable' }); return; }
+    res.json({ ok: true });
+  });
+
+  router.post('/api/desktop/operator-locked', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopOperatorLocked(req.body, frontId)); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'desktop request refused' }); }
+  });
+
+  router.post('/api/desktop/operator-command', authMiddleware, async (req, res) => {
+    if (!ctx.onDesktopOperatorCommand) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
+    const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopOperatorCommand(req.body, frontId)); }
+    // E2E-PAIRING: EXEMPT — this edit only explains the existing HTTP denial; production-boot coverage was paired with the route implementation.
+    catch {
+      // @silent-fallback-ok — the caller receives an explicit refusal; no remote input is admitted.
+      res.status(403).json({ error: 'Desktop request unavailable' });
+    }
+  });
 
   const hasBearer = (req: import('express').Request): boolean => {
     const expected = ctx.getIdentityRecoveryBearerToken?.();
@@ -286,6 +466,11 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       ? await Promise.resolve(ctx.resolveIdentityReannounceContext(proposed, req)).catch(() => failClosed)
       : failClosed;
     const result = ctx.identityReannounce.evaluate(claim, evidence);
+    featureEvidence.record('multiMachine.identityReannounce', {
+      kind: result.outcome !== 'refused' ? 'fired' : /error|unreadable/.test(result.reason) ? 'error' : 'held',
+      reason: result.outcome === 'refused' ? `received claim refused: ${result.reason}` : `received claim: ${result.outcome}`,
+      context: { side: 'challenger', outcome: result.outcome, machineId: proposed.machineId, keyEpoch: Number(proposed.keyEpoch ?? 0), code: result.outcome === 'refused' ? result.reason : null },
+    });
     const status = result.outcome === 'refused' ? 403 : result.outcome.includes('quarantine') ? 202 : 200;
     res.status(status).json(result);
   });
@@ -458,9 +643,20 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Note: This endpoint does NOT use machineAuth (new machine isn't registered yet).
   // Instead, it relies on the pairing code exchange for authentication.
 
-  router.post('/api/pair', (req, res) => {
-    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl } = req.body ?? {};
+  // Express 4 does not catch a rejected handler, and an unhandled rejection stops the server.
+  const handlePair = async (req: Request, res: Response): Promise<void> => {
+    const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const joining = (req.body as { teamEnforcement?: unknown } | undefined)?.teamEnforcement;
+    const blocked = ctx.pairBlocked?.() ?? null;
+    if (blocked) {
+      res.status(409).json({ error: blocked, detail: 'This is a throwaway test agent that used a stand-in owner chat, so it is never paired with another machine.' });
+      return;
+    }
+    if (ctx.teamJoinBlocked?.(typeof joining === 'number' ? joining : 0)) {
+      res.status(409).json({ error: 'team-needs-newer-build', detail: 'This agent has team members, and this machine is on a build that does not understand them. Update it, then join again.' });
+      return;
+    }
 
     if (!pairingCode || !machineIdentity || !ephemeralPublicKey) {
       res.status(400).json({ error: 'Missing required pairing fields' });
@@ -527,6 +723,18 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
       return;
     }
 
+    // identity-security piece 2c §4: after enrolment, a joiner below the minimum build is refused, naming the
+    // build it needs. An older joiner sends no build at all, so it is refused too. Nothing applies before enrolment.
+    if (ctx.stateDir) {
+      const fence = ownerRecordFence(ctx.stateDir);
+      const below = belowFence((req.body as { instarVersion?: unknown } | undefined)?.instarVersion, fence);
+      if (below.refused) {
+        ctx.securityLog.append({ event: 'pairing_rejected', machineId: machineIdentity.machineId, machineName: machineIdentity.name, reason: 'below-minimum-build', ip });
+        res.status(409).json({ error: 'below-minimum-build', needed: below.needed, message: `This machine runs an older version of Instar. Update it to ${below.needed} or newer, then join again.` });
+        return;
+      }
+    }
+
     // Code valid → register the joiner as standby, persist its public keys (so
     // MeshRpc can verify its signatures), record its advertised URL if it sent
     // one, and burn the code (single-use).
@@ -548,6 +756,31 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         recoveryEpoch: authority.recoveryEpoch + 1,
       };
     }
+    // fb-1e30d109-e50: the agent identity the joiner needs. Created here, while this machine
+    // is still the agent's only one (before the joiner is registered — afterwards the mint
+    // guard counts it and refuses). Never fatal to the MACHINE pairing: a refusal is carried
+    // to the joiner in plain words instead.
+    let agentIdentityAbsent: AgentIdentityAbsence | null = null;
+    if (ctx.stateDir) {
+      try {
+        const ensured = ensureAgentIdentityForPairing(ctx.stateDir);
+        if (!ensured.ok) {
+          agentIdentityAbsent = ensured.absence;
+          console.warn(`[pair] no agent identity to hand over: ${ensured.absence.reason}`);
+        } else if (ensured.minted) {
+          console.log('[pair] created the agent identity for its first pairing');
+        }
+      } catch (err) {
+        // @silent-fallback-ok: named to the joiner as inviter-mint-failed; the machine pairing proceeds
+        agentIdentityAbsent = { reason: 'inviter-mint-failed', detail: `The machine you paired with could not prepare its agent identity: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    // Decided before the joiner is stored, so it does not count itself.
+    const pairActivation = ctx.stateDir ? decideInviterPairActivation({
+      stateDir: ctx.stateDir,
+      otherMachineIds: Object.keys(ctx.identityManager.loadRegistry().machines ?? {}).filter((id) => id !== ctx.localMachineId),
+      joinerMachineId: machineIdentity.machineId,
+    }) : null;
     try {
       ctx.identityManager.storeRemoteIdentity(acceptedMachineIdentity, {
         actor: 'pairing-trust',
@@ -574,6 +807,20 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         ctx.identityManager.updateMachineUrl(machineIdentity.machineId, advertisedUrl.trim().replace(/\/+$/, ''));
       } catch { /* entry was just registered; best-effort */ }
     }
+    // The joiner may have no other way to tell this machine where it is: a quick tunnel only
+    // exists once its server starts, and that address changes at every restart.
+    const joinerLasting = lastingEndpoints(endpoints);
+    if (joinerLasting.length > 0) {
+      try {
+        ctx.identityManager.updateMachineEndpoints(
+          machineIdentity.machineId,
+          mergeEndpoints(ctx.identityManager.getMachineEndpoints(machineIdentity.machineId), joinerLasting),
+        );
+      } catch (err) {
+        console.warn('[pair] could not record the new machine\'s addresses:', err);
+      }
+    }
+    if (ctx.stateDir) new LastingLinkLedger(ctx.stateDir).forget(machineIdentity.machineId);
     stored.consumed = true;
     pairingStore.save(stored);
 
@@ -615,26 +862,63 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
           },
         });
         if (sealed.ok) agentIdentityEnvelope = sealed.envelope;
-        else console.warn(`[pair] agent-identity handover refused: ${sealed.refusal}`);
+        else {
+          console.warn(`[pair] agent-identity handover refused: ${sealed.refusal}`);
+          agentIdentityAbsent = { reason: 'inviter-seal-refused', detail: `The machine you paired with could not seal its agent identity for this machine (${sealed.refusal}).` };
+        }
       } else {
         // No agent identity to hand over is a REAL state on a machine that never had
         // one. Logged rather than silent, because the joiner will refuse to mint and
         // the operator deserves to know which end lacked it.
         console.warn('[pair] no agent identity on this machine to hand over');
+        agentIdentityAbsent ??= { reason: 'inviter-mint-failed', detail: 'The machine you paired with has no agent identity to hand over.' };
       }
     } catch (err) {
       // @silent-fallback-ok: pairing the MACHINE must still succeed even if the agent
       // identity cannot be sealed — the joiner then fails loudly with a named reason
       // rather than minting, which is the safe direction.
       console.warn('[pair] agent-identity handover failed (non-fatal):', err);
+      agentIdentityAbsent = { reason: 'inviter-seal-failed', detail: `The machine you paired with failed while sealing its agent identity: ${err instanceof Error ? err.message : String(err)}` };
     }
+
+    const activation = ctx.stateDir && pairActivation ? finishInviterPairActivation({
+      stateDir: ctx.stateDir,
+      decision: pairActivation,
+      telegram: ctx.getTelegramHandoverSource?.() ?? null,
+      pairingSessionId: String(stored.code),
+      joinerMachineId: machineIdentity.machineId,
+      joinerEncryptionPublicKey: String(ephemeralPublicKey),
+      now: new Date(),
+    }) : null;
 
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      // The name the identity handover is bound to, so a joiner whose folder is named
+      // otherwise binds to the right one (fb-1e30d109-e50).
+      ...(ctx.agentName ? { agentName: ctx.agentName } : {}),
+      endpoints: await selfLastingEndpointsForPairing(ctx),
+      ...(activation?.response ?? {}),
       ...(ctx.getIdentityRecoveryBearerToken?.() ? { identityRecoveryBearerToken: ctx.getIdentityRecoveryBearerToken!() } : {}),
-      ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
+      ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : agentIdentityAbsent ? { agentIdentityAbsent } : {}),
+      // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6):
+      // public keys only, over this code-authenticated pairing response.
+      ...ownerIntroducersForJoin(ctx.stateDir),
       message: 'Paired.',
+    });
+    if (activation?.restart && ctx.stateDir) {
+      try {
+        requestPairActivationRestart(ctx.stateDir, new Date());
+      } catch (err) {
+        // @silent-fallback-ok: the keys are written, so the next restart applies them; until then this machine stays dark.
+        console.warn('[pair] could not request a restart; sharing starts at the next one:', err);
+      }
+    }
+  };
+  router.post('/api/pair', (req, res) => {
+    handlePair(req, res).catch((err) => {
+      console.warn('[pair] pairing failed:', err instanceof Error ? err.message : String(err));
+      if (!res.headersSent) res.status(500).json({ error: 'pairing-failed' });
     });
   });
 
@@ -934,7 +1218,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     ctx.securityLog.append({
       event: 'handoff_requested',
       machineId: auth.machineId,
-      machineName: ctx.identityManager.loadRemoteIdentity(auth.machineId)?.name ?? auth.machineId,
+      machineName: verifiedEntityName(auth.machineId, ctx.identityManager.loadRemoteIdentity(auth.machineId)?.name) ?? 'another machine',
     });
 
     // 3. Prepare for handoff — stop services and sync state
@@ -1091,29 +1375,71 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Protected by Machine-HMAC (5-header scheme). Envelope carries Ed25519 signature
   // verified by the MessageRouter.relay() method.
 
-  router.post('/api/messages/relay-machine', authMiddleware, async (req, res) => {
+  // messages-reach-renamed-sessions §D: the relay answers with a SIGNED ack or nack,
+  // bound to this machine, the message id and the request's nonce. The legacy path is
+  // a permanent machine-auth alias for older senders.
+  const relayMachineHandler = async (req: import('express').Request, res: import('express').Response) => {
     if (!ctx.messageRouter) {
       res.status(503).json({ error: 'Messaging not available' });
       return;
     }
+    const envelope = req.body;
+    const messageId: string = typeof envelope?.message?.id === 'string' ? envelope.message.id : '';
+    const reqNonce = String(req.headers['x-nonce'] ?? '');
+    const answer = (code?: string) => {
+      const a = { machineId: ctx.localMachineId, messageId, reqNonce, ...(code ? { code } : {}) };
+      return { a, sig: signRelayAnswer(a, ctx.localSigningKeyPem) };
+    };
+    if (!messageId) {
+      res.status(400).json({ error: 'Invalid envelope', code: 'relay-invalid-envelope' });
+      return;
+    }
     try {
-      const envelope = req.body;
-      if (!envelope?.message?.id) {
-        res.status(400).json({ error: 'Invalid envelope' });
+      const requestSigner = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+      const result = await ctx.messageRouter.relayFromMachine(envelope, requestSigner);
+      if (result.outcome === 'refused') {
+        const { a, sig } = answer(result.code);
+        res.status(409).json({ error: 'Relay refused', code: result.code, nack: a, sig });
         return;
       }
-
-      // Ed25519 signature verification happens inside relay() for source='machine'
-      const accepted = await ctx.messageRouter.relay(envelope, 'machine');
-      if (accepted) {
-        res.json({ ok: true });
-      } else {
-        res.status(409).json({ error: 'Relay rejected (loop, duplicate, or invalid signature)' });
-      }
+      const { a, sig } = answer();
+      res.json({ ok: true, duplicate: result.outcome === 'duplicate', ack: a, sig });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Relay failed' });
+    }
+  };
+  // N73: observe the receiver's exact incarnation before the sender creates a
+  // message. Existing machineAuth authenticates membership and rejects replay;
+  // the existing signed relay answer binds the complete observation digest.
+  router.post(MESSAGE_GENERATION_PATH, authMiddleware, (req, res) => {
+    const sender = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
+    if (!ctx.identityManager.isMachineActive(sender)) { res.status(403).json({ error: 'Machine not active' }); return; }
+    if (!ctx.messageRouter) { res.status(503).json({ error: 'Messaging not available' }); return; }
+    const target = req.body?.target;
+    if (typeof target !== 'string' || !target || target.length > 200 || target === '*' || target === 'best') {
+      res.status(400).json({ error: 'A named session target is required' }); return;
+    }
+    try {
+      const observation = { target, sessionId: ctx.messageRouter.currentSessionGeneration(target), observedAt: Date.now() };
+      const ack = { machineId: ctx.localMachineId, messageId: generationProofId(observation), reqNonce: String(req.headers['x-nonce'] ?? '') };
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ observation, ack, sig: signRelayAnswer(ack, ctx.localSigningKeyPem) });
+    } catch {
+      res.status(503).json({ error: 'The current session generation is unavailable' });
     }
   });
+  router.post(GENERATION_RELAY_MACHINE_PATH, authMiddleware, (req, res) => {
+    const recipient = req.body?.generationEnvelope?.message?.to;
+    if (req.body?.protocol !== 'session-generation-v1' || recipient?.sessionGenerationRequired !== true
+      || typeof recipient.sessionId !== 'string' || !recipient.sessionId || recipient.sessionId.length > 200) {
+      res.status(400).json({ error: 'Generation protocol wrapper required' }); return;
+    }
+    // Authentication covered the wrapper; only now unwrap for envelope verification.
+    req.body = req.body.generationEnvelope;
+    return relayMachineHandler(req, res);
+  });
+  router.post(RELAY_MACHINE_PATH, authMiddleware, relayMachineHandler);
+  router.post(RELAY_MACHINE_LEGACY_PATH, authMiddleware, relayMachineHandler);
 
   return router;
 }

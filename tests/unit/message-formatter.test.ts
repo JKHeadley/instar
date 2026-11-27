@@ -76,11 +76,20 @@ describe('MessageFormatter', () => {
       expect(result).toContain('thr-xyz-789');
     });
 
-    it('includes reply and ack instructions', () => {
-      const msg = makeMessage({ id: 'msg-reply-test' });
+    it('includes reply and ack instructions (cross-agent → threadline_send)', () => {
+      const msg = makeMessage({ id: 'msg-reply-test', to: { agent: 'other-agent', session: 'best', machine: 'local' } });
       const result = formatter.formatInline(msg);
       expect(result).toContain('threadline_send');
       expect(result).toContain('Message ID: msg-reply-test');
+    });
+
+    it('same-agent message: reply goes session-to-session, never a user topic', () => {
+      const msg = makeMessage({ id: 'msg-same-agent' });
+      const result = formatter.formatInline(msg);
+      expect(result).toContain('POST /messages/send to session "deploy-job"');
+      expect(result).toContain('Never answer an agent message in a user topic.');
+      expect(result).not.toContain('threadline_send');
+      expect(result).toContain('Message ID: msg-same-agent');
     });
 
     it('uses delimiter lines for visual separation', () => {

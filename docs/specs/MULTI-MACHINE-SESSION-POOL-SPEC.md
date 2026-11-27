@@ -588,7 +588,7 @@ Each invariant states HONESTLY what the substrate guarantees — no overstatemen
 
 Per `GRADUATED-FEATURE-ROLLOUT-SPEC`:
 - **Stage 0 (dark):** all code ships; placement runs in **dryRun** (logs the decision it WOULD make; always places locally). Single-machine = no-op.
-- **Stage 1 (shadow):** router makes real placement decisions, ownership records written, but transfer disabled — proves routing + ownership without moving live sessions.
+- **Stage 1 (shadow):** router makes real placement decisions and can start a new conversation on another machine; ownership records written; transfer of a running session disabled.
 - **Stage 2 (live transfer):** failover + explicit-pin transfers enabled.
 - **Stage 3 (rebalance):** load-driven proactive transfers enabled.
 - **E2E is a HARD per-stage gate enforced by TWO NAMED CODE COMPONENTS, not by willpower (Structure > Willpower).** A stage does NOT activate until the **Tier-3 E2E test for that stage** (real two-machine pool; the test-as-self real-Telegram exactly-once check below) completes GREEN — and that gate is mechanical, grounded in two implemented components:

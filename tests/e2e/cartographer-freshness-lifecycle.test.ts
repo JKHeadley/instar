@@ -18,7 +18,7 @@
  *   POST /cartographer/node/refresh writes a summary, and GET /cartographer/health
  *   returns the spec #2 `freshness` backlog metric object.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -192,14 +192,30 @@ describe('Cartographer doc-freshness sweep — feature is alive (Tier 3 E2E)', (
     const engine = engineFor(t, routerStub());
     const poller = new CartographerSweepPoller({ engine, cadenceMs: 50, idleCadenceMs: 50 });
     expect(poller.isBreakerOpen()).toBe(false);
-    poller.start();
-    // Let at least one cadence tick fire.
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    poller.stop();
-    // A healthy author tick must NOT have tripped the degradation breaker.
-    expect(poller.isBreakerOpen()).toBe(false);
-    // The poller drove the real engine, which authored real nodes.
-    expect(t.computeStaleness('src/core/Widget.ts')).toBe('fresh');
+    const realRunPass = engine.runPass.bind(engine);
+    let completePass!: () => void;
+    let failPass!: (error: unknown) => void;
+    const completedPass = new Promise<void>((resolve, reject) => { completePass = resolve; failPass = reject; });
+    let activePass: ReturnType<typeof engine.runPass> | undefined;
+    const passSpy = vi.spyOn(engine, 'runPass').mockImplementation(() => {
+      activePass = realRunPass();
+      void activePass.then(completePass, failPass);
+      return activePass;
+    });
+    try {
+      poller.start();
+      // Await the real pass invoked by the poller, not an assumed duration of its work.
+      // The fixture's existing test timeout bounds a poller that never invokes the engine.
+      await completedPass;
+      expect(passSpy).toHaveBeenCalled();
+      // A healthy author tick must NOT have tripped the degradation breaker.
+      expect(poller.isBreakerOpen()).toBe(false);
+      // The poller drove the real engine, which authored real nodes.
+      expect(t.computeStaleness('src/core/Widget.ts')).toBe('fresh');
+    } finally {
+      poller.stop();
+      try { await activePass; } finally { passSpy.mockRestore(); }
+    }
   });
 
   // ── PART B — the spec #2 routes are alive (200, not 503) through the server ──

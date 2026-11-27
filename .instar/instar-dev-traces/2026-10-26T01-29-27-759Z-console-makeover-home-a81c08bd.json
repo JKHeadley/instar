@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "console-makeover-home",
+  "sessionId": "cd11bb25-38ff-4a31-becc-216173b7ad19",
+  "timestamp": "2026-10-26T01:29:27.759Z",
+  "artifactPath": "upgrades/side-effects/console-makeover-home.md",
+  "artifactSha256": "558fc05a259127723fea8b46142dda40f1d213d09015841cfc58b254ad41b1e4",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/home-model.js",
+    "dashboard/console/nav-model.js",
+    "dashboard/console/promises-model.js",
+    "dashboard/console/promises.js",
+    "dashboard/console/ui.js",
+    "docs/specs/console-makeover.md",
+    "docs/specs/reports/console-features-review-r1-argon.md",
+    "docs/specs/reports/console-features-review-r1-astra.md",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/integration/console-static-serving.test.ts",
+    "tests/unit/console-home-model.test.ts",
+    "tests/unit/console-promises.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "First native console page (Promises) and shared UI parts; static dashboard files using existing bearer-only routes; tests in three tiers.",
+  "eli16Path": "docs/specs/console-makeover.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-makeover-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

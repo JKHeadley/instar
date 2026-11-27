@@ -47,5 +47,20 @@ describe('PostUpdateMigrator — feedback executor section', () => {
     const md = generateClaudeMd('test', 'agent', 4042, false);
     expect(md).toContain('**Feedback executor (operated feedback factory)**');
     expect(md).not.toContain('The executor that turns work items into pull requests is not built yet.');
+    expect(md).not.toContain('`auto-merge-disabled`');
+    expect(md).toContain('the complete CI floor passes');
+  });
+
+  it('removes the obsolete native auto-merge prerequisite from an existing agent once', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-feedback-exec-old-'));
+    dirs.push(projectDir);
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    const file = path.join(projectDir, 'CLAUDE.md');
+    fs.writeFileSync(file, '# Agent\n\n**Feedback executor (operated feedback factory)** — status: `approver-not-independent` / `auto-merge-disabled` / `profile-unenforceable`.\n');
+    expect(migrate(projectDir).upgraded).toContain('CLAUDE.md: removed obsolete feedback auto-merge prerequisite');
+    const once = fs.readFileSync(file, 'utf8');
+    expect(once).not.toContain('`auto-merge-disabled`');
+    expect(once).toContain('the complete CI floor passes');
+    expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: removed obsolete feedback auto-merge prerequisite');
   });
 });

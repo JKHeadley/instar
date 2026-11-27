@@ -180,4 +180,42 @@ describe('load report slot (B1): separate receipt, coarse beats carry it forward
     expect(cap.loadVerdict).toBe('unknown');
     expect(cap.loadReport).toBe(report); // retained for forensics, not treated as current
   });
+
+  describe('session capacity from the report (a peer beat carries the report, not the fields)', () => {
+    const withSessions = clampLoadReport({ bootId: 'b', seq: 2, sampleAgeMs: 1000, verdict: 'ok', sessionsActive: 3, sessionsMax: 10 })!;
+
+    it('a fresh report fills activeSessionCount and maxSessions on a row that has neither', () => {
+      const reg = makeRegistry({ now: () => T0 });
+      reg.recordHeartbeat({ machineId: 'm_pc', selfReportedLastSeen: new Date(T0).toISOString(), loadReport: withSessions });
+      const cap = reg.getCapacity('m_pc')!;
+      expect(cap.activeSessionCount).toBe(3);
+      expect(cap.maxSessions).toBe(10);
+    });
+
+    it('a stale report fills nothing, so an old count cannot make a machine look free', () => {
+      let now = T0;
+      const reg = makeRegistry({ now: () => now });
+      reg.recordHeartbeat({ machineId: 'm_pc', selfReportedLastSeen: new Date(now).toISOString(), loadReport: withSessions });
+      now += 60_000; // 1 s sample age + 60 s = 61 s
+      reg.recordHeartbeat({ machineId: 'm_pc', selfReportedLastSeen: new Date(now).toISOString() });
+      const cap = reg.getCapacity('m_pc')!;
+      expect(cap.activeSessionCount).toBeUndefined();
+      expect(cap.maxSessions).toBeUndefined();
+    });
+
+    it('fields the beat carried directly win over the report', () => {
+      const reg = makeRegistry({ now: () => T0 });
+      reg.recordHeartbeat({ machineId: 'm_pc', selfReportedLastSeen: new Date(T0).toISOString(), activeSessionCount: 7, maxSessions: 20, loadReport: withSessions });
+      const cap = reg.getCapacity('m_pc')!;
+      expect(cap.activeSessionCount).toBe(7);
+      expect(cap.maxSessions).toBe(20);
+    });
+
+    it('a report with null session fields leaves the row unknown', () => {
+      const noSessions = clampLoadReport({ bootId: 'b', seq: 3, sampleAgeMs: 1000, verdict: 'ok' })!;
+      const reg = makeRegistry({ now: () => T0 });
+      reg.recordHeartbeat({ machineId: 'm_pc', selfReportedLastSeen: new Date(T0).toISOString(), loadReport: noSessions });
+      expect(reg.getCapacity('m_pc')!.maxSessions).toBeUndefined();
+    });
+  });
 });

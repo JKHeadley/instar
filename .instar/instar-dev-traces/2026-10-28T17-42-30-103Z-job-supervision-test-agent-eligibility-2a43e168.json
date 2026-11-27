@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "job-supervision-test-agent-eligibility",
+  "sessionId": "d384ab47-df76-4f5e-98ea-d49268d23429",
+  "timestamp": "2026-10-28T17:42:30.103Z",
+  "artifactPath": "upgrades/side-effects/job-supervision-test-agent-eligibility.md",
+  "artifactSha256": "915ace2ac621ae52359b7b973fd3dae5a53b56726c7689a9b07099540ea03103",
+  "specPath": "docs/specs/job-result-supervision-v2.md",
+  "coveredFiles": [
+    "src/scheduler/JobSupervisionRollout.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/job-supervision-rollout-eligibility.test.ts",
+    "upgrades/next/job-supervision-test-agent-eligibility.md",
+    "upgrades/side-effects/job-supervision-test-agent-eligibility.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This is a narrow reversible correction, but it guards the first stage of a higher-risk model rollout, so I am using the approved spec and full review path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

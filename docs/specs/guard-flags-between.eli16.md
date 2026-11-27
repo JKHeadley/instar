@@ -1,0 +1,5 @@
+The agent has a safety check that stops dangerous git commands before they run. It looked for exact phrases, so adding one small harmless option in the middle of the command, or telling git which folder to work in, slipped past it. That actually happened: a command meant for a scratch folder ran in the agent's live home because an earlier step failed, and the check did not recognise the spelling.
+
+Now the check understands that options can sit anywhere in the command, for the three dangerous commands it already watched: throwing away local changes, deleting untracked files, and overwriting history on the server. It stays within one command, so an unrelated command later in the same line does not set it off. The safer way of overwriting your own branch is still allowed.
+
+Nothing else changes. Every agent gets the new check the next time it updates, because this file is rewritten on each update. Sometimes a commit message that quotes one of these commands will be stopped, as already happened with the exact phrase, and the agent can reword it.

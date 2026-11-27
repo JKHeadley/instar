@@ -198,6 +198,11 @@ export const KNOWN_CLAUDE_MODEL_IDS = [
   // dropped at the resolution clamp and a topic pin to Fable 5.1 was refused
   // `off-enum` — a stale allowlist reads exactly like a deliberate refusal.
   'claude-fable-5-1',
+  // Fable 5.2 — live-verified against `claude --model claude-fable-5-2 -p` on CLI 2.1.319,
+  // 2026-11-09 (`modelUsage` reported `claude-fable-5-2`). Added on the operator's request to
+  // move every Fable 5.1 pin to 5.2; without it the pin is refused `invalid-model` even though
+  // the door serves the id — the same allowlist lag as the 5.1 entry above.
+  'claude-fable-5-2',
   // Opus 5.5 — live-verified against `claude --model claude-opus-5-5 -p` on
   // CLI 2.1.281, 2026-09-24. Added so a topic can be pinned to it by exact id
   // (the operator moved every Fable 5.1 pin to Opus 5.5 that day).
@@ -241,6 +246,19 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // Live-verified 2026-09-23 on codex CLI 0.156.1 (0.153.4 refuses both).
   'gpt-6-sol',
   'gpt-6-luna',
+  // Live subscription probe on Codex CLI 0.166.0 (2026-11-04); 0.156.1
+  // refuses this id. Launchers check local CLI capability before using it.
+  'gpt-6.1-sol',
+  // Live subscription probe on Codex CLI 0.169.0 (2026-11-15): answered a trivial prompt.
+  'gpt-6.1-terra',
+  // GPT-6.2 family — released 2026-11-17. Live subscription probe that day on
+  // Codex CLI 0.169.0: all five Codex accounts list both ids in models_cache.json
+  // and `codex exec -m <id>` answered on every account. CLI 0.166.0 and 0.168.0
+  // answer too; 0.165.0 and older refuse both ("not supported when using Codex
+  // with a ChatGPT account"), so launchers take CODEX_OLDER_CLI_FALLBACKS there.
+  // There is no gpt-6.2-luna; the light tier stays gpt-6-luna.
+  'gpt-6.2-sol',
+  'gpt-6.2-astra',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

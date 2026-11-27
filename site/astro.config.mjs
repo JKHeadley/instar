@@ -7,6 +7,10 @@ import vercel from '@astrojs/vercel';
 // https://astro.build/config
 export default defineConfig({
   site: 'https://instar.sh',
+  // The old comparison guide was retired (topic 145295); old links land on the introduction.
+  redirects: {
+    '/guides/vs-openclaw': '/introduction/',
+  },
   vite: {
     plugins: [tailwindcss()]
   },
@@ -79,10 +83,12 @@ export default defineConfig({
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
             { label: 'Telegram Integration', slug: 'features/telegram' },
+            { label: 'Tunnels', slug: 'features/tunnel' },
             { label: 'WhatsApp Integration', slug: 'features/whatsapp' },
             { label: 'Slack Integration', slug: 'features/slack' },
             { label: 'Lifeline', slug: 'features/lifeline' },
             { label: 'Conversational Memory', slug: 'features/memory' },
+            { label: 'Memory Privacy', slug: 'features/memory-privacy' },
             { label: 'Evolution System', slug: 'features/evolution' },
             { label: 'Relationships', slug: 'features/relationships' },
             { label: 'Safety Gates', slug: 'features/safety-gates' },
@@ -95,6 +101,7 @@ export default defineConfig({
             { label: 'Self-Healing', slug: 'features/self-healing' },
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
+            { label: 'Disk Steward', slug: 'features/disk-steward' },
             { label: 'Resource Ledger (CPU + Memory)', slug: 'features/resource-ledger' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
             { label: 'Paste Handling', slug: 'features/paste-handling' },
@@ -110,6 +117,8 @@ export default defineConfig({
           items: [
             { label: 'Under the Hood', slug: 'architecture/under-the-hood' },
             { label: 'The Living System', slug: 'architecture/the-living-system' },
+            { label: 'Conversations: Custody and Writes', slug: 'architecture/conversations-custody' },
+            { label: 'Conversations: Recovery and Privacy', slug: 'architecture/conversations-recovery-privacy' },
           ],
         },
         {
@@ -117,6 +126,7 @@ export default defineConfig({
           items: [
             { label: 'CLI Commands', slug: 'reference/cli' },
             { label: 'API Endpoints', slug: 'reference/api' },
+            { label: 'Blocker, Authorization, Failure & Framework-Issue Routes', slug: 'reference/ledger-and-request-routes' },
             { label: 'Configuration', slug: 'reference/configuration' },
             { label: 'File Structure', slug: 'reference/file-structure' },
             { label: 'Hooks', slug: 'reference/hooks' },
@@ -128,9 +138,10 @@ export default defineConfig({
         {
           label: 'Guides',
           items: [
+            { label: 'Instar in Your Organization', slug: 'guides/organizations' },
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
-            { label: 'vs OpenClaw', slug: 'guides/vs-openclaw' },
+            { label: 'Contributor Checks', slug: 'guides/contributor-checks' },
           ],
         },
       ],

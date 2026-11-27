@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "slug": "job-cost-reduction",
+  "sessionId": "151db862-f0e5-4985-9614-540e5687e3fe",
+  "timestamp": "2026-10-27T15:52:32.863Z",
+  "artifactPath": "upgrades/side-effects/job-cost-reduction.md",
+  "artifactSha256": "a98ce3bd3384c093031f4002499dbbef7c132e9109c50f238c9cc4dc598143ec",
+  "specPath": "docs/specs/job-cost-reduction.md",
+  "coveredFiles": [
+    "docs/specs/job-cost-reduction.eli16.md",
+    "docs/specs/job-cost-reduction.md",
+    "src/config/ConfigDefaults.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scheduler/JobCostAuditReadiness.ts",
+    "src/scheduler/JobResultTriage.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "tests/e2e/job-cost-lifecycle.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-script-runner.test.ts",
+    "tests/unit/job-result-triage.test.ts",
+    "upgrades/next/job-cost-reduction.md",
+    "upgrades/side-effects/job-cost-reduction.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Runtime audit gate changes scheduled job execution and fleet-installed awareness; approved spec and independent side-effects review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "gpt-6-astra",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-cost-reduction-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

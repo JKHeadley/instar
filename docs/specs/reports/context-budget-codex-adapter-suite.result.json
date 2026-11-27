@@ -1,0 +1,76 @@
+{
+  "schema": "adapter-suite/1",
+  "engine": "codex-cli",
+  "version": "0.167.1",
+  "machine": "m_e8c9b243c449b1337713bc29d47a6f3a",
+  "ranAt": 1794373748200,
+  "durationMs": 47747,
+  "capabilities": {
+    "transcriptRead": {
+      "state": "supported",
+      "evidence": "the rollout at a known path carries entries and the session id (/home/echo/.codex/sessions/2026/11/10/rollout-2026-11-10T21-09-09-01a1c902-8749-7f63-a496-162fb89cfd78.jsonl); token_count carries cached_input_tokens"
+    },
+    "controlCompact": {
+      "state": "absent",
+      "evidence": "`/compact` as a headless prompt did not produce a `compacted` entry"
+    },
+    "controlClear": {
+      "state": "absent",
+      "evidence": "unmeasured by this suite: `codex exec` has no clear command; the TUI's new-thread command is not driven headlessly"
+    },
+    "compactionDetection": {
+      "state": "supported",
+      "evidence": "the rollout's `compacted` entry (window_id 01a1c903-1720-7480-be42-db61289aa869) AND a native PreCompact hook (trigger auto); a forked rollout's inherited copies were not exercised"
+    },
+    "preCompactionSteering": {
+      "state": "partial",
+      "evidence": "the PreCompact hook runs, but its output does not reach the compaction (its token appears nowhere in the rollout; Codex exposes no summary to steer)"
+    },
+    "postCompactSummary": {
+      "state": "partial",
+      "evidence": "the PostCompact hook fires after a compaction, but without a summary (the rollout's `compacted` message is empty too)"
+    },
+    "seedAfterCompaction": {
+      "state": "supported",
+      "evidence": "SessionStart(source=compact) fired and its seed is in the model's input after the compaction (a developer message in the rollout; the model did not echo it when asked to list its tokens); the UserPromptSubmit next-prompt carrier is in the input after it too"
+    },
+    "seedAfterClear": {
+      "state": "absent",
+      "evidence": "unmeasured by this suite: no headless clear command (see controlClear)"
+    },
+    "spawnWithInitialContext": {
+      "state": "absent",
+      "evidence": "unmeasured by this suite: rung 2 uses Instar's own spawn path (formatContextForSession), covered by its tests"
+    },
+    "materialiseResume": {
+      "state": "supported",
+      "evidence": "a pre-compaction copy of the rollout under a new thread id resumed and recalled the codeword"
+    },
+    "compactionWindowSetting": {
+      "state": "supported",
+      "evidence": "`-c model_auto_compact_token_limit=<n>` pressed a real auto compaction at the configured size"
+    },
+    "perPromptDelta": {
+      "state": "supported",
+      "evidence": "UserPromptSubmit output is in the model's input as a developer message, byte-whole at 7000 chars"
+    },
+    "toolPolicy": {
+      "state": "supported",
+      "evidence": "a PreToolUse(.*) deny refused the shell call (its reason reached the rollout) and the command never ran"
+    },
+    "cleanStopSignals": {
+      "state": "absent",
+      "evidence": "unmeasured by this suite: pane pattern and child processes are Instar-side signals, not engine capabilities"
+    },
+    "costModel": {
+      "state": "partial",
+      "evidence": "token_count exposes cache-read counters (cached_input_tokens); the engine gives no cache pricing or TTL"
+    },
+    "frameworkDiscriminator": {
+      "state": "supported",
+      "evidence": "INSTAR_FRAMEWORK reached the hook environment"
+    }
+  },
+  "inconclusive": false,
+  "errors": []
+}

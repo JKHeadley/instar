@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-native-conversations-inc2",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T09:04:01.655Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-conversations-inc2.md",
+  "artifactSha256": "55f573cfda2b7cc5f2ae995faa9b0ea778f2400bc137efe4b868ea177a8d6db4",
+  "specPath": "docs/specs/mobile-native-conversations.md",
+  "coveredFiles": [
+    "src/core/MobileDeviceKeyLedger.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-conversations-alive.test.ts",
+    "tests/integration/mobile-native-signed-records.test.ts",
+    "tests/unit/mobile-device-key-ledger-auth.test.ts",
+    "upgrades/next/mobile-native-conversations-inc2.md",
+    "upgrades/side-effects/mobile-native-conversations-inc2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to increment 2: device authentication also refuses a pairing with a device-key ledger revocation row (in-memory index), closing the window where a failed registry write left a revoked phone authenticating. Security-relevant auth path change, dark on the fleet.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

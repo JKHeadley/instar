@@ -33,27 +33,61 @@ const preCompactEmitter = new EventEmitter();
 const postCompactEmitter = new EventEmitter();
 
 // Synthesis threshold: how full the context window can get before we emit
-// a pre-compact notice. Codex auto-compacts near `effective_window - 13k`,
-// so we emit our synthetic notice at roughly 90% of the assumed window.
+// a pre-compact notice. Codex auto-compacts near `effective_window - 13k`
+// (measured 2026-11-10: compactions at 84-95% of a 258,400 window), so we
+// emit our synthetic notice at 85% of the window.
 const PRE_COMPACT_THRESHOLD_RATIO = 0.85;
 const ASSUMED_CONTEXT_WINDOW = 200_000;
 
 const lastNoticeBySession = new Set<SessionHandle>();
 
-/** Called by the event normalizer when a turn.completed event arrives. */
-export function trackContextUsage(session: SessionHandle, contextWindowUsed: number): void {
-  const threshold = ASSUMED_CONTEXT_WINDOW * PRE_COMPACT_THRESHOLD_RATIO;
-  if (contextWindowUsed >= threshold && !lastNoticeBySession.has(session)) {
-    lastNoticeBySession.add(session);
-    preCompactEmitter.emit('pre-compact', {
-      session,
-      timestamp: new Date().toISOString(),
-      source: 'synthesized',
-      contextWindowUsed,
-      remainingBeforeForced: Math.max(0, ASSUMED_CONTEXT_WINDOW - 13_000 - contextWindowUsed),
-      providerSpecific: { [OPENAI_CODEX_ID]: { synthesized: true, thresholdRatio: PRE_COMPACT_THRESHOLD_RATIO } },
-    } as PreCompactNotice);
-  }
+/**
+ * Called with each usage reading (the rollout's `token_count` event, read by
+ * the context-budget transcript channel; context-budget-layered-summaries
+ * §9.6 "Compaction detection"). Emits ONE synthesized pre-compact notice per
+ * compaction cycle when the context used crosses 85% of the window: the
+ * engine-reported `model_context_window` when the rollout carries it, else
+ * the assumed 200K. Re-armed by `emitPostCompactFromTranscript`.
+ * Returns true when this call emitted the notice.
+ */
+export function trackContextUsage(session: SessionHandle, contextWindowUsed: number, contextWindow?: number): boolean {
+  const reported = typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0;
+  const window = reported ? contextWindow : ASSUMED_CONTEXT_WINDOW;
+  const threshold = window * PRE_COMPACT_THRESHOLD_RATIO;
+  if (!(contextWindowUsed >= threshold) || lastNoticeBySession.has(session)) return false;
+  lastNoticeBySession.add(session);
+  preCompactEmitter.emit('pre-compact', {
+    session,
+    timestamp: new Date().toISOString(),
+    source: 'synthesized',
+    contextWindowUsed,
+    remainingBeforeForced: Math.max(0, window - 13_000 - contextWindowUsed),
+    providerSpecific: { [OPENAI_CODEX_ID]: { synthesized: true, thresholdRatio: PRE_COMPACT_THRESHOLD_RATIO, contextWindow: window, windowAssumed: !reported } },
+  } as PreCompactNotice);
+  return true;
+}
+
+/** Re-arm the synthesized notice without announcing (a historical compaction seen late). */
+export function rearmContextUsage(session: SessionHandle): void {
+  lastNoticeBySession.delete(session);
+}
+
+/**
+ * The post-compaction PRODUCER (§9.6 "Post-compaction event with the
+ * summary": Codex `absent`). Codex has no post-compact hook; the context-budget
+ * transcript channel calls this when the rollout records a `compacted` entry.
+ * Codex exposes no summary (the entry's `message` is empty in every measured
+ * rollout), so the notice carries `summary: null` and says so. Re-arms the
+ * synthesized pre-compact notice for the next cycle.
+ */
+export function emitPostCompactFromTranscript(session: SessionHandle, o: { timestamp: string; windowId: string; tokensBefore?: number }): void {
+  lastNoticeBySession.delete(session);
+  postCompactEmitter.emit('post-compact', {
+    session,
+    timestamp: o.timestamp,
+    summary: null,
+    providerSpecific: { [OPENAI_CODEX_ID]: { source: 'transcript', summary: 'absent', windowId: o.windowId, ...(typeof o.tokensBefore === 'number' ? { tokensBefore: o.tokensBefore } : {}) } },
+  } as PostCompactNotice);
 }
 
 class OpenAiCodexCompactionLifecycle implements CompactionLifecycle {

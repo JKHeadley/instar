@@ -48,8 +48,10 @@
  */
 
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
+import { AbsenceTracker, assessOwnerRoutability, DEFAULT_UNREGISTERED_SILENCE_MS, type OwnerRoutability, type OwnerStanding } from './unroutableOwner.js';
 import type { MergedClaimAnnotation } from './TopicClaimAnnotationStore.js';
 import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 /** Config subtree: multiMachine.sessionPool.staleOwnerRelease (§5). */
 export interface StaleOwnerReleaseConfig {
@@ -69,6 +71,15 @@ export interface StaleOwnerReleaseConfig {
   bootstrapNonObservationMultiple: number;
   /** The owner self-fence TTL the §2.3 ordering invariant is validated against. */
   selfFenceTtlMs: number;
+  /**
+   * Unroutable-owner release (docs/specs/unroutable-owner-release.md): claims
+   * from a REVOKED owner, or an UNREGISTERED owner whose journal has been silent
+   * past the bound, land even while the engine is in dryRun — no such owner can
+   * ever answer, so the dry-run soak (which exists to prove the death-evidence
+   * bar against live peers) has nothing to protect. Default true; false keeps
+   * them under dryRun like every other claim.
+   */
+  unroutableOwnerLive?: boolean;
 }
 
 export const DEFAULT_STALE_OWNER_RELEASE_CONFIG: Omit<StaleOwnerReleaseConfig, 'enabled'> = {
@@ -220,6 +231,18 @@ export interface StaleOwnerReleaseDeps {
   trace: (entry: StaleOwnerTraceEntry) => void;
   /** Raise ONE deduped attention item (episode-keyed; P17-coalesced pool-wide). */
   raiseAttention: (item: StaleOwnerAttentionItem) => void;
+  /**
+   * trustworthy-machine-load D5: the owner's honest liveness (live / unreachable with a
+   * shape / stale / unknown), so a notice says "struggling" or "refusing" when that is the
+   * evidence instead of describing a machine that still answers as gone. Display only:
+   * it never changes the evidence bar or any claim decision. Absent ⇒ today's wording.
+   */
+  ownerLiveness?: (machineId: string) => import('./machineLiveness.js').MachineLiveness | undefined;
+  /**
+   * Unroutable-owner release: the owner's standing in THIS machine's machine
+   * registry. Absent ⇒ every owner reads 'registered' (today's behavior).
+   */
+  ownerStanding?: (machineId: string) => OwnerStanding;
   /** Durable condition lifecycle. Wiring owns ids; this producer owns semantic
    *  identity and positive-evidence clears. */
   observeAttentionCondition?: (identity: AttentionConditionIdentity) => AttentionConditionObservation;
@@ -246,6 +269,8 @@ interface OwnerEpisode {
   /** Memoized probe verdict + when it was computed (mono). */
   probe: { verdict: ProbeVerdict; atMono: number } | null;
   probeInFlight: boolean;
+  /** Why the owner is unroutable this tick (null = routable; the full evidence bar applies). */
+  unroutable: 'revoked' | 'unregistered-silent' | null;
   probeErrors: number;
   probeBreakerOpen: boolean;
   /** Widening backoff between probe attempts (mono floor). */
@@ -367,7 +392,9 @@ export class StaleOwnerReleaseEngine {
 
     // ── Candidate owners: peers that own at least one live topic record.
     const records = this.d.listOwnershipRecords().filter(
-      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self,
+      // app-conversations-in-the-pool §2.2: never automatic for an app conversation. Its only takeover is
+      // the operator's "bring it back here".
+      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self && !r.sessionKey.startsWith('app:'),
     );
     const topicsByOwner = new Map<string, SessionOwnershipRecord[]>();
     for (const r of records) {
@@ -413,7 +440,18 @@ export class StaleOwnerReleaseEngine {
       const ep = this.openEpisode(owner, nowMono, nowWall);
       ep.healthySinceMono = null;
 
-      const verdict = this.classifyOwner(owner, view, ep, cfg, nowWall, nowMono, machines.length, inQuorum);
+      // Unroutable owner (revoked, or unregistered + silent): no probe or advert
+      // can ever disprove its death, so the evidence bar would hold its topics
+      // as ambiguity forever. It is expired by construction (spec §2).
+      const routability = this.assessRoutability(owner, !!view, cfg, nowWall, nowMono);
+      ep.unroutable = routability.unroutable ? routability.reason : null;
+      let verdict: OwnerEvidenceVerdict;
+      if (routability.unroutable && (routability.reason === 'revoked' || inQuorum)) {
+        this.bumpEvidenceClass(`unroutable-${routability.reason}`);
+        verdict = { verdict: 'expired' };
+      } else {
+        verdict = this.classifyOwner(owner, view, ep, cfg, nowWall, nowMono, machines.length, inQuorum);
+      }
       this.recordVerdict(ep, owner, verdict, cfg, nowMono, nowWall);
 
       if (verdict.verdict !== 'expired') continue;
@@ -458,7 +496,10 @@ export class StaleOwnerReleaseEngine {
 
         this.counters.attempts++;
 
-        if (this.d.dryRun()) {
+        // Only a REVOKED owner bypasses dryRun: an unregistered-silent verdict rests on
+        // observed absence, not on proof the machine stopped (cross-model round 4).
+        const unroutableLive = ep.unroutable === 'revoked' && cfg.unroutableOwnerLive !== false;
+        if (this.d.dryRun() && !unroutableLive) {
           // State-change-gated would-claim: once per topic per episode (§2.6).
           if (!ep.wouldClaimLogged.has(rec.sessionKey)) {
             ep.wouldClaimLogged.add(rec.sessionKey);
@@ -481,7 +522,7 @@ export class StaleOwnerReleaseEngine {
         if (landed) {
           claimsThisTick++;
           this.counters.claims++;
-          this.trace({ type: 'claim', owner, episodeId: ep.episodeId, topic: rec.sessionKey });
+          this.trace({ type: 'claim', owner, episodeId: ep.episodeId, topic: rec.sessionKey, ...(ep.unroutable ? { reason: `unroutable-owner:${ep.unroutable}` } : {}) });
           this.lastEpisodeSummary = { episodeId: ep.episodeId, owner, verdict: 'claimed', at: new Date(nowWall).toISOString() };
           if (Number.isFinite(topicNum)) {
             // §2.4/§2.7.4: the claim CAS and the suspension annotation are
@@ -554,6 +595,7 @@ export class StaleOwnerReleaseEngine {
         healthySinceMono: null,
         probe: null,
         probeInFlight: false,
+        unroutable: null,
         probeErrors: 0,
         probeBreakerOpen: false,
         nextProbeAtMono: 0,
@@ -562,6 +604,31 @@ export class StaleOwnerReleaseEngine {
       this.trace({ type: 'stale-detect', owner, episodeId: ep.episodeId });
     }
     return ep;
+  }
+
+  /** Unroutable-owner assessment (spec §2). Any fault reads as routable (the full bar applies). */
+  private readonly absence = new AbsenceTracker();
+  private assessRoutability(owner: string, inPoolView: boolean, cfg: StaleOwnerReleaseConfig, nowWall: number, nowMono: number): OwnerRoutability {
+    try {
+      const standing = this.d.ownerStanding?.(owner) ?? 'registered';
+      // Monotonic clock for the continuous-absence window (wall time only for timestamps).
+      const absentForMs = this.absence.observe(owner, standing, nowMono);
+      if (standing === 'registered' || standing === 'unavailable') return { unroutable: false, reason: standing === 'registered' ? 'registered' : 'registry-unavailable' };
+      const mirror = this.d.evidenceMirror();
+      return assessOwnerRoutability({
+        owner,
+        selfMachineId: this.d.selfMachineId(),
+        standing,
+        inPoolView,
+        lastSideEffectMs: mirror.lastOwnerSideEffectMs(owner),
+        nowMs: nowWall,
+        absentForMs,
+        silenceBoundMs: DEFAULT_UNREGISTERED_SILENCE_MS,
+        absenceWindowMs: cfg.bootstrapNonObservationMultiple * cfg.deathEvidenceMs,
+      });
+    } catch {
+      return { unroutable: false, reason: 'registered' }; /* @silent-fallback-ok — an unreadable registry/mirror falls back to the full fail-closed evidence bar, never to a claim */
+    }
   }
 
   /** The §2.2 evidence bar for ONE owner. Fail CLOSED on every uncertainty. */
@@ -783,7 +850,7 @@ export class StaleOwnerReleaseEngine {
             id: condition?.itemId ?? `stale-owner:${ep.episodeId}`,
             title: `Topic(s) look stranded on ${owner} — I can't prove the owner's state`,
             body:
-              `Machine ${owner} has been offline past the evidence window but the death evidence stays ambiguous ` +
+              `Machine ${owner} ${this.describeOwner(owner)} past the evidence window but the death evidence stays ambiguous ` +
               `(fail-closed). Topics it owns are not being served. Your call: demote it (I take its topics over) or wait. ` +
               `Episode ${ep.episodeId}.`,
             priority: 'high',
@@ -808,12 +875,25 @@ export class StaleOwnerReleaseEngine {
     try {
       this.d.raiseAttention({
         id: key,
-        title: `Stale-owner release gave up${topic ? ` on topic ${topic}` : ''} (${owner})`,
+        title: `Stale-owner release gave up${topic ? ` on ${topicRef(topic)}` : ''} (${owner})`,
         body: `${detail}. No further automatic attempts this episode — manual demote or investigation needed.`,
         priority: 'high',
         sourceContext: `stale-owner-release:${owner}`,
       });
     } catch { /* best-effort */ }
+  }
+
+  /**
+   * D5 wording: what the evidence says about the owner. A machine that answers slowly or
+   * refuses connections is described as such, never as gone.
+   */
+  describeOwner(owner: string): string {
+    let l: import('./machineLiveness.js').MachineLiveness | undefined;
+    try { l = this.d.ownerLiveness?.(owner); } catch { l = undefined; /* @silent-fallback-ok — no liveness view keeps the neutral wording */ }
+    if (l?.state === 'unreachable' && l.shape === 'struggling') return 'is struggling (it answers slowly or only partly, so it looks overloaded rather than gone) and has not served its topics';
+    if (l?.state === 'unreachable' && l.shape === 'refusing') return 'is refusing connections (it is running but turning requests away) and has not served its topics';
+    if (l?.state === 'live') return 'still answers direct contact but has not served its topics';
+    return 'has been unreachable';
   }
 
   private observeCondition(conditionType: 'ambiguity' | 'giveup', owner: string, scope = 'owner'): AttentionConditionObservation | undefined {

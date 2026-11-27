@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "native-remote-desktop-bootstrap-diagnostics",
+  "sessionId": "e0a70e98-3933-416c-b0c6-3ded161084be",
+  "timestamp": "2026-10-31T08:34:57.126Z",
+  "artifactPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "artifactSha256": "4859a00bd3a2e229e30f0a5206601850fd7f590c753beeb514ca2c886568fc8c",
+  "coveredFiles": [
+    "src/core/WindowsDesktopBootstrapStatus.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Annotation for an optional diagnostic fallback; no admission or external behavior changes.",
+  "eli16Path": "docs/specs/windows-desktop-bootstrap-diagnostics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/native-remote-desktop-bootstrap-diagnostics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

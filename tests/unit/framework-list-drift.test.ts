@@ -90,23 +90,15 @@ describe('framework list drift', () => {
   describe('one alias table, not three (round-22)', () => {
     /**
      * Three tables of framework spellings existed on this branch: the canonical
-     * one in frameworkFacts, a hand-written copy in ProfileIntentClassifier (the
-     * conversational lane), and a three-name list in the `instar route` CLI. The
-     * copies were CORRECT — round-10 had already caught the classifier missing
-     * `grok`, which broke "use grok here" while the literal id worked. Correct-today
-     * is the state a duplicate is in immediately before it drifts, and this test
-     * is what makes a re-introduced copy fail rather than wait to be noticed.
+     * one in frameworkFacts, a hand-written copy in the (since retired)
+     * conversational-lane classifier, and a three-name list in the `instar route`
+     * CLI. The copies were CORRECT — round-10 had already caught the classifier
+     * missing `grok`, which broke "use grok here" while the literal id worked.
+     * Correct-today is the state a duplicate is in immediately before it drifts,
+     * and this test is what makes a re-introduced copy fail rather than wait to
+     * be noticed. (The classifier copy check went with the classifier —
+     * docs/specs/retire-staged-features-2026-10-25.md.)
      */
-    const classifierSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/core/ProfileIntentClassifier.ts'),
-      'utf-8',
-    );
-
-    it('the conversational lane DERIVES its aliases instead of re-listing them', () => {
-      // The literal shape that used to be here. A regression restores it.
-      expect(classifierSource).not.toMatch(/const FRAMEWORK_ALIASES: Record<string, string> = \{\s*\n\s*codex:/);
-      expect(classifierSource).toContain('CANONICAL_FRAMEWORK_ALIASES');
-    });
 
     it('every framework short form survives the derivation', () => {
       // The derivation is `alias !== canonical`. Reproduced here against the real

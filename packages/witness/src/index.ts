@@ -51,6 +51,20 @@ export {
 } from './binding.js';
 export { WitnessStore, type AddResult, type Chain, type ChainLink, type RecordStatus } from './store.js';
 export { didKeyFromPublicKey, publicKeyFromDidKey } from './didkey.js';
+export {
+  LEGACY_SEAL_PREFIX,
+  MAX_SEALKEEPER_REFERENCE,
+  SEALKEEPER_REFERENCE_PREFIX,
+  SEAL_LABELS_NOTE,
+  SEAL_REFERENCE_PROVISIONAL_NOTE,
+  checkSealBytes,
+  formatSealkeeperReference,
+  parseSealReference,
+  sealReferencesIn,
+  sha256Hex,
+  type SealBytesCheck,
+  type SealReference,
+} from './seal.js';
 export { verifyRecordWithBinding, ISSUER_KEY_CHECKED, ISSUER_KEY_NOT_CHECKED, type LocalVerifyResult } from './localverify.js';
 export {
   DEFAULT_REGISTRY,

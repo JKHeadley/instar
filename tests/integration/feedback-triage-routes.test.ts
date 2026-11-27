@@ -16,12 +16,15 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import type { FeedbackDrainStore } from '../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { IntelligenceRouter } from '../../src/core/IntelligenceRouter.js';
 import { resolveCliModelFlag } from '../../src/providers/adapters/openai-codex/models.js';
 import type { InstarConfig, IntelligenceOptions } from '../../src/core/types.js';
+import type { SubscriptionAccount, SubscriptionPool } from '../../src/core/SubscriptionPool.js';
+import type { CodexUsageSnapshot } from '../../src/providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import { decisionRow, packetsFrom, type Decide } from '../fixtures/feedbackTriageHarness.js';
 
 const AUTH = 'feedback-triage-routes-auth';
@@ -42,7 +45,10 @@ function writeStore(canonical: string, clusters: Array<{ id: string; reports: nu
   fs.appendFileSync(path.join(canonical, 'feedback.jsonl'), feedbackLines.map((l) => `${l}\n`).join(''));
 }
 
-async function makeServer(opts: { root: string; meshSelfId?: string; operatedHostMachineId?: string; resolvePeerUrls?: () => Array<{ machineId: string; url: string }>; decide: { fn: Decide }; clock: { now: number }; attention: unknown[] }) {
+async function makeServer(opts: { root: string; meshSelfId?: string; operatedHostMachineId?: string; resolvePeerUrls?: () => Array<{ machineId: string; url: string }>; decide: { fn: Decide }; clock: { now: number }; attention: unknown[];
+  poolAccounts?: SubscriptionAccount[]; accountSelectionMode?: 'off' | 'observe' | 'on';
+  liveReader?: (opts?: { codexHome?: string }) => Promise<CodexUsageSnapshot | null>;
+  accountSeen?: string[] }) {
   const stateDir = path.join(opts.root, '.instar');
   const canonical = path.join(stateDir, 'state', 'feedback-factory', 'store');
   fs.mkdirSync(canonical, { recursive: true });
@@ -51,7 +57,10 @@ async function makeServer(opts: { root: string; meshSelfId?: string; operatedHos
   fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'studio', authToken: AUTH, dashboardPin: PIN }));
   const tracker = new InitiativeTracker(stateDir);
   const codex = {
+    frameworkId: 'codex-cli',
     evaluate: async (prompt: string, options?: IntelligenceOptions) => {
+      if (options?.launchGuard && !options.launchGuard()) throw new Error('launch guard refused');
+      if (options?.accountOverride) opts.accountSeen?.push(options.accountOverride.accountId);
       options?.onModel?.({ model: resolveCliModelFlag(options?.model), framework: 'codex-cli' });
       const out = opts.decide.fn(packetsFrom(prompt), prompt);
       return typeof out === 'string' ? out : JSON.stringify({ decisions: out });
@@ -63,7 +72,7 @@ async function makeServer(opts: { root: string; meshSelfId?: string; operatedHos
     developmentAgent: true, requestTimeoutMs: 30_000, version: '0.0.0',
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 3, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
-    feedbackFactory: { ...(opts.operatedHostMachineId ? { operatedHostMachineId: opts.operatedHostMachineId } : {}), processing: {}, drain: {}, consumer: { dryRun: true }, triage: { maxBatchChars: 200_000 } },
+    feedbackFactory: { ...(opts.operatedHostMachineId ? { operatedHostMachineId: opts.operatedHostMachineId } : {}), processing: {}, drain: {}, consumer: { dryRun: true }, triage: { maxBatchChars: 200_000, ...(opts.accountSelectionMode ? { accountSelectionMode: opts.accountSelectionMode } : {}) } },
   } as unknown as InstarConfig;
   const secondOpinion = {
     evaluate: async (_p: string, options?: IntelligenceOptions) => {
@@ -75,9 +84,11 @@ async function makeServer(opts: { root: string; meshSelfId?: string; operatedHos
     config, state: new StateManager(stateDir), initiativeTracker: tracker, intelligence,
     sessionManager: { listRunningSessions: () => [], getSession: () => null, getRunningSessionPanePids: () => [], on: () => undefined } as never,
     resolvePeerUrls: opts.resolvePeerUrls,
+    ...(opts.poolAccounts ? { subscriptionPool: { list: () => opts.poolAccounts!, get: (id: string) => opts.poolAccounts!.find((account) => account.id === id) } as unknown as SubscriptionPool } : {}),
+    ...(opts.liveReader ? { codexLiveUsageReader: opts.liveReader } : {}),
     ...(opts.meshSelfId ? { meshSelfId: opts.meshSelfId } : {}),
     feedbackTriageDeps: {
-      secondOpinion: () => secondOpinion, quotaUsedPercent: async () => 10, listMergedPrs: async () => [],
+      secondOpinion: () => secondOpinion, ...(opts.poolAccounts ? {} : { quotaUsedPercent: async () => 10 }), listMergedPrs: async () => [],
       raiseAttention: async (item) => { opts.attention.push(item); }, clock: () => opts.clock.now,
     },
   });
@@ -275,5 +286,52 @@ describe('feedback triage routes — non-owner posture', () => {
     expect(neverFetched.status).toBe(503);
     expect(neverFetched.body.owner).toBe('owner-machine');
     stub = http.createServer(); stub.listen(0);
+  });
+});
+
+describe('feedback triage routes — verified Codex account admission', () => {
+  it('uses a live spare subscription on an HTTP tick while the first account is over 75%', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-triage-account-http-'));
+    const clock = { now: Date.UTC(2026, 9, 31, 6, 0) };
+    const accounts = ['ambient', 'spare'].map((id): SubscriptionAccount => {
+      const home = path.join(root, id);
+      fs.mkdirSync(home, { recursive: true });
+      const email = `${id}@example.test`;
+      const idToken = `x.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.x`;
+      fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: idToken, account_id: id } }));
+      return { id, nickname: id, email, provider: 'openai', framework: 'codex-cli',
+        configHome: home, status: 'active', enrolledAt: new Date(clock.now).toISOString(), version: 1 } as SubscriptionAccount;
+    });
+    const accountSeen: string[] = [];
+    const window = (usedPercent: number) => ({ usedPercent, remainingPercent: 100 - usedPercent,
+      windowMinutes: 10080, resetsAt: 1795000000, resetsAtIso: null, resetsInSeconds: null });
+    const decide = { fn: ((packets) => packets.map((packet) => decisionRow(packet.clusterId))) as Decide };
+    const { server, tracker, canonical } = await makeServer({ root, decide, clock, attention: [],
+      poolAccounts: accounts, accountSelectionMode: 'on', accountSeen,
+      liveReader: async ({ codexHome } = {}) => ({ source: 'codex-app-server', rolloutPath: '', threadId: null,
+        capturedAt: new Date(clock.now).toISOString(), model: null, planType: 'pro', rateLimitReachedType: null,
+        primary: window(codexHome === accounts[0].configHome ? 88 : 10), secondary: null }),
+    });
+    try {
+      const app = server.getApp();
+      const drain = (server as unknown as { feedbackDrain: { store: FeedbackDrainStore; authorityBinding: () => { ownerMachineId: string | null; ownerEpoch: number } } }).feedbackDrain;
+      const binding = drain.authorityBinding();
+      expect(binding.ownerMachineId).toBeTruthy();
+      drain.store.startRun({ ownerHost: binding.ownerMachineId!, ownerEpoch: binding.ownerEpoch, leaseMs: 60_000 });
+      const approved = await request(app).post('/feedback-factory/triage/authority').set(HX)
+        .send({ action: 'create', useProposal: true, pin: PIN, operatorDecisionRef: 'account-http-owner-pin' });
+      expect(approved.status).toBe(200);
+      await addItems(tracker, canonical, [{ id: 'spare-route', reports: 2 }]);
+      const summary = await tickAndWait(app, clock);
+      expect(summary.lastTick).toMatchObject({ result: 'succeeded', decided: 1, calls: 1 });
+      expect(accountSeen).toEqual(['spare']);
+      const audit = drain.store.sharedDatabase().prepare("SELECT reason FROM drain_audit WHERE kind='triage-call' AND to_state='launched'")
+        .get() as { reason: string };
+      expect(JSON.parse(audit.reason)).toMatchObject({ accountId: 'spare', source: 'codex-app-server',
+        limitFamily: 'codex', usedPercent: 10 });
+    } finally {
+      await server.stop();
+      SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'feedback-triage-routes.test.ts' });
+    }
   });
 });

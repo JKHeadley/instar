@@ -8,7 +8,9 @@
  */
 
 import type { MachineCapacity } from './types.js';
+import { LOAD_REPORT_MAX_AGE_MS } from './machineLoadReport.js';
 import { machineServesChannel } from './machineServesChannel.js';
+import { effectivePending, heavyFit, placementLoad, PENDING_HEAVY_PER_CORE, type WorkWeight } from './machineResourceProfile.js';
 
 /** Per-topic placement metadata (persisted with the topic; §L4). */
 export interface TopicPlacement {
@@ -23,6 +25,11 @@ export interface TopicPlacement {
 }
 
 export interface PlacementPolicy {
+  /**
+   * `loadAvg` multiplies the machine's load term: its fresh per-core load expressed
+   * at 8 cores (resource-aware placement §1 — equal to the raw load average of an
+   * 8-core machine), or the raw load average when its core count is unknown.
+   */
   weights: { loadAvg: number; activeSessionRatio: number; memPressure: number };
   thresholds: { rebalanceThresholdPercent: number; placementHysteresisDelta: number };
   capabilityWhitelist: string[];
@@ -48,6 +55,12 @@ export interface PlacementRequest {
    *  `unknown` → the platform/workspace filter no-ops (fail-open). The FAILOVER caller MUST pass it
    *  (the live-test bug was a failover placement). */
   channel?: import('./machineServesChannel.js').ChannelScope & { channelId?: string };
+  /**
+   * How much the work asks of a machine (docs/specs/resource-aware-placement.md §2).
+   * Absent / `standard` / `light` = today's eligibility. `heavy` = only heavy-capable
+   * machines with fresh headroom; none → `queued` with a named reason.
+   */
+  workWeight?: WorkWeight;
 }
 
 export interface PlacementDecision {
@@ -124,6 +137,46 @@ const MEM_PRESSURE_NUM: Record<string, number> = { low: 0, moderate: 1, high: 2,
  */
 export interface PlacementExecutorSeams {
   sustainedOnline?: (machineId: string) => boolean;
+  /**
+   * trustworthy-machine-load C5: rank candidates by load evidence (live and
+   * ok/elevated first, then unknown, then stale) when this machine enforces
+   * overload admission. Absent / false ⇒ today's plain least-loaded order.
+   */
+  overloadAwareRanking?: () => boolean;
+  /**
+   * Resource-aware placement §1: heavy items this process placed in the last few
+   * minutes, per machine (each adds per-core load until the machine's own load
+   * report catches up). Absent ⇒ 0.
+   */
+  pendingHeavy?: (machineId: string) => number;
+  /**
+   * agent-sessions-placed-by-load §1b: extra per-core load this process has already
+   * sent a machine through the agent-session route (standard/light helpers), read ONLY
+   * by score() so successive placements spread instead of filling one peer. Never
+   * folded into pending(), so heavy fit and conversation placement do not see it.
+   * Absent ⇒ 0.
+   */
+  extraLoadPerCore?: (machineId: string) => number;
+}
+
+/**
+ * trustworthy-machine-load C1: a machine REFUSES new work only on positive,
+ * fresh evidence — its own enforcing admission says so in a report younger
+ * than the 60 s expiry. Stale or missing evidence is never read as refusing
+ * (C5 ranks it lower instead), so a peer on older code is still placeable.
+ */
+export function isRefusingWork(m: MachineCapacity): boolean {
+  const r = m.loadReport;
+  if (!r || r.admissionEnforced !== true || r.acceptingWork !== false) return false;
+  return typeof m.loadReportAgeMs === 'number' && m.loadReportAgeMs <= LOAD_REPORT_MAX_AGE_MS;
+}
+
+/** C5 evidence tier (lower is better). */
+export function loadEvidenceTier(m: MachineCapacity): number {
+  if (m.liveness?.state === 'unreachable') return 3;
+  if (m.liveness?.state === 'stale') return 2;
+  if (m.loadVerdict === 'ok' || m.loadVerdict === 'elevated') return 0;
+  return 1;
 }
 
 export class PlacementExecutor {
@@ -135,13 +188,50 @@ export class PlacementExecutor {
     this.seams = seams;
   }
 
+  private pending(m: MachineCapacity): number {
+    let reserved = 0;
+    try {
+      const n = this.seams.pendingHeavy?.(m.machineId) ?? 0;
+      reserved = typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+    } catch { reserved = 0; /* @silent-fallback-ok — a broken reservation seam reads as none; the machine's own advertised count and fresh load still decide */ }
+    return effectivePending(m, reserved);
+  }
+
   /** Score a candidate (lower = better): weighted load + session-ratio + mem pressure. */
   private score(m: MachineCapacity): number {
     const w = this.policy.weights;
-    const load = m.loadAvg ?? 0;
+    // Resource-aware placement §2: per-core load at an 8-core reference scale where
+    // measurable; unmeasured machines are ranked after measured ones (measuredFirst),
+    // so the 0 here only orders a pool where nothing is measured.
+    let extra = 0;
+    try {
+      const n = this.seams.extraLoadPerCore?.(m.machineId) ?? 0;
+      extra = typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+    } catch { extra = 0; /* @silent-fallback-ok — a broken seam reads as no extra load; fresh load still ranks */ }
+    const load = placementLoad(m, this.pending(m) + extra / PENDING_HEAVY_PER_CORE) ?? 0;
     const ratio = m.maxSessions && m.maxSessions > 0 ? (m.activeSessionCount ?? 0) / m.maxSessions : 0;
     const mem = MEM_PRESSURE_NUM[m.memPressure ?? 'low'] ?? 0;
     return w.loadAvg * load + w.activeSessionRatio * ratio + w.memPressure * mem;
+  }
+
+  /**
+   * Resource-aware placement §2 "measured first": rank only machines whose load is
+   * measurable now when at least one is; an unmeasured machine (no fresh report, no
+   * valid load average) must never win by scoring 0.
+   */
+  private measuredFirst(candidates: MachineCapacity[]): MachineCapacity[] {
+    if (candidates.length <= 1) return candidates;
+    const measured = candidates.filter((m) => placementLoad(m) !== null);
+    return measured.length > 0 ? measured : candidates;
+  }
+
+  /** C5: the candidates in the best non-empty evidence tier (all of them when ranking is off). */
+  private bestEvidenceTier(candidates: MachineCapacity[]): MachineCapacity[] {
+    let on = false;
+    try { on = this.seams.overloadAwareRanking?.() === true; } catch { on = false; /* @silent-fallback-ok — a broken seam keeps today's plain least-loaded order */ }
+    if (!on || candidates.length <= 1) return candidates;
+    const top = Math.min(...candidates.map(loadEvidenceTier));
+    return candidates.filter((m) => loadEvidenceTier(m) === top);
   }
 
   /** Pure placement decision (§L4). Deterministic over its inputs. */
@@ -171,6 +261,20 @@ export class PlacementExecutor {
     let candidates = allQuotaBlocked ? eligible : quotaOk;
     const quotaNote = allQuotaBlocked ? 'all-machines-quota-blocked' : undefined;
 
+    // Overload admission gate (trustworthy-machine-load C1/C5): never place new
+    // work on a machine that is refusing it. If every candidate refuses, the
+    // message stays in the durable inbound queue (outcome `queued`) — it is not
+    // pushed onto an overloaded machine. A hard pin to a refusing machine queues
+    // the same way (eligible is narrowed below the hard-pin branch reads it).
+    if (candidates.length > 0) {
+      const accepting = candidates.filter((m) => !isRefusingWork(m));
+      if (accepting.length === 0) {
+        return { chosenMachine: null, score: 0, reason: 'all-machines-refusing-work', outcome: 'queued', escalationReason: 'all-machines-refusing-work' };
+      }
+      candidates = accepting;
+      eligible = eligible.filter((m) => !isRefusingWork(m));
+    }
+
     // Platform/workspace reachability gate (spec: placement-platform-workspace-aware).
     // A machine whose adapter is NOT connected to this channel's platform/workspace
     // STRUCTURALLY cannot serve it — placing there is a permanent black-hole (the live-test
@@ -197,6 +301,45 @@ export class PlacementExecutor {
       // (→ hard-pin-unsatisfiable via the existing hard-pin-unavailable branch) instead of
       // honoring it onto a non-serving machine. A pin to an `unknown` machine stays honored (fail-open).
       eligible = eligible.filter((m) => serveOf(m) !== 'no');
+    }
+
+    // Resource-aware placement §2: heavy work goes only to a heavy-capable machine
+    // with fresh headroom. Soft preference and sticky do not apply; a hard pin is
+    // honoured only inside the eligible set.
+    if (req.workWeight === 'heavy') {
+      // A headless helper on a quota-blocked machine would fail silently, so the
+      // conversation path's "place on a blocked machine anyway" fallback does not apply.
+      if (allQuotaBlocked) {
+        return { chosenMachine: null, score: 0, reason: 'all-machines-quota-blocked', outcome: 'queued', escalationReason: 'all-machines-quota-blocked' };
+      }
+      if (tp.requiredCapabilities && tp.requiredCapabilities.length > 0) {
+        const capOk = (m: MachineCapacity): boolean => tp.requiredCapabilities!.every((c) => (m.capabilities ?? []).includes(c));
+        candidates = candidates.filter(capOk);
+        if (candidates.length === 0) {
+          return { chosenMachine: null, score: 0, reason: 'no-capable-machine', outcome: 'queued', escalationReason: 'capabilities-unsatisfiable' };
+        }
+      }
+      if (candidates.length === 0) {
+        return { chosenMachine: null, score: 0, reason: 'no-online-machine', outcome: 'queued', escalationReason: 'no-capable-online-machine' };
+      }
+      const fits = candidates.map((m) => ({ m, fit: heavyFit(m, this.pending(m)) }));
+      if (!fits.some((f) => f.fit.profile.heavyCapable)) {
+        return { chosenMachine: null, score: 0, reason: 'no-heavy-capable-machine', outcome: 'queued', escalationReason: 'no-heavy-capable-machine' };
+      }
+      const eligibleHeavy = fits.filter((f) => f.fit.eligible).map((f) => f.m);
+      if (eligibleHeavy.length === 0) {
+        return { chosenMachine: null, score: 0, reason: 'heavy-capable-machines-busy', outcome: 'queued', escalationReason: 'heavy-capable-machines-busy' };
+      }
+      if (tp.pinned && tp.preferredMachine) {
+        const pinned = eligibleHeavy.find((m) => m.machineId === tp.preferredMachine);
+        if (!pinned) {
+          return { chosenMachine: null, score: 0, reason: 'hard-pin-not-heavy-capable', outcome: 'queued', escalationReason: 'hard-pin-not-heavy-capable' };
+        }
+        return { chosenMachine: pinned.machineId, score: this.score(pinned), reason: 'hard-pin', outcome: 'placed' };
+      }
+      const pool = this.bestEvidenceTier(eligibleHeavy);
+      const best = pool.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), pool[0]);
+      return { chosenMachine: best.machineId, score: this.score(best), reason: 'heavy-least-loaded', outcome: 'placed', escalationReason: quotaNote };
     }
 
     for (const step of this.policy.ordering) {
@@ -237,7 +380,9 @@ export class PlacementExecutor {
             escalationReason: pinned.quotaState?.blocked === true
               ? (pinned.quotaState.reason === 'session-start-failing'
                 ? 'pinned-machine-cannot-start-sessions'
-                : 'pinned-machine-quota-blocked')
+                : pinned.quotaState.reason === 'no-signed-in-account'
+                  ? 'pinned-machine-not-signed-in'
+                  : 'pinned-machine-quota-blocked')
               : undefined,
           };
         }
@@ -252,7 +397,8 @@ export class PlacementExecutor {
         if (req.currentOwner && req.reason !== 'rebalance') {
           const cur = candidates.find((m) => m.machineId === req.currentOwner);
           if (cur) {
-            const best = candidates.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), candidates[0]);
+            const ranked = this.measuredFirst(candidates);
+            const best = ranked.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), ranked[0]);
             // Stick unless a meaningfully-better machine exists (hysteresis margin).
             if (this.score(cur) <= this.score(best) + this.policy.thresholds.placementHysteresisDelta) {
               return { chosenMachine: cur.machineId, score: this.score(cur), reason: 'sticky', outcome: 'placed' };
@@ -263,7 +409,8 @@ export class PlacementExecutor {
         if (candidates.length === 0) {
           return { chosenMachine: null, score: 0, reason: 'no-online-machine', outcome: 'queued', escalationReason: 'no-capable-online-machine' };
         }
-        const best = candidates.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), candidates[0]);
+        const pool = this.measuredFirst(this.bestEvidenceTier(candidates));
+        const best = pool.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), pool[0]);
         return { chosenMachine: best.machineId, score: this.score(best), reason: 'least-loaded', outcome: 'placed', escalationReason: quotaNote };
       }
     }
@@ -271,7 +418,8 @@ export class PlacementExecutor {
     if (candidates.length === 0) {
       return { chosenMachine: null, score: 0, reason: 'no-online-machine', outcome: 'queued', escalationReason: 'no-capable-online-machine' };
     }
-    const best = candidates.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), candidates[0]);
+    const pool = this.measuredFirst(this.bestEvidenceTier(candidates));
+    const best = pool.reduce((a, b) => (this.score(b) < this.score(a) ? b : a), pool[0]);
     return { chosenMachine: best.machineId, score: this.score(best), reason: 'fallback-least-loaded', outcome: 'placed', escalationReason: quotaNote };
   }
 }

@@ -29,6 +29,7 @@
 
 import { EventEmitter } from 'node:events';
 import type { StallEvent } from '../core/SleepWakeDetector.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 /** The outcome classification the (A) tmux wrapper reports for each call. */
 export type TmuxCallOutcome = 'success' | 'killed-client' | 'indeterminate';
@@ -129,6 +130,8 @@ export class DegradedTmuxGuard extends EventEmitter {
   /** A stall arriving this cycle forces the cycle degraded (a corroborating slow cycle). */
   private stallThisCycle = false;
   private openEpisode: DegradedTmuxEpisode | null = null;
+  /** The evidence row that opened the episode, graded when tmux recovers. */
+  private openEpisodeEvidenceId: string | null = null;
   private episodeCounter = 0;
   /** Wall-clock (ms) of the most recent onRefresh(); drives the settle-window exclusion. */
   private lastRefreshAt = 0;
@@ -263,6 +266,12 @@ export class DegradedTmuxGuard extends EventEmitter {
       // (3a) A clean cycle resets corroboration AND closes any open episode (recovery).
       this.consecutiveSlowCycles = 0;
       if (this.openEpisode) {
+        if (this.openEpisodeEvidenceId) {
+          const durationMs = ts - this.openEpisode.openedAtMs;
+          // A corroborated slowdown that lasted a minute and then cleared was real; a shorter blip is not proven either way.
+          featureEvidence.record('monitoring.degradedTmuxGuard', { kind: 'outcome', outcome: durationMs >= 60_000 ? 'right' : 'unknown', gradesEventId: this.openEpisodeEvidenceId, gradedBy: 'DegradedTmuxGuard', reason: 'tmux recovered: episode closed', context: { episodeId: this.openEpisode.id, durationMs, ewmaMs: Math.round(this.ewmaMs ?? 0), loadPerCore } });
+        }
+        this.openEpisodeEvidenceId = null;
         this.openEpisode = null;
       }
       return;
@@ -300,10 +309,14 @@ export class DegradedTmuxGuard extends EventEmitter {
   /** Wrap the operator-notify dep so a notify throw can never crash an ingest path. */
   private raiseEpisode(ep: DegradedTmuxEpisode): void {
     this.episodesRaised += 1;
+    const evidenceContext = { episodeId: ep.id, ageMs: ep.ageMs, ewmaMs: ep.ewmaMs, consecutiveSlowCycles: ep.consecutiveSlowCycles, slowCallThresholdMs: this.slowCallThresholdMs, escalation: ep.ageMs > 0 };
     try {
       this.deps.raiseAttention(ep);
+      const evidenceId = featureEvidence.record('monitoring.degradedTmuxGuard', { kind: 'fired', reason: ep.ageMs > 0 ? 'episode re-raised: still degraded' : 'episode raised', context: evidenceContext });
+      if (ep.ageMs === 0) this.openEpisodeEvidenceId = evidenceId;
     } catch {
       /* signal-only — a notify failure is swallowed; the episode state is already recorded */
+      featureEvidence.record('monitoring.degradedTmuxGuard', { kind: 'error', reason: 'episode raise failed', context: evidenceContext });
     }
     this.emit('episode', ep);
   }

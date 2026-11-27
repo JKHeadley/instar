@@ -21,6 +21,7 @@
  */
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { AgentTrustLevel, AgentTrustManager } from './AgentTrustManager.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
 
@@ -216,6 +217,20 @@ export type RelayUnknownSenderOutcome =
  *    otherwise emit the held level. The interaction is recorded only for a
  *    sender that already has a profile, so a stranger's probe writes nothing.
  */
+/**
+ * One row per sender, operation and verdict per hour: this runs per inbound message.
+ * A refusal of a sender that holds a trust profile is the failure this rollout
+ * watches for, so it reads `error`; a refused stranger is the feature doing its job.
+ */
+function recordRelayUnknownSenderVerdict(fingerprint: string, v: RelayUnknownSenderVerdict, verdict: 'allowed' | 'would-refuse' | 'refuse', dryRun: boolean): void {
+  const operation = v.operation.slice(0, 48);
+  featureEvidence.recordAtMostEvery('threadline.relayUnknownSenderTrust', `${fingerprint}|${operation}|${verdict}`, 60 * 60 * 1000, {
+    kind: verdict !== 'allowed' && v.hasProfile ? 'error' : 'fired',
+    reason: verdict !== 'allowed' && v.hasProfile ? `${verdict}-sender-with-profile` : verdict,
+    context: { fingerprint, level: v.level, operation, hasProfile: v.hasProfile, dryRun },
+  });
+}
+
 export function handleRelayUnknownSender(
   deps: RelayUnknownSenderHandlerDeps,
   received: ReceivedMessage,
@@ -252,6 +267,7 @@ export function handleRelayUnknownSender(
   } catch (err) {
     counters.lookupErrors++;
     log(`[relay-unknown-sender-trust] lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    featureEvidence.record('threadline.relayUnknownSenderTrust', { kind: 'error', reason: 'trust-lookup-failed', context: { fingerprint, dryRun: mode.dryRun } });
     if (mode.dryRun) {
       legacyDeliver();
       return 'passed-dry-run';
@@ -261,6 +277,7 @@ export function handleRelayUnknownSender(
     return 'refused-lookup-error';
   }
   counters.evaluated++;
+  recordRelayUnknownSenderVerdict(fingerprint, verdict, verdict.allowed ? 'allowed' : mode.dryRun ? 'would-refuse' : 'refuse', mode.dryRun);
 
   if (mode.dryRun) {
     if (verdict.allowed) {

@@ -5,6 +5,7 @@ date: 2026-10-22
 author: echo
 status: approved
 approved: true
+amendment-2026-10-31: "§2.6 user-meant routing. Approval basis: the operator's directive (Justin, 2026-10-31, relayed by the coordinating session): 'the whole point of the agent specific topic is that all messages from an agent that are intended for the user show up in that topic'. One internal review round on the amendment."
 approved-by: "Justin (Telegram topic 127831, 2026-10-22 — scope cut approved \"Yes!\", with the build direction: \"Build the simplest version: when a pairing becomes mutual-verified, the lease holder creates ... a topic named after the peer and binds the peer conversation to it; peer requests that need Justin post there with a notification. Drop the crash-ordering intent-state machinery.\")"
 approval-note: |
   Operator-DIRECTED, and deliberately below the skill's own convergence bar. He stopped the
@@ -15,11 +16,12 @@ approval-note: |
 eli16-overview: peer-conversation-homebase-topic.eli16.md
 tracks: "topic 127831 · operator feature request 2026-10-21"
 parent-principle: "The User Experience Is the Product — Reachability, Responsiveness, and Coherence Are Sacred"
-review-convergence: "2026-10-22T16:05:25.792Z"
-review-iterations: 3
-review-completed-at: "2026-10-22T16:05:25.792Z"
+review-convergence: "2026-10-31T21:40:23.000Z"
+review-iterations: 5
+review-completed-at: "2026-10-31T21:40:23.000Z"
 review-report: "docs/specs/reports/peer-conversation-homebase-topic-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
+amendment-2026-10-31b: "§2.7 per-message user-meant judging. Approval basis: the same operator directive as §2.6 (Justin, 2026-10-31: 'all messages from an agent that are intended for the user show up in that topic'), which §2.6 met only for the first message of a conversation; relayed by the coordinating session as the build order for this half. One internal review round on the amendment, iterated to concurrence (findings in upgrades/side-effects/peer-homebase-per-message.md)."
 single-run-completable: true
 frontloaded-decisions: 4
 cheap-to-change-tags: 0
@@ -161,7 +163,9 @@ accidental. Never when it *might* have been chosen. (`pp`'s own conversation is 
 unknown-provenance class, so it is re-homed by the operator's explicit request — which he has
 already made — not automatically.)
 
-**One destination rule, for every peer message that is sent:**
+**One destination rule, for every peer message that is sent** (superseded for messages meant
+for the user by §2.6 — the operator's rule of 2026-10-31; this table now governs only the
+agent-internal / housekeeping traffic, and the binding record itself):
 
 | # | Condition (first match wins) | Destination |
 |---|---|---|
@@ -179,6 +183,12 @@ H3's completeness requirement applies: the conversation's **commitment `topicId`
 alongside `ConversationStore`, because `captureOriginOnSend`'s first-write-wins would otherwise
 keep the old destination and the bind would silently do nothing.
 
+*Completeness note, as built (2026-10-31):* creation binds no conversation (`ensurePeerHomebase`
+records the map entry only), so there is no bind whose commitment `topicId` could go stale. The
+destination of a user-meant message is decided at delivery time (§2.6) from the live map and the
+conversation's `boundTopicSource`, not from the commitment's `topicId`; the commitment keeps the
+originating topic, which is still where the originating session lives.
+
 ### 2.3 Stop inheriting an unrelated topic
 
 `ThreadResumeMap.ts:109`'s inheritance is removed for **peer** conversations. That is the actual
@@ -189,10 +199,171 @@ parentless, which the approved routing design already handles.
 
 The existing `SalienceGate` already decides `user-visible` vs `agent-internal`. A `user-visible`
 peer message — `pp` asking the agent to contact the operator — is delivered **with
-notification**, to the destination the 2.2 table selects. Salience decides whether it buzzes,
-never where it lands: an operator-bound conversation's escalation still arrives in the topic the
-operator chose. (An earlier draft sent every `user-visible` message to the homebase
-unconditionally, contradicting 2.2.) Housekeeping is unchanged by this spec.
+notification**, to the destination §2.6 selects (originally the 2.2 table; §2.6 supersedes it
+for user-meant messages). An operator-bound conversation's escalation still arrives in the topic
+the operator chose. Housekeeping is unchanged by this spec.
+
+### 2.6 Operator rule: messages meant for the user land in the homebase (2026-10-31)
+
+The operator, verbatim: *"the whole point of the agent specific topic is that all messages from
+an agent that are intended for the user show up in that topic"*. Live evidence that §2.2's
+"any binding wins" did not deliver this: on 2026-10-31 a peer (`scout`, the acceptor of an
+invite pairing) received its first message from `echo` at 11:39, its `🤝 echo` topic was created
+at 11:40, and the message was posted to an unrelated topic ("B2Lead Invoices"). Nothing read the
+homebase at delivery time: `getHomebaseTopic` had no reader outside creation.
+
+**Destination rule for a peer message meant for the user** (a `user-visible` SalienceGate
+verdict, or a notice from that peer intended for the operator), first match wins:
+
+| # | Condition | Destination |
+|---|---|---|
+| a | the conversation has `boundTopicSource: 'operator'` | that topic |
+| b | the peer is mutual-verified and has a homebase | the homebase |
+| c | otherwise | existing routing, unchanged |
+
+Agent-internal and housekeeping traffic keeps the existing routing (the §2.2 table). This rule
+decides where a message is POSTED and writes nothing: bindings, including unknown-provenance
+ones, are still preserved as records (§2.2, §9).
+
+**Delivery points it applies at:**
+
+1. **A reply on a conversation this agent started from a topic** (`TopicLinkageHandler`, the
+   `originTopicId` path, including the cross-machine ask): the reply is still handed to the
+   originating topic's session (it is that session's work), and the user-facing `💬 Reply from`
+   post goes to the §2.6 destination. When that destination differs from the originating topic,
+   the server posts a `user-visible` reply there for every delivery mode, because the session's
+   own inline relay would land in the originating topic. The session's payload tells it which
+   topic the user reads this peer in. The originating topic gets no pointer (kept minimal: the
+   session there already has the reply).
+2. **An inbound message on a conversation with no topic link** (the relay inbound funnel, the
+   local `/messages/relay-agent` route and the signed `/threadline/messages/receive` route): when
+   the peer has a homebase, the server itself posts a `user-visible` message into it, with
+   notification (`PeerHomebaseRelay`), instead of relying on whichever topic the receiving
+   session picks. A message the relay does not post (agent-internal, rate-limited, send failed)
+   falls back to the existing silent Threadline-hub surface, so none is left with no topic at
+   all. A peer with no homebase keeps the hub.
+3. **The session spawned for that conversation** is told the topic id to use if it writes to
+   the user about it, so its own messages do not pick an unrelated topic.
+
+**The peer is identified by fingerprint, never by display name.** A display name is whatever
+the sender says it is; a name lookup would let an unpaired agent that calls itself "scout" post
+into `🤝 scout`. The resolver accepts a profile only when the key equals that profile's own
+fingerprint: the relay-authenticated sender fingerprint, the signature-derived fingerprint on the
+signed HTTP route, and on the local route the signature-proven fingerprint or, failing that, the
+one the local registry holds for the name (the identity that route already trusts).
+
+**Both pairing sides create the homebase at mutual-verified.** The invite flow previously created
+none at pairing time: only the 12-word confirm route did, and the invite sides waited for the
+first message's contact hook, which ran concurrently with that message's delivery. The invite
+handshake's own notices now trigger creation: `finishing` on the inviter (its person tapped
+Finish), `finish-received` on the acceptor (the inviter's signed finish arrived), with `paired`
+as a backstop. Creation keeps its existing discipline (lease holder only, create-once,
+best-effort, never fails a pairing).
+
+**Brakes.** `PeerHomebaseRelay` posts at most once per thread per minute and three times per
+topic per minute, the same bounds the topic-linked surface uses; a post held by a brake falls
+back to the hub surface (above).
+
+**What is structural and what is not, stated plainly.** As first built, whether a message is
+meant for the user was the existing SalienceGate's verdict, which production runs without a
+classifier; its fallback marks only the FIRST message on a thread as `user-visible`, so a later
+user-meant message relied on the session following a prompt line. §2.7 closes that: every
+message is judged, and the first-only rule remains only as the behaviour of the off switch.
+
+**Off switch.** `threadline.peerHomebase.enabled: false` (read live) makes the resolver return
+the existing routing everywhere, which restores the previous behaviour exactly.
+
+**Signal vs authority.** This is delivery routing, not a gate: it never blocks, delays or drops a
+message, and every failure falls back to the existing destination.
+
+### 2.7 Every message is judged "meant for the user?" (2026-10-31, second half)
+
+§2.6 delivered the operator's rule for the first message of each conversation only. This makes
+the server post EVERY peer message meant for the user into the §2.6 destination, by deciding
+"meant for the user?" per message (`PeerUserMeantJudge`, `src/threadline/PeerUserMeantJudge.ts`).
+
+**The decision, in order** (first that answers wins):
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Protocol traffic, by wire type: `ack` or `wellness`, or the exact fixed ack sentences (`DEFAULT_AUTO_ACK_MESSAGE`, `NO_REPLY_ACK_MESSAGE`) older peers send without a type | agent-internal, no model call |
+| 2 | The text could not be secret-scrubbed, or no model is available at all | no verdict → post |
+| 2b | The judge's own budget is spent: the daily cap (default 300 model calls, seeded from the audit log so a restart does not reset it) or the per-peer limit (default 30 judged messages per rolling hour; a peer is charged only when a model is actually asked) | the §2.6 first-only rule, with its brakes, decides. A budget is a brake: exhausting it must not become "post everything unjudged" |
+| 3 | Jev (TypeSafe, vault `typesafe_api_key`): a calibrated three-way choice (meant for the person / agent coordination / cannot tell). A confident answer outside the shared cascade band (0.30–0.70) decides | Jev's answer |
+| 4 | Jev unsure, "cannot tell", absent or failing → the referee chain, in order: the Codex fast tier (its own breaker), then the agent's shared provider. The first parseable answer decides | the referee's answer |
+| 5 | Nothing answered, or the decision's deadline passed | no verdict → post |
+
+So the judge works fully on a single provider: a Claude-only agent with no Jev key asks the
+shared provider. It fails toward POSTING: a duplicate notice is better than a missed one. Only
+deterministic protocol types are never posted, and only a spent budget falls back to first-only.
+
+**Judged by meaning, never by string match.** The question (to Jev and to the referees) asks
+whether the message is meant for the receiving agent's person to read: it addresses or asks the
+person, asks the receiving agent to tell or pass something on to them ("tell Justin", "for your
+person", "please pass this on"), needs their decision, approval, answer or action, or carries a
+result, report, warning or news they would want. Coordination the receiving agent can handle
+alone is agent-internal. The message reaches a model only after the durable secret scrub, quoted
+as data the model is told not to follow (fenced); the peer-asserted sender name is reduced to one
+line without control characters so it cannot fake that layout; a private-key marker sends
+nothing (and posts). **Egress:** the scrubbed message text leaves the machine to TypeSafe (Jev)
+when a key is configured, and to the Codex or shared provider's vendor when they answer.
+
+**Where it applies.** (a) `PeerHomebaseRelay`, all three inbound seams of §2.6 point 2; each seam
+passes the wire type it has. (b) `TopicLinkageHandler`, only when the reply is REDIRECTED to the
+homebase (§2.6 point 1). The verdict feeds the session payload, so the inject of such a reply
+waits for it, at most 6 s (Jev answers in about 1.5 s; a referee can take longer), then posts on
+no verdict. Elsewhere the SalienceGate decides exactly as before, with no added wait.
+
+**Brakes under per-message judging.** The per-thread one-post-a-minute brake of §2.6 is lifted
+for judged messages (a second user-meant message inside a minute is still meant for the user);
+the per-topic brake (three posts a minute into one topic) stays as the flood bound. A judged
+user-meant post held by that brake, or whose send failed, is retried (at most twice, at most 50
+pending, after the window frees or 30 s), and the hub surface runs meanwhile, so the homebase
+still gets it. The judge's own budget (step 2b) bounds model spend.
+
+**No double posting.** The spawn-prompt line of §2.6 point 3 now says, only where the relay has
+actually taken the thread, that the server posts each message from that peer it judges meant for
+the user into topic N, so the session must not repost, forward or summarise them, and posts in its
+own words only what it adds (including a point it thinks the user still needs). "Taken" means:
+the relay resolved the homebase for this thread from the transport's own sender evidence and
+judged a message of it with the switch on (recorded synchronously at ingest, before the spawn),
+the switch is still on, and the conversation is unbound. Otherwise the §2.6 line stands. The topic-linked payload already said the server
+posted a user-visible reply.
+
+**Audit.** One content-free row per judged message in `logs/peer-user-meant.jsonl`: time, the
+first 8 characters of the thread id, the first 12 of the peer fingerprint, the message length,
+the verdict, who decided (`protocol` / `jev` / `referee` / `no-verdict`), a closed-enum reason,
+Jev's probability, which referee answered, and the model calls made. No message text. Model
+calls are also metered under the `peer-user-meant` feature on `/metrics/features`.
+
+**Switch.** `threadline.peerHomebase.perMessageClassification`, read live per message. Omitted or
+`true` ⇒ on (the operator's directive). Explicit `false` ⇒ the §2.6 first-only behaviour exactly.
+An object form carries tuning: `{ "enabled": true, "maxChecksPerDay": 300, "perPeerPerHour": 30 }`.
+`threadline.peerHomebase.enabled: false` still turns the whole homebase routing off.
+
+**Signal vs authority.** The verdict decides only whether the server posts a COPY to the operator's
+topic. It never blocks, delays or drops the message on its way to a session; every failure
+resolves to posting. It holds no authority over the peer or the session.
+
+**Limits, stated plainly.**
+- Past the daily cap or a peer's hourly limit, only the first message of a conversation is posted
+  by the server (§2.6) until the budget resets; a later user-meant message then depends on the
+  session again. One busy peer can spend the shared daily cap for every peer.
+- A judged post that still fails after its retries stays in the silent hub only.
+- A wrong agent-internal verdict means no server post; the session was told not to repost the
+  peer's messages, so its own words are the only remaining path (the prompt invites it to add a
+  point it thinks the user still needs).
+- The spawn prompt is fixed when the session starts: switching per-message judging off later
+  leaves a running session believing the server posts; it learns otherwise only on respawn.
+- The session can still post its OWN messages about a peer elsewhere; the prompt line is the only
+  control there (unchanged from §2.6).
+- A bound, non-operator conversation with no thread-resume entry is handled by neither the relay
+  nor the topic-linked path (pre-existing, unchanged; §2.6 under-block).
+- Model verdicts can be wrong in both directions; the measured rate is not known yet. The audit
+  log is the input for measuring it.
+
+**Review round (internal, one).** Findings and their resolution are recorded in the side-effects
+artifact `upgrades/side-effects/peer-homebase-per-message.md`.
 
 ### 2.5 Why automatic creation is permitted here
 
@@ -292,6 +463,7 @@ dev-agent gate kept creation off on every fleet build, including the operator's 
 |---|---|---|
 | `homebaseTopics[fingerprint]` | **unified** | Replicated with the peer record, the way system-topic ids already are. |
 | `boundTopicSource` | **unified** | A field on the conversation record, replicated under its existing class. |
+| Where a user-meant message is posted (§2.6) | **machine-local by design** | Decided on the machine that receives the message (the relay holder, or the topic owner for a cross-machine reply ask), from the replicated trust profile and conversation record; the post goes through that machine's Telegram adapter like every other post. |
 | Which machine creates | **machine-local** · `machine-local-justification: physical-credential-locality` | The Telegram bot token and the forum namespace its topic ids live in are bound to one credential on one disk; an id minted under another machine's token is meaningless. |
 
 Conversation **content** replication is unresolved in the surrounding subsystem (a third-party

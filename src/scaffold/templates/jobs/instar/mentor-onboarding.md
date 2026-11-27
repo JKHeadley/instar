@@ -12,6 +12,11 @@ tags:
   - framework-integration
 toolAllowlist: "*"
 unrestrictedTools: true
+runner: script
+script: mentor-onboarding.mjs
+scriptTimeoutMinutes: 1
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one mentor heartbeat by POSTing to the local mentor endpoint, then stop.
 

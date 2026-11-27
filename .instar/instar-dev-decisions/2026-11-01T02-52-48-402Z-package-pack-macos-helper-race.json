@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-01T02:52:48.402Z",
+  "slug": "package-pack-macos-helper-race",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      2521
+    ],
+    "notes": "A nested tmux kill command was enclosed in shell double quotes, allowing /bin/sh to expand a tmux session ID such as $0 before tmux received it. Studio pre-push smoke exposed the error on a retained dead pane."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

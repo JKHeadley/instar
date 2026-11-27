@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "desktop-locked-screen",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T09:03:23.117Z",
+  "artifactPath": "upgrades/side-effects/desktop-locked-screen.md",
+  "artifactSha256": "b265ee8f2ef6c3b6ac5a10c688fe6b7f37e716a387038e5d5d8d0e91b98de199",
+  "specPath": "docs/specs/desktop-locked-screen.md",
+  "coveredFiles": [
+    "tests/e2e/desktop-locked-lifecycle.test.ts",
+    "tests/integration/desktop-locked-routes.test.ts",
+    "tests/unit/DesktopLockState.test.ts",
+    "tests/unit/DesktopLockedController.test.ts",
+    "tests/unit/DirectDesktopAccess.locked.test.ts",
+    "tests/unit/desktop-helper-state-op.test.ts",
+    "tests/unit/desktop-locked-wire.test.ts",
+    "upgrades/side-effects/desktop-locked-screen.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -9,11 +9,12 @@ import {
   type WindowRunLivenessDocument,
   type WindowRunLivenessSample,
   resolveWindowRunSampleLifecycle,
+  windowRunRecoveryResultFromRefresh,
 } from '../../src/core/WindowRunLivenessAuthority.js';
 
 const BASE = Date.parse('2026-09-05T20:00:00.000Z');
 
-function harness(options: { dryRun?: boolean; recovery?: boolean; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
+function harness(options: { dryRun?: boolean; recovery?: boolean; busy?: { healSample: boolean }; recoveryAdvanceMs?: number; replacementExecutorId?: string; resumedTaskRef?: string; projectStatus?: (status: string) => string } = {}) {
   let nowMs = BASE;
   let sample: WindowRunLivenessSample = {
     sampledAt: new Date(nowMs).toISOString(),
@@ -31,6 +32,12 @@ function harness(options: { dryRun?: boolean; recovery?: boolean; replacementExe
     sample: () => structuredClone(sample),
     recover: async ({ attemptId, taskRef }) => {
       recoveryCalls++;
+      if (options.recoveryAdvanceMs) nowMs += options.recoveryAdvanceMs;
+      if (options.busy) {
+        // SessionRefresh refuses a mid-work session with code session-busy.
+        if (options.busy.healSample) sample.executor.heartbeatAt = new Date(nowMs).toISOString();
+        return { succeeded: false, detail: 'session-busy:in-flight work', receipt: `${attemptId}:session-busy`, executorBusy: true };
+      }
       if (options.recovery !== false) {
         if (options.replacementExecutorId) sample.executor.id = options.replacementExecutorId;
         sample.executor.running = true;
@@ -115,6 +122,124 @@ describe('WindowRunLivenessAuthority', () => {
     await h.authority.tick();
     expect(h.recoveryCalls).toBe(1);
     expect(h.notices).toHaveLength(1);
+  });
+
+  it('counts a heartbeat slightly newer than the sample time as fresh (clock-order tolerance)', async () => {
+    const h = harness();
+    // Production reads transcript mtime after stamping the sample time; the
+    // incident had a heartbeat 65 ms after the sample.
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 65).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.predicates['heartbeat-fresh'].ok).toBe(true);
+    expect(state?.status).toBe('active');
+  });
+
+  it('still rejects a heartbeat far in the future of the sample time', async () => {
+    const h = harness({ dryRun: true });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 60_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.predicates['heartbeat-fresh'].ok).toBe(false);
+    expect(state?.status).toBe('at-risk');
+  });
+
+  it('treats a session-busy recovery refusal as alive, not a failed recovery, and restores active on a green re-sample', async () => {
+    const h = harness({ busy: { healSample: true } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(1_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(h.recoveryCalls).toBe(1);
+    expect(state?.status).toBe('active');
+    expect(state?.recoveryAttempt).toMatchObject({ number: 1, outcome: 'executor-busy' });
+    expect(state?.transitions.at(-1)).toMatchObject({ to: 'active', reason: 'recovery-verified-executor-busy' });
+    expect(h.notices).toHaveLength(0);
+  });
+
+  it('keeps a busy-but-not-yet-green run at-risk, heals on a later green tick, and never re-attempts recovery', async () => {
+    const h = harness({ busy: { healSample: false } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(1_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const state = await h.authority.tick();
+    expect(state?.status).toBe('at-risk');
+    expect(state?.recoveryAttempt?.outcome).toBe('executor-busy');
+    expect(h.notices).toHaveLength(0);
+    h.advance(60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 61_000).toISOString(); });
+    const healed = await h.authority.tick();
+    expect(healed?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('a busy executor that never turns green still fails at the recovery ceiling', async () => {
+    const h = harness({ busy: { healSample: false } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(15 * 60_000);
+    const state = await h.authority.tick();
+    expect(state?.status).toBe('failed');
+    expect(state?.transitions.at(-1)?.reason).toBe('recovery-ceiling-exceeded');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it.each([
+    ['busy', { busy: { healSample: true } }],
+    ['resumed', {}],
+  ] as const)('gives a later loss its own ceiling after a %s recovery without actuating twice', async (_kind, options) => {
+    const h = harness(options);
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const first = await h.authority.tick();
+    expect(first?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+
+    h.advance(20 * 60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    const later = await h.authority.tick();
+    expect(later?.status).toBe('at-risk');
+    expect(later?.recoveryAttempt?.attemptId).toBe(first?.recoveryAttempt?.attemptId);
+    expect(h.recoveryCalls).toBe(1);
+    expect(h.notices).toHaveLength(0);
+
+    h.advance(14 * 60_000);
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(60_000);
+    const failed = await h.authority.tick();
+    expect(failed?.status).toBe('failed');
+    expect(failed?.finalSnapshot?.reason).toBe('recovery-ceiling-exceeded');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('restores active when a later loss heals within its own ceiling', async () => {
+    const h = harness({ busy: { healSample: true } });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.advance(20 * 60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    h.advance(60_000);
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE + 21 * 60_000).toISOString(); });
+    expect((await h.authority.tick())?.status).toBe('active');
+    expect(h.recoveryCalls).toBe(1);
+  });
+
+  it('uses the later episode clock even when it starts in the recovery-completion millisecond', async () => {
+    const h = harness({ recoveryAdvanceMs: 14 * 60_000 });
+    expect((await h.authority.tick())?.status).toBe('active');
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE - 120_000).toISOString(); });
+    const recovered = await h.authority.tick();
+    expect(recovered?.status).toBe('active');
+    expect(recovered?.recoveryAttempt?.completedAt).toBe(new Date(BASE + 14 * 60_000).toISOString());
+    h.mutateSample(s => { s.executor.heartbeatAt = new Date(BASE).toISOString(); });
+    const later = await h.authority.tick();
+    expect(later?.status).toBe('at-risk');
+    expect(later?.atRiskSince).toBe(recovered?.recoveryAttempt?.completedAt);
+    h.advance(60_000);
+    expect((await h.authority.tick())?.status).toBe('at-risk');
+    expect(h.recoveryCalls).toBe(1);
   });
 
   it('persists an attributable replacement binding before recovery re-sampling', async () => {
@@ -210,7 +335,7 @@ describe('WindowRunLivenessAuthority', () => {
     expect(expired?.finalSnapshot?.reason).toBe('window-expired');
   });
 
-  it('mints sequence, timestamp, digest attribution server-side and rejects unchanged artifacts', async () => {
+  it('mints sequence, timestamp, digest attribution server-side and rejects unchanged or replayed artifacts', async () => {
     const h = harness();
     const binding = { windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966' };
     await h.authority.tick();
@@ -219,6 +344,9 @@ describe('WindowRunLivenessAuthority', () => {
     expect(receipt).toMatchObject({ sequence: 2, observedAt: new Date(BASE).toISOString(), digest: 'b'.repeat(64), artifact: 'src/b.ts', taskRef: 'task-7' });
     expect(receipt.receiptId).toMatch(/^[a-f0-9]{64}$/);
     expect(h.store.load()?.lastWorkReceipt).toEqual(receipt);
+    await h.authority.recordWorkAdvance({ ...binding, artifactRef: 'src/c.ts' });
+    await expect(h.authority.recordWorkAdvance({ ...binding, artifactRef: 'src/b.ts' })).rejects.toThrow('window-run-liveness-artifact-replayed');
+    expect(h.store.load()?.lastWorkReceipt?.sequence).toBe(3);
   });
 
   it('uses one fail-closed authority timestamp for artifact admission and receipt stamping', async () => {
@@ -446,6 +574,113 @@ describe('WindowRunLivenessAuthority', () => {
       .toThrow('window-run-liveness-active-binding-exists');
     expect(h.store.load()?.executorId).toBe('echo-topic-36966');
   });
+
+  // 2026-11-01: a session registered with `runId` instead of `autonomousRunId`
+  // and no `lifecycleRunId`. RegExp.test(undefined) matched "undefined", so the
+  // binding was projected onto a run named "undefined" and failed with
+  // autonomous-run-not-found, leaving a 24h run stuck in preparing.
+  it.each(['windowId', 'autonomousRunId', 'lifecycleRunId', 'executorId'] as const)('refuses a missing %s by name before projecting anything', field => {
+    const projections: string[] = [];
+    const h = harness({ projectStatus: status => { projections.push(status); return `projected:${status}`; } });
+    h.authority.freeze('first-window-finished', 'failed');
+    const before = projections.length;
+    const input: Record<string, unknown> = { windowId: 'w-other', topicId: 131439, autonomousRunId: 'run-other', lifecycleRunId: 'run-other', executorId: 'echo-other' };
+    delete input[field];
+    expect(() => h.authority.register(input as never)).toThrow(`window-run-liveness-registration-invalid:${field}`);
+    expect(projections.length).toBe(before);
+    expect(h.store.load()?.windowId).toBe('w32');
+  });
+
+  it('refuses a non-string id even when its text form would match', () => {
+    const h = harness();
+    h.authority.freeze('first-window-finished', 'failed');
+    expect(() => h.authority.register({ windowId: 'w-other', topicId: 131439, autonomousRunId: 12345 as never, lifecycleRunId: 'run-other', executorId: 'echo-other' }))
+      .toThrow('window-run-liveness-registration-invalid:autonomousRunId');
+  });
+
+  // 2026-11-01 (topic 10000001256): the authority held ONE binding for the
+  // whole agent, so a live run in one topic left another topic's run in
+  // 'preparing' with nothing able to promote it.
+  it('holds one binding per topic, so two topics run at once', async () => {
+    const projected: Array<{ topicId: number; autonomousRunId: string; status: string }> = [];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-other-'));
+    const now = new Date(BASE).toISOString();
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => now,
+      sample: (state) => ({
+        sampledAt: now,
+        executor: { id: state.executorId, running: true, heartbeatAt: now },
+        deliveryReachable: true,
+        work: { receiptId: `work-${state.topicId}`, sequence: 1, digest: 'a'.repeat(64), observedAt: now, artifact: 'src/a.ts', taskRef: 'task-1' },
+        lifecycle: { lifecycleRunId: state.lifecycleRunId, state: 'autonomous-run-registered', admitted: true, expiresAt: new Date(BASE + 60 * 60_000).toISOString() },
+      }),
+      projectStatus: (state, status) => { projected.push({ topicId: state.topicId, autonomousRunId: state.autonomousRunId, status }); return `projected:${status}`; },
+    }, { enabled: true, dryRun: false });
+    authority.register({ windowId: 'instar-app-134088', topicId: 134088, autonomousRunId: 'run-a', lifecycleRunId: 'run-a', executorId: 'echo-instar-app' });
+    const second = authority.register({ windowId: 'desktop-131439', topicId: 131439, autonomousRunId: 'run-b', lifecycleRunId: 'run-b', executorId: 'echo-desktop' });
+    expect(second).toMatchObject({ status: 'preparing', topicId: 131439, autonomousRunId: 'run-b' });
+    // Each binding is projected onto ITS OWN run.
+    expect(projected).toEqual([
+      { topicId: 134088, autonomousRunId: 'run-a', status: 'preparing' },
+      { topicId: 131439, autonomousRunId: 'run-b', status: 'preparing' },
+    ]);
+    await authority.tick();
+    const status = authority.status();
+    expect(status.states.map(state => [state.topicId, state.status])).toEqual([[131439, 'active'], [134088, 'active']]);
+    expect(authority.status(134088).state?.autonomousRunId).toBe('run-a');
+    expect(authority.status(131439).state?.autonomousRunId).toBe('run-b');
+    // Freezing one topic leaves the other running.
+    authority.freeze('done', 'closed', 134088);
+    expect(authority.status(134088).state?.status).toBe('closed');
+    expect(authority.status(131439).state?.status).toBe('active');
+    // Within a topic a live binding still refuses a second window.
+    expect(() => authority.register({ windowId: 'desktop-2', topicId: 131439, autonomousRunId: 'run-c', lifecycleRunId: 'run-c', executorId: 'echo-desktop' }))
+      .toThrow('window-run-liveness-active-binding-exists');
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:other-topic-cleanup' });
+  });
+
+  it('refuses one window live in two topics', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-same-'));
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('not sampled'); },
+    }, { enabled: true, dryRun: false });
+    authority.register({ windowId: 'w32', topicId: 1, autonomousRunId: 'run-a', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-a' });
+    expect(() => authority.register({ windowId: 'w32', topicId: 2, autonomousRunId: 'run-b', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-b' }))
+      .toThrow('window-run-liveness-window-bound-elsewhere');
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:same-window-cleanup' });
+  });
+
+  it('sets an unreadable pre-split file aside instead of blocking every topic', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-corrupt-'));
+    const legacy = path.join(dir, 'window-run-liveness', 'state.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, '{not json');
+    const authority = new WindowRunLivenessAuthority(new WindowRunLivenessStore(dir), {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('not sampled'); },
+    }, { enabled: true, dryRun: false });
+    const registered = authority.register({ windowId: 'w-new', topicId: 5, autonomousRunId: 'run-5', lifecycleRunId: 'run-5', executorId: 'echo-5' });
+    expect(registered.status).toBe('preparing');
+    expect(fs.existsSync(legacy)).toBe(false);
+    expect(fs.readdirSync(path.dirname(legacy)).some(name => name.startsWith('state.json.unreadable-'))).toBe(true);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:corrupt-cleanup' });
+  });
+
+  it('moves the pre-split single binding into its topic and keeps it working', async () => {
+    const h = harness();
+    const doc = h.store.load()!;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-live-legacy-'));
+    const legacy = path.join(dir, 'window-run-liveness', 'state.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify(doc));
+    const store = new WindowRunLivenessStore(dir);
+    expect(store.topicIds()).toEqual([36966]);
+    expect(fs.existsSync(legacy)).toBe(false);
+    expect(store.forTopic(36966).load()).toEqual(doc);
+    expect(store.load()).toEqual(doc);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/window-run-liveness-authority.test.ts:legacy-cleanup' });
+  });
 });
 
 describe('resolveWindowRunSampleLifecycle', () => {
@@ -478,4 +713,33 @@ describe('resolveWindowRunSampleLifecycle', () => {
         .toEqual({ lifecycleRunId: 'lifecycle-w32', state: 'closed_failed', admitted: true, expiresAt: run.endAt });
     }
   });
+});
+
+describe('windowRunRecoveryResultFromRefresh (production recover wiring)', () => {
+  it('maps a session-busy refusal to an alive, busy executor', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: false, code: 'session-busy', message: 'in-flight work' });
+    expect(result).toMatchObject({ succeeded: false, executorBusy: true, receipt: 'att-1:session-busy' });
+  });
+
+  it('keeps any other refusal a failed recovery', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: false, code: 'session_not_found', message: 'gone' });
+    expect(result.succeeded).toBe(false);
+    expect(result.executorBusy).toBeUndefined();
+  });
+
+  it('maps a refresh to an attributable replacement binding', () => {
+    const result = windowRunRecoveryResultFromRefresh('att-1', 'task-3', { ok: true, newSessionName: 'echo-topic-2', topicId: 2 });
+    expect(result).toMatchObject({ succeeded: true, replacementExecutorId: 'echo-topic-2', resumedTaskRef: 'task-3' });
+  });
+});
+
+
+it('keeps a quiet liveness failure terminal across restart without a delivered flag', async () => {
+  const h = harness(); await h.authority.freeze('window-ceiling-expired', 'failed'); let sends = 0;
+  const make = () => new WindowRunLivenessAuthority(h.store, { now: () => new Date(BASE).toISOString(), sample: () => { throw new Error('no sample'); },
+    notifyFailure: async () => { sends++; return { delivered: false, recorded: true, quietId: 'liveness-q' }; } }, { enabled: true, dryRun: false });
+  const previous = h.store.load()!; delete previous.notificationDeliveredAt; h.store.save(previous);
+  await make().tick(); await make().tick(); const state = h.store.load()!;
+  expect(state.notificationQuietId).toBe('liveness-q'); expect(state.notificationRecordedAt).toBeDefined();
+  expect(state.notificationDeliveredAt).toBeUndefined(); expect(sends).toBe(1);
 });

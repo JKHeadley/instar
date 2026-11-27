@@ -4,13 +4,21 @@ import path from 'node:path';
 import os from 'node:os';
 
 const tmux = vi.hoisted(() => ({ sessions: new Set<string>(), calls: [] as string[][], failKill: false,
-  environment: new Map<string, string>(), failEnvironment: false }));
+  environment: new Map<string, string>(), failEnvironment: false,
+  // Per-session environment from `new-session -e K=V` (real tmux behaviour), read before the global map.
+  sessionEnv: new Map<string, Map<string, string>>(), failEnvironmentKey: null as string | null }));
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn((_cmd: string, args: string[] = []) => {
     tmux.calls.push(args);
     const target = args[args.indexOf('-t') + 1]?.replace(/^=/, '').replace(/:$/, '');
     if (args[0] === 'has-session' && !tmux.sessions.has(target)) throw Object.assign(new Error('absent'), { status: 1 });
-    if (args[0] === 'new-session') tmux.sessions.add(args[args.indexOf('-s') + 1]);
+    if (args[0] === 'new-session') {
+      const name = args[args.indexOf('-s') + 1];
+      tmux.sessions.add(name);
+      const env = new Map<string, string>();
+      args.forEach((a, i) => { if (args[i - 1] === '-e') { const eq = a.indexOf('='); env.set(a.slice(0, eq), a.slice(eq + 1)); } });
+      tmux.sessionEnv.set(name, env);
+    }
     if (args[0] === 'kill-session') { if (tmux.failKill) throw new Error('kill unavailable'); tmux.sessions.delete(target); }
     return '';
   }),
@@ -22,8 +30,23 @@ vi.mock('node:child_process', () => ({
       return;
     }
     const key = args.at(-1)!;
-    if (cb) cb(null, { stdout: args[0] === 'show-environment' && tmux.environment.has(key)
-      ? `${key}=${tmux.environment.get(key)}\n` : '', stderr: '' });
+    if (args[0] === 'show-environment') {
+      if (tmux.failEnvironmentKey === key) {
+        if (cb) cb(Object.assign(new Error('tmux unavailable'), { code: 'ETIMEDOUT' }));
+        return;
+      }
+      const target = args[args.indexOf('-t') + 1]?.replace(/^=/, '');
+      const own = tmux.sessionEnv.get(target);
+      const value = own?.has(key) ? own.get(key) : tmux.environment.get(key);
+      if (value === undefined) {
+        // Real tmux: an unknown variable exits 1 with this message.
+        if (cb) cb(Object.assign(new Error('unknown variable'), { code: 1, stderr: `unknown variable: ${key}\n` }));
+        return;
+      }
+      if (cb) cb(null, { stdout: `${key}=${value}\n`, stderr: '' });
+      return;
+    }
+    if (cb) cb(null, { stdout: '', stderr: '' });
   }), execSync: vi.fn(() => ''), spawn: vi.fn(),
 }));
 import { SessionManager } from '../../../src/core/SessionManager.js';
@@ -54,7 +77,7 @@ describe('SessionManager origin lifecycle production callback wiring', () => {
       revoke: sessionId => registry.revoke(sessionId) });
     vi.spyOn(manager as any, 'waitForClaudeReadyWithRetry').mockResolvedValue(true);
     vi.spyOn(manager as any, 'injectAfterReady').mockResolvedValue(undefined);
-    tmux.sessions.clear(); tmux.calls = []; tmux.failKill = false; tmux.environment.clear(); tmux.failEnvironment = false;
+    tmux.sessions.clear(); tmux.calls = []; tmux.failKill = false; tmux.environment.clear(); tmux.failEnvironment = false; tmux.sessionEnv.clear(); tmux.failEnvironmentKey = null;
   });
   afterEach(async () => {
     manager.stopMonitoring();
@@ -149,12 +172,94 @@ describe('SessionManager origin lifecycle production callback wiring', () => {
       expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 1, unavailable: [] });
       expect(registry.getBinding(session.id)?.configHome).toBe(accountHome);
     });
+  // SEC-107: a credential-stripped session must not regain an origin credential on a server restart.
+  it('a credential-stripped launch carries the omitted marker and a blank origin token', async () => {
+    await manager.spawnSession({ name: 'stripped', prompt: 'fixture', omitAuthEnv: true });
+    const args = tmux.calls.find(a => a[0] === 'new-session')!;
+    expect(args).toContain('INSTAR_ORIGIN_TOKEN=');
+    expect(args).toContain('INSTAR_ORIGIN_OMITTED=1');
+  });
+  it('re-enrollment reads the marker a stripped launch wrote and never re-arms it', async () => {
+    const session = await manager.spawnSession({ name: 'stripped', prompt: 'fixture', omitAuthEnv: true });
+    tmux.calls = [];
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 0, unavailable: [] });
+    expect(tmux.calls.some(a => a[0] === 'set-environment' && a[3] === 'INSTAR_ORIGIN_TOKEN')).toBe(false);
+    expect(registry.getBinding(session.id)).toBeUndefined();
+  });
+  it('skipping revokes a credential the session already held', async () => {
+    const session = await manager.spawnSession({ name: 'held', prompt: 'fixture' });
+    const token = launchedToken();
+    expect(registry.verify(token).ok).toBe(true);
+    tmux.sessionEnv.get(session.tmuxSession)!.set('INSTAR_ORIGIN_OMITTED', '1');
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 0, unavailable: [] });
+    expect(registry.verify(token).ok).toBe(false);
+  });
+  it('a removed or blanked marker still counts as stripped', async () => {
+    for (const form of ['', 'x']) {
+      tmux.sessionEnv.clear();
+      const session = await manager.spawnSession({ name: `m${form}`, prompt: 'fixture' });
+      tmux.sessionEnv.get(session.tmuxSession)!.set('INSTAR_ORIGIN_OMITTED', form);
+      expect((await manager.enrollExistingOriginSessions()).enrolled).toBe(0);
+      await manager.killSession(session.id);
+    }
+  });
+  it('a session from before the marker, launched with a blank agent token, is not re-armed', async () => {
+    (manager as unknown as { config: { authToken?: string } }).config.authToken = 'agent-token';
+    const session = await manager.spawnSession({ name: 'old-stripped', prompt: 'fixture', omitAuthEnv: true });
+    const env = tmux.sessionEnv.get(session.tmuxSession)!;
+    env.delete('INSTAR_ORIGIN_OMITTED');
+    expect(env.get('INSTAR_AUTH_TOKEN')).toBe('');
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 0, unavailable: [] });
+  });
+  it('a normal session (no marker, real agent token) is still re-enrolled', async () => {
+    (manager as unknown as { config: { authToken?: string } }).config.authToken = 'agent-token';
+    const session = await manager.spawnSession({ name: 'normal', prompt: 'fixture' });
+    const args = tmux.calls.find(a => a[0] === 'new-session')!;
+    expect(args).not.toContain('INSTAR_ORIGIN_OMITTED=1');
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 1, unavailable: [] });
+    expect(registry.getBinding(session.id)).toBeDefined();
+  });
+  it('a failing marker lookup alone holds enrollment closed', async () => {
+    const session = await manager.spawnSession({ name: 'normal', prompt: 'fixture' });
+    tmux.failEnvironmentKey = 'INSTAR_ORIGIN_OMITTED';
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 0, unavailable: [session.id] });
+    expect(tmux.calls.some(a => a[0] === 'set-environment')).toBe(false);
+  });
   it('holds enrollment when the live config home lookup fails instead of adopting server defaults', async () => {
     const session = await manager.spawnSession({ name: 'account-home', prompt: 'fixture' });
     tmux.failEnvironment = true;
     expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 0, unavailable: [session.id] });
     expect(registry.getBinding(session.id)).toBeUndefined();
     expect(tmux.calls.some(args => args[0] === 'set-environment')).toBe(false);
+  });
+  // Live 2026-11-12: worktree sessions re-enrolled after a restart were bound to the agent home,
+  // because the headless record never kept its spawn tree; the transcript was never found.
+  it('a headless session keeps its spawn tree, and re-enrollment binds that tree', async () => {
+    const tree = path.join(dir, '.worktrees', 'topic-42');
+    fs.mkdirSync(tree, { recursive: true });
+    const session = await manager.spawnSession({ name: 'tree', prompt: 'fixture', cwd: tree });
+    expect(state.getSession(session.id)?.cwd).toBe(tree);
+    expect(registry.getBinding(session.id)?.projectDir).toBe(tree);
+    expect(await manager.enrollExistingOriginSessions()).toEqual({ enrolled: 1, unavailable: [] });
+    expect(registry.getBinding(session.id)?.projectDir).toBe(tree);
+  });
+  // Live 2026-11-12: a first reply 13 s after spawn read "native-session-unbound" (no hook yet).
+  it('resolves an unreported Claude session id from Claude Code\'s own per-process record', async () => {
+    const session = await manager.spawnSession({ name: 'first-reply', prompt: 'fixture' });
+    const home = path.join(dir, 'claude-home');
+    fs.mkdirSync(path.join(home, 'sessions'), { recursive: true });
+    const nativeId = '44444444-4444-4444-8444-444444444444';
+    fs.writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId: nativeId, tmux: `${session.tmuxSession}:@1.%1`, startedAt: Date.now() }));
+    vi.spyOn(manager, 'configHomeForSession').mockReturnValue(home);
+    expect(manager.resolveOriginNativeSession(session.id)).toBe(nativeId);
+    expect(state.getSession(session.id)?.claudeSessionId).toBe(nativeId);
+    expect(bindNative).toHaveBeenLastCalledWith(session.id, nativeId);
+    // Already known: re-tells the observer without another lookup.
+    bindNative.mockClear();
+    expect(manager.resolveOriginNativeSession(session.id)).toBe(nativeId);
+    expect(bindNative).toHaveBeenCalledWith(session.id, nativeId);
+    expect(manager.resolveOriginNativeSession('not-a-session')).toBeNull();
   });
   it('native registration is scoped to an existing running Instar session', async () => {
     const session = await manager.spawnSession({ name: 'bind-control', prompt: 'fixture' });

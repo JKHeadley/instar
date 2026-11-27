@@ -58,6 +58,7 @@ export interface SpendAlert {
 export type DispatchDecision =
   | 'sent'
   | 'sent-lifeline'
+  | 'quiet-recorded'
   | 'queued-durable'
   | 'coalesced'
   | 'suppressed'
@@ -81,7 +82,7 @@ export interface AlertChannel {
    * CONFIRMED delivery (the latch condition). `moneyCritical` lets the channel
    * pick the durable path.
    */
-  deliver(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'failed'>;
+  deliver(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'quiet-recorded' | 'failed'>;
 }
 
 export interface SpendAlertDispatcherOptions {
@@ -153,7 +154,7 @@ export class SpendAlertDispatcher {
       }
       // Money-critical: immediate, never digested, durable path preferred.
       const outcome = await this.deliverThroughChannels(alert.text, true);
-      if (outcome === 'sent' || outcome === 'sent-lifeline' || outcome === 'queued-durable') {
+      if (outcome === 'sent' || outcome === 'sent-lifeline' || outcome === 'queued-durable' || outcome === 'quiet-recorded') {
         this.latched.set(latchKey, this.now());
       }
       this.audit({ decision: outcome, kind: alert.kind, lane, dedupeKey: alert.dedupeKey });
@@ -200,12 +201,13 @@ export class SpendAlertDispatcher {
     this.digestTimer.unref?.();
   }
 
-  private async deliverThroughChannels(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'failed'> {
-    let best: 'sent' | 'sent-lifeline' | 'queued-durable' | 'failed' = 'failed';
+  private async deliverThroughChannels(text: string, moneyCritical: boolean): Promise<'sent' | 'sent-lifeline' | 'queued-durable' | 'quiet-recorded' | 'failed'> {
+    let best: 'sent' | 'sent-lifeline' | 'queued-durable' | 'quiet-recorded' | 'failed' = 'failed';
     for (const ch of this.channels) {
       try {
         const r = await ch.deliver(text, moneyCritical);
         if (r === 'sent') return 'sent';
+        if (r === 'quiet-recorded' && best === 'failed') best = 'quiet-recorded';
         if (r === 'queued-durable' && best === 'failed') best = 'queued-durable';
         if (r === 'sent-lifeline' && best === 'failed') best = 'sent-lifeline';
       } catch {

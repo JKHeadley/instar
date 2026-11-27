@@ -14,8 +14,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { SafeGitExecutor } from '../../core/SafeGitExecutor.js';
+import { SafeGitExecutor, type SafeGitOptions } from '../../core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
+import { createAuthenticatedGitHubCliRuntimeResolver, type AuthenticatedGitHubCliRuntime } from '../../core/githubRuntime.js';
 import type { PrReview, RepoInfo } from './reviewGate.js';
 
 const execFileAsync = promisify(execFile);
@@ -44,6 +45,12 @@ export interface AttemptGit {
    * `'none'` when no release contains it yet; null when it cannot be determined.
    */
   firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null>;
+  /**
+   * The full SHA and committer time of `commit` when it names a commit the trusted source checkout
+   * has AND `baseSha` contains it; null otherwise (unknown, not an ancestor, or unreadable).
+   * Optional: without it a session's "already fixed by" claim is never trusted.
+   */
+  commitInBase?(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null>;
 }
 
 export interface GitHubGateway {
@@ -63,19 +70,64 @@ export interface GitHubGateway {
   prFiles(slug: string, pr: number): Promise<string[] | null>;
   /** Leave a comment on the PR; false on a gh error. */
   comment(slug: string, pr: number, body: string): Promise<boolean>;
+  /**
+   * Close the PR (the branch is kept, so it can be reopened). Idempotent for an already closed PR.
+   * A PR found MERGED is reported as `merged`, never as closed: the caller must record the merge,
+   * not finalize a close. `failed` on a gh error.
+   */
+  closePr(slug: string, pr: number): Promise<'closed' | 'merged' | 'failed'>;
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
   return { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_ASKPASS: '', SSH_ASKPASS: '' };
 }
 
+function githubCredentialArgs(runtime: AuthenticatedGitHubCliRuntime): string[] {
+  // Git helpers are shell syntax: quote the executable; tokens stay in the child environment.
+  const executable = `'${runtime.executable.replace(/'/g, `'\\''`)}'`;
+  return ['-c', 'credential.helper=', '-c', `credential.helper=!${executable} auth git-credential`];
+}
+
+const GIT_KILL_GRACE_MS = 5_000;
+
+/**
+ * Clones, fetches and pushes take tens of seconds on a busy machine. Run synchronously they stop the
+ * server's event loop for that long, which misses lease renewals and health checks. Same safety
+ * checks as execSync, through SafeGitExecutor.spawn.
+ */
+export function runGitWithoutBlocking(args: string[], opts: SafeGitOptions & { timeout: number }): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const { timeout, ...spawnOpts } = opts;
+    const child = SafeGitExecutor.spawn(args, { ...spawnOpts, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderr = `${stderr}${chunk.toString('utf8')}`.slice(-4_000); });
+    // The timeout settles the promise itself: `close` waits for every holder of the stderr pipe, and a
+    // stuck credential helper can hold it long after git is gone, which would wedge the tick.
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      child.stderr?.destroy();
+      setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, GIT_KILL_GRACE_MS).unref();
+      reject(Object.assign(new Error(`Command failed: git ${args.join(' ')}\ntimed out after ${timeout} ms\n${stderr}`), { status: null, signal: 'SIGTERM' }));
+    }, timeout);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) { resolve(); return; }
+      reject(Object.assign(new Error(`Command failed: git ${args.join(' ')}\n${stderr}`), { status: code, signal }));
+    });
+  });
+}
+
 export class SafeAttemptGit implements AttemptGit {
+  constructor(private readonly resolveGitHubRuntime?: () => AuthenticatedGitHubCliRuntime) {}
+
   async fetchBase(sourceRepoPath: string): Promise<string> {
+    const runtime = this.resolveGitHubRuntime?.();
     // The base also lands on a LOCAL branch: a clone of the source copies only objects reachable from
     // its branches and tags, never from remote-tracking refs, so an origin/main that no local branch
     // contains left every attempt clone unable to check out the base ("unable to read tree").
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, 'fetch', 'origin', `+refs/heads/main:refs/remotes/origin/main`, `+refs/heads/main:refs/heads/${BASE_BRANCH}`, '--no-tags', '--no-recurse-submodules', '--quiet'],
-      { cwd: sourceRepoPath, operation: 'feedback-execute fetch base', sourceTreeReadOk: true, timeout: 120_000, env: gitEnv() });
+    await runGitWithoutBlocking([...HARDENED_GIT_CONFIG, ...(runtime ? githubCredentialArgs(runtime) : []), 'fetch', 'origin', `+refs/heads/main:refs/remotes/origin/main`, `+refs/heads/main:refs/heads/${BASE_BRANCH}`, '--no-tags', '--no-recurse-submodules', '--quiet'],
+      { cwd: sourceRepoPath, operation: 'feedback-execute fetch base', sourceTreeReadOk: true, timeout: 120_000, env: { ...runtime?.env, ...gitEnv() } });
     const sha = SafeGitExecutor.readSync(['rev-parse', `refs/heads/${BASE_BRANCH}`], { cwd: sourceRepoPath, operation: 'feedback-execute base sha', sourceTreeReadOk: true }).trim();
     if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('base-sha-unreadable');
     return sha;
@@ -87,24 +139,25 @@ export class SafeAttemptGit implements AttemptGit {
     // cwd is a neutral temp directory; the destination is a fresh feedback attempt clone.
     // Cloning from the trusted local checkout is a "file" transport; it is allowed for this one
     // command (the later -c wins) and stays off everywhere else (no submodule or alternate fetches).
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, '-c', 'protocol.file.allow=always', 'clone', '--no-hardlinks', '--no-checkout', '--quiet', '--no-recurse-submodules', sourceRepoPath, dest],
+    await runGitWithoutBlocking([...HARDENED_GIT_CONFIG, '-c', 'protocol.file.allow=always', 'clone', '--no-hardlinks', '--no-checkout', '--quiet', '--no-recurse-submodules', sourceRepoPath, dest],
       { cwd: os.tmpdir(), operation: 'feedback-execute create attempt clone', timeout: 300_000, env: gitEnv() });
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, 'checkout', '--detach', '--quiet', sha],
+    await runGitWithoutBlocking([...HARDENED_GIT_CONFIG, 'checkout', '--detach', '--quiet', sha],
       { cwd: dest, operation: 'feedback-execute checkout base', feedbackAttemptCloneOk: true, timeout: 300_000, env: gitEnv() });
   }
 
   async commitAndPush(publishClone: string, input: { branch: string; message: string; remoteUrl: string; authorName: string; authorEmail: string; credentialHelper: string | null }): Promise<string> {
     if (!/^feedback\/[a-z0-9-]+-a\d+$/.test(input.branch)) throw new Error('invalid feedback branch');
     if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/.test(input.remoteUrl)) throw new Error('remote must be an explicit https GitHub URL');
+    const runtime = this.resolveGitHubRuntime?.();
     const opts = { cwd: publishClone, feedbackAttemptCloneOk: true, env: gitEnv(), timeout: 120_000 } as const;
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, 'add', '-A', '--', '.'], { ...opts, operation: 'feedback-execute stage change set' });
+    await runGitWithoutBlocking([...HARDENED_GIT_CONFIG, 'add', '-A', '--', '.'], { ...opts, operation: 'feedback-execute stage change set' });
     // Identity as env (it outranks any inherited or injected identity): the resolved commit identity, never an invented one.
     const identityEnv = { GIT_AUTHOR_NAME: input.authorName, GIT_AUTHOR_EMAIL: input.authorEmail, GIT_COMMITTER_NAME: input.authorName, GIT_COMMITTER_EMAIL: input.authorEmail };
     SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, '-c', `user.name=${input.authorName}`, '-c', `user.email=${input.authorEmail}`, 'commit', '--no-verify', '--quiet', '-F', '-'],
       { ...opts, env: { ...opts.env, ...identityEnv }, operation: 'feedback-execute commit change set', input: input.message });
-    const helper = input.credentialHelper ? ['-c', 'credential.helper=', '-c', `credential.helper=${input.credentialHelper}`] : ['-c', 'credential.helper='];
-    SafeGitExecutor.execSync([...HARDENED_GIT_CONFIG, ...helper, 'push', '--no-verify', '--quiet', input.remoteUrl, `HEAD:refs/heads/${input.branch}`],
-      { ...opts, operation: 'feedback-execute push feedback branch' });
+    const helper = runtime ? githubCredentialArgs(runtime) : input.credentialHelper ? ['-c', 'credential.helper=', '-c', `credential.helper=${input.credentialHelper}`] : ['-c', 'credential.helper='];
+    await runGitWithoutBlocking([...HARDENED_GIT_CONFIG, ...helper, 'push', '--no-verify', '--quiet', input.remoteUrl, `HEAD:refs/heads/${input.branch}`],
+      { ...opts, env: { ...runtime?.env, ...gitEnv() }, operation: 'feedback-execute push feedback branch' });
     const head = SafeGitExecutor.readSync(['rev-parse', 'HEAD'], { cwd: publishClone, operation: 'feedback-execute pushed head', feedbackAttemptCloneOk: true }).trim();
     if (!/^[0-9a-f]{40}$/.test(head)) throw new Error('pushed-head-unreadable');
     return head;
@@ -118,9 +171,25 @@ export class SafeAttemptGit implements AttemptGit {
     } catch { return null; } // @silent-fallback-ok: an unreadable origin makes the executor report no-source-repo
   }
 
+  async commitInBase(sourceRepoPath: string, commit: string, baseSha: string): Promise<{ sha: string; committedAt: number } | null> {
+    if (!/^[0-9a-f]{7,40}$/.test(commit) || !/^[0-9a-f]{40}$/.test(baseSha)) return null;
+    const read = (args: string[], operation: string) => SafeGitExecutor.readSync(args, { cwd: sourceRepoPath, operation, sourceTreeReadOk: true, timeout: 60_000 });
+    try {
+      const full = read(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`], 'feedback-execute already-fixed resolve').trim();
+      if (!/^[0-9a-f]{40}$/.test(full)) return null;
+      read(['merge-base', '--is-ancestor', full, baseSha], 'feedback-execute already-fixed ancestry');
+      const committedAt = Date.parse(read(['log', '-1', '--format=%cI', full], 'feedback-execute already-fixed date').trim());
+      return Number.isFinite(committedAt) ? { sha: full, committedAt } : null;
+    } catch { return null; } // @silent-fallback-ok: unknown or not an ancestor → the claim is not trusted and the attempt counts as plain not-reproducible
+  }
+
   async firstReleaseContaining(sourceRepoPath: string, commit: string): Promise<{ tag: string; taggedAt: number } | 'none' | null> {
     if (!/^[0-9a-f]{7,40}$/.test(commit)) return null;
-    const read = (args: string[], operation: string) => SafeGitExecutor.readSync(args, { cwd: sourceRepoPath, operation, sourceTreeReadOk: true, timeout: 60_000 });
+    const read = (args: string[], operation: string) => {
+      const runtime = args[0] === 'ls-remote' ? this.resolveGitHubRuntime?.() : undefined;
+      return SafeGitExecutor.readSync([...(runtime ? githubCredentialArgs(runtime) : []), ...args],
+        { cwd: sourceRepoPath, operation, sourceTreeReadOk: true, timeout: 60_000, ...(runtime ? { env: { ...runtime.env, ...gitEnv() } } : {}) });
+    };
     try {
       // Release tags point at release commits on main, which fetchBase already brought in, so no
       // tag refs are written: ls-remote lists them and merge-base checks ancestry locally.
@@ -152,11 +221,30 @@ function compareVersionTags(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * True when a failed `gh api -X DELETE …/labels/<label>` means only that the label was not on the
+ * issue: GitHub's 404 with the message "Label does not exist". Any other 404 (a missing PR or repo,
+ * no access) stays a failure.
+ */
+export function labelAlreadyAbsent(error: unknown): boolean {
+  const e = error as { stdout?: unknown; stderr?: unknown } | null;
+  const text = `${String(e?.stdout ?? '')}\n${String(e?.stderr ?? '')}`;
+  return /Label does not exist/.test(text) && /\b404\b/.test(text);
+}
+
 export class GhGateway implements GitHubGateway {
-  constructor(private readonly opts: { ghPath?: string; cwd: string; safeMergeScript: string; nodePath?: string }) {}
+  private readonly resolveRuntime: () => AuthenticatedGitHubCliRuntime;
+
+  constructor(private readonly opts: { ghPath?: string; cwd: string; safeMergeScript: string; nodePath?: string; resolveRuntime?: () => AuthenticatedGitHubCliRuntime }) {
+    this.resolveRuntime = opts.resolveRuntime ?? createAuthenticatedGitHubCliRuntimeResolver({
+      stateDir: opts.cwd,
+      ...(opts.ghPath ? { resolveExecutable: () => opts.ghPath! } : {}),
+    });
+  }
 
   private async gh(args: string[], timeout = 30_000): Promise<string> {
-    const { stdout } = await execFileAsync(this.opts.ghPath ?? 'gh', args, { cwd: this.opts.cwd, timeout, maxBuffer: 16 * 1024 * 1024 });
+    const runtime = this.resolveRuntime();
+    const { stdout } = await execFileAsync(runtime.executable, args, { cwd: this.opts.cwd, env: runtime.env, timeout, maxBuffer: 16 * 1024 * 1024 });
     return stdout;
   }
 
@@ -218,7 +306,13 @@ export class GhGateway implements GitHubGateway {
   }
 
   async removeLabel(slug: string, pr: number, label: string): Promise<boolean> {
-    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; } catch { return false; } // @silent-fallback-ok: caller records the failure
+    try { await this.gh(['api', '-X', 'DELETE', `repos/${slug}/issues/${pr}/labels/${encodeURIComponent(label)}`]); return true; }
+    catch (error) {
+      // Idempotent: the label already gone is the wanted state. GitHub answers 404 "Label does not
+      // exist" for that, and reading it as a failure stalled every admitted PR before its merge.
+      if (labelAlreadyAbsent(error)) return true;
+      return false; // @silent-fallback-ok: caller records the failure
+    }
   }
 
   /**
@@ -260,10 +354,22 @@ export class GhGateway implements GitHubGateway {
     }
   }
 
+  async closePr(slug: string, pr: number): Promise<'closed' | 'merged' | 'failed'> {
+    try {
+      // RULE 3: EXEMPT — gh's documented --json output (a stable, versioned data contract).
+      const view = JSON.parse(await this.gh(['pr', 'view', String(pr), '--repo', slug, '--json', 'state'])) as { state?: string };
+      if (view.state === 'MERGED') return 'merged';
+      if (view.state === 'CLOSED') return 'closed';
+      await this.gh(['pr', 'close', String(pr), '--repo', slug]);
+      return 'closed';
+    } catch { return 'failed'; } // @silent-fallback-ok: the caller keeps the close intent and retries next tick (degradation after 3 failures)
+  }
+
   async safeMerge(slug: string, pr: number, sha: string): Promise<{ exitCode: number | null; stdout: string }> {
     try {
+      const runtime = this.resolveRuntime();
       const { stdout } = await execFileAsync(this.opts.nodePath ?? process.execPath, [this.opts.safeMergeScript, String(pr), '--auto', '--repo', slug, '--match-head-commit', sha],
-        { cwd: this.opts.cwd, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024 });
+        { cwd: this.opts.cwd, env: runtime.env, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024 });
       return { exitCode: 0, stdout };
     } catch (error) {
       const e = error as { code?: number | string; stdout?: string };

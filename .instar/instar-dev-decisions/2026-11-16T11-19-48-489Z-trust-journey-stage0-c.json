@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-16T11:19:48.489Z",
+  "slug": "trust-journey-stage0-c",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 927,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AdaptiveTrust.ts",
+      "src/core/BackupManager.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/installCodexHooks.ts",
+      "src/core/trustJourney/TrustJourneyRuntime.ts",
+      "src/core/trustJourney/TrustJourneyStore.ts",
+      "src/core/trustJourney/TrustOutcomeLog.ts",
+      "src/core/trustJourney/admission.ts",
+      "src/core/trustJourney/legacyImport.ts",
+      "src/data/awareness/trust-raises-need-the-person.md",
+      "src/data/effect-kinds.ts",
+      "src/monitoring/FrameworkParitySentinel.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 808,
+    "deletedLines": 119
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "queued-reply-coherence",
+  "sessionId": "7c3c0b47-1ffe-4674-a3a3-26072f48ed08",
+  "timestamp": "2026-11-05T04:53:04.957Z",
+  "artifactPath": "upgrades/side-effects/queued-reply-coherence.md",
+  "artifactSha256": "e3e726f9c7cbda2f2aceb8b4e42883b9dbb3bbcdc5a8261b574e3f41bea1e660",
+  "coveredFiles": [
+    "docs/specs/queued-reply-coherence.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "tests/unit/telegram-origin/queued-reply-supersession.test.ts",
+    "upgrades/side-effects/queued-reply-coherence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow completion of the held-reply repair: preserve original session authorship and draft time through holder replacement and history writes, without new state or API.",
+  "eli16Path": "docs/specs/queued-reply-coherence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/queued-reply-coherence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder",
+      "howCaught": "The existing forward ladder has a deadline and bounded attempts; preserving author metadata adds no repeat action, and the chronology gate either holds a reserved attempt or terminates it once."
+    }
+  }
+}

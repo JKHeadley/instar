@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "mac-qr-pairing",
+  "sessionId": "df6e9091-1eb6-41a4-afe5-df76adcd659c",
+  "timestamp": "2026-11-16T00:04:34.462Z",
+  "artifactPath": "upgrades/side-effects/mac-qr-pairing.md",
+  "artifactSha256": "9d4241d5b92c40bca07cd4a00387ba0d08d90c71e7e8297d1e49f5fa19ffa839",
+  "specPath": "docs/specs/mac-qr-pairing.md",
+  "coveredFiles": [
+    "upgrades/side-effects/mac-qr-pairing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "evidence update to this change's own side-effects review",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

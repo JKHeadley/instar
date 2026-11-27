@@ -1,17 +1,136 @@
 {
-  "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC \u00a73.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, \u00a74e). New state declares its class here at birth.",
+  "$schema-note": "Machine form of docs/specs/STATE-COHERENCE-REGISTRY.md (the approved census, census-date 2026-06-05). AUTHORED, NOT build-generated (committed-generated-manifest conflict-loop lesson, COHERENCE-JOURNAL-SPEC §3.6). One entry per durable state category the census enumerates. Consumed by scripts/lint-state-registry.js: every direct durable-write site targeting a state dir / .instar/ must match an entry's `paths` (or carry an inline `/* state-registry: <category> */` annotation). Fields: category (kebab-case id) | description | scope (machine-local | must-be-coherent | derived-cache | coherent-on-demand) | freshness (real-time | eventual | session-boundary | n/a) | conflictShape (single-writer | append-only | lww | n/a) | transport (git | peer-http | none | deferred) | paths (glob-ish hints) | grandfathered (census marked uncertainty, §4e). New state declares its class here at birth.",
   "version": 1,
   "censusDate": "2026-06-05",
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "security-review-preflight-packets",
+      "description": "Private, bounded, machine-local full declared-input snapshots for evidence-only security-review diagnostics. They certify neither model consumption nor semantic review; source ledger is never modified.",
+      "scope": "machine-local",
+      "freshness": "session-boundary",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/security/private/review-packets/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "bounded",
+        "maxEntries": 16,
+        "note": "Keep at most16 complete owned UUID packets (up to8MiB source bytes per packet); remove only oldest owned derived packets. Unknown/partial artifacts are never consumed; enumeration over128 entries refuses capture. These are never the sole record of a finding."
+      }
+    },
+    {
+      "category": "attribution-ledger",
+      "description": "Append-only history of claims credited to a person: wording, verdict, source ref and lineage. Rotated into kept gzip archives, never deleted. One writer per machine; a trace merges every machine's rows on read.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "attribution/ledger.jsonl",
+        "attribution/ledger.*.jsonl.gz"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "note": "The paper trail itself. Live file rotates at 50k rows into gzip archives that are kept, never deleted (Archiving May Never Mean Deleting)."
+      }
+    },
+    {
+      "category": "attribution-pins",
+      "description": "Copies of logged rows taken on their first verified resolve, so a good citation stays checkable after the log rotates. Dropped when the person deletes the message. Backed up; a peer reads them through GET /attribution/resolve?scope=local.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "attribution/pins.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "streamed",
+        "complianceHold": true,
+        "note": "Evidence for citations. Nothing is evicted; a pin is dropped only when the person deletes the message. Memory holds the newest 20k."
+      }
+    },
+    {
+      "category": "attribution-budget",
+      "description": "Per-use daily judge budgets and running counters behind GET /attribution/status, persisted so a restart does not reset them. Per machine because the spend is per machine.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "attribution/budget.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file: today's budgets and running counters."
+      }
+    },
+    {
+      "category": "attribution-audit",
+      "description": "The daily report, the audit's block hashes, retry schedule and breaker, and claims waiting on a lineage link. Only the lease holder runs the audit; it writes nothing to any note, so shared notes gain no second writer. The report is proxied on read.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "attribution/report.json",
+        "attribution/audit-state.json",
+        "attribution/lineage-pending.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 50000,
+        "note": "Report lists cap at 200 items each and are replaced each run. Block hashes are pruned when the block leaves its file; retries clear on a firm outcome; pending lineage caps at 2000."
+      }
+    },
+    {
+      "category": "host-test-runner-merge-priority",
+      "description": "Per-agent, host-local short leases that give a queued merge-gate verify the next full-suite slot. Expired, dead-owner and foreign-host claims have no authority.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "~/.instar/host-test-runner-priority/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 64,
+        "note": "One replace-in-place claim per agent and machine, at most 64 host-wide. A new writer prunes dead or expired claims at the ceiling; a live claim expires after 2 minutes without renewal."
+      }
+    },
+    {
       "category": "telegram-origin-session-custody",
       "description": "Machine-bound preparation credential verifiers and the owner-only notice IPC socket. Raw credentials are never persisted. Session liveness and incarnation must still be current; a copied verifier or stale socket never grants delivery authority. Excluded structurally from git sync and replicated backup.",
-      "scope": "machine-local", "freshness": "real-time", "conflictShape": "single-writer", "transport": "none",
-      "paths": ["origin-sessions-*.json", "origin-sessions-*.json.*.tmp", "origin-notice.sock"],
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "origin-sessions-*.json",
+        "origin-sessions-*.json.*.tmp",
+        "origin-notice.sock"
+      ],
       "grandfathered": false,
-      "retention": { "class": "A", "access": "bounded", "maxBytes": 16384000,
-        "note": "At most 1000 session verifiers; revoked at session end, replaced on incarnation rotation. Socket is removed on orderly owner close and contains no payload or credential." }
+      "retention": {
+        "class": "A",
+        "access": "bounded",
+        "maxBytes": 16384000,
+        "note": "At most 1000 session verifiers; revoked at session end, replaced on incarnation rotation. Socket is removed on orderly owner close and contains no payload or credential."
+      }
     },
     {
       "category": "telegram-origin-retained-evidence",
@@ -20,7 +139,11 @@
       "freshness": "real-time",
       "conflictShape": "append-only",
       "transport": "peer-http",
-      "paths": ["state/pending-relay.*.sqlite", "state/telegram-origin-spool/", "state/telegram-origin-archives/"],
+      "paths": [
+        "state/pending-relay.*.sqlite",
+        "state/telegram-origin-spool/",
+        "state/telegram-origin-archives/"
+      ],
       "grandfathered": false,
       "retention": {
         "class": "C",
@@ -28,6 +151,27 @@
         "complianceHold": true,
         "maxAgeMs": 2592000000,
         "note": "30 days hot; bounded indexed archive batches retain evidence indefinitely with count/digest manifests. Queue payload cleanup and archive movement never remove receipt/origin lookup or aggregate totals. Execution remains in the existing credential-owner queue; evidence copies are inert. Disk pressure never silently drops retained metadata."
+      }
+    },
+    {
+      "category": "telegram-test-groups",
+      "description": "Audit log of typed Telegram test-group operations (create/list/delete intents, outcomes, flood and damage holds) plus the dedicated marker key. Authority lives on the account (issuer-keyed marker in each group title, verified by a live read), so nothing here needs replicating; the log only bounds the daily create count and carries holds for the one enrolled profile.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/telegram-test-groups.jsonl",
+        "state/telegram-test-groups.1.jsonl",
+        "state/telegram-test-groups.key"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "Rotates at 2 MB into one kept segment; the 24 h create count reads both. The key file is 65 bytes and never rotated. A damaged log is moved aside once (telegram-test-groups.damaged-<ts>.jsonl) with a 24 h create hold."
       }
     },
     {
@@ -136,12 +280,12 @@
         "class": "R",
         "access": "protocol-reader",
         "boundedBy": "replication-protocol",
-        "note": "CARVED OUT \u2014 bounded inside CoherenceJournal via KindRetention + the new seq-floor prune guard; never externally rotated"
+        "note": "CARVED OUT — bounded inside CoherenceJournal via KindRetention + the new seq-floor prune guard; never externally rotated"
       }
     },
     {
       "category": "pending-pulls",
-      "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 \u00a73.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
+      "description": "Durable working-set pending-pull ledger - outstanding fetches whose producer was offline/unreachable/revoked/mid-run; re-fired on reappearance/run-stopped (WORKING-SET-HANDOFF-SPEC P2 §3.4). Machine-local: records describe THIS machine's outstanding fetches; single-writer serialized mutate() funnel.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -153,7 +297,7 @@
     },
     {
       "category": "pull-opkeys",
-      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 \u00a73.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
+      "description": "Durable (topic,epoch) operation-key window for working-set pull dedupe - restart-proof at-most-once scheduling per move (WORKING-SET-HANDOFF-SPEC P2 §3.3). Machine-local, bounded window (200 keys), single-writer (the coordinator).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -165,7 +309,7 @@
     },
     {
       "category": "visibility-guard",
-      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 \u00a73.6). Machine-local notice hygiene, never authority.",
+      "description": "Peer-visibility guard dedupe state - which improper revocations were already surfaced (keyed on revokedAt, cross-boot) + per-machine disappearance episodes for flap bounding (WORKING-SET-HANDOFF-SPEC P2 §3.6). Machine-local notice hygiene, never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -189,7 +333,7 @@
     },
     {
       "category": "commitment-replicas",
-      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
+      "description": "Per-peer read-only replicas of other machines' commitment stores (COMMITMENTS-COHERENCE-SPEC P1.5 §3.2). Derived cache - rebuilt by a full re-pull; written ONLY by the commitments-sync receive path; first-hop sender-bound; incarnation-fenced.",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -201,7 +345,7 @@
     },
     {
       "category": "commitment-pending-mutations",
-      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
+      "description": "Durable owner-routed mutation intents awaiting an offline owner (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4). Stores INTENT only - a FRESH signed envelope is re-issued at fire time; single-writer serialized funnel; per-(origin,id) and per-owner enqueue bounds; TTL 7d with one honest expiry notice.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -213,7 +357,7 @@
     },
     {
       "category": "commitment-opkeys",
-      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 \u00a73.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
+      "description": "Owner-side durable opKey replay window for commitment-mutate (COMMITMENTS-COHERENCE-SPEC P1.5 §3.4) - the replay control beyond the 60s envelope nonce window; records verdicts, survives restarts, TTL >= pending-mutation TTL.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -262,7 +406,7 @@
     },
     {
       "category": "slack-pending-registrations",
-      "description": "Durable pending Slack self-registration requests awaiting admin approval (SlackUserRegistry). Cleared on approve/deny. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md \u00a76.3.",
+      "description": "Durable pending Slack self-registration requests awaiting admin approval (SlackUserRegistry). Cleared on approve/deny. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §6.3.",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -274,7 +418,7 @@
     },
     {
       "category": "slack-relationship-baselines",
-      "description": "Durable per-principal behavioral baseline (Pillar 3 relationship-aware anomaly second factor): privacy-respecting SHAPE aggregates only \u2014 action repertoire, tier/hour histograms, coarse message-length stats, urgency rate \u2014 NEVER message content. Fed observe-only from authorized Slack traffic; read by RelationshipAnomalyScorer. Ships DARK. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md \u00a77.1-7.2, \u00a77.6.",
+      "description": "Durable per-principal behavioral baseline (Pillar 3 relationship-aware anomaly second factor): privacy-respecting SHAPE aggregates only — action repertoire, tier/hour histograms, coarse message-length stats, urgency rate — NEVER message content. Fed observe-only from authorized Slack traffic; read by RelationshipAnomalyScorer. Ships DARK. See docs/specs/SLACK-ORG-INTEGRATION-SPEC.md §7.1-7.2, §7.6.",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -299,7 +443,7 @@
         "class": "R",
         "access": "protocol-reader",
         "boundedBy": "replication-protocol",
-        "note": "CARVED OUT \u2014 replication substrate"
+        "note": "CARVED OUT — replication substrate"
       }
     },
     {
@@ -425,7 +569,7 @@
     },
     {
       "category": "job-definitions",
-      "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census \u00a75).",
+      "description": "Declarative job definitions (cron / prompt / supervision). The coherent half of jobs.json plus markdown job specs; run state is machine-local (see job-run-state). Field split required before whole-file sync (census §5).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
@@ -485,14 +629,15 @@
     },
     {
       "category": "secret-vault",
-      "description": "Encrypted secret vault. The one category that truly replicates today (cross-machine secret sync, X25519-sealed push, receive-only default).",
+      "description": "Encrypted vault; eligible values use configured X25519-sealed secret sync. Machine identity recovery and reserved conversation_graph_ control, role, policy and rollback-marker namespaces remain machine-local and are refused by ordinary outbound and inbound sync. Graph owner recovery uses its separate verified recipient envelopes.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "single-writer",
       "transport": "peer-http",
       "paths": [
         "config.secrets.enc",
-        "state/secrets.enc"
+        "state/secrets.enc",
+        "secrets/config.secrets.enc"
       ],
       "grandfathered": false
     },
@@ -511,7 +656,7 @@
     },
     {
       "category": "topic-pin-skew-quarantine",
-      "description": "U4.1 sticky durable exclusion set for future-skewed replicated topic-pin records (key+HLC pairs; docs/specs/u4-1-pin-persistence.md \u00a72C). Machine-local BY DESIGN: each fold quarantines what ITS skew gate rejected.",
+      "description": "U4.1 sticky durable exclusion set for future-skewed replicated topic-pin records (key+HLC pairs; docs/specs/u4-1-pin-persistence.md §2C). Machine-local BY DESIGN: each fold quarantines what ITS skew gate rejected.",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -524,7 +669,7 @@
         "class": "R",
         "access": "protocol-reader",
         "boundedBy": "domain-cardinality",
-        "note": "One entry per poisoned record (rare by construction); entries prune on honest supersession (a newer honest HLC wins) or explicit per-record re-admission \u2014 never unbounded growth."
+        "note": "One entry per poisoned record (rare by construction); entries prune on honest supersession (a newer honest HLC wins) or explicit per-record re-admission — never unbounded growth."
       }
     },
     {
@@ -541,7 +686,7 @@
     },
     {
       "category": "fleet-config",
-      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census \u00a75).",
+      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5); subscriptionPool.assistedRelogin is a per-machine field (each machine's own sign-in repair setting, docs/specs/one-tap-unattended-repair.md) and must never be whole-file synced.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
@@ -651,7 +796,8 @@
       "transport": "none",
       "paths": [
         "state/lease-local.json",
-        "state/registry-liveness.json"
+        "state/registry-liveness.json",
+        "state/lease-continuity.json"
       ],
       "grandfathered": false
     },
@@ -738,7 +884,7 @@
     },
     {
       "category": "threadline-trust-profiles",
-      "description": "Per-peer agent trust profiles (AgentTrustManager) + audit trail. Now CREDENTIAL-GATING (Secure A2A Verified Pairing \u00a73.8): the profile carries the pairing lifecycle state (pending-verification / mutual-verified / verification-failed / identity-verified) that the credential-share gate keys on. MACHINE-LOCAL: the SAS-bound pending state + the machine-local handshake's identity decision live here; the SAS words themselves are in a separate 0600 store (pairing-pending.json, never in the registry). The VERIFIED-IDENTITY RESULT alone replicates via the threadline-pairing stateSync transport (see threadline-pairing-result) \u2014 this file is never whole-file-synced.",
+      "description": "Per-peer agent trust profiles (AgentTrustManager) + audit trail. Now CREDENTIAL-GATING (Secure A2A Verified Pairing §3.8): the profile carries the pairing lifecycle state (pending-verification / mutual-verified / verification-failed / identity-verified) that the credential-share gate keys on. MACHINE-LOCAL: the SAS-bound pending state + the machine-local handshake's identity decision live here; the SAS words themselves are in a separate 0600 store (pairing-pending.json, never in the registry). The VERIFIED-IDENTITY RESULT alone replicates via the threadline-pairing stateSync transport (see threadline-pairing-result) — this file is never whole-file-synced.",
       "scope": "machine-local",
       "freshness": "real-time",
       "conflictShape": "single-writer",
@@ -752,7 +898,7 @@
     },
     {
       "category": "threadline-pairing-result",
-      "description": "The replicated verified-IDENTITY RESULT of a Secure A2A pairing (Secure A2A Verified Pairing \u00a73.8 / FD11). Replicates ONLY { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } across the agent's OWN machines via the HLC replicated-store foundation (kind 'threadline-pairing-record') \u2014 NEVER the SAS words, shared secret, or relay token (those stay machine-local, bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated record ONLY by pinning peerIdentityPub; a revoke/verification-failed propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing (enabled:false, dryRun:true). Rides the coherence-journal stream files (no dedicated path).",
+      "description": "The replicated verified-IDENTITY RESULT of a Secure A2A pairing (Secure A2A Verified Pairing §3.8 / FD11). Replicates ONLY { peerFp, peerIdentityPub, state:'mutual-verified', verifiedAt, verifiedOnMachine } across the agent's OWN machines via the HLC replicated-store foundation (kind 'threadline-pairing-record') — NEVER the SAS words, shared secret, or relay token (those stay machine-local, bound to the machine-local handshake's ephemeral secret). Machine B honors a replicated record ONLY by pinning peerIdentityPub; a revoke/verification-failed propagates as a tombstone. Ships DARK behind multiMachine.stateSync.threadlinePairing (enabled:false, dryRun:true). Rides the coherence-journal stream files (no dedicated path).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
@@ -782,6 +928,23 @@
       "grandfathered": false
     },
     {
+      "category": "threadline-mcp-local-secret",
+      "description": "Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D2): the 0600 per-agent local secret the agent's own sessions present on POST /mcp/threadline. MACHINE-LOCAL: it authorises only loopback calls on its own host; each machine generates its own at first boot, and a copy elsewhere would authorise nothing there. In KEY_MATERIAL_PATHS (never served, edited, backed up or committed).",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-mcp-secret"
+      ],
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One 64-character secret, replaced only by the operator (delete the file, restart)."
+      },
+      "grandfathered": false
+    },
+    {
       "category": "process-restart-coordination",
       "description": "Process/restart coordination: boot-id, restart markers, auto-updater state, caffeinate pid, slept-marker. Per-process lifecycle.",
       "scope": "machine-local",
@@ -792,7 +955,8 @@
         "state/boot-id",
         "state/auto-updater.json",
         "state/slept-marker.json",
-        "state/lifeline-restart-requested.json"
+        "state/lifeline-restart-requested.json",
+        "state/restart-budget.json"
       ],
       "grandfathered": false
     },
@@ -862,7 +1026,7 @@
     },
     {
       "category": "audit-destructive-ops",
-      "description": "Destructive-ops audit stream (411M live -- needs rotation, census \u00a77). Append-only per-machine.",
+      "description": "Destructive-ops audit stream (411M live -- needs rotation, census §7). Append-only per-machine.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "append-only",
@@ -877,7 +1041,7 @@
         "access": "streamed",
         "complianceHold": true,
         "keepSegments": 0,
-        "note": "forensic trail \u2014 archive, never drop-delete (replaces SafeGitExecutor.maybeRotateAuditLog drop-rotate)"
+        "note": "forensic trail — archive, never drop-delete (replaces SafeGitExecutor.maybeRotateAuditLog drop-rotate)"
       }
     },
     {
@@ -897,6 +1061,135 @@
         "access": "streamed",
         "maxBytes": 33554432,
         "keepSegments": 4
+      }
+    },
+    {
+      "category": "browser-instance-ledger",
+      "description": "Browser care (docs/specs/machine-self-maintenance.md, Part B): one small file per normal-Chrome instance this agent opened (profile dir, pid + start time, session, purpose, lease). Written by the browser helper scripts and the watch-only sweep; describes live processes on this machine only.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/browser-instances/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One file per running owned Chrome instance; BrowserCareSweep removes the file once its process has exited, so the count tracks open browsers, never history."
+      }
+    },
+    {
+      "category": "linux-browser-driver-state",
+      "description": "Linux Chrome driver (docs/specs/normal-chrome-linux.md): bindings, latches, lock, display record, cookie, socket folder, install result (provision.json, provision-backoff.json, auto-install.json) and page reads under out/ (24 h, 200 MB). Describes live processes and packages on this machine only.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/xdrive/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One file per running owned Chrome instance; BrowserCareSweep removes the file once its process has exited, so the count tracks open browsers, never history."
+      }
+    },
+    {
+      "category": "audit-browser-care",
+      "description": "Browser care audit (docs/specs/machine-self-maintenance.md, Part B): what the watch-only sweep and chrome-close.sh would close or keep, and why. Profile paths relative to the agent home, never page content. Machine-local observability; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/browser-care.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "BrowserCareSweep.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending; it writes only when an instance's verdict changes."
+      }
+    },
+    {
+      "category": "audit-machine-drain",
+      "description": "Watch-only drain audit (docs/specs/machine-self-maintenance.md): what each nightly rehearsal would have done, phase by phase, with delays, holds and yield times. Machine-local observability of this machine; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/machine-drain.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "DrainRehearsal.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending."
+      }
+    },
+    {
+      "category": "audit-work-admission",
+      "description": "Overload-admission audit stream (trustworthy-machine-load-and-mesh-floor Part C): one JSON line per admission transition (closed/reopened), refusal or would-refuse (dry-run), and recovery-slot grant. Machine-local observability of this machine's own decisions; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/work-admission.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "WorkAdmission.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending; rows are small and only written on transitions and refusals."
+      }
+    },
+    {
+      "category": "audit-overload-shed",
+      "description": "Overload-shed audit stream (trustworthy-machine-load-and-mesh-floor Part D): one JSON line per proposed move, would-move (dry-run, at most one per topic/target per 5 min), claim, expiry, breaker hold and governor hold. Machine-local observability of this machine's own shed decisions; never authority, never replicated.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/overload-shed.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "OverloadShedPlanner.audit() rotates the file to .1 (one kept segment) when it passes 2 MiB before appending."
+      }
+    },
+    {
+      "category": "overload-shed-state",
+      "description": "Overload-shed planner state (trustworthy-machine-load Part D): capacity reservations on targets (TTL), the per-hour move breaker, per-topic cooldowns and attempt counts for the current overload episode, peers recently seen refusing work, and the one live move. Restart-safe so a restart neither resets the breaker nor re-proposes a topic.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/overload-shed.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file replaced in place; every list in it is pruned each tick (reservations by TTL, move times to one hour, cooldowns to 30 min, attempts reset per episode and bounded by the topics this machine owns)."
       }
     },
     {
@@ -953,7 +1246,7 @@
         "access": "streamed",
         "complianceHold": true,
         "keepSegments": 0,
-        "note": "forensic trail \u2014 archive, never drop-delete (replaces SecurityLog maybeRotateJsonl keep-ratio trim)"
+        "note": "forensic trail — archive, never drop-delete (replaces SecurityLog maybeRotateJsonl keep-ratio trim)"
       }
     },
     {
@@ -1125,6 +1418,25 @@
       "grandfathered": false
     },
     {
+      "category": "derived-usage-ledger",
+      "description": "Unified usage ledger SQLite (docs/specs/unified-usage-ledger.md): per-request token rows, session bindings, rollups and pooled peer rows, rebuilt from source transcripts plus the slim snapshot. The snapshot is the backed-up copy.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "server-data/usage-ledger.db",
+        "server-data/usage-ledger.snapshot.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 7776000000,
+        "note": "raw rows 90 days or 4M-row ceiling; hour and session-day rollups 400 days; day rollups kept; bounded batches + incremental_vacuum"
+      }
+    },
+    {
       "category": "derived-token-ledger",
       "description": "Token ledger SQLite, rebuilt from Claude Code JSONL transcripts.",
       "scope": "derived-cache",
@@ -1145,7 +1457,7 @@
     },
     {
       "category": "derived-semantic-memory",
-      "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census \u00a71.6/\u00a77.)",
+      "description": "semantic.db / memory.db / episodes -- rebuildable from evidence. (Live-disk: stale since Jun 1 -- investigate separately, census §1.6/§7.)",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "n/a",
@@ -1176,6 +1488,23 @@
         "state/topic-memory.db"
       ],
       "grandfathered": true
+    },
+    {
+      "category": "derived-conversation-embeddings",
+      "description": "Meaning search over conversations (docs/specs/conversation-search.md §4): one row per message this machine holds (conversation ref, source key, time, platform, sender, text hash) with its 384-float vector from the local all-MiniLM-L6-v2 model, or no vector for a message under 3 words. No message text. Filled in the background from TopicMemory, the app conversation store and the Slack history rows; at most 200,000 rows (newest kept). Machine-local by design: each machine indexes what it holds and scope=pool merges answers.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "state/conversation-embeddings.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Derived from the conversation stores and rebuilt from them (a corrupt or different-model file is set aside and refilled); bounded to the newest 200,000 messages."
+      }
     },
     {
       "category": "derived-project-map",
@@ -1254,7 +1583,7 @@
     },
     {
       "category": "uncertain-instructions-tracking",
-      "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census \u00a74e).",
+      "description": "state/instructions-tracking/ (59M, 15,180 UUID-keyed JSONL files). Census did not map an owner; volume says it matters. Owner + rotation + class needed (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -1266,7 +1595,7 @@
     },
     {
       "category": "uncertain-topic-intent-store",
-      "description": "TopicIntentStore. Code references it; on-disk location unverified (census \u00a74e).",
+      "description": "TopicIntentStore. Code references it; on-disk location unverified (census §4e).",
       "scope": "derived-cache",
       "freshness": "eventual",
       "conflictShape": "n/a",
@@ -1279,7 +1608,7 @@
     },
     {
       "category": "uncertain-shared-state-ledger",
-      "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census \u00a74e).",
+      "description": "shared-state.jsonl (SharedStateLedger). Nominally the git-synced cross-machine ledger -- is anything consuming it on real machines? May be the vestigial ancestor of the P1 journal (census §4e).",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -1292,7 +1621,7 @@
     },
     {
       "category": "uncertain-correction-capture-backlog",
-      "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census \u00a74e).",
+      "description": "correction-capture-backlog.db vs correction-ledger.db: two stores, one sentinel -- which is canonical? (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -1304,7 +1633,7 @@
     },
     {
       "category": "uncertain-project-round-worktrees",
-      "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census \u00a74e).",
+      "description": "ProjectRoundWorktrees / TaskFlow stores. Routes-managed; durable form unverified (census §4e).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "single-writer",
@@ -1317,7 +1646,7 @@
     },
     {
       "category": "legacy-singletons",
-      "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census \u00a77.",
+      "description": "Stale legacy singletons (anti-patterns.json, quick-facts.json, project-registry.json, May 20 vintage, no live writers found). Retire per census §7.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "single-writer",
@@ -1342,8 +1671,26 @@
       "grandfathered": false
     },
     {
+      "category": "session-monitor-dead-notified",
+      "description": "Persisted 'session has stopped' notice ledger - topicId -> {sessionName, userMessageAt, at} last announced as dead, so one death is announced once across server restarts (2026-11-02: a Slack agent re-posted the notice a dozen times in one morning as each boot forgot the in-memory guards). Machine-local, single-writer (SessionMonitor), pruned at 7 days on load; at most one entry per monitored topic.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/session-monitor-dead-notified.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "domain-cardinality",
+        "note": "One entry per monitored topic (overwritten, never appended); entries older than 7 days are pruned on load, so the file tracks topics, never history."
+      }
+    },
+    {
       "category": "stream-tickets",
-      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC \u00a72.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
+      "description": "Pool Dashboard Streaming single-use bearer tickets (POOL-DASHBOARD-STREAM-SPEC §2.3). Minted by the pool-stream-ticket mesh verb, consumed once on the /pool-stream WS upgrade. Persisted so a captured ticket cannot replay across a serving-machine restart (consumed-set survives). Machine-local; single-writer (the store's own funnel); TTL-bounded + GC'd.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1355,7 +1702,7 @@
     },
     {
       "category": "guard-posture-snapshot",
-      "description": "Boot-time guard posture snapshot written by the GuardPostureTripwire at every server boot; read by GET /guards for diverged-pending-restart derivation (GUARD-POSTURE-ENDPOINT-SPEC \u00a72.2). Machine-local observability, never authority.",
+      "description": "Boot-time guard posture snapshot written by the GuardPostureTripwire at every server boot; read by GET /guards for diverged-pending-restart derivation (GUARD-POSTURE-ENDPOINT-SPEC §2.2). Machine-local observability, never authority.",
       "scope": "machine-local",
       "freshness": "boot",
       "conflictShape": "single-writer",
@@ -1367,7 +1714,7 @@
     },
     {
       "category": "guard-posture-peers",
-      "description": "Durable last-known guard posture per peer machine with RECEIVER-side receipt time (GUARD-POSTURE-ENDPOINT-SPEC \u00a72.3(c)) - survives local restarts so a dark peer's posture renders with its honest age. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Machine-local observability, never authority.",
+      "description": "Durable last-known guard posture per peer machine with RECEIVER-side receipt time (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) - survives local restarts so a dark peer's posture renders with its honest age. Written only at the heartbeat-ingestion chokepoint (registry-keyed identity). Machine-local observability, never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1398,7 +1745,7 @@
     },
     {
       "category": "guard-posture-episodes",
-      "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC \u00a72.4). Machine-local notice hygiene, never authority.",
+      "description": "GuardPostureProbe episode state - per-anomaly first/last-seen for the persist-across-ticks rule, flap windows, and the open-episode marker that keeps alerts to ONE aggregated Attention item per episode (GUARD-POSTURE-ENDPOINT-SPEC §2.4). Machine-local notice hygiene, never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1410,7 +1757,7 @@
     },
     {
       "category": "guard-accepted-fallbacks",
-      "description": "Durable, per-machine OWNED operator-accept records for the G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards \u00a72.4) - keyed <machineId>:<guardKey> -> {reason, owner, acceptedAt}. Suppresses a load-bearing guard's loadBearingGap into a VISIBLE accepted-risk row. Reserved for a genuine PIN-authenticated operator decision; per-machine (an accept on one machine never silences a peer's gap). Machine-local decision record, never authority over a peer.",
+      "description": "Durable, per-machine OWNED operator-accept records for the G3 dark-but-load-bearing classification (g3-dark-but-load-bearing-guards §2.4) - keyed <machineId>:<guardKey> -> {reason, owner, acceptedAt}. Suppresses a load-bearing guard's loadBearingGap into a VISIBLE accepted-risk row. Reserved for a genuine PIN-authenticated operator decision; per-machine (an accept on one machine never silences a peer's gap). Machine-local decision record, never authority over a peer.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1428,7 +1775,7 @@
     },
     {
       "category": "remote-close-audit",
-      "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC \u00a72.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
+      "description": "Relaying machine's append-only record of every relayed session-close ORDER (REMOTE-SESSION-CLOSE-SPEC §2.3) - target machine, sessionUuid, observed outcome. The owner's reap-log is the authoritative record of the kill; this is the order-end manifest so a relayed kill sweep cannot be traceless on the relayer. Machine-local audit history, never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1440,7 +1787,7 @@
     },
     {
       "category": "resume-queue",
-      "description": "Durable mid-work resume queue + single-writer lockfile + decision audit (reap-notify spec R2.3): entries for autonomously-reaped mid-work sessions awaiting ordered revival, plus the resurrection tombstone ledger. Machine-local BY DESIGN \u2014 entries reference local tmux sessions/worktrees; deliberately EXCLUDED from backup/restore and never replicated (a foreign-host lock disables the queue loudly).",
+      "description": "Durable mid-work resume queue + single-writer lockfile + decision audit (reap-notify spec R2.3): entries for autonomously-reaped mid-work sessions awaiting ordered revival, plus the resurrection tombstone ledger. Machine-local BY DESIGN — entries reference local tmux sessions/worktrees; deliberately EXCLUDED from backup/restore and never replicated (a foreign-host lock disables the queue loudly).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1453,7 +1800,7 @@
     },
     {
       "category": "rope-health-monitor",
-      "description": "U4.5 RopeHealthMonitor durable debounce/episode memory (u4-5-rope-health-alerts \u00a72) - per peer: condition, all-down onset, episodeKey, lastAlertAt, detected-not-notified flag. Transition-only writes with a short debounce; intra-episode counters lost to a restart are ACCEPTED (a restart re-debounces, never fabricates an episode). Machine-local BY DESIGN (rope health is per-machine-pair and directional); never authority.",
+      "description": "U4.5 RopeHealthMonitor durable debounce/episode memory (u4-5-rope-health-alerts §2) - per peer: condition, all-down onset, episodeKey, lastAlertAt, detected-not-notified flag. Transition-only writes with a short debounce; intra-episode counters lost to a restart are ACCEPTED (a restart re-debounces, never fabricates an episode). Machine-local BY DESIGN (rope health is per-machine-pair and directional); never authority.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1470,7 +1817,7 @@
     },
     {
       "category": "provider-cost-reports",
-      "description": "routing-control-room-spend Layer 1c: immutable append-only provider-reported cost/usage records (provider_cost_report) + reconciliation records (recon_record), joined on meteredCallId. REPORTING-only \u2014 structurally excluded from the money gate (FD-21).",
+      "description": "routing-control-room-spend Layer 1c: immutable append-only provider-reported cost/usage records (provider_cost_report) + reconciliation records (recon_record), joined on meteredCallId. REPORTING-only — structurally excluded from the money gate (FD-21).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -1483,7 +1830,7 @@
         "class": "sqlite",
         "access": "sqlite",
         "maxAgeMs": 34560000000,
-        "note": "400d (routingSpend.providerReportRetentionDays) \u2014 NOT re-derivable, volume bounded by metered calls only; batched-delete prune (scal-F4) at boot + daily"
+        "note": "400d (routingSpend.providerReportRetentionDays) — NOT re-derivable, volume bounded by metered calls only; batched-delete prune (scal-F4) at boot + daily"
       }
     },
     {
@@ -1505,7 +1852,7 @@
     },
     {
       "category": "self-action-governor-snapshot",
-      "description": "SelfActionGovernor durable admission-state snapshot (unified-self-action-backpressure FD14): window buckets, per-target counts, demote latches, breaker state \u2014 flushed on cadence + event-aware eager flush, rehydrated at boot so a crash/bounce never refills a runaway loop's count budget. Machine-local BY DESIGN (hardware-bound classes: this host's admission history; pool-shared classes' buckets are the LOCAL half of the FD15-replicated surface, replication owned by the deferred FD15 deliverable). BackupManager-excluded via BLOCKED_PATH_PREFIXES (a foreign restore carries the wrong machine's counts).",
+      "description": "SelfActionGovernor durable admission-state snapshot (unified-self-action-backpressure FD14): window buckets, per-target counts, demote latches, breaker state — flushed on cadence + event-aware eager flush, rehydrated at boot so a crash/bounce never refills a runaway loop's count budget. Machine-local BY DESIGN (hardware-bound classes: this host's admission history; pool-shared classes' buckets are the LOCAL half of the FD15-replicated surface, replication owned by the deferred FD15 deliverable). BackupManager-excluded via BLOCKED_PATH_PREFIXES (a foreign restore carries the wrong machine's counts).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1518,7 +1865,7 @@
         "class": "A",
         "access": "streamed",
         "maxBytes": 1048576,
-        "note": "fixed-size snapshot OVERWRITTEN in place (atomic temp+rename, never appended) \u2014 size bounded by construction: eviction-capped per-target maps + fixed window buckets per class"
+        "note": "fixed-size snapshot OVERWRITTEN in place (atomic temp+rename, never appended) — size bounded by construction: eviction-capped per-target maps + fixed window buckets per class"
       }
     },
     {
@@ -1536,7 +1883,7 @@
         "class": "A",
         "access": "streamed",
         "maxBytes": 524288,
-        "note": "fixed-size keyed aggregates OVERWRITTEN in place (atomic temp+rename) \u2014 bounded by the closed (class x sub-mechanism) key set"
+        "note": "fixed-size keyed aggregates OVERWRITTEN in place (atomic temp+rename) — bounded by the closed (class x sub-mechanism) key set"
       }
     },
     {
@@ -1560,7 +1907,7 @@
     },
     {
       "category": "growth-digest-deferrals",
-      "description": "C1 (maturation-followthrough-fix Standard C) durable delivery-attempt ledger for the weekly growth digest \u2014 one record per window that hit a RETRYABLE block (tone-gate/provider/send-error). Keyed on windowId; {attemptCount,firstDeferredAt,nextAttemptAt,lastReason,attentionDedupeKey,state}. Machine-local BY DESIGN: only the awake/serving-lease machine emits the digest, so its retry state is a fact about THIS machine, never merged from a peer (mirrors growth-digest.jsonl).",
+      "description": "C1 (maturation-followthrough-fix Standard C) durable delivery-attempt ledger for the weekly growth digest — one record per window that hit a RETRYABLE block (tone-gate/provider/send-error). Keyed on windowId; {attemptCount,firstDeferredAt,nextAttemptAt,lastReason,attentionDedupeKey,state}. Machine-local BY DESIGN: only the awake/serving-lease machine emits the digest, so its retry state is a fact about THIS machine, never merged from a peer (mirrors growth-digest.jsonl).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1633,6 +1980,64 @@
       }
     },
     {
+      "category": "local-verify-failed-file-diagnoses",
+      "description": "Lease-holder-local advisory diagnosis markers for exact PR/head/base/file keys. They never authorize a merge; a new lease holder rechecks from its own journal.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/failed-file-diagnoses.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 200,
+        "maxAgeMs": 1209600000,
+        "note": "At most 200 terminal keys are retained for 14 days; active markers stay until terminal or explicit invalidation. One atomic snapshot is rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-failed-file-diagnosis-peer",
+      "description": "Peer-local one-child advisory diagnosis intent, bounded results/tombstones and scratch files under the guarded verify root. Full verification preempts this child; an unknown cleanup keeps the peer held.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/failed-file-diagnosis-peer.json",
+        "state/local-verify/diagnosis-runs/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 200,
+        "maxAgeMs": 1209600000,
+        "note": "One in-flight attempt, at most 200 results and 200 tombstones for 14 days. Scratch input/result/log files belong to the bounded attempt and are removed after safe process cleanup."
+      }
+    },
+    {
+      "category": "local-verify-peer-attempts",
+      "description": "Machine-local peer verifier hand-off state: one current attempt, the last 20 results, and cancelled attempt ids retained for seven days. It lets a restarted peer reject delayed hand-offs and lets the coordinator retrieve a completed result.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/peer-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 20,
+        "tombstoneMaxAgeMs": 604800000,
+        "note": "The current attempt is replaced on completion or restart, results keep their last 20 entries, and cancelled attempt ids expire after seven days. The snapshot is rewritten in place."
+      }
+    },
+    {
       "category": "local-verify-journal",
       "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority §2 step 6).",
       "scope": "machine-local",
@@ -1652,7 +2057,7 @@
     },
     {
       "category": "local-verify-inflight",
-      "description": "local-verify two-phase in-flight intent (attempt token written before the run child is spawned, pid/pgid patched after) plus the run child's transient input/result/log files. Machine-local by construction: it names a process group on this host.",
+      "description": "local-verify two-phase in-flight intent (attempt token written before the run child is spawned, pid/pgid patched after) plus the run child's transient input/result files and its log file, which is kept 30 days. Machine-local by construction: it names a process group on this host.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1663,14 +2068,14 @@
       ],
       "grandfathered": false,
       "retention": {
-        "class": "fixed-cardinality",
-        "maxRecords": 1,
-        "note": "One run at a time; the intent is cleared on exit and the run's input/result files are removed then."
+        "class": "time-window",
+        "maxAgeMs": 2592000000,
+        "note": "One run at a time; the intent is cleared on exit and the run's input/result files are removed then; run logs are kept 30 days (the audit lines' pointers to a run's full failure output rest on them), then removed when a run starts."
       }
     },
     {
       "category": "local-verify-main-health",
-      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority §2 Self-heal (c)).",
+      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head, the time of the oldest unverified merge, and since when that time is unknown). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority §2 Self-heal (c)).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1682,7 +2087,24 @@
       "retention": {
         "class": "fixed-cardinality",
         "maxRecords": 1,
-        "note": "One file, overwritten atomically on every state change."
+        "note": "One file, overwritten atomically on every state or age change."
+      }
+    },
+    {
+      "category": "local-verify-main-failure",
+      "description": "local-verify main-failure detail: the failing test files, bounded reasons and clipped first messages of the last failed `main` verify, keyed by its head. Read at boot so the main-red hold (CMT-1033: doomed PR verifies wait while `main` is red; a PR that touches or names a failing file runs first) survives a server restart; it is consulted only while its head is the main-health watermark's red head, and removed when `main` goes green. Machine-local: the verify queue it gates is this machine's.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-failure.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One file, overwritten atomically on every failed main verify and removed on green."
       }
     },
     {
@@ -1722,8 +2144,43 @@
       }
     },
     {
+      "category": "local-verify-waiting",
+      "description": "local-verify waiting list (fb-7fde7f49-8ee): PRs refused because the verify queue was full, keyed by PR with the first refusal time, last offer time and refusal count, so a freed slot goes to the PR refused earliest. A waiter not offered for 30 minutes of healthy running time reserves nothing; one idle for 6 hours, closed, merged or recorded is removed. Rewritten atomically on change (plus a 5-minute heartbeat while non-empty) and restored at boot with downtime added back. Machine-local: it describes this machine's queue.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/waiting.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "At most WAITING_LIST_LIMITS.maxWaiters (200) waiters; the longest-idle are removed past it. Replaced in place, never appended. An unreadable file is moved aside once to waiting.json.corrupt-<ts> (operator-cleared; one per corruption event)."
+      }
+    },
+    {
+      "category": "local-verify-operator-queue",
+      "description": "local-verify operator queue controls (docs/specs/local-verify-queue-controls.md): per pull-request number, the operator's hold (who, why, when, the expected release date, the queue entry or waiting-list place the hold took out, whether the change was asked for while held, the in-progress state of a release) and front mark (a rising number, who, why, the in-progress state of an admission), plus the changes admitted over the queue cap and whether the lease-loss notice was sent. Rewritten atomically on change; the previous good copy is kept beside it as operator-queue.json.prev and used when the file cannot be read. Read at boot and held in memory; admission, the start check and the peer hand-off read that copy. Machine-local: the queue it describes belongs to the machine holding the coordinator lease.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/operator-queue.json",
+        "state/local-verify/operator-queue.json.prev"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "At most OPERATOR_QUEUE_LIMITS.maxRecords (200) changes; records of closed or merged changes are dropped first, then a new record is refused. Replaced in place, never appended; one previous copy. An unreadable file is moved aside once to operator-queue.json.corrupt-<ts> (operator-cleared; one per corruption event)."
+      }
+    },
+    {
       "category": "local-verify-flaky",
-      "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised; plus this machine's last green `main` record (head, finish time, files not clean on it), which a PR verify's isolation re-run requires. Machine-local: it describes this machine's own runs.",
+      "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised, and, per file, up to 40 test names a `main` verify saw fail and pass alone, each with its time and first failure line; plus this machine's last green `main` record (head, finish time, files not clean on it, and `origin: 'local'`), which a PR verify's isolation re-run requires. A record without `origin: 'local'` (older code, or a peer) counts as absent (SEC-113). Machine-local: it describes this machine's own runs.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -1735,7 +2192,1052 @@
       "retention": {
         "class": "fixed-cardinality",
         "maxRecords": 501,
-        "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window, plus one green-main entry; rewritten in place."
+        "note": "At most 500 files (newest kept), each with at most 20 timestamps inside a 7-day window and at most 40 main-flaky test names inside the same window, plus one green-main entry carrying its origin; rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-likely-failing",
+      "description": "local-verify first parts (docs/specs/local-verify-likely-failing-first.md): the likely-failing list (per test file, the pull request number and time of each verify that failed finally on it in the last 7 days; built by the coordinator from every verify of a change it records, its own or a peer's, and sent to a peer with each hand-off), the coordinator's one-time assignment of each pull request to the trial's with or without group. Ordering only: the list decides which files run first, never whether a file runs or what a verify's verdict is; lost or unreadable means an empty list. Machine-local by the approved Local Verify capacity spec's ratified lease-holder-local queue and run-machine state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17): a new coordinator starts with its own list and rebuilds it.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/likely-failing.json",
+        "state/local-verify/first-part-groups.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 5500,
+        "note": "At most 500 listed files with at most 40 entries each (one per pull request, its latest failure) inside a 7-day window (the file is read only when at most 1 MB), at most 5000 pull request assignments (oldest dropped), each rewritten whole and replaced."
+      }
+    },
+    {
+      "category": "local-verify-first-part-report",
+      "description": "Machine-local first-part observations, trial markers, suspects, findings, red-main episodes and daily cost evaluations (local-verify-likely-failing-first amendment, 2026-11-19). Each machine observes and judges only its own verifies. The coordinator alone snapshots confirmed red-main episodes. Findings and episodes stay on their writing machine when the role moves. Machine-local justification: operator-ratified run-machine settings exception, commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/first-part-findings.json",
+        "logs/local-verify-first-part-observations.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "whole-sync",
+        "complianceHold": true,
+        "note": "Observation rows expire after 30 days. Trial marker rows, suspects, findings and episodes are retained across trials as the amendment requires. The findings file keeps the most recent daily evaluation."
+      }
+    },
+    {
+      "category": "local-verify-peer-trust",
+      "description": "local-verify peer trust (SEC-113, docs/specs/local-verify-peer-result-trust.md): the lease-holder's local anchor (its own last main green), the clock peers cannot move, heads it verified itself, which peer called which head green, the peers kept off main after a same-head disagreement, at most one arbitration marker, its last ten main durations, and the holding record that binds all of it to unbroken holding by this machine. Machine-local by the parent Local Verify capacity spec's ratified lease-holder-local queue and peer state (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17); reset on any break in holding.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/peer-trust.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 85,
+        "note": "At most 50 peer greens, 20 locally verified heads, 10 durations, one quarantine entry per configured peer (at most 2), one arbitration marker, one anchor and one holding record; rewritten in place."
+      }
+    },
+    {
+      "category": "local-verify-borrowed-helpers",
+      "description": "The practice record of borrowed helpers (docs/specs/local-verify-borrowed-slices-count.md, F 'The practice record'), on the helper's pairing run machine. It DECIDES WHETHER A HELPER'S PASSES COUNT: per helper and lane, the four evidence items (coverage against the files eligible at the dry run, spread over verifies, failing-direction comparisons with the check slice's history, the wrong-pass window), the state (practice, counting, suspended, lapsed with its reason), the sandbox image and runner version the evidence belongs to, the practice period's start, and the recorded decision to count with the evidence it was taken on. Per helper also: how often it is asked (unanswered requests, when its silence began), the spot re-run rate, a recorded dry-run request, and the main-verify observer's last 50 run summaries. Beside the helpers: this machine's helper events with ids, and the ids a coordinator has already sent a notice for. A pass counts only where this file holds a decision for the helper, the lane and the current practice period; a lost or unreadable file, a file of the first design (version 1) or a lane that does not read strictly means practice from the start, by intent, so it is not backed up. Unified by placement: one file, on the pairing run machine, and every decision that reads or changes it is taken there; the coordinator reads the events through the peer status it already polls. Machine-local by the approved Local Verify capacity spec's ratified run-machine dispatch exception (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/borrowed-helpers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 61000,
+        "note": "One helper per run machine, three lanes. Per lane at most 20,000 uncovered file paths (they only shrink after the dry run), 200 failing-direction comparisons, 500 wrong-pass positions, 20 check results, 20 answers and 50 lapses; per helper 50 run summaries; 200 events and 400 told ids. Rewritten in place. Absent or unreadable state is practice from the start."
+      }
+    },
+    {
+      "category": "local-verify-main-file-counts",
+      "description": "Baseline results for borrowed helpers (docs/specs/local-verify-borrowed-slices-count.md, F 'Baseline results' and 'Build decisions'): for the coordinator's last three green main verifies (plus at most two older ones a dry run has pinned), each test file's passed, failed, skipped and to-do counts and the digest of its test names and outcomes. The pass definition and the dry run read it: a helper's pass needs the same digest as the baseline. It lives in the server's state folder, outside every run tree; its hash is written to the Local Verify audit log on every write and checked on every read, and a mismatch, a missing audited hash or a malformed file means no baseline (nothing counts). Unified by placement: the coordinator writes it and sends it to a peer that has a helper when it changes (POST /local-verify/peer-baseline); a peer stores the coordinator's copy under its own audit row and never writes its own. Written only while a helper is configured on this machine or on a peer. Rebuildable from the next green main verify, so not backed up.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-file-counts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 100000,
+        "note": "At most 5 baselines (the last three green main verifies and two pinned for a dry run), each at most 20,000 file rows (about 5,500 today, under 1 MB per baseline); rewritten in place, read only up to 16 MB."
+      }
+    },
+    {
+      "category": "local-verify-helper-learned",
+      "description": "A borrowed helper's learned exclude list (docs/specs/local-verify-borrowed-slices-count.md, D), kept ON the helper machine: files it is no longer sent, each with the rule that put it there (the helper failed it where the run machine passed, in two comparisons in a row; a same-tree digest difference with both sides passing; a confirmed wrong pass), the merge tree and verifies of those comparisons, the helper's runner version and the file's content hash at its last trial, plus first helper failures waiting for a second and the helper's verify count for trials. Its run machine reports comparisons through the signed POST /local-verify/helper-learned (keyed by tree hash) and reads the list from GET /local-verify/helper-status. Unified by placement: one list per helper, so no replication; the run machine's audit rows stay the source of truth if the helper is reinstalled. It only keeps files off this helper; it is never a verdict input.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-learned.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 22050,
+        "note": "At most 20,000 entries (the duration records' file bound; no lane has more files), at most 2,000 waiting first failures and the last 50 verify ids; rewritten in place and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-compared",
+      "description": "The files a borrowed helper has been compared on, per lane (docs/specs/local-verify-borrowed-slices-count.md, D 'A file this helper has never been compared on'), kept ON the helper machine beside its learned list: for the helper's current sandbox image and runner version, the test files of each lane that have had an agreeing comparison with its run machine. A file not in it is new to the helper and is run by both sides, compare-only. Written only from agreeing observations of the signed learned request; the status answer reports a count and a digest per lane, and the full list of one lane on request. Unified by placement: one record per helper, read by its run machine through GET /local-verify/helper-status. A change of image or runner version starts it over; absent or unreadable means nothing has been compared.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-compared.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 60000,
+        "note": "At most 20,000 file paths per lane (the duration records' file bound), three lanes; rewritten in place, started over on a new image or runner version, and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-dry-run",
+      "description": "A borrowed helper's own dry-run record (docs/specs/local-verify-borrowed-slices-count.md, C item 3), kept ON the helper machine, outside the sandbox: per lane, the sandbox image's digest, the sandbox settings' hash, the merged commit, the date its dry run finished and the share of the lane's helper time that passed there (the 'lane proven' figure), plus the files answered so far by a dry run still in progress, each with its time and whether it passed. The helper reads it before any waiting change and refuses (dry-run-not-done) without a record of that lane on its current image. Unified by placement: one record per helper, read by its run machine through GET /local-verify/helper-status; the helper never takes it on a run machine's word. Absent or unreadable means no dry run is done.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-dry-run.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 60003,
+        "note": "At most 3 lane records and 3 in-progress file lists, each list bounded by the 20,000-file duration cap; rewritten in place and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-packages",
+      "description": "A borrowed helper's index of installed-package sets (docs/specs/local-verify-borrowed-slices-count.md, C 'Packages are installed only from merged code'), kept ON the helper machine, outside the sandbox: per install-inputs hash, the merged commit the packages were installed from (after the helper's own merged check), the digest of the manifest of file hashes the sandbox wrote when it locked them, and when they were installed and last used. The packages themselves are on the sandbox's package volume; before each use their manifest is recomputed and compared with this record, and a difference discards the set. Machine-local: it describes this machine's sandbox. Absent or unreadable means nothing is cached.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-packages.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 3,
+        "note": "At most 3 package sets (the least recently used is dropped, with its files); rewritten atomically and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-seen-attempts",
+      "description": "A borrowed helper's single-use request ids (docs/specs/local-verify-borrowed-unit-slices.md, C 'Replay'): every signed helper request's attemptId with the time it was seen, persisted so a replayed request is refused across helper restarts. Machine-local: it guards this helper's own routes.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-seen-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 20000,
+        "maxAgeMs": 600000,
+        "note": "Ids older than 10 minutes are pruned on every read and write (requests live at most 60 s plus 30 s clock tolerance); at most 20,000 kept; rewritten atomically."
+      }
+    },
+    {
+      "category": "local-verify-helper-control",
+      "description": "A borrowed helper's owner pause switch (docs/specs/local-verify-borrowed-unit-slices.md, B 'Pause control'), written by instar helper pause|resume and the dashboard toggle, read by the helper at every request and governor sample. Machine-local: it is this machine owner's control.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-control.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One small file overwritten atomically; removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "queue-pace-ledger",
+      "description": "Queue pace hourly ledger (docs/specs/queue-pace.md): one row per queue per fixed hour (arrivals, completions, other exits, open count, coverage flags, cursorAfter, ids digest) plus notice audit rows. Machine-local: each machine measures its own queues; GET /queue-pace?scope=pool merges peers live.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/queue-pace.jsonl",
+        "logs/queue-pace-notices.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 7776000000,
+        "note": "Hourly rows older than 14 days are compacted to one daily row per queue; daily rows are kept 90 days. About 5 queues x 24 x 14 hourly rows plus 90 daily rows each, rewritten atomically once a day."
+      }
+    },
+    {
+      "category": "queue-pace-ticks",
+      "description": "Queue pace tick rows: one server-written row per feedback triage tick attempt (decided, calls, stop reason, depth after) and per executor admission check. Written in-process only while queuePace resolves enabled; evidence for the bottleneck and the tuner.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/queue-pace-ticks.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 7776000000,
+        "note": "Rows older than 14 days are compacted to daily counts per source; daily rows are kept 90 days. Roughly 100-300 rows per day."
+      }
+    },
+    {
+      "category": "queue-pace-tuner",
+      "description": "Queue pace tuner: the durable daily extra-tick counter, cooldown and step state (state/queue-pace/tuner.json, write-temp-then-rename, fsync) and its audit (reservations, outcomes, step changes, flag changes). Missing state fails closed.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/queue-pace/tuner.json",
+        "logs/queue-pace-tuner.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "The state file is one record replaced in place. The audit is bounded by the tuner itself: at most 12 reservations a day plus their outcomes and a handful of step and config rows (under 100 rows a day)."
+      }
+    },
+    {
+      "category": "queue-pace-state",
+      "description": "Queue pace per-queue reconciliation state: the cursor, the previous open id set (at most 20,000 ids) and the last written hour per queue, plus the per-queue evaluation (hysteresis and notice state). Replaced atomically after each ledger row; rebuilt from the ledger row's cursorAfter after a crash.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/queue-pace/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 6,
+        "note": "One file per queue (5) plus evaluations.json, each replaced in place; the id set per queue is capped at 20,000 ids (a larger queue records too-large instead)."
+      }
+    },
+    {
+      "category": "quota-pacing-history",
+      "description": "Quota pacing reading history (docs/specs/quota-pacing-forecast.md section 1): one JSONL file per subscription account, one row per 5-minute bucket per window state (polledAt, measuredAt, identity hash, source, per-window percentage and reset), plus failed-read outcome rows. Each machine keeps the readings it took itself; GET /quota-pacing merges every machine's computed summaries on read. Excluded from git-sync and backups; rebuilt after a restore.",
+      "scope": "coherent-on-demand",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/quota-history/*.jsonl",
+        "state/quota-history/retired/*.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "compactAfterMs": 1209600000,
+        "maxAgeMs": 1814400000,
+        "maxRecords": 5000,
+        "note": "Round-robin: 14 days at full resolution, one row per hour to 21 days, then only each weekly window's cycle-end row. Hard cap 5,000 rows per file (about 1 MB), oldest first, disclosed as droppedRows. Retired files (account left the pool) are kept 35 days."
+      }
+    },
+    {
+      "category": "quota-pacing-ticks",
+      "description": "Quota pacing hourly tick row per machine (accounts, accounts with history, stale reasons, ledger write failures, malformed and dropped rows, verdict counts): the durable evidence the feature ladder reads.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/quota-pacing.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 5242880,
+        "keepSegments": 4,
+        "note": "One row per hour per machine (about 300 bytes); segment-rotated at 5 MB, 4 segments kept."
+      }
+    },
+    {
+      "category": "app-conversations",
+      "description": "Native app conversation store (docs/specs/mobile-native-conversations.md §4.5): one append-only JSONL file per conversation (immutable events keyed by eventId, each with this machine's ingestSeq), the source of truth for a native conversation. Replicated to every machine through the appConversations replicated-store kind whenever native conversations are on. Also holds the per-request dispatch context files under state/app-dispatch/.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "app-conversations/*.jsonl",
+        "app-conversations/deleted/*.jsonl",
+        "state/app-dispatch/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Reads go through the SQLite index by byte offset, never a whole-file read. Kept until the operator deletes the conversation (a tombstone event); the file then moves to app-conversations/deleted/ and is kept, never destroyed by this feature. Size is reported in the authenticated /health (appConversations.bytes, .count). Dispatch context files are small per-message copies of recent history."
+      }
+    },
+    {
+      "category": "conversation-graph",
+      "description": "Opaque immutable graph cores, original authorization capsules, witnessed source custody and all-member final certificates. Only the verified certified union authorizes the hierarchy. Private application bodies and key envelopes are separate erasable sidecars; logical erasure preserves control identity while purging every matching private version. Header metadata is derived, never plaintext title storage. Source-owned held-import plans and signed per-row catalogs precede generic intents; they retain quarantined custody without a Source ACK or canonical publication until verified activation. Catalog-attributed private copies join the same all-version purge and cold integrity checks.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "signed registered-peer source/certificate delivery and journal repair; verified owned-machine or optional external custody role",
+      "paths": [
+        "state/conversation-graph-source",
+        "conversation-graph/effort-headers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain immutable opaque authority and negative erasure facts for recovery. Purge matching private bodies, original and rewrapped key envelopes on logical erasure; no blanket compliance hold on private content. Never expire witnessed Pending by a clock."
+      }
+    },
+    {
+      "category": "app-conversations-index",
+      "description": "Derived SQLite index over the app conversation JSONL files (WAL + busy_timeout): events, messages, deliveries, conversations. Caught up at boot from each file's last indexed offset; a missing or corrupt index is rebuilt from the files.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "app-conversations/index.sqlite"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Derived from the JSONL files; bounded by them and rebuilt from them, never an independent copy."
+      }
+    },
+    {
+      "category": "conversation-list-pins",
+      "description": "Conversations each person pinned to the top of their conversation list (docs/specs/conversation-list-pins.md): immutable pin and unpin rows, the latest per person per conversation wins. Written atomically on each change, mode 0600. Replicated through the conversation-list-pin kind wherever native chat is on; a row whose share was refused is sent again at the next boot.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "latest row per person x conversation by (atMs, eventId); order-independent union of immutable rows",
+      "transport": "peer-http",
+      "paths": [
+        "state/conversation-list-pins.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current row per person x conversation ever pinned (an unpin row stays as the tombstone that stops an older pin from returning); at most 50 pinned per person."
+      }
+    },
+    {
+      "category": "telegram-topic-names",
+      "description": "Telegram topic names shared between the agent's machines (docs/specs/topic-name-replication.md): the winning immutable name row per topic (a rename beats a creation or older name, then the later time, then the event id), whether this machine's own journal holds it, and which names a gap-filling row put in this machine's topic registry. Written atomically on each change, mode 0600. Replicated through the telegram-topic-name-record kind wherever the coherence journal runs; a row the journal refused is retried by a drain with backoff.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "winner per topic by (rename over fill, atMs, eventId); order-independent union of immutable rows",
+      "transport": "peer-http",
+      "paths": [
+        "state/telegram-topic-names.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current row per Telegram topic the agent has a name for, the same bound as the topic registry's name map."
+      }
+    },
+    {
+      "category": "conversation-read-markers",
+      "description": "Read markers and baselines per person per conversation for the app's unread counts (docs/specs/mobile-unread-messages.md §3.2-§3.3): the position of the newest message each reader has seen, forward-only, plus one baseline time per reader. Held in memory, flushed atomically at most every 5 s and on shutdown, mode 0600. Replicated through the conversation-read-marker kind wherever native chat is on; a machine that missed the journal window catches up from any peer's GET /mobile/conversations/read-markers. Also holds the per-peer catch-up cursor and the refs this machine removed.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "lww",
+      "conflictNote": "monotonic per key: the furthest position (earliest baseline) wins; order-independent",
+      "transport": "peer-http",
+      "paths": [
+        "state/conversation-read-markers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "access": "in-memory",
+        "note": "One current record per reader × conversation that exists; a marker is removed only on local evidence that its conversation or reader is gone. A soft 20,000-marker threshold raises one degradation report and drops nothing."
+      }
+    },
+    {
+      "category": "app-media",
+      "description": "Bytes behind app conversations (docs/specs/mobile-native-chat-media.md §4.1, §4.7): content-addressed blobs, blobs of deleted conversations, quarantined blobs, staged uploads, session copies and the agent outbox. Never in a journal or log. The events that name these files replicate through the appConversations kind; the bytes reach other machines by verified pull (the next increment).",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "app-media/blobs/",
+        "app-media/deleted/",
+        "app-media/quarantine/",
+        "app-media/uploads/",
+        "app-media/session-files/",
+        "app-media/outbox/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Blobs are capped by mobilePairing.native.media.maxStoreBytes and a free-disk floor, and removed only by the operator's purge from the app or the 7-day orphan rule. Uploads expire after 24 hours, session copies after 30 days. Sizes are in the authenticated /health (appMedia)."
+      }
+    },
+    {
+      "category": "app-media-index",
+      "description": "Upload, chunk and blob-check state for app media (SQLite, WAL + busy_timeout). Machine-local: an upload is authorized by a phone's device record, which is bound to this machine.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "app-media/uploads/index.sqlite"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "note": "Upload rows are dropped 7 days after they expire or are sent; blob checks follow their blobs."
+      }
+    },
+    {
+      "category": "app-session-registry",
+      "description": "Which session serves which native app conversation on this machine (local alias → tmux session name). Machine-local: a session runs on one machine.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/app-session-registry.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "resolution",
+        "boundedByResolution": true,
+        "maxOpenItems": 5000,
+        "note": "One row per app conversation that has had a session on this machine; replaced in place."
+      }
+    },
+    {
+      "category": "mobile-device-key-ledger",
+      "description": "Device-key ledger (docs/specs/mobile-native-conversations.md §4.6): append-only, machine-signed activation and revocation rows for every paired phone key, keyed by the full key hash. It grants nothing (device authentication stays machine-bound); it lets a stored app message be re-checked later on any machine. Written ledger-first by the device registry's activation/revocation paths and by boot reconciliation; replicated through the mobileDeviceKeyLedger kind, a peer's row accepted only when it verifies under the pinned identity key of the machine it names.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "mobile-device-key-ledger.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "complianceHold": true,
+        "note": "Never pruned by design: a message signed by a key must stay checkable after the key is revoked. One activation and at most one revocation row per paired phone key per writing machine, so it grows only with pairings."
+      }
+    },
+    {
+      "category": "recommended-services",
+      "description": "A person's yes and no choices about recommended outside services (docs/specs/recommended-services.md): an append-only signed ledger that replicates as the recommendedServices store.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/recommended-services/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "jsonl",
+        "complianceHold": true,
+        "note": "Never pruned by design: dropping a row could undo a person's no. Volume is tiny: at most a few rows per service per person."
+      }
+    },
+    {
+      "category": "offer-prerequisites",
+      "description": "Whether this machine holds a new agent or a finished per-owner migration, and the first reply a platform accepted here. Read before an offer is reserved, and only able to hold one back. Per machine today; the recommended-services rollout requires a decision before offers read them.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/offer-prerequisites/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 2,
+        "note": "Two replace-in-place files."
+      }
+    },
+    {
+      "category": "recommended-service-tokens",
+      "description": "Hashes of the single-use tokens for open recommended-service confirm pages. Local by design: a token belongs to the machine that served the page.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/recommended-service-tokens/tokens.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file, capped per service, with expired tokens pruned on write."
+      }
+    },
+    {
+      "category": "recommended-service-confirm-stats",
+      "description": "SEC-135: per-machine counters for the recommended-service confirm page (answers by path, refused public answers, owner opens, exempt-path answers while the public aggregate was full, with times). Machine-local, proxied-on-read: each machine reports its own in GET /recommended-services and the graduation review sums every machine's.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/recommended-service-tokens/confirm-stats.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file of cumulative counters, written at most once a minute; its timed event list keeps the newest 200."
+      }
+    },
+    {
+      "category": "pin-attempts",
+      "description": "Durable PIN guess counters (identity-security piece 1c): the public aggregate, per-source, local and per-approval-link budgets. Machine-local by design: each machine bounds the guesses it accepts itself, and piece 1c section 4 declares the per-machine posture.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/pin-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 4096,
+        "note": "PinAttemptStore keeps at most 4096 rows (PIN_ATTEMPT_MAX_ROWS); expired rows are pruned on every write and the oldest unlocked rows go first above the cap."
+      }
+    },
+    {
+      "category": "recommended-service-setup",
+      "description": "Per machine: whether a recommended service passed its setup check here, and the session and promise working on it. A login or install lives on one disk, so this is never replicated.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/recommended-service-setup/setup.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file with one entry per service."
+      }
+    },
+    {
+      "category": "email-outbox",
+      "description": "Every email to the owner in flight (docs/specs/backup-email-sending.md, A durable outbox): one row per report or one-off with hashes, a destination-safe topic copy and its state, plus one budget record per email day. Only the lease holder writes; rows replicate through the email-outbox-record kind so a successor finishes any live row. A delivery queue, not a memory store: every report is also held by its destination.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "state/email-outbox/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "bounded",
+        "maxBytes": 67108864,
+        "note": "outbox.jsonl rotates at 16 MB keeping three archives (64 MB at most); terminal rows get a tombstone after 24 hours and live rows are re-emitted hourly, so no live row is only in a rotated file."
+      }
+    },
+    {
+      "category": "email-outbox-text",
+      "description": "The owner's full report text for each email still in flight, held only on the machine sending it and deleted the moment its row is terminal. Never replicated and outside state backups.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-outbox-text/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "One file per live row (at most 200 live rows, 16 KB each), deleted at terminal."
+      }
+    },
+    {
+      "category": "email-opt-in",
+      "description": "The email opt-in code (keyed hash, expiry, attempt count), the recipient the owner confirmed, the count of proof mails to an unconfirmed address, and proof results by credential version. Local by design: the code is minted and checked on the machine that took the yes.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-opt-in.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file; days older than a week and all but the newest eight proof versions pruned on write."
+      }
+    },
+    {
+      "category": "email-service",
+      "description": "The email sender's own flags on this machine: the credential breaker, a provider refusal of the recipient, and when each fallback line was last said.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-service.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file."
+      }
+    },
+    {
+      "category": "ecosystem-ideas",
+      "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "state/ecosystem/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "note": "Never pruned by design: keeping declined and stopped ideas stops the same idea being argued twice, and adoption predictions are graded against the record. Volume is small: one row per idea revision, stage change and weekly run."
+      }
+    },
+    {
+      "category": "feature-evidence-log",
+      "description": "Rich-context record of what each switched-off feature did on this machine, read by the maturation ladder (feature-maturation-ladder §4). Per-machine facts, read through each machine's route and the board's ladder owner.",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/feature-evidence.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Segment rotation at 10 MB, 8 segments kept."
+      }
+    },
+    {
+      "category": "maturation-advances-audit",
+      "description": "Audit of what the ladder raised, each observed rung change, and every move the review made, with evidence and old values (feature-maturation-ladder §8).",
+      "scope": "machine-local",
+      "freshness": "n/a",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "logs/maturation-advances.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Segment rotation at 10 MB, every segment archived: this is the record of what moved and why."
+      }
+    },
+    {
+      "category": "conversation-graph-intake",
+      "description": "Sealed sequence-free owner intents are local custody until signed forwarding and actual native-writer admission; frozen admitted reservations retain their exact original sequence through crash recovery. Neither is independent custody or shared commitment by itself.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-intake"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-transfer",
+      "description": "Bounded receiver-local transfer stages; owner activation and signed manifests determine custody, not presence of a staged file.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-transfer"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-source-observations",
+      "description": "Encrypted producer observation cache and monotonic opaque producer sequence counters; cached arrival never authorizes placement.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-source-observations",
+        "state/conversation-graph-source-observation-sequences"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-erasure",
+      "description": "Durable local deny fences and authenticated opaque fleet-erasure retry ingress. Local purge does not assert fleet or backup completion.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/local-erasure-intents",
+        "state/conversation-graph-erasure-ingress"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-delegation-control",
+      "description": "Opaque signed local/remote delegation provenance, original parent-signed requests, target dispatch-admission receipts and prepared placement controls. These records retain no launch prompt, transcript, title, bind capability or content key; transport receipt/prepared-local is never witness Saved or canonical placement. Real persisted worker bootstrap and native witnessed certification are required before graph commitment.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-delegation-sources",
+        "state/conversation-graph-delegation-prepared",
+        "state/conversation-graph-remote-delegation"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain opaque authorization and uncertain dispatch identity through semantic reconciliation; no TTL may discard an unresolved receipt. Replay enumerations have explicit file/count limits and refuse invalid or oversized controls. Immutable original authority remains for certified provenance; no private application payload is held here."
+      }
+    },
+    {
+      "category": "conversation-graph-bootstrap-publication",
+      "description": "Owner-admitted immutable genesis publication and all-installed signed pins; native lease serialization never substitutes for owner admission.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "conversation-graph/bootstrap/*/publication.json",
+        "conversation-graph/bootstrap/*/pin-*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    },
+    {
+      "category": "conversation-graph-owned-custody",
+      "description": "Designated owned-host custody database and one-shot creation/ready claims. Missing acknowledged data requires authenticated recovery, never blank replacement.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/custody.sqlite*",
+        "conversation-graph/bootstrap/*/database-*.json",
+        "conversation-graph/roles/*/custody.sqlite*",
+        "conversation-graph/roles/*/claim.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    },
+    {
+      "category": "conversation-graph-owner-control-recovery",
+      "description": "Owner-signed, recipient-encrypted control-root recovery envelopes and actual installed-member durable self-decryption receipts. Custody role private keys and cloud credentials are never contained in this protocol.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "conversation-graph/owner-control-recovery/*/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain acknowledged recovery material through an authenticated successor ceremony; age never deletes the only surviving root envelope. Historical and offline backup copies remain separately inventoried debt. No plain root or role private key is ordinary replicated state."
+      }
+    },
+    {
+      "category": "conversation-graph-active-custody-authority",
+      "description": "Owner-signed negative hold intents, bounded final-stage revision chains, member holds, retirement proofs, verified activation rows and installed-member post-import durable activation pins. A newer local hold cannot be cleared by an older peer activation or a timeout; positive activation requires every installed member's exact ACT pin.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": [
+        "conversation-graph/active-custody/*/*.json",
+        "conversation-graph/activation-pins/*/*.json",
+        "conversation-graph/activation-pins/*/*.pending"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Monotonic negative authority and exact signed successor outcomes survive restart. Protocol bounds refuse further admission rather than dropping a durable hold; no TTL is recovery authority. This does not detect rollback of all authority and key copies together."
+      }
+    },
+    {
+      "category": "conversation-graph-local-capacity",
+      "description": "Machine-local signed hash-only logical Source capacity reservations under an explicit declared byte policy. No application body, envelope or key is stored; this is neither physical block allocation nor Source ACK authority.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-capacity/*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain original identity and conservative charges through interrupted publication. Unknown partial files are charged debt; no TTL or unproved refund. Tokens remain local to their actual machine/root/policy and must never be copied as peer admission credit."
+      }
+    },
+    {
+      "category": "conversation-graph-peer-frontier",
+      "description": "Machine-local durable negative observations from fresh, challenge-bound registered-peer graph heads and hashed erasure inventories. These can withhold stale private serving; they cannot grant a membership, owner action, activation or globally fresh state.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/peer-frontier/*/*.json",
+        "conversation-graph/peer-frontier/*/*.pending"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Known newer or negative authority is not cleared by age or restart. Positive freshness is not restored from these files: cold startup verifies real authority and available signed peer heads. An acknowledged offline snapshot is distinct from current global state. Full local authority/key rollback with no reachable current authority remains an explicit recovery limit."
+      }
+    },
+    {
+      "category": "conversation-graph-native-tail-floor",
+      "description": "Durable observed native-epoch admission floor preceding signed closed-tail acknowledgements. This negative graph fence does not elect a native writer or allocate Source sequence numbers.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-native-tail/floor.json",
+        "state/conversation-graph-native-tail/floor-*.pending"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "One canonical monotonic floor per agent. Interrupted scratch publications are unacknowledged recovery evidence, never positive authority; this entry does not assert one total inode across failed writes. Failed durability produces no closure receipt or stale-writer permission."
+      }
+    },
+    {
+      "category": "conversation-graph-owner-intent-grants",
+      "description": "Opaque request-scoped owner grants and authenticated monotonic policy generations. No PIN, browser token, title, or deterministic private-body hash is retained.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/owner-intent-grants",
+        "conversation-graph/owner-intent-policy.json",
+        "conversation-graph-owner-policy-head.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    },
+    {
+      "category": "conversation-graph-member-loss-administration",
+      "description": "Machine-local encrypted action-scoped owner confirmation, signed durable native revocation/floor evidence and public-only loss-role creation/ready records. Historical proofs alone never authorize a new removal.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/member-loss-actions/*/*.json",
+        "conversation-graph/member-loss-actions/*/*.pending",
+        "conversation-graph/member-loss-native/*/*.json",
+        "conversation-graph/member-loss-native/*/*.pending",
+        "conversation-graph/member-loss-pins/*/*.json",
+        "conversation-graph/member-loss-pins/*/*.pending",
+        "conversation-graph/member-loss-owned/*/*.json",
+        "conversation-graph/member-loss-owned/*/*.pending"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain unresolved operation scope and monotonic revocation evidence through verified recovery, never expire them into permission. Encrypted action records contain no PIN/session token/private key; their reserved local vault key is excluded from generic secret sync. They are recovery evidence, not a substitute for fresh owner authentication. Backup copies and full authority rollback remain explicit privacy limits."
+      }
+    },
+    {
+      "category": "org-action-checks",
+      "description": "Organization never-rules checks for a joined agent (org-never-actions): one record per judgment (masked samples only), hook failures, message notes for the next session start, the judge's daily spend, a ten-minute verdict cache, and pending allow-once checks. Per machine, since each machine checks its own sessions' actions.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "org/action-checks.jsonl",
+        "org/message-notes.jsonl",
+        "org/judge-spend.json",
+        "org/check-cache.json",
+        "org/pending-checks/*"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 5242880,
+        "keepSegments": 1,
+        "note": "action-checks.jsonl rotates at 5 MB into one kept segment (.1); message-notes.jsonl rotates at 1 MB into one kept segment and is emptied at each session start; pending checks expire after 30 minutes; the cache drops entries older than ten minutes."
+      }
+    },
+    {
+      "category": "throwaway-owner-chat",
+      "description": "The stand-in owner chat of a throwaway test agent (docs/specs/throwaway-owner-chat.md): the log of owner-chat messages, taps and commands, and its state file (first build, adopted owner-record genesis, shut-off record). Exists only on a single-machine throwaway in a temporary folder with no owner; never replicated, synced or backed up, and its presence refuses machine pairing for the life of the home.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/throwaway-owner-chat.jsonl",
+        "state/throwaway-owner-chat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Append-only log under a 16 MiB byte budget that refuses new entries rather than evicting; the whole home is deleted with the throwaway."
+      }
+    },
+    {
+      "category": "owned-repo-registry",
+      "description": "The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1, increment 1): every repository this agent works in on this machine, with its remotes, single-copy work and age, plus the scan's resume cursor, the candidate queue from session evidence and the births recorded by SafeGitExecutor. One file per machine. Its replicated half is the `owned-repo` WS2 kind; this file is the machine's own index of its own disk. machine-local-justification: hardware-bound-resource — the scan cursor and candidate queue index one disk's paths.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "last-writer-wins",
+      "transport": "none",
+      "paths": [
+        "state/owned-repos/*",
+        "logs/no-data-loss.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "whole-file",
+        "maxBytes": 16777216,
+        "note": "Bounded by caps in OwnedRepoRegistry: 2000 repositories, 500 births, 500 queued candidates, a 50,000-item scan queue and 20,000 known paths; a removed repository's tombstone is dropped after 90 days. The audit log logs/no-data-loss.jsonl (metadata only) rotates at 16 MB with 4 kept segments."
       }
     }
   ]

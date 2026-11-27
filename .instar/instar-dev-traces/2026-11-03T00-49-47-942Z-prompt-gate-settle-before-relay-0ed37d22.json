@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "prompt-gate-settle-before-relay",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T00:49:47.942Z",
+  "artifactPath": "upgrades/side-effects/prompt-gate-settle-before-relay.md",
+  "artifactSha256": "54ad780bd2011fcde3203d88f43c3d29653a220007dbb2fc3ceeca4ae84e38a0",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/types.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/monitoring/promptRelaySettle.ts",
+    "tests/unit/prompt-relay-settle.test.ts",
+    "upgrades/next/prompt-gate-settle-before-relay.md",
+    "upgrades/side-effects/prompt-gate-settle-before-relay.eli16.md",
+    "upgrades/side-effects/prompt-gate-settle-before-relay.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "notification timing only; never answers or blocks a prompt; fails toward relaying; one setting reverts it",
+  "eli16Path": "upgrades/side-effects/prompt-gate-settle-before-relay.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/prompt-gate-settle-before-relay.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

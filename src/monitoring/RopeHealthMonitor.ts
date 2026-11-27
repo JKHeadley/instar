@@ -47,6 +47,7 @@
  */
 
 import fs from 'node:fs';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import type { RopeHealthSnapshotRow } from '../core/PeerEndpointResolver.js';
@@ -395,6 +396,11 @@ export class RopeHealthMonitor {
     try {
       this.evaluateInner();
     } catch (err) {
+      featureEvidence.recordAtMostEvery('monitoring.ropeHealth', 'evaluation-error', 3_600_000, {
+        kind: 'error',
+        reason: 'evaluation-failed',
+        context: { errorName: err instanceof Error ? err.name : 'unknown', evaluations: this.evaluations },
+      });
       // Fail toward silence, never a crashed loop (signal, not authority).
       this.log(`evaluation error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -515,6 +521,12 @@ export class RopeHealthMonitor {
       if (this.sleepGateSuppresses(peerRows, nowMs)) {
         this.suppressedBySleepGate += 1;
         this.metric('suppressed-by-sleep-gate');
+        // Graded by whether this episode turns urgent after the grace or the peer was really asleep.
+        featureEvidence.recordAtMostEvery('monitoring.ropeHealth', `sleep-gate:${st.episodeKey ?? peer.machineId}`, 3_600_000, {
+          kind: 'held',
+          reason: 'urgent-suppressed-by-sleep-gate',
+          context: { peer: peer.machineId, episode: st.episodeKey, consecutiveObservations: st.consecutiveObservations, downMin: Math.round((nowMs - (st.allDownSince ?? nowMs)) / 60_000) },
+        });
         continue;
       }
 
@@ -524,6 +536,11 @@ export class RopeHealthMonitor {
         // One episode, one ask — the already-open split-brain item wins.
         this.suppressedBySplitBrain += 1;
         this.metric('suppressed-by-split-brain');
+        featureEvidence.recordAtMostEvery('monitoring.ropeHealth', `split-brain:${st.episodeKey ?? peer.machineId}`, 3_600_000, {
+          kind: 'held',
+          reason: 'urgent-suppressed-by-split-brain',
+          context: { peer: peer.machineId, episode: st.episodeKey },
+        });
         continue;
       }
 
@@ -592,12 +609,13 @@ export class RopeHealthMonitor {
       const r = this.d.raiseAttention(item);
       if (r && typeof (r as Promise<unknown>).then === 'function') {
         void (r as Promise<unknown>).then(
-          () => { st.authRejectRaisedAt = this.now(); this.metric('auth-rejected-episode'); this.scheduleWrite(); },
+          () => { st.authRejectRaisedAt = this.now(); this.metric('auth-rejected-episode'); featureEvidence.record('monitoring.ropeHealth', { kind: 'fired', reason: 'peer-refusing-signatures-alert', context: { peer: peer.machineId, episode: st.episodeKey } }); this.scheduleWrite(); },
           () => { /* delivery failed — retried next evaluation (authRejectRaisedAt stays null) */ },
         );
       } else {
         st.authRejectRaisedAt = this.now();
         this.metric('auth-rejected-episode');
+        featureEvidence.record('monitoring.ropeHealth', { kind: 'fired', reason: 'peer-refusing-signatures-alert', context: { peer: peer.machineId, episode: st.episodeKey } });
         this.scheduleWrite();
       }
     } catch {
@@ -645,6 +663,11 @@ export class RopeHealthMonitor {
     if (firstDelivery) {
       this.urgentEpisodes += 1;
       this.metric('urgent-episode');
+      featureEvidence.record('monitoring.ropeHealth', {
+        kind: 'fired',
+        reason: 'urgent-partition-alert',
+        context: { episode: st.episodeKey, consecutiveObservations: st.consecutiveObservations, downMin: Math.round((nowMs - (st.allDownSince ?? nowMs)) / 60_000) },
+      });
     }
     this.scheduleWrite();
   }
@@ -653,6 +676,8 @@ export class RopeHealthMonitor {
     if (st.detectedNotNotified) {
       this.notNotifiedRetries += 1;
       this.metric('detected-not-notified-retry');
+    } else {
+      featureEvidence.record('monitoring.ropeHealth', { kind: 'error', reason: 'urgent-alert-delivery-failed', context: { episode: st.episodeKey } });
     }
     st.detectedNotNotified = true;
     if (st.urgentRaisedAt === null) st.urgentRaisedAt = null; // stays unraised — retried next evaluation
@@ -870,6 +895,14 @@ export class RopeHealthMonitor {
 
   private recordTransition(prev: RopeHealthCondition, next: RopeHealthCondition): void {
     if (prev === next) return;
+    // Classification is the feature's verdict: a row per change lets a review grade sleep misreads.
+    if (next !== 'unknown') {
+      featureEvidence.record('monitoring.ropeHealth', {
+        kind: next === 'urgent' || next === 'auth-rejected' ? 'fired' : 'held',
+        reason: `classified:${next}`,
+        context: { from: prev, to: next, urgentEnabled: this.cfg.urgentEnabled, authRejectAlertEnabled: this.cfg.authRejectAlertEnabled },
+      });
+    }
     const evt = (`transition-${next}` as RopeHealthMetricEvent);
     if (next !== 'unknown') this.metric(evt);
     this.scheduleWrite();

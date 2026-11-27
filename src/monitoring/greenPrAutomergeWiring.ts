@@ -26,7 +26,7 @@
  *                here can only cause a refusal, never an unintended merge.
  */
 
-import { extractRulesetReviewPolicy, parseCodeowners, codeOwnedFiles } from '../../scripts/local-verify-floor.mjs';
+import { extractRulesetReviewPolicy, parseCodeowners, codeOwnedFiles, codeOwnerApprovedAtHead } from '../../scripts/local-verify-floor.mjs';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,7 +39,9 @@ import {
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { DegradationReporter } from './DegradationReporter.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
+import type { AgentStopFacts } from './agentStopRelease.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
+import { listOpenPrRowsPaged, readHandoffPrRow } from './greenPrOpenPrList.js';
 import {
   type GreenPrAutoMergerDeps,
   type GreenPrState,
@@ -107,9 +109,17 @@ export const GH_PR_JSON_FIELDS: readonly string[] = [
 /** The `refetchPr` projection (act-time pre-arm gate + armed-episode reconciliation read). */
 export const REFETCH_PR_JSON_FIELDS: readonly string[] = [
   'title', 'labels', 'isDraft', 'headRefOid', 'state', 'mergeCommit', 'autoMergeRequest',
+  // Belt-and-braces for the watcher's nudge of a verified PR listed as UNKNOWN: a direct
+  // read makes GitHub compute mergeability; requesting the field makes that explicit.
+  'mergeable',
 ];
 
-/** The `listOpenPrs` projection. */
+/** The agent-stop condition's candidate read (green-pr-agent-stop-release). */
+export const AGENT_STOP_PR_JSON_FIELDS: readonly string[] = [
+  'number', 'body', 'state', 'mergedAt', 'baseRefName', 'mergeCommit',
+];
+
+/** The `listOpenPrs` projection: the keys of every row the paged listing (greenPrOpenPrList) returns. */
 export const LIST_PR_JSON_FIELDS: readonly string[] = [
   'number', 'title', 'labels', 'isDraft', 'headRefName', 'headRefOid', 'baseRefName', 'mergeable',
   'statusCheckRollup', 'autoMergeRequest', 'reviewDecision', 'createdAt',
@@ -246,6 +256,41 @@ export function buildGuardLatchStore(opts: GreenPrWiringOpts): GuardLatchStore {
   });
 }
 
+/** Real GitHub reads behind an agent stop's release condition. A failed read is never "met". */
+export function buildAgentStopFacts(opts: GreenPrWiringOpts): AgentStopFacts {
+  const exec = opts.ghExec ?? createAuthenticatedGhExec({
+    stateDir: opts.stateDir,
+    resolveRuntime: opts.githubRuntime ?? createAuthenticatedGitHubCliRuntimeResolver({ stateDir: opts.stateDir }),
+  });
+  return {
+    mergedPrsCiting: async (marker) => {
+      const r = await exec(['pr', 'list', '--repo', opts.repo, '--state', 'merged', '--limit', '5', '--search', `"${marker}" in:body`, '--json', AGENT_STOP_PR_JSON_FIELDS.join(',')]);
+      if (r.code !== 0) return null;
+      try {
+        const rows = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
+        if (!Array.isArray(rows)) return null;
+        return rows.map((row) => ({
+          number: Number(row.number),
+          body: typeof row.body === 'string' ? row.body : '',
+          state: String(row.state ?? ''),
+          mergedAt: typeof row.mergedAt === 'string' ? row.mergedAt : null,
+          baseRefName: String(row.baseRefName ?? ''),
+          mergeCommitOid: typeof (row.mergeCommit as { oid?: unknown } | null)?.oid === 'string' ? (row.mergeCommit as { oid: string }).oid : null,
+        }));
+      } catch { /* @silent-fallback-ok: an unparseable read is never "met" */ return null; }
+    },
+    commitInReleaseTag: async (commit, version) => {
+      if (!/^[0-9a-f]{7,64}$/i.test(commit) || !/^\d+\.\d+\.\d+$/.test(version)) return 'unreadable';
+      const r = await exec(['api', `repos/${opts.repo}/compare/${commit}...v${version}`, '--jq', '.status']);
+      if (r.code !== 0) return 'unreadable';
+      const status = r.stdout.trim();
+      if (status === 'ahead' || status === 'identical') return 'contained';
+      if (status === 'behind' || status === 'diverged') return 'not-contained';
+      return 'unreadable';
+    },
+  };
+}
+
 /** Build the full GreenPrAutoMerger deps (real gh adapters). */
 export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchStore): GreenPrAutoMergerDeps {
   const githubRuntime = opts.githubRuntime
@@ -328,17 +373,16 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       return extractRulesetReviewPolicy(JSON.parse(r.stdout));
     },
     listOpenPrs: async () => {
-      const r = await exec([
-        'pr', 'list', '--author', '@me', '--state', 'open', '--base', 'main',
-        // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
-        // extra field on the single oldest-first list call already made each tick
-        // lets gather() skip an already-armed PR FREE, regardless of local state.
-        '--limit', '100', '--json', LIST_PR_JSON_FIELDS.join(','),
-        '--search', 'sort:created-asc',
-      ]);
-      if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
-      const rows = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
+      // Paged (greenPrOpenPrList): the single `gh pr list --limit 100` call with every PR's
+      // checks got HTTP 502 from GitHub once enough PRs were open. Rows keep the `gh pr list`
+      // shape (LIST_PR_JSON_FIELDS), including autoMergeRequest so gather() still skips an
+      // already-armed PR for free. A failed page throws and feeds the tick-failed breaker.
+      const rows = await listOpenPrRowsPaged(exec, opts.repo);
       return rows.map(mapPr);
+    },
+    refetchHandoffPr: async (pr) => {
+      const row = await readHandoffPrRow(exec, opts.repo, pr);
+      return row ? mapPr(row) : null;
     },
     codeOwnedPaths: async (pr: PrSummary): Promise<CodeOwnedPathsVerdict> => {
       // CODEOWNERS is read at runtime from the PR's base branch on GitHub (the copy GitHub
@@ -355,7 +399,19 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       if (r.code !== 0) return unverifiable;
       const changed = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
       const files = codeOwnedFiles(changed, rules);
-      return { touches: files.length > 0, files, protectedFiles: changed.filter((f) => diffTouchesProtected([f])), unverifiable: false };
+      // GitHub leaves reviewDecision empty for a ruleset's code-owner review, so an empty
+      // decision is answered from the reviews. A read failure leaves the PR waiting.
+      let ownerApproved = false;
+      if (files.length > 0 && !pr.reviewDecision) {
+        const rv = await exec(['api', `repos/${opts.repo}/pulls/${pr.number}/reviews`, '--paginate', '--jq', '.[] | {login: .user.login, state, commitId: .commit_id, submittedAt: .submitted_at}']);
+        if (rv.code === 0) {
+          try {
+            const reviews = rv.stdout.split('\n').map((s) => s.trim()).filter(Boolean).map((l) => JSON.parse(l));
+            ownerApproved = codeOwnerApprovedAtHead({ reviewDecision: pr.reviewDecision, files: changed, rules, reviews, headSha: pr.headRefOid });
+          } catch { /* @silent-fallback-ok: unparseable reviews count as no approval; the PR keeps waiting and GitHub enforces the rule */ ownerApproved = false; }
+        }
+      }
+      return { touches: files.length > 0, files, protectedFiles: changed.filter((f) => diffTouchesProtected([f])), unverifiable: false, ...(ownerApproved ? { ownerApproved: true } : {}) };
     },
     independentReviewAtHead: async (pr: PrSummary, flaggedPaths: string[]): Promise<IndependentReviewVerdict> => {
       // The changed files that are trace files (added or modified), read AT THE HEAD, so a

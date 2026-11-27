@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "app-trust-approval",
+  "sessionId": "71633c8d-121b-4780-802b-80cc79b00151",
+  "timestamp": "2026-11-17T16:32:45.585Z",
+  "artifactPath": "docs/specs/app-trust-approval.md",
+  "artifactSha256": "642fe5854fde4b83c4da37fb9968a3e7c72c2c854fe2e580f797d4598a6c5964",
+  "specPath": "docs/specs/app-trust-approval.md",
+  "coveredFiles": [
+    "src/commands/install.ts",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/MobilePush.ts",
+    "src/core/TrustRaiseGuard.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "src/core/trustJourney/accountPath.ts",
+    "src/core/types.ts",
+    "src/data/awareness/app-trust-approval.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/mobileTrustApproval.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "citation": "src/server/mobileTrustApproval.ts",
+    "enforcement": "test",
+    "howCaught": "a raise in what the agent may do is applied only with a Touch ID approval from an accepted device in the Instar app"
+  }
+}

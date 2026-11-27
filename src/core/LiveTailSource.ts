@@ -1,3 +1,4 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
 /**
  * LiveTailSource — the HOLDER-side flush producer (spec §8 G3b). Tracks, per
  * active topic, what conversation content has already been streamed to the
@@ -186,7 +187,7 @@ export class LiveTailSource {
       delta = full.slice(prior.length);
     } else {
       // Divergence (history rewrite/compaction) — resend the full content.
-      this.log(`topic ${topic} content diverged from streamed prefix — resending full tail`);
+      this.log(`${topicRef(topic)} content diverged from streamed prefix — resending full tail`);
       delta = full;
     }
     if (delta.length === 0) {
@@ -197,7 +198,7 @@ export class LiveTailSource {
     // per-topic bytes anyway; an oversized send is cost without retention.
     const maxBytes = this.d.maxFlushBytes ?? DEFAULT_MAX_FLUSH_BYTES;
     if (delta.length > maxBytes) {
-      this.log(`topic ${topic} flush capped: ${delta.length} → ${maxBytes} chars (freshest suffix kept)`);
+      this.log(`${topicRef(topic)} flush capped: ${delta.length} → ${maxBytes} chars (freshest suffix kept)`);
       delta = delta.slice(-maxBytes);
     }
 
@@ -215,7 +216,7 @@ export class LiveTailSource {
       const backoff = Math.min(base * 2 ** (failures - 1), cap);
       this.nextAttemptAt.set(topic, this.now() + backoff);
       this.log(
-        `flush of topic ${topic} seq ${nextSeq} not acknowledged — retry in ${Math.round(backoff / 1000)}s (failure #${failures})`,
+        `flush of ${topicRef(topic)} seq ${nextSeq} not acknowledged — retry in ${Math.round(backoff / 1000)}s (failure #${failures})`,
       );
 
       // Eternal Sentinel condition 4: retrying forever is correct, but a topic
@@ -228,7 +229,7 @@ export class LiveTailSource {
       if (failingForMs >= (this.d.staleSignalAfterMs ?? DEFAULT_STALE_SIGNAL_AFTER_MS)
           && this.staleSignaledFor.get(topic) !== episodeStart) {
         this.staleSignaledFor.set(topic, episodeStart);
-        this.log(`topic ${topic} standby copy STALE — flushes failing for ${Math.round(failingForMs / 60_000)}min (signaling once; retries continue)`);
+        this.log(`${topicRef(topic)} standby copy STALE — flushes failing for ${Math.round(failingForMs / 60_000)}min (signaling once; retries continue)`);
         this.d.reportStaleStandby?.({ topic, failingForMs, consecutiveFailures: failures });
       }
       return { topic, seq: this.currentSeq(topic), flushed: false };

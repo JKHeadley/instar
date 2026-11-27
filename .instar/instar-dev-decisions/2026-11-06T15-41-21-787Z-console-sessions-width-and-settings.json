@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-06T15:41:21.787Z",
+  "slug": "console-sessions-width-and-settings",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/mobileSessionControlsRoutes.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

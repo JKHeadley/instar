@@ -103,6 +103,20 @@ describe('migrateClaudeMd — Green-PR section REPLACE for already-armed agents 
     expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
   });
 
+  it('RE-SYNCS a current-looking section that predates agent stop release, and stays idempotent after', () => {
+    // Every earlier marker present: only the release route is missing.
+    const PRE = OLD_SECTION + '\nmergeStrategy approval-required needs-independent-review notAgentOwnedCount\n';
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + PRE + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('/green-pr-automerge/release');
+    expect(after).toContain('A stop a person asked for NEVER carries the claim');
+    expect(after).toContain('## Next Section');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    expect(runClaudeMdMigration(projectDir).upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
   it('APPENDS the section for a brand-new agent that has no Green-PR section at all', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nNo green-pr here.\n');
     const result = runClaudeMdMigration(projectDir);

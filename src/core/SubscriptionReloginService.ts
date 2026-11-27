@@ -71,6 +71,20 @@ export interface SubscriptionReloginServiceDeps {
    * `resolved-elsewhere` — the account was signed in another way. Absent ⇒ never closes.
    */
   cellHealthy?: (episode: SubscriptionReloginEpisode) => boolean;
+  /**
+   * Called when a FAILED or REFUSED repair's account×machine cell is verified healthy again
+   * (`cellHealthy`) and no other repair for that cell is still running: the sign-in condition
+   * the operator was (or would have been) told about is over. The server closes that condition's
+   * attention row through the existing `clearAttentionCondition` producer path. Called at most
+   * once per episode per process; must be idempotent (closing an already-closed row is a no-op).
+   */
+  onConditionCleared?: (episode: SubscriptionReloginEpisode) => Promise<void> | void;
+  /**
+   * codex-device-limit-tripwire §4: true while the episode's account is suspected or benched for a
+   * device limit on this machine (read from the pool record, switch-aware). A slow retry is
+   * deferred while it holds; the episode itself is never mutated by suspicion.
+   */
+  deviceLimitHold?: (episode: SubscriptionReloginEpisode) => boolean;
   tickMs?: number;
   now?: () => number;
 }
@@ -97,6 +111,8 @@ export class SubscriptionReloginService {
   private ticking = false;
   private readonly inFlight = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
+  /** Episodes whose "condition over" this process already reported (onConditionCleared). */
+  private readonly clearedReported = new Set<string>();
 
   constructor(private readonly deps: SubscriptionReloginServiceDeps) {
     this.tickMs = Math.max(5_000, Math.min(15 * 60_000, Math.floor(deps.tickMs ?? 30_000)));
@@ -167,6 +183,43 @@ export class SubscriptionReloginService {
     return approved;
   }
 
+  /**
+   * codex-device-limit-tripwire §4: end every non-terminal repair for this account on this machine
+   * because it was benched for a (suspected) device limit. `suggested` → `refused`; any other live
+   * state → `failed`; both with failureClass `device-limit` (terminal, never slow-retried, no
+   * per-episode notice). The store transition comes first, then a live drive in this process is
+   * aborted (the orchestrator reports that ending as terminal). A CAS conflict or invalid
+   * transition is returned, never thrown: the bench on the pool record stands regardless.
+   */
+  async endForDeviceLimit(accountId: string, machineId: string): Promise<Array<{ id: string; ended: boolean; reason?: string }>> {
+    const results: Array<{ id: string; ended: boolean; reason?: string }> = [];
+    const terminal = new Set(['succeeded', 'refused', 'cancelled', 'failed']);
+    const at = new Date((this.deps.now ?? Date.now)()).toISOString();
+    for (const episode of this.deps.store.list({ accountId, limit: 500 })) {
+      if (episode.machineId !== machineId || terminal.has(episode.state)) continue;
+      try {
+        this.deps.store.transition(episode.id, {
+          expectedVersion: episode.version,
+          to: episode.state === 'suggested' ? 'refused' : 'failed',
+          eventClass: 'device-limit-stopped',
+          failureClass: 'device-limit',
+          reason: 'relogin-device-limit-benched',
+          at,
+        });
+        this.controllers.get(episode.id)?.abort();
+        results.push({ id: episode.id, ended: true });
+      } catch (err) {
+        results.push({ id: episode.id, ended: false, reason: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return results;
+  }
+
+  private deviceLimitHeld(episode: SubscriptionReloginEpisode): boolean {
+    try { return this.deps.deviceLimitHold?.(episode) ?? false; }
+    catch { return false; } // @silent-fallback-ok — an unreadable pool never blocks a retry (today's behaviour)
+  }
+
   async cancel(episodeId: string): Promise<SubscriptionReloginEpisode> {
     this.controllers.get(episodeId)?.abort();
     return this.deps.store.cancel(episodeId);
@@ -205,6 +258,7 @@ export class SubscriptionReloginService {
         }
       }
       this.closeResolvedElsewhere();
+      await this.reportRecoveredConditions();
       await this.slowRetryDue();
       const runnable = this.deps.store.list({ limit: 500 }).filter((episode) =>
         !['suggested', 'waiting-operator-only', 'succeeded', 'refused', 'cancelled', 'failed'].includes(episode.state));
@@ -259,6 +313,46 @@ export class SubscriptionReloginService {
   }
 
   /**
+   * True when a terminal FAILED / REFUSED repair no longer describes a live problem: the server
+   * has verified its account×machine cell healthy (pool active, identity matches, live login
+   * check ok) and no other repair for that cell is still in flight. Unmeasurable ⇒ false (the
+   * operator keeps hearing about it; a sign-in problem is never hidden on a guess).
+   */
+  private recoveredSinceFailure(episode: SubscriptionReloginEpisode): boolean {
+    if (!this.deps.cellHealthy) return false;
+    if (episode.state !== 'failed' && episode.state !== 'refused') return false;
+    const terminal = ['succeeded', 'refused', 'cancelled', 'failed'];
+    let sameCell: SubscriptionReloginEpisode[];
+    try { sameCell = this.deps.store.list({ accountId: episode.accountId, limit: 50 }).filter((e) => e.machineId === episode.machineId); }
+    catch { return false; } // @silent-fallback-ok — unreadable store ⇒ not proven recovered
+    if (sameCell.some((e) => !terminal.includes(e.state) || this.inFlight.has(e.id))) return false;
+    try { return this.deps.cellHealthy(episode) === true; }
+    catch { return false; } // @silent-fallback-ok — unmeasurable ⇒ not proven recovered
+  }
+
+  /**
+   * Self-Heal Before Notify, for the outcome side: a failed or refused repair whose account was
+   * signed in again afterwards (by a later repair, by hand, by the provider refreshing it) is no
+   * longer something the operator can or must fix. Report the condition over once, so its
+   * attention row closes itself with an honest resolution instead of waiting for a hand clear.
+   */
+  private async reportRecoveredConditions(): Promise<void> {
+    if (!this.deps.onConditionCleared || !this.deps.cellHealthy) return;
+    const seenCells = new Set<string>();
+    for (const episode of this.deps.store.list({ limit: 500 })) {
+      const cell = `${episode.accountId}:${episode.machineId}`;
+      if (seenCells.has(cell)) continue; // newest episode per cell only (list is newest first)
+      seenCells.add(cell);
+      if (this.clearedReported.has(episode.id)) continue;
+      if (!this.recoveredSinceFailure(episode)) continue;
+      try {
+        await this.deps.onConditionCleared(episode);
+        this.clearedReported.add(episode.id);
+      } catch { /* @silent-fallback-ok — not recorded as reported; the next tick tries again */ }
+    }
+  }
+
+  /**
    * Slow automatic retry (spec relogin-unattended-agent-session-and-slow-retry). A `failed` repair
    * with a non-safety failure class (and no operator hold), whose source incident is still open and
    * whose per-episode cap is not spent, first gets its next retry time recorded (visible on the
@@ -286,6 +380,7 @@ export class SubscriptionReloginService {
       const eligible = isSlowRetryEligible(episode) && episode.slowRetryCount < this.slowRetry.maxRetries
         && !this.deps.store.challengedSinceAdmission(episode.id);
       if (!eligible && episode.nextAttemptAt === null) continue; // nothing to do, no lookup needed
+      if (eligible && this.deviceLimitHeld(episode)) continue; // deferred, schedule kept
       try {
         let open = false;
         if (eligible) {
@@ -389,6 +484,15 @@ export class SubscriptionReloginService {
           // A terminal notice whose repair has since been restarted (a slow retry raced its delivery)
           // is stale: never send "repair ended" for a repair that is running again.
         }
+        else if (notification.kind === 'terminal' && this.recoveredSinceFailure(episode)) {
+          // The account is verified signed in again: the failure is no longer the operator's to
+          // fix, so the "repair ended in failed" notice is never sent. Its condition (and any
+          // earlier row for it, such as the suggestion) is reported over instead.
+          if (this.deps.onConditionCleared && !this.clearedReported.has(episode.id)) {
+            await this.deps.onConditionCleared(episode);
+            this.clearedReported.add(episode.id);
+          }
+        }
         else if (notification.kind === 'terminal' && episode.state === 'failed' && this.retryWillFollow(episode)) {
           // Held while a slow retry is still coming (Self-Heal Before Notify) — but only up to one
           // retry delay past the failure plus an hour: a retry kept deferred by refusals never
@@ -407,8 +511,12 @@ export class SubscriptionReloginService {
             continue;
           }
           await this.deps.onTerminal?.(episode, notification.deliveryKey);
+          this.clearedReported.delete(episode.id); // a row may exist now: a later recovery must close it
         }
-        else await this.deps.onTerminal?.(episode, notification.deliveryKey);
+        else {
+          await this.deps.onTerminal?.(episode, notification.deliveryKey);
+          if (episode) this.clearedReported.delete(episode.id);
+        }
         this.deps.store.completeNotification(notification.id);
       } catch {
         const delay = 5_000 * 2 ** Math.min(6, Math.max(0, notification.attemptCount - 1));

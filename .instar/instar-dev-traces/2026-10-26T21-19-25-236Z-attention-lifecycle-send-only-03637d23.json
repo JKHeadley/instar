@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "attention-lifecycle-send-only",
+  "sessionId": "908eb5bd-48cd-426b-a09d-39816df7ecf8",
+  "timestamp": "2026-10-26T21:19:25.236Z",
+  "artifactPath": "upgrades/side-effects/attention-lifecycle-send-only.md",
+  "artifactSha256": "f93c97316b4f5ad0ee07bd08e0c0840e9c6672869c51f22dfc23f88cd26f8223",
+  "coveredFiles": [
+    "docs/specs/attention-lifecycle-send-only.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/e2e/attention-lifecycle-send-only-alive.test.ts",
+    "tests/integration/attention-lifecycle-send-only.test.ts",
+    "tests/unit/attention-lifecycle-send-only.test.ts",
+    "upgrades/next/attention-lifecycle-send-only.md",
+    "upgrades/side-effects/attention-lifecycle-send-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "3-line wiring + idempotent public method that arms existing timers; a revert fully undoes it",
+  "eli16Path": "docs/specs/attention-lifecycle-send-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/attention-lifecycle-send-only.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

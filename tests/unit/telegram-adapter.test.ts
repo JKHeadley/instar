@@ -95,6 +95,19 @@ describe('TelegramAdapter', () => {
       const adapter = createAdapter();
       expect(adapter.getTopicName(999)).toBeNull();
     });
+    it('keeps a verified name when a standby rebinds with a generated placeholder', () => {
+      const adapter = createAdapter();
+      adapter.registerTopicSession(127504, 'first', 'Instar dashboard makeover');
+      adapter.registerTopicSession(127504, 'second', 'topic-127504');
+      expect(adapter.getTopicName(127504)).toBe('Instar dashboard makeover');
+      expect(adapter.getAllTopicMappings()).toContainEqual({ topicId: 127504, sessionName: 'second', topicName: 'Instar dashboard makeover' });
+    });
+    it('does not load a generated placeholder as a verified name', () => {
+      const adapter = createAdapter();
+      adapter.registerTopicSession(127504, 'first', 'topic-127504');
+      expect(adapter.getTopicName(127504)).toBeNull();
+      expect(adapter.getAllTopicMappings()).toContainEqual({ topicId: 127504, sessionName: 'first', topicName: null });
+    });
   });
 
   describe('getAllTopicMappings', () => {
@@ -131,6 +144,13 @@ describe('TelegramAdapter', () => {
       const mappings = adapter2.getAllTopicMappings();
       expect(mappings).toHaveLength(1);
       expect(mappings[0].topicName).toBe('My Topic');
+    });
+
+    it('keeps a verified title available after its session is unregistered', () => {
+      const adapter = createAdapter();
+      adapter.registerTopicSession(127504, 'session', 'Instar dashboard makeover');
+      adapter.unregisterTopic(127504);
+      expect(adapter.getAllTopicMappings()).toContainEqual({ topicId: 127504, sessionName: null, topicName: 'Instar dashboard makeover' });
     });
   });
 

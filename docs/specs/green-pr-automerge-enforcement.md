@@ -341,7 +341,9 @@ Two enforcement gaps, two layers:
   stop authority outside the agent's emergency-stop reach and audit surfaces — the same
   locality reason the Alternatives section gives for not delegating merge authority to
   CI. **`/enable` requires the
-  operator's dashboard PIN** — re-arming merge authority is the operator's, structurally
+  operator's dashboard PIN** (amended 2026-11-03: a stop an agent session pulled as its own is
+  released by that agent through `/release`, on a server-verified condition; every other stop
+  stays PIN-only. See `green-pr-agent-stop-release.md`) — re-arming merge authority is the operator's, structurally
   (the Mandates-TAB precedent, not just the Mandates API): re-arm ships WITH its human
   surface — a button on the dashboard guards/watcher panel — and the rollback Attention
   item carries the dashboard link (resolved via the existing fleet dashboard-link helper

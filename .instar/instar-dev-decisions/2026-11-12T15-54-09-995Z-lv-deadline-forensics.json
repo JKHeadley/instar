@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-12T15:54:09.995Z",
+  "slug": "lv-deadline-forensics",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 132,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/unhandledErrorsReporter.ts"
+    ],
+    "addedLines": 123,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

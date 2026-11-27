@@ -466,6 +466,7 @@ export class ProjectMapper {
   }
 
   private findRelatedWorktrees(): RelatedWorktreeSummary[] {
+    const remotesByRepo = new Map<string, Map<string, string>>();
     const roots = this.findRelatedWorktreeRoots();
     const byPath = new Map<string, RelatedWorktreeSummary>();
 
@@ -488,7 +489,7 @@ export class ProjectMapper {
           name: entry.name,
           path: realPath,
           gitBranch: this.detectGitBranchFor(realPath),
-          gitRemote: this.detectGitRemoteFor(realPath),
+          gitRemote: this.detectGitRemoteFor(realPath, remotesByRepo),
           keyDirectories: this.findKeyDirectories(realPath),
         });
       }
@@ -517,30 +518,75 @@ export class ProjectMapper {
     return fs.existsSync(path.join(dir, '.git'));
   }
 
-  private detectGitRemoteFor(dir: string): string | null {
+  /**
+   * The git directory for a checkout, read from disk. A linked worktree's `.git` is a file
+   * (`gitdir: <path>`); a plain clone's is the directory itself.
+   *
+   * Related-worktree details are read from these files rather than by running git: this runs
+   * on the server's event loop at boot, and two git processes per worktree blocked it for
+   * 17-59s on an agent with about 500 worktrees.
+   */
+  private readGitDirFor(dir: string): string | null {
+    const dotGit = path.join(dir, '.git');
     try {
-      const result = SafeGitExecutor.readSync(['remote', 'get-url', 'JKHeadley'], { cwd: dir,
-        encoding: 'utf-8',
-        stdio: 'pipe', sourceTreeReadOk: true, operation: 'src/core/ProjectMapper.ts:related-remote-jkheadley' });
-      return result.trim() || null;
+      if (fs.statSync(dotGit).isDirectory()) return dotGit;
+      const match = fs.readFileSync(dotGit, 'utf-8').match(/^gitdir:\s*(.+?)\s*$/m);
+      return match ? path.resolve(dir, match[1]) : null;
     } catch {
-      try {
-        const result = SafeGitExecutor.readSync(['remote', 'get-url', 'origin'], { cwd: dir,
-          encoding: 'utf-8',
-          stdio: 'pipe', sourceTreeReadOk: true, operation: 'src/core/ProjectMapper.ts:related-remote-origin' });
-        return result.trim() || null;
-      } catch {
-        return null;
-      }
+      return null;
     }
   }
 
-  private detectGitBranchFor(dir: string): string | null {
+  /** A worktree shares its remotes with the repository named by `<gitdir>/commondir`. */
+  private readCommonGitDir(gitDir: string): string {
     try {
-      const result = SafeGitExecutor.readSync(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir,
-        encoding: 'utf-8', sourceTreeReadOk: true,
-        stdio: 'pipe', operation: 'src/core/ProjectMapper.ts:related-branch' });
-      return result.trim() || null;
+      const pointer = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim();
+      return pointer ? path.resolve(gitDir, pointer) : gitDir;
+    } catch {
+      return gitDir; // @silent-fallback-ok: no commondir file means this IS the common dir
+    }
+  }
+
+  /** Remote name to URL, from a repository's config. One parse per repository. */
+  private readRemotesFor(commonGitDir: string, cache: Map<string, Map<string, string>>): Map<string, string> {
+    const cached = cache.get(commonGitDir);
+    if (cached) return cached;
+    const remotes = new Map<string, string>();
+    try {
+      let section: string | null = null;
+      for (const line of fs.readFileSync(path.join(commonGitDir, 'config'), 'utf-8').split('\n')) {
+        const header = line.match(/^\s*\[\s*([^\]]*?)\s*\]/);
+        if (header) {
+          section = header[1].match(/^remote\s+"(.+)"$/)?.[1] ?? null;
+          continue;
+        }
+        const url = section ? line.match(/^\s*url\s*=\s*(.+?)\s*$/i) : null;
+        if (section && url && !remotes.has(section)) remotes.set(section, url[1].replace(/^"(.*)"$/, '$1'));
+      }
+    } catch {
+      // @silent-fallback-ok: an unreadable config reports no remote, as a failed git call did
+    }
+    cache.set(commonGitDir, remotes);
+    return remotes;
+  }
+
+  private detectGitRemoteFor(dir: string, cache: Map<string, Map<string, string>>): string | null {
+    const gitDir = this.readGitDirFor(dir);
+    if (!gitDir) return null;
+    const remotes = this.readRemotesFor(this.readCommonGitDir(gitDir), cache);
+    return remotes.get('JKHeadley') ?? remotes.get('origin') ?? null;
+  }
+
+  /** The branch name, or `HEAD` when detached (what `rev-parse --abbrev-ref HEAD` reports). */
+  private detectGitBranchFor(dir: string): string | null {
+    const gitDir = this.readGitDirFor(dir);
+    if (!gitDir) return null;
+    try {
+      const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
+      if (!head) return null;
+      const ref = head.match(/^ref:\s*refs\/heads\/(.+)$/);
+      if (ref?.[1] === '.invalid') return null; // a reftable repository's placeholder, not a branch
+      return ref ? ref[1] : 'HEAD';
     } catch {
       return null;
     }

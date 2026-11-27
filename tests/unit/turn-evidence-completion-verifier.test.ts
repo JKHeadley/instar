@@ -161,7 +161,7 @@ describe('ClaimClauseArbiter', () => {
         completionScope: 'none', corroborated: false }] }, general: { schemaVersion: 1, claims: [{ hostile: true }] } });
     }) } as any;
     const result = await new ClaimClauseArbiter({ intelligence: provider }).arbitrate('I will deploy it', evidence);
-    expect(result).toEqual({ clauses: [], authoritative: false });
+    expect(result).toEqual({ clauses: [], authoritative: false, failure: expect.objectContaining({ reason: 'invalid-output', branch: 'parse:general-envelope' }) });
   });
 
   it('rejects unknown root, legacy, and clause fields from model output', () => {

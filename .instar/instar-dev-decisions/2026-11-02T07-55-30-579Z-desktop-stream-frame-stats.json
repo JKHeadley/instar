@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-02T07:55:30.579Z",
+  "slug": "desktop-stream-frame-stats",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 41,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/DesktopStreamManager.ts"
+    ],
+    "addedLines": 40,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-05T08:04:50.702Z",
+  "slug": "mobile-native-console-pages",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 433,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobileConsolePagesRoutes.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 433,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only routes; no loop or self-action added."
+  },
+  "verdict": "pass"
+}

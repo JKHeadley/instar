@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "headless-probe-api-key-only",
+  "sessionId": "51d660f6-740d-48ec-83a5-c69af0a01060",
+  "timestamp": "2026-11-03T17:53:29.097Z",
+  "artifactPath": "upgrades/side-effects/headless-probe-api-key-only.md",
+  "artifactSha256": "5b7d41a869fa50003c9a20cb5401bd8f3f8d2d15a179a0acd7aac911127c8e9d",
+  "coveredFiles": [
+    "src/providers/adapters/anthropic-headless/control/authCredentialInjection.ts",
+    "tests/unit/pinned-model-callsites.test.ts",
+    "upgrades/headless-probe-api-key-only.eli16.md",
+    "upgrades/next/headless-probe-api-key-only.md",
+    "upgrades/side-effects/headless-probe-api-key-only.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes an uncalled code path (subscription-token AI request in probe); a revert fully undoes it; no state, config, route or migration.",
+  "eli16Path": "upgrades/headless-probe-api-key-only.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/headless-probe-api-key-only.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

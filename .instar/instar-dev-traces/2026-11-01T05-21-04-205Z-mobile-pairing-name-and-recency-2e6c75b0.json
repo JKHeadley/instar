@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "mobile-pairing-name-and-recency",
+  "sessionId": "162ffdb7-e254-42e8-8d0e-d1d170f9713d",
+  "timestamp": "2026-11-01T05:21:04.205Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-name-and-recency.md",
+  "artifactSha256": "7fb2196cbb2852718c45d8a759616e8f386c10e37f6441a3c6877363bf390bef",
+  "coveredFiles": [
+    "docs/specs/mobile-pairing-name-and-recency.eli16.md",
+    "src/core/MobilePairing.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-pairing-alive.test.ts",
+    "tests/integration/mobile-pairing-routes.test.ts",
+    "tests/unit/mobile-pairing.test.ts",
+    "upgrades/next/mobile-pairing-name-and-recency.md",
+    "upgrades/side-effects/mobile-pairing-name-and-recency.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds an optional display name to the pairing link and one read route to the device allowlist; a revert fully undoes it.",
+  "eli16Path": "docs/specs/mobile-pairing-name-and-recency.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-pairing-name-and-recency.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

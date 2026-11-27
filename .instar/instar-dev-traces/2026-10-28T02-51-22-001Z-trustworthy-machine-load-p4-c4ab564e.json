@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p4",
+  "sessionId": "2ab54b39-76b9-473e-a95e-5a1cb833f5c5",
+  "timestamp": "2026-10-28T02:51:22.001Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p4.md",
+  "artifactSha256": "65b8e8a1f11edf84924fded326258a58e8311e3ef3564c0a1867161425ca986a",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MachineLoadAssessor.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/machine-load-assessment-lifecycle.test.ts",
+    "tests/integration/machine-load-assessment-routes.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/machine-load-assessor.test.ts",
+    "tests/unit/session-manager-memory-pressure-sibling.test.ts",
+    "upgrades/next/trustworthy-machine-load-p4.md",
+    "upgrades/side-effects/trustworthy-machine-load-p4.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "spec-driven phase P4 of an approved converged spec; new advisory sentinel + wiring; ships dev-gated log-only",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

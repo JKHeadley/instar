@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "machine-self-maintenance-browser-care-lock-reading",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T14:02:23.739Z",
+  "artifactPath": "upgrades/side-effects/machine-self-maintenance-browser-care-lock-reading.md",
+  "artifactSha256": "79004b7e8da8a881ae2c891f53c41e28b8bd75e15cdd7d6a6c6d4f5db18e8d7a",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "tests/e2e/machine-maintenance-lifecycle.test.ts",
+    "tests/integration/machine-maintenance-route.test.ts",
+    "tests/unit/browser-care-scripts.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/machine-maintenance-browser-care.test.ts",
+    "tests/unit/machine-maintenance-lock-state.test.ts",
+    "tests/unit/machine-maintenance-watch-only.test.ts",
+    "tests/unit/normal-chrome-browser-skill.test.ts",
+    "upgrades/side-effects/machine-self-maintenance-browser-care-lock-reading.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

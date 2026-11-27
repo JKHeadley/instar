@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "telegram-userseat-allowance-1031",
+  "sessionId": "387e7496-8664-446e-ae7b-4bef31f4c28c",
+  "timestamp": "2026-11-01T05:06:07.804Z",
+  "artifactPath": "upgrades/side-effects/telegram-userseat-allowance-1031.md",
+  "artifactSha256": "3f9a1d3ea2057cf966cf65ddd2979872277d1b12f7b535c6f3c41384d9c02e85",
+  "specPath": "docs/specs/telegram-message-origin.md",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginConfig.ts",
+    "src/messaging/telegram-origin/ReviewedWebKBuilds.ts",
+    "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+    "src/messaging/telegram-origin/types.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Outbound browser authorization is security-sensitive even though the allowance is exact and reversible",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/telegram-message-origin-convergence.md",
+      "iterations": 17,
+      "verified": true
+    }
+  }
+}

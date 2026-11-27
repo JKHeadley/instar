@@ -1,0 +1,7 @@
+# Spawns honor the saved framework model
+
+When an agent saves a default model for Codex, starting a new session without naming a model should use that choice. The headless spawn path previously skipped the saved choice entirely. Codex's launcher then supplied its ordinary balanced model, even if the operator had deliberately saved a different model. Interactive sessions already read the saved default correctly, so the same agent behaved differently depending on which spawn path started its work.
+
+This small fix makes headless spawning read the saved model for the framework it will actually launch. A model explicitly requested by a caller still takes priority. That includes the balanced tier used by internal judges: its meaning and its mapping stay exactly as they were. If there is no saved model for the selected framework, the existing launcher fallback still applies. A saved Claude model cannot leak into a Codex session or vice versa.
+
+The selected model still passes through the existing Codex quota-swap and client-compatibility handling. The launched command and session record both receive the resulting model, keeping the dashboard consistent with the process. No settings are rewritten and no data migration is needed. Reverting this code change fully removes the new behavior. Tests reproduce the original failure and verify saved defaults, explicit choices, balanced, and the missing-default case at the real SessionManager launch boundary with tmux mocked.

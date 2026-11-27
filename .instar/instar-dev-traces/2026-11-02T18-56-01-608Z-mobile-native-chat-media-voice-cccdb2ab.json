@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-voice",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T18:56:01.608Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-voice.md",
+  "artifactSha256": "82e3809b3ae9cc528d5a70cb1e5993aa47bcd4056d6d5677afbe323f6971a23e",
+  "coveredFiles": [
+    "tests/integration/app-voice-transcription.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only fix: restore an import and a destructured variable lost when the integration test was assembled from the e2e file.",
+  "eli16Path": "docs/specs/reports/mobile-native-chat-media-voice.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mobile-native-chat-media-voice.md",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-04T20:25:30.833Z",
+  "slug": "echo-bugs-codex-default",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 87,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ModelTierEscalation.ts",
+      "src/core/SessionManager.ts",
+      "src/core/TopicProfileResolver.ts",
+      "src/core/codexCapabilities.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

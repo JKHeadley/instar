@@ -1,0 +1,24 @@
+{
+  "ts": "2026-10-26T13:43:28.753Z",
+  "slug": "allow-cc-writes-dir",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 54,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/changeSet.ts",
+      "src/feedback-factory/execute/confinementCanary.ts",
+      "src/feedback-factory/execute/executePolicy.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

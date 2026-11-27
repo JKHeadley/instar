@@ -5,7 +5,6 @@ schedule: "15 6 * * *"
 priority: low
 expectedDurationMinutes: 3
 model: haiku
-supervision: tier1
 enabled: false
 tags:
   - cat:response-review
@@ -15,6 +14,11 @@ gate: curl -sf http://localhost:${INSTAR_PORT:-4042}/health >/dev/null 2>&1
 toolAllowlist: "*"
 unrestrictedTools: true
 mcpAccess: none
+runner: script
+script: review-canary-battery.mjs
+scriptTimeoutMinutes: 5
+supervision: tier0
+scriptSupervision: deterministic
 ---
 Run one review canary battery. This is mechanical soak tooling — do NOT message the user. It exists because the context-aware-reviewer enforcement flip (spec §D9) requires a DAILY measured check that the "user asked for this" carve-out cannot be used to launder a credential/PII paste past the opted-in reviewer; this job IS that daily cadence.
 

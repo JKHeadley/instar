@@ -5,6 +5,7 @@ import path from 'node:path';
 import { AdaptiveTrust } from '../../src/core/AdaptiveTrust.js';
 import type { AdaptiveTrustConfig, TrustLevel } from '../../src/core/AdaptiveTrust.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { proved } from '../helpers/operatorProof.js';
 
 describe('AdaptiveTrust', () => {
   let tmpDir: string;
@@ -119,7 +120,7 @@ describe('AdaptiveTrust', () => {
 
     it('does not suggest elevation for user-explicit levels', () => {
       const trust = createTrust({ elevationThreshold: 2 });
-      trust.grantTrust('gmail', 'modify', 'approve-always', 'I want it this way');
+      proved(trust).grantTrust('gmail', 'modify', 'approve-always', 'I want it this way');
 
       for (let i = 0; i < 10; i++) {
         const suggestion = trust.recordSuccess('gmail', 'modify');
@@ -132,7 +133,7 @@ describe('AdaptiveTrust', () => {
     it('drops trust on incident', () => {
       const trust = createTrust();
       // Start with a non-default elevated level
-      trust.grantTrust('gmail', 'write', 'autonomous', 'Full trust');
+      proved(trust).grantTrust('gmail', 'write', 'autonomous', 'Full trust');
 
       const event = trust.recordIncident('gmail', 'write', 'Deleted emails without approval');
       expect(event).toBeDefined();
@@ -163,7 +164,7 @@ describe('AdaptiveTrust', () => {
 
     it('uses configured incident drop level', () => {
       const trust = createTrust({ incidentDropLevel: 'blocked' });
-      trust.grantTrust('gmail', 'write', 'autonomous', 'Full trust');
+      proved(trust).grantTrust('gmail', 'write', 'autonomous', 'Full trust');
 
       const event = trust.recordIncident('gmail', 'write', 'Catastrophic failure');
       expect(event).toBeDefined();
@@ -174,7 +175,7 @@ describe('AdaptiveTrust', () => {
   describe('explicit trust grants', () => {
     it('sets trust for specific operation', () => {
       const trust = createTrust();
-      const event = trust.grantTrust('gmail', 'delete', 'autonomous', "You don't need to ask me about deleting emails");
+      const event = proved(trust).grantTrust('gmail', 'delete', 'autonomous', "You don't need to ask me about deleting emails");
 
       expect(event.from).toBe('approve-always'); // default
       expect(event.to).toBe('autonomous');
@@ -188,7 +189,7 @@ describe('AdaptiveTrust', () => {
 
     it('sets trust for entire service', () => {
       const trust = createTrust();
-      const events = trust.grantServiceTrust('calendar', 'log', 'I trust you with calendar management');
+      const events = proved(trust).grantServiceTrust('calendar', 'log', 'I trust you with calendar management');
 
       expect(events).toHaveLength(4); // read, write, modify, delete
       for (const event of events) {
@@ -199,7 +200,7 @@ describe('AdaptiveTrust', () => {
 
     it('can block specific operations', () => {
       const trust = createTrust();
-      trust.grantTrust('gmail', 'delete', 'blocked', 'Never delete my emails');
+      proved(trust).grantTrust('gmail', 'delete', 'blocked', 'Never delete my emails');
 
       const entry = trust.getTrustLevel('gmail', 'delete');
       expect(entry.level).toBe('blocked');
@@ -233,7 +234,7 @@ describe('AdaptiveTrust', () => {
   describe('change log', () => {
     it('tracks trust changes', () => {
       const trust = createTrust();
-      trust.grantTrust('gmail', 'delete', 'autonomous', 'Full trust');
+      proved(trust).grantTrust('gmail', 'delete', 'autonomous', 'Full trust');
       trust.recordIncident('gmail', 'delete', 'Oops');
 
       const log = trust.getChangeLog();
@@ -246,7 +247,7 @@ describe('AdaptiveTrust', () => {
   describe('persistence', () => {
     it('saves and loads trust profile', () => {
       const trust1 = createTrust();
-      trust1.grantTrust('gmail', 'delete', 'autonomous', 'Trust granted');
+      proved(trust1).grantTrust('gmail', 'delete', 'autonomous', 'Trust granted');
       trust1.recordSuccess('gmail', 'delete');
       trust1.recordSuccess('gmail', 'delete');
 
@@ -274,7 +275,7 @@ describe('AdaptiveTrust', () => {
   describe('profile access', () => {
     it('returns deep copy of profile', () => {
       const trust = createTrust();
-      trust.grantTrust('gmail', 'delete', 'autonomous', 'Trust');
+      proved(trust).grantTrust('gmail', 'delete', 'autonomous', 'Trust');
 
       const profile = trust.getProfile();
       // Mutating the copy shouldn't affect the original
@@ -295,7 +296,7 @@ describe('AdaptiveTrust', () => {
 
     it('generates summary with services', () => {
       const trust = createTrust();
-      trust.grantTrust('gmail', 'read', 'autonomous', 'Trust reads');
+      proved(trust).grantTrust('gmail', 'read', 'autonomous', 'Trust reads');
       trust.recordSuccess('gmail', 'read');
 
       const summary = trust.getSummary();
@@ -314,7 +315,7 @@ describe('AdaptiveTrust', () => {
   describe('global trust state', () => {
     it('tracks last event', () => {
       const trust = createTrust();
-      trust.grantTrust('gmail', 'delete', 'autonomous', 'Full trust');
+      proved(trust).grantTrust('gmail', 'delete', 'autonomous', 'Full trust');
 
       const profile = trust.getProfile();
       expect(profile.global.lastEvent).toContain('gmail.delete');

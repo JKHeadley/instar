@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-12T03:44:46.015Z",
+  "slug": "conversation-graph-suggestions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 12,
+  "loc": 597,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphSuggestions.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/componentCategories.ts",
+      "src/core/conversationGraphRead.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/messaging/shared/conversationGraphChat.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphOwnerChanges.ts",
+      "src/server/ConversationGraphSuggestionService.ts",
+      "src/server/ConversationGraphSurface.ts",
+      "src/server/conversationGraphSuggestionRoutes.ts"
+    ],
+    "addedLines": 590,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "user-driven: a suggestion build starts only when the owner opens the suggestions list (at most once per 24 h) or taps Refresh (at most once per 10 min, single-flight); nothing re-triggers it"
+  },
+  "verdict": "pass"
+}

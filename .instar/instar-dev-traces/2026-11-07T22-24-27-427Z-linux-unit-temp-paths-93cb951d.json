@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "linux-unit-temp-paths",
+  "sessionId": "5b800062-dfd4-4a77-b261-868fdf17b7b8",
+  "timestamp": "2026-11-07T22:24:27.427Z",
+  "artifactPath": "upgrades/side-effects/linux-unit-temp-paths.md",
+  "artifactSha256": "213d90ce6b1bd930ec6aa487877a6c5f929caad8546a5296adf01ad9d341fc71",
+  "coveredFiles": [
+    "docs/specs/linux-unit-temp-paths.eli16.md",
+    "tests/unit/SourceTreeGuard.test.ts",
+    "tests/unit/autonomous-stop-hook-idle-backoff.test.ts",
+    "tests/unit/telegram-origin/config-reader.test.ts",
+    "upgrades/next/linux-unit-temp-paths.md",
+    "upgrades/side-effects/linux-unit-temp-paths.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible fixture corrections; the existing memory safety rule was reviewed in the first commit.",
+  "eli16Path": "docs/specs/linux-unit-temp-paths.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/linux-unit-temp-paths.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -8,6 +8,8 @@ import {
   mapLiveResponse,
   buildCodexLiveUsageReader,
   buildCodexLiveUsageReaderDetailed,
+  capUtf8,
+  CODEX_REFUSAL_TEXT_MAX_BYTES,
 } from '../../src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 
 /**
@@ -92,14 +94,20 @@ describe('mapLiveResponse', () => {
     expect(snap!.secondary).toBeNull();
   });
 
-  it('treats a malformed window (missing fields) as absent rather than guessing', () => {
+  it('rejects a malformed reported window rather than treating it as absent', () => {
     const r = liveResult();
     (r.rateLimitsByLimitId as Record<string, Record<string, unknown>>).codex.primary = {
       usedPercent: 'lots',
     };
-    const snap = mapLiveResponse(r, NOW_MS);
-    expect(snap!.primary).toBeNull();
-    expect(snap!.windowsUnavailable).toBe(true);
+    expect(mapLiveResponse(r, NOW_MS)).toBeNull();
+  });
+
+  it('rejects a favorable primary when the reported exhausted secondary is malformed', () => {
+    const r = liveResult();
+    const bucket = (r.rateLimitsByLimitId as Record<string, Record<string, unknown>>).codex;
+    bucket.primary = { usedPercent: 10, windowDurationMins: 300, resetsAt: 1790000000 };
+    bucket.secondary = { usedPercent: 100, windowDurationMins: 10080 };
+    expect(mapLiveResponse(r, NOW_MS)).toBeNull();
   });
 });
 
@@ -121,6 +129,7 @@ class FakeChild extends EventEmitter {
   killed = false;
   kill(): boolean {
     this.killed = true;
+    this.emit('exit', 0);
     return true;
   }
 }
@@ -134,6 +143,12 @@ function scriptedChild(opts: {
   readErrorMessage?: string;
   garbageFirst?: boolean;
   silent?: boolean;
+  /** A full JSON-RPC error object for initialize (id 1). */
+  initErrorObject?: Record<string, unknown>;
+  /** A full JSON-RPC error object for the read (id 2). */
+  readErrorObject?: Record<string, unknown>;
+  /** Text the child writes to stderr before every reply (must never surface in a result). */
+  stderrText?: string;
 }): { child: FakeChild; spawnImpl: () => ChildProcessWithoutNullStreams } {
   const child = new FakeChild();
   child.stdin.on('written', (raw: string) => {
@@ -147,14 +162,17 @@ function scriptedChild(opts: {
     const reply = (payload: Record<string, unknown>): void => {
       // Async like a real pipe, with optional non-protocol chatter first.
       setImmediate(() => {
+        if (opts.stderrText) child.stderr.emit('data', Buffer.from(opts.stderrText));
         if (opts.garbageFirst) child.stdout.emit('data', Buffer.from('not json at all\n'));
         child.stdout.emit('data', Buffer.from(`${JSON.stringify(payload)}\n`));
       });
     };
     if (msg.id === 1) {
-      reply(opts.initError ? { id: 1, error: { message: 'nope' } } : { id: 1, result: {} });
+      if (opts.initErrorObject) reply({ id: 1, error: opts.initErrorObject });
+      else reply(opts.initError ? { id: 1, error: { message: 'nope' } } : { id: 1, result: {} });
     } else if (msg.id === 2) {
-      if (opts.readErrorMessage) reply({ id: 2, error: { code: -32600, message: opts.readErrorMessage } });
+      if (opts.readErrorObject) reply({ id: 2, error: opts.readErrorObject });
+      else if (opts.readErrorMessage) reply({ id: 2, error: { code: -32600, message: opts.readErrorMessage } });
       else if (opts.readError) reply({ id: 2, error: { message: 'nope' } });
       else reply({ id: 2, result: opts.readResult ?? liveResult() });
     }
@@ -176,6 +194,32 @@ describe('readLiveCodexRateLimits', () => {
     expect(methods).toEqual(['initialize', 'initialized', 'account/rateLimits/read']);
   });
 
+  it('uses a subscription-only child environment for a fenced admission read', async () => {
+    const originalKey = process.env.OPENAI_API_KEY;
+    const originalEscape = process.env.INSTAR_DISABLE_RULE1_OPENAI;
+    process.env.OPENAI_API_KEY = 'sk-not-for-triage';
+    process.env.INSTAR_DISABLE_RULE1_OPENAI = '1';
+    try {
+      let spawnedEnv: NodeJS.ProcessEnv | undefined;
+      let spawnedArgs: string[] | undefined;
+      const { spawnImpl } = scriptedChild({});
+      const snapshot = await readLiveCodexRateLimits({
+        codexHome: '/tmp/verified-subscription', subscriptionOnly: true, nowMs: NOW_MS,
+        spawnImpl: (cmd, args, opts) => { spawnedEnv = opts.env; spawnedArgs = args; return spawnImpl(); },
+      });
+      expect(snapshot).not.toBeNull();
+      expect(spawnedEnv?.CODEX_HOME).toBe('/tmp/verified-subscription');
+      expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnedEnv?.INSTAR_DISABLE_RULE1_OPENAI).toBeUndefined();
+      expect(spawnedArgs).toEqual(['app-server', '-c', 'cli_auth_credentials_store="file"']);
+    } finally {
+      if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalKey;
+      if (originalEscape === undefined) delete process.env.INSTAR_DISABLE_RULE1_OPENAI;
+      else process.env.INSTAR_DISABLE_RULE1_OPENAI = originalEscape;
+    }
+  });
+
   it('returns null when initialize is refused', async () => {
     const { spawnImpl } = scriptedChild({ initError: true });
     expect(await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl })).toBeNull();
@@ -190,6 +234,23 @@ describe('readLiveCodexRateLimits', () => {
     const { child, spawnImpl } = scriptedChild({ silent: true });
     const snap = await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl, timeoutMs: 50 });
     expect(snap).toBeNull();
+    expect(child.killed).toBe(true);
+  });
+
+  it('does not spawn for a cancelled probe and reaps an in-flight cancelled probe', async () => {
+    const alreadyCancelled = new AbortController();
+    alreadyCancelled.abort();
+    let spawns = 0;
+    expect(await readLiveCodexRateLimits({ subscriptionOnly: true, signal: alreadyCancelled.signal,
+      spawnImpl: () => { spawns++; return scriptedChild({ silent: true }).spawnImpl(); } })).toBeNull();
+    expect(spawns).toBe(0);
+
+    const running = new AbortController();
+    const { child, spawnImpl } = scriptedChild({ silent: true });
+    const read = readLiveCodexRateLimits({ subscriptionOnly: true, signal: running.signal,
+      timeoutMs: 5_000, spawnImpl });
+    running.abort();
+    expect(await read).toBeNull();
     expect(child.killed).toBe(true);
   });
 
@@ -235,7 +296,10 @@ describe('readLiveCodexRateLimitsDetailed', () => {
       readErrorMessage: 'codex account authentication required to read rate limits',
     });
     const read = await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl });
-    expect(read).toEqual({ kind: 'auth-failed' });
+    expect(read).toEqual({
+      kind: 'auth-failed',
+      refusal: { stage: 'read', text: 'codex account authentication required to read rate limits' },
+    });
     expect(child.killed).toBe(true);
     // The null-returning wrapper still reads it as "no snapshot" for existing callers.
     const again = scriptedChild({ readErrorMessage: 'codex account authentication required to read rate limits' });
@@ -244,9 +308,9 @@ describe('readLiveCodexRateLimitsDetailed', () => {
 
   it('keeps a non-auth protocol error, an init error and a timeout as unavailable (never evidence of sign-out)', async () => {
     expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ readError: true }).spawnImpl }))
-      .toEqual({ kind: 'unavailable' });
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'read', text: 'nope' } });
     expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ initError: true }).spawnImpl }))
-      .toEqual({ kind: 'unavailable' });
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'initialize', text: 'nope' } });
     expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild({ silent: true }).spawnImpl, timeoutMs: 30 }))
       .toEqual({ kind: 'unavailable' });
     expect(await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: () => { throw new Error('ENOENT'); } }))
@@ -271,5 +335,77 @@ describe('readLiveCodexRateLimitsDetailed', () => {
   it('the detailed factory honors the same codexLiveQuota:false rollback lever', () => {
     expect(buildCodexLiveUsageReaderDetailed({ codexLiveQuota: false })).toBeNull();
     expect(typeof buildCodexLiveUsageReaderDetailed({})).toBe('function');
+  });
+});
+
+describe('readLiveCodexRateLimitsDetailed refusal text (spec codex-device-limit-tripwire §2)', () => {
+  const read = (o: Parameters<typeof scriptedChild>[0]) =>
+    readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: scriptedChild(o).spawnImpl });
+
+  it('an initialize (id 1) error stays unavailable — even with auth wording — and carries an initialize refusal', async () => {
+    expect(await read({ initErrorObject: { code: -32000, message: 'handshake failed' } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'initialize', text: 'handshake failed' } });
+    // No new auth detection on the handshake.
+    expect(await read({ initErrorObject: { message: 'authentication required' } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'initialize', text: 'authentication required' } });
+  });
+
+  it('a read (id 2) auth error is auth-failed with a read refusal; a non-auth one is unavailable with a read refusal', async () => {
+    expect(await read({ readErrorObject: { message: 'Unauthorized' } }))
+      .toEqual({ kind: 'auth-failed', refusal: { stage: 'read', text: 'Unauthorized' } });
+    expect(await read({ readErrorObject: { message: 'device has too many accounts' } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'read', text: 'device has too many accounts' } });
+  });
+
+  it('appends error.data only when it is a string', async () => {
+    expect(await read({ readErrorObject: { message: 'refused', data: 'limit of 3 accounts on this device' } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'read', text: 'refused\nlimit of 3 accounts on this device' } });
+    expect(await read({ readErrorObject: { message: 'refused', data: { detail: 'object data is dropped' } } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'read', text: 'refused' } });
+    expect(await read({ initErrorObject: { message: 'init refused', data: 'extra' } }))
+      .toEqual({ kind: 'unavailable', refusal: { stage: 'initialize', text: 'init refused\nextra' } });
+  });
+
+  it('caps the refusal text at 2 KiB of UTF-8 without splitting a character', async () => {
+    const result = await read({ readErrorObject: { message: 'x'.repeat(5000), data: 'y'.repeat(5000) } });
+    expect(result.kind).toBe('unavailable');
+    const text = result.kind === 'unavailable' ? result.refusal!.text : '';
+    expect(Buffer.byteLength(text, 'utf8')).toBe(CODEX_REFUSAL_TEXT_MAX_BYTES);
+    expect(text).toBe('x'.repeat(CODEX_REFUSAL_TEXT_MAX_BYTES));
+
+    const multi = capUtf8('é'.repeat(2000), CODEX_REFUSAL_TEXT_MAX_BYTES);
+    expect(Buffer.byteLength(multi, 'utf8')).toBeLessThanOrEqual(CODEX_REFUSAL_TEXT_MAX_BYTES);
+    expect(multi).toBe('é'.repeat(1024));
+    expect(capUtf8('short', 10)).toBe('short');
+  });
+
+  it('stderr content never appears in any result', async () => {
+    const marker = 'STDERR-SECRET-MARKER-9f2c';
+    const results = await Promise.all([
+      read({ stderrText: marker, readErrorObject: { message: 'Unauthorized' } }),
+      read({ stderrText: marker, readErrorObject: { message: 'boom' } }),
+      read({ stderrText: marker, initErrorObject: { message: 'init boom' } }),
+      read({ stderrText: marker }),
+    ]);
+    for (const r of results) expect(JSON.stringify(r)).not.toContain(marker);
+  });
+
+  it('two results never share an object, so a refusal cannot leak between results', async () => {
+    const a = await read({ readErrorObject: { message: 'boom' } });
+    const b = await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: () => { throw new Error('ENOENT'); } });
+    const c = await readLiveCodexRateLimitsDetailed({ nowMs: NOW_MS, spawnImpl: () => { throw new Error('ENOENT'); } });
+    expect(b).toEqual({ kind: 'unavailable' });
+    expect(b).not.toBe(c);
+    expect(a).not.toBe(b);
+    (b as { refusal?: unknown }).refusal = { stage: 'read', text: 'mutated' };
+    expect(c).toEqual({ kind: 'unavailable' });
+    // A refusal-carrying result followed by a plain failure: the plain one carries no refusal.
+    expect(a).toHaveProperty('refusal');
+    expect(c).not.toHaveProperty('refusal');
+  });
+
+  it('the non-detailed reader is unchanged: null on every refusal', async () => {
+    expect(await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl: scriptedChild({ initErrorObject: { message: 'x' } }).spawnImpl })).toBeNull();
+    expect(await readLiveCodexRateLimits({ nowMs: NOW_MS, spawnImpl: scriptedChild({ readErrorObject: { message: 'Unauthorized' } }).spawnImpl })).toBeNull();
   });
 });

@@ -86,7 +86,7 @@ describe('migrateClaudeMd appends the section for existing agents (Migration Par
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-claudemd-'));
     stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042 }));
+    fs.writeFileSync(path.join(stateDir, 'config.json'), JSON.stringify({ projectName: 'x', port: 4042 , claudeMd: { layout: 'full' } /* tests the legacy append chain; the reference-layout conversion is covered in claude-md-reference-layout.test.ts */ }));
     claudeMdPath = path.join(projectDir, 'CLAUDE.md');
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md — legacy agent\n\nSome existing content.\n');
   });

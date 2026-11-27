@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "mobile-native-chat-media-cross-machine",
+  "sessionId": "03f51762-938f-4d63-ba6d-eb28aeb6941b",
+  "timestamp": "2026-11-02T12:21:49.222Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-chat-media-cross-machine.md",
+  "artifactSha256": "311cbd6c32e9a9a02baab4dbb3a8dc7ec9d2fd5f15d0550997058ef01f82a902",
+  "specPath": "docs/specs/mobile-native-chat-media.md",
+  "coveredFiles": [
+    "src/core/AppMediaReplicator.ts",
+    "src/core/AppMediaStore.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "tests/integration/app-media-cross-machine.test.ts",
+    "tests/unit/app-media-replicator.test.ts",
+    "upgrades/next/mobile-native-chat-media-cross-machine.md",
+    "upgrades/side-effects/mobile-native-chat-media-cross-machine.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Review fixes for PR 2580: purge-during-hash, honest 202, bounded hurry, waiter cleanup, single-peer blame, gate wording.",
+  "secondPass": "false",
+  "reviewerConcurred": null
+}

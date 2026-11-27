@@ -14,7 +14,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import { dashboardCacheControl, dashboardSecurityHeaders, DASHBOARD_STATIC_OPTIONS } from '../../src/server/middleware.js';
+import { dashboardSecurityHeaders, DASHBOARD_STATIC_OPTIONS } from '../../src/server/middleware.js';
+import { mountDashboardEntryRoutes } from '../../src/server/dashboardEntry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_DIR = path.resolve(__dirname, '..', '..', 'dashboard');
@@ -23,10 +24,9 @@ interface TestServer { url: string; close: () => Promise<void>; }
 function boot(): Promise<TestServer> {
   const app = express();
   app.use(dashboardSecurityHeaders);
-  app.get('/dashboard', (_req, res) => {
-    dashboardCacheControl(res);
-    res.sendFile(path.join(DASHBOARD_DIR, 'index.html'), { cacheControl: false, etag: true, lastModified: true });
-  });
+  // The shipped entry routes (dashboard-console-default-and-pair-page §3.1): /dashboard → console,
+  // the legacy page at /dashboard/legacy.
+  mountDashboardEntryRoutes(app, { dashboardDir: DASHBOARD_DIR });
   app.use('/dashboard', express.static(DASHBOARD_DIR, DASHBOARD_STATIC_OPTIONS));
   return new Promise((resolve) => {
     const srv = app.listen(0, () => {
@@ -78,13 +78,59 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/console/console.js', 'javascript'],
       ['/dashboard/console/home-model.js', 'javascript'],
       ['/dashboard/console/nav-model.js', 'javascript'],
+      ['/dashboard/console/ui.js', 'javascript'],
+      ['/dashboard/console/promises.js', 'javascript'],
+      ['/dashboard/console/promises-model.js', 'javascript'],
+      ['/dashboard/console/machines.js', 'javascript'],
+      ['/dashboard/console/machines-model.js', 'javascript'],
+      ['/dashboard/console/machine-care.js', 'javascript'],
+      ['/dashboard/console/machine-care-model.js', 'javascript'],
+      ['/dashboard/console/accounts.js', 'javascript'],
+      ['/dashboard/console/accounts-model.js', 'javascript'],
+      ['/dashboard/console/messages.js', 'javascript'],
+      ['/dashboard/console/messages-model.js', 'javascript'],
+      ['/dashboard/console/allowed.js', 'javascript'],
+      ['/dashboard/console/allowed-model.js', 'javascript'],
+      ['/dashboard/console/services-model.js', 'javascript'],
+      ['/dashboard/console/plans.js', 'javascript'],
+      ['/dashboard/console/plans-model.js', 'javascript'],
+      ['/dashboard/console/costs.js', 'javascript'],
+      ['/dashboard/console/costs-model.js', 'javascript'],
+      ['/dashboard/console/schedule.js', 'javascript'],
+      ['/dashboard/console/schedule-model.js', 'javascript'],
+      ['/dashboard/console/development.js', 'javascript'],
+      ['/dashboard/console/development-model.js', 'javascript'],
+      ['/dashboard/console/agents.js', 'javascript'],
+      ['/dashboard/console/agents-model.js', 'javascript'],
+      ['/dashboard/console/mandates.js', 'javascript'],
+      ['/dashboard/console/mandates-model.js', 'javascript'],
+      ['/dashboard/console/secrets.js', 'javascript'],
+      ['/dashboard/console/secrets-model.js', 'javascript'],
+      ['/dashboard/console/sessions.js', 'javascript'],
+      ['/dashboard/console/sessions-model.js', 'javascript'],
+      ['/dashboard/console/learned.js', 'javascript'],
+      ['/dashboard/console/learned-model.js', 'javascript'],
+      ['/dashboard/console/inside.js', 'javascript'],
+      ['/dashboard/console/inside-model.js', 'javascript'],
+      ['/dashboard/process-health.js', 'javascript'],
+      ['/dashboard/console/files.js', 'javascript'],
+      ['/dashboard/console/files-model.js', 'javascript'],
+      ['/dashboard/console/page-lifecycle.js', 'javascript'],
+      ['/dashboard/console/browser-device.js', 'javascript'],
+      ['/dashboard/console/chats.js', 'javascript'],
+      ['/dashboard/console/chats-model.js', 'javascript'],
+      ['/dashboard/console/credential-shape.js', 'javascript'],
+      ['/dashboard/console/context.js', 'javascript'],
+      ['/dashboard/console/context-model.js', 'javascript'],
       ['/dashboard/console/fonts/inter-latin-wght-normal.woff2', 'font/woff2'],
       ['/dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2', 'font/woff2'],
     ] as const) {
       const res = await get(server.url, p);
       expect(res.status, p).toBe(200);
       expect(res.headers['content-type'], p).toContain(type);
-      expect(res.headers['cache-control'], p).toBe('no-cache');
+      // Scripts and stylesheets are never stored (Cloudflare rewrites no-cache on them);
+      // fonts and pages revalidate.
+      expect(res.headers['cache-control'], p).toBe(/\.(m?js|css)$/.test(p) ? 'no-store' : 'no-cache');
     }
   });
 
@@ -97,7 +143,7 @@ describe('console served beside the legacy dashboard', () => {
 
   it('the legacy dashboard links to the console and keeps DENY', async () => {
     server = await boot();
-    const res = await get(server.url, '/dashboard');
+    const res = await get(server.url, '/dashboard/legacy');
     expect(res.status).toBe(200);
     expect(res.body).toContain('href="/dashboard/console/"');
     expect(res.headers['x-frame-options']).toBe('DENY');

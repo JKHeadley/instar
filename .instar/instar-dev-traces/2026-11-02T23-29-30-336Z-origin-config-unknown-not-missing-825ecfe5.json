@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "origin-config-unknown-not-missing",
+  "sessionId": "9835e3c3-4f0a-4e2b-bfd1-264654fcb517",
+  "timestamp": "2026-11-02T23:29:30.336Z",
+  "artifactPath": "upgrades/side-effects/origin-config-unknown-not-missing.md",
+  "artifactSha256": "cc0c53d8d690ac7adb6377e6181290b9b9e043e844d39b8de1e889d6764ef840",
+  "coveredFiles": [
+    "src/messaging/telegram-origin/OriginLegacy.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/origin-config-unknown-not-missing.md",
+    "upgrades/side-effects/origin-config-unknown-not-missing.eli16.md",
+    "upgrades/side-effects/origin-config-unknown-not-missing.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow: one more exact pre-dispatch refusal body in the existing replay check; revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/origin-config-unknown-not-missing.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/origin-config-unknown-not-missing.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

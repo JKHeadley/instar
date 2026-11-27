@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-14T00:16:16.421Z",
+  "slug": "standards-backreference-completion",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 28,
+  "loc": 95,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/class-closure-lint.mjs",
+      "scripts/doorway-scan.mjs",
+      "scripts/instar-dev-precommit.js",
+      "scripts/lint-dev-agent-dark-gate.js",
+      "scripts/lint-expected-capacity-degradations.js",
+      "scripts/lint-model-registry-freshness.mjs",
+      "scripts/lint-no-unregistered-self-action.js",
+      "scripts/lint-standard-code-backreference.mjs",
+      "scripts/redact-captured-fixture.mjs",
+      "scripts/stall-class-codemod.mjs",
+      "scripts/write-audit-convergence.mjs",
+      "skills/spec-converge/scripts/write-convergence-tag.mjs",
+      "src/core/CapacityEnforcement.ts",
+      "src/core/FeatureMaturationPlanGate.mjs",
+      "src/core/FeatureRolloutReconciler.ts",
+      "src/core/FeedbackManager.ts",
+      "src/core/InitiativeTracker.ts",
+      "src/core/LiveTestArtifactStore.ts",
+      "src/core/LiveTestHarness.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RealChannelDriver.ts",
+      "src/core/canonicalPipelineRegistry.ts",
+      "src/core/stallCoverageValidator.ts",
+      "src/core/types.ts",
+      "src/monitoring/AutonomousThroughputFloor.ts",
+      "src/monitoring/FeatureMetricsLedger.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 94,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

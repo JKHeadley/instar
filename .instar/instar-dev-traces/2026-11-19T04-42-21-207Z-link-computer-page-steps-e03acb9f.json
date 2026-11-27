@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "link-computer-page-steps",
+  "sessionId": "024790f2-113e-4d72-9108-6bbb038e5b2b",
+  "timestamp": "2026-11-19T04:42:21.207Z",
+  "artifactPath": "upgrades/side-effects/link-computer-page-steps.md",
+  "artifactSha256": "62de6c37be5591308a2ed5939892fdcb1eca7791231af8d4b438e8257876853d",
+  "coveredFiles": [
+    "dashboard/docs/doc-page-model.js",
+    "dashboard/docs/doc-page.css",
+    "dashboard/docs/doc-page.js",
+    "tests/unit/documents-link-words.test.ts",
+    "upgrades/next/link-computer-page-steps.md",
+    "upgrades/side-effects/link-computer-page-steps.eli16.md",
+    "upgrades/side-effects/link-computer-page-steps.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Static document-page words and layout plus a test; no route, key, flow, authority or migration; a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/link-computer-page-steps.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/link-computer-page-steps.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

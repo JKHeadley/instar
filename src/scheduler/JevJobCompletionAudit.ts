@@ -168,12 +168,19 @@ export interface EvidencePack {
   lastAttemptPass?: number;
 }
 
+/**
+ * Evidence-pack directory name, joined directly onto stateDir (the `.instar`
+ * directory), so packs land at `.instar/jev-supervision-evidence/`. The awareness
+ * card and spec cite that path; jev-audit-wiring.test.ts holds them to this constant.
+ */
+export const JEV_EVIDENCE_DIR_NAME = 'jev-supervision-evidence';
+
 export interface JevAuditDeps {
   /** Live config read — the kill switch needs no restart. */
   getConfig: () => JevAuditConfig | undefined;
   /** Vault key, read at construction; re-read at most every 10 min on miss/401. */
   readKey: () => string | null;
-  /** Directory for evidence packs (state/jev-supervision-evidence). */
+  /** Directory for evidence packs (see JEV_EVIDENCE_DIR_NAME). */
   evidenceDir: string;
   /** Verdict log path (logs/jev-job-completion-audit.jsonl). */
   logPath: string;
@@ -734,7 +741,7 @@ export function buildJevJobCompletionAudit(opts: {
       const v = opts.readSecret('typesafe_api_key');
       return typeof v === 'string' && v ? v : null;
     },
-    evidenceDir: path.join(opts.stateDir, 'jev-supervision-evidence'),
+    evidenceDir: path.join(opts.stateDir, JEV_EVIDENCE_DIR_NAME),
     logPath: path.join(opts.stateDir, '..', 'logs', 'jev-job-completion-audit.jsonl'),
     metrics: opts.metrics,
     fetchImpl: opts.fetchImpl,

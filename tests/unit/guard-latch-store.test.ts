@@ -167,3 +167,97 @@ describe('GuardLatchStore — durable round-trip', () => {
     expect(mode).toBe(0o600);
   });
 });
+
+describe('stop class (green-pr-agent-stop-release)', () => {
+  const origin = { class: 'agent' as const, topicId: 18330, cause: 'The old watcher merged a PR too early.', release: { kind: 'fix-pr-released' as const }, stoppedAt: '2026-11-03T10:34:00.000Z' };
+
+  it('a stop with no origin is operator-class', () => {
+    const s = store();
+    const id = s.set(ROLLBACK_FAMILY, 'operator-rollback');
+    expect(s.stopClass(ROLLBACK_FAMILY, id)).toEqual({ known: true, active: true, class: 'operator' });
+  });
+
+  it('a stop minted with an origin is agent-class, and survives a restart', () => {
+    const id = store().set(ROLLBACK_FAMILY, 'mine', origin);
+    expect(store().stopClass(ROLLBACK_FAMILY, id)).toEqual({ known: true, active: true, class: 'agent', origin });
+  });
+
+  it('every latch in an existing file reads as operator-class, unchanged', () => {
+    const file = path.join(dir, 'state', 'green-pr-automerge-latches.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const legacy = {
+      machineId: 'machine-A', ownSeq: 216,
+      transitions: { rollback: { 'machine-A:212': { action: 'set', epoch: 23323, seq: 212, reason: 'PR #2648 merged at 10:30:24Z while 10 hosted CI jobs were still in progress; hol', ts: '2026-11-03T10:34:18.000Z' } } },
+    };
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    const s = store();
+    expect(s.stopClass(ROLLBACK_FAMILY, 'machine-A:212')).toEqual({ known: true, active: true, class: 'operator' });
+    expect(s.rollbackStops()).toEqual([{ latchId: 'machine-A:212', class: 'operator', reason: legacy.transitions.rollback['machine-A:212'].reason, since: '2026-11-03T10:34:18.000Z' }]);
+    expect(JSON.parse(fs.readFileSync(file, 'utf-8'))).toEqual(legacy);
+  });
+
+  it('a malformed stored origin reads as operator-class', () => {
+    const file = path.join(dir, 'state', 'green-pr-automerge-latches.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ machineId: 'machine-A', ownSeq: 1, transitions: { rollback: { 'machine-A:1': { action: 'set', epoch: 1, seq: 1, ts: 't', origin: { class: 'agent' } } } } }));
+    expect(store().stopClass(ROLLBACK_FAMILY, 'machine-A:1')).toMatchObject({ class: 'operator' });
+  });
+
+  it('a peer row reads as operator-class, even with a local origin under its id', () => {
+    const peers = (): GuardLatchEntry[] => [{ machine: 'machine-B', latchKind: ROLLBACK_FAMILY, latchId: 'machine-B:7', action: 'set', epoch: 9, seq: 7 }];
+    expect(store({ peers }).stopClass(ROLLBACK_FAMILY, 'machine-B:7')).toEqual({ known: true, active: true, class: 'operator' });
+  });
+
+  it('an unknown id is unknown, and a cleared one is not active', () => {
+    const s = store();
+    expect(s.stopClass(ROLLBACK_FAMILY, 'machine-A:999')).toEqual({ known: false });
+    const id = s.set(ROLLBACK_FAMILY, 'mine', origin);
+    s.clear(ROLLBACK_FAMILY, [id], 'agent-release');
+    expect(s.stopClass(ROLLBACK_FAMILY, id)).toMatchObject({ known: true, active: false, class: 'agent' });
+  });
+
+  it('an unreadable peer view throws, so the release route refuses', () => {
+    const s = store({ peers: () => { throw new Error('unreadable'); } });
+    expect(() => s.stopClass(ROLLBACK_FAMILY, 'machine-A:1')).toThrow();
+    expect(s.rollbackStops()).toEqual([]);
+  });
+
+  it('the origin never reaches the journal, and the journal row keeps its shape', () => {
+    const s = store();
+    const id = s.set(ROLLBACK_FAMILY, 'mine', origin);
+    s.clear(ROLLBACK_FAMILY, [id], 'agent-release', { topicId: 1, note: 'n', evidence: {}, at: 'now' });
+    for (const row of emitted) {
+      expect(Object.keys(row).sort()).toEqual(['action', 'epoch', 'latchId', 'latchKind', 'reason', 'seq']);
+    }
+  });
+
+  it('keeps the origin and records the release across the clear, for the history', () => {
+    const s = store();
+    const id = s.set(ROLLBACK_FAMILY, 'mine', origin);
+    const release = { topicId: 136706, note: 'fix is running', evidence: { pr: 1 }, at: 'now' };
+    s.clear(ROLLBACK_FAMILY, [id], 'agent-release', release);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'state', 'green-pr-automerge-latches.json'), 'utf-8'));
+    expect(onDisk.transitions.rollback[id]).toMatchObject({ action: 'clear', origin, release });
+  });
+
+  it('a claim mints a fresh id: it cannot describe or pre-clear any other stop', () => {
+    const s = store();
+    const op = s.set(ROLLBACK_FAMILY, 'operator-rollback');
+    const mine = s.set(ROLLBACK_FAMILY, 'mine', origin);
+    expect(mine).not.toBe(op);
+    expect(s.stopClass(ROLLBACK_FAMILY, op)).toMatchObject({ class: 'operator' });
+    s.clear(ROLLBACK_FAMILY, [mine], 'agent-release');
+    expect(s.isMergeAllowed()).toMatchObject({ allowed: false, reason: 'rollback', activeLatchIds: { rollback: [op] } });
+  });
+
+  it('snapshot carries the classes and keeps the plain id list', () => {
+    const s = store();
+    const op = s.set(ROLLBACK_FAMILY, 'operator-rollback');
+    const mine = s.set(ROLLBACK_FAMILY, 'mine', origin);
+    const snap = s.snapshot();
+    expect(snap.rollback).toEqual([op, mine]);
+    expect(snap.rollbackStops.map((r) => r.class)).toEqual(['operator', 'agent']);
+    expect(snap.rollbackStops[1].marker).toBe(`agent-stop-${mine.replace(':', '-')}`);
+  });
+});
+

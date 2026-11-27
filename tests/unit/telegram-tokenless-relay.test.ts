@@ -62,6 +62,14 @@ describe('TelegramAdapter — tokenless-standby relay decision (bug #7)', () => 
     expect(relay).toHaveBeenCalledTimes(1);
   });
 
+  it('carries an HTML formatting choice to the holder', async () => {
+    adapter = makeAdapter({ secret: true });
+    const relay = vi.fn().mockResolvedValue({ messageId: 1, topicId: 42 });
+    adapter.outboundRelay = relay;
+    await adapter.sendToTopic(42, '<b>Agent Health</b>', { formatMode: 'html' });
+    expect(relay).toHaveBeenCalledWith(42, '<b>Agent Health</b>', expect.objectContaining({ formatMode: 'html' }));
+  });
+
   it('sends DIRECTLY (no relay) when a real string token is present', async () => {
     adapter = makeAdapter('123456:realbottoken');
     const relay = vi.fn();

@@ -1,3 +1,4 @@
+import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../../src/data/accountPageSafetyScript.js';
 /**
  * /normal-chrome-browser built-in skill + its .instar/scripts/browser/ helpers
  * (specs docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md).
@@ -21,16 +22,19 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { installBuiltinSkills, installBrowserScripts, BROWSER_SCRIPT_NAMES, MACOS_BROWSER_SCRIPT_NAMES } from '../../src/commands/init.js';
-import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_SECTION } from '../../src/data/builtinSkillContent.js';
+import { installBuiltinSkills, installBrowserScripts, BROWSER_SCRIPT_NAMES, MACOS_BROWSER_SCRIPT_NAMES, BROWSER_CARE_SCRIPT_NAMES } from '../../src/commands/init.js';
+import { NORMAL_CHROME_BROWSER_SKILL_CONTENT, NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX, NORMAL_CHROME_BROWSER_WINDOWS_SECTION, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING, NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE } from '../../src/data/builtinSkillContent.js';
 import { NORMAL_CHROME_BROWSER_SKILL_MARKER, NORMAL_CHROME_BROWSER_SKILL_V1_SHA256 } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEMPLATE_DIR = path.resolve(process.cwd(), 'src/templates/scripts/browser');
 /** The scripts pin the system python (macOS Command Line Tools; present on Linux CI images). */
 const HAS_PY = fs.existsSync('/usr/bin/python3');
-/** PP's reviewed v5, the file the Mama PC live test ran on 2026-10-21 (VERDICT: PASS). */
-const NATIVE_DRIVE_V5_SHA256 = '9bacd88a373fe524c31173906f6a667084031fd3e0b232de9b1db14bc0c99e0e';
+/**
+ * PP's reviewed v5 (Mama PC live test 2026-10-21, VERDICT: PASS) plus the occlusion fix and ERR page-not-rendering
+ * (spec normal-chrome-windows-occlusion; these bytes ran live on the Mama PC on 2026-11-19).
+ */
+const NATIVE_DRIVE_V6_SHA256 = '74f2071c3a53ad92b305ed0d6b4ac5cfc73b6df0671da946adb7c9e1be6aad92';
 
 let tmp: string;
 beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-normal-chrome-')); });
@@ -44,7 +48,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     const content = fs.readFileSync(skillPath(), 'utf-8');
     expect(content).toMatch(/^---\nname: normal-chrome-browser\n/);
     expect(content).toContain('user_invocable: "true"');
-    expect(content).toContain('instar_skill_version: "2"');
+    expect(content).toContain('instar_skill_version: "3"');
     expect(content).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
   });
 
@@ -70,7 +74,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     expect(content).toContain('ERR wsl-only');
     expect(content).toContain('ERR macos-only');
     expect(content).toContain('ERR windows-only');
-    expect(content).toContain('ACT-138');
+    expect(content).toContain('### Linux (xdrive.sh, the agent display)');
     expect(content).not.toContain('**macOS only.**');
     // Both driver sections, the marker heading, the capability note, invoke named, the forward-window decision.
     expect(content).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
@@ -108,10 +112,20 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     expect(NORMAL_CHROME_BROWSER_SKILL_CONTENT).not.toContain('bridge-failed');
   });
 
+  it('every ERR token the Windows driver itself can emit is in the skill text, with its blank-page note', () => {
+    const driver = fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'), 'utf-8');
+    const tokens = [...new Set([...driver.matchAll(/ERR ([a-z-]+)/g)].map(m => m[1]))];
+    expect(tokens).toContain('page-not-rendering');
+    for (const t of tokens) expect(NORMAL_CHROME_BROWSER_SKILL_CONTENT, t).toContain(`ERR ${t}`);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_SECTION).toContain(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE.startsWith(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_HEADING)).toBe(true);
+    expect(NORMAL_CHROME_BROWSER_WINDOWS_BLANK_PAGE_NOTE).toContain('--disable-features=CalculateNativeWinOcclusion');
+  });
+
   it('the Windows appendix carries the marker, the Windows section and the Linux statement', () => {
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith(NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(true);
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith('## Drivers by operating system')).toBe(true);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_WINDOWS_SECTION.trim());
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('### Linux (no Windows underneath)');
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('Your edited copy of the skill was kept');
   });
 
@@ -135,20 +149,20 @@ describe('installBrowserScripts', () => {
 
   it('writes all five helpers, executable and byte-preserving', () => {
     const written = installBrowserScripts(tmp);
-    expect(written).toEqual([...BROWSER_SCRIPT_NAMES]);
-    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh']);
+    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, 'xdrive-provision.sh']);
+    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'account-page-safety.js', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py']);
     expect(MACOS_BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh']);
     for (const name of BROWSER_SCRIPT_NAMES) {
       const stat = fs.statSync(target(name));
       expect(stat.mode & 0o777).toBe(0o755);
-      expect(fs.readFileSync(target(name))).toEqual(fs.readFileSync(path.join(TEMPLATE_DIR, name)));
+      expect(fs.readFileSync(target(name))).toEqual(name === 'account-page-safety.js' ? Buffer.from(ACCOUNT_PAGE_SAFETY_SCRIPT) : fs.readFileSync(path.join(TEMPLATE_DIR, name)));
     }
   });
 
-  it('ships native-drive.ps1 byte-identical to the live-tested v5 (no BOM, LF)', () => {
+  it('ships native-drive.ps1 byte-identical to the live-tested v6 (no BOM, LF)', () => {
     installBrowserScripts(tmp);
     const bytes = fs.readFileSync(target('native-drive.ps1'));
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(NATIVE_DRIVE_V6_SHA256);
     expect(bytes.slice(0, 3).toString('hex')).not.toBe('efbbbf');
     expect(bytes.includes('\r\n')).toBe(false);
   });
@@ -173,7 +187,7 @@ describe('installBrowserScripts', () => {
 
   it('shipped scripts carry no machine-specific path, site name or account identity', () => {
     for (const name of BROWSER_SCRIPT_NAMES) {
-      const src = fs.readFileSync(path.join(TEMPLATE_DIR, name), 'utf-8');
+      const src = name === 'account-page-safety.js' ? ACCOUNT_PAGE_SAFETY_SCRIPT : fs.readFileSync(path.join(TEMPLATE_DIR, name), 'utf-8');
       expect(src, name).not.toMatch(/\/Users\/|\/home\/|mama_pc|headl|@gmail/i);
     }
   });
@@ -188,6 +202,40 @@ describe('native-drive.ps1 — static checks on the live-tested bytes', () => {
     expect(launch).toContain("'--force-renderer-accessibility'");
     expect(launch).toContain("$ok = '^--(disable-extensions|start-maximized|new-window|window-size=\\d+,\\d+|window-position=-?\\d+,-?\\d+|lang=[A-Za-z-]+)$'");
     expect(launch).toContain('refused: ND_CHROME_FLAGS may only contain allowlisted flags');
+  });
+
+  it('launch always adds the occlusion fix, and ND_CHROME_FLAGS cannot remove or override it', () => {
+    const launch = src.slice(src.indexOf("'launch' {"), src.indexOf("'attach' {"));
+    expect(src).toContain("$OcclusionFix = '--disable-features=CalculateNativeWinOcclusion'");
+    const args = launch.slice(launch.indexOf('$chromeArgs = @('), launch.indexOf(')', launch.indexOf('$chromeArgs = @(')));
+    expect(args).toContain('$OcclusionFix');
+    // The allowlist (same regex syntax in .NET and JS) refuses every --disable-features / --enable-features spelling.
+    const ok = new RegExp('^--(disable-extensions|start-maximized|new-window|window-size=\\d+,\\d+|window-position=-?\\d+,-?\\d+|lang=[A-Za-z-]+)$');
+    for (const f of ['--disable-features=Foo', '--enable-features=CalculateNativeWinOcclusion', '--disable-features=', '-disable-features=X', '/disable-features=X']) expect(ok.test(f), f).toBe(false);
+    expect(ok.test('--disable-extensions')).toBe(true);
+  });
+
+  it('attach warns when the bound Chrome lacks the fix; page reads name a blank site instead of returning Chrome UI', () => {
+    const attach = src.slice(src.indexOf("'attach' {"), src.indexOf("'target' {"));
+    expect(attach.indexOf('Save-Target $A1')).toBeLessThan(attach.indexOf('Test-OcclusionFix $bpid'));
+    expect(attach).toContain('[Console]::Error.WriteLine($OcclusionMissingWarning)');
+    expect(attach).not.toMatch(/Test-OcclusionFix[^\n]*Fail/);
+    const text = src.slice(src.indexOf("'text' {"), src.indexOf("'find' {"));
+    expect(text).toContain('if (-not (Get-PageDocument $t)) {');
+    expect(text).toContain("only Chrome''s own UI was read");
+    expect(src).toContain("$root = if ($scope -eq 'browser') { Get-TargetElement $t } else { Get-PageDocument $t }");
+    expect(src).toContain('$doc = Get-PageDocument $t');
+    const fn = src.slice(src.indexOf('function Get-PageDocument('), src.indexOf('# Search scope:'));
+    // Blank or new tab: the old answer; a site: one recheck after a second, then the named failure.
+    expect(fn.indexOf('if (-not $title) { return $null }')).toBeLessThan(fn.indexOf('Start-Sleep -Milliseconds 1000'));
+    expect(fn.indexOf('Start-Sleep -Milliseconds 1000')).toBeLessThan(fn.indexOf('Fail "ERR page-not-rendering'));
+    expect((fn.match(/Fail "ERR page-not-rendering: /g) || []).length).toBe(2);
+    expect((fn.match(/" 2\n/g) || []).length).toBe(2);
+    // The page title is page-supplied: control characters dropped, length cut, labelled in the message.
+    const title = src.slice(src.indexOf('function Get-PageTitle('), src.indexOf('function Get-PageDocument('));
+    expect(title).toContain("-replace '[\\x00-\\x1f\\x7f]', ''");
+    expect(title).toContain('if ($n.Length -gt 80)');
+    expect(fn).toContain('window title (page-supplied)');
   });
 
   it('every PowerShell input wrapper checks the foreground before its Win32 input call (ordering within each body; SendInput itself is in the C# block)', () => {
@@ -228,10 +276,10 @@ describe('native-drive.ps1 — static checks on the live-tested bytes', () => {
   });
 
   it('is pinned to the reviewed hash in the skill text and the manifest', () => {
-    expect(createHash('sha256').update(fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'))).digest('hex')).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(createHash('sha256').update(fs.readFileSync(path.join(TEMPLATE_DIR, 'native-drive.ps1'))).digest('hex')).toBe(NATIVE_DRIVE_V6_SHA256);
     const manifest = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'scripts/blocking-decision-surfaces-baseline.json'), 'utf-8'));
     const entry = manifest.nonBlocking.find((e: { path: string }) => e.path === 'src/templates/scripts/browser/native-drive.ps1');
-    expect(entry?.sha256).toBe(NATIVE_DRIVE_V5_SHA256);
+    expect(entry?.sha256).toBe(NATIVE_DRIVE_V6_SHA256);
   });
 });
 
@@ -442,7 +490,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     expect(prefs.browser.allow_javascript_apple_events).toBe(true);
     const opened = fs.readFileSync(openLog, 'utf-8');
     expect(opened).toContain('-g -na Google Chrome --args'); // -g: never brings Chrome to the foreground
-    expect(opened).toContain(`--user-data-dir=${dir} HTTPS://example.com`);
+    expect(opened).toContain(`--user-data-dir=${dir} --disable-backgrounding-occluded-windows --disable-renderer-backgrounding HTTPS://example.com`);
     expect(opened).not.toContain('remote-debugging');
   });
 
@@ -484,7 +532,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     stub('uname', 'echo Darwin');
     stub('ps', `echo "  9 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir('p')}"`);
     const log = path.join(tmp, 'osa.log');
-    stub('osascript', `cat >/dev/null; printf '%s\\n' "$JS" >> ${log}; if [ "$MODE" = wrong ]; then echo "\${NONCE}wrong-origin:https://example.com"; else echo "\${NONCE}ok:fine"; fi`);
+    stub('osascript', `cat >/dev/null; printf '%s\\n__CALL_END__\\n' "$JS" >> ${log}; if [ "$MODE" = wrong ]; then echo "\${NONCE}wrong-origin:https://example.com"; else echo "\${NONCE}ok:fine"; fi`);
     const args = ['p', 'document.querySelector("b").click()', 'https://claude.ai'];
     const wrong = run('chrome-js.sh', args, { MODE: 'wrong' });
     expect(wrong.status).toBe(3);
@@ -492,7 +540,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     const right = run('chrome-js.sh', args, { MODE: 'right' });
     expect(right.status).toBe(0);
     expect(right.stdout.trim()).toBe('fine');
-    const sent = fs.readFileSync(log, 'utf-8').trim().split('\n');
+    const sent = fs.readFileSync(log, 'utf-8').split('\n__CALL_END__\n').map(s => s.trim()).filter(Boolean);
     expect(sent).toHaveLength(2); // one Apple Event per call: check and action are never split
     expect(sent[0]).toContain('(location.origin==="https://claude.ai") ? (function(){try{return "nc');
     expect(sent[0]).toContain('eval("document.querySelector(\\"b\\").click()")');
@@ -513,6 +561,43 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
       expect(r.status, body).toBe(code);
       expect(r.stdout.trim().startsWith(out), r.stdout).toBe(true);
     }
+  });
+
+  it('installed Chrome wrapper signals the whole recovery page before eval and permits reviewed actions', () => {
+    stub('uname', 'echo Darwin');
+    stub('ps', `echo "  9 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir('p')}"`);
+    const runner = path.join(tmp, 'browser.cjs');
+    fs.writeFileSync(runner, `const vm=require('node:vm');
+      const text='x'.repeat(12000)+' Your account will be temporarily suspended for 72 hours.';
+      const document={body:{innerText:text,dataset:{}},querySelectorAll:()=>[],createElement:()=>({remove(){}})};
+      const context=vm.createContext({document,location:{href:'https://www.npmjs.com/login',origin:'https://www.npmjs.com'},URL});
+      document.head={appendChild:s=>vm.runInContext(s.textContent,context)};
+      console.log(vm.runInContext(process.env.JS,context));`);
+    stub('osascript', `cat >/dev/null; node '${runner}'`);
+    const blocked = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com']);
+    expect(blocked.status).toBe(0);
+    expect(JSON.parse(blocked.stdout).kind).toBe('account-action-review');
+    expect(blocked.stdout).not.toContain('CALLER EXECUTED');
+    const first = run('chrome-js.sh', ['p', '--read-page', 'https://www.npmjs.com']);
+    expect(first.status).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({ complete: false, nextOffset: 6000 });
+    const last = run('chrome-js.sh', ['p', '--read-page', 'https://www.npmjs.com', '12000']);
+    expect(last.status).toBe(0);
+    expect(JSON.parse(last.stdout)).toMatchObject({ complete: true, nextOffset: null });
+    expect(JSON.parse(last.stdout).text).toContain('temporarily suspended');
+    const bypass = run('chrome-mainworld.sh', ['p', 'R="CALLER EXECUTED"', 'https://www.npmjs.com']);
+    expect(bypass.status).toBe(0);
+    expect(JSON.parse(bypass.stdout).kind).toBe('account-action-review');
+    const fingerprint = JSON.parse(first.stdout).pageFingerprint;
+    const accepted = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', fingerprint, '--review-reason', 'Full page reviewed: this is a read-only support inspection.']);
+    expect(accepted.status).toBe(0);
+    expect(accepted.stdout.trim()).toBe('CALLER EXECUTED');
+    expect(accepted.stderr).toContain('reasonSha256');
+    const mainworldAccepted = run('chrome-mainworld.sh', ['p', 'R="CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', fingerprint, '--review-reason', 'Full page reviewed: read-only support inspection in mainworld.']);
+    expect(mainworldAccepted.status).toBe(0);
+    expect(mainworldAccepted.stdout.trim()).toBe('CALLER EXECUTED');
+    const stale = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', 'old-page', '--review-reason', 'Reviewed the older page']);
+    expect(JSON.parse(stale.stdout).kind).toBe('account-action-review');
   });
 
   it('chrome-js.sh reports NO_PID when that profile is not open', () => {
@@ -568,6 +653,19 @@ esac`;
     const envBase = () => ({ ND_POWERSHELL: '/nonexistent', STUB_LAD: lad, STUB_DIR: stubDir });
     const logRows = () => fs.readFileSync(path.join(home, '.instar', 'logs', 'normal-chrome-browser.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
     const nd = (args: string[], env: Record<string, string> = {}, input = '') => run('ndrive.sh', args, { ...envBase(), ...env }, input);
+    // These two refusal cases must hide the real WSL binaries on a WSL host.
+    // Keep only the shell utilities needed to reach and log the guard.
+    const guardedPath = () => {
+      const toolsDir = path.join(tmp, 'guarded-bin');
+      fs.mkdirSync(toolsDir, { recursive: true });
+      for (const name of ['basename', 'tr', 'shasum', 'cut', 'cksum', 'mkdir', 'dirname', 'date']) {
+        const target = path.join(toolsDir, name);
+        const source = [`/usr/bin/${name}`, `/bin/${name}`].find((candidate) => fs.existsSync(candidate));
+        if (!source) throw new Error(`Missing system utility for guarded PATH: ${name}`);
+        if (!fs.existsSync(target)) fs.symlinkSync(source, target);
+      }
+      return `${bin}:${toolsDir}`;
+    };
     /** The wrapper's per-agent tag: the home's basename plus 8 hex of the full (physical) home path. */
     const agentTag = () => `${path.basename(home)}-${createHash('sha256').update(home).digest('hex').slice(0, 8)}`;
 
@@ -586,7 +684,7 @@ esac`);
 
     it('refuses to run without wslpath (ERR wsl-only, exit 2): Git Bash is untested', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'wslpath'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: `${bin}:/usr/bin:/bin` });
+      const r = run('ndrive.sh', ['target'], { ...envBase(), PATH: guardedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR wsl-only');
       expect(logRows().pop()).toMatchObject({ cmd: 'target', exit: 2, via: 'none' });
@@ -594,7 +692,7 @@ esac`);
 
     it('refuses to run where no powershell.exe is reachable (ERR windows-only, exit 2) and logs the refusal', () => {
       SafeFsExecutor.safeRmSync(path.join(bin, 'powershell.exe'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      const r = nd(['target']);
+      const r = nd(['target'], { PATH: guardedPath() });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('ERR windows-only');
       expect(r.stderr).toContain('chrome-launch.sh');
@@ -1283,14 +1381,15 @@ esac`);
       const ok = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'gone' });
       expect(ok.status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
+      // The timed wait was checked above; these status probes use the immediate path.
       // a start-less record is decided by the probe (a process newer than the record is gone; the stub says alive)
       fs.writeFileSync(survivor, `4242 - ${Math.floor(Date.now() / 1000) - 1000}\n`);
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'gone' }).status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
       // a record WITH a start time does not expire: identity is checked
       fs.writeFileSync(survivor, `4242 133000000000000000 ${Math.floor(Date.now() / 1000) - 1000}\n`);
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       SafeFsExecutor.safeRmSync(survivor, { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
     });
 
@@ -1326,7 +1425,7 @@ esac`);
       fs.writeFileSync(path.join(left, 'pid.txt'), '5151\r\n');
       fs.writeFileSync(path.join(left, 'pidstart.txt'), '133000000000000001\r\n');
       fs.writeFileSync(path.join(left, 'verdict.txt'), 'driver-still-running\r\n');
-      const r = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' });
+      const r = nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('outlived its timeout');
       expect(fs.readFileSync(survivor, 'utf-8')).toMatch(/^5151 133000000000000001 \d+\n$/);
@@ -1342,7 +1441,7 @@ esac`);
       expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive' }).status).toBe(0);
       expect(fs.existsSync(survivor)).toBe(false);
       SafeFsExecutor.safeRmSync(path.join(left, 'rc.txt'), { force: true, operation: 'tests/unit/normal-chrome-browser-skill.test.ts' });
-      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '1' }).status).toBe(2);
+      expect(nd(['target'], { STUB_SESSION: '1', STUB_SURVIVOR: 'alive', ND_LOCK_WAIT: '0' }).status).toBe(2);
       expect(fs.existsSync(survivor)).toBe(true);
       // the registration writes the verdict file
       nd(['target'], { STUB_SESSION: '0', STUB_SURVIVOR: 'gone' });

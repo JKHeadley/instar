@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "message-origin-all-platforms",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-03T21:36:59.179Z",
+  "artifactPath": "upgrades/side-effects/message-origin-all-platforms.md",
+  "artifactSha256": "8635ce43df370801fac452289540d11c8c7fafaf7feedb6a3a1b7613996e329f",
+  "specPath": "docs/specs/message-origin-all-platforms.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-03T21-36-48-673Z-message-origin-all-platforms.json",
+    ".instar/instar-dev-traces/2026-11-03T21-36-27-276Z-message-origin-all-platforms-7bcc5d95.json",
+    "src/server/routes.ts",
+    "tests/e2e/message-origin-all-platforms-alive.test.ts",
+    "tests/integration/message-origin-all-platforms.test.ts",
+    "upgrades/side-effects/message-origin-all-platforms.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix found by the integration test in the same change: the Slack footer credential check read an object as a boolean.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

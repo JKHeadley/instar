@@ -17,18 +17,23 @@
  * it handles restarts and this watcher should not be started.
  */
 
+import { describeRestartRequester, recordRestartRequest } from './restartRequestAttribution.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { markPlannedRestartDeferred, plannedRestartVerifyState } from './PlannedRestartVerifyGuard.js';
 
 export interface RestartRequest {
   requestedAt: string;
   requestedBy: string;
+  /** Why, in the writer's words (optional). */
+  reason?: string;
   /** Absent for a restart that applies a setting rather than an update (connect-enable, money-layer enable). */
   targetVersion?: string;
   previousVersion?: string;
   plannedRestart?: boolean;
+  bypassHolds?: boolean;
   expiresAt?: string;
   pid?: number;
 }
@@ -45,6 +50,12 @@ export interface ForegroundRestartWatcherConfig {
   exitOnRestart?: boolean;
   /** Process exit code. Default: 0. */
   exitCode?: number;
+  /**
+   * planned-restart-keeps-lead §1 step 3 — before this consumer acts on a request, give the lease
+   * holder one chance to persist a window renewal for it (null = nothing to wait for). Awaited once
+   * per request; the file and the ledger are re-read afterwards.
+   */
+  beforeConsume?: (request: RestartRequest) => Promise<unknown> | null;
 }
 
 export class ForegroundRestartWatcher extends EventEmitter {
@@ -52,6 +63,10 @@ export class ForegroundRestartWatcher extends EventEmitter {
   private interval: ReturnType<typeof setInterval> | null = null;
   private flagPath: string;
   private isShuttingDown = false;
+  private deferredRestartRequestedAt: string | null = null;
+  /** The request whose `beforeConsume` wait ran (or is running); the same request is not waited for twice. */
+  private continuityAwaitedFor: string | null = null;
+  private awaitingContinuity = false;
 
   constructor(config: ForegroundRestartWatcherConfig) {
     super();
@@ -80,13 +95,43 @@ export class ForegroundRestartWatcher extends EventEmitter {
    * Check for a restart-requested signal. If found and valid, trigger shutdown.
    */
   private async check(): Promise<void> {
-    if (this.isShuttingDown) return;
+    if (this.isShuttingDown || this.awaitingContinuity) return;
 
     try {
       if (!fs.existsSync(this.flagPath)) return;
 
       const raw = fs.readFileSync(this.flagPath, 'utf-8');
-      const data: RestartRequest = JSON.parse(raw);
+      let data: RestartRequest = JSON.parse(raw);
+
+      // planned-restart-keeps-lead §1 step 3 — one bounded wait per request for the holder's
+      // window renewal, with the guard held so a second tick cannot consume meanwhile. Afterwards
+      // the file is re-read: gone (withdrawn, or taken by the supervisor) means nothing to do here.
+      const key = `${data.requestedAt}|${data.requestedBy}`;
+      if (this.config.beforeConsume && this.continuityAwaitedFor !== key) {
+        this.continuityAwaitedFor = key;
+        const wait = this.config.beforeConsume(data);
+        if (wait) {
+          this.awaitingContinuity = true;
+          try { await wait; } catch { /* @silent-fallback-ok: the wait is a courtesy to the lease; the restart proceeds */ }
+          finally { this.awaitingContinuity = false; }
+          if (this.isShuttingDown) return;
+          if (!fs.existsSync(this.flagPath)) { this.continuityAwaitedFor = null; return; }
+          data = JSON.parse(fs.readFileSync(this.flagPath, 'utf-8')) as RestartRequest;
+          if (`${data.requestedAt}|${data.requestedBy}` !== key) { this.continuityAwaitedFor = null; return; } // a different request: judged on the next tick
+        }
+      }
+
+      // The foreground consumer races the supervisor for the same flag. Both
+      // must honor the active full-suite child before either consumes it.
+      if (plannedRestartVerifyState(this.config.stateDir, data).hold
+        && markPlannedRestartDeferred(this.config.stateDir, data)) {
+        if (this.deferredRestartRequestedAt !== data.requestedAt) {
+          this.deferredRestartRequestedAt = data.requestedAt;
+          console.log('[ForegroundRestartWatcher] Planned restart deferred for active local verification');
+        }
+        return;
+      }
+      this.deferredRestartRequestedAt = null;
 
       // Check TTL — but DON'T silently ignore expired requests.
       // In foreground mode, the restart is critical. If the flag expired,
@@ -97,9 +142,11 @@ export class ForegroundRestartWatcher extends EventEmitter {
         console.warn(`[ForegroundRestartWatcher] Restart request EXPIRED but still acting on it — stale process is worse than late restart`);
       }
 
+      const requester = describeRestartRequester(data);
+      recordRestartRequest(path.dirname(path.dirname(this.flagPath)), data, 'foreground-watcher');
       console.log(data.targetVersion
-        ? `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} for v${data.targetVersion} (from v${data.previousVersion})`
-        : `[ForegroundRestartWatcher] Restart requested by ${data.requestedBy} (no version change)`);
+        ? `[ForegroundRestartWatcher] Restart requested by ${requester.label} for v${data.targetVersion} (from v${data.previousVersion})`
+        : `[ForegroundRestartWatcher] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${data.reason.slice(0, 200)}` : ''})`);
 
       // Clear the flag to prevent re-triggering on next startup
       try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:102' }); } catch { /* ignore */ }

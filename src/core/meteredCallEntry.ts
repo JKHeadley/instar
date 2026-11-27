@@ -17,14 +17,22 @@
  * implementer would naturally place the brake inside the machinery it is meant
  * to survive.
  *
- * ORDER, and each step's reason:
+ * ORDER, and each step's reason (gemini-payg §2/§5 extends it):
+ *   0. DEDUPE   — an authenticated callId resubmission returns the existing
+ *                 call's state, never refused by a cap, freeze or disabled
+ *                 caller: the call was already admitted and paid for.
  *   1. FREEZE   — the emergency stop, honoured regardless of intent, config,
  *                 lifecycle state or the single-instance lock. Read from DISK,
  *                 so a freeze written by a process that does NOT hold the lock
  *                 stops spend in the process that DOES (T34).
  *   2. SERVING  — the live enable check. `servingReady`, never `intentEnabled`:
  *                 asking for the layer on is not permission to spend (MLE-2).
- *   3. GATE     — caps, prices, reservation. Unchanged.
+ *   3. CALLER   — membership in the door's `meteredCallers` (and E3 component
+ *                 membership); a missing caller refuses `not-allowlisted`.
+ *   4. RELEASE  — `armed-pending-proof` admits only the release-proof call,
+ *                 which needs a recorder-minted marker request input can never set.
+ *   5. GATE     — per-call ceiling, caps, shares, prices, reservation, with the
+ *                 policy re-read inside the reservation lock.
  *
  * WHERE THE READINESS PROBE ENTERS, and why that is not the bypass review
  * killed five times. The probe calls `MeteredSpendGate.admit` DIRECTLY, one
@@ -50,7 +58,22 @@
  */
 
 import type { RoutingSpendCapsStore } from './RoutingSpendCapsStore.js';
-import { MoneyGateRefusal, type AdmitRequest, type AdmitResult } from './MeteredSpendGate.js';
+import {
+  MoneyGateRefusal,
+  callerAdmissionRefusal,
+  callIdConflict,
+  type AdmitRequest,
+  type AdmitResult,
+  type ReleaseProofMarker,
+} from './MeteredSpendGate.js';
+import type { ReservationView } from './MeteredSpendLedger.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+
+/** Internal-only admission inputs — NEVER derived from request input. */
+export interface MeteredCallInternal {
+  /** Minted by the release-proof recorder only (slice E). */
+  proofMarker?: ReleaseProofMarker;
+}
 
 export interface MeteredCallEntryDeps {
   /** Read DIRECTLY, ahead of the money layer — never through it. */
@@ -58,7 +81,13 @@ export interface MeteredCallEntryDeps {
   /** The live enable predicate. Absent ⇒ refuse: an unanswerable question is not a yes. */
   servingReady: (() => boolean) | null;
   /** The constructed gate. Absent ⇒ refuse. */
-  gate: { admit(req: AdmitRequest): Promise<AdmitResult> } | null;
+  gate: {
+    admit(req: AdmitRequest, proofMarker?: ReleaseProofMarker): Promise<AdmitResult>;
+    /** Step-0 dedupe lookup (folded from the ledger, so it survives restart). */
+    lookupCall?(callId: string): ReservationView | null;
+    /** Preflight headroom (§5 step 6). */
+    preflightHeadroom?(req: Pick<AdmitRequest, 'door' | 'caller'>): MoneyGateRefusal | null;
+  } | null;
   /** Resolve door → keyRef for the freeze read, without entering the gate. */
   resolveKeyRef?: (door: string) => string | null;
 }
@@ -88,7 +117,55 @@ export function frozenKeyForDoor(capsStore: RoutingSpendCapsStore | null, door: 
  * Admit a metered call through the full entry path. Every refusal is a
  * `MoneyGateRefusal`, so callers handle one error type.
  */
-export async function admitMeteredCall(deps: MeteredCallEntryDeps, req: AdmitRequest): Promise<AdmitResult> {
+export async function admitMeteredCall(deps: MeteredCallEntryDeps, req: AdmitRequest, internal?: MeteredCallInternal): Promise<AdmitResult> {
+  try {
+    const admitted = await admitThroughEntryPath(deps, req, internal);
+    featureEvidence.record('routingSpend.money', {
+      kind: 'fired',
+      reason: 'metered-call-admitted',
+      context: { door: req.door, modelId: req.modelId, keyRef: admitted.keyRef, reserveUsd: admitted.reserveUsd, committedDayUsd: admitted.committedDayUsd },
+    });
+    return admitted;
+  } catch (err) {
+    const refusal = err instanceof MoneyGateRefusal ? err : null;
+    featureEvidence.record('routingSpend.money', {
+      kind: 'error',
+      reason: refusal ? `refused: ${refusal.reason}` : 'admission-failed',
+      context: { door: req.door, modelId: req.modelId, keyRef: refusal?.keyRef ?? null },
+    });
+    throw err;
+  }
+}
+
+/**
+ * The checks that must pass BEFORE the key is used at all (§5 step 1): dedupe,
+ * freeze, live, caller, release state — then, when the gate offers it, the
+ * headroom preflight (committed already meets a limit ⇒ refuse without paying
+ * for a token count). `deduped` means the call already exists: skip the token
+ * count and the send, and resume by callId.
+ */
+export type MeteredPreflight = { kind: 'proceed' } | { kind: 'deduped'; reservation: ReservationView };
+
+export async function preflightMeteredCall(deps: MeteredCallEntryDeps, req: AdmitRequest, internal?: MeteredCallInternal): Promise<MeteredPreflight> {
+  const dedupe = dedupeLookup(deps, req);
+  if (dedupe) return { kind: 'deduped', reservation: dedupe };
+  entryChecks(deps, req, internal);
+  const headroom = deps.gate?.preflightHeadroom?.(req) ?? null;
+  if (headroom) throw headroom;
+  return { kind: 'proceed' };
+}
+
+function dedupeLookup(deps: MeteredCallEntryDeps, req: AdmitRequest): ReservationView | null {
+  if (!req.callId || !deps.gate?.lookupCall) return null;
+  const existing = deps.gate.lookupCall(req.callId);
+  if (!existing) return null;
+  const conflict = callIdConflict(req, existing);
+  if (conflict) throw conflict;
+  return existing;
+}
+
+/** Steps 1–4 (freeze, live, caller, release state). Throws MoneyGateRefusal. */
+function entryChecks(deps: MeteredCallEntryDeps, req: AdmitRequest, internal?: MeteredCallInternal): void {
   // 1) FREEZE — before anything else, and independent of the money layer.
   const freeze = frozenKeyForDoor(deps.capsStore, req.door);
   if (freeze.unreadable) {
@@ -106,9 +183,29 @@ export async function admitMeteredCall(deps: MeteredCallEntryDeps, req: AdmitReq
     throw new MoneyGateRefusal('not-live', 'money-layer-disabled: the spending-control layer is not up and enforcing on this machine', undefined, req.door);
   }
 
-  // 3) The gate: caps, prices, reservation.
+  // 3+4) Caller membership (E3 components), then release state. The caps store
+  // was readable a moment ago (step 1); a read failure here still fails closed.
+  let file;
+  try {
+    file = deps.capsStore!.read();
+  } catch {
+    throw new MoneyGateRefusal('invalid-cap', 'the caps store could not be read for the caller check — refusing (fail closed)', undefined, req.door);
+  }
+  const refusal = callerAdmissionRefusal(file, req, internal?.proofMarker);
+  if (refusal) throw refusal;
+}
+
+async function admitThroughEntryPath(deps: MeteredCallEntryDeps, req: AdmitRequest, internal?: MeteredCallInternal): Promise<AdmitResult> {
+  // 0) DEDUPE — an already-admitted call is returned through the gate's own
+  // dedupe (which never re-checks caps, freeze or caller).
+  if (deps.gate && dedupeLookup(deps, req)) {
+    return deps.gate.admit(req, internal?.proofMarker);
+  }
+  entryChecks(deps, req, internal);
+
+  // 5) The gate: per-call ceiling, caps, shares, prices, reservation.
   if (!deps.gate) {
     throw new MoneyGateRefusal('not-live', 'the metered spend gate is not constructed on this machine', undefined, req.door);
   }
-  return deps.gate.admit(req);
+  return deps.gate.admit(req, internal?.proofMarker);
 }

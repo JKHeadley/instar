@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { SubscriptionLoginLedger, normalizeCellId } from '../../src/core/SubscriptionLoginLedger.js';
+import { SUBSCRIPTION_LOGIN_CAUSE_CLASSES, SubscriptionLoginLedger, normalizeCellId } from '../../src/core/SubscriptionLoginLedger.js';
 
 const dirs: string[] = [];
 function temp(): string {
@@ -155,5 +156,96 @@ describe('SubscriptionLoginLedger', () => {
     expect(restarted.listEpisodes({ accountId: 'acct-0' })[0]).toMatchObject({
       outcome: 'cancelled', closedAt: '2026-08-27T03:00:00.000Z',
     });
+  });
+});
+
+describe('SubscriptionLoginLedger.supersedeCause (codex-device-limit-tripwire §5)', () => {
+  function events(ledger: SubscriptionLoginLedger): Array<{ kind: string; causeClass: string | null; fromCauseClass: string | null; episodeId: number | null; ts: string }> {
+    const db = new Database(ledger.dbPath, { readonly: true });
+    try {
+      return db.prepare('SELECT kind,causeClass,fromCauseClass,episodeId,ts FROM events ORDER BY id').all() as never;
+    } finally { db.close(); }
+  }
+
+  it('accepts codex-device-limit as a cause class in recordStatus', () => {
+    expect(SUBSCRIPTION_LOGIN_CAUSE_CLASSES).toContain('codex-device-limit');
+    const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
+    const opened = ledger.recordStatus({
+      accountId: 'codex-1', status: 'needs-reauth', at: '2026-10-31T20:00:00.000Z',
+      causeClass: 'codex-device-limit', corroboration: 'exchange-corroborated',
+    });
+    expect(opened.changed).toBe(true);
+    expect(ledger.listEpisodes()[0]).toMatchObject({ causeClass: 'codex-device-limit', closedAt: null });
+    ledger.close();
+  });
+
+  it('re-labels the open episode in place, appends cause-superseded {from,to,at}, and is not a re-login', () => {
+    const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
+    const opened = ledger.recordStatus({
+      accountId: 'codex-1', status: 'needs-reauth', at: '2026-10-31T20:00:00.000Z',
+      causeClass: 'cli-signed-out-auth-refused', corroboration: 'exchange-corroborated',
+    });
+    expect(ledger.supersedeCause('codex-1', 'codex-device-limit', '2026-10-31T20:06:00.000Z')).toBe('superseded');
+    const episodes = ledger.listEpisodes();
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]).toMatchObject({
+      id: opened.episodeId, causeClass: 'codex-device-limit', closedAt: null, outcome: null,
+      openedAt: '2026-10-31T20:00:00.000Z',
+    });
+    const rows = events(ledger);
+    expect(rows.map((row) => row.kind)).toEqual(['relogin-required', 'cause-superseded']);
+    expect(rows[1]).toMatchObject({
+      causeClass: 'codex-device-limit', fromCauseClass: 'cli-signed-out-auth-refused',
+      episodeId: opened.episodeId, ts: '2026-10-31T20:06:00.000Z',
+    });
+    expect(rows.some((row) => row.kind === 'relogin-resolved')).toBe(false);
+    // Login history counts episodes: still one, open, none resolved.
+    expect(episodes.filter((row) => row.outcome === 'resolved')).toHaveLength(0);
+    ledger.close();
+  });
+
+  it('is unchanged when the open episode already carries that cause', () => {
+    const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
+    ledger.recordStatus({
+      accountId: 'codex-1', status: 'needs-reauth', at: '2026-10-31T20:00:00.000Z', causeClass: 'codex-device-limit',
+    });
+    expect(ledger.supersedeCause('codex-1', 'codex-device-limit')).toBe('unchanged');
+    expect(events(ledger).map((row) => row.kind)).toEqual(['relogin-required']);
+    ledger.close();
+  });
+
+  it('is a no-op without an open episode (none, or only a closed one)', () => {
+    const ledger = new SubscriptionLoginLedger({ stateDir: temp(), machineId: 'm_local', writeEnabled: true });
+    expect(ledger.supersedeCause('codex-1', 'codex-device-limit')).toBe('no-open-episode');
+    ledger.recordStatus({ accountId: 'codex-1', status: 'needs-reauth', at: '2026-10-31T20:00:00.000Z', causeClass: 'exchange-failed' });
+    ledger.recordStatus({ accountId: 'codex-1', status: 'active', at: '2026-10-31T20:10:00.000Z' });
+    expect(ledger.supersedeCause('codex-1', 'codex-device-limit')).toBe('no-open-episode');
+    expect(ledger.listEpisodes()[0]).toMatchObject({ causeClass: 'exchange-failed', outcome: 'resolved' });
+    expect(events(ledger).some((row) => row.kind === 'cause-superseded')).toBe(false);
+    ledger.close();
+  });
+
+  it('refuses to write on a read-only ledger and rejects an unknown cause', () => {
+    const dir = temp();
+    const writer = new SubscriptionLoginLedger({ stateDir: dir, machineId: 'm_local', writeEnabled: true });
+    expect(() => writer.supersedeCause('codex-1', 'not-a-cause' as never)).toThrow('invalid-cause-class');
+    writer.close();
+    const reader = new SubscriptionLoginLedger({ stateDir: dir, machineId: 'm_local', writeEnabled: false });
+    expect(() => reader.supersedeCause('codex-1', 'codex-device-limit')).toThrow('subscription-login-ledger-readonly');
+    reader.close();
+  });
+
+  it('adds the fromCauseClass column to a ledger created before it existed', () => {
+    const dir = temp();
+    const first = new SubscriptionLoginLedger({ stateDir: dir, machineId: 'm_local', writeEnabled: true });
+    first.recordStatus({ accountId: 'codex-1', status: 'needs-reauth', at: '2026-10-31T20:00:00.000Z', causeClass: 'exchange-failed' });
+    first.close();
+    const raw = new Database(first.dbPath);
+    raw.exec('ALTER TABLE events DROP COLUMN fromCauseClass');
+    raw.close();
+    const reopened = new SubscriptionLoginLedger({ stateDir: dir, machineId: 'm_local', writeEnabled: true });
+    expect(reopened.supersedeCause('codex-1', 'codex-device-limit')).toBe('superseded');
+    expect(events(reopened)[1]).toMatchObject({ fromCauseClass: 'exchange-failed' });
+    reopened.close();
   });
 });

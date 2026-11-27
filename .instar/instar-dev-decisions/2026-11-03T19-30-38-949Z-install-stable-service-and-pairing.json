@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-03T19:30:38.949Z",
+  "slug": "install-stable-service-and-pairing",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 373,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/install.ts",
+      "src/commands/setup.ts",
+      "src/core/PostUpdateMigrator.ts"
+    ],
+    "addedLines": 296,
+    "deletedLines": 77
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-03T22:46:43.316Z",
+  "slug": "reconcile-last-applied-version",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AutoUpdater.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "lastAppliedVersion only ever had one writer, the apply success branch; any other landing route left it stale."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

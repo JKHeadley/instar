@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-17T20:17:34.098Z",
+  "slug": "document-decisions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 20,
+  "loc": 834,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MobilePush.ts",
+      "src/core/types.ts",
+      "src/data/awareness/document-decisions.md",
+      "src/documents/access.ts",
+      "src/documents/decisions.ts",
+      "src/documents/docpageAuth.ts",
+      "src/documents/fold.ts",
+      "src/documents/originCheck.ts",
+      "src/documents/rows.ts",
+      "src/documents/service.ts",
+      "src/documents/store.ts",
+      "src/documents/sync.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/documentPageRoutes.ts",
+      "src/server/documentRoutes.ts",
+      "src/server/memorySessionGuard.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/needsRoutes.ts"
+    ],
+    "addedLines": 807,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

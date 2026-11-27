@@ -2,6 +2,8 @@
 /**
  * safe-merge — merge a PR ONLY after every check (incl. the e2e job) is green.
  *
+ * Governed by: One Constitution, Two Books Aligned (it refuses a rule-book change with no declared counterpart).
+ *
  * Why: we merge with `gh pr merge --admin` to jump the hot-branch queue, but
  * `--admin` BYPASSES branch-protection's required-checks enforcement — which is
  * how PR #381 merged while the `E2E Tests` job was red and turned main red for
@@ -28,11 +30,9 @@
  * Usage:  node scripts/safe-merge.mjs <PR#> [--auto|--admin] [--squash|--merge|--rebase]
  *           [--repo <owner/name>] [--delete-branch] [--deadline-ms <n>]
  *
- *   --auto  PREFERRED. Arms GitHub native auto-merge and returns immediately —
- *           GitHub merges the instant every required check passes, enforcing
- *           branch protection itself (no --admin bypass) and never timing out.
- *           Requires "Allow auto-merge" enabled on the repo. Exit 5 = armed,
- *           exit 0 = merged immediately (checks were already green).
+ *   --auto  PREFERRED. Defers while CI is pending, then synchronously merges
+ *           the verified head once the full code-pinned CI floor is green.
+ *           It never arms GitHub's weaker native auto-merge policy.
  *   --admin Legacy synchronous path: polls for green, re-imposes the required
  *           contexts that --admin would bypass, then merges. Use only when the
  *           repo has auto-merge disabled.
@@ -55,8 +55,10 @@ import { checkPrDescriptionEli16 } from './eli16-pr-description-check.mjs';
 import { evaluateDecisionAuditPresence } from './decision-audit-presence-check.mjs';
 import { checkReleaseFragment } from './check-release-fragment.mjs';
 import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
-import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles } from './local-verify-floor.mjs';
+import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles, codeOwnerApprovedAtHead } from './local-verify-floor.mjs';
 import { isTracePath } from './lib/instar-dev-trace.mjs';
+import { pairingRefusal } from './check-constitution-pairing.mjs';
+import { resolveReviewerLogins, confirmedRequested } from './pr-reviewer-request.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -193,10 +195,8 @@ export function parseArgs(argv) {
     throw new UsageError(`unknown flag: ${a} (strict argv — see --capabilities for the contract)`);
   }
   if (!out.capabilities && out.pr === null) throw new UsageError('a PR number is required');
-  // --auto (native GitHub auto-merge: GitHub enforces every required check
-  // before merging) and --admin (bypass-then-re-impose) are contradictory
-  // strategies — refuse the incoherent combo rather than silently pick one.
-  if (out.auto && out.admin) throw new UsageError('--auto and --admin are mutually exclusive: --auto relies on GitHub native required-check enforcement, --admin bypasses it');
+  // These are distinct merge floors, so the caller must choose one.
+  if (out.auto && out.admin) throw new UsageError('--auto and --admin are mutually exclusive merge strategies');
   return out;
 }
 
@@ -209,11 +209,12 @@ export function capabilities() {
       'strict-argv', 'repo-param', 'json-checks', 'head-pinning',
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
-      'native-auto-merge', 'auto-arm-unavailable-detection',
+      'ci-floor-sync-merge', 'pending-check-deferral',
       'approval-required-refusal', 'request-review-from', 'local-floor', 'attempt-token',
+      'non-main-base-refusal',
     ],
     floorModes: [...MERGE_FLOOR_MODES],
-    exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
+    exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4 },
   };
 }
 
@@ -474,7 +475,13 @@ export function evaluateLocalPredicate(a) {
 export function verifyRequestOutcome(post) {
   const b = post?.body;
   if (!post || !b || typeof b !== 'object') return null;
-  if (b.ok === true && typeof b.status === 'string') return b.status;
+  if (b.ok === true && typeof b.status === 'string') {
+    // The main-red hold (CMT-1033): the PR is queued but will not start while `main` fails a
+    // check it does not fix; say which check, and which PR is already fixing it.
+    const h = b.hold;
+    if (h && typeof h === 'object' && typeof h.detail === 'string') return `${b.status} (held: ${h.detail.slice(0, 400)})`;
+    return b.status;
+  }
   if (b.ok === false && typeof b.code === 'string') return b.code;
   return null;
 }
@@ -566,6 +573,43 @@ export async function selectSafeMergeFloor({ repo, view, agent, override, server
 }
 
 /**
+ * Does `--auto` take the Actions-floor path? Only when the caller asked for
+ * `--auto` AND the selected floor is `actions`. Under the `local` floor the
+ * Actions matrix is not the gate (ci.yml skips the heavy jobs on pull requests
+ * since 2026-11-21), so `--auto` falls through to the local path. Pure.
+ */
+export function autoTakesActionsFloor(args, sel) {
+  return Boolean(args?.auto) && sel?.floor !== 'local';
+}
+
+/**
+ * Read the agent's config and server once and select the floor for this merge.
+ * An unreadable config without the `actions` override is the local floor with
+ * an unmeasurable refusal (never a silent fall-back to Actions).
+ */
+export async function resolveFloorSelection({ repo, view }) {
+  const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
+  let agent = null;
+  let configError = null;
+  try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
+  const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
+  let token = agent?.inlineToken ?? null;
+  let tokenTried = false;
+  const serverGet = async (p) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerGet({ port: agent?.port ?? null, token })(p);
+  };
+  const serverPost = async (p, body) => {
+    if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
+    return makeServerPost({ port: agent?.port ?? null, token })(p, body);
+  };
+  const sel = configError && !override
+    ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
+    : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+  return { sel, agent, serverGet, serverPost };
+}
+
+/**
  * The §3 predicate's inputs, gathered fresh (server index + GitHub), then
  * judged by `evaluateLocalPredicate`. Any read failure is unmeasurable.
  *
@@ -631,8 +675,18 @@ export async function checkLocalFloor({ repo, pr, pinnedHead, status, agent, ser
 // gh invocation layer (sync is fine — this is a standalone CLI, not server code)
 // ---------------------------------------------------------------------------
 
+/**
+ * Output cap for one gh call. Node's default (1 MiB) is smaller than GitHub's answer for a
+ * large PR (the files list of a 150-file PR with patches; a long review history), and
+ * spawnSync then fails with ENOBUFS: the precheck could not read its own answer and the
+ * merge was refused `contexts-unverifiable` three times running (PR 2900 on 2026-11-08,
+ * PR 3053 on 2026-11-15, each green and authorized). 64 MiB is far above any real answer
+ * and still bounded.
+ */
+export const GH_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
 function gh(args, { allowFail = false } = {}) {
-  const r = spawnSync('gh', args, { encoding: 'utf-8' });
+  const r = spawnSync('gh', args, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   if (r.error) throw new Error(`gh spawn failed: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
     throw new Error(`gh ${args.slice(0, 3).join(' ')} exited ${r.status}: ${(r.stderr || '').slice(0, 400)}`);
@@ -649,6 +703,38 @@ function ghJson(args) {
   }
 }
 
+const VERCEL_FORK_DESCRIPTION = 'Authorization required to deploy.';
+const VERCEL_FORK_TARGET_PREFIX = 'https://vercel.com/git/authorize?';
+
+/**
+ * Vercel refuses to build a preview for a fork's commit until a team member grants it, and reports that
+ * as a failed status. Nothing was built or tested, so it says nothing about the change, and every fork
+ * PR (all feedback executor PRs) would otherwise be refused forever. Drop that one row only when the PR
+ * is a verified fork and every Vercel status on the head is exactly that refusal; anything else about
+ * a Vercel row, such as a real build failure, still refuses.
+ */
+export function dropForkVercelAuthorizationRefusal(rows, { isCrossRepository, statuses }) {
+  if (isCrossRepository !== true) return rows;
+  const vercel = (statuses ?? []).filter((st) => st?.context === 'Vercel');
+  const onlyRefusal = vercel.length > 0 && vercel.every((st) => st.state === 'failure'
+    && st.description === VERCEL_FORK_DESCRIPTION
+    && typeof st.target_url === 'string' && st.target_url.startsWith(VERCEL_FORK_TARGET_PREFIX));
+  if (!onlyRefusal) return rows;
+  // A commit status has no workflow. A GitHub Actions job that happens to be named Vercel does, and stays red.
+  return rows.filter((row) => !(String(row?.name ?? '') === 'Vercel' && !row?.workflow && String(row?.bucket ?? '').toLowerCase() === 'fail'));
+}
+
+function fetchHeadStatusDetails(repo, headSha) {
+  return ghJson(['api', `repos/${repo}/commits/${headSha}/status?per_page=100`])?.statuses ?? [];
+}
+
+function checksWithoutForkVercelRefusal(rows, view, repo, headSha) {
+  if (view?.isCrossRepository !== true || !rows.some((row) => String(row?.name ?? '') === 'Vercel')) return rows;
+  const kept = dropForkVercelAuthorizationRefusal(rows, { isCrossRepository: true, statuses: fetchHeadStatusDetails(repo, headSha) });
+  if (kept.length !== rows.length) console.error('safe-merge: ignoring Vercel "Authorization required to deploy" on this fork PR; nothing was built.');
+  return kept;
+}
+
 function fetchChecksRows(pr, repo) {
   // gh pr checks exits non-zero when checks are failing/pending; capture either way.
   // The run times are what lets classifyChecks keep only the latest run per name.
@@ -658,13 +744,13 @@ function fetchChecksRows(pr, repo) {
 
 /** gh's answer for a head GitHub has not registered any check run on yet (e.g. right after a push). */
 const NO_CHECKS_REPORTED_RE = /no checks reported/i;
+export class NoChecksReportedError extends Error {}
 
 /**
  * Parse `gh pr checks --json` output. An empty stdout whose stderr says "no checks
  * reported" (seen right after a push, PRs 2296/2314) is ZERO rows — not settled,
- * so the caller keeps waiting (classifyChecks never reads zero rows as green). Any
- * other unparseable, non-array or empty answer throws (retried, then
- * contexts-unverifiable), with gh's stderr in the message so it is diagnosable.
+ * so the caller keeps waiting. Any other unparseable, non-array or empty answer
+ * throws (retried, then contexts-unverifiable).
  */
 export function parseChecksRows(stdout, stderr = '') {
   const err = String(stderr || '').trim().slice(0, 200);
@@ -677,7 +763,7 @@ export function parseChecksRows(stdout, stderr = '') {
     throw new Error(`gh pr checks returned unparseable JSON: ${String(stdout || '').slice(0, 200)}${errNote}`);
   }
   if (!Array.isArray(rows)) throw new Error(`gh pr checks returned a non-array: ${String(stdout || '').slice(0, 200)}${errNote}`);
-  if (rows.length === 0) throw new Error(`gh pr checks returned no checks${errNote}`);
+  if (rows.length === 0) throw new NoChecksReportedError(`gh pr checks returned no checks${errNote}`);
   return rows;
 }
 
@@ -803,8 +889,7 @@ function resolveReviewers(repo, args, view) {
       if (owner) logins = [owner];
     } catch { /* fall through — no default reviewer resolvable */ }
   }
-  const author = view?.author?.login;
-  return logins.filter(l => l && l !== author);
+  return resolveReviewerLogins({ explicit: logins, author: view?.author?.login });
 }
 
 /** Request review from `logins` on the PR. Idempotent at GitHub (re-requesting is a no-op). Never throws. */
@@ -814,13 +899,7 @@ function requestReviewers(repo, pr, logins) {
   for (const l of logins) args.push('-f', `reviewers[]=${l}`);
   const r = gh(args, { allowFail: true });
   if (r.status !== 0) return { requested: [], error: (r.stderr || '').slice(0, 200) };
-  try {
-    const body = JSON.parse(r.stdout);
-    const now = (body?.requested_reviewers ?? []).map(u => u?.login).filter(Boolean);
-    return { requested: logins.filter(l => now.includes(l)), error: null };
-  } catch {
-    return { requested: logins, error: null };
-  }
+  return { requested: confirmedRequested(r.stdout, logins), error: null };
 }
 
 /**
@@ -877,6 +956,32 @@ function fetchCheckRunsWithProducers(repo, headSha) {
  */
 export function noActionsChecksRan(checkRuns) {
   return !(checkRuns ?? []).some(cr => cr?.appSlug === 'github-actions');
+}
+
+/**
+ * The one base a PR may merge into (ACT-053, 2026-11-02). ci.yml runs the
+ * suite only for PRs into main and the required checks are scoped to main, so
+ * a PR into a feature branch (a stacked PR) runs no suite on GitHub yet shows
+ * mergeStateStatus CLEAN — and `--auto` would let GitHub merge it at once
+ * (PR #2202 merged branch-to-branch on 2026-10-19). Stacks still work: review
+ * them in place, then merge the bottom PR into main; the next PR is retargeted
+ * to main and verified there. Running the full suite on every stacked push
+ * would double CI load on an allowance already saturated (see ci.yml).
+ */
+export const MERGE_BASE = 'main';
+
+/** Pure: null when the base is mergeable, else the refusal for it. */
+export function nonMainBaseRefusal(baseRefName) {
+  const base = typeof baseRefName === 'string' ? baseRefName : '';
+  if (base === MERGE_BASE) return null;
+  return {
+    result: 'refused:non-main-base',
+    base: base || null,
+    message: `safe-merge: REFUSING — this PR's base is ${base ? `"${base}"` : 'unreadable'}, not ${MERGE_BASE}. ` +
+      `Nothing runs the test suite on GitHub for a PR into a feature branch, so a green badge there means nothing. ` +
+      `Merge the PR below it into ${MERGE_BASE} first, then retarget this PR to ${MERGE_BASE} (gh pr edit <PR#> --base ${MERGE_BASE}). ` +
+      `Retargeting alone starts no CI run: push a commit (e.g. rebase onto ${MERGE_BASE}) or close and reopen the PR, then retry once CI is green.`,
+  };
 }
 
 function refuseNoChecksRan(pr, head) {
@@ -1021,8 +1126,10 @@ function reviewPrecheck({ repo, pr, view, args }) {
   // require_code_owner_review: a PR touching a CODEOWNERS-owned path (the constitution)
   // waits for the code owner — never try a merge GitHub will refuse.
   if (reviewPolicy.codeOwnerReviewRequired === true && view.reviewDecision !== 'APPROVED') {
-    const owned = fetchCodeOwnedFiles(repo, pr, view.baseRefName || 'main');
-    if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })) {
+    const { rules, files } = fetchCodeOwnership(repo, pr, view.baseRefName || 'main');
+    const owned = codeOwnedFiles(files, rules);
+    if (codeOwnerReviewPending({ policy: reviewPolicy, ownedFiles: owned, reviewDecision: view.reviewDecision })
+      && !codeOwnerApprovedAtHead({ reviewDecision: view.reviewDecision, files, rules, reviews: view.reviewDecision ? [] : fetchReviews(repo, pr), headSha: args.matchHeadCommit ?? view.headRefOid })) {
       refuseApprovalRequired({ repo, pr, view, args, policy: { ...reviewPolicy, codeOwnedFiles: owned.slice(0, 10) }, via: 'code-owner-review' });
     }
   }
@@ -1034,8 +1141,8 @@ export function codeOwnerReviewPending({ policy, ownedFiles, reviewDecision }) {
   return !reviewPrecheckPasses({ policy, reviewDecision, codeOwnedTouched: (ownedFiles ?? []).length > 0 });
 }
 
-/** The PR's changed files a CODEOWNERS rule (read from the base branch) owns. Throws when unreadable. */
-function fetchCodeOwnedFiles(repo, pr, base) {
+/** The base branch's CODEOWNERS rules and the PR's changed files. Throws when unreadable. */
+function fetchCodeOwnership(repo, pr, base) {
   const co = gh(['api', `repos/${repo}/contents/.github/CODEOWNERS?ref=${encodeURIComponent(base)}`, '-H', 'Accept: application/vnd.github.raw'], { allowFail: true });
   let rules;
   if (co.status === 0) rules = parseCodeowners(co.stdout);
@@ -1043,7 +1150,13 @@ function fetchCodeOwnedFiles(repo, pr, base) {
   if (!rules) throw new Error(`CODEOWNERS unverifiable: ${(co.stderr || '').slice(0, 200)}`);
   const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--paginate', '--slurp']);
   const files = (Array.isArray(pages) ? pages : [pages]).flat().map(f => String(f?.filename ?? '')).filter(Boolean);
-  return codeOwnedFiles(files, rules);
+  return { rules, files };
+}
+
+/** The PR's reviews, in the shape approvedAtHead reads. Throws when unreadable. */
+function fetchReviews(repo, pr) {
+  const pages = ghJson(['api', `repos/${repo}/pulls/${pr}/reviews?per_page=100`, '--paginate', '--slurp']);
+  return (Array.isArray(pages) ? pages : [pages]).flat().map(r => ({ login: String(r?.user?.login ?? ''), state: String(r?.state ?? ''), commitId: String(r?.commit_id ?? ''), submittedAt: r?.submitted_at }));
 }
 
 /** The head-pinned merge plus the independent confirmation (B10). Always exits. */
@@ -1052,7 +1165,7 @@ function mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin }) {
   const mergeArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--match-head-commit', pinnedHead];
   if (admin) mergeArgs.push('--admin');
   if (args.deleteBranch) mergeArgs.push('--delete-branch');
-  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8' });
+  const m = spawnSync('gh', mergeArgs, { encoding: 'utf-8', maxBuffer: GH_MAX_BUFFER_BYTES });
   process.stdout.write(m.stdout ?? '');
   process.stderr.write(m.stderr ?? '');
 
@@ -1130,6 +1243,22 @@ async function main() {
     result({ result: 'refused:draft', pr: Number(pr) });
     process.exit(1);
   }
+  // Before every floor and before --auto: a feature-branch base is never a
+  // landing, and GitHub requires nothing of it (ACT-053).
+  const baseRefusal = nonMainBaseRefusal(view.baseRefName);
+  if (baseRefusal) {
+    result({ result: baseRefusal.result, pr: Number(pr), base: baseRefusal.base });
+    console.error(baseRefusal.message);
+    process.exit(1);
+  }
+  // Rule 119: a change to the constitution names its counterpart in the other
+  // book. Existence only; the review holds whether the pair means the same.
+  const pairing = pairingRefusal(repo, Number(pr));
+  if (pairing) {
+    result({ result: pairing.result, pr: Number(pr), state: pairing.state, detail: pairing.detail });
+    console.error(pairing.message);
+    process.exit(1);
+  }
   const pinnedHead = args.matchHeadCommit ?? view.headRefOid;
   if (args.matchHeadCommit && view.headRefOid && args.matchHeadCommit !== view.headRefOid) {
     result({ result: 'refused:head-moved', pr: Number(pr), expected: args.matchHeadCommit, actual: view.headRefOid });
@@ -1137,18 +1266,24 @@ async function main() {
     process.exit(1);
   }
 
-  // --- Native auto-merge path (--auto): arm-and-return, no polling ----------
-  // GitHub's native auto-merge merges the PR the instant every REQUIRED check
-  // passes and the branch is mergeable — and it NEVER bypasses a check (unlike
-  // --admin). So the required-context re-imposition this script does manually
-  // for the --admin path is enforced by GitHub itself here. We only run the
-  // cheap pre-flight above (open, not draft, head not moved), arm auto-merge,
-  // confirm it's armed, and exit. No deadline, so it can't time out the way a
-  // foreground/background poller does (the failure mode that wedged hot-branch
-  // merges: the watcher is killed before slow CI finishes).
-  if (args.auto) {
-    // Zero Actions checks is never green: refuse before arming (GitHub would
-    // otherwise merge at once when no check is required).
+  // --- Floor selection (local-verify-merge-authority §3), read once ----------
+  // Under the `local` floor the §3 predicate (a Local Verify record in the
+  // server index) is the merge gate and the Actions matrix is not: since
+  // 2026-11-21 ci.yml skips the heavy jobs on pull requests, so a caller that
+  // asked for `--auto` (the feedback executor does) would otherwise wait on
+  // checks that never run. So `--auto` takes the Actions path only when the
+  // selected floor is `actions`; under `local` it falls through to the local
+  // path below, exactly like the synchronous call.
+  const floorSel = await resolveFloorSelection({ repo, view });
+
+  // --- CI-floor merge path (--auto): defer until green, then merge now ------
+  // GitHub enforces only the contexts configured in branch rules. On this repo
+  // that can be just instar/local-verify, so --auto would merge while the CI
+  // matrix is still queued. Check the full code-pinned Actions floor before
+  // merging. A pending check is a deferral: the caller retries on its next tick.
+  if (autoTakesActionsFloor(args, floorSel.sel)) {
+    // Zero Actions checks is never green. A queued run may not yet appear,
+    // so classify pending first and refuse only once the rows have settled.
     let headRuns;
     try {
       headRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
@@ -1157,77 +1292,66 @@ async function main() {
       console.error(`safe-merge: REFUSING — could not read the head's check runs: ${e.message}`);
       process.exit(1);
     }
-    if (noActionsChecksRan(headRuns)) refuseNoChecksRan(pr, pinnedHead);
-    const autoArgs = ['pr', 'merge', pr, '--repo', repo, args.method, '--auto'];
-    if (args.matchHeadCommit) autoArgs.push('--match-head-commit', pinnedHead);
-    if (args.deleteBranch) autoArgs.push('--delete-branch');
-    console.log(`safe-merge: arming native auto-merge for PR #${pr} (${args.method}, head ${pinnedHead.slice(0, 12)}) — GitHub will merge when all required checks pass...`);
-    const a = spawnSync('gh', autoArgs, { encoding: 'utf-8' });
-    process.stdout.write(a.stdout ?? '');
-    process.stderr.write(a.stderr ?? '');
-    if (a.status !== 0 || a.signal) {
-      const cls = classifyMergeFailure(a.stderr, a.status, a.signal);
-      if (cls === 'already-merged') { result({ result: 'already-merged', pr: Number(pr) }); process.exit(3); }
-      if (cls === 'closed') { result({ result: 'closed', pr: Number(pr) }); process.exit(4); }
-      // Distinguish "auto-merge is disabled on the repo" (a PERMANENT condition →
-      // terminal-non-ladder for the orchestrator) from a generic transient gh
-      // failure. The discriminator is a REAL stderr-signature match, not the
-      // human-only console.error hint below.
-      if (isAutoMergeUnavailable(a.stderr)) {
-        result({ result: 'refused:auto-arm-unavailable', raw: cls });
-        console.error('safe-merge: could not arm auto-merge — "Allow auto-merge" appears DISABLED on the repo settings. Enable it, or run with --admin.');
+    let checksState;
+    let evaluation;
+    try {
+      checksState = classifyChecks(checksWithoutForkVercelRefusal(fetchChecksRows(pr, repo), view, repo, pinnedHead));
+      if (!checksState.settled) {
+        result({ result: 'deferred:checks-pending', pr: Number(pr), pending: checksState.pending.slice(0, 20), noChecks: checksState.noChecks });
+        console.error('safe-merge: CI checks are still pending; merge deferred.');
         process.exit(1);
       }
-      result({ result: `refused:auto-arm-${cls}`, raw: cls });
-      console.error(`safe-merge: could not arm auto-merge (${cls}). Is "Allow auto-merge" enabled on the repo settings?`);
+      if (checksState.failed.length > 0) {
+        result({ result: 'refused:red-checks', failed: checksState.failed.slice(0, 20) });
+        console.error('safe-merge: REFUSING — a check is red; merge not attempted.');
+        process.exit(1);
+      }
+      // An external check can pass before Actions registers any rows. Treat
+      // absent Actions/E2E as pending; the executor's three-hour deadline
+      // makes a missing workflow a bounded, eventual refusal.
+      if (noActionsChecksRan(headRuns) || !checksState.sawE2e) {
+        result({ result: 'deferred:checks-pending', pr: Number(pr), pending: ['Actions or E2E not registered'] });
+        console.error('safe-merge: Actions or E2E has not registered; merge deferred.');
+        process.exit(1);
+      }
+      if (!checksState.e2ePassed) {
+        result({ result: 'refused:e2e-missing-or-red' });
+        console.error('safe-merge: REFUSING — E2E did not pass; merge not attempted.');
+        process.exit(1);
+      }
+      const rulesetContexts = fetchRulesetContexts(repo, view.baseRefName || 'main');
+      const commitStatuses = rulesetContexts.includes(LOCAL_VERIFY_CONTEXT) ? fetchCommitStatuses(repo, pinnedHead) : [];
+      evaluation = evaluateRequiredContexts({
+        protectionContexts: [], rulesetContexts, floor: ACTIONS_FLOOR_CONTEXTS,
+        extraFloor: args.extraFloor, checkRuns: headRuns, commitStatuses,
+      });
+    } catch (e) {
+      if (e instanceof NoChecksReportedError) {
+        result({ result: 'deferred:checks-pending', pr: Number(pr), noChecks: true });
+        console.error('safe-merge: no CI checks have registered; merge deferred.');
+        process.exit(1);
+      }
+      result({ result: 'refused:contexts-unverifiable', detail: String(e.message).slice(0, 300) });
+      console.error(`safe-merge: REFUSING — could not verify the CI floor: ${e.message}`);
       process.exit(1);
     }
-    // Independent confirmation (B10: never trust the exit code alone). If the
-    // checks were ALREADY green, GitHub merges immediately and we report merged.
-    try {
-      const after = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,autoMergeRequest']);
-      if (after.state === 'MERGED' || after.mergedAt) {
-        result({ result: 'merged', pr: Number(pr), head: pinnedHead });
-        process.exit(0);
-      }
-      if (after.autoMergeRequest) {
-        result({ result: 'auto-merge-armed', pr: Number(pr), head: pinnedHead });
-        console.log('safe-merge: auto-merge armed. GitHub will merge when required checks pass — no further action needed.');
-        process.exit(5);
-      }
-      result({ result: 'error:auto-arm-unconfirmed', state: after.state });
-      console.error('safe-merge: gh reported success but auto-merge is not armed on re-read. NOT claiming success.');
-      process.exit(2);
-    } catch (e) {
-      result({ result: 'error:auto-confirm-unreadable', detail: String(e.message).slice(0, 300) });
-      console.error('safe-merge: could not independently confirm auto-merge was armed. NOT claiming success.');
-      process.exit(2);
+    if (!evaluation.ok) {
+      const wrongProducer = evaluation.problems.some(problem => problem.includes('WRONG producer'));
+      result({ result: wrongProducer ? 'refused:contexts' : 'deferred:checks-pending', problems: evaluation.problems.slice(0, 20) });
+      console.error(`safe-merge: ${wrongProducer ? 'REFUSING' : 'deferring'} — code-pinned CI floor is not green; merge not attempted.`);
+      process.exit(1);
     }
+    // Never leave a future merge armed: GitHub's required contexts can be
+    // weaker than the floor just checked, and a rerun could turn red later.
+    mergeAndConfirm({ repo, pr, view, args, pinnedHead, admin: false });
   }
 
-  // --- Floor selection (local-verify-merge-authority §3) --------------------
-  // `--auto` (above) keeps today's behaviour. On the synchronous path, the
-  // `local` floor replaces the three Actions waits and the contexts floor with
-  // the §3 predicate; it never falls back to the Actions floor on its own.
+  // --- Local floor (local-verify-merge-authority §3) -------------------------
+  // The `local` floor replaces the three Actions waits and the contexts floor
+  // with the §3 predicate; it never falls back to the Actions floor on its own.
+  // Reached by the synchronous call, and by `--auto` when the floor is `local`.
   {
-    const home = resolveAgentHome(path.dirname(fileURLToPath(import.meta.url)));
-    let agent = null;
-    let configError = null;
-    try { agent = loadAgentConfig(home); } catch (e) { configError = e; }
-    const override = process.env.INSTAR_MERGE_FLOOR === 'actions' ? 'actions' : undefined;
-    let token = agent?.inlineToken ?? null;
-    let tokenTried = false;
-    const serverGet = async (p) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerGet({ port: agent?.port ?? null, token })(p);
-    };
-    const serverPost = async (p, body) => {
-      if (!token && !tokenTried && agent?.tokenSource === 'vault') { tokenTried = true; token = resolveVaultToken(home); }
-      return makeServerPost({ port: agent?.port ?? null, token })(p, body);
-    };
-    const sel = configError && !override
-      ? { floor: 'local', refusal: { result: UNMEASURABLE, problems: [`agent config unreadable: ${String(configError.message).slice(0, 200)}`] } }
-      : await selectSafeMergeFloor({ repo, view, agent, override, serverGet });
+    const { sel, agent, serverGet, serverPost } = floorSel;
     if (sel.floor === 'local') {
       const refuseLocal = (r) => {
         result({ result: r.result, pr: Number(pr), floor: 'local', problems: (r.problems ?? []).slice(0, 20) });
@@ -1261,7 +1385,7 @@ async function main() {
       console.error(`safe-merge: REFUSING — ${e.message}`);
       process.exit(1);
     }
-    checksState = classifyChecks(rows);
+    checksState = classifyChecks(checksWithoutForkVercelRefusal(rows, view, repo, pinnedHead));
     if (checksState.settled) break;
     if (Date.now() > deadline) {
       result({ result: 'refused:checks-timeout', pending: checksState.pending.slice(0, 10), ...(checksState.noChecks ? { noChecksReported: true } : {}) });

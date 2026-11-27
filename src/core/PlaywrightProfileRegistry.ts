@@ -1,3 +1,4 @@
+import { isSigninProfile } from './SigninProfileGuard.js';
 /**
  * PlaywrightProfileRegistry — the durable per-agent map of which Playwright
  * browser PROFILE holds which logged-in ACCOUNT, plus the compact boot-awareness
@@ -31,6 +32,7 @@ import os from 'node:os';
 // Reuse the EXACT boot-block sanitizer (control-char/ANSI strip + angle-bracket escape
 // + backtick neutralize) so the two boot surfaces can never drift (D16).
 import { sanitizeForBlock } from './BootSelfKnowledge.js';
+import { isWindowsProfileDir, windowsDirToWslPath } from './wslPlatform.js';
 import { validWebKBuildEnrollment } from '../messaging/telegram-origin/TelegramWebKDriver.js';
 
 // ── Types (D-model) ──────────────────────────────────────────────────────────
@@ -93,6 +95,11 @@ export interface PlaywrightProfile {
   id: string;
   /** null = Playwright MCP's built-in default location; else an ABSOLUTE path jailed to the agent home (D2/D9). */
   userDataDir: string | null;
+  /**
+   * WSL only: the Chrome folder this profile really lives in, as a Windows path. WSL's userDataDir
+   * is then metadata, since Windows Chrome cannot use a folder inside the Linux filesystem.
+   */
+  windowsUserDataDir?: string;
   /** Clamped 256, sanitized on render. */
   description: string;
   isDefault: boolean;
@@ -184,6 +191,8 @@ export interface PlaywrightProfileRegistryOptions {
   passkeyEntryExists?: (key: string) => boolean | null;
   /** Optional override for os.hostname() in the block header (tests). */
   hostname?: string;
+  /** Optional override for whether a Windows profile folder exists (tests). */
+  windowsDirExists?: (dir: string) => boolean;
 }
 
 export type PlaywrightRevertLoginMethodResult =
@@ -219,7 +228,10 @@ export const MAX_IDENTITY_CHARS = 128;
 export const MAX_NOTE_CHARS = 256;
 const PROFILE_ID_RE = /^[a-z0-9-]{1,64}$/;
 const MUTATE_CAS_MAX_RETRIES = 5;
-export const DEFAULT_BLOCK_MAX_BYTES = 800;
+// 2400 (was 800): at 800 a machine with a dozen profiles showed only the first 3 at session
+// start, hiding the operator accounts an agent most needs to know it can act through
+// (Echo Bugs topic 10000002506). Still a hard cap; `full` bypasses it.
+export const DEFAULT_BLOCK_MAX_BYTES = 2400;
 
 const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'session-cookie',
@@ -234,11 +246,13 @@ const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
 export class PlaywrightProfileRegistry {
   private readonly stateDir: string;
   private readonly projectDir: string;
+  private readonly windowsDirExists: ((dir: string) => boolean) | null;
   private readonly listVaultNames: () => string[] | null;
   private readonly passkeyEntryExists: ((key: string) => boolean | null) | null;
   private readonly hostname: string;
 
   constructor(opts: PlaywrightProfileRegistryOptions) {
+    this.windowsDirExists = opts.windowsDirExists ?? null;
     this.stateDir = opts.stateDir;
     this.projectDir = path.resolve(opts.projectDir);
     this.listVaultNames = opts.listVaultNames;
@@ -399,13 +413,36 @@ export class PlaywrightProfileRegistry {
 
   // ── Reads ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The LIGHT accounts view (sibling-machine-reach §3.2): each profile's accounts with
+   * service, identity, owner and the last-asserted login state ONLY. Reads the registry
+   * file and nothing else: NO vault read (no keychain call), NO seeding, NO write. An
+   * absent file answers []. A corrupt file throws like every other read.
+   */
+  listAccountsLight(): Array<{
+    id: string;
+    accounts: Array<{ service: string; identity: string; owner: PlaywrightAccountOwner; lastAsserted: boolean; lastVerifiedAt: string | null }>;
+  }> {
+    if (!fs.existsSync(this.filePath())) return [];
+    return this.read().profiles.map((p) => ({
+      id: p.id,
+      accounts: p.accounts.map((a) => ({
+        service: a.service,
+        identity: a.identity,
+        owner: a.owner,
+        lastAsserted: a.lastAsserted === true,
+        lastVerifiedAt: a.lastVerifiedAt ?? null,
+      })),
+    }));
+  }
+
   /** The FULL detail surface (GET-only): every account, vault NAMES, dangling-ref flags (D17). */
   listProfiles(): PlaywrightProfileDetail[] {
     const store = this.ensureSeeded();
     const liveNames = this.safeVaultNames();
     return store.profiles.map((p) => ({
       ...p,
-      dirExists: this.dirExists(p.userDataDir),
+      dirExists: this.profileDirExists(p),
       accounts: p.accounts.map((a) => ({
         ...a,
         danglingRefs:
@@ -431,13 +468,13 @@ export class PlaywrightProfileRegistry {
       const exact = store.profiles.find((p) =>
         p.accounts.some((a) => a.service === svc && a.identity === id),
       );
-      if (exact) return { profile: exact, dirExists: this.dirExists(exact.userDataDir) };
+      if (exact) return { profile: exact, dirExists: this.profileDirExists(exact) };
       // fall through to service-only
     }
 
     const svcMatches = store.profiles.filter((p) => p.accounts.some((a) => a.service === svc));
     if (svcMatches.length === 1) {
-      return { profile: svcMatches[0], dirExists: this.dirExists(svcMatches[0].userDataDir) };
+      return { profile: svcMatches[0], dirExists: this.profileDirExists(svcMatches[0]) };
     }
     if (svcMatches.length > 1) {
       return {
@@ -514,6 +551,21 @@ export class PlaywrightProfileRegistry {
       );
     }
     return { profileId, userDataDir, created };
+  }
+
+  /** Record (or, with null, clear) the Windows Chrome folder of a WSL profile. */
+  setWindowsUserDataDir(profileId: string, windowsUserDataDir: string | null): PlaywrightProfile {
+    if (windowsUserDataDir !== null && !isWindowsProfileDir(windowsUserDataDir)) {
+      throw new PlaywrightRegistryError('windowsUserDataDir must be a local absolute Windows path (C:\\...)', 400);
+    }
+    return this.mutate<PlaywrightProfile>((store) => {
+      const profile = store.profiles.find((p) => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner) throw new PlaywrightRegistryError('managed profile is available through typed broker operations only', 409);
+      if (windowsUserDataDir === null) delete profile.windowsUserDataDir;
+      else profile.windowsUserDataDir = windowsUserDataDir;
+      return { next: store, result: profile };
+    });
   }
 
   assignAccount(
@@ -791,6 +843,7 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (isSigninProfile(profile) || (profile.userDataDir && store.profiles.some(other => isSigninProfile(other) && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === canonicalProfileDirectory(profile.userDataDir!)))) throw new PlaywrightRegistryError('registered sign-in profile refuses automation; use normal Chrome and subscription-signin', 409);
     if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
     if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 
@@ -884,6 +937,8 @@ export class PlaywrightProfileRegistry {
       'Profiles live on THIS machine only. Login state is LAST-ASSERTED, never a guarantee —',
       're-verify in-browser before any privileged action, especially operator-owned accounts.',
       'Full detail + vault key names: GET /playwright-profiles · pick one: GET /playwright-profiles/resolve',
+      'Before asking the operator to look at or check something: if an account below or your own server',
+      'key reaches it, look yourself. Mark anything you send as the operator: [Sent by <agent> on <operator>\'s behalf].',
       '',
     ];
     const footer = [
@@ -932,6 +987,15 @@ export class PlaywrightProfileRegistry {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────────
 
+  /**
+   * The live vault secret NAMES (never values), best-effort: null when the vault is
+   * unreadable. Read by the agent-reach builder so the outbound gate can see what the
+   * agent already holds (Echo Bugs topic 10000002770).
+   */
+  vaultNames(): string[] | null {
+    return this.safeVaultNames();
+  }
+
   /** Best-effort vault names for READ paths — swallows the unreadable case to null. */
   private safeVaultNames(): string[] | null {
     try {
@@ -940,6 +1004,13 @@ export class PlaywrightProfileRegistry {
       // @silent-fallback-ok — READ-path dangling-ref check is best-effort; null = "don't assert dangling" (D17).
       return null;
     }
+  }
+
+  /** The folder the profile really lives in: its Windows folder when it has one. */
+  private profileDirExists(profile: PlaywrightProfile): boolean {
+    if (!profile.windowsUserDataDir) return this.dirExists(profile.userDataDir);
+    if (this.windowsDirExists) return this.windowsDirExists(profile.windowsUserDataDir);
+    return this.dirExists(windowsDirToWslPath(profile.windowsUserDataDir) ?? '');
   }
 
   /** fs.existsSync on a userDataDir; null userDataDir → built-in profile present (true). */

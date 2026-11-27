@@ -13,11 +13,13 @@ Measuring inside the running server showed the cause. Telegram had slowed Echo's
 
 ## What already exists and stays the same
 
-The rule that an "outcome unknown" message is never resent automatically stays exactly as it is. Nothing new blocks or allows anything. The relay script that agents use to send already allows a request 125 seconds, so a 60 second network wait fits inside it.
+The rule that an "outcome unknown" message is never resent automatically stays exactly as it is. Nothing new blocks or allows anything. The server gives a reply request 120 seconds in total. One send's 60 second network wait, plus up to 20 seconds for each of the two checks that read a message before it goes out, fits inside that, and a test now enforces it.
 
 ## The trade-off
 
 A request to a Telegram that is genuinely unreachable now takes up to 60 seconds to fail instead of 15. That only costs time on a path that was already failing, and the caller still gets the same answer.
+
+One limit remains. A very long reply goes out as several Telegram messages, one after another. If Telegram is slow on every one of them, the whole reply can take longer than the server's 120 seconds. The sender is then told the result is not known yet, and to check the conversation before trying again. Each part already sent is recorded, so it is not sent twice.
 
 ## What to decide
 

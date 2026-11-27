@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "maturation-path-amendment",
+  "sessionId": "5d64ec71-904d-47d7-b933-ec981d537d0d",
+  "timestamp": "2026-11-04T03:00:08.100Z",
+  "artifactPath": "upgrades/side-effects/maturation-path-amendment.md",
+  "artifactSha256": "6a027f7b5a24ecf43c0cad33618d0c0fd53a995a4b50bdceebb3bdb26a7eae8a",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/specs/maturation-path-amendment.eli16.md",
+    "docs/specs/maturation-path-amendment.md",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/feature-ladders-coverage.test.ts",
+    "upgrades/next/maturation-path-amendment.md",
+    "upgrades/side-effects/maturation-path-amendment.eli16.md",
+    "upgrades/side-effects/maturation-path-amendment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text only, reversible by revert; operator sign-off required before merge.",
+  "eli16Path": "upgrades/side-effects/maturation-path-amendment.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-path-amendment.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

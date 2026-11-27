@@ -57,6 +57,7 @@ import {
   type MergedPairingView,
 } from '../core/ThreadlinePairingReplicatedStore.js';
 import { ReplicatedStoreReader } from '../core/ReplicatedStoreReader.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { ReplicatedKindRegistry, StateSyncStores } from '../core/ReplicatedRecordEnvelope.js';
 import type { OriginRecord } from '../core/UnionReader.js';
 import type { BuildRecordData } from '../core/ReplicatedRecordEmitter.js';
@@ -275,9 +276,17 @@ export function createPairingReplicationWiring(deps: PairingReplicationWiringDep
       const state = deps.readState();
       const s = applyReplicatedPairingInheritance(state.views, deps.trust, state.revoked, state.marks);
       if (s.inherited > 0 || s.refused > 0 || s.revoked > 0 || s.marksMerged > 0) log(`pairing inheritance: ${JSON.stringify(s)}`);
+      const evidenceContext = { peers: s.peers, inherited: s.inherited, unchanged: s.unchanged, localWins: s.localWins, refused: s.refused, revoked: s.revoked, revokeHeld: s.revokeHeld };
+      if (s.inherited > 0 || s.revoked > 0) {
+        featureEvidence.record('multiMachine.stateSync.threadlinePairing', { kind: 'fired', reason: s.inherited > 0 ? 'pairing-inherited' : 'inherited-pairing-revoked', context: evidenceContext });
+      }
+      if (s.refused > 0) {
+        featureEvidence.record('multiMachine.stateSync.threadlinePairing', { kind: 'error', reason: 'inheritance-refused-key-pin', context: evidenceContext });
+      }
       return s;
     } catch (err) {
       log(`pairing inheritance failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      featureEvidence.record('multiMachine.stateSync.threadlinePairing', { kind: 'error', reason: 'inheritance-pass-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
       return empty();
     }
   };

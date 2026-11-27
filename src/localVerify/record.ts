@@ -1,4 +1,5 @@
 /**
+ * A preflight field is evidence about an attempt, not independent proof of full-suite green.
  * The local-verify record (spec local-verify-merge-authority.md §2 step 6, Keys).
  *
  * Records are keyed by (repo, pr, headSha, baseRefName); execution is
@@ -6,12 +7,32 @@
  * description puts the state label first and is cut to GitHub's 140-char limit.
  */
 
+import { validFirstPartEvidence, type FirstPartEvidence } from './firstPartReport.js';
 import type { LaneTotals } from './laneReport.js';
+import { isBoundedFailedFileSet } from './failedFileDiagnosis.js';
 import { isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 
 export type VerifyOutcome = 'success' | 'failure' | 'error';
 
+/** Bounded early-test evidence. It never authorizes a green merge verdict. */
+export interface PreflightEvidence {
+  mode: 'observe' | 'enforce';
+  outcome: 'pass' | 'red' | 'skip' | 'timeout' | 'error';
+  reason: string;
+  elapsedMs: number;
+  changedFiles: number;
+  selectedFiles: string[];
+  selectedCases: number;
+  headSha: string;
+  baseSha: string;
+  /** Present only when two trusted attempts failed assertions in this selected file. */
+  repeatedFailedFile?: string;
+}
+
+export const PREFLIGHT_MAX_SELECTED_FILES = 5;
+
 export interface LocalVerifyRecord {
+  smallPeerReceipt?: import('./smallPeerWatchdog.js').TrialReceipt;
   repo: string;
   pr: number;
   headSha: string;
@@ -46,19 +67,181 @@ export interface LocalVerifyRecord {
    */
   kind?: 'main';
   /**
-   * Files that failed in their lane and then passed when re-run alone, once, in the same
-   * verify (the evidence-per-run form of the spec's "known-flaky" idea, Throughput budget).
-   * Present only when at least one file was re-run and passed; the lane then counted as
-   * passing. Each one is a tracked item to fix (`local-verify:flaky:<file>`).
+   * Files that failed in their lane and then passed when re-run alone in the same verify:
+   * once, or three times in a row for an import-related file whose failed tests `main` has
+   * shown flaky (the evidence-per-run form of the spec's "known-flaky" idea, Throughput
+   * budget; spec local-verify-import-related-rerun.md). Present only when at least one file
+   * was re-run and passed; the lane then counted as passing. Each one is a tracked item to
+   * fix (`local-verify:flaky:<file>`).
    */
   flakyRetried?: FlakyRetry[];
+  /** Complete failed test-file set when a full PR run failed in 1–3 inventoried files. */
+  failedFiles?: string[];
+  /**
+   * The files of `failedFiles` whose re-run alone was cut off because another lane had already
+   * failed: they failed once in their lane and were never shown to fail again. The likely-failing
+   * list and a change's previous failures leave them out (spec local-verify-likely-failing-first.md B).
+   * Present only when there is at least one.
+   */
+  rerunCutOff?: string[];
+  /**
+   * Present only on a record a PEER verifier produced for a coordinator's hand-off
+   * (spec local-verify-capacity.md Part D): the attempt it answers, the coordinator that
+   * dispatched it and that coordinator's lease epoch at dispatch. The coordinator imports
+   * a peer record only when all three match its own dispatch marker.
+   */
+  attempt?: PeerAttemptRef;
+  /** Diagnostic or early-red preflight evidence, validated before journal/peer import. */
+  preflight?: PreflightEvidence;
+  firstPart?: FirstPartEvidence;
+  /**
+   * Present only when a borrowed helper took part in this verify (spec
+   * local-verify-borrowed-slices-count.md, F "The record"): which helper, whether the verify was
+   * assigned to count its passes or drawn compare-only (one in ten, before the helper was asked),
+   * and per lane a count and a digest of the files sent. Never on a `main` record: a main verify
+   * never counts a helper's results. A peer's signed record carries the field unchanged.
+   */
+  borrowed?: BorrowedRecordField;
 }
 
+export interface BorrowedRecordField {
+  /** The helper's machine id. Checked here by format only; whether it is a known machine is checked where the record is imported. */
+  helper: string;
+  assigned: 'counting' | 'compare-only';
+  lanes: Array<{ lane: 'unit' | 'integration' | 'e2e'; files: number; filesDigest: string }>;
+}
+
+const BORROWED_HELPER_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
+const BORROWED_LANES: readonly string[] = Object.freeze(['unit', 'integration', 'e2e']);
+/** At most this many files of one lane on a helper. */
+export const BORROWED_RECORD_MAX_FILES = 20_000;
+
+/**
+ * The record check of `borrowed`: a machine id by format, `assigned` one of its two values, at
+ * most three lanes (each lane once), a whole number of files up to 20,000 and a 64-character
+ * digest; exactly these keys at every level. Pure.
+ */
+export function isValidBorrowedField(v: unknown): v is BorrowedRecordField {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const x = v as Record<string, unknown>;
+  if (!Object.keys(x).every((k) => k === 'helper' || k === 'assigned' || k === 'lanes')) return false;
+  if (typeof x.helper !== 'string' || !BORROWED_HELPER_ID.test(x.helper)) return false;
+  if (x.assigned !== 'counting' && x.assigned !== 'compare-only') return false;
+  if (!Array.isArray(x.lanes) || x.lanes.length > 3) return false;
+  const seen = new Set<string>();
+  for (const l of x.lanes) {
+    if (!l || typeof l !== 'object' || Array.isArray(l)) return false;
+    const t = l as Record<string, unknown>;
+    if (!Object.keys(t).every((k) => k === 'lane' || k === 'files' || k === 'filesDigest')) return false;
+    if (typeof t.lane !== 'string' || !BORROWED_LANES.includes(t.lane) || seen.has(t.lane)) return false;
+    seen.add(t.lane);
+    if (typeof t.files !== 'number' || !Number.isSafeInteger(t.files) || t.files < 0 || t.files > BORROWED_RECORD_MAX_FILES) return false;
+    if (typeof t.filesDigest !== 'string' || !/^[0-9a-f]{64}$/.test(t.filesDigest)) return false;
+  }
+  return true;
+}
+
+export interface PeerAttemptRef {
+  /** 32 lowercase hex characters (16 random bytes). */
+  id: string;
+  coordinatorMachineId: string;
+  /** The coordinator's serving-lease epoch when it dispatched (null when the pool reports none). */
+  leaseEpoch: number | null;
+}
+
+export const ATTEMPT_ID_RE = /^[0-9a-f]{32}$/;
+
+export function isValidAttemptRef(a: unknown): a is PeerAttemptRef {
+  if (!a || typeof a !== 'object') return false;
+  const x = a as Record<string, unknown>;
+  return typeof x.id === 'string' && ATTEMPT_ID_RE.test(x.id)
+    && typeof x.coordinatorMachineId === 'string' && x.coordinatorMachineId.length > 0 && x.coordinatorMachineId.length <= 200
+    && (x.leaseEpoch === null || (typeof x.leaseEpoch === 'number' && Number.isSafeInteger(x.leaseEpoch) && x.leaseEpoch >= 0))
+    && Object.keys(x).every((k) => k === 'id' || k === 'coordinatorMachineId' || k === 'leaseEpoch');
+}
+
+/** One cleared test of an import-related clear: when `main` showed it flaky, and both failure lines. */
+export interface FlakyEvidence {
+  test: string;
+  /** When a `main` verify saw this test fail in its lane and pass alone by name. */
+  mainAt: string;
+  /** The distinguishing error line on `main` and in this PR run, each bounded with its disclosure. */
+  mainLine: string;
+  prLine: string;
+  /** Set when the stored line was shortened: open the full output. */
+  mainLineCut?: true;
+  prLineCut?: true;
+  /** The run log of that `main` verify (a file name under `state/local-verify/runs/` on the machine that ran it). */
+  mainRunLog: string;
+}
+
+/**
+ * One file that failed in its lane and then passed alone. Spec
+ * local-verify-import-related-rerun.md "Recording": the SHARED name fields may ride on any
+ * entry (PR or `main`, plain or import-related); the CLEARANCE fields only with
+ * `importRelated: true` (three consecutive by-name solo passes on named main evidence).
+ */
 export interface FlakyRetry {
   file: string;
   lane: string;
   /** The first run's failure (first failing test + message), bounded. */
   firstMessage: string;
+  /** The verifier reran these named assertions, retaining the original file inventory. */
+  namedRetry?: true;
+  /** Shared: full names of the tests that failed in the lane run, at most 20, each whole (a longer name is left out). */
+  failedTests?: string[];
+  /** Shared: the true number of failed tests, so a shorter list is disclosed. */
+  failedTestsTotal?: number;
+  /** Shared: the subset of `failedTests` reported passed by name in the solo run (in all three for a clear). */
+  soloPassedByName?: string[];
+  /** Shared: sha256 of the file's full test names in report (definition) order in the lane run. */
+  testSetHash?: string;
+  /** Clearance: the file imports a file the PR changed and was cleared on main evidence. */
+  importRelated?: true;
+  /** Clearance: always 3. */
+  soloPasses?: 3;
+  /** Clearance: the three solo runs' wall seconds. */
+  soloSeconds?: number[];
+  /** Clearance: one entry per cleared test, in `failedTests` order. */
+  evidence?: FlakyEvidence[];
+}
+
+/** The record-side bounds of the name fields (mirrors policy.ts IMPORT_RELATED_RERUN; record.ts imports no policy). */
+const NAME_FIELDS = Object.freeze({ names: 20, nameChars: 300, lineChars: 400, runLogChars: 200 });
+
+/** Shared and clearance field rules of one `flakyRetried` entry. Pure. */
+function flakyNameFieldsOk(r: Record<string, unknown>): boolean {
+  const isName = (v: unknown): v is string => typeof v === 'string' && v.length >= 1 && v.length <= NAME_FIELDS.nameChars;
+  const names = r.failedTests;
+  if (names !== undefined && !(Array.isArray(names) && names.length <= NAME_FIELDS.names && names.every(isName))) return false;
+  const list = (names as string[] | undefined) ?? [];
+  if (r.failedTestsTotal !== undefined && !(typeof r.failedTestsTotal === 'number' && Number.isSafeInteger(r.failedTestsTotal) && r.failedTestsTotal >= list.length)) return false;
+  if (r.soloPassedByName !== undefined) {
+    const p = r.soloPassedByName;
+    if (!Array.isArray(p) || p.length > list.length || !p.every((n) => typeof n === 'string' && list.includes(n))) return false;
+  }
+  if (r.testSetHash !== undefined && !(typeof r.testSetHash === 'string' && /^[0-9a-f]{64}$/.test(r.testSetHash))) return false;
+  const clearance = r.soloPasses !== undefined || r.soloSeconds !== undefined || r.evidence !== undefined;
+  if (r.namedRetry !== undefined && (r.namedRetry !== true || r.importRelated !== undefined || list.length < 1 || list.length > 3
+    || typeof r.testSetHash !== 'string' || r.failedTestsTotal !== list.length || new Set(list).size !== list.length || !Array.isArray(r.soloPassedByName)
+    || r.soloPassedByName.length !== list.length || !list.every((name, index) => name === (r.soloPassedByName as string[])[index]))) return false;
+  if (r.importRelated === undefined) return !clearance;
+  if (r.importRelated !== true) return false;
+  if (r.soloPasses !== 3) return false;
+  if (!Array.isArray(r.soloSeconds) || r.soloSeconds.length !== 3 || !r.soloSeconds.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)) return false;
+  if (names === undefined || list.length < 1 || r.failedTestsTotal !== list.length) return false;
+  const passed = r.soloPassedByName;
+  if (!Array.isArray(passed) || passed.length !== list.length || !passed.every((n, i) => n === list[i])) return false;
+  if (typeof r.testSetHash !== 'string') return false;
+  const ev = r.evidence;
+  if (!Array.isArray(ev) || ev.length !== list.length) return false;
+  const line = (v: unknown) => typeof v === 'string' && v.length <= NAME_FIELDS.lineChars;
+  return ev.every((e, i) => {
+    const x = e as Record<string, unknown> | null;
+    return !!x && typeof x === 'object' && x.test === list[i] && isIso(x.mainAt) && line(x.mainLine) && line(x.prLine)
+      && (x.mainLineCut === undefined || x.mainLineCut === true) && (x.prLineCut === undefined || x.prLineCut === true)
+      && typeof x.mainRunLog === 'string' && x.mainRunLog.length <= NAME_FIELDS.runLogChars;
+  });
 }
 
 /** At most this many flaky entries on a record (the re-run cap is smaller). */
@@ -72,6 +255,11 @@ const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 // git check-ref-format essentials: no spaces, control chars, ~^:?*[\, no "..", no leading "-" or "/".
 const REF = /^(?!-)(?!\/)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\s~^:?*[\\\x00-\x1f\x7f]+(?<!\/)(?<!\.lock)(?<!\.)$/;
 const STATUS_LIMIT = 140;
+
+/** A branch name a record may carry as `baseRefName` (the same check `validateRecord` applies). */
+export function isValidBaseRef(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 255 && REF.test(v);
+}
 
 export function isValidPr(pr: unknown): pr is number {
   return typeof pr === 'number' && Number.isSafeInteger(pr) && pr > 0;
@@ -113,6 +301,7 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
   if (!isIso(x.finishedAt)) errors.push('finishedAt');
   if (isIso(x.startedAt) && isIso(x.finishedAt) && Date.parse(x.finishedAt) < Date.parse(x.startedAt)) errors.push('finishedAt<startedAt');
   if (x.outcome !== 'success' && x.outcome !== 'failure' && x.outcome !== 'error') errors.push('outcome');
+  if (x.firstPart !== undefined && (x.kind === 'main' || !validFirstPartEvidence(x.firstPart))) errors.push('firstPart');
   if (x.errorStep !== undefined && typeof x.errorStep !== 'string') errors.push('errorStep');
   for (const k of ['harnessChanging', 'protectedPath', 'skipsAdded', 'testsRemoved'] as const) {
     if (typeof x[k] !== 'boolean') errors.push(k);
@@ -121,14 +310,45 @@ export function validateRecord(r: unknown): { ok: true; record: LocalVerifyRecor
     const ok = Array.isArray(x.flakyRetried) && x.flakyRetried.length <= FLAKY_RETRIED_MAX && x.flakyRetried.every((f) => {
       const r = f as Record<string, unknown>;
       return !!r && typeof r.file === 'string' && r.file.length > 0 && r.file.length <= 300 && typeof r.lane === 'string'
-        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000;
+        && typeof r.firstMessage === 'string' && r.firstMessage.length <= 2000 && flakyNameFieldsOk(r);
     });
-    if (!ok) errors.push('flakyRetried');
+    if (!ok || (x.flakyRetried as FlakyRetry[]).reduce((sum, r) => sum + (r.namedRetry ? (r.failedTests?.length ?? 0) : 0), 0) > 3) errors.push('flakyRetried');
+  }
+  if (x.failedFiles !== undefined) {
+    if (!isBoundedFailedFileSet(x.failedFiles) || x.outcome !== 'failure' || x.kind === 'main') errors.push('failedFiles');
+  }
+  if (x.rerunCutOff !== undefined) {
+    const named = Array.isArray(x.failedFiles) ? x.failedFiles as unknown[] : [];
+    if (!Array.isArray(x.rerunCutOff) || x.rerunCutOff.length < 1 || x.rerunCutOff.length > named.length
+      || new Set(x.rerunCutOff).size !== x.rerunCutOff.length || !x.rerunCutOff.every((f) => typeof f === 'string' && named.includes(f))) errors.push('rerunCutOff');
   }
   if (x.independentReview !== undefined) {
     const ir = x.independentReview as Record<string, unknown> | null;
     if (!ir || typeof ir !== 'object' || ir.concurred !== true || !isTracePath(ir.trace)) errors.push('independentReview');
   }
+  // A `main` verify a peer ran for the coordinator carries its attempt like any peer record.
+  if (x.attempt !== undefined && !isValidAttemptRef(x.attempt)) errors.push('attempt');
+  if (x.preflight !== undefined) {
+    const p = x.preflight as Record<string, unknown> | null;
+    const isCount = (n: unknown, max: number) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= max;
+    const selected = p && Array.isArray(p.selectedFiles) && p.selectedFiles.length <= PREFLIGHT_MAX_SELECTED_FILES
+      && p.selectedFiles.every((f) => typeof f === 'string' && f.length > 0 && f.length <= 300 && !f.startsWith('/') && !f.includes('..') && !f.includes('\\'));
+    const valid = p && x.kind !== 'main'
+      && (p.mode === 'observe' || p.mode === 'enforce')
+      && ['pass', 'red', 'skip', 'timeout', 'error'].includes(String(p.outcome))
+      && typeof p.reason === 'string' && p.reason.length <= 200
+      && isCount(p.elapsedMs, 90_000)
+      && isCount(p.changedFiles, p.outcome === 'skip' ? 10_000 : 40)
+      && selected && isCount(p.selectedCases, p.outcome === 'skip' ? 10_000 : 200)
+      && p.headSha === x.headSha && p.baseSha === x.baseSha
+      && (p.repeatedFailedFile === undefined || (typeof p.repeatedFailedFile === 'string' && (p.selectedFiles as string[]).includes(p.repeatedFailedFile)))
+      && (p.outcome !== 'red' || (p.repeatedFailedFile !== undefined && (p.selectedCases as number) > 0))
+      && (p.mode !== 'enforce' || p.outcome !== 'red' || (p.reason === 'preflight-red' && x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0))
+      && (p.mode !== 'observe' || !(x.outcome === 'failure' && Array.isArray(x.lanes) && x.lanes.length === 0 && p.outcome === 'red'))
+      && Object.keys(p).every((k) => ['mode', 'outcome', 'reason', 'elapsedMs', 'changedFiles', 'selectedFiles', 'selectedCases', 'headSha', 'baseSha', 'repeatedFailedFile'].includes(k));
+    if (!valid) errors.push('preflight');
+  }
+  if (x.borrowed !== undefined && (!isValidBorrowedField(x.borrowed) || x.kind === 'main')) errors.push('borrowed');
   return errors.length ? { ok: false, errors } : { ok: true, record: x as unknown as LocalVerifyRecord };
 }
 

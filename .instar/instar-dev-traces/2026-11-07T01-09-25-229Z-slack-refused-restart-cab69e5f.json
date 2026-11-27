@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "slack-refused-restart",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T01:09:25.229Z",
+  "artifactPath": "upgrades/side-effects/slack-refused-restart.md",
+  "artifactSha256": "a78f30092dfc357f72abf7a5c148f6683f8d41f93d2fbd5e969287e77573c412",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SlackRefusedHold.ts",
+    "src/core/SlackReplyRelayInstaller.ts",
+    "src/server/AgentServer.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/slack-refused-hold.test.ts",
+    "upgrades/eli16-slack-refused-restart.md",
+    "upgrades/next/slack-refused-restart.md",
+    "upgrades/side-effects/slack-refused-restart.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A revert fully undoes it and a leftover state file is inert; adds retry of existing dispatch, no new authority",
+  "eli16Path": "upgrades/eli16-slack-refused-restart.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-refused-restart.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "slack-refused-hold-retry is registered: fixed 6-try schedule per conversation, then dropped and the person asked to resend; attempts persist across restarts; only a new human message re-adds"
+    }
+  }
+}

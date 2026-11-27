@@ -55,6 +55,8 @@ const NEEDS_USER_SOURCES: ReadonlyArray<{ source: string; idPrefix?: string; min
   { source: 'telegram-ingress-lifeline-secret' },
   // A passkey revoke the operator ordered has not landed on a machine for 30 days.
   { source: 'passkey-revoke-outbox' },
+  // The monthly bench found an above-noise routing change; only the operator applies it.
+  { source: 'bench-refresh', idPrefix: 'bench-refresh:routing-diff' },
 ];
 
 const PRIORITY_RANK: Record<HubItemLike['priority'], number> = { LOW: 0, NORMAL: 1, HIGH: 2, URGENT: 3 };
@@ -89,6 +91,7 @@ const HUB_NOTICE_CATEGORIES: ReadonlyMap<string, 'any' | 'immediate'> = new Map(
   ['stuck-recovery', 'any'], // "I didn't get to N of your messages"
   ['sender-rejection', 'any'], // a message was refused as an unknown sender
   ['commitment', 'any'], // a setting the user asked for reverted
+  ['claude-key', 'any'], // the agent's sign-in key was rejected: it cannot reply to anyone
   ['session-reap', 'any'], // a session doing the user's work was shut down (reap fallback for unbound sessions)
   ['mutual-ssh-host-key-change', 'any'], // security
   ['quota', 'immediate'], // only exhausted / critical

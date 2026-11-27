@@ -267,7 +267,7 @@ wired (ACT-119).
 The planned remediator Telegram countersignature (G10) is P-class and must **not** count as a different
 principal. Nothing verifies through it today; the remediator V3 amendment is ACT-116.
 
-**Defect found while grounding (ACT-115, not fixed here):** the tunnel-consent and prompt-gate owner checks
+**Defect found while grounding (ACT-115, since fixed by `owner-checks-fail-closed`, which closes all three checks and reports installs left with no owner):** the tunnel-consent and prompt-gate owner checks
 are written `if (owner && from.id !== owner)`, which passes when no owner is configured, and pairing's chat
 check is skipped when a chat id is missing. The tunnel-consent prompt itself is not sent without an owner,
 so that path is reachable only by a forged callback; the prompt-gate path is reachable from any chat member

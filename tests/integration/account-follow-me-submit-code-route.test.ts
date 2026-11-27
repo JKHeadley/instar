@@ -108,7 +108,9 @@ describe('WS5.2 code paste-back submit-code routes (integration)', () => {
   const post = (p: string, body?: unknown) =>
     fetch(server.url + p, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // Every fixture binds port 0; a later fixture can inherit that port while
+      // Undici still has a pooled socket for the earlier server's routes.
+      headers: { 'Content-Type': 'application/json', Connection: 'close' },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 

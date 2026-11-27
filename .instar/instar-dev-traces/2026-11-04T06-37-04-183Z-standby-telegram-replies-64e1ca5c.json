@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "standby-telegram-replies",
+  "sessionId": "a7817f74-6b0c-4a81-9c98-6bcac06e6834",
+  "timestamp": "2026-11-04T06:37:04.183Z",
+  "artifactPath": "upgrades/side-effects/standby-telegram-replies.md",
+  "artifactSha256": "a5718f13f845ea436c3f635f52aa574c16ada2c096c64eddacc4f35be5fbb6af",
+  "specPath": "docs/specs/telegram-message-origin.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/OriginDeliveryResolution.ts",
+    "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+    "src/messaging/telegram-origin/OriginMesh.ts",
+    "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/telegram-origin-forward-on-standby.test.ts",
+    "tests/unit/telegram-origin-forward-on-standby.test.ts",
+    "tests/unit/telegram-origin/held-reply-outcome.test.ts",
+    "upgrades/next/standby-telegram-replies.md",
+    "upgrades/side-effects/standby-telegram-replies.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes outbound delivery truth and standby recovery fencing, requiring approved spec and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

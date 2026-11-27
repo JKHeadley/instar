@@ -127,7 +127,9 @@ describe('PostUpdateMigrator — compaction recovery hook reachability', () => {
       (match) => match[1],
     );
 
-    expect(referencedRecoveryPaths).toHaveLength(2);
+    // The -x check, the switch-off/non-Claude exec, and the seeding run that
+    // writes the one-carrier marker (context-budget-layered-summaries §9.1).
+    expect(referencedRecoveryPaths).toHaveLength(3);
     expect(new Set(referencedRecoveryPaths)).toEqual(new Set(['hooks/instar/compaction-recovery.sh']));
 
     const installedRecoveryPath = path.join(projectDir, '.instar', referencedRecoveryPaths[0]);

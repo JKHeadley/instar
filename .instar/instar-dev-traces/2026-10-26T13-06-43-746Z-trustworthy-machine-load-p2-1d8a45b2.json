@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "trustworthy-machine-load-p2",
+  "sessionId": "2ec314b8-48fb-456a-9d9a-4641c5b6298e",
+  "timestamp": "2026-10-26T13:06:43.746Z",
+  "artifactPath": "upgrades/side-effects/trustworthy-machine-load-p2.md",
+  "artifactSha256": "bf9d683c9503cd0733c6802e2c91fd8208a501a12252da52d37772879d840833",
+  "specPath": "docs/specs/trustworthy-machine-load-and-mesh-floor.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/trustworthy-machine-load-p2.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Annotation-only fix keeping main under the silent-fallback baseline; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "WorkAdmission is registered as overload-admission-self-help in src/testing/selfActionRegistry.ts: under the pinned always-saturated fixture it closes once, emits the self-help notice once per closed episode (boundK 1, horizon-independent) and never reopens"
+    },
+    "component": "WorkAdmission"
+  }
+}

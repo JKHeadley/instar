@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-03T08:30:08.421Z",
+  "slug": "feedback-ci-floor-merge",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 196,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/reviewGate.ts",
+      "src/monitoring/GreenPrAutoMerger.ts",
+      "src/monitoring/MergeRunner.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 115,
+    "deletedLines": 81
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

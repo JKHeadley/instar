@@ -172,7 +172,7 @@ function readProposalsFromDir(dir: string): PersistedProposal[] {
   return out;
 }
 
-function loadAllProposals(stateDir: string): PersistedProposal[] {
+export function loadAllProposals(stateDir: string): PersistedProposal[] {
   const remediationDir = path.join(stateDir, 'remediation');
   const dirs = listProposalDirs(remediationDir);
   const all: PersistedProposal[] = [];

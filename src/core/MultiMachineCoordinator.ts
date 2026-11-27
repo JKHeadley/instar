@@ -23,7 +23,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { SecurityLog } from './SecurityLog.js';
 import { NonceStore } from './NonceStore.js';
 import type { StateManager } from './StateManager.js';
-import type { LeaseCoordinator } from './LeaseCoordinator.js';
+import type { LeaseCoordinator, LeaseHoldVerdict } from './LeaseCoordinator.js';
 import { SEAMLESSNESS_PROTOCOL_VERSION } from './seamlessnessConfig.js';
 import { FailureEpisodeLatch } from './FailureEpisodeLatch.js';
 import { ChurnBreaker } from './churnBreaker.js';
@@ -36,7 +36,16 @@ import { serveProgressFresh } from './serveProgress.js';
 import { decideZombieRelinquish, sharedG1ZombieRelinquishLedger } from './zombieRelinquish.js';
 import { getCurrentBootId } from '../server/boot-id.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
+import { onRestartRequested, onRestartWithdrawn, setRestartSignalDeadlineMs } from './restartRequestSignal.js';
+import { UNSIGNED_WINDOW_CEILING_MS } from './BootClaimHold.js';
+import { REQUEST_POLL_MS as RESTART_REQUEST_POLL_MS, nextRequestPollMs } from './LeaseContinuity.js';
+
+// planned-restart-keeps-lead §1 step 1 — the request-file poll's cadence decision (nextRequestPollMs) is modeled by
+// the planned-restart-lease-continuity controller in src/testing/selfActionRegistry.ts (declared in LeaseCoordinator.ts).
+/** planned-restart-keeps-lead §2 — initializeLease waits this long for the reclaim's verdict. */
+const RECLAIM_WAIT_MS = 120_000;
 
 /** Observability shape for /health.multiMachine.syncStatus (spec §11). */
 export interface MultiMachineSyncStatus {
@@ -59,6 +68,11 @@ export interface MultiMachineSyncStatus {
   awakeMachineCount: number | null;
   /** Which basis produced `awakeMachineCount` (machine-coherence-guard §5b, D5). */
   awakeMachineCountSource: 'lease-live' | 'registry-roles' | 'unavailable';
+  /**
+   * planned-restart-keeps-lead — the restart episode open on this holder, or null. Machine-local and
+   * in-memory: only the holder has one, and it says what the holder is doing with its lease.
+   */
+  pendingRestart?: { requestedBy: string; since: string; windowMs: number } | null;
   /** Once-per-process lease backing-store decision made during server boot. */
   leaseMedium?: {
     medium: 'git' | 'local' | 'unchecked';
@@ -134,6 +148,8 @@ const MIN_RENEW_RETRY_MS = 1_000;
  * 30s leaves a 3× margin while keeping the write off every lease tick.
  */
 const POLL_INTENT_REFRESH_MS = 30_000;
+/** Evidence only: how long after a silent-standby relinquish to look for a new holder. */
+const SILENT_STANDBY_EVIDENCE_CHECK_MS = 5 * 60_000;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -205,6 +221,12 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   private leaseRenewing: boolean = false;
+  /** planned-restart-keeps-lead — the 2 s request-file poll (backs off on a read error) and the signal subscriptions. */
+  private restartPollTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartPollIntervalMs = RESTART_REQUEST_POLL_MS;
+  private restartSignalDetach: Array<() => void> = [];
+  private reclaimNudgeTimer: ReturnType<typeof setTimeout> | null = null;
+  private probeListenerDetach: (() => void) | null = null;
   /** ACT-1308 — one-shot retry armed after an unconfirmed renewal. */
   private leaseRenewRetryTimer: ReturnType<typeof setTimeout> | null = null;
   /** ACT-1308 — logged once per episode when the renew tick skips while we are still the named holder. */
@@ -291,6 +313,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leaseStallSurfaced: boolean = false;
   /** F3 — per-incarnation latch so a silent standby relinquishes its held lease once. */
   private silentStandbyRelinquished: boolean = false;
+  /** Evidence only: when to check whether anyone took the lease a silent standby gave up. */
+  private silentStandbyEvidenceCheckAtMs: number | null = null;
+  /** Evidence only: the last G2 decision recorded, so a repeated decision is not a row per cadence. */
+  private g2EvidenceKey: string | null = null;
+  /** Evidence only: the last poll intent recorded, and an open write-failure episode. */
+  private pollIntentEvidence: boolean | null = null;
+  private pollIntentWriteFailEvidenced = false;
+  /** Evidence only: the open churn-breaker latch episode. */
+  private churnEvidenceLatched = false;
+  private churnEvidenceExhausted = false;
   /**
    * U4.3 — the rope-health registration handle (the resolver instance is a
    * closure-local in server.ts; the prober registers its merged view here so
@@ -328,6 +360,16 @@ export class MultiMachineCoordinator extends EventEmitter {
 
   /** This machine's identity (null if not initialized). */
   get identity(): MachineIdentity | null { return this._identity; }
+
+  private leaseHold: (() => boolean) | null = null;
+
+  /** A condition that keeps this machine from taking the lease. It never gives one up. */
+  setLeaseHold(hold: () => boolean): void { this.leaseHold = hold; }
+
+  /** When a peer's lease was last seen, on this machine's clock, or null. */
+  leaseObservedAt(machineId: string): number | null {
+    return this.leaseCoordinator?.peerLeaseObservations().get(machineId)?.observedAtMs ?? null;
+  }
 
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
@@ -423,6 +465,11 @@ export class MultiMachineCoordinator extends EventEmitter {
     // corruption, disk glitch, or manual cleanup hard-crashes the server
     // on boot because updateRole throws on unknown machineIds.
     this.identityManager.ensureSelfRegistered(this._identity, 'standby');
+    // Every machine carries a human name (operator report 2026-11-12: footers read
+    // "Machine m_4851af"). Backfills this machine's own friendly name and names peers that have
+    // none; never replaces a name a person chose. Best-effort: naming never blocks boot.
+    try { this.identityManager.ensureNicknames(this._identity.machineId); }
+    catch { /* @silent-fallback-ok — an unwritable registry keeps the current names; the next boot retries */ }
 
     // Integrated-Being v1 — per-machine ledger warning.
     // Emit exactly once per startup when the registry shows >1 machine.
@@ -560,6 +607,10 @@ export class MultiMachineCoordinator extends EventEmitter {
       this.leaseRenewTimer = null;
     }
     this.clearLeaseRenewRetry();
+    if (this.restartPollTimer) { clearTimeout(this.restartPollTimer); this.restartPollTimer = null; }
+    if (this.reclaimNudgeTimer) { clearTimeout(this.reclaimNudgeTimer); this.reclaimNudgeTimer = null; }
+    for (const d of this.restartSignalDetach.splice(0)) { try { d(); } catch { /* @silent-fallback-ok */ } }
+    if (this.probeListenerDetach) { try { this.probeListenerDetach(); } catch { /* @silent-fallback-ok */ } this.probeListenerDetach = null; }
     this.nonceStore.destroy();
   }
 
@@ -679,6 +730,62 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   attachLeaseCoordinator(lc: LeaseCoordinator): void {
     this.leaseCoordinator = lc;
+    // planned-restart-keeps-lead §1 steps 1–2: every in-process restart writer announces before it
+    // publishes; the holder answers with its window renewal. The subscription is process-wide (one
+    // coordinator per server), error-isolated by the signal module, and detached in stop().
+    for (const d of this.restartSignalDetach.splice(0)) { try { d(); } catch { /* @silent-fallback-ok */ } }
+    this.restartSignalDetach.push(onRestartRequested(
+      (announce) => (this.leaseRenewStopped || this.isLeaseObserveOnly) ? null : lc.beginPendingRestart(announce),
+      { onError: (err) => console.warn(`[MultiMachine] lease-continuity: the restart announce could not be handled: ${err instanceof Error ? err.message : String(err)}`) },
+    ));
+    this.restartSignalDetach.push(onRestartWithdrawn(() => lc.noteRestartWithdrawn()));
+    if (typeof lc.attachProbeListenerForReclaim === 'function') {
+      this.probeListenerDetach = lc.attachProbeListenerForReclaim(() => this.nudgeReclaim());
+    }
+  }
+
+  /** planned-restart-keeps-lead §2 step 2 — a probe landed while a window lease awaits its verdict: evaluate soon. */
+  private nudgeReclaim(): void {
+    const lc = this.leaseCoordinator;
+    if (!lc || typeof lc.bootReclaimPending !== 'function' || !lc.bootReclaimPending() || this.reclaimNudgeTimer) return;
+    this.reclaimNudgeTimer = setTimeout(() => {
+      this.reclaimNudgeTimer = null;
+      if (this.leaseTicking || !this.leaseCoordinator?.bootReclaimPending()) return;
+      void this.tickLease();
+    }, 50);
+    if (this.reclaimNudgeTimer.unref) this.reclaimNudgeTimer.unref();
+  }
+
+  /**
+   * planned-restart-keeps-lead — the lease coordinator says an episode opened or ended: the renew
+   * tick moves to the pending cadence (10 s on a tunnel) or back, and the poll starts or stops.
+   */
+  noteLeaseEpisodeChange(_pending: boolean): void {
+    if (this.leaseRenewTimer) this.startLeaseRenewTimer();
+    this.startRestartRequestPoll();
+  }
+
+  /** §1 step 1 — the request-file poll runs while this machine holds the lease (2 s; backs off on read errors). */
+  private startRestartRequestPoll(): void {
+    if (this.restartPollTimer || this.leaseRenewStopped || !this.leaseCoordinator) return;
+    if (typeof this.leaseCoordinator.pollRequestFile !== 'function') return;
+    const arm = () => {
+      if (this.leaseRenewStopped) return;
+      this.restartPollTimer = setTimeout(() => {
+        this.restartPollTimer = null;
+        let ok = true;
+        try {
+          ok = this.leaseCoordinator?.pollRequestFile() ?? true;
+        } catch (err) {
+          ok = false;
+          console.warn(`[MultiMachine] lease-continuity: request-file poll error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        this.restartPollIntervalMs = nextRequestPollMs(ok, this.restartPollIntervalMs);
+        arm();
+      }, this.restartPollIntervalMs);
+      if (this.restartPollTimer.unref) this.restartPollTimer.unref();
+    };
+    arm();
   }
 
   /** Origin egress requires a current fenced lease throughout its lifetime.
@@ -686,8 +793,30 @@ export class MultiMachineCoordinator extends EventEmitter {
    * dependency when its flag is omitted. Explicit false remains authoritative;
    * this never grants a lease or enables the other B3 rollout mechanisms. */
   enrollOriginWriterLeaseRenewal(): () => void {
-    if (this.leaseRenewStopped) throw new Error('origin-lease-renewal-coordinator-stopped');
-    const owner = Symbol('telegram-origin-writer');
+    return this.enrollLeaseRenewalDependency('telegram-origin-writer');
+  }
+
+  /** A peer's signed pull is about to read our lease. Same limits as the renew timer. */
+  noteLeasePeerPull(): void {
+    if (this.leaseRenewStopped || !this.leaseCoordinator || this.isLeaseObserveOnly || !this.resilientRenewEnabled()) return;
+    try {
+      this.leaseCoordinator.confirmHoldOnPeerPull();
+    } catch (err) {
+      // @silent-fallback-ok: a read-only pull must still be answered; the renew timer retries.
+      console.warn(`[MultiMachine] could not extend the lease on a peer pull: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Any conversation surface that admits work only while this machine holds the
+   * lease (the Telegram origin writer, native app conversations) enrolls the same
+   * holder-only renewal carrier. Without it a non-development agent's lease lapses
+   * at TTL and is re-acquired only at the next 2-minute heartbeat tick, so the
+   * surface refuses work for the gap and the epoch climbs every tick. Same rules
+   * as the origin writer: explicit false wins; renewal never acquires and stops
+   * the moment a higher epoch is seen. Returns an idempotent release. */
+  enrollLeaseRenewalDependency(name: string): () => void {
+    if (this.leaseRenewStopped) throw new Error('lease-renewal-coordinator-stopped');
+    const owner = Symbol(name);
     this.originLeaseRenewalOwners.add(owner);
     if (!this.leaseRenewTimer) this.startLeaseRenewTimer();
     return () => {
@@ -823,17 +952,28 @@ export class MultiMachineCoordinator extends EventEmitter {
         peerConfirmsGlobalOutage: false, // refinement → local-failure-safe direction
       });
       sharedG1ZombieRelinquishLedger.record(decision, nowIso);
+      const zombieEvidenceContext = {
+        action: decision.action, dryRun: cfg.dryRun, staleStreak: this._g1RelinquishStreak,
+        pollAttemptedFresh, pollSucceededFresh, serveProgressedFresh,
+      };
+      if (!decision.relinquish && decision.action !== 'healthy' && decision.action !== 'not-applicable') {
+        // Runs on the evaluator's cadence, so a held state is one row per hour, not per tick.
+        featureEvidence.recordAtMostEvery('multiMachine.zombieRelinquish', `held|${decision.reason}`, 60 * 60 * 1000, { kind: 'held', reason: decision.reason, context: zombieEvidenceContext });
+      }
       if (decision.relinquish && !cfg.dryRun) {
         // Quiesce + relinquish (signed tombstone). Best-effort — a failure retries next tick.
         try {
           await this.leaseCoordinator.relinquishAndBroadcast();
           this._g1RelinquishStreak = 0;
           console.log(`[MultiMachine] [g1-relinquish] zombie holder relinquished (${decision.reason})`);
+          featureEvidence.record('multiMachine.zombieRelinquish', { kind: 'fired', reason: decision.reason, context: zombieEvidenceContext });
         } catch (err) {
           console.error(`[MultiMachine] [g1-relinquish] relinquish failed: ${(err as Error).message}`);
+          featureEvidence.record('multiMachine.zombieRelinquish', { kind: 'error', reason: 'relinquish-failed', context: zombieEvidenceContext });
         }
       } else if (decision.relinquish && cfg.dryRun) {
         console.log(`[MultiMachine] [g1-relinquish] DRY-RUN would relinquish (${decision.reason})`);
+        featureEvidence.recordAtMostEvery('multiMachine.zombieRelinquish', `would|${decision.reason}`, 60 * 60 * 1000, { kind: 'fired', reason: `would-relinquish: ${decision.reason}`, context: zombieEvidenceContext });
       }
       return { decision: decision.action, relinquished: decision.relinquish && !cfg.dryRun };
     } finally {
@@ -889,6 +1029,17 @@ export class MultiMachineCoordinator extends EventEmitter {
       globalOutageEvidence: false,
     });
     sharedG2NobodyPollingLedger.recordClaim(decision, nowIso);
+    const g2Key = `${decision.action}|${decision.reason}|${cfg.dryRun}`;
+    if (g2Key !== this.g2EvidenceKey) {
+      this.g2EvidenceKey = g2Key;
+      if (decision.action !== 'claim' && decision.action !== 'no-op' && decision.action !== 'await-confirm') {
+        featureEvidence.record('multiMachine.nobodyPollingRecovery', {
+          kind: decision.action === 'fail-closed' ? 'error' : 'held',
+          reason: `${decision.action}: ${decision.reason}`,
+          context: { verdict: verdict.verdict, silenceConfirmed, silenceStreak: this._g2SilenceStreak, machines: capacities.length, online: capacities.filter((c) => c.online).length, claimant: decision.claimant, dryRun: cfg.dryRun },
+        });
+      }
+    }
     const outcome = await applyNobodyPollingRecovery({
       decision,
       dryRun: cfg.dryRun,
@@ -940,9 +1091,18 @@ export class MultiMachineCoordinator extends EventEmitter {
       });
       this.lastPollIntentKey = `${shouldPoll}|${normalizedRole}|${epoch}`;
       this.lastPollIntentWriteMs = Date.now();
+      this.pollIntentWriteFailEvidenced = false;
       return true;
     } catch (err) {
       console.log(`[MultiMachine] [poll-intent] write failed (non-fatal): ${(err as Error).message}`);
+      if (!this.pollIntentWriteFailEvidenced) {
+        this.pollIntentWriteFailEvidenced = true;
+        featureEvidence.record('multiMachine.pollFollowsLease', {
+          kind: 'error',
+          reason: 'poll intent write failed',
+          context: { shouldPoll, role: normalizedRole, epoch, code: (err as NodeJS.ErrnoException).code ?? null },
+        });
+      }
       return false;
     }
   }
@@ -961,23 +1121,52 @@ export class MultiMachineCoordinator extends EventEmitter {
     const key = `${shouldPoll}|${role === 'awake' ? 'awake' : 'standby'}|${this.leaseCoordinator.currentEpoch()}`;
     const unchanged = key === this.lastPollIntentKey;
     if (unchanged && Date.now() - this.lastPollIntentWriteMs < POLL_INTENT_REFRESH_MS) return;
-    this.writeLeasePollIntent(shouldPoll, role);
+    const wrote = this.writeLeasePollIntent(shouldPoll, role);
+    if (wrote && this.pollIntentEvidence !== shouldPoll) this.recordPollIntentEvidence(shouldPoll, role);
+  }
+
+  /** Evidence only: one row per change of the published poll intent, never one per reconcile. */
+  private recordPollIntentEvidence(shouldPoll: boolean, role: MachineRole): void {
+    const first = this.pollIntentEvidence === null;
+    this.pollIntentEvidence = shouldPoll;
+    try {
+      const holder = this.leaseCoordinator?.currentHolder?.() ?? null;
+      const nobody = !shouldPoll && !first && !holder;
+      featureEvidence.record('multiMachine.pollFollowsLease', {
+        kind: nobody ? 'error' : 'fired',
+        reason: nobody ? 'poll intent stopped with no lease holder visible, so nobody may be polling' : (shouldPoll ? 'poll intent start' : 'poll intent stop'),
+        context: { shouldPoll, role, holder, epoch: this.leaseCoordinator?.currentEpoch?.() ?? null, firstThisBoot: first },
+      });
+    } catch { /* @silent-fallback-ok — evidence only; a partial coordinator must not break the lease tick */ }
   }
 
   /**
-   * B3 keeps its standalone dev gate. An enrolled origin writer requires this
-   * existing renewal carrier when the flag is omitted; explicit booleans win.
+   * B3 keeps its standalone dev gate. An enrolled lease-dependent surface (origin
+   * writer, app conversations) requires this existing renewal carrier when the
+   * flag is omitted; explicit booleans win.
    * Read live so disabling it takes effect on the next renew tick.
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return explicit ?? (this.originLeaseRenewalOwners.size > 0 || resolveDevAgentGate(undefined, this.config));
+    // A store holding only this machine's copy has no other way to keep a held lease alive between
+    // heartbeats. Without the timer the peer's pull takes the lease in every gap, and each swap is a
+    // role change that restarts a machine, whatever conversation surfaces the agent has.
+    return explicit ?? (
+      this.originLeaseRenewalOwners.size > 0
+      || !!this.leaseCoordinator?.hasNoSharedMedium()
+      || resolveDevAgentGate(undefined, this.config)
+    );
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
   private renewIntervalMs(): number {
     const ttl = this.leaseCoordinator?.ttlMs ?? MAX_RENEW_INTERVAL_MS * 2;
     return Math.max(MIN_RENEW_INTERVAL_MS, Math.min(MAX_RENEW_INTERVAL_MS, Math.round(ttl * RENEW_SAFETY_FACTOR)));
+  }
+
+  /** The renew tick's normal cadence (planned-restart-keeps-lead derives the pending cadence and the window margin from it). */
+  leaseRenewIntervalMs(): number {
+    return this.renewIntervalMs();
   }
 
   /**
@@ -993,7 +1182,9 @@ export class MultiMachineCoordinator extends EventEmitter {
       this.leaseRenewTimer = null;
     }
     if (this.leaseRenewStopped || !this.leaseCoordinator || !this.resilientRenewEnabled()) return;
-    const interval = this.renewIntervalMs();
+    // planned-restart-keeps-lead §1 step 4 — while a restart is pending the tick runs at the pending cadence.
+    const pending = typeof this.leaseCoordinator.pendingRenewIntervalMs === 'function' ? this.leaseCoordinator.pendingRenewIntervalMs() : null;
+    const interval = pending ?? this.renewIntervalMs();
     if (!this.leaseRenewStartLogged) {
       console.log(`[MultiMachine] lease renew timer armed (every ${interval}ms; TTL ${this.leaseCoordinator.ttlMs}ms) — B3 resilient renew`);
       this.leaseRenewStartLogged = true;
@@ -1016,8 +1207,15 @@ export class MultiMachineCoordinator extends EventEmitter {
     // silent-standby zombie) would have its lease renewed/re-broadcast here for
     // up to ~TTL, fighting the silent-standby-relinquish self-heal. (2nd-pass.)
     if (this.isLeaseObserveOnly) return;
+    // planned-restart-keeps-lead — the tick reads the request file too, so a pending restart is seen
+    // even where the poll is not running yet.
+    if (typeof this.leaseCoordinator.pollRequestFile === 'function') {
+      try { this.leaseCoordinator.pollRequestFile(); } catch { /* @silent-fallback-ok: the poll logs and backs off on its own */ }
+    }
     // Only a current holder renews. A lapsed/non-holder is acquireIfEligible's job.
     if (!this.leaseCoordinator.holdsLease()) {
+      // Rule 1b: a window lease awaiting its peer verdict is not a lapse; its renewal is the reclaim's.
+      if (typeof this.leaseCoordinator.bootReclaimPending === 'function' && this.leaseCoordinator.bootReclaimPending()) return;
       // ACT-1308 — this skip used to be silent. When the lease still names us,
       // skipping means our own lease lapsed between renewals: say so once.
       const lease = this.leaseCoordinator.currentLease();
@@ -1051,7 +1249,8 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this.leaseCoordinator.holdsLease()) return;
     const interval = this.renewIntervalMs();
     // A confirmation from this attempt is newer than any part of the interval.
-    if (this.leaseCoordinator.msSinceConfirmedRenewal() < interval / 2) return;
+    const sinceConfirmed = this.leaseCoordinator.msSinceConfirmedRenewal();
+    if (sinceConfirmed === null || sinceConfirmed < interval / 2) return; // null: nothing confirmed yet in this process (rule 1b), the reclaim path retries
     const delay = Math.max(MIN_RENEW_RETRY_MS, Math.round(interval * RENEW_RETRY_FRACTION));
     console.log(`[MultiMachine] lease renewal unconfirmed; retrying in ${delay}ms (last confirmed ${this.leaseCoordinator.msSinceConfirmedRenewal()}ms ago, TTL ${this.leaseCoordinator.ttlMs}ms)`);
     this.leaseRenewRetryTimer = setTimeout(() => {
@@ -1071,6 +1270,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** Whether this machine structurally holds the lease (false if none attached). */
   holdsLease(): boolean {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
+  }
+
+  /**
+   * lease-freshness-lapse-retry — how long since this machine last CONFIRMED a lease
+   * renewal, and the lease lifetime, so a send refused at the network boundary can say
+   * whether the renewal lapsed or the lease was lost within its lifetime. Null when no
+   * lease coordinator is attached (nothing to measure). Read-only.
+   */
+  leaseFreshness(): { msSinceConfirmedRenewal: number | null; ttlMs: number; verdict: LeaseHoldVerdict } | null {
+    return this.leaseCoordinator?.renewalFreshness() ?? null;
   }
 
   /**
@@ -1175,6 +1384,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       awakeMachineCount,
       awakeMachineCountSource,
       ...(this.leaseMediumProvider ? { leaseMedium: this.leaseMediumSafe() } : {}),
+      pendingRestart: typeof this.leaseCoordinator?.pendingRestartStatus === 'function' ? this.leaseCoordinator.pendingRestartStatus() : null,
       leaseTickWatchdog: this.leaseCoordinator
         ? {
             lastTickAgeMs: this.lastTickRunMonoMs > 0 ? this.monoNowMs() - this.lastTickRunMonoMs : -1,
@@ -1268,12 +1478,60 @@ export class MultiMachineCoordinator extends EventEmitter {
     // in `reconcileRoleToLease`, so the tail write clobbered the truth and left a
     // lease HOLDER published as `standby / do-not-poll`.
     this.writeLeasePollIntent(false, 'standby');
+    // takeover-ready-pool R1 (boot claim safety): the boot claim goes through the boot hold
+    // AFTER the pull loop starts, so the hold's probes accrue while it waits instead of the
+    // claim running once against the stale local view before anyone was asked.
+    const bootClaimSafety = typeof this.leaseCoordinator.bootClaimSafetyEnabled === 'function'
+      && this.leaseCoordinator.bootClaimSafetyEnabled();
+    // planned-restart-keeps-lead §2 (rule 1b): a window lease on disk is confirmed with a peer before
+    // it is held, whatever the switches say. The pull loop starts first so a round can be evaluated.
+    const reclaim = typeof this.leaseCoordinator.bootReclaimPending === 'function' && this.leaseCoordinator.bootReclaimPending();
+    if (bootClaimSafety || reclaim) {
+      this.bootHoldNudgePending = true;
+      this.startLeasePullLoop();
+    }
     if (this.isLeaseObserveOnly) {
-      // Silent standby: do NOT acquire — only observe the primary's lease.
+      // Silent standby: do NOT acquire — only observe the primary's lease. A window lease left by a
+      // boot that is now muted is given up with a tombstone (it was never a muted machine's to hold).
+      if (reclaim) await this.leaseCoordinator.relinquishAndBroadcast('observe-only boot: the window lease left by the last restart is not held by a muted machine');
       this.reconcileRoleToLease('lease-init-observe-only');
+    } else if (reclaim) {
+      // Hold the tick guard, evaluate once against the first round, then wait for the verdict:
+      // confirmed, superseded or survivor hold, up to 120 s (longer after a late promotion, and while
+      // a peer answers unsigned, capped at R1's ceiling). The role is reconciled only once a verdict
+      // is in or the wait ends; the pull tick's nudge keeps evaluating after that.
+      this.leaseTicking = true;
+      try {
+        await this.leaseCoordinator.acquireIfEligible();
+      } finally {
+        this.leaseTicking = false;
+      }
+      const lc = this.leaseCoordinator;
+      const startedAt = Date.now();
+      let maxWait = lc.reclaimAfterLatePromotion() ? Math.max(RECLAIM_WAIT_MS, lc.reclaimRemainingWindowMs()) : RECLAIM_WAIT_MS;
+      let verdict = await lc.awaitReclaimVerdict(maxWait);
+      while (verdict === 'timeout' && lc.bootReclaimPending() && lc.reclaimHasUnsignedPeer() && Date.now() - startedAt < UNSIGNED_WINDOW_CEILING_MS) {
+        maxWait = Math.min(RECLAIM_WAIT_MS, UNSIGNED_WINDOW_CEILING_MS - (Date.now() - startedAt));
+        if (maxWait <= 0) break;
+        verdict = await lc.awaitReclaimVerdict(maxWait);
+      }
+      if (verdict === 'timeout') {
+        console.log('[MultiMachine] lease-continuity: no peer confirmed this machine\'s renewal within the boot wait; it comes up standby and keeps asking.');
+      }
+      this.reconcileRoleToLease('lease-init-reclaim');
     } else if (this.shouldDeferToPreferred()) {
       // F4 — boot as a deferential standby to a healthy preferred peer (no contend).
       this.reconcileRoleToLease('lease-init-defer-preferred');
+    } else if (bootClaimSafety) {
+      // The pull loop is already running; hold the tick guard so its nudge cannot run a
+      // second acquisition alongside this one.
+      this.leaseTicking = true;
+      try {
+        await this.leaseCoordinator.acquireIfEligible();
+      } finally {
+        this.leaseTicking = false;
+      }
+      this.reconcileRoleToLease('lease-init');
     } else {
       await this.leaseCoordinator.acquireIfEligible();
       this.reconcileRoleToLease('lease-init');
@@ -1286,6 +1544,8 @@ export class MultiMachineCoordinator extends EventEmitter {
     // B3 — keep the held lease fresh (renew before it lapses) so the epoch stops
     // climbing. No-op unless resilientRenew resolves on (dev-gate).
     this.startLeaseRenewTimer();
+    // planned-restart-keeps-lead §1 step 1 — watch for out-of-process restart requests while holding.
+    this.startRestartRequestPoll();
   }
 
   /**
@@ -1337,7 +1597,15 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.leaseTickStartMonoMs = this.monoNowMs(); // F1b — for the watchdog's ceiling-gated guard reset
     // B2 — advance the churn breaker so a settled system auto-resets the latch
     // after a calm window (no-op when the churnDetector gate is off).
-    this.getChurnBreaker()?.tick();
+    const churnTick = this.getChurnBreaker()?.tick();
+    if (churnTick && this.churnEvidenceLatched && !churnTick.latched) {
+      this.churnEvidenceLatched = false;
+      featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+        kind: 'held',
+        reason: 'breaker reset after a calm window',
+        context: { flipsInWindow: churnTick.flipsInWindow, latchesInHour: churnTick.latchesInHour },
+      });
+    }
     try {
       this.leaseCoordinator.sampleLiveness?.();
       if (this.isLeaseObserveOnly) {
@@ -1354,7 +1622,33 @@ export class MultiMachineCoordinator extends EventEmitter {
           this.leaseCoordinator.currentHolder() === this._identity.machineId
         ) {
           this.silentStandbyRelinquished = true;
-          await this.withTickTimeout('relinquishAndBroadcast', () => this.leaseCoordinator!.relinquishAndBroadcast());
+          const relinquishEpoch = this.leaseCoordinator.currentEpoch?.() ?? null;
+          try {
+            await this.withTickTimeout('relinquishAndBroadcast', () => this.leaseCoordinator!.relinquishAndBroadcast());
+          } catch (err) {
+            featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+              kind: 'error',
+              reason: 'relinquish failed or timed out',
+              context: { epoch: relinquishEpoch, error: err instanceof Error ? err.message.slice(0, 80) : 'unknown' },
+            });
+            throw err;
+          }
+          this.silentStandbyEvidenceCheckAtMs = Date.now() + SILENT_STANDBY_EVIDENCE_CHECK_MS;
+          featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+            kind: 'fired',
+            reason: 'silent standby gave up the lease it still held',
+            context: { epoch: relinquishEpoch, holderAfter: this.leaseCoordinator.currentHolder() },
+          });
+        }
+        if (this.silentStandbyEvidenceCheckAtMs !== null && Date.now() >= this.silentStandbyEvidenceCheckAtMs) {
+          this.silentStandbyEvidenceCheckAtMs = null;
+          if (!this.leaseCoordinator.currentHolder()) {
+            featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+              kind: 'error',
+              reason: 'nobody holds the lease after the silent standby gave it up',
+              context: { epoch: this.leaseCoordinator.currentEpoch?.() ?? null, waitedMs: SILENT_STANDBY_EVIDENCE_CHECK_MS },
+            });
+          }
         }
         // Silent standby: never acquire/renew — just reconcile role to the
         // observed holder (effectiveView folds the primary's broadcast lease).
@@ -1371,6 +1665,7 @@ export class MultiMachineCoordinator extends EventEmitter {
         // failed eval must never wedge the lease tick.
         await this.evaluateZombieRelinquish(performance.now(), new Date().toISOString())
           .catch(() => { /* @silent-fallback-ok — G1 eval is best-effort; retried next tick */ });
+      } else if (this.shouldDeferToPreferred()) {
         // F4 (preferred-awake, opt-in) — we are NON-preferred and observe the
         // preferred machine holding a HEALTHY lease: defer, do not contend. If the
         // preferred goes down/unhealthy, shouldDeferToPreferred() flips false and we
@@ -1378,7 +1673,8 @@ export class MultiMachineCoordinator extends EventEmitter {
         // machine creates no contention to leapfrog, so no agreement-gossip needed).
         this.reconcileRoleToLease('lease-tick-defer-preferred');
       } else {
-        await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
+        // A machine that cannot honour team access must not start serving (team-roles-and-access, "Step 2b").
+        if (!this.leaseHold?.()) await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
         this.reconcileRoleToLease('lease-tick');
       }
     } catch {
@@ -1443,6 +1739,22 @@ export class MultiMachineCoordinator extends EventEmitter {
           `${v.exhausted ? ' (EXHAUSTED — operator attention)' : ''} — ` +
           `${dryRun ? `would hold role '${wouldRole}' (dry-run)` : `holding role '${wouldRole}'`}`,
         );
+        if (!this.churnEvidenceLatched) {
+          this.churnEvidenceLatched = true;
+          featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+            kind: 'fired',
+            reason: dryRun ? 'would latch the flap breaker' : 'latched the flap breaker',
+            context: { flipsInWindow: v.flipsInWindow, latchesInHour: v.latchesInHour, wouldRole, dryRun, transitionReason: reason },
+          });
+        }
+        if (v.exhausted && !this.churnEvidenceExhausted) {
+          this.churnEvidenceExhausted = true;
+          featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+            kind: 'error',
+            reason: 'breaker exhausted its latch budget: stays latched until the operator clears it',
+            context: { flipsInWindow: v.flipsInWindow, latchesInHour: v.latchesInHour, wouldRole, dryRun },
+          });
+        }
       }
     }
   }
@@ -1489,6 +1801,9 @@ export class MultiMachineCoordinator extends EventEmitter {
    * every acquire/renew decision and all its observe-only/preferred/fencing
    * gates. Re-arms via `arm` even on failure.
    */
+  /** takeover-ready-pool R1 — one tickLease nudge owed for the moment the boot hold ends. */
+  private bootHoldNudgePending = false;
+
   private async tickLeasePull(arm: () => void): Promise<void> {
     if (this.leasePulling) { arm(); return; }
     this.leasePulling = true;
@@ -1501,6 +1816,28 @@ export class MultiMachineCoordinator extends EventEmitter {
       try {
         this.config.onLeasePullTick?.();
       } catch { /* @silent-fallback-ok — observation is signal-only; the next tick retries */ }
+      // takeover-ready-pool R1 — the moment the boot hold ends, run the one authoritative lease
+      // actor once instead of waiting for the next heartbeat tick. The nudge adds no authority:
+      // tickLease still applies every acquisition rule (a live holder is never taken over).
+      if (this.bootHoldNudgePending) {
+        const lc = this.leaseCoordinator!;
+        const reclaimPending = typeof lc.bootReclaimPending === 'function' && lc.bootReclaimPending();
+        if (reclaimPending) {
+          // planned-restart-keeps-lead §2 — a window lease awaits its verdict: evaluate against this round.
+          if (!this.leaseTicking) await this.tickLease();
+        } else if (typeof lc.bootHoldActive !== 'function') {
+          this.bootHoldNudgePending = false;
+        } else if (!lc.bootHoldActive()) {
+          if (lc.holdsLease()) {
+            this.bootHoldNudgePending = false;
+          } else if (!this.leaseTicking) {
+            // Cleared only when the tick really runs: a heartbeat tick in flight would make
+            // tickLease return at once, and the nudge would be lost until the next heartbeat.
+            this.bootHoldNudgePending = false;
+            await this.tickLease();
+          }
+        }
+      }
       // Only reconcile role / surface split-brain when a peer lease was actually
       // OBSERVED. A solo machine (no peers, or no peer lease seen this boot) must
       // NEVER be demoted by the pull loop on a transient self-lease lapse — that
@@ -1577,7 +1914,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const weHold = this.leaseCoordinator.holdsLease();
     const peer = this.leaseCoordinator.observedPeerLease();
     const ourEpoch = this.leaseCoordinator.currentEpoch();
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (contested && !this.leasePullContested) {
       this.leasePullContested = true;
       console.warn(
@@ -1622,7 +1959,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const ourEpoch = this.leaseCoordinator.currentEpoch();
     // A genuine same-epoch contested tie: we still hold AND a peer claims a
     // different-holder lease at our epoch (or higher-but-equal after a leapfrog).
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (!contested) {
       // Falling edge — the tie resolved (we adopted the winner, or it cleared).
       // Drop the episode so a future contested tie starts a fresh latch.
