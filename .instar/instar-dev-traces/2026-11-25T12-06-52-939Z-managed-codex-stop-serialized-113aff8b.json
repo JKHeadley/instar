@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-serialized",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T12:06:52.939Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-serialized.md",
+  "artifactSha256": "518f750c73ed9ab027ee97cb7306d54475257b2ac5caf246f2d2b6ecc8437bf1",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopRuntime.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-stop-store.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only disposable managed composition invokes this path, and the switch stays off.",
+  "eli16Path": "upgrades/managed-codex-stop-serialized.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-serialized.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-route",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T10:53:44.474Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-route.md",
+  "artifactSha256": "27a60f550b8d423c51efe90e3e95fb7ebca5f034f53d6960d763153674cab56c",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "tests/integration/autonomous-sessions-api.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "No production composition provides the new optional dependency. Existing request authorization and decision behavior are unchanged.",
+  "eli16Path": "upgrades/managed-codex-stop-route.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-route.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

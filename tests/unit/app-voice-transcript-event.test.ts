@@ -8,7 +8,7 @@
  *    late transcripts (stored `late`, one follow-up line or a note for the next delivery),
  *    platform conversations (stored, no follow-up promised), and notes that arrive after dispatch.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -420,25 +420,52 @@ describe('finding 1: a per-process limit on provider calls', () => {
 
   it('queue time counts toward the ceiling: a call still queued ends "timed out waiting"; a running one past it times out; both settle', async () => {
     const timeouts: Array<number | undefined> = [];
+    let markStarted!: () => void;
+    let markQueued!: () => void;
+    let finishProvider!: (text: string) => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const queued = new Promise<void>((resolve) => { markQueued = resolve; });
+    const provider = new Promise<string>((resolve) => { finishProvider = resolve; });
     const { svc } = service({
       concurrency: 1, ceilingMs: 60, deadlineMs: 2_000,
-      transcribe: (_p, _t, timeoutMs) => { timeouts.push(timeoutMs); return new Promise((r) => setTimeout(() => r('too slow'), 150)); },
+      transcribe: (_p, _t, timeoutMs) => {
+        timeouts.push(timeoutMs);
+        markStarted();
+        return provider;
+      },
     });
     const first = await voiceMessage(svc);
     const second = await voiceMessage(svc);
-    // Start the first note and wait until it holds the slot: each line awaits an async session copy
-    // before queueing, so under Promise.all the second note could claim the slot first (a CI flake).
-    const pa = lines(svc, first);
-    for (let i = 0; i < 200 && timeouts.length === 0; i++) await settle(1);
-    const [[a], [b]] = await Promise.all([pa, lines(svc, second)]);
-    expect(a).toMatch(/\(transcription unavailable: the transcription service timed out; /);
-    expect(b).toMatch(/\(transcription unavailable: timed out waiting; /);
-    expect(timeouts).toHaveLength(1); // the queued call never reached the provider
-    expect(timeouts[0]!).toBeLessThanOrEqual(60);
-    // Recorded, never retried.
-    expect((await lines(svc, second))[0]).toMatch(/timed out waiting/);
-    await settle(150);
-    expect(timeouts).toHaveLength(1);
+    const queue = svc as unknown as { acquireTranscribeSlot(waitMs: number): Promise<boolean> };
+    const acquire = queue.acquireTranscribeSlot.bind(queue);
+    let attempts = 0;
+    const slots = vi.spyOn(queue, 'acquireTranscribeSlot').mockImplementation((waitMs) => {
+      const slot = acquire(waitMs);
+      if (++attempts === 2) markQueued();
+      return slot;
+    });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const firstLines = lines(svc, first);
+      await started;
+      const secondLines = lines(svc, second);
+      // Both notes have finished the asynchronous session-file copy and reached the real queue.
+      await queued;
+      await vi.advanceTimersByTimeAsync(60);
+      const [[a], [b]] = await Promise.all([firstLines, secondLines]);
+      expect(a).toMatch(/\(transcription unavailable: the transcription service timed out; /);
+      expect(b).toMatch(/\(transcription unavailable: timed out waiting; /);
+      expect(timeouts).toHaveLength(1);
+      expect(timeouts[0]!).toBeLessThanOrEqual(60);
+      expect((await lines(svc, second))[0]).toMatch(/timed out waiting/);
+      finishProvider('too slow');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(timeouts).toHaveLength(1);
+    } finally {
+      finishProvider('too slow');
+      vi.useRealTimers();
+      slots.mockRestore();
+    }
   });
 });
 

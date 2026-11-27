@@ -125,3 +125,30 @@ describe('autonomous-stop-hook.sh VAULT_AUTH_RESOLVE exact-hash upgrade', () => 
     expect(result.skipped.some((s) => s.includes('no exact stock hash for vault-auth upgrade'))).toBe(true);
   });
 });
+
+describe('managed Codex Stop hook upgrade', () => {
+  const prior = execFileSync('git', ['show', `e965a2d32e91303c1fab9d26f0ec12779e633154:${HOOK_REL}`]).toString();
+  const resolver = '.claude/skills/autonomous/scripts/resolve-auth.sh';
+
+  it('upgrades exact packaged predecessor bytes once', () => {
+    const projectDir = makeProject();
+    const dst = deploy(projectDir, HOOK_REL, prior);
+    const first = run(projectDir);
+    expect(first.errors).toEqual([]);
+    expect(first.upgraded).toContain('skills/autonomous/hooks/autonomous-stop-hook.sh (managed Codex Stop transport)');
+    expect(fs.readFileSync(dst, 'utf8')).toContain('hook-capability: MANAGED_CODEX_STOP');
+    expect(run(projectDir).upgraded).not.toContain('skills/autonomous/hooks/autonomous-stop-hook.sh (managed Codex Stop transport)');
+  });
+
+  it('warns once for a missing known resolver and preserves the local hook', () => {
+    const projectDir = makeProject();
+    const custom = prior + `\nauth=$(bash ${resolver} 2>/dev/null)\nauth=$(bash ${resolver} 2>/dev/null)\n`;
+    const dst = deploy(projectDir, HOOK_REL, custom);
+    const first = run(projectDir);
+    expect(first.errors.filter(error => error.includes('references missing'))).toHaveLength(1);
+    expect(fs.readFileSync(dst, 'utf8')).toBe(custom);
+    deploy(projectDir, resolver, '#!/bin/bash\n');
+    expect(run(projectDir).errors).toEqual([]);
+    expect(fs.readFileSync(dst, 'utf8')).toBe(custom);
+  });
+});

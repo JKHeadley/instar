@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T12:16:27.672Z",
+  "slug": "managed-codex-project-dispatch",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 76,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexProjectDispatch.ts"
+    ],
+    "addedLines": 76,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

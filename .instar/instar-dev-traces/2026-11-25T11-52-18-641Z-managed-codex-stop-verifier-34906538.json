@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-verifier",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:52:18.641Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-verifier.md",
+  "artifactSha256": "1ee214a4a5c01462b26ae60ccce11abc78733131e00b4c1c28739d511278aff5",
+  "coveredFiles": [
+    "src/core/ManagedCodexStopDecision.ts",
+    "src/core/ManagedCodexStopStore.ts",
+    "src/core/ManagedCodexStopVerifier.ts",
+    "tests/e2e/managed-codex-stop-lifecycle.test.ts",
+    "tests/unit/managed-codex-stop-verifier.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The only consumer is a temporary test agent and live startup does not inject this verifier.",
+  "eli16Path": "upgrades/managed-codex-stop-verifier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-verifier.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

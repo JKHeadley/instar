@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "managed-codex-stop-registry",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T11:21:16.543Z",
+  "artifactPath": "upgrades/side-effects/managed-codex-stop-registry.md",
+  "artifactSha256": "c949557f3d9602232c13d97fcc1e36627cca39164ec7deb0666d955d7031c00c",
+  "coveredFiles": [
+    "src/data/feature-ladders.json",
+    "tests/unit/lint-dev-agent-dark-gate.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Registers a rollout plan without changing the off switch or worker behavior.",
+  "eli16Path": "upgrades/managed-codex-stop-registry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/managed-codex-stop-registry.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

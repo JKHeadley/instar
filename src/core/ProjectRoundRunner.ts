@@ -101,6 +101,13 @@ export interface ProjectRoundRunnerConfig {
   ackGapCap?: number;
 }
 
+export interface ManagedRoundCandidate {
+  workKey: string;
+  revision: string;
+  topicId: string;
+  machineId: string;
+}
+
 export class ProjectRoundRunner {
   private tracker: InitiativeTracker;
   private stateDir: string;
@@ -130,6 +137,33 @@ export class ProjectRoundRunner {
    * skipped in this PR; it lands when the drift-check HTTP endpoint is
    * wired into the routes ctx (Phase 1b follow-up).
    */
+  /**
+   * Identify the approved work for the one-item managed slice. A candidate is
+   * not a launch permit: the caller must still reserve the shared execution
+   * claim and validate current conversation custody before dispatch.
+   */
+  managedRoundCandidate(projectId: string, roundIndex: number): ManagedRoundCandidate | undefined {
+    const result = this.preflight(projectId, roundIndex);
+    if (!result.ok) return;
+
+    const { project, round, children, ownerMachineId } = result;
+    const child = children[0];
+    if (project.status !== 'active' || project.needsUser || project.blockers.length > 0
+      || project.ownerMachineId !== ownerMachineId || !project.telegramTopicId
+      || (project.lastAckedRoundIndex ?? -1) < roundIndex
+      || children.length !== 1 || round.itemIds.length !== 1
+      || child.parentProjectId !== project.id || child.pipelineStage !== 'approved'
+      || child.status !== 'active' || child.needsUser || child.blockers.length > 0
+      || !Number.isSafeInteger(project.version) || !Number.isSafeInteger(child.version)) return;
+
+    return {
+      workKey: JSON.stringify([project.id, roundIndex, child.id]),
+      revision: JSON.stringify([project.version, child.version]),
+      topicId: project.telegramTopicId,
+      machineId: ownerMachineId,
+    };
+  }
+
   preflight(projectId: string, roundIndex: number): PreflightResult {
     // ── Step 0: tracker present ───────────────────────────────────
     if (!this.tracker) {

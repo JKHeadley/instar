@@ -1135,6 +1135,11 @@ export interface DarkGateExclusion {
 }
 
 export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
+  {
+    configPath: 'autonomousSessions.managedCodexContinuation.enabled',
+    category: 'action-bearing',
+    reason: 'may return a real native continuation directive; this slice requires an explicit disposable lifecycle opt-in',
+  },
   { configPath: 'notifications.selectivity.digest.enabled', category: 'optional-integration', reason: 'A daily digest is an explicit operator notification preference, never an automatic development-agent opt-in.' },
   // ── destructive — kills/deletes on a heuristic; off + dry-run for EVERYONE ──
   {

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T12:25:52.132Z",
+  "slug": "managed-codex-round-candidate",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ProjectRoundRunner.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

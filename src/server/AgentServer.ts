@@ -167,6 +167,7 @@ import type { StallTriageNurse } from '../monitoring/StallTriageNurse.js';
 import type { MultiMachineCoordinator } from '../core/MultiMachineCoordinator.js';
 import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
+import { createManagedCodexStopRuntime } from '../core/ManagedCodexStopRuntime.js';
 import { createRoutes } from './routes.js';
 import { getSelfActionGovernor } from '../monitoring/selfaction/governor.js';
 import { createFileRoutes } from './fileRoutes.js';
@@ -2014,6 +2015,8 @@ export class AgentServer {
     enforcedTerminationStatus?: (() => unknown) | null;
     /** Records operator stop instructions for the drainer's R2.6 validation. */
     operatorStopRecorder?: (topicId: number | null) => void;
+    managedCodexStop?: Omit<Parameters<typeof createManagedCodexStopRuntime>[0], 'enabled'>;
+
     /** SleepWakeDetector — timer-drift sleep detection with CPU-starvation guard.
      *  Powers GET /monitoring/sleep-wake (wake + suppression telemetry). */
     sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
@@ -7240,6 +7243,10 @@ export class AgentServer {
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
+      decideManagedCodexStop: options.managedCodexStop ? createManagedCodexStopRuntime({
+        ...options.managedCodexStop,
+        enabled: () => options.config.autonomousSessions?.managedCodexContinuation?.enabled === true,
+      }) : undefined,
       sleepWakeDetector: options.sleepWakeDetector ?? null,
       telegramBridgeConfig: options.telegramBridgeConfig ?? null,
       telegramBridge: options.telegramBridge ?? null,

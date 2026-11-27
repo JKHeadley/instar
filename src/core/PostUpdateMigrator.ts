@@ -8098,17 +8098,27 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       // placeholder and every hook call 403'd. Exact-stock replacement only;
       // customized hook bytes remain untouched.
       const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
-      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (vault-aware bearer-token resolution)';
+      const vaultStockSha = 'a7193fff6de4134653b7eb7658814f5e7cea222ea610a4cccd3b7a9318d9e486';
+      const obsoleteResolver = '.claude/skills/autonomous/scripts/resolve-auth.sh';
       try {
         const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
         if (!fs.existsSync(deployed)) return;
         const current = fs.readFileSync(deployed, 'utf8');
-        if (current.includes('VAULT_AUTH_RESOLVE')) return; // already current — idempotent
+        if (current.includes('hook-capability: MANAGED_CODEX_STOP')) return;
         const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
-        const stock = currentSha256 === AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256
+        const vaultStock = currentSha256 === vaultStockSha;
+        const stock = vaultStock || currentSha256 === AUTONOMOUS_STOP_HOOK_PREPARATION_CARRIER_SHA256
           || (AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256);
         if (!stock) {
-          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for vault-auth upgrade)`);
+          if (current.includes('$(bash ' + obsoleteResolver + ' ')
+            && !fs.existsSync(path.join(this.config.projectDir, obsoleteResolver))) {
+            result.errors.push(`${relPath}: customized hook references missing ${obsoleteResolver}; compare with the bundled hook`);
+          }
+          // Preserve other operator customizations without repeatedly reporting
+          // current vault-aware copies as old vault-auth layouts.
+          if (!current.includes('VAULT_AUTH_RESOLVE')) {
+            result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for vault-auth upgrade)`);
+          }
           return;
         }
         const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
@@ -8117,8 +8127,8 @@ if [[ "$ACTIVE" != "true" ]]; then`;
           return;
         }
         const next = fs.readFileSync(bundled, 'utf8');
-        if (!next.includes('VAULT_AUTH_RESOLVE')) {
-          result.errors.push(`${relPath} migration: bundled hook lacks VAULT_AUTH_RESOLVE`);
+        if (!next.includes('VAULT_AUTH_RESOLVE') || !next.includes('hook-capability: MANAGED_CODEX_STOP')) {
+          result.errors.push(`${relPath} migration: bundled hook lacks managed Stop support or vault authentication`);
           return;
         }
         const tempPath = `${deployed}.vault-auth.${process.pid}.${randomUUID()}.tmp`;
@@ -8133,7 +8143,9 @@ if [[ "$ACTIVE" != "true" ]]; then`;
             });
           }
         }
-        result.upgraded.push(label);
+        result.upgraded.push(vaultStock
+          ? 'skills/autonomous/hooks/autonomous-stop-hook.sh (managed Codex Stop transport)'
+          : 'skills/autonomous/hooks/autonomous-stop-hook.sh (vault-aware bearer-token resolution)');
       } catch (err) {
         result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T10:42:46.280Z",
+  "slug": "managed-codex-stop-core",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ManagedCodexStopDecision.ts",
+      "src/core/ManagedCodexStopReceipt.ts"
+    ],
+    "addedLines": 113,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

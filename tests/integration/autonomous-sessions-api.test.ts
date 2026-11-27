@@ -54,6 +54,10 @@ describe('Multi-session autonomy API (integration)', () => {
     app.use(express.json());
     const router = createRoutes({
       config, state,
+      decideManagedCodexStop: ({ sessionId, turnId }: { sessionId: string; turnId?: string }) => {
+        if (sessionId !== 'managed-fixture') return undefined;
+        return turnId === 'current' ? { decision: 'continue', reasonText: 'fixture directive' } : { decision: 'allow' };
+      },
       sessionManager: { sendInput: (tmux: string, input: string) => { sentInputs.push({ tmux, input }); return true; } } as any,
       scheduler: null, telegram: null, relationships: null,
       feedback: null, dispatches: null, updateChecker: null, autoUpdater: null,
@@ -88,6 +92,44 @@ describe('Multi-session autonomy API (integration)', () => {
   afterAll(async () => {
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
     project.cleanup();
+  });
+
+  it('uses the managed decision before an explicit continuation ledger', async () => {
+    const topicId = '9949';
+    const sessionId = 'managed-fixture';
+    const headers = { 'Content-Type': 'application/json' };
+    const enrolled = await fetch(baseUrl + '/continuation/start', {
+      method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, tasks: ['ordinary ledger task'] }),
+    });
+    expect(enrolled.ok).toBe(true);
+
+    for (const [turnId, decision] of [['old', 'allow'], ['current', 'continue']]) {
+      const response = await fetch(baseUrl + '/continuation/decide', {
+        method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, turnId }),
+      });
+      expect(response.ok).toBe(true);
+      expect(await response.json()).toMatchObject({ decision });
+    }
+
+    const response = await fetch(baseUrl + '/continuation/9949/status');
+    expect(await response.json()).toMatchObject({ continuationCount: 0 });
+  });
+
+  it('refuses a tagged managed Stop when no managed verifier recognizes it', async () => {
+    const topicId = '9950';
+    const sessionId = 'unverified-managed-fixture';
+    const headers = { 'Content-Type': 'application/json' };
+    const started = await fetch(baseUrl + '/continuation/start', {
+      method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, tasks: ['ordinary ledger task'] }),
+    });
+    expect(started.ok).toBe(true);
+    const decision = await fetch(baseUrl + '/continuation/decide', {
+      method: 'POST', headers, body: JSON.stringify({ topicId, sessionId, managedStop: true }),
+    });
+    expect(decision.ok).toBe(true);
+    expect(await decision.json()).toEqual({ decision: 'allow' });
+    const status = await fetch(baseUrl + '/continuation/9950/status');
+    expect(await status.json()).toMatchObject({ continuationCount: 0 });
   });
 
   it('GET /autonomous/sessions lists active per-topic jobs', async () => {

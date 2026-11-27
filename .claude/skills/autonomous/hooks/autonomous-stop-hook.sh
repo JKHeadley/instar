@@ -100,6 +100,8 @@ fi
 # normal codex stop is unaffected — this is the instant-rollback flag (flip it off and
 # the standing hook is a no-op again, no redeploy). Claude (IS_CODEX=0) skips this.
 CODEX_TASK_CONTINUATION_ENABLED=0
+# hook-capability: MANAGED_CODEX_STOP — server-authorized managed callbacks.
+CODEX_MANAGED_STOP=0
 if [[ "$IS_CODEX" == "1" ]]; then
   CODEX_GATES=$(python3 -c "
 import json
@@ -113,7 +115,8 @@ except Exception:
 " 2>/dev/null || echo "0:0")
   CODEX_LOOP_ENABLED="${CODEX_GATES%%:*}"
   CODEX_TASK_CONTINUATION_ENABLED="${CODEX_GATES##*:}"
-  if [[ "$CODEX_LOOP_ENABLED" != "1" ]] && [[ "$CODEX_TASK_CONTINUATION_ENABLED" != "1" ]]; then
+  if [[ "${INSTAR_MANAGED_CODEX_STOP:-}" == "1" ]]; then CODEX_MANAGED_STOP=1; fi
+  if [[ "$CODEX_LOOP_ENABLED" != "1" ]] && [[ "$CODEX_TASK_CONTINUATION_ENABLED" != "1" ]] && [[ "$CODEX_MANAGED_STOP" != "1" ]]; then
     exit 0
   fi
 fi
@@ -148,14 +151,21 @@ except Exception: print('')" 2>/dev/null || echo "")
 # authenticated decision route remain the mutation/decision authority.
 continuation_decision() {
   [[ "$IS_CODEX" == "1" ]] || return 0
-  [[ "$CODEX_TASK_CONTINUATION_ENABLED" == "1" ]] || return 0
+  [[ "$CODEX_TASK_CONTINUATION_ENABLED" == "1" || "$CODEX_MANAGED_STOP" == "1" ]] || return 0
   [[ -n "$MY_TOPIC" ]] || return 0
   local port auth agent_id decision reason
   port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
   auth=$(resolve_auth_token)
   agent_id=$(python3 -c "import json;c=json.load(open('.instar/config.json'));print(c.get('projectName') or c.get('agentName') or 'local-stop-hook')" 2>/dev/null | tr -d '\r\n' || echo "local-stop-hook")
   [[ -n "$agent_id" ]] || agent_id="local-stop-hook"
-  decision=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}' \
+  local payload
+  if [[ "$CODEX_MANAGED_STOP" == "1" ]]; then
+    payload=$(printf '%s' "$HOOK_INPUT" | jq -c --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" \
+      '{topicId:$topicId,sessionId:$sessionId,managedStop:true,turnId:.turn_id,lastAssistantMessage:.last_assistant_message}')
+  else
+    payload=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}')
+  fi
+  decision=$(printf '%s' "$payload" \
     | curl -sS -m 5 -H "Authorization: Bearer $auth" -H "X-Instar-AgentId: $agent_id" -H 'Content-Type: application/json' \
       --data-binary @- "http://127.0.0.1:${port}/continuation/decide" 2>/dev/null || echo "")
   if [[ "$(printf '%s' "$decision" | jq -r '.decision // ""' 2>/dev/null)" == "continue" ]]; then

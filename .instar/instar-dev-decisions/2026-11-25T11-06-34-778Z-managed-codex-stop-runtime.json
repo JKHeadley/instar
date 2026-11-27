@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T11:06:34.778Z",
+  "slug": "managed-codex-stop-runtime",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/config/ConfigDefaults.ts",
+      "src/core/ManagedCodexStopRuntime.ts",
+      "src/core/ManagedCodexStopStore.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 60,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
