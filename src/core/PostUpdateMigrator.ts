@@ -14082,6 +14082,11 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
     }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.queueCap')) {
+      content += '\n- Local Verify admission depth uses `monitoring.localVerify.queueCap`. It reads integers from 10 through 30 live and defaults to 10. Lowering the limit lets admitted work drain.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the Local Verify admission limit');
+    }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';

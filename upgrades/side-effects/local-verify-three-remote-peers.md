@@ -58,3 +58,7 @@ Remove the third entry after any reservation on it has drained, or revert and sh
 ## Conclusion
 
 The parser fixture covers the third peer, overflow, duplicates, self, and malformed URLs. The dispatch fixture checks distinct accepted reservations on three peers while the local slot is occupied. The migration fixture covers existing instructions and idempotence. The reviewer concurred with the change on static review and identified the failed-file diagnosis interaction recorded above.
+
+The coordinator reads `monitoring.localVerify.queueCap` live. It accepts integers from 10 through 30 and defaults to 10. Lowering the limit slows new admissions while the existing queue drains. Entries already admitted stay eligible for restoration after a restart.
+
+Drain the queue to the old admission limit before reverting to a binary with the fixed restore limit. The independent queue-cap review checked admission, restore, and the existing overflow paths.

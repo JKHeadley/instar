@@ -11,3 +11,5 @@ The machine coordinating tests can now share full test runs with three other Mac
 ## Summary of New Capabilities
 
 Use up to four machines in one Local Verify pool, including the coordinator.
+
+The coordinator reads `monitoring.localVerify.queueCap` live. It accepts integers from 10 through 30 and defaults to 10. Lowering the limit slows new admissions while the existing queue drains. Entries already admitted stay eligible for restoration after a restart.

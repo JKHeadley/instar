@@ -57,6 +57,8 @@ export interface LocalVerifyConfigBlock {
   importRelatedRerun?: boolean;
   /** Retry only named assertions on this verifier. Absent means off. */
   namedFlakeRetry?: boolean;
+  /** Coordinator admission depth, read live. Accepts integers from 10 through 30. */
+  queueCap?: number;
   /**
    * `off` (default), `on` or `alternate`: on this machine, each lane of a pull request's verify
    * runs a small first part before the rest (the change's own test files, the files it failed on
@@ -666,7 +668,7 @@ export function wireLocalVerifyPeers(
  */
 export function wireLocalVerifySwitches(
   svc: Pick<LocalVerifyService, 'setMainRedHoldEnabled' | 'setFailFastEnabled' | 'setLaneShards' | 'setPreflightMode' | 'setImportRelatedRerunEnabled' | 'setQueueControlsEnabled' | 'setPeerWorksThroughRestart'>
-    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff' | 'setNamedFlakeRetryEnabled'>>,
+    & Partial<Pick<LocalVerifyService, 'setLikelyFailingFirst' | 'setLikelyFailingFirstOff' | 'setNamedFlakeRetryEnabled' | 'setQueueCap'>>,
   liveConfig: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void },
 ): void {
   svc.setMainRedHoldEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.mainRedHold', true) !== false);
@@ -676,6 +678,7 @@ export function wireLocalVerifySwitches(
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
   // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
   svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
+  svc.setQueueCap?.(() => liveConfig.get<unknown>('monitoring.localVerify.queueCap', null));
   svc.setNamedFlakeRetryEnabled?.(() => liveConfig.get<boolean>('monitoring.localVerify.namedFlakeRetry', false) === true);
   // Off unless set: no hold or front route answers and stored choices are not applied (docs/specs/local-verify-queue-controls.md).
   svc.setQueueControlsEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.queueControls', false) === true);

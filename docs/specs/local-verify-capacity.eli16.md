@@ -29,3 +29,5 @@ When an Instar update is waiting for a test run to finish, both machines wait in
 **Trust, stated plainly.** The Mini is treated like the Studio: if someone took over the Mini, they could fake a passing result, just as they could if they took over the Studio. That is the same trust that already covers all of the operator's machines.
 
 What you need to decide: nothing to turn this on; it ships switched off and I turn it on once it's merged. The only open question is whether to drop batching.
+
+The coordinator reads `monitoring.localVerify.queueCap` live. It accepts integers from 10 through 30 and defaults to 10. Lowering the limit slows new admissions while the existing queue drains. Entries already admitted stay eligible for restoration after a restart.

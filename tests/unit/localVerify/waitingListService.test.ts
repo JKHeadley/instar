@@ -120,6 +120,24 @@ function views(...prs: number[]): Record<number, PrView> {
 }
 
 describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
+  it('reads an increased cap live and drains excess admissions after the cap is lowered', async () => {
+    const prViews = views(50, 60, 70);
+    const s = setup({ views: prViews });
+    await fill(s);
+    let cap = CAP + 2;
+    s.svc.setQueueCap(() => cap);
+    expect(await s.svc.request(50, { explicit: true })).toMatchObject({ ok: true, status: 'queued' });
+    expect(await s.svc.request(60, { explicit: true })).toMatchObject({ ok: true, status: 'queued' });
+    cap = CAP;
+    expect(await s.svc.request(70, { explicit: true })).toMatchObject({ ok: false, code: 'queue-full' });
+    expect(s.prQueue().slice(-2)).toEqual([50, 60]);
+    expect(s.prQueue()).toHaveLength(CAP + 2);
+    const restarted = setup({ views: prViews, stateDir: s.stateDir });
+    await restarted.svc.restoreQueue();
+    expect(restarted.prQueue()).toEqual(expect.arrayContaining([50, 60]));
+    expect(await restarted.svc.request(70, { explicit: true })).toMatchObject({ ok: false, code: 'queue-full' });
+  });
+
   it('the oldest waiter is admitted first; a newer PR does not take the freed slot', async () => {
     const s = setup({ views: views(50, 60, 70) });
     await fill(s);

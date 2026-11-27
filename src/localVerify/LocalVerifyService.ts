@@ -256,11 +256,13 @@ export const QUEUE_PRIORITY = Object.freeze({ main: MAIN_VERIFY_LIMITS.priority,
  */
 export const THROUGHPUT_AGING_MS = 90 * 60_000;
 
+const MAX_QUEUE_CAP = 30;
+
 /** The queue cap an entry of this priority is admitted under: labelled throughput work gets a bounded overflow. */
-export function capFor(priority: number): number {
+export function capFor(priority: number, queueCap: number = LOCAL_VERIFY_LIMITS.queueCap): number {
   return priority === QUEUE_PRIORITY.mergeThroughput
-    ? LOCAL_VERIFY_LIMITS.queueCap + LOCAL_VERIFY_LIMITS.throughputOverflow
-    : LOCAL_VERIFY_LIMITS.queueCap;
+    ? queueCap + LOCAL_VERIFY_LIMITS.throughputOverflow
+    : queueCap;
 }
 
 /** The stored priority for a PR entry, from its labels. */
@@ -1036,6 +1038,7 @@ export class LocalVerifyService {
   private failFastEnabled: (() => boolean) | null = null;
   /** `monitoring.localVerify.importRelatedRerun`, read live when a run starts or is dispatched. Absent ⇒ off. */
   private importRelatedRerunEnabled: (() => boolean) | null = null;
+  private queueCapSetting: (() => unknown) | null = null;
   private namedFlakeRetryEnabled: (() => boolean) | null = null;
   private runLogsSweptAt = 0;
   /** `monitoring.localVerify.likelyFailingFirst`, read live at the start of each verify this machine runs. Absent ⇒ off. */
@@ -1244,6 +1247,15 @@ export class LocalVerifyService {
 
   /** Late-bind the live `monitoring.localVerify.importRelatedRerun` switch (spec local-verify-import-related-rerun.md). */
   setImportRelatedRerunEnabled(fn: (() => boolean) | null): void { this.importRelatedRerunEnabled = fn; }
+
+  setQueueCap(fn: () => unknown): void { this.queueCapSetting = fn; }
+
+  private queueCap(): number {
+    const value = this.queueCapSetting?.();
+    return typeof value === 'number' && Number.isInteger(value)
+      && value >= LOCAL_VERIFY_LIMITS.queueCap && value <= MAX_QUEUE_CAP
+      ? value : LOCAL_VERIFY_LIMITS.queueCap;
+  }
 
   setNamedFlakeRetryEnabled(fn: () => boolean): void { this.namedFlakeRetryEnabled = fn; }
 
@@ -1561,7 +1573,7 @@ export class LocalVerifyService {
       // push ordinary entries that were legitimately queued below the cap out of the queue.
       // +1: the run interrupted by the restart comes back at the head on top of a full overflow.
       // Entries an operator front or release admitted over the cap are restored too (their own bounded overflow).
-      if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1 + this.operatorRestoreAllowance()) { drops['queue-full']++; continue; }
+      if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput, MAX_QUEUE_CAP) + 1 + this.operatorRestoreAllowance()) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
         // The saved base, never the PR view's `baseRefOid`: that is the base as of the PR's last
@@ -2009,18 +2021,19 @@ export class LocalVerifyService {
     // Queue controls: an operator front or release admits into a full queue within its own
     // bounded overflow, and below the cap it does not wait behind the waiting list.
     const operatorAdmit = opts.operator && this.queueControlsOn() ? opts.operator : null;
+    const queueCap = this.queueCap();
     let operatorOverCap = false;
     // A pushed head re-queued in its kept place replaces an entry that was already admitted:
     // it is never refused for capacity (it would otherwise lose its place while the overflow is in use).
     if (operatorAdmit) {
-      if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+      if (!keptPlace && this.prQueueLength() >= queueCap) {
         if (this.operatorOverflowUsed() >= OPERATOR_QUEUE_LIMITS.overflow) {
           this.audit({ event: 'operator-overflow-full', pr, by: operatorAdmit, used: this.operatorOverflowUsed(), max: OPERATOR_QUEUE_LIMITS.overflow });
           return { ok: false, code: 'overflow-full' };
         }
         operatorOverCap = true;
       }
-    } else if (!keptPlace && this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+    } else if (!keptPlace && this.prQueueLength() >= queueCap) {
       // A queue full of HELD entries must not refuse the repair that would release them: a
       // repair candidate is admitted past the cap while the hold is active. There is no
       // second cap: candidates past it are bounded only by the open PRs that touch, name
@@ -2035,7 +2048,7 @@ export class LocalVerifyService {
       const agedWaiter = !replayPriority && !repair && requestedPriority !== QUEUE_PRIORITY.mergeThroughput
         && this.waiterAged(pr);
       const throughput = !replayPriority && !repair && (requestedPriority === QUEUE_PRIORITY.mergeThroughput || agedWaiter)
-        && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
+        && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput, queueCap);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
         const w = replayPriority ? null : this.waiting.refused(pr);
@@ -2052,11 +2065,11 @@ export class LocalVerifyService {
       // eligible cannot hold a slot empty. A labelled throughput PR, a replay and the one-shot
       // red→green failure re-run are admitted exactly as before (nothing would offer the re-run
       // again); a repair needs a red `main`, when the list reserves nothing.
-      const ahead = this.waitingAhead(pr);
+      const ahead = this.waitingAhead(pr, queueCap);
       if (ahead.length > 0) {
         const w = this.waiting.refused(pr);
         this.audit({ event: 'queue-full-waiting', pr, firstRefusedAt: w.firstRefusedAt, refusals: w.refusals,
-          waitPosition: ahead.length + 1, ahead: ahead.slice(0, 5).map((x) => x.pr), freeSlots: LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() });
+          waitPosition: ahead.length + 1, ahead: ahead.slice(0, 5).map((x) => x.pr), freeSlots: queueCap - this.prQueueLength() });
         return { ok: false, code: 'queue-full' };
       }
     }
@@ -2116,10 +2129,10 @@ export class LocalVerifyService {
    * `main` is not healthy (nothing is offered then) or nothing is queued (the verifier must
    * never sit idle for a reservation), or when there are more free slots than waiters ahead.
    */
-  private waitingAhead(pr: number): Waiter[] {
+  private waitingAhead(pr: number, queueCap: number): Waiter[] {
     if (!this.health.isHealthy() || this.prQueueLength() === 0) return [];
     const ahead = this.waiting.liveAhead(pr);
-    return ahead.length >= LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() ? ahead : [];
+    return ahead.length >= queueCap - this.prQueueLength() ? ahead : [];
   }
 
   /** Service tick: the waiting clock follows `main` health; idle waiters drop; closed or merged PRs leave (bounded batch). */
@@ -5090,7 +5103,7 @@ export class LocalVerifyService {
       seen.add(r.pr);
       // Skipped at the ordinary cap BEFORE asking (an overflow is audited and left failed, as
       // before). Below the cap the re-run is not held back by the waiting list (fb-7fde7f49-8ee).
-      if (this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) {
+      if (this.prQueueLength() >= this.queueCap()) {
         this.audit({ event: 'rerun-after-green-overflow', pr: r.pr, headSha: r.headSha });
         continue;
       }
@@ -5633,7 +5646,7 @@ export class LocalVerifyService {
     if (this.operatorPresent(pr)) placed = 'already-placed';
     else if (this.waiting.get(pr)) placed = 'waiting-list'; // placed there before a restart: its place is kept
     else if (h.entry) {
-      const full = this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap;
+      const full = this.prQueueLength() >= this.queueCap();
       if (full && this.operatorOverflowUsed() >= OPERATOR_QUEUE_LIMITS.overflow) {
         // The queue and its operator overflow are full: the head of the waiting list, so it takes the next free place.
         // The waiting list holds only the change number, so what the saved entry carried (a re-test
@@ -5971,7 +5984,7 @@ export class LocalVerifyService {
       const heldMs = h.takenAt !== undefined ? Math.max(0, this.now() - h.takenAt) : 0;
       let placed = 'already-placed';
       if (!this.operatorPresent(r.pr) && !this.waiting.get(r.pr)) {
-        if (h.entry && this.prQueueLength() < LOCAL_VERIFY_LIMITS.queueCap) {
+        if (h.entry && this.prQueueLength() < this.queueCap()) {
           this.queue.push(this.entryFromSaved(r.pr, h.entry, heldMs));
           placed = 'queue';
         } else if (h.entry || h.waiter) {
