@@ -32,6 +32,17 @@ export const NEVER_EDITABLE = [
   { prefix: 'node_modules/', why: 'Installed packages are never editable here.' },
   { prefix: '.instar/jobs/instar/', why: 'Built-in jobs are replaced on every update, so they are never editable here.' },
   { prefix: '.instar/config.json', why: 'The agent’s settings file is never editable here; ask the agent to change a setting.' },
+  { prefix: '.claude/settings.json', why: 'Hook settings decide which commands run, so they are never editable here.' },
+  { prefix: '.claude/settings.local.json', why: 'Hook settings decide which commands run, so they are never editable here.' },
+  { prefix: '.instar/hooks/', why: 'Hooks and scripts are never editable here.' },
+  { prefix: '.instar/scripts/', why: 'Hooks and scripts are never editable here.' },
+  { prefix: '.instar/jobs.json', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.instar/jobs/user/', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.instar/jobs/schedule/', why: 'Jobs decide what runs; edit them on the Schedule page.' },
+  { prefix: '.mcp.json', why: 'This file names the tool servers sessions start, so it is never editable here.' },
+  { prefix: '.codex/', why: 'This framework’s settings name commands it starts, so they are never editable here.' },
+  { prefix: '.gemini/', why: 'This framework’s settings name commands it starts, so they are never editable here.' },
+  { prefix: '.husky/', why: 'Git hooks run on every commit, so they are never editable here.' },
 ];
 export const NEVER_SHOWN_WORDS = 'Key material (the agent’s identity and machine keys, the key vault, signed-in account records) and files named like secrets (.env, *.key, *.pem, credentials, tokens) are never listed, shown or downloaded.';
 
@@ -93,13 +104,18 @@ export function fileKind(name) {
 
 // ── the server's refusals, in words ───────────────────────────────────────
 
+/** A 413 from the download route: over the (larger) download limit. */
+export function downloadTooLargeWords(data) {
+  return `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} limit for downloads.`;
+}
+
 /** Any non-200 from a file route → { kind, text }. A refusal is said, never hidden. */
 export function refusalWords(status, data) {
   const err = data && typeof data.error === 'string' ? data.error : '';
   if (status === 401) return { kind: 'signin', text: 'You are signed out. Sign in again to open this.' };
   if (status === 404 && /disabled/i.test(err)) return { kind: 'off', text: 'The file viewer is switched off on this agent.' };
   if (status === 404) return { kind: 'missing', text: 'There is no file or folder at this path.' };
-  if (status === 413) return { kind: 'too-large', text: `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} this page can open or download.` };
+  if (status === 413) return { kind: 'too-large', text: `This file is ${sizeWords(data && data.size) || 'too large'}, more than the ${sizeWords(data && data.maxSize) || 'size'} this page can show. You can still download it.` };
   if (status === 403) {
     if (/not permitted/i.test(err)) return { kind: 'never-shown', text: 'This file is never shown, by design. It holds key material the agent keeps to itself.' };
     if (/blocked for security/i.test(err)) return { kind: 'never-shown', text: 'This file is never shown, by design. Its name marks it as a secret (.env, a key, credentials or a token).' };

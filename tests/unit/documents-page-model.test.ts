@@ -22,6 +22,7 @@ const SAMPLE: Record<string, Record<string, unknown>> = {
   reanchor: { docId: DOC, commentKey: 'owner:y', onVersion: crypto.randomUUID(), start: 0, end: 5 },
   send: { docId: DOC, batchId: rid(), commentKeysHash: 'd'.repeat(64), primaryRow: 'A:12', messageRequestId: rid() },
   open: { docId: DOC },
+  'decide-on-phone': { docId: DOC, askId: crypto.randomUUID(), verdict: 'approve' },
 };
 
 describe('instar-docpage-v1 string', () => {
@@ -132,7 +133,7 @@ describe('selection → projection offsets', () => {
     expect(pieces[0].keys).toEqual([]);
   });
 
-  it('highlights only on the latest version and only placed open comments', () => {
+  it('highlights placed open comments on whichever version is being read', () => {
     const comments = [
       { key: 'a', start: 1, end: 3, resolved: false, anchorState: 'ok' },
       { key: 'b', start: 1, end: 3, resolved: true, anchorState: 'ok' },
@@ -140,7 +141,8 @@ describe('selection → projection offsets', () => {
       { key: 'd', start: 4, end: 9, resolved: false, anchorState: 'edited' },
     ];
     expect(m.highlightRanges({ version: { latest: true }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
-    expect(m.highlightRanges({ version: { latest: false }, comments })).toEqual([]);
+    expect(m.highlightRanges({ version: { latest: false }, comments }).map((r) => r.key)).toEqual(['a', 'd']);
+    expect(m.highlightRanges({ version: null, comments })).toEqual([]);
   });
 
   it('numbers ordered items per level', () => {
@@ -203,6 +205,12 @@ describe('links, location and words', () => {
     expect(m.anchorNote('edited')).toBe('The passage changed since this comment');
     expect(m.anchorNote('orphaned')).toBe('The passage this comment was on was removed');
     expect(m.anchorNote('ok')).toBeNull();
+    const page = { version: { id: 'v2' } };
+    const fromV1 = { onVersion: 'v1', onVersionLabel: 1 };
+    expect(m.anchorNote('ok', { onVersion: 'v2', onVersionLabel: 2 }, page)).toBeNull();
+    expect(m.anchorNote('ok', fromV1, page)).toBe('Made on version 1');
+    expect(m.anchorNote('edited', fromV1, page)).toBe('Made on version 1. The passage changed since this comment');
+    expect(m.anchorNote('orphaned', fromV1, page)).toBe("Made on version 1. This passage isn't in the version you're reading");
   });
 
   it('turns errors into plain words, never raw codes', () => {
@@ -263,5 +271,84 @@ describe('opening on a phone (fb-54b4d850-0de: the QR screen on the phone that w
     expect(m.prefersAppOpen({ inApp: false, coarsePointer: false, canHover: true })).toBe(false);
     expect(m.prefersAppOpen({ inApp: false, coarsePointer: true, canHover: true })).toBe(false); // touch laptop
     expect(m.prefersAppOpen({ inApp: true, coarsePointer: true, canHover: false })).toBe(false);
+  });
+});
+
+describe('the decision panel (document-decisions §3.3)', () => {
+  const ask = { askId: crypto.randomUUID(), question: 'Ship it?', questionHash: 'a'.repeat(64) };
+  const base = (decision: unknown, me: Record<string, unknown> = { isOwner: true, canAskPhone: true }, latest = true) => ({
+    agentName: 'Echo', primary: { name: 'Security' }, version: { id: 'v', label: 2, latest }, versions: [{ id: 'v1', label: 1 }, { id: 'v', label: 2 }],
+    me, decision: { ask, decision, waitingOnOwner: decision === null, crossed: false, concurrentVersionLabel: null, concurrentEdits: false, ownerName: 'Justin', writesBlockedBy: null },
+  });
+  it('a computer shows Approve and Decline on the document, confirmed on the phone', () => {
+    const v = m.decisionPanel(base(null))!;
+    expect(v.controls).toBe('phone-buttons');
+    expect(v.headline).toBe('Echo asks for your decision');
+    expect(v.question).toBe('Ship it?');
+  });
+  it('in the app the buttons hand off to the app, and an older app says to update', () => {
+    expect(m.decisionPanel(base(null), { inApp: true, appOps: ['reply', 'decide'] })!.controls).toBe('app-buttons');
+    expect(m.decisionPanel(base(null), { inApp: true, appOps: null })!.controls).toBe('update-app');
+  });
+  it('a PIN-only browser gets the path to the app, a member sees status only, an older version says open the latest', () => {
+    expect(m.decisionPanel(base(null, { isOwner: true, canAskPhone: false }))!.controls).toBe('open-in-app');
+    const member = m.decisionPanel(base(null, { isOwner: false }))!;
+    expect(member.controls).toBe('none');
+    expect(member.headline).toBe("Waiting for Justin's decision");
+    expect(m.decisionPanel(base(null, undefined, false))!.controls).toBe('open-latest');
+  });
+  it('SEC-088 interim: a held answer is a note only and never takes the owner\'s buttons away', () => {
+    const b = base(null);
+    const plain = m.decisionPanel(base(null))!;
+    (b.decision as Record<string, unknown>).confirmingElsewhere = true;
+    const v = m.decisionPanel(b)!;
+    expect(v.headline).toBe(plain.headline);
+    expect(v.lines.join(' ')).toMatch(/unconfirmed answer is waiting for confirmation by the machine your phone is paired with.*You can still answer here\./);
+    expect(v.controls).toBe(plain.controls);
+    expect(v.controls).not.toBe('none');
+    expect(v.waiting).toBe(true);
+  });
+  it('an approval names the version, and a later version is said to be not approved', () => {
+    const v = m.decisionPanel(base({ verdict: 'approve', versionLabel: 1, latest: false, at: '2026-11-17T18:00:00Z', delivered: true }))!;
+    expect(v.tone).toBe('ok');
+    expect(v.headline).toMatch(/^Approved by you · .* · version 1$/);
+    expect(v.lines).toContain('Version 2 is not approved (approved: version 1).');
+    expect(v.lines).toContain('Sent to Security.');
+  });
+  it('the phone-ask words never leave the owner at a dead end', () => {
+    expect(m.phoneAskWords('sent', 'approve')).toMatch(/^Confirm on your phone/);
+    expect(m.phoneAskWords('no-phone')).toMatch(/Pair your phone/);
+    expect(m.phoneAskWords('unavailable')).toMatch(/Open this document in the Instar app/);
+    expect(m.decisionPollDelays().reduce((a: number, b: number) => a + b, 0)).toBeLessThanOrEqual(600_000);
+  });
+});
+
+describe('joining a computer from a team invite (member-browser-any-computer)', async () => {
+  const { joinConfirmString, joinForgetString } = await import('../../src/server/documentJoinRoutes.js');
+  it('parses the join fragment: a 22-character code, an optional document id, nothing else', () => {
+    const code = 'A'.repeat(22);
+    expect(m.parseJoinFragment(`#v=1&c=${code}`)).toEqual({ code, docId: null });
+    const doc = crypto.randomUUID();
+    expect(m.parseJoinFragment(`#v=1&c=${code}&d=${doc}`)).toEqual({ code, docId: doc });
+    expect(m.parseJoinFragment(`#v=1&c=${code}&d=not-a-doc`)).toEqual({ code, docId: null });
+    expect(m.parseJoinFragment(`#v=2&c=${code}`)).toBeNull();
+    expect(m.parseJoinFragment('#v=1&c=short')).toBeNull();
+    expect(m.parseJoinFragment('')).toBeNull();
+  });
+  it('signs exactly what the server verifies', () => {
+    expect(m.joinConfirmString({ deviceId: 'd', host: 'Echo.Example.dev', timeMs: '1', code: '123456' })).toBe(joinConfirmString('d', 'echo.example.dev', '1', '123456'));
+    expect(m.joinForgetString({ deviceId: 'd', host: 'Echo.Example.dev', timeMs: '1' })).toBe(joinForgetString('d', 'echo.example.dev', '1'));
+  });
+  it('cleans a typed code, and words refusals plainly', () => {
+    expect(m.cleanJoinCode('123 456')).toBe('123456');
+    expect(m.cleanJoinCode('12345')).toBeNull();
+    expect(m.joinErrorWords(403, { error: 'wrong-code', attemptsLeft: 1 }, 'Justin')).toBe('That code isn\'t right. One try left.');
+    expect(m.joinErrorWords(403, null, 'Justin')).toContain('Ask Justin for a new link');
+    expect(m.joinErrorWords(409, { detail: 'Your agent is finishing an update on echo-laptop. Try this link again later.' }, 'Justin')).toContain('echo-laptop');
+  });
+  it('shows the end line only in the last 7 days', () => {
+    const now = Date.parse('2026-11-20T12:00:00Z');
+    expect(m.computerEndLine(new Date(now + 10 * 86_400_000).toISOString(), 'Justin', now)).toBeNull();
+    expect(m.computerEndLine(new Date(now + 3 * 86_400_000).toISOString(), 'Justin', now)).toMatch(/ask Justin for a new link\.$/);
   });
 });

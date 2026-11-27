@@ -183,7 +183,7 @@ describe('memory care — peers', () => {
     const h = harness();
     const sentTo: string[] = [];
     const client: PeerClient = {
-      status: async () => ({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: false }),
+      status: async () => ({ inFlight: null, verifierVersion: '1.0.0', policyHash: POLICY, slotBusy: false, signerKeyHash: 'a'.repeat(64) }),
       run: async (p, req) => { sentTo.push(p.machineId); return { ok: true, attemptId: req.attemptId }; },
       result: async () => ({ state: 'running' }),
       cancel: async () => {},
@@ -193,6 +193,8 @@ describe('memory care — peers', () => {
       peers: () => [{ machineId: 'm5pro', url: 'http://m5pro:4042' }, { machineId: 'mini', url: 'http://mini:4042' }],
       client,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+      // SEC-113 D1: both peers are pinned (this test is about placement, not signatures).
+      keyLookupFactory: () => () => ({ status: 'ok', publicKeyPem: '' }),
       peerFit: (id) => (id === 'm5pro' && m5Memory
         ? { eligible: false, reason: 'memory-pressure', score: null, memoryReason: m5Memory }
         : { eligible: true, reason: 'fits', score: 0.5 }),

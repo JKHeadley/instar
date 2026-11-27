@@ -29,10 +29,76 @@ export interface PinPlatformOps {
   edit(conversationKey: string, messageId: string, text: string): Promise<'edited' | 'not-modified' | 'missing'>;
 }
 
+export type RowCount = { label: string; value: number; tone?: 'ok' | 'attn' | 'bad' | 'quiet' };
+
+/** How many counts a row shows (spec part 2 §3.3: "three counts and opens to the rest"). */
+export const ROW_COUNTS_SHOWN = 3;
+/** The most counts an app summary may carry (ProjectAppCustomSource.writeSummary refuses more). */
+export const ROW_COUNTS_MAX = 12;
+
+/**
+ * A custom app's summary counts as the row carries them (part 2 §3.3): the first three are shown, the
+ * rest are folded into `moreCounts` (what the row opens to), never cut. Malformed entries are left out.
+ */
+export function foldRowCounts(raw: unknown): { counts: RowCount[]; moreCounts: RowCount[] } {
+  const all: RowCount[] = [];
+  if (Array.isArray(raw)) {
+    for (const c of raw.slice(0, ROW_COUNTS_MAX) as Array<Record<string, unknown> | null>) {
+      if (!c || typeof c.label !== 'string' || !c.label.trim() || typeof c.value !== 'number' || !Number.isFinite(c.value)) continue;
+      all.push({ label: c.label, value: c.value });
+    }
+  }
+  return { counts: all.slice(0, ROW_COUNTS_SHOWN), moreCounts: all.slice(ROW_COUNTS_SHOWN) };
+}
+
+/**
+ * Whether a custom app runs (part 2): `served` = an approved version runs; `copying` = an approved
+ * version is still reaching this machine; `off` = the owner stopped it; `not-approved` = no version has
+ * been approved on the owner's phone yet. A row that is `off` or `not-approved` has nothing to open.
+ */
+export type CustomAppRunState = 'served' | 'copying' | 'off' | 'not-approved';
+
+/** The row's run state from the custom-app source's served-version state. */
+export function customAppRunState(served: 'served' | 'copying' | 'none' | 'disabled'): CustomAppRunState {
+  switch (served) {
+    case 'served': return 'served';
+    case 'copying': return 'copying';
+    case 'disabled': return 'off';
+    default: return 'not-approved';
+  }
+}
+
+/** What customAppRow reads from the custom-app source (ProjectAppCustomSource). */
+export interface CustomAppRowSource {
+  app(appId: string): { appId: string; title: string; conversationKey: string } | null;
+  readSummary(appId: string): unknown;
+  specOk(appId: string): boolean;
+  servedVersion(appId: string): { state: 'served' | 'copying' | 'none' | 'disabled' };
+}
+
+/**
+ * A custom app by its ref, as the Work row reads it (the `customApp` dep, part 2): its summary with
+ * counts folded past three (§3.3), and whether it runs. Null for anything but an existing custom app.
+ */
+export function customAppRow(src: CustomAppRowSource, appRef: string): ReturnType<NonNullable<ProjectAppsRuntimeDeps['customApp']>> {
+  const m = /^custom:(pa_[0-9a-f]{16})$/.exec(appRef);
+  if (!m) return null;
+  const a = src.app(m[1]);
+  if (!a) return null;
+  const sum = src.readSummary(a.appId) as { headline?: unknown; counts?: unknown; asOf?: unknown; erased?: unknown; unreadable?: unknown } | null;
+  const summary: BuiltinSummary = !sum ? { state: 'pending' }
+    : sum.erased ? { state: 'unreadable', why: '(erased)' }
+    : sum.unreadable || typeof sum.headline !== 'string' ? { state: 'unreadable', why: 'This app\'s summary cannot be read on this machine.' }
+    : { state: 'ok', headline: sum.headline, ...foldRowCounts(sum.counts), asOf: String(sum.asOf ?? '') };
+  return { appId: a.appId, title: a.title, conversationKey: a.conversationKey, specOk: src.specOk(a.appId), summary, runState: customAppRunState(src.servedVersion(a.appId).state) };
+}
+
 export interface BuiltinSummary {
   state: 'ok' | 'pending' | 'unreadable';
   headline?: string;
-  counts?: Array<{ label: string; value: number; tone?: 'ok' | 'attn' | 'bad' | 'quiet' }>;
+  counts?: RowCount[];
+  /** Counts past the three a row shows, folded (part 2 §3.3). */
+  moreCounts?: RowCount[];
   asOf?: string;
   why?: string;
   action?: { label: string; href: string };
@@ -60,13 +126,15 @@ export interface ProjectAppsRuntimeDeps {
    * app or custom apps are off on this agent (then its rows are hidden and it cannot be offered).
    * Absent ⇒ custom apps are not available on this build.
    */
-  customApp?: (appRef: string) => { appId: string; title: string; conversationKey: string; specOk: boolean; summary?: BuiltinSummary } | null;
+  customApp?: (appRef: string) => { appId: string; title: string; conversationKey: string; specOk: boolean; summary?: BuiltinSummary; runState?: CustomAppRunState } | null;
   log?: (entry: Record<string, unknown>) => void;
 }
 
 export interface ProjectAppRow {
   appRef: string; title: string; openHref: string; nativeScreen?: string;
-  summary: { headline: string; counts: Array<{ label: string; value: number; tone?: string }>; asOf: string } | null;
+  summary: { headline: string; counts: Array<{ label: string; value: number; tone?: string }>; moreCounts?: Array<{ label: string; value: number; tone?: string }>; asOf: string } | null;
+  /** A custom app only: whether it runs (see CustomAppRunState). Absent on a builtin app. */
+  state?: CustomAppRunState;
   summaryState: 'ok' | 'pending' | 'unreadable'; summaryWhy?: string; summaryAction?: { label: string; href: string };
   pin?: { platform: PinPlatform; state: 'pinned' | 'pending' | 'failed' | 'uncertain' | 'out-of-date' | 'none'; reason?: string };
 }
@@ -165,7 +233,8 @@ export class ProjectAppsRuntime {
         return {
           appRef: p.appRef, title: this.titleOf(p.appRef), openHref: b?.consoleRoute ?? (c ? `/dashboard/project-app/?app=${c.appId}` : '#/work/board'),
           ...(b ? { nativeScreen: b.nativeScreen } : {}),
-          summary: s.state === 'ok' && s.headline && s.asOf ? { headline: s.headline, counts: s.counts ?? [], asOf: s.asOf } : null,
+          summary: s.state === 'ok' && s.headline && s.asOf ? { headline: s.headline, counts: s.counts ?? [], ...(s.moreCounts?.length ? { moreCounts: s.moreCounts } : {}), asOf: s.asOf } : null,
+          ...(c?.runState ? { state: c.runState } : {}),
           summaryState: s.state, ...(s.why ? { summaryWhy: s.why } : {}), ...(s.action ? { summaryAction: s.action } : {}),
           ...(platform ? { pin: this.pinState(platform, pins, base) } : {}),
         };

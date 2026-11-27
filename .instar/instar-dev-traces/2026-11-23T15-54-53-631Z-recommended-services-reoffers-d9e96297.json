@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "recommended-services-reoffers",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:54:53.631Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-reoffers.md",
+  "artifactSha256": "4503d5624b83f5f94ab1c97ba322dbfafffacc9c0f08e7bab275d4bf500ea22b",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-reoffers.eli16.md",
+    "docs/specs/recommended-services.eli16.md",
+    "docs/specs/recommended-services.md",
+    "src/data/awareness/recommended-services-reoffers.md",
+    "src/recommended/reoffers.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-reoffers.test.ts",
+    "tests/unit/recommended-services-reoffers.test.ts",
+    "upgrades/next/recommended-services-reoffers-secret-lost.md",
+    "upgrades/side-effects/recommended-services-reoffers.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Rollout step 4 slice B after merging main (slice A now merged as 3531): a secret missing at start re-offers Bitwarden after a no; dark; content identical to the slice commit.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

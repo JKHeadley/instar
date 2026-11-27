@@ -58,7 +58,7 @@ function make(over: Partial<JevCorrectionShadowDeps> = {}, p: Record<string, num
   return { shadow, fetchImpl: (over.fetchImpl as unknown as typeof fetchImpl) ?? fetchImpl, metrics, logPath, rows };
 }
 
-const USER = { topicId: 7, messageId: 101, fromUser: true, provenance: 'user' };
+const USER = { topicId: 7, messageId: 101, fromUser: true, provenance: 'user', telegramUserId: 111 }; // a verified sender (SEC-069)
 const AGENT = { topicId: 7, fromUser: false, provenance: 'agent' };
 
 describe('renderCorrectionState — what leaves the machine', () => {
@@ -113,7 +113,7 @@ describe('the question', () => {
   it('sends the pinned model, the questions and the scrubbed state with the key as a bearer token', async () => {
     const m = make();
     m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
-    m.shadow.observe({ ...USER, text: 'You removed the wrong one, put it back.' });
+    m.shadow.observe({ ...USER, text: 'You removed the wrong one, put it back.' }, 111);
     await m.shadow.lastCheck;
     expect(m.fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = m.fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
@@ -132,7 +132,7 @@ describe('observe — rows', () => {
     const m = make();
     const text = 'Stop asking me to approve every fix, this is really frustrating.';
     m.shadow.observe({ ...AGENT, text: 'Shall I wait for your approval?' });
-    m.shadow.observe({ ...USER, text });
+    m.shadow.observe({ ...USER, text }, 111);
     await m.shadow.lastCheck;
     const [row] = m.rows();
     expect(row).toMatchObject({
@@ -152,30 +152,30 @@ describe('observe — rows', () => {
     const m = make();
     const text = 'These are not critical things that need my approval. Please carry on.';
     expect(realLayer0(text)?.learningKind ?? null).toBeNull();
-    m.shadow.observe({ ...USER, text });
+    m.shadow.observe({ ...USER, text }, 111);
     await m.shadow.lastCheck;
     expect(m.rows()[0]).toMatchObject({ jevFlag: true, layer0: { signal: false }, agree: false, hadContext: false });
   });
 
   it('flag threshold on P(correction)+P(preference): 0.5 flags, 0.49 does not; a split vote still flags', async () => {
     const a = make({}, { correction: 0.2, preference: 0.3, neither: 0.5, cannot_tell: 0 });
-    a.shadow.observe({ ...USER, text: 'From now on keep it short.' });
+    a.shadow.observe({ ...USER, text: 'From now on keep it short.' }, 111);
     await a.shadow.lastCheck;
     expect(a.rows()[0]).toMatchObject({ jevFlag: true });
 
     const b = make({}, { correction: 0.2, preference: 0.29, neither: 0.51, cannot_tell: 0 });
-    b.shadow.observe({ ...USER, text: 'From now on keep it short.' });
+    b.shadow.observe({ ...USER, text: 'From now on keep it short.' }, 111);
     await b.shadow.lastCheck;
     expect(b.rows()[0]).toMatchObject({ label: 'neither', jevFlag: false });
 
     // Recorded backfill shape: Jev split a clear correction across the two labels.
     const c = make({}, { correction: 0.49, neither: 0.03, preference: 0.48, cannot_tell: 0 });
-    c.shadow.observe({ ...USER, text: 'x' });
+    c.shadow.observe({ ...USER, text: 'x' }, 111);
     await c.shadow.lastCheck;
     expect(c.rows()[0]).toMatchObject({ jevFlag: true });
 
     const d = make({}, { correction: 0.1, preference: 0.1, neither: 0.1, cannot_tell: 0.7 });
-    d.shadow.observe({ ...USER, text: 'hm' });
+    d.shadow.observe({ ...USER, text: 'hm' }, 111);
     await d.shadow.lastCheck;
     expect(d.rows()[0]).toMatchObject({ label: 'cannot_tell', jevFlag: false, pCannotTell: 0.7 });
   });
@@ -183,7 +183,7 @@ describe('observe — rows', () => {
   it('replays a real recorded Jev answer shape (2026-10-05 backfill)', async () => {
     const p = { neither: 0.03, cannot_tell: 0, correction: 0.97, preference: 0 };
     const m = make({}, p);
-    m.shadow.observe({ ...USER, text: 'x' });
+    m.shadow.observe({ ...USER, text: 'x' }, 111);
     await m.shadow.lastCheck;
     expect(m.rows()[0]).toMatchObject({ label: 'correction', jevFlag: true, pCorrection: 0.97 });
   });
@@ -194,7 +194,7 @@ describe('observe — rows', () => {
     m.shadow.observe({ ...AGENT, text: 'second agent reply' });
     m.shadow.observe({ topicId: 7, fromUser: false, provenance: 'automation', text: 'AUTOMATED HEARTBEAT' });
     m.shadow.observe({ topicId: 8, fromUser: false, provenance: 'agent', text: 'OTHER TOPIC' });
-    m.shadow.observe({ ...USER, text: 'no' });
+    m.shadow.observe({ ...USER, text: 'no' }, 111);
     await m.shadow.lastCheck;
     const state = JSON.parse(String((m.fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body)).state;
     expect(state).toContain('second agent reply');
@@ -208,7 +208,7 @@ describe('observe — rows', () => {
     const layer0 = vi.fn(realLayer0);
     const m = make({ readKey, layer0, logPath: tmpLog() });
     readKey.mockClear();
-    m.shadow.observe({ ...USER, text: 'wrong' });
+    m.shadow.observe({ ...USER, text: 'wrong' }, 111);
     expect(layer0).not.toHaveBeenCalled();
     expect(m.fetchImpl).not.toHaveBeenCalled();
     await m.shadow.lastCheck;
@@ -221,7 +221,7 @@ describe('observe — rows', () => {
     const token = 'ghp_' + 'K'.repeat(36);
     const blob = 'eyJhbGciOiJIUzI1NiJ9.' + 'A'.repeat(4000) + '.' + 'B'.repeat(43);
     m.shadow.observe({ ...AGENT, text: 'start ' + token + ' ' + blob });
-    m.shadow.observe({ ...USER, text: 'no' });
+    m.shadow.observe({ ...USER, text: 'no' }, 111);
     await m.shadow.lastCheck;
     const state = JSON.parse(String((m.fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body)).state;
     expect(state).not.toContain('KKKKKKKK');
@@ -231,7 +231,7 @@ describe('observe — rows', () => {
   it('agent messages and empty user messages never call Jev', async () => {
     const m = make();
     m.shadow.observe({ ...AGENT, text: 'hello' });
-    m.shadow.observe({ ...USER, text: '' });
+    m.shadow.observe({ ...USER, text: '' }, 111);
     await m.shadow.lastCheck;
     expect(m.fetchImpl).not.toHaveBeenCalled();
     expect(m.rows()).toEqual([]);
@@ -240,14 +240,14 @@ describe('observe — rows', () => {
   it('remembers at most MAX_TOPICS agent messages (least recently active dropped)', async () => {
     const m = make();
     for (let t = 0; t <= MAX_TOPICS; t++) m.shadow.observe({ topicId: t, fromUser: false, provenance: 'agent', text: `ctx-${t}` });
-    m.shadow.observe({ topicId: 0, messageId: 1, fromUser: true, text: 'no' });
+    m.shadow.observe({ topicId: 0, messageId: 1, fromUser: true, telegramUserId: 111, text: 'no' }, 111);
     await m.shadow.lastCheck;
     expect(JSON.parse(String((m.fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body)).state).toContain('(none)');
   });
 
   it('meters every call as feature jev-correction-shadow', async () => {
     const m = make();
-    m.shadow.observe({ ...USER, text: 'wrong' });
+    m.shadow.observe({ ...USER, text: 'wrong' }, 111);
     await m.shadow.lastCheck;
     expect(m.metrics.record).toHaveBeenCalledWith(expect.objectContaining({ feature: 'jev-correction-shadow', outcome: 'fired', tokensIn: 420, model: 'jev-1.13.0', framework: 'typesafe-api' }));
   });
@@ -256,7 +256,7 @@ describe('observe — rows', () => {
 describe('observe — skips, bounds, floors', () => {
   it('disabled: no call, no row', async () => {
     const m = make({ getConfig: () => ({ enabled: false }) });
-    m.shadow.observe({ ...USER, text: 'wrong' });
+    m.shadow.observe({ ...USER, text: 'wrong' }, 111);
     await m.shadow.lastCheck;
     expect(m.fetchImpl).not.toHaveBeenCalled();
     expect(m.rows()).toEqual([]);
@@ -265,19 +265,19 @@ describe('observe — skips, bounds, floors', () => {
   it('kill switch is read live on the next message', async () => {
     let enabled = true;
     const m = make({ getConfig: () => ({ enabled }) });
-    m.shadow.observe({ ...USER, text: 'one' });
+    m.shadow.observe({ ...USER, text: 'one' }, 111);
     await m.shadow.lastCheck;
     enabled = false;
-    m.shadow.observe({ ...USER, text: 'two' });
+    m.shadow.observe({ ...USER, text: 'two' }, 111);
     await m.shadow.lastCheck;
     expect(m.fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('no key: one disabled-no-key row, no call', async () => {
     const m = make({ readKey: () => null });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     await m.shadow.lastCheck;
-    m.shadow.observe({ ...USER, text: 'b' });
+    m.shadow.observe({ ...USER, text: 'b' }, 111);
     await m.shadow.lastCheck;
     expect(m.fetchImpl).not.toHaveBeenCalled();
     expect(m.rows()).toEqual([{ kind: 'skipped', ts: expect.any(String), topic: 7, reason: 'disabled-no-key' }]);
@@ -285,7 +285,7 @@ describe('observe — skips, bounds, floors', () => {
 
   it('a throwing vault reads as no key', async () => {
     const m = make({ readKey: () => { throw new Error('locked'); } });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     await m.shadow.lastCheck;
     expect(m.rows()[0].reason).toBe('disabled-no-key');
   });
@@ -294,16 +294,16 @@ describe('observe — skips, bounds, floors', () => {
     const now = () => Date.parse('2026-10-05T12:00:00Z');
     const logPath = tmpLog();
     const first = make({ logPath, now, getConfig: () => ({ enabled: true, maxChecksPerDay: 2 }) });
-    for (const t of ['a', 'b', 'c']) { first.shadow.observe({ ...USER, text: t }); await first.shadow.lastCheck; }
+    for (const t of ['a', 'b', 'c']) { first.shadow.observe({ ...USER, text: t }, 111); await first.shadow.lastCheck; }
     expect(first.fetchImpl).toHaveBeenCalledTimes(2);
     const restarted = make({ logPath, now, getConfig: () => ({ enabled: true, maxChecksPerDay: 2 }) });
-    restarted.shadow.observe({ ...USER, text: 'd' });
+    restarted.shadow.observe({ ...USER, text: 'd' }, 111);
     await restarted.shadow.lastCheck;
     expect(restarted.fetchImpl).not.toHaveBeenCalled();
     const caps = restarted.rows().filter((r) => r.reason === 'daily-cap');
     expect(caps).toHaveLength(1); // once per day, even across a restart (the note is seeded from the log)
     const nextDay = make({ logPath, now: () => Date.parse('2026-10-06T00:01:00Z'), getConfig: () => ({ enabled: true, maxChecksPerDay: 2 }) });
-    nextDay.shadow.observe({ ...USER, text: 'e' });
+    nextDay.shadow.observe({ ...USER, text: 'e' }, 111);
     await nextDay.shadow.lastCheck;
     expect(nextDay.fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -313,11 +313,11 @@ describe('observe — skips, bounds, floors', () => {
     const gate = new Promise<void>((r) => { release = r; });
     const fetchImpl = vi.fn(async () => { await gate; return answer({ correction: 0.9, preference: 0, neither: 0.1, cannot_tell: 0 }); });
     const m = make({ fetchImpl: fetchImpl as never });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     const p1 = m.shadow.lastCheck;
-    m.shadow.observe({ ...USER, text: 'b' });
+    m.shadow.observe({ ...USER, text: 'b' }, 111);
     const p2 = m.shadow.lastCheck;
-    m.shadow.observe({ ...USER, text: 'c' });
+    m.shadow.observe({ ...USER, text: 'c' }, 111);
     await m.shadow.lastCheck;
     release();
     await Promise.all([p1, p2]);
@@ -329,9 +329,9 @@ describe('observe — skips, bounds, floors', () => {
     const fetchImpl = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) }) as unknown as Response);
     const readKey = vi.fn(() => 'k');
     const m = make({ fetchImpl: fetchImpl as never, readKey });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     await m.shadow.lastCheck;
-    m.shadow.observe({ ...USER, text: 'b' });
+    m.shadow.observe({ ...USER, text: 'b' }, 111);
     await m.shadow.lastCheck;
     expect(m.rows().map((r) => r.reason)).toEqual(['http-error', 'disabled-no-key']);
   });
@@ -341,7 +341,7 @@ describe('observe — skips, bounds, floors', () => {
       init.signal!.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
     }));
     const m = make({ fetchImpl: fetchImpl as never, getConfig: () => ({ enabled: true, timeoutMs: 20 }) });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     await m.shadow.lastCheck;
     expect(m.rows()[0].reason).toBe('timeout');
     expect(m.metrics.record).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'error' }));
@@ -349,18 +349,18 @@ describe('observe — skips, bounds, floors', () => {
 
   it('model-mismatch and no-answers', async () => {
     const a = make({ fetchImpl: vi.fn(async () => answer({ correction: 1 }, 'jev-latest')) as never });
-    a.shadow.observe({ ...USER, text: 'a' });
+    a.shadow.observe({ ...USER, text: 'a' }, 111);
     await a.shadow.lastCheck;
     expect(a.rows()[0].reason).toBe('model-mismatch');
     const b = make({ fetchImpl: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ model: 'jev-1.13.0', answers: {} }) }) as unknown as Response) as never });
-    b.shadow.observe({ ...USER, text: 'a' });
+    b.shadow.observe({ ...USER, text: 'a' }, 111);
     await b.shadow.lastCheck;
     expect(b.rows()[0].reason).toBe('no-answers');
   });
 
   it('a throwing Layer-0 reads as no signal and never breaks the check', async () => {
     const m = make({ layer0: () => { throw new Error('boom'); } });
-    m.shadow.observe({ ...USER, text: 'a' });
+    m.shadow.observe({ ...USER, text: 'a' }, 111);
     await m.shadow.lastCheck;
     expect(m.rows()[0].layer0).toEqual({ signal: false, kind: null, weight: 0 });
   });
@@ -412,7 +412,7 @@ describe('production factory — dev gate both sides, live config', () => {
 
   it('development agent with enabled omitted: live, logs under <agent>/logs', async () => {
     const b = build(true, () => ({}));
-    b.shadow.observe({ ...USER, text: 'wrong' });
+    b.shadow.observe({ ...USER, text: 'wrong' }, 111);
     await b.shadow.lastCheck;
     expect(b.fetchImpl).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(b.logPath)).toBe(true);
@@ -420,7 +420,7 @@ describe('production factory — dev gate both sides, live config', () => {
 
   it('fleet agent with enabled omitted: dark', async () => {
     const b = build(false, () => ({}));
-    b.shadow.observe({ ...USER, text: 'wrong' });
+    b.shadow.observe({ ...USER, text: 'wrong' }, 111);
     await b.shadow.lastCheck;
     expect(b.fetchImpl).not.toHaveBeenCalled();
   });
@@ -429,7 +429,7 @@ describe('production factory — dev gate both sides, live config', () => {
     let intel: Record<string, unknown> = {};
     const b = build(true, () => intel);
     intel = { jevCorrectionShadow: { enabled: false } };
-    b.shadow.observe({ ...USER, text: 'wrong' });
+    b.shadow.observe({ ...USER, text: 'wrong' }, 111);
     await b.shadow.lastCheck;
     expect(b.fetchImpl).not.toHaveBeenCalled();
     expect(b.shadow.summary().enabled).toBe(false);
@@ -450,7 +450,7 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
   it('hands a Jev-only flag to the sentinel with the raw text, topic, message id and session', async () => {
     const m = feedMake({ feedSentinel: true });
     expect(realLayer0(PLAIN)?.learningKind ?? null).toBeNull(); // Layer 0 misses it
-    m.shadow.observe({ ...USER, text: PLAIN, sessionName: 'echo-desk' });
+    m.shadow.observe({ ...USER, text: PLAIN, sessionName: 'echo-desk' }, 111);
     await m.shadow.lastCheck;
     expect(m.feed).toHaveBeenCalledTimes(1);
     expect(m.feed.mock.calls[0][0]).toMatchObject({ topicId: 7, messageId: 101, text: PLAIN, sessionName: 'echo-desk', pPreference: 0.7 });
@@ -462,7 +462,7 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
   it('does not feed when the feed is off (omitted or false): the row carries no fed field', async () => {
     for (const cfg of [{}, { feedSentinel: false }]) {
       const m = feedMake(cfg);
-      m.shadow.observe({ ...USER, text: PLAIN });
+      m.shadow.observe({ ...USER, text: PLAIN }, 111);
       await m.shadow.lastCheck;
       expect(m.feed).not.toHaveBeenCalled();
       expect(m.rows()[0].fed).toBeUndefined();
@@ -474,10 +474,10 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
     const m = make({ getConfig: () => ({ enabled: true, feedSentinel }), agentName: 'echo' }, PREF);
     const feed = vi.fn();
     m.shadow.setSentinelFeed(feed);
-    m.shadow.observe({ ...USER, text: PLAIN });
+    m.shadow.observe({ ...USER, text: PLAIN }, 111);
     await m.shadow.lastCheck;
     feedSentinel = false;
-    m.shadow.observe({ ...USER, messageId: 102, text: PLAIN });
+    m.shadow.observe({ ...USER, messageId: 102, text: PLAIN }, 111);
     await m.shadow.lastCheck;
     expect(feed).toHaveBeenCalledTimes(1);
   });
@@ -486,7 +486,7 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
     const text = 'From now on, always run the full test suite before pushing.';
     expect(realLayer0(text)?.learningKind).not.toBeNull();
     const m = feedMake({ feedSentinel: true });
-    m.shadow.observe({ ...USER, text });
+    m.shadow.observe({ ...USER, text }, 111);
     await m.shadow.lastCheck;
     expect(m.feed).not.toHaveBeenCalled();
     expect(m.rows()[0].fed).toBeUndefined();
@@ -494,14 +494,14 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
 
   it('does not feed below the confidence line', async () => {
     const m = feedMake({ feedSentinel: true }, { correction: 0.2, preference: 0.29, neither: 0.51, cannot_tell: 0 });
-    m.shadow.observe({ ...USER, text: PLAIN });
+    m.shadow.observe({ ...USER, text: PLAIN }, 111);
     await m.shadow.lastCheck;
     expect(m.feed).not.toHaveBeenCalled();
   });
 
   it('excludes desk notes that open "From <agent>" and records why', async () => {
     const m = feedMake({ feedSentinel: true });
-    m.shadow.observe({ ...USER, text: 'From Echo (observer), correction to my last note: do not leave the admission open.' });
+    m.shadow.observe({ ...USER, text: 'From Echo (observer), correction to my last note: do not leave the admission open.' }, 111);
     await m.shadow.lastCheck;
     expect(m.feed).not.toHaveBeenCalled();
     expect(m.rows()[0]).toMatchObject({ jevFlag: true, fed: 'excluded-agent-prefix' });
@@ -511,7 +511,7 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
   it('excludes agent-signed messages', async () => {
     const m = feedMake({ feedSentinel: true });
     const signed = `${PLAIN}\n\u27e6asp1 a=dawn t=7 ts=1760000000 n=abc s=${'A'.repeat(86)}\u27e7`;
-    m.shadow.observe({ ...USER, text: signed });
+    m.shadow.observe({ ...USER, text: signed }, 111);
     await m.shadow.lastCheck;
     expect(m.feed).not.toHaveBeenCalled();
     expect(m.rows()[0].fed).toBe('excluded-signed');
@@ -519,18 +519,18 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
 
   it('records no-sentinel when nothing is wired, no-topic without a topic, feed-error when the sink throws', async () => {
     const a = make({ getConfig: () => ({ enabled: true, feedSentinel: true }), agentName: 'echo' }, PREF);
-    a.shadow.observe({ ...USER, text: PLAIN });
+    a.shadow.observe({ ...USER, text: PLAIN }, 111);
     await a.shadow.lastCheck;
     expect(a.rows()[0].fed).toBe('no-sentinel');
 
     const b = feedMake({ feedSentinel: true });
-    b.shadow.observe({ ...USER, topicId: null, text: PLAIN });
+    b.shadow.observe({ ...USER, topicId: null, text: PLAIN }, 111);
     await b.shadow.lastCheck;
     expect(b.rows()[0].fed).toBe('no-topic');
 
     const c = feedMake({ feedSentinel: true });
     c.shadow.setSentinelFeed(() => { throw new Error('boom'); });
-    c.shadow.observe({ ...USER, text: PLAIN });
+    c.shadow.observe({ ...USER, text: PLAIN }, 111);
     await c.shadow.lastCheck;
     expect(c.rows()[0].fed).toBe('feed-error');
   });
@@ -557,5 +557,41 @@ describe('live feed into the correction sentinel (jev-correction-live.md)', () =
     expect(mk({}, false).deps.getConfig()?.feedSentinel).toBe(false);
     expect(mk({ feedSentinel: false }, true).deps.getConfig()?.feedSentinel).toBe(false);
     expect(mk({ feedSentinel: true }, false).deps.getConfig()?.feedSentinel).toBe(true);
+  });
+});
+
+// SEC-069: only the owner's own words feed correction learning.
+describe('JevCorrectionShadow — only the owner\'s own words', () => {
+  it('a team member\'s message is never sent for classification', async () => {
+    for (const who of [{ teamPhone: true }, { senderRole: 'team' }]) {
+      const m = make();
+      m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+      m.shadow.observe({ ...USER, ...who, text: 'You removed the wrong one, put it back.' }, 111);
+      await m.shadow.lastCheck;
+      expect(m.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+  it('forwarded text is never sent for classification', async () => {
+    const m = make();
+    m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+    m.shadow.observe({ ...USER, forwarded: true, text: 'You removed the wrong one, put it back.' }, 111);
+    await m.shadow.lastCheck;
+    expect(m.fetchImpl).not.toHaveBeenCalled();
+  });
+  it('another person in a shared topic, or an unverified sender, is not', async () => {
+    for (const [entry, owner] of [[{ ...USER, telegramUserId: 222 }, 111], [{ ...USER, telegramUserId: undefined }, undefined], [{ ...USER, telegramUserId: 222 }, undefined]] as const) {
+      const m = make();
+      m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+      m.shadow.observe({ ...entry, text: 'You removed the wrong one, put it back.' }, owner);
+      await m.shadow.lastCheck;
+      expect(m.fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+  it('the owner\'s own message still is', async () => {
+    const m = make();
+    m.shadow.observe({ ...AGENT, text: 'Done: I removed the PIN step.' });
+    m.shadow.observe({ ...USER, senderRole: 'owner', forwarded: false, text: 'You removed the wrong one, put it back.' }, 111);
+    await m.shadow.lastCheck;
+    expect(m.fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

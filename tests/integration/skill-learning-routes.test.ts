@@ -218,7 +218,7 @@ describe('POST /skills/learned/proposals/:name/{agree,disagree} — this machine
     expect(res.body.error).toBe('not-found');
   });
 
-  it('bad slug 400; dark 503; five wrong PINs lock the address out (429)', async () => {
+  it('bad slug 400; dark 503; five wrong PINs lock this caller out (429, keyed on the signed-in source)', async () => {
     const { sentinel } = fakeSentinel();
     expect((await request(app({ sentinel })).post('/skills/learned/proposals/Bad_Name/agree').set(auth).send({ pin: PIN })).status).toBe(400);
     expect((await request(app({ enabled: false, sentinel })).post('/skills/learned/proposals/weekly-ci-health/agree').set(auth).send({ pin: PIN })).status).toBe(503);

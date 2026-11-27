@@ -5,13 +5,16 @@
  * loopback from Home's sources; a source that cannot be read is named instead of reading as zero; and a
  * synthetic need (an attention item raised for the owner) travels the real read and shows up.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
+import type { OwnerNeedsWithdrawal } from '../../src/core/OwnerNeedsWithdrawal.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
+import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -30,7 +33,10 @@ afterAll(async () => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/needs-read-alive.test.ts' });
 });
 
-async function boot() {
+async function boot(
+  ownerNeedsCandidate?: ConstructorParameters<typeof AgentServer>[0]['ownerNeedsCandidate'],
+  ownerNeedsWithdrawalJournalFor?: ConstructorParameters<typeof AgentServer>[0]['ownerNeedsWithdrawalJournalFor'],
+) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'needs-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -46,8 +52,10 @@ async function boot() {
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
+  // Capacity is full, but this ordinary wait requires no person to intervene.
+  sessionManager.getCachedRunningSessions = () => ({count:1,sessions:[]});
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel });
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), tunnel, ownerNeedsCandidate, ownerNeedsWithdrawalJournalFor });
   servers.push(server);
   return { server, config };
 }
@@ -64,7 +72,34 @@ describe('Needs-you read — production wiring', () => {
     closers.push(listener);
     config.port = (listener.address() as { port: number }).port;
 
-    const first = await auth(request(app).get('/needs'));
+    // Seed the production attention store before the first read populates the owner cache.
+    const attention = new LocalAttentionItems(config.stateDir);
+    for (let n = 1; n <= 105; n++) {
+      expect(attention.raise({
+        id: `desktop-${n}`, title: `Review desktop request ${n}`, summary: 'Review the request on the Desktop page.',
+        category: 'desktop', priority: 'HIGH', source: 'agent',
+      })).toBe(true);
+    }
+
+    const feature = 'SessionManager.verifyInjection.unsubmitted';
+    const reporter = DegradationReporter.getInstance();
+    const recentEvents = vi.spyOn(reporter, 'getRecentEvents').mockReturnValue([{
+      timestamp: new Date().toISOString(),
+      feature,
+      primary: 'Submit the message',
+      fallback: 'The background recovery check will try again',
+      reason: 'The input is still at the prompt',
+      impact: 'Message is still waiting',
+      reported: false,
+      alerted: false,
+    }]);
+    const [first, health] = await (async () => {
+      try {
+        return [await auth(request(app).get('/needs')), await auth(request(app).get('/mobile/health-issues'))];
+      } finally {
+        recentEvents.mockRestore();
+      }
+    })();
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body).toMatchObject({ schemaVersion: 1, viewer: { role: 'owner' }, agent: { name: 'needs-e2e' } });
     expect(Array.isArray(first.body.items)).toBe(true);
@@ -77,6 +112,20 @@ describe('Needs-you read — production wiring', () => {
     // A feature switched off on this agent (here: plan tracking and the blocker list) is off, never
     // "could not check", even when its 503 also says "not initialized".
     expect(first.body.couldNotCheck).not.toContain('plans');
+    expect(health.status).toBe(200);
+    expect(health.body.issues).toContainEqual(expect.objectContaining({id:'health:sessions-full',requiresUserAction:false}));
+    expect(health.body.issues).toContainEqual(expect.objectContaining({ id: feature, requiresUserAction: false }));
+    expect(first.body.items.some((i: { id: string }) => i.id === `need:health:${feature}`)).toBe(false);
+    expect(first.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(first.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
+    // Each thing once (work-board-cards-appear §3, amended 2026-11-18): an item that IS its card opens the card and
+    // keeps its own conversation in alsoOpens, and no card stands behind two items.
+    const cardIds: string[] = [];
+    for (const i of first.body.items as Array<{ action: { kind: string; href?: string }; card?: { id: string }; alsoOpens?: { href: string } }>) {
+      if (i.alsoOpens) { expect(i.action.href).toMatch(/^#\/work\/board\?card=wc_/); expect(i.alsoOpens.href).toMatch(/^#\/work\/chats\?c=/); }
+      if (i.card) cardIds.push(i.card.id);
+    }
+    expect(new Set(cardIds).size).toBe(cardIds.length);
 
     // An owner phone, paired through the existing path, gets the same list through its own device rule.
     server.mobilePairing!.deps.fetchFn = (async (url: string) => {
@@ -107,9 +156,35 @@ describe('Needs-you read — production wiring', () => {
     const phone = await send('GET', '/mobile/needs');
     expect(phone.status, JSON.stringify(phone.body)).toBe(200);
     expect(phone.body.viewer.role).toBe('owner');
+    expect(phone.body.sources.find((s: {id:string}) => s.id === 'health').state).toBe('ok');
+    expect(phone.body.items.some((i: {title:string}) => i.title === 'All session slots are in use')).toBe(false);
     expect(phone.body.sources.map((s: { id: string }) => s.id)).toEqual(first.body.sources.map((s: { id: string }) => s.id));
     // The phone still cannot reach the raw sources it was built from.
     expect((await send('GET', '/green-pr-automerge')).status).toBe(403);
+
+    // Each caller obtains its own continuation through the public route and opens it
+    // through the same authenticated entry point. The two pages cover every seeded need.
+    for (const [firstPage, next] of [
+      [first.body, (cursor: string) => auth(request(app).get('/needs?cursor=' + encodeURIComponent(cursor)))],
+      [phone.body, (cursor: string) => send('GET', '/mobile/needs?cursor=' + encodeURIComponent(cursor))],
+    ] as const) {
+      expect(firstPage.items).toHaveLength(100);
+      expect(firstPage.continuation.start).toBe(0);
+      expect(typeof firstPage.continuation.nextCursor).toBe('string');
+      const more = await next(firstPage.continuation.nextCursor);
+      expect(more.status).toBe(200);
+      expect(more.body.continuation.start).toBe(100);
+      const all = [...firstPage.items, ...more.body.items];
+      expect(new Set(all.map(i => i.id)).size).toBe(all.length);
+      expect(all.filter(i => i.title.startsWith('Review desktop request '))).toHaveLength(105);
+      const desktop = more.body.items.find((i: { title: string }) => i.title.startsWith('Review desktop request '));
+      expect(desktop?.action).toMatchObject({ kind: 'href', href: expect.stringMatching(/^\/dashboard\/desktop\.html(?:\?|$)/) });
+    }
+    // A closed item changes the current list before the owner's first-page cache expires.
+    expect(attention.setStatus('desktop-1', 'DONE')).toBeDefined();
+    const stale = await send('GET', '/mobile/needs?cursor=' + encodeURIComponent(phone.body.continuation.nextCursor));
+    expect(stale.status).toBe(409);
+    expect(stale.body.items).toBeUndefined();
 
     // The canary's synthetic row exists only for its own single-use nonce: a guessed one adds nothing.
     const guessed = await auth(request(app).get('/needs?canary=cguess'));
@@ -121,4 +196,58 @@ describe('Needs-you read — production wiring', () => {
     // A phone cannot read the canary's state (device rule: not allowed).
     expect((await send('GET', '/needs/canary')).status).toBe(403);
   }, 60_000);
+});
+
+describe('Needs-you in-place action floor — dark runtime', () => {
+  it('projects verified owner actions in place and leaves agent work out of owner counts', async () => {
+    let ask = { project: 'telegram:123', bindingVersion: 'v1', episode: 'episode-1', requestVersion: 'r1' };
+    const withdrawals = new Map<string, OwnerNeedsWithdrawal>();
+    const { server, config } = await boot(item => {
+      if (item.title === 'Disk cleanup is ready') {
+        return { responsibility: 'agent', actions: [], handoffs: [] };
+      }
+      if (item.title === 'Update Instar on your phone') {
+        return { responsibility: 'owner-required', ownerAction: 'physical', presentation: 'update-instar-phone', actions: [{ kind: 'instructions', template: 'update-instar-phone' }], handoffs: [],
+          withdrawal: { ask, record: [...withdrawals.values()][0] ?? null } };
+      }
+      return null;
+    }, async req => req.get('X-Test-Coordinator') === 'test' ? {
+      withAskLock: (_project, run) => run({
+        authority: () => ({ principal: 'coordinator', leaseEpoch: 1 }),
+        activeAsk: () => ({ identity: ask, state: 'pending' }),
+        findWithdrawal: key => withdrawals.get(key) ?? null,
+        appendIfCurrent: async record => { withdrawals.set(record.key, record); return true; },
+      }),
+    } : null);
+    const app = server.getApp();
+    const listener = app.listen(0);
+    closers.push(listener);
+    config.port = (listener.address() as { port: number }).port;
+    const ownerRead = () => request(app).get('/needs').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
+    const baseline = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    const attention = new LocalAttentionItems(config.stateDir);
+    for (const [id, title] of [['agent-cleanup', 'Disk cleanup is ready'], ['owner-phone-update', 'Update Instar on your phone']]) {
+      expect(attention.raise({ id, title, summary: 'A test observation.', category: 'desktop', priority: 'HIGH', source: 'agent' })).toBe(true);
+    }
+
+    const older = await ownerRead().expect(426);
+    expect(older.body).not.toHaveProperty('items');
+    const result = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(result.body.schemaVersion).toBe(2);
+    expect(result.body.items).toEqual([expect.objectContaining({
+      title: 'Update Instar on your phone', ownerAction: 'physical', action: { kind: 'instructions', steps: expect.arrayContaining(['Open Instar again.']) },
+    })]);
+    expect(result.body.count).toBe(1);
+    expect(result.body.divertedCount).toBe(baseline.body.divertedCount + 1);
+    expect(JSON.stringify(result.body.items)).not.toContain('#/');
+    const retire = () => request(app).post('/needs/withdrawals').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'needs-e2e');
+    await retire().send(ask).expect(403);
+    for (let n = 0; n < 2; n++) await retire().set('X-Test-Coordinator', 'test').send(ask).expect(200);
+    expect(withdrawals.size).toBe(1);
+    const hidden = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(hidden.body.items).toEqual([]);
+    ask = { ...ask, episode: 'episode-2' };
+    const next = await ownerRead().set('X-Instar-Needs-Contract', 'in-place-v1').expect(200);
+    expect(next.body.items.map((item: { title: string }) => item.title)).toEqual(['Update Instar on your phone']);
+  });
 });

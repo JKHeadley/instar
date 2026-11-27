@@ -29,7 +29,13 @@ let worker: URL;
 beforeAll(async () => { worker = await compileOriginConfigWorker(); });
 // The timed-out reads below are forced by the blocked stat, not by the clock, so the budget only
 // needs to be long enough for a read that should succeed, worker start included, on a loaded host.
-const BUDGET_MS = 2_000;
+// 2 s was not: reads that must succeed ran out of it under a full parallel run (2026-11-07..18).
+const BUDGET_MS = 5_000;
+// The reader frees its one source slot only when the source work has really settled (the late stat
+// returned, the worker terminated). Until then read() hands back the previous attempt's promise,
+// timeout included. Wait for that, bounded, instead of a fixed 30 ms guess.
+const settled = (reader: OriginConfigReader) =>
+  vi.waitFor(() => expect(reader.getHealth().busy).toBe(false), { timeout: 10_000, interval: 5 });
 const readers: OriginConfigReader[] = [];
 afterEach(() => { control.release?.(); for (const reader of readers.splice(0)) reader.close(); control.path = ''; });
 describe('config reader owns actual source work beyond caller timeout', () => {
@@ -47,7 +53,7 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     await expect(retryWhileBlocked).rejects.toThrow('origin-config-reader-timeout');
     expect(control.started).toBe(1); expect(control.workers).toBe(0);
     control.release!();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await settled(reader);
     expect(control.workers).toBe(0);
     const next = await reader.read();
     expect(next.config.messaging[0].config.chatId).toBe('-100123');
@@ -55,10 +61,10 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     // counts vary with host scheduling. A single byte read proves one fresh
     // source attempt made it past the cancelled stat.
     expect(control.reads).toBe(1); expect(control.workers).toBe(1);
-  }, 15_000);
-  it('gives a read 10 seconds by default, so a saturated host is not read as a config failure', () => {
+  }, 40_000);
+  it('gives a read 25 seconds by default, so a saturated host is not read as a config failure', () => {
     const reader = new OriginConfigReader(temporaryState(), worker); readers.push(reader);
-    expect(reader.readBudgetMs).toBe(10_000);
+    expect(reader.readBudgetMs).toBe(25_000);
   });
   it('keeps the revision through a timed-out read and revokes on a real refusal', async () => {
     const stateDir = temporaryState(); await mkdir(path.join(stateDir, 'state'), { recursive: true });
@@ -67,20 +73,20 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     const reader = new OriginConfigReader(stateDir, worker, BUDGET_MS); readers.push(reader);
     const invalidated = vi.fn(); reader.onInvalidated(invalidated);
     const good = await reader.read();
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await settled(reader);
     // The read stalls past its budget: nothing was learned about the source.
     control.path = filename; control.started = 0;
     await expect(reader.read()).rejects.toThrow('origin-config-reader-timeout');
     expect(reader.revision).toBe(good.revision);
     expect(invalidated).not.toHaveBeenCalled();
     control.release!(); control.path = '';
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await settled(reader);
     expect((await reader.read()).config.messaging).toEqual([]);
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await settled(reader);
     // A source that cannot be parsed is a real refusal and revokes at once.
     await writeFile(filename, '{ not json');
     await expect(reader.read()).rejects.toThrow();
     expect(reader.revision).toBeGreaterThan(good.revision);
     expect(invalidated).toHaveBeenCalled();
-  }, 15_000);
+  }, 40_000);
 });

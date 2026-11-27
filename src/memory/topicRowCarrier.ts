@@ -26,7 +26,7 @@
 import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import type { TopicMemory, TopicMessage } from './TopicMemory.js';
+import type { TopicMemory, TopicMessage, TopicRowOrigin } from './TopicMemory.js';
 import { coerceTopicRowOrigin } from './TopicMemory.js';
 import { rowChannelForTopicId, type RowBody, type RowIdentity, type TopicRowWriter } from './topicRowWriter.js';
 import { isStreamId, streamMachine, type StreamGap, type StreamState, type TopicRowWatermarkStore } from './topicRowWatermark.js';
@@ -58,7 +58,8 @@ export interface CarriedRowBody {
   telegramUserId?: number;
   userId?: string;
   forwarded?: boolean;
-  origin?: 'relay' | 'a2a';
+  /** `imported` marks a row restored through POST /topic/import (topic-history-import spec). */
+  origin?: TopicRowOrigin;
 }
 
 export interface CarriedRow {
@@ -383,7 +384,9 @@ export class TopicRowCarrier {
       const asked = typeof cmd.limit === 'number' && Number.isFinite(cmd.limit) ? Math.floor(cmd.limit) : ROW_PULL_MAX_ROWS;
       const limit = Math.max(1, Math.min(asked, ROW_PULL_MAX_ROWS));
       const rows = takeWithinBytes(tm.getRecentMessages(topicId, limit)
-        .filter((m) => typeof m.channelMessageId === 'string' && m.channelMessageId.length > 0)
+        // A restored row (topic-history-import spec) is never carried: each machine
+        // imports for itself, and a plain insert on the receiver would land it as newest.
+        .filter((m) => typeof m.channelMessageId === 'string' && m.channelMessageId.length > 0 && m.origin !== 'imported')
         .map((m) => rowBodyFrom(m, channel, m.channelMessageId as string)), 'back');
       return { ok: true, mode: 'recent', rows, streams: this.d.store.streams(key), own: { stream: this.d.store.streamId(), head: this.d.store.outboundHead(key) } };
     }
@@ -392,7 +395,7 @@ export class TopicRowCarrier {
       const ids = cmd.ids.slice(0, ROW_PULL_MAX_ROWS).filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 256);
       const rows = takeWithinBytes(ids.map((id) => {
         const m = tm.getMessageByChannelId(topicId, id);
-        return m ? rowBodyFrom(m, channel, id) : null;
+        return m && m.origin !== 'imported' ? rowBodyFrom(m, channel, id) : null;
       }).filter((r): r is CarriedRowBody => r !== null), 'front');
       return { ok: true, mode: 'ids', rows };
     }
@@ -479,7 +482,7 @@ export class TopicRowCarrier {
     const tm = this.d.topicMemory();
     if (!tm || !tm.isReady()) return null;
     const m = tm.getMessageByChannelId(addr.topicId, addr.channelMessageId);
-    if (!m) return null;
+    if (!m || m.origin === 'imported') return null;
     const body = rowBodyFrom(m, addr.channel, addr.channelMessageId);
     // Bounded on the wire: a row over the cap is carried as missing (a visible gap), never truncated.
     return body.text.length > CARRIED_TEXT_MAX ? null : body;

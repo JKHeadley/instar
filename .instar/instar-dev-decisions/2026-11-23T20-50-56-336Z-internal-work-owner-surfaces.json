@@ -1,0 +1,41 @@
+{
+  "ts": "2026-11-23T20:50:56.336Z",
+  "slug": "internal-work-owner-surfaces",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 18,
+  "loc": 205,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AppConversationStore.ts",
+      "src/core/ConversationUnreadService.ts",
+      "src/core/WorkBoardPickupController.ts",
+      "src/core/WorkBoardRuntime.ts",
+      "src/core/WorkBoardService.ts",
+      "src/core/WorkCardStore.ts",
+      "src/core/workBoardViews.ts",
+      "src/core/workFrontDoorsGraph.ts",
+      "src/core/workSourceCards.ts",
+      "src/data/awareness/agent-work-cards.md",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphSurface.ts",
+      "src/server/conversationGraphViewer.ts",
+      "src/server/conversationMeaningSearch.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileConversationSearchRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/workBoardRoutes.ts"
+    ],
+    "addedLines": 154,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

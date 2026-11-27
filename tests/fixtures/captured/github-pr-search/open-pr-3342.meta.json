@@ -1,0 +1,8 @@
+{
+  "source": "GitHub GraphQL v4 Repository.pullRequests response for the public JKHeadley/instar PR 3342",
+  "command": "gh api graphql against JKHeadley/instar pullRequests with first:1, matched headRefName and OPEN, selecting the production pageInfo and nodes fields",
+  "capturedAt": "2026-11-24T03:40:00Z",
+  "machine": "Echo Studio",
+  "redactions": [],
+  "note": "Public repository response body preserved byte for byte. The head ref filter selects the incident record without changing the response shape. CLI used only to capture evidence."
+}

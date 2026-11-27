@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-19T19:25:45.605Z",
+  "slug": "tmux-name-roleless-record",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "naming rule only; adds no loop"
+  },
+  "verdict": "pass"
+}

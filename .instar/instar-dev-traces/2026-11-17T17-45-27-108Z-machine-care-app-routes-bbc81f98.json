@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "machine-care-app-routes",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-17T17:45:27.108Z",
+  "artifactPath": "upgrades/side-effects/machine-care-app-routes.md",
+  "artifactSha256": "774e466bc524bb5b65135794ffbd713577f833fef52826dabc0042faad0fdef1",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/machine-care-app-alive.test.ts",
+    "upgrades/next/machine-care-app-routes.md",
+    "upgrades/side-effects/machine-care-app-routes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The phone routes refuse the agent's own token; restart stays behind the owner's tap and the machine-restart Eternal Sentinel."
+    }
+  }
+}

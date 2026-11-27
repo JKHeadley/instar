@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "locked-proof-timing-evidence",
+  "sessionId": "c0a8f9d3-a0e4-4a67-a7bf-12d6a18f1eaf",
+  "timestamp": "2026-11-18T03:06:49.306Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-timing-evidence.md",
+  "artifactSha256": "de1a4468acc72872e3326331dc8f387124cdcbbda72a3cff7ac94911477675a0",
+  "coveredFiles": [
+    "docs/builds/locked-proof-timing-evidence.md",
+    "docs/specs/locked-proof-timing-evidence.eli16.md",
+    "scripts/locked-proof/lib.mjs",
+    "tests/unit/locked-proof-timing.test.ts",
+    "upgrades/next/locked-proof-timing-evidence.md",
+    "upgrades/side-effects/locked-proof-timing-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible proof-completeness correction requiring final retained same-duty timing; no native/product changes",
+  "eli16Path": "docs/specs/locked-proof-timing-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-timing-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "parent-independent",
+        "outcome": "concurred",
+        "verified": false
+      }
+    ]
+  }
+}

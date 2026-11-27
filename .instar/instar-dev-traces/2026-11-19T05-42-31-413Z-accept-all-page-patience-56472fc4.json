@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "accept-all-page-patience",
+  "sessionId": "4e81326d-5c23-4bba-a349-427ccf37313c",
+  "timestamp": "2026-11-19T05:42:31.413Z",
+  "artifactPath": "upgrades/side-effects/accept-all-page-patience.md",
+  "artifactSha256": "673e3fc0ee34fd7ee8bfae63ffc5975febe3bb7293608c3f55f8aa35391a1df4",
+  "coveredFiles": [
+    "dashboard/console/conversation-suggestions.js",
+    "docs/specs/accept-all-page-patience.eli16.md",
+    "tests/unit/console-conversation-suggestions.test.ts",
+    "upgrades/next/accept-all-page-patience.md",
+    "upgrades/side-effects/accept-all-page-patience.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Client-side wait and stop threshold on one dashboard page; no server, state or migration; a revert undoes it",
+  "eli16Path": "docs/specs/accept-all-page-patience.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accept-all-page-patience.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

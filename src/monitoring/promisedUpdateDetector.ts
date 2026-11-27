@@ -232,3 +232,26 @@ export function formatPromiseTime(ms: number, timeZone?: string | null): string 
     return new Date(ms).toISOString(); // @silent-fallback-ok — an ISO time is still a true time
   }
 }
+
+/**
+ * A promised COMPLETION time in a commitment's text — "I'll have the run done
+ * by noon", "before 9:30 AM tomorrow" (docs/specs/overdue-promise-follow-through.md
+ * §3.5). Unlike `detectPromisedUpdate` there is no "promise of a message" cue:
+ * the caller already knows the text is a commitment. To keep past events out
+ * ("finished at 5 PM"), only `by` / `before` count. This is a GUARD that decides
+ * whether to ASK the recording session for a date; it never writes one.
+ */
+export function detectPromisedTime(text: string, nowMs: number, timeZone?: string | null): PromisedUpdate | null {
+  if (!text || typeof text !== 'string') return null;
+  const zone = resolveTimeZone(timeZone);
+  for (const sentence of splitSentences(text)) {
+    if (NEGATION.test(sentence)) continue;
+    const resolved = resolveClock(sentence, nowMs, zone);
+    if (!resolved) continue;
+    if (!/^(by|before)\b/i.test(resolved.phrase)) continue;
+    const lead = resolved.dueAtMs - nowMs;
+    if (lead < MIN_LEAD_MS || lead > resolved.maxHorizon) continue;
+    return { dueAtMs: resolved.dueAtMs, sentence: sentence.slice(0, PROMISE_SENTENCE_MAX), phrase: resolved.phrase };
+  }
+  return null;
+}

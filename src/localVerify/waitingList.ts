@@ -55,7 +55,7 @@ interface WaitingFile {
   waiters: Waiter[];
 }
 
-export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'idle' | 'over-cap';
+export type WaiterRemoval = 'admitted' | 'closed' | 'recorded' | 'untrusted-head' | 'idle' | 'over-cap' | 'held';
 
 /** Oldest first: by firstRefusedAt, then PR number. */
 export function waiterOrder(a: Waiter, b: Waiter): number {
@@ -123,6 +123,24 @@ export class WaitingList {
     }
     this.persist(true);
     return this.waiters.get(pr)!;
+  }
+
+  /**
+   * Put a PR on the list without a refusal (spec local-verify-queue-controls.md): an operator
+   * release that found the queue and its overflow full, or a held waiter put back. A PR that is
+   * already waiting keeps its place and nothing changes. `head` places it before every other
+   * waiter, so it takes the next free place; otherwise it gets `firstRefusedAt` as given.
+   */
+  put(pr: number, firstRefusedAt: number, opts: { head?: boolean; refusals?: number } = {}): Waiter {
+    const existing = this.waiters.get(pr);
+    if (existing) return existing;
+    const now = this.now();
+    let at = Math.min(firstRefusedAt, now);
+    if (opts.head) for (const w of this.waiters.values()) at = Math.min(at, w.firstRefusedAt - 1);
+    this.waiters.set(pr, { pr, firstRefusedAt: at, lastOfferedAt: now, refusals: Math.max(1, opts.refusals ?? 1) });
+    this.enforceCap();
+    this.persist(true);
+    return this.waiters.get(pr) ?? { pr, firstRefusedAt: at, lastOfferedAt: now, refusals: 1 };
   }
 
   remove(pr: number, reason: WaiterRemoval): Waiter | null {

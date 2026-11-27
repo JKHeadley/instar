@@ -26,6 +26,7 @@ const DEFAULT_FILE_VIEWER_CONFIG: FileViewerConfig = {
   allowedPaths: ['./'],
   editablePaths: ['./'],
   maxFileSize: 1_048_576, // 1MB
+  maxDownloadSize: 1_073_741_824, // 1GB — downloads stream from the checked descriptor, so they get their own, larger cap
   maxEditableFileSize: 204_800, // 200KB
   blockedFilenames: [
     '.env', '.env.*', '*.key', '*.pem', '*.p12', 'secrets.*',
@@ -607,7 +608,65 @@ const NEVER_EDITABLE_PREFIXES = [
   // is a machine-local operator surface, not a document to edit from a phone;
   // the conversational config path and a raw file edit remain.
   '.instar/config.json',
+  // SEC-144: the rest of what decides what runs. `.claude/settings*.json` hold the hook command
+  // lines; `.instar/hooks/` holds the hook scripts that actually run (`.claude/hooks/` above is the
+  // older location); `.instar/scripts/` holds the scripts sessions and jobs call; `.instar/jobs.json`
+  // and `.instar/jobs/user/` define scheduled jobs (the dashboard's schedule editor saves them through
+  // `POST /jobs/:slug/save`, which the same token can still use, so this is defence in depth); `.mcp.json` names the MCP
+  // servers sessions launch. Viewing them is unchanged.
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.instar/hooks/',
+  '.instar/scripts/',
+  '.instar/jobs.json',
+  '.instar/jobs/user/',
+  // A job's manifest (`execute`, `enabled`, `schedule`) decides what the scheduler runs, so it is
+  // fenced with the job body.
+  '.instar/jobs/schedule/',
+  '.mcp.json',
+  // Other frameworks' project config names the commands their MCP servers and hooks start; Husky
+  // hook files run through `sh` on every commit and push the agent makes.
+  '.codex/',
+  '.gemini/',
+  '.husky/',
+  // SEC-173: the repository's own git folder. What it holds decides what git runs, and the agent runs
+  // git all the time (the hourly sync, session commits). The entry also covers a worktree's `.git`
+  // pointer file and a nested copy's `.git/` through the nested match below. `.gitmodules` names
+  // submodule sources git fetches. Viewing them is unchanged.
+  '.git/',
+  '.gitmodules',
+  // SEC-174: files a program runs without an execute bit. A development checkout under `.worktrees/` holds
+  // scripts its commit hook and test runs execute; nobody edits one from the phone. The boot wrapper
+  // (every extension) runs at each server start, and Windows has no execute bit to catch it.
+  '.worktrees/',
+  '.instar/instar-boot.',
+  // SEC-178: backup snapshots. Restoring one copies its files back over the live ones, including fenced
+  // ones such as `.instar/jobs.json`, so an edited snapshot copy would reach a fenced file at the next
+  // restore. Nobody edits a snapshot from the phone; viewing is unchanged.
+  '.instar/backups/',
 ];
+
+/**
+ * SEC-174: file names that are never editable at any depth, because a package manager runs what they name
+ * (`package.json` scripts and lifecycle hooks, `.npmrc` settings). Matched on the last path segment, any case.
+ */
+const NEVER_EDITABLE_NAMES = ['package.json', '.npmrc'];
+
+/** SEC-174: does the last segment of this (normalized, lower-cased, `/`-separated) path match a fenced name? */
+export function hasNeverEditableName(normalized: string): boolean {
+  const base = normalized.replace(/\/+$/, '').split('/').pop() ?? '';
+  return NEVER_EDITABLE_NAMES.includes(base);
+}
+
+/**
+ * SEC-173: a file with an execute bit is a script something may run, so the editor never saves one,
+ * wherever it sits. This closes the open-ended rest of the list above (a script outside the fenced
+ * folders, such as a worktree helper sessions call) without naming every place one can live.
+ * Windows has no execute bit, so the check applies only where the mode carries one.
+ */
+export function isExecutableFile(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32' && (mode & 0o111) !== 0;
+}
 
 /**
  * Exported for the round-14 bypass tests: the case-folding and resolved-path
@@ -624,13 +683,19 @@ export function isNeverEditable(relativePath: string): boolean {
   // lower-cases both sides; this list did not, and the entries it guards are
   // the ones whose invariant is "a PIN compromise must never result in
   // arbitrary code execution" (`.claude/hooks/`, `.claude/scripts/`).
-  const normalized = path.normalize(relativePath).toLowerCase();
+  // SEC-144: Windows separators are folded to `/` so the `/`-based entries hold on win32 too.
+  const normalized = path.normalize(relativePath).replace(/\\/g, '/').toLowerCase();
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
+  if (hasNeverEditableName(normalized)) return true;
   return NEVER_EDITABLE_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
-    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+    // SEC-144: also match the same path inside a nested project root, such as a worktree under
+    // `.worktrees/<name>/`, whose sessions load that copy's hooks and settings.
+    const nested = `/${p}`;
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '')
+      || normalized.includes(nested) || normalized.endsWith(nested.replace(/\/$/, ''));
   });
 }
 
@@ -917,6 +982,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       // in the listing and refused on write.
       const editable =
         isEditable(requestedPath, config) &&
+        !isExecutableFile(stat.mode) &&
         !isNeverEditable(requestedPath) &&
         !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve));
 
@@ -1008,6 +1074,12 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
 
       if (stat.isDirectory()) {
         res.status(400).json({ error: 'Cannot write to a directory' });
+        return;
+      }
+
+      // SEC-173: never rewrite a script (the stat follows a symlink to its target).
+      if (isExecutableFile(stat.mode)) {
+        res.status(403).json({ error: 'Scripts cannot be edited from the file editor' });
         return;
       }
 
@@ -1109,6 +1181,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       editablePaths: config.editablePaths,
       maxFileSize: config.maxFileSize,
       maxEditableFileSize: config.maxEditableFileSize,
+      maxDownloadSize: Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!),
     });
   });
 
@@ -1225,8 +1298,10 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         return;
       }
 
-      if (checkedStat.size > config.maxFileSize) {
-        res.status(413).json({ error: 'File too large', size: checkedStat.size, maxSize: config.maxFileSize });
+      // Downloads have their own cap (CMT-1819): the 1 MB preview cap made bigger files undownloadable.
+      const downloadMax = Math.max(config.maxFileSize, Number.isFinite(config.maxDownloadSize) ? config.maxDownloadSize! : DEFAULT_FILE_VIEWER_CONFIG.maxDownloadSize!);
+      if (checkedStat.size > downloadMax) {
+        res.status(413).json({ error: 'File too large', size: checkedStat.size, maxSize: downloadMax });
         return;
       }
 
@@ -1360,7 +1435,8 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     }
 
     const encodedPath = encodeURIComponent(normalized);
-    const relativePath = `/dashboard?tab=files&path=${encodedPath}`;
+    // The new console's Files page (CMT-1819); it also reads the legacy ?tab=files&path= form.
+    const relativePath = `/dashboard/console/#/settings/files?path=${encodedPath}`;
 
     res.json({
       path: normalized,

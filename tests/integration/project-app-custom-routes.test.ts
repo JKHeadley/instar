@@ -8,17 +8,22 @@
  *   - a console (PIN) Approve on that card → 403 "Approve this on your phone"; withdraw-approval is taken;
  *   - the agent cannot edit the server-owned card;
  *   - a PIN-proof approve record never serves; an owner phone-presence approve serves the html;
- *   - the narrow key then reads and writes the app's data.
+ *   - the narrow key then reads and writes the app's data;
+ *   - after "Stop this app" the card says it was stopped, leaves Needs-you, and a phone approve is
+ *     refused (turning it back on is stage 2, CMT-1882).
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { createMandatePinCheck } from '../../src/server/mandatePin.js';
-import { registerWorkBoardRoutes, type WorkBoardRouteDeps } from '../../src/server/workBoardRoutes.js';
+import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from '../../src/server/workBoardRoutes.js';
 import { mountProjectAppCustomRoutes } from '../../src/server/projectAppCustomRoutes.js';
 import { mountProjectAppSandboxRoutes } from '../../src/server/projectAppSandboxRoutes.js';
 import { ProjectAppSandbox } from '../../src/server/ProjectAppSandbox.js';
+import { ProjectAppsRuntime, customAppRow } from '../../src/server/ProjectAppsRuntime.js';
+import { mountProjectsRoutes } from '../../src/server/workProjectsRoutes.js';
+import { projectAppRecordStoreSchema, type UnionEntry } from '../../src/core/ProjectAppStore.js';
 import { resolveWorkBoardSettings } from '../../src/core/WorkBoardService.js';
 import { versionCardId } from '../../src/core/ProjectAppCustomFold.js';
 import { sha256Hex } from '../../src/core/WorkCardStore.js';
@@ -45,16 +50,40 @@ function boot(opts: { maxApps?: number; enabled?: boolean } = {}) {
     behind: () => null, lastWrittenOn: () => null, repliedAfterQuestion: () => false, brokenAttachments: () => [], when: (iso) => iso,
     saveSettings: () => true,
     phoneOnlyCard: (cardId) => h.source.isVersionCard(cardId),
+    exposeBoardRead: (read) => { boardRead = read; },
   };
+  let boardRead: Parameters<NonNullable<WorkBoardRouteDeps['exposeBoardRead']>>[0] | null = null;
+  // The Work projects read with a REAL ProjectAppsRuntime whose custom apps come from the real source,
+  // through the same customAppRow server.ts uses.
+  const paUnion: UnionEntry[] = [];
+  let t = 1_700_000_000_000;
+  const runtime = new ProjectAppsRuntime({
+    emit: (_k, build) => {
+      const data = build({ physical: t++, logical: 0, node: 'm_self' }, 'm_self');
+      if (!data || !projectAppRecordStoreSchema.validate(data, { countDroppedField() {}, countJailReject() {} } as never)) return { outcome: 'dropped:invalid' };
+      paUnion.push({ data, origin: 'm_self' });
+      return { outcome: 'emitted' };
+    },
+    loadUnion: () => paUnion, now: () => t, machineId: 'm_self',
+    isActingMachine: () => false, holdsLease: () => true, projectKeys: () => [PROJECT], publicBase: () => null, platformFor: () => null,
+    builtinSummary: () => ({ state: 'pending' }), builtinAvailable: () => true,
+    customApp: (appRef) => customAppRow(h.source, appRef),
+  });
   const app = express();
   app.use(express.json({ limit: '12mb' }));
   app.use(authMiddleware(() => TOKEN, 'pa-int'));
   const router = express.Router();
   registerWorkBoardRoutes(router, wbDeps);
+  const projectsRoute = mountProjectsRoutes(router, {
+    projects: () => [{ conversationKey: PROJECT, title: 'Example: sales pipeline', goal: 'Sell', lastVerdict: null, lastCheckAt: null, parked: false, doneDefinition: [], doneItems: null }],
+    boardFor: (req) => (boardRead ? boardRead(req, { full: true }) : null),
+    bearerOk: (req) => req.headers.authorization === `Bearer ${TOKEN}`,
+    appsFor: (key) => runtime.view(key),
+  });
   mountProjectAppCustomRoutes(router, { source: () => h.source, enabled: () => opts.enabled !== false, bearerOk: (req) => req.headers.authorization === `Bearer ${TOKEN}` });
   mountProjectAppSandboxRoutes(router, { sandbox: () => sandbox, enabled: () => opts.enabled !== false, origin: { knownHttpsHosts: () => [] } });
   app.use(router);
-  return { app, h, sandbox };
+  return { app, h, sandbox, wbDeps, runtime, projectsRoute };
 }
 
 const agent = (r: request.Test) => r.set('Authorization', `Bearer ${TOKEN}`).set('X-Instar-AgentId', 'pa-int');
@@ -176,5 +205,83 @@ describe('PUT /project-apps/:appId/source → the version card → the owner\'s 
     const appId = await createApp(app);
     const r = await agent(request(app).get('/project-apps'));
     expect(r.body.apps).toEqual([expect.objectContaining({ appId, appRef: `custom:${appId}`, title: 'Sales pipeline', served: 'none' })]);
+  });
+});
+
+describe('"Stop this app" on a running custom app (no restart in this build)', () => {
+  it('the card says it was stopped, leaves the waiting lane, and an approve on it is refused on the console and the phone', async () => {
+    const { app, h, wbDeps } = boot();
+    const appId = await createApp(app);
+    const cardId = versionCardId(appId, 'serve');
+    expect((await agent(request(app).put(`/project-apps/${appId}/source`)).send({ html: HTML, note: 'First version' })).status).toBe(200);
+    expect(phoneApprove(h, cardId, 'presence')).toMatchObject({ ok: true });
+    expect(h.source.settleApprovedCards().closed).toEqual([cardId]);
+
+    const before = h.svc.view(cardId)!.card;
+    const stop = await agent(request(app).post(`/work-board/cards/${cardId}/tap`)).send({ action: 'withdraw-approval', titleHash: sha256Hex(before.title), pin: PIN });
+    expect(stop.status, JSON.stringify(stop.body)).toBe(200);
+    h.source.invalidate();
+    expect((await agent(request(app).post(`/project-apps/${appId}/ticket`)).send({})).body).toMatchObject({ state: 'disabled' });
+
+    // The card tells the truth and is not waiting on anyone.
+    const shown = await agent(request(app).get(`/work-board/cards/${cardId}`));
+    expect(shown.body.card).toMatchObject({ phoneOnly: true, appStopped: true, lane: 'done', needLine: 'Stopped by you. Turning it back on comes in a later update.' });
+    const board = await agent(request(app).get('/work-board'));
+    const waiting = (board.body.lanes as Array<{ lane: string; cards: Array<{ id: string }> }>).find((l) => l.lane === 'waiting-on-you')!;
+    expect(waiting.cards.map((c) => c.id)).not.toContain(cardId);
+    expect(board.body.waitingOnYou).toBe(0);
+    expect(h.svc.waitingOnOwnerCount()).toBe(0);
+
+    // A console Approve: refused as before (phone-only).
+    const card = h.svc.view(cardId)!.card;
+    const tapBody = { action: 'approve', materialHash: card.materialHash, titleHash: sha256Hex(card.title) };
+    const consoleTap = await agent(request(app).post(`/work-board/cards/${cardId}/tap`)).send({ ...tapBody, pin: PIN });
+    expect(consoleTap.status).toBe(403);
+    // The phone's approve (the same shared tap path the phone route calls): refused in plain words, nothing recorded.
+    const recordsBefore = h.svc.recordsOf(cardId).length;
+    const phone = await performOwnerTap(wbDeps, h.svc, cardId, tapBody, { kind: 'person', personKey: OWNER, proof: 'presence', isOwner: true });
+    expect(phone.status).toBe(409);
+    expect(phone.body).toMatchObject({ error: 'app-stopped' });
+    expect(String(phone.body.message)).toContain('turning it back on comes in a later update');
+    expect(h.svc.recordsOf(cardId).length).toBe(recordsBefore);
+    h.source.invalidate();
+    // Still off, and the closer writes nothing that says "running".
+    expect(h.source.settleApprovedCards()).toEqual({ closed: [], refused: [] });
+    expect((await agent(request(app).post(`/project-apps/${appId}/ticket`)).send({})).body).toMatchObject({ state: 'disabled' });
+    expect((await agent(request(app).get(`/work-board/cards/${cardId}`))).body.card.needLine).toBe('Stopped by you. Turning it back on comes in a later update.');
+  });
+});
+
+describe('the Work row of a custom app says whether it runs', () => {
+  it('not approved → "not-approved"; approved → "served" with counts folded past three; stopped → "off"', async () => {
+    const { app, h, runtime, projectsRoute } = boot();
+    const appId = await createApp(app);
+    const ref = `custom:${appId}`;
+    const cardId = versionCardId(appId, 'serve');
+    expect(runtime.offer(PROJECT, ref, 'The pipeline reads better as a board.')).toEqual({ ok: true });
+    expect(runtime.answer(PROJECT, ref, 'attach', { by: 'owner', via: 'console', principal: 'owner' })).toMatchObject({ ok: true });
+    const row = async () => {
+      projectsRoute.invalidate();
+      const r = await agent(request(app).get('/work/projects'));
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      return (r.body.projects[0].apps as Array<Record<string, any>>).find((a) => a.appRef === ref)!;
+    };
+
+    expect((await agent(request(app).put(`/project-apps/${appId}/source`)).send({ html: HTML, note: 'v1' })).status).toBe(200);
+    expect(await row()).toMatchObject({ state: 'not-approved', title: 'Sales pipeline' });
+
+    expect(phoneApprove(h, cardId, 'presence')).toMatchObject({ ok: true });
+    const t = await agent(request(app).post(`/project-apps/${appId}/ticket`)).send({});
+    const key = (await agent(request(app).post(`/project-apps/${appId}/key`)).send({ contentSha: t.body.contentSha })).body.key as string;
+    const counts = ['Lead', 'Qualified', 'Proposal', 'Won'].map((label, i) => ({ label, value: i + 1 }));
+    expect((await request(app).put(`/project-apps/${appId}/api/summary`).set('X-Project-App-Key', key).send({ headline: '3 open deals worth $34,500', counts })).status).toBe(200);
+    const served = await row();
+    expect(served).toMatchObject({ state: 'served', openHref: `/dashboard/project-app/?app=${appId}`, summaryState: 'ok' });
+    expect(served.summary).toMatchObject({ headline: '3 open deals worth $34,500', counts: counts.slice(0, 3), moreCounts: [{ label: 'Won', value: 4 }] });
+
+    const card = h.svc.view(cardId)!.card;
+    expect((await agent(request(app).post(`/work-board/cards/${cardId}/tap`)).send({ action: 'withdraw-approval', titleHash: sha256Hex(card.title), pin: PIN })).status).toBe(200);
+    h.source.invalidate();
+    expect(await row()).toMatchObject({ state: 'off' });
   });
 });

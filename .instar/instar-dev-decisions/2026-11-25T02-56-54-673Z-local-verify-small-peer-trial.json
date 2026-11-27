@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-25T02:56:54.673Z",
+  "slug": "local-verify-small-peer-trial",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -29,7 +29,7 @@ export function createLifecycle({ report } = {}) {
 
   function begin(path, query = '') {
     dispose();
-    const visit = { token: ++seq, path, query, live: true, disposers: [], onQuery: null, selfRefreshing: false };
+    const visit = { token: ++seq, path, query, live: true, disposers: [], onQuery: null, onReconnect: null, selfRefreshing: false };
     current = visit;
     return {
       token: visit.token,
@@ -39,6 +39,7 @@ export function createLifecycle({ report } = {}) {
         if (visit.live) visit.disposers.push(fn); else safe(fn);
       },
       onQuery(fn) { if (visit.live && typeof fn === 'function') visit.onQuery = fn; },
+      onReconnect(fn) { if (visit.live && typeof fn === 'function') visit.onReconnect = fn; },
       selfRefreshing() { if (visit.live) visit.selfRefreshing = true; },
     };
   }
@@ -58,8 +59,22 @@ export function createLifecycle({ report } = {}) {
     return false;
   }
 
+  /** Await the current page's actual catch-up without remounting its composer. */
+  async function reconnectCurrent() {
+    const visit = current;
+    if (!visit || !visit.live || !visit.onReconnect) return null;
+    try {
+      const result = await visit.onReconnect();
+      return current === visit && visit.live && result !== false;
+    } catch (e) {
+      try { if (report) report(e); } catch { /* reporting must not replace the actual catch-up failure */ }
+      return false;
+    }
+  }
+
   return {
     begin,
+    reconnectCurrent,
     dispose,
     tryQuery,
     isSelfRefreshing: () => Boolean(current && current.live && current.selfRefreshing),

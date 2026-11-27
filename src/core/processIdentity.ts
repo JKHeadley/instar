@@ -10,7 +10,8 @@
  * cannot be proven, callers do not signal.
  */
 
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 /**
@@ -49,6 +50,23 @@ export function processCommandLine(pid: number): string | null {
     return r.status === 0 && out ? out : null;
   } catch {
     // @silent-fallback-ok — unreadable means unknown, which callers treat as "not it"
+    return null;
+  }
+}
+
+const execFileAsync = promisify(execFile);
+
+/** Bounded, non-blocking identity read for monitoring ticks. */
+export async function processStartMsAsync(pid: number): Promise<number | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart='], {
+      encoding: 'utf8', timeout: 3000, killSignal: 'SIGKILL', env: { ...process.env, LC_ALL: 'C' },
+    });
+    const time = Date.parse(stdout.trim());
+    return Number.isFinite(time) ? time : null;
+  } catch {
+    // @silent-fallback-ok — unreadable identity never authorizes signalling
     return null;
   }
 }

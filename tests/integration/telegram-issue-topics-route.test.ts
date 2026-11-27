@@ -86,6 +86,26 @@ describe('GET /telegram/topics?scope=pool', () => {
     expect(res.body.pool.unresolved).toEqual([127504]);
   });
 
+  it('an unresolved topic bound to a project gets the project title as a fallback, apart from verified names', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-topics-fallback-'));
+    dirs.push(dir);
+    const telegram = new TelegramAdapter({ token: 'test-token-123', chatId: MAIN }, dir);
+    adapters.push(telegram);
+    telegram.registerTopicSession(127504, 'echo-topic', 'topic-127504');
+    telegram.registerTopicSession(4242, 'echo-other', 'topic-4242');
+    const app = express();
+    app.use(createRoutes({
+      config: { authToken: '', stateDir: dir, port: 0 },
+      messagingToneGate: null, outboundDedupGate: null, topicIntentArcCheck: null, topicMemory: null,
+      telegram, resolvePeerUrls: () => [],
+      chiefOfStaffLoop: { projectsSummary: () => [{ conversationKey: 'telegram:127504', title: 'Finish the dashboard makeover', goal: 'g' }] },
+    } as any));
+    const res = await request(app).get('/telegram/topics?scope=pool').expect(200);
+    expect(res.body.topics).toEqual([]);
+    expect(res.body.fallbacks).toEqual([{ topicId: 127504, title: 'Finish the dashboard makeover', source: 'project' }]);
+    expect(res.body.pool.unresolved).toEqual([4242, 127504]);
+  });
+
   it('uses the serving machine title when a standby has an older real title', async () => {
     const { app } = makeApp(undefined, [{ machineId: 'studio', url: 'http://127.0.0.1:4567' }]);
     adapters[adapters.length - 1].registerTopicSession(127504, 'echo-topic', 'Old title');

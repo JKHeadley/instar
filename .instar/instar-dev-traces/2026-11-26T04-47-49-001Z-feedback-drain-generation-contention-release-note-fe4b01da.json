@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "feedback-drain-generation-contention-release-note",
+  "sessionId": "bcc82a0c-f81e-440b-88eb-304eb7ee4f4c",
+  "timestamp": "2026-11-26T04:47:49.001Z",
+  "artifactPath": "upgrades/side-effects/feedback-drain-generation-contention-release-note.md",
+  "artifactSha256": "84151581ae495813f164b7658a382b9cd532f09cce2af7b32f9438b64c3a9497",
+  "coveredFiles": [
+    "upgrades/eli16/feedback-drain-generation-contention-release-note.md",
+    "upgrades/next/feedback-drain-generation-contention.md",
+    "upgrades/side-effects/feedback-drain-generation-contention-release-note.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only user-facing release fragment; reversible by removing the fragment, with separate plain-language and side-effects review artifacts.",
+  "eli16Path": "upgrades/eli16/feedback-drain-generation-contention-release-note.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-drain-generation-contention-release-note.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

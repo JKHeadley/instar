@@ -28,7 +28,10 @@
 
 import type { StoreFieldSchema, StoreValidateContext, ReplicatedOp } from './ReplicatedRecordEnvelope.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
+import crypto from 'node:crypto';
 import { compareHlc } from './TopicPinReplicatedStore.js';
+import { decodeOwnerNeedsAskIdentity, decodeOwnerNeedsWithdrawal, ownerNeedsAskKey, type OwnerNeedsAskIdentity, type OwnerNeedsWithdrawal } from './OwnerNeedsWithdrawal.js';
+import { canonicalHash } from './GraphWitnessTypes.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
 export { compareHlc };
@@ -51,8 +54,10 @@ export function chiefOfStaffStoreEnabled(config: { developmentAgent?: boolean; c
   return resolveDevAgentGate(config?.chiefOfStaff?.enabled, config);
 }
 
+const WITHDRAWAL_RECORD_PREFIX = 'owner-ask-withdrawal:';
+
 export const COS_RECORD_TYPES = [
-  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note',
+  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note', 'owner-ask-withdrawal',
 ] as const;
 export type CosRecordType = typeof COS_RECORD_TYPES[number];
 
@@ -99,10 +104,23 @@ export function isLegalTransition(from: CosTransition, to: CosTransition): boole
   return LEGAL_TRANSITIONS[from]?.includes(to) ?? false;
 }
 
-export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark', 'owner-pause', 'owner-resume'] as const;
+export const COS_LIFECYCLE_EVENTS = ['closed', 'reopened', 'unpark', 'owner-pause', 'owner-resume', 'owner-item-check', 'check-requested', 'owner-ask-completed'] as const;
 export type CosLifecycleEvent = typeof COS_LIFECYCLE_EVENTS[number];
 /** The owner's pause on a project (docs/specs/cos-owner-pause-record.md). */
 export interface OwnerPauseRecord { who: string; at: string; quote: string; messageRef: string }
+/** The owner's own check on one judgment done item (docs/specs/work-door-project-rows.md §3.3). */
+export interface OwnerItemCheckRecord { who: string; at: string; messageRef: string; itemId: string; checked: boolean; checkRef: string }
+
+/**
+ * What an owner item check is bound to (work-door-project-rows §3.3): the SHA-256 (hex) of the UTF-8 JSON array
+ * `[goal, itemId, itemText]`. Changing the goal or the item voids the check.
+ */
+export function doneItemCheckRef(goal: string, itemId: string, itemText: string): string {
+  // JSON array encoding: unambiguous for any text (a newline inside the goal or the text cannot shift a boundary).
+  return crypto.createHash('sha256').update(JSON.stringify([goal, itemId, itemText]), 'utf8').digest('hex');
+}
+/** A done item id as the binding validator bounds one (1–64 characters). */
+export const DONE_ITEM_ID_MAX = 64;
 /** §3.5: Telegram's own message limit, so a whole owner message always fits. */
 export const OWNER_PAUSE_QUOTE_MAX = 4096;
 /** Server-produced fields (owner name, parsed marker); the merged reader's bound. */
@@ -143,12 +161,12 @@ export function deriveOutcomeKey(intentKey: string, transition: CosTransition): 
 const KNOWN_FIELDS = [
   'recordType', 'conversationKey', 'parentConversationKey', 'role', 'deletedAt',
   'goal', 'doneDefinition', 'checkCadenceHours', 'linked', 'initiativeId', 'confirmedBy', 'confirmedAt',
-  'event', 'bindingHlc', 'by', 'at', 'who', 'quote', 'messageRef', 'askId',
+  'event', 'bindingHlc', 'by', 'at', 'who', 'quote', 'messageRef', 'askId', 'itemId', 'itemChecked', 'checkRef',
   'verdict', 'evidenceHash', 'evidenceIds', 'progressSeen', 'netDiffHighWater', 'machine', 'note',
   'action', 'leaseEpoch', 'sequence', 'claimedAt', 'holderSignature', 'intentKey', 'transition', 'writer', 'runId', 'injectId', 'reason',
   'renewedAt', 'renewedVia', 'principal', 'eventRef', 'machineSignature',
   'date', 'metrics', 'decision',
-  'tickAt',
+  'tickAt', 'withdrawal', 'completionAsk',
 ] as const;
 
 /** A lifecycle event name a later build may add: one or more lower-case words joined by '-'. */
@@ -203,6 +221,15 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
   knownFields: KNOWN_FIELDS as unknown as ReadonlyArray<string>,
   pathSensitiveFields: ['machine', 'by', 'writer', 'principal', 'role', 'renewedVia'],
   validate(raw: Readonly<Record<string, unknown>>, ctx: StoreValidateContext): Record<string, unknown> | null {
+    const withdrawalKey = typeof raw.recordKey === 'string' && raw.recordKey.startsWith(WITHDRAWAL_RECORD_PREFIX);
+    if (withdrawalKey || raw.recordType === 'owner-ask-withdrawal') {
+      if (!withdrawalKey || raw.recordType !== 'owner-ask-withdrawal' || raw.op !== 'put') return null;
+      const withdrawal = decodeOwnerNeedsWithdrawal(raw.withdrawal);
+      if (!withdrawal || raw.recordKey !== WITHDRAWAL_RECORD_PREFIX + withdrawal.key) return null;
+      return { recordType: 'owner-ask-withdrawal', withdrawal };
+    }
+    const completionKey = typeof raw.recordKey === 'string' && raw.recordKey.startsWith('owner-ask-completion:');
+    if (completionKey && (raw.recordType !== 'binding-lifecycle' || raw.event !== 'owner-ask-completed' || raw.op !== 'put')) return null;
     if (raw.op === 'delete') {
       // Only `tree` is ever tombstoned (unparent). Everything else is immutable.
       const deletedAt = isIso(raw.deletedAt) ? raw.deletedAt : undefined;
@@ -254,11 +281,29 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
           if (raw.event.length > 200 || !UNKNOWN_EVENT_RE.test(raw.event) || !isShortText(raw.by, 200)) return null;
           return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at };
         }
+        if (raw.event === 'owner-ask-completed') {
+          const ask = decodeOwnerNeedsAskIdentity(raw.completionAsk);
+          const epoch = raw.leaseEpoch;
+          if (raw.by !== 'owner-tap' || !ask || ask.project !== ck || ask.bindingVersion !== hlcKey(raw.bindingHlc)) return null;
+          if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) return null;
+          if (raw.op !== 'put' || raw.recordKey !== ownerNeedsCompletionRecordKey(ask)) return null;
+          const check = chiefOfStaffRecordStoreSchema.validate({
+            ...raw, recordKey: undefined, recordType: 'check-event', verdict: 'done-verified', progressSeen: false, note: 'owner-confirmed',
+          }, ctx);
+          if (!check) return null;
+          return { ...check, recordType: type, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, completionAsk: ask, leaseEpoch: epoch };
+        }
         if (raw.event === 'owner-pause' || raw.event === 'owner-resume') {
           // Only the owner's own tap pauses or resumes (spec cos-owner-pause-record §3.1): never the Chief of Staff.
           if (raw.by !== 'owner-tap') return null;
           if (!isShortText(raw.who, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.quote, OWNER_PAUSE_QUOTE_MAX) || !isShortText(raw.messageRef, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.askId, 64)) return null;
           return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at, who: raw.who, quote: raw.quote, messageRef: raw.messageRef, askId: raw.askId };
+        }
+        if (raw.event === 'owner-item-check') {
+          // Only the owner's own tap checks a judged done item (work-door-project-rows §3.3): never the Chief of Staff.
+          if (raw.by !== 'owner-tap' || typeof raw.itemChecked !== 'boolean' || typeof raw.checkRef !== 'string' || !SHA256_HEX_RE.test(raw.checkRef)) return null;
+          if (!isShortText(raw.itemId, DONE_ITEM_ID_MAX) || !isShortText(raw.who, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.messageRef, OWNER_PAUSE_FIELD_MAX) || !isShortText(raw.askId, 64)) return null;
+          return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at, who: raw.who, messageRef: raw.messageRef, askId: raw.askId, itemId: raw.itemId, itemChecked: raw.itemChecked, checkRef: raw.checkRef };
         }
         if (raw.by !== 'owner-tap' && raw.by !== 'chief-of-staff') return null;
         return { recordType: type, conversationKey: ck, event: raw.event, bindingHlc: raw.bindingHlc, by: raw.by, at: raw.at };
@@ -365,6 +410,16 @@ function envelope(recordKey: string, hlc: HlcTimestamp, origin: string, observed
   return { ...fields, recordKey, hlc, op, origin, ...(observed !== undefined ? { observed } : {}) };
 }
 
+/** Build a separate record after the source writer has authorized and fenced the withdrawal. */
+export function buildOwnerNeedsWithdrawal(record: OwnerNeedsWithdrawal): Build {
+  const withdrawal = decodeOwnerNeedsWithdrawal(record);
+  return (hlc, origin, observed) => withdrawal
+    ? envelope(WITHDRAWAL_RECORD_PREFIX + withdrawal.key, hlc, origin, observed, 'put', {
+      recordType: 'owner-ask-withdrawal', withdrawal,
+    })
+    : null;
+}
+
 export function buildTreePut(conversationKey: string, parentConversationKey: string | null, role?: 'chief-of-staff' | 'project' | 'sub-topic'): Build {
   return (hlc, origin, observed) => {
     if (!isValidConversationKey(conversationKey)) return null;
@@ -406,6 +461,22 @@ export function buildOwnerPauseEvent(conversationKey: string, event: 'owner-paus
   };
 }
 
+/** The owner checks or unchecks one judgment done item (work-door-project-rows §3.3), written only from the owner's own tap. */
+export function buildOwnerItemCheckEvent(conversationKey: string, bindingHlc: HlcTimestamp, rec: OwnerItemCheckRecord, askId: string): Build {
+  return (hlc, origin, observed) => {
+    if (!isValidConversationKey(conversationKey)) return null;
+    return envelope(`lifecycle:${conversationKey}:${hlcKey(hlc)}`, hlc, origin, observed, 'put', { recordType: 'binding-lifecycle', conversationKey, event: 'owner-item-check', bindingHlc, by: 'owner-tap', at: rec.at, who: rec.who, messageRef: rec.messageRef, askId, itemId: rec.itemId, itemChecked: rec.checked, checkRef: rec.checkRef });
+  };
+}
+
+/** "Ask for an update" that could not run at once (work-door-project-rows §3.2): the holder's next tick checks it. */
+export function buildCheckRequestedEvent(conversationKey: string, bindingHlc: HlcTimestamp, by: 'owner-tap' | 'chief-of-staff', at: string): Build {
+  return (hlc, origin, observed) => {
+    if (!isValidConversationKey(conversationKey)) return null;
+    return envelope(`lifecycle:${conversationKey}:${hlcKey(hlc)}`, hlc, origin, observed, 'put', { recordType: 'binding-lifecycle', conversationKey, event: 'check-requested', bindingHlc, by, at });
+  };
+}
+
 export interface CheckEventInput {
   conversationKey: string; verdict: CosVerdict; evidenceHash: string; evidenceIds: string[]; progressSeen: boolean; netDiffHighWater?: number; machine: string; at: string; note?: string;
   /** The deterministic done-item results at this check — the DURABLE baseline the next check's progress detection compares against (never an in-memory map). */
@@ -417,6 +488,29 @@ export function buildCheckEvent(c: CheckEventInput): Build {
     if (!isValidConversationKey(c.conversationKey)) return null;
     return envelope(`check:${c.conversationKey}:${hlcKey(hlc)}`, hlc, origin, observed, 'put', { recordType: 'check-event', ...c });
   };
+}
+
+export function ownerNeedsCompletionRecordKey(ask: OwnerNeedsAskIdentity): string {
+  return 'owner-ask-completion:' + ownerNeedsAskKey(ask);
+}
+
+/** One durable entry carries both verification and the binding transition. */
+export function buildOwnerNeedsCompletion(
+  ask: OwnerNeedsAskIdentity,
+  bindingHlc: HlcTimestamp,
+  leaseEpoch: number,
+  check: Pick<CheckEventInput, 'evidenceHash' | 'evidenceIds' | 'netDiffHighWater' | 'machine' | 'at' | 'doneItems'>,
+): Build {
+  return (hlc, origin, observed) => envelope(ownerNeedsCompletionRecordKey(ask), hlc, origin, observed, 'put', {
+    ...check,
+    recordType: 'binding-lifecycle',
+    conversationKey: ask.project,
+    event: 'owner-ask-completed',
+    by: 'owner-tap',
+    bindingHlc,
+    completionAsk: ask,
+    leaseEpoch,
+  });
 }
 
 export interface IntentInput { conversationKey: string; action: CosAction; leaseEpoch: number; sequence: number; claimedAt: string; machine: string; holderSignature: string }
@@ -503,6 +597,79 @@ export function latestPerKey(entries: UnionEntry[]): Map<string, { data: Record<
   return winner;
 }
 
+/** Resolve the exact withdrawal from a complete authenticated journal union. */
+export function findOwnerNeedsWithdrawal(entries: UnionEntry[], ask: OwnerNeedsAskIdentity): OwnerNeedsWithdrawal | null {
+  const key = ownerNeedsAskKey(ask);
+  const recordKey = WITHDRAWAL_RECORD_PREFIX + key;
+  const matching = entries.filter(({ data }) => data.recordKey === recordKey);
+  if (!matching.length) return null;
+  const winner = latestPerKey(matching).get(recordKey)?.data;
+  const withdrawal = decodeOwnerNeedsWithdrawal(winner?.withdrawal);
+  if (winner?.recordType !== 'owner-ask-withdrawal' || winner.op !== 'put' || withdrawal?.key !== key) {
+    throw new Error('invalid owner request withdrawal record');
+  }
+  return withdrawal;
+}
+
+export interface OwnerNeedsCompletionReceipt {
+  recordKey: string;
+  recordedAt: string;
+  evidenceHash: string;
+  leaseEpoch: number;
+}
+
+/** Recover an exact receipt from the authenticated journal. Conflicting records require reconciliation. */
+export function findOwnerNeedsCompletion(entries: UnionEntry[], ask: OwnerNeedsAskIdentity): OwnerNeedsCompletionReceipt | null {
+  const recordKey = ownerNeedsCompletionRecordKey(ask);
+  let receipt: OwnerNeedsCompletionReceipt | null = null;
+  let digest: string | null = null;
+  for (const { data, origin } of entries) {
+    if (data.recordKey !== recordKey) continue;
+    const check = chiefOfStaffRecordStoreSchema.validate(data, {
+      countDroppedField() {}, countJailReject() {},
+    });
+    if (!check || !isHlc(data.hlc) || typeof check.leaseEpoch !== 'number' ||
+      typeof check.at !== 'string' || typeof check.evidenceHash !== 'string') {
+      throw new Error('invalid owner request completion record');
+    }
+
+    const candidate = canonicalHash({ check, origin, hlc: data.hlc });
+    if (digest !== null && digest !== candidate) throw new Error('conflicting owner request completion records');
+    digest = candidate;
+    receipt = { recordKey, recordedAt: check.at, evidenceHash: check.evidenceHash, leaseEpoch: check.leaseEpoch };
+  }
+  return receipt;
+}
+
+/** Used only by the journal's fenced reconciliation callback. */
+export function confirmsOwnerNeedsDecision(
+  intent: UnionEntry, verifiedLocal: readonly UnionEntry[], completePeers: readonly UnionEntry[] | null,
+): boolean {
+  if (!completePeers) return false;
+  const context = { countDroppedField() {}, countJailReject() {} };
+  const fingerprint = ({ data, origin }: UnionEntry) => {
+    const fields = chiefOfStaffRecordStoreSchema.validate(data, context);
+    return fields && isHlc(data.hlc) ? canonicalHash({ fields, origin, hlc: data.hlc }) : null;
+  };
+  const { data } = intent;
+  const withdrawal = decodeOwnerNeedsWithdrawal(data.withdrawal);
+  const ask = withdrawal?.ask ?? decodeOwnerNeedsAskIdentity(data.completionAsk);
+  if (!ask || typeof data.recordKey !== 'string') return false;
+
+  const withdrawalKey = WITHDRAWAL_RECORD_PREFIX + ownerNeedsAskKey(ask);
+  const completionKey = ownerNeedsCompletionRecordKey(ask);
+  const expectedKey = withdrawal ? withdrawalKey : completionKey;
+  if (data.recordKey !== expectedKey) return false;
+  const oppositeKey = withdrawal ? completionKey : withdrawalKey;
+  const expected = fingerprint(intent);
+  if (!expected || !verifiedLocal.some(entry => entry.data.recordKey === expectedKey && fingerprint(entry) === expected)) return false;
+
+  return [...verifiedLocal, ...completePeers].every(entry => {
+    const key = entry.data.recordKey;
+    return key !== oppositeKey && (key !== expectedKey || fingerprint(entry) === expected);
+  });
+}
+
 export interface TreeNode { conversationKey: string; parentConversationKey: string | null; role?: 'chief-of-staff' | 'project' | 'sub-topic' }
 
 /** §1.1/§1.4: the parent link per conversation (last-writer by HLC; a tombstone removes the node). */
@@ -530,6 +697,15 @@ export interface BindingState {
   lastUnparkAt: string | null;
   /** The owner's pause (spec cos-owner-pause-record): the newest owner pause/resume tap wins; null when not paused. */
   pausedBy: OwnerPauseRecord | null;
+  /** The owner's checks on judgment done items (work-door-project-rows §3.3): item id → when and who; only checks whose
+   *  goal + item still match, made after the newest owner reopen. */
+  ownerChecks: Record<string, { at: string; who: string }>;
+  /** The newest "Ask for an update" queued for this project (work-door-project-rows §3.2); null when none. */
+  lastCheckRequestAt: string | null;
+  /** That request's record HLC: compared with the last check-event's HLC, never two machines' wall clocks. */
+  lastCheckRequestHlc: HlcTimestamp | null;
+  /** The newest owner pause / resume decision's `at` (a Telegram ask older than it no longer applies). */
+  lastOwnerDecisionAt: string | null;
 }
 
 /**
@@ -544,7 +720,7 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
   for (const [key, w] of latest) {
     if (w.data.recordType !== 'binding' || !key.startsWith('binding:')) continue;
     const ck = w.data.conversationKey as string;
-    out.set(ck, { conversationKey: ck, binding: w.data, bindingHlc: w.hlc, confirmed: w.data.confirmedBy === 'owner', closed: false, lastUnparkAt: null, pausedBy: null });
+    out.set(ck, { conversationKey: ck, binding: w.data, bindingHlc: w.hlc, confirmed: w.data.confirmedBy === 'owner', closed: false, lastUnparkAt: null, pausedBy: null, ownerChecks: {}, lastCheckRequestAt: null, lastCheckRequestHlc: null, lastOwnerDecisionAt: null });
   }
   // Lifecycle events are immutable (unique keys), so read them all, not just the latest per key.
   const byConv = new Map<string, Array<{ data: Record<string, unknown>; hlc: HlcTimestamp }>>();
@@ -568,15 +744,49 @@ export function foldBindingState(entries: UnionEntry[]): Map<string, BindingStat
       if ((d.event !== 'owner-pause' && d.event !== 'owner-resume') || d.by !== 'owner-tap') continue;
       if (typeof d.askId !== 'string' || seenAsks.has(d.askId)) continue;
       seenAsks.add(d.askId);
+      if (isIso(d.at) && (!st.lastOwnerDecisionAt || (d.at as string) > st.lastOwnerDecisionAt)) st.lastOwnerDecisionAt = d.at as string;
       if (d.event === 'owner-resume') { st.pausedBy = null; continue; }
       if (isIso(d.at) && typeof d.who === 'string' && typeof d.quote === 'string' && typeof d.messageRef === 'string') st.pausedBy = { who: d.who, at: d.at, quote: d.quote, messageRef: d.messageRef };
     }
+    // Owner item checks (work-door-project-rows §3.3): per item the newest event by record HLC wins; an event counts
+    // only while the CURRENT goal and item text give its checkRef (changing either voids it); an askId decides once.
+    const goal = String(st.binding?.goal ?? '');
+    const items = Array.isArray(st.binding?.doneDefinition) ? st.binding!.doneDefinition as Array<Record<string, unknown>> : [];
+    const idCount = new Map<string, number>();
+    for (const it of items) if (it && typeof it.id === 'string') idCount.set(it.id, (idCount.get(it.id) ?? 0) + 1);
+    const refs = new Map<string, string>();
+    // An id used twice cannot be checked on its own (the fold could not tell the two items apart).
+    for (const it of items) if (it && typeof it.id === 'string' && it.kind === 'judgment' && idCount.get(it.id) === 1) refs.set(it.id, doneItemCheckRef(goal, it.id, String(it.text ?? '')));
+    // A reopen starts the judgments afresh: only checks newer than the newest owner reopen count.
+    let reopenedHlc: HlcTimestamp | null = null;
+    for (const ev of events) if (ev.data.event === 'reopened' && ev.data.by === 'owner-tap') reopenedHlc = ev.hlc;
+    const seenItemAsks = new Set<string>();
+    const newestItem = new Map<string, Record<string, unknown>>();
     for (const ev of events) {
+      const d = ev.data;
+      if (d.event === 'check-requested' && (d.by === 'owner-tap' || d.by === 'chief-of-staff') && isIso(d.at)) {
+        if (!st.lastCheckRequestHlc || compareHlc(ev.hlc, st.lastCheckRequestHlc) > 0) { st.lastCheckRequestHlc = ev.hlc; st.lastCheckRequestAt = d.at as string; }
+        continue;
+      }
+      if (d.event !== 'owner-item-check' || d.by !== 'owner-tap' || typeof d.itemId !== 'string' || typeof d.itemChecked !== 'boolean') continue;
+      if (reopenedHlc && compareHlc(ev.hlc, reopenedHlc) < 0) continue;
+      if (typeof d.askId !== 'string' || seenItemAsks.has(d.askId)) continue;
+      seenItemAsks.add(d.askId);
+      // Newest per item FIRST (whatever content it was made on), then it counts only if made on the current content:
+      // an uncheck under other wording is never skipped, so a withdrawn check cannot come back after a revert.
+      newestItem.set(d.itemId, d);
+    }
+    for (const [itemId, d] of newestItem) {
+      if (!d.itemChecked || refs.get(itemId) !== d.checkRef || !isIso(d.at)) continue;
+      st.ownerChecks[itemId] = { at: d.at as string, who: typeof d.who === 'string' ? d.who : 'owner' };
+    }
+    for (const ev of events) {
+      const closesBinding = ev.data.event === 'closed' || ev.data.event === 'owner-ask-completed';
       const valid =
-        (ev.data.event === 'closed' && isHlc(ev.data.bindingHlc) && compareHlc(ev.data.bindingHlc as HlcTimestamp, st.bindingHlc) === 0) ||
+        (closesBinding && isHlc(ev.data.bindingHlc) && compareHlc(ev.data.bindingHlc as HlcTimestamp, st.bindingHlc) === 0) ||
         ((ev.data.event === 'reopened' || ev.data.event === 'unpark') && ev.data.by === 'owner-tap');
       if (!valid) continue;
-      if (ev.data.event === 'closed') st.closed = true;
+      if (closesBinding) st.closed = true;
       else if (ev.data.event === 'reopened') st.closed = false;
       else if (ev.data.event === 'unpark' && isIso(ev.data.at) && (!st.lastUnparkAt || (ev.data.at as string) > st.lastUnparkAt)) st.lastUnparkAt = ev.data.at as string;
     }
@@ -701,6 +911,8 @@ export interface ProjectCheckState {
   nextActionAllowedAt: string | null;
   /** Done-item results recorded on the newest check (the durable progress baseline); null when the newest check carried none. */
   lastDoneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
+  /** The newest check-event's record HLC (null when none or unreadable). */
+  lastCheckHlc: HlcTimestamp | null;
 }
 
 const ACTION_ATTEMPT_ACTIONS: ReadonlySet<CosAction> = new Set<CosAction>(['restart-inject', 'restart-run', 'redirect']);
@@ -718,8 +930,11 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export function foldProjectCheckState(entries: UnionEntry[], conversationKey: string, cfg: CheckStateConfig, now: Date, bindingState?: BindingState): ProjectCheckState {
   const checks: Array<Record<string, unknown>> = [];
-  for (const e of entries) {
-    if (e.data.recordType === 'check-event' && e.data.conversationKey === conversationKey && isIso(e.data.at)) checks.push(e.data);
+  for (const { data } of entries) {
+    if (data.conversationKey !== conversationKey || !isIso(data.at)) continue;
+    const requestCompletion = data.recordType === 'binding-lifecycle' && data.event === 'owner-ask-completed' &&
+      bindingState?.bindingHlc && isHlc(data.bindingHlc) && compareHlc(data.bindingHlc, bindingState.bindingHlc) === 0;
+    if (data.recordType === 'check-event' || requestCompletion) checks.push(data);
   }
   checks.sort((a, b) => String(a.at).localeCompare(String(b.at)));
   const intents = foldIntentState(entries);
@@ -770,6 +985,7 @@ export function foldProjectCheckState(entries: UnionEntry[], conversationKey: st
     nextCheckAt,
     nextActionAllowedAt,
     lastDoneItems: last && last.doneItems && typeof last.doneItems === 'object' ? (last.doneItems as Record<string, 'pass' | 'fail' | 'unknown'>) : null,
+    lastCheckHlc: last ? hlcOf(last) : null,
   };
 }
 

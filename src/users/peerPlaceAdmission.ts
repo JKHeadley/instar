@@ -15,7 +15,7 @@ export const PEER_PLACE_PREFIX = 'agent:';
 export const PEER_PLACE_SESSION_MARKER = 'msg-place-';
 
 /** Trust sources an owner or a pairing sets. `setup-default` is what a stranger gets. */
-const GRANTED_SOURCES = new Set(['user-granted', 'paired-machine-granted', 'mutual-verified']);
+const GRANTED_SOURCES = new Set(['user-granted', 'paired-machine-granted', 'mutual-verified', 'agent-proposal']);
 const ADMITTED_LEVELS = new Set(['verified', 'trusted', 'autonomous']);
 
 export const AGENT_SESSIONS_REFUSED_REASON = 'agent-to-agent sessions are off on an agent that serves several people';
