@@ -25,6 +25,7 @@ import { recordTelegramEditRejection, takeTelegramEditRejection } from './Telegr
  */
 
 import fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
@@ -1416,6 +1417,29 @@ export class TelegramAdapter implements MessagingAdapter {
   /** One-time batch seed done (all live topics seeded in a single file pass). */
   private tailCacheSeeded = false;
   private static readonly TAIL_CACHE_LIMIT = 500;
+  /**
+   * The log file's newest TAIL_CACHE_LIMIT rows per topic, exactly as a read of the file parses them
+   * (docs/specs/conversation-list-log-view.md). Used ONLY by the conversation list and its unread
+   * counts, in place of their synchronous file scan, and only while it is ready; otherwise they run
+   * the old read immediately. Nothing else reads it, and nothing ever waits for it.
+   */
+  private logView: Map<number, LogEntry[]> | null = null;
+  private logViewBuild: Promise<boolean> | null = null;
+  /** Bumped by each rotation (and on any doubt about the file), so a pass over an older file is discarded. */
+  private logGeneration = 0;
+  /** The file's last line has no newline, so the next append lands on that same line. */
+  private logTornTail = false;
+  private logViewFailures = 0;
+  /** After a failed pass, no new pass starts before this time; a later list request starts it. */
+  private logViewNextAttemptAt = 0;
+  /** Identity of the file the view describes: checked before every use. */
+  private logViewStat: { ino: number; dev: number; size: number; mtimeMs: number } | null = null;
+  /** Bytes of row text the view holds, and its cap: over the cap the view is dropped and the old read runs. */
+  private logViewBytes = 0;
+  private logViewByteCap = 64 * 1024 * 1024;
+  private readonly logViewRowBytes = new WeakMap<LogEntry, number>();
+  /** The off switch (`telegramHistoryView.enabled`, read live): false = the old read, always. */
+  private historyViewSwitch: () => boolean = () => true;
 
   // Shared infrastructure modules (Phase 1 extraction)
   private sharedLogger: MessageLogger | null = null;
@@ -1514,7 +1538,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Initialize shared modules when feature flags are enabled
     if (SHARED_INFRA_FLAGS.useSharedMessageLogger) {
-      this.sharedLogger = new MessageLogger({ logPath: this.messageLogPath });
+      this.sharedLogger = new MessageLogger({ logPath: this.messageLogPath, onRotated: () => this.noteLogRotated() });
     }
     if (SHARED_INFRA_FLAGS.useSharedStallDetector) {
       this.sharedStallDetector = new StallDetector({
@@ -4843,6 +4867,214 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.topicTailCache.get(topicId) ?? null;
   }
 
+  /** True when the conversation list may read the view (switched on and built). */
+  isHistoryLoaded(): boolean {
+    return this.historyViewOn() && this.logView !== null;
+  }
+
+  /** Wire the off switch. Called once by the server with a live config read. */
+  setHistoryViewSwitch(on: () => boolean): void {
+    this.historyViewSwitch = on;
+  }
+
+  /** Whether the view is in use. Off drops it: appends are not recorded while off, so it is rebuilt from the file when turned back on. */
+  historyViewOn(): boolean {
+    let on = true;
+    try { on = this.historyViewSwitch() !== false; } catch { on = true; /* @silent-fallback-ok — an unreadable switch keeps the default (on) */ }
+    if (!on && this.logView) { this.logView = null; this.logViewStat = null; this.logTornTail = false; }
+    return on;
+  }
+
+  /**
+   * Build the view with ONE pass over the file, read in small awaited blocks, off the request path.
+   * Single flight; never rejects; nothing waits for it. It reads to the end of the file and publishes
+   * in the same turn that confirms that end (same file, same size), so no append falls between the
+   * read and the view. A failed pass publishes nothing; the next list request may start another
+   * after 5 s, doubling to 5 min.
+   */
+  loadHistory(): Promise<boolean> {
+    if (!this.historyViewOn()) return Promise.resolve(false);
+    if (this.logViewBuild) return this.logViewBuild;
+    if (Date.now() < this.logViewNextAttemptAt) return Promise.resolve(this.logView !== null);
+    const pass = async (generation: number): Promise<boolean> => {
+      const found = new Map<number, LogEntry[]>();
+      const bytes = { total: 0 };
+      const take = (line: string): void => {
+        if (!line) return;
+        // Every step inside the try: a line the file scan would skip must never stop the load.
+        try {
+          const entry = JSON.parse(line) as LogEntry;
+          const id = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
+          if (typeof id === 'number') this.addToLogView(found, id, entry, line.length, bytes);
+        } catch { /* @silent-fallback-ok — skip a malformed JSONL line, identical to the scan path */ }
+      };
+      /** Publish in the turn that confirmed the end of the file: no append can fall in between. */
+      const publish = (unterminated: boolean, st: fs.Stats | null): void => {
+        if (bytes.total > this.logViewByteCap) throw new Error(`the view would hold ${bytes.total} bytes, over its ${this.logViewByteCap}-byte cap`);
+        this.logView = found;
+        this.logViewBytes = bytes.total;
+        this.logViewStat = st ? { ino: st.ino, dev: st.dev, size: st.size, mtimeMs: st.mtimeMs } : { ino: -1, dev: -1, size: -1, mtimeMs: -1 };
+        this.logTornTail = unterminated;
+      };
+      let fh: fs.promises.FileHandle;
+      try { fh = await fs.promises.open(this.messageLogPath, 'r'); }
+      catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+        if (generation !== this.logGeneration || fs.existsSync(this.messageLogPath)) return false; // it appeared: read it
+        publish(false, null); // no file: an empty view, which any later file fails the identity check against
+        return true;
+      }
+      try {
+        const opened = await fh.stat();
+        const decoder = new StringDecoder('utf8');
+        const block = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0, carry = '';
+        for (;;) {
+          const { bytesRead } = await fh.read(block, 0, block.length, offset);
+          if (generation !== this.logGeneration) return false;
+          if (bytesRead > 0) {
+            offset += bytesRead;
+            const lines = (carry + decoder.write(block.subarray(0, bytesRead))).split('\n');
+            carry = lines.pop() ?? '';
+            for (const line of lines) take(line);
+            if (bytes.total > this.logViewByteCap) throw new Error(`the log has more recent rows than the view's ${this.logViewByteCap}-byte cap`);
+            continue;
+          }
+          // At the end. Appends are synchronous on this thread, so what this check sees holds
+          // until the turn ends. A different file at the path means this pass read a replaced one.
+          let now: fs.Stats;
+          try { now = fs.statSync(this.messageLogPath); } catch { return false; }
+          if (now.ino !== opened.ino || now.dev !== opened.dev || now.size < offset) return false;
+          if (now.size !== offset) continue;
+          carry += decoder.end();
+          take(carry);
+          publish(carry.length > 0, now);
+          return true;
+        }
+      } finally {
+        await fh.close().catch(() => undefined); // @silent-fallback-ok — closing a read-only handle
+      }
+    };
+    const run = async (): Promise<boolean> => {
+      try {
+        // A rotation during the pass means it read the replaced file: read the new one.
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (!this.historyViewOn()) return false;
+          if (!(await pass(this.logGeneration))) continue;
+          // A rotation while the handle closed dropped what this pass published: read the new file
+          // in this same flight, never report a load that left no view.
+          if (!this.logView) continue;
+          this.logViewFailures = 0;
+          return true;
+        }
+        throw new Error('the log changed underneath every read');
+      } catch (err) {
+        // @silent-fallback-ok — reported here; the list uses the old read and a later list request reads again.
+        console.error(`[telegram] background load of message history failed: ${err}`);
+        this.logViewFailures += 1;
+        this.logViewNextAttemptAt = Date.now() + Math.min(5_000 * 2 ** (this.logViewFailures - 1), 5 * 60_000);
+        return this.logView !== null;
+      }
+    };
+    this.logViewBuild = run().finally(() => { this.logViewBuild = null; });
+    return this.logViewBuild;
+  }
+
+  private addToLogView(view: Map<number, LogEntry[]>, topicId: number, entry: LogEntry, size: number, bytes: { total: number }): void {
+    let tail = view.get(topicId);
+    if (!tail) { tail = []; view.set(topicId, tail); }
+    tail.push(entry);
+    this.logViewRowBytes.set(entry, size);
+    bytes.total += size;
+    if (tail.length > TelegramAdapter.TAIL_CACHE_LIMIT) bytes.total -= this.logViewRowBytes.get(tail.shift()!) ?? 0;
+  }
+
+  /**
+   * After a save has finished ALL of its own steps (trim check, cache update, notifications): keep the
+   * view in step with what was written. Fully isolated: any failure here only drops the view (the
+   * list then uses the old read and the view is rebuilt), and never affects the save.
+   */
+  private afterSaveForView(row: unknown): void {
+    try {
+      this.noteLogRow(row);
+    } catch (err) {
+      // @silent-fallback-ok — the save already completed; only the view is given up and rebuilt.
+      console.error(`[telegram] message-history view update failed, rebuilding it: ${err}`);
+      try { this.noteLogRotated(); } catch { this.logView = null; /* @silent-fallback-ok — at worst the view is simply unavailable */ }
+    }
+  }
+
+  /** The row as a later read of the file will parse it (a separate step, so a test can make it fail). */
+  private toViewRow(row: unknown): LogEntry {
+    return JSON.parse(JSON.stringify(row)) as LogEntry;
+  }
+
+  /** Record an appended row exactly as a later read of the file will parse it. */
+  private noteLogRow(row: unknown): void {
+    if (!this.logView || !this.historyViewOn()) return; // a pass in progress reads it from the file
+    if (this.logTornTail) {
+      // The row joined an unterminated last line: what the file now holds is the file's to say.
+      this.noteLogRotated();
+      return;
+    }
+    const parsed = this.toViewRow(row);
+    const id = parsed.topicId ?? (parsed as unknown as { channelId?: number }).channelId;
+    if (typeof id === 'number') {
+      const bytes = { total: this.logViewBytes };
+      this.addToLogView(this.logView, id, parsed, JSON.stringify(row).length, bytes);
+      this.logViewBytes = bytes.total;
+      if (this.logViewBytes > this.logViewByteCap) { this.logView = null; this.logViewStat = null; return; } // over the cap: old read from here
+    }
+    // The file now ends with this row: the identity the next use of the view checks against.
+    const st = fs.statSync(this.messageLogPath);
+    this.logViewStat = { ino: st.ino, dev: st.dev, size: st.size, mtimeMs: st.mtimeMs };
+  }
+
+  /** The file changed in a way the view cannot follow row by row (a rotation, a failed append): drop it and rebuild. */
+  private noteLogRotated(): void {
+    this.logGeneration += 1;
+    const hadView = this.logView !== null;
+    this.logView = null;
+    this.logViewStat = null;
+    this.logTornTail = false;
+    if (hadView || this.logViewBuild) void this.loadHistory();
+  }
+
+  /**
+   * The conversation list's (and its unread counts') read of a topic's recent rows. Returns what
+   * getTopicHistory returns, without its synchronous file read when the view can answer:
+   * - a cached tail is answered from the cache, as getTopicHistory does;
+   * - otherwise, while the view is usable, from the view: read only, never written into the shared
+   *   tail cache, so the view can affect the list response and nothing else (no chat ever reads it);
+   * - otherwise (building, failed, over its memory cap, switched off, or the file changed underneath
+   *   it): getTopicHistory itself, immediately. Nothing waits.
+   */
+  getTopicHistoryForList(topicId: number, limit: number = 20): LogEntry[] {
+    const view = limit <= TelegramAdapter.TAIL_CACHE_LIMIT ? this.usableView() : null;
+    if (!view) return this.getTopicHistory(topicId, limit);
+    const cached = this.topicTailCache.get(topicId);
+    if (cached) return this.authorshipJoin.join(cached.slice(-limit));
+    return this.authorshipJoin.join((view.get(topicId) ?? []).slice(-limit));
+  }
+
+  /**
+   * The view, if it may answer now: switched on, built, and the log file is the same file at the
+   * same size and modification time the view describes (anything else, such as an external append
+   * or a replaced file, drops it and starts a background rebuild). Null otherwise; never waits.
+   */
+  private usableView(): Map<number, LogEntry[]> | null {
+    if (!this.historyViewOn()) return null;
+    if (!this.logView || !this.logViewStat) { void this.loadHistory(); return null; }
+    let st: fs.Stats;
+    try { st = fs.statSync(this.messageLogPath); } catch { this.noteLogRotated(); return null; }
+    const v = this.logViewStat;
+    if (st.ino !== v.ino || st.dev !== v.dev || st.size !== v.size || st.mtimeMs !== v.mtimeMs) {
+      this.noteLogRotated(); // not what the view was built from: old read now, rebuild in the background
+      return null;
+    }
+    return this.logView;
+  }
+
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
@@ -5126,7 +5358,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Phase 1b: Delegate to shared MessageLogger when flag is enabled
     if (this.sharedLogger) {
-      const persisted = this.sharedLogger.append({
+      const sharedRow = {
         messageId: entry.messageId,
         channelId: entry.topicId,
         text: entry.text,
@@ -5141,8 +5373,10 @@ export class TelegramAdapter implements MessagingAdapter {
         ...(entry.via ? { via: entry.via, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
         provenance: entry.provenance,
         ...(entry.rowOrigin ? { rowOrigin: entry.rowOrigin } : {}),
-      });
-      if (!persisted) return;
+      };
+      const persisted = this.sharedLogger.append(sharedRow);
+      // A failed append may have written part of the line: the view re-reads what the file holds.
+      if (!persisted) { try { this.noteLogRotated(); } catch { /* @silent-fallback-ok — view only */ } return; }
       this.rememberLoggedEntry(entry, dedupeKey);
       // Also notify the Telegram-specific callback for backward compatibility
       if (this.onMessageLogged) {
@@ -5173,6 +5407,8 @@ export class TelegramAdapter implements MessagingAdapter {
           provenance: entry.provenance,
         }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
       }
+      // Last: keep the list's view in step (isolated; can only drop the view).
+      this.afterSaveForView(sharedRow);
       return;
     }
 
@@ -5182,6 +5418,8 @@ export class TelegramAdapter implements MessagingAdapter {
       this.maybeRotateLog();
     } catch (err) {
       console.error(`[telegram] Failed to append to message log: ${err}`);
+      // It may have written part of the line: the view re-reads what the file holds.
+      try { this.noteLogRotated(); } catch { /* @silent-fallback-ok — view only */ }
       DegradationReporter.getInstance().report({
         feature: 'Telegram.messageLog',
         primary: 'JSONL message log for conversation history and recovery',
@@ -5222,6 +5460,8 @@ export class TelegramAdapter implements MessagingAdapter {
         provenance: entry.provenance,
       }).catch(err => console.error(`[telegram] EventBus message:logged error: ${err}`));
     }
+    // Last: keep the list's view in step (isolated; can only drop the view).
+    this.afterSaveForView(entry);
   }
 
   private messageLogDedupeKey(entry: Pick<LogEntry, 'messageId' | 'topicId' | 'fromUser'>): string {
@@ -5281,6 +5521,7 @@ export class TelegramAdapter implements MessagingAdapter {
           try { SafeFsExecutor.safeUnlinkSync(tmpPath, { operation: 'src/messaging/TelegramAdapter.ts:2844' }); } catch { /* ignore */ }
           throw rotateErr;
         }
+        this.noteLogRotated(); // the list's log view follows the file (conversation-list-log-view)
         console.log(`[telegram] Rotated message log: ${lines.length} -> ${kept.length} lines`);
       }
     } catch {
