@@ -204,6 +204,25 @@ describe('fetchGitHubGraphql', () => {
     expect(request.body).not.toContain('machine-global');
   });
 
+  it('cancels an oversized decoded response body before parsing it', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from('first chunk'));
+        controller.enqueue(Buffer.from('second chunk'));
+      },
+      cancel,
+    });
+    const fetchImpl = (async () => new Response(body)) as typeof globalThis.fetch;
+    await expect(fetchGitHubGraphql({
+      token: 'agent-token',
+      query: 'query { viewer { login } }',
+      fetchImpl,
+      maxResponseBytes: 18,
+    })).rejects.toThrow('github-graphql-response-too-large');
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it('surfaces only bounded status metadata on HTTP failure', async () => {
     const fetchImpl = (async () => new Response('sensitive upstream body', {
       status: 401,

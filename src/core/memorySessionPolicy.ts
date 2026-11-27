@@ -28,7 +28,9 @@ export function memorySessionInboundRoots(state: string): string[] {
   return [
     path.join(state, 'telegram-inbound'), path.join(state, 'telegram-images'), path.join(state, 'telegram-documents'),
     path.join(state, 'telegram-files'), path.join(state, 'slack-files'), path.join(state, 'imessage', 'attachments'),
-    path.join(state, 'state', 'dashboard-uploads'), '/tmp/instar-slack', '/private/tmp/instar-slack',
+    // SEC-138: Slack context and long-message files moved from /tmp/instar-slack into telegram-inbound;
+    // a shared /tmp folder is no longer a trusted source of inbound files.
+    path.join(state, 'state', 'dashboard-uploads'),
   ];
 }
 

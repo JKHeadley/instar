@@ -1,0 +1,5 @@
+# Testing throughput without a model
+
+The existing two-hour testing report reads the verification journal and counts completed tests. A new opt-in job performs those calculations directly and saves a plain-text report under the agent's report directory. It uses the same lane file-count thresholds as the saved report and reports how many attempts finished, how many ran the full set of checks, and how many of those succeeded. The two reporting windows are the last two hours and the time since the saved baseline. When the journal lacks the time an exact revision was published, the report says that measure is unavailable.
+
+The new job is disabled on installation. It also requires the scheduler's script runner to be active. With the script runner off, it skips the run instead of starting a model. The existing report schedule is preserved during installation and upgrade. A future operator cutover should turn off the old schedule when enabling the script version. This draft saves the report locally and includes a best-effort snapshot of the local queue. Compare its delivery with the current report before replacing that schedule.

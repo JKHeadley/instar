@@ -194,6 +194,7 @@ describe('what needs the operator', () => {
     expect(n).toHaveLength(1);
     expect(n[0].title).toBe('Recovery after a long conversation is compressed is not working on this machine');
     expect(n[0].detail).toContain('Affected: Claude Code 2.1.321.');
+    expect(n[0].requiresUserAction).toBe(false);
   });
   it('two diverged versions on one machine are one row, naming both', () => {
     const n = contextNeeds(sentinel({ canary: { groups: [group({ state: 'diverged' }), group({ state: 'diverged', version: '2.1.300' }), group({ state: 'healthy', version: '2.1.200' })] } }), NAMES, NOW);
@@ -276,11 +277,12 @@ describe('Home count source', () => {
   it('a wrong-shape 200 is failed, not quiet', () => {
     expect(surfacedNeeds({ context: { results: { sentinel: ok({}) } } }, NOW).failed).toContain('context');
   });
-  it('healthy adds nothing; a diverged check adds one row that opens the page', () => {
+  it('keeps a diverged recovery diagnostic off the owner list', () => {
     expect(surfacedNeeds({ context: { results: { sentinel: ok(sentinel()) } } }, NOW).rows.filter((r: any) => r.key.startsWith('need:context:'))).toEqual([]);
     const rows = surfacedNeeds({ context: { results: { sentinel: ok(sentinel({ canary: { groups: [group({ state: 'diverged' })] } })) } } }, NOW).rows;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ tone: 'attn', action: { kind: 'href', href: '#/settings/context' } });
+    expect(rows).toEqual([]);
+    const raw = surfacedNeeds({ context: { results: { sentinel: ok(sentinel({ canary: { groups: [group({ state: 'diverged' })] } })) } } }, NOW, 120000, { raw: true });
+    expect(raw.rows).toEqual([expect.objectContaining({ source: 'context', ownerAction: false })]);
   });
 });
 

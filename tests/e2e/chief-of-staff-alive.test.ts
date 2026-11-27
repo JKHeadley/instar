@@ -11,7 +11,7 @@
  * CoherenceJournal (200 with the real shape; a bound project appears in the summary
  * and its detail; an unknown key is 404).
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -57,6 +57,9 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     try {
       const r = await request(server.getApp()).get('/chief-of-staff').set(auth());
       expect(r.status).toBe(503); expect(r.body.error).toMatch(/not enabled/);
+      await request(server.getApp()).get('/chief-of-staff/pr-search?q=instar.sh').set(auth()).expect(503);
+      await request(server.getApp()).post('/chief-of-staff/project-binding-preview')
+        .set({ ...auth(), 'X-Instar-Request': '1' }).send({}).expect(503);
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(503);
       const ask = await request(server.getApp()).post(`/chief-of-staff/projects/${encodeURIComponent(CK)}/pause-ask`).set(auth()).send({ action: 'pause', marker: '[source: telegram 1/2 2026-11-13]' });
@@ -73,7 +76,7 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     const loadUnion = (): UnionEntry[] => journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 10_000).entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: 'm1' }));
     const loop = new ChiefOfStaffLoop({
       now: () => Date.now(), machineId: 'm1', enabled: () => true, holdsLease: () => true, config: () => CHIEF_OF_STAFF_LOOP_DEFAULTS,
-      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion },
+      journal: { emit: (k, b) => { const r = emitter.emit(CHIEF_OF_STAFF_STORE_KEY, k, b); return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) }; }, loadUnion, loadUnionCompleteReadOnly: loadUnion },
       verifyRenewal: () => true,
       gather: async () => { throw new Error('not exercised here'); },
       judge: async () => null,
@@ -84,6 +87,9 @@ describe('Chief of Staff E2E (feature is alive)', () => {
     emitter.emit(CHIEF_OF_STAFF_STORE_KEY, `binding:${CK}`, buildBindingPut({ conversationKey: CK, goal: 'Ship the thing', doneDefinition: [{ id: 'd1', kind: 'judgment', text: 'owner says done' }], checkCadenceHours: 24, linked: { repos: [], branches: [], domains: [] }, confirmedBy: 'owner', confirmedAt: new Date().toISOString() } as never));
     journal.flush();
 
+    config.developmentAgent = true;
+    config.dashboardPin = '424242';
+    config.chiefOfStaff = { bindingBatchPreview: true };
     const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir), chiefOfStaffLoop: loop });
     await server.start();
     try {
@@ -94,6 +100,22 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       expect(Array.isArray(r.body.projects)).toBe(true);
       expect(r.body.projects.map((p: { conversationKey: string }) => p.conversationKey)).toEqual([CK]);
       expect(r.body.projects[0].goal).toBe('Ship the thing');
+
+      const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '424242' }).expect(200);
+      const preview = await request(server.getApp()).post('/chief-of-staff/project-binding-preview')
+        .set({ ...auth(), 'X-Instar-Request': '1', 'X-Instar-Operator-Session': unlock.body.operatorSessionToken })
+        .send({ draft: {
+          version: 1, id: '1'.repeat(32), createdAt: '2026-11-26T20:00:00Z',
+          sourceMessageRefs: ['telegram:1/2'],
+          items: [{
+            kind: 'project-bind', title: 'Already bound project',
+            binding: { conversationKey: CK, goal: 'Ship the thing', doneDefinition: [
+              { id: 'd1', kind: 'judgment', text: 'owner says done' },
+            ], checkCadenceHours: 24, linked: {} },
+          }],
+        } }).expect(200);
+      expect(preview.body.items[0].disposition).toBe('already-tracked');
+      expect(loadUnion()).toHaveLength(1);
 
       const d = await request(server.getApp()).get(`/chief-of-staff/projects/${encodeURIComponent(CK)}`).set(auth());
       expect(d.status).toBe(200); expect(d.body.conversationKey).toBe(CK); expect(Array.isArray(d.body.checks)).toBe(true); expect(Array.isArray(d.body.intents)).toBe(true);
@@ -107,6 +129,42 @@ describe('Chief of Staff E2E (feature is alive)', () => {
 
       const nf = await request(server.getApp()).get('/chief-of-staff/projects/telegram:1').set(auth());
       expect(nf.status).toBe(404);
+
+      // Incident replay at the HTTP seam: the link lives beyond the first 100 open
+      // PRs and only its body says instar.sh. The fresh agent has no topic history
+      // or memory to consult and the server uses GitHub directly.
+      const originalFetch = globalThis.fetch;
+      vi.stubEnv('GITHUB_TOKEN', 'e2e-fixture');
+      const github = vi.fn(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        if (url !== 'https://api.github.com/graphql') return originalFetch(url, init);
+        const { variables } = JSON.parse(String(init?.body)) as { variables: { states: string[]; cursor: string | null } };
+        const cursorStep = Number(variables.cursor ?? 0);
+        const nextCursor = variables.states[0] === 'OPEN' && cursorStep < 2 ? String(cursorStep + 1) : null;
+        const results = variables.states[0] === 'MERGED' ? [] : nextCursor
+          ? Array.from({ length: 50 }, (_, index) => cursorStep * 50 + index + 1)
+          : [3342];
+        const nodes = results.map(number => ({
+          number, title: `Existing feature ${number}`, body: number === 3342 ? 'Permanent agent addresses on instar.sh' : '',
+          headRefName: `topic/fixture-${number}`, baseRefName: 'main', state: 'OPEN',
+          updatedAt: '2026-11-23T00:00:00.000Z', mergedAt: null,
+        }));
+        return new Response(JSON.stringify({
+          data: { repository: { isPrivate: false, pullRequests: { nodes, pageInfo: { hasNextPage: nextCursor !== null, endCursor: nextCursor } } } },
+        }));
+      });
+      vi.stubGlobal('fetch', github);
+      try {
+        const priorWork = await request(server.getApp()).get('/chief-of-staff/pr-search?q=instar.sh').set(auth()).expect(200);
+        expect(priorWork.body).toMatchObject({
+          coverage: { open: { status: 'fresh' }, merged: { status: 'fresh' } },
+          matchCount: 1,
+          items: [{ number: 3342, url: 'https://github.com/JKHeadley/instar/pull/3342' }],
+        });
+        expect(github).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+      }
 
       const noAuth = await request(server.getApp()).get('/chief-of-staff');
       expect(noAuth.status).toBe(401);

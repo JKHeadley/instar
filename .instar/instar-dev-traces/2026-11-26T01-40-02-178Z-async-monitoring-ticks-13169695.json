@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "async-monitoring-ticks",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-26T01:40:02.178Z",
+  "artifactPath": "upgrades/side-effects/async-monitoring-ticks.md",
+  "artifactSha256": "a77da65b54531cfc743a7d33dedfeb9dc89e1f1ec0ced1691fce3fa6fc5b5d8c",
+  "coveredFiles": [
+    "src/monitoring/OrphanProcessReaper.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Make the existing full-process-table output bound explicit at its callsite. The helper still enforces the same timeout and output limit.",
+  "eli16Path": "upgrades/eli16/async-monitoring-ticks.md",
+  "sideEffectsPath": "upgrades/side-effects/async-monitoring-ticks.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

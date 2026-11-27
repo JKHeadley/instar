@@ -29,3 +29,19 @@ describe('independent graph viewer revocation review',()=>{
   }finally{pairing.stop();SafeFsExecutor.safeRmSync(dir,{recursive:true,force:true,operation:'graph-viewer-independent-review-cleanup'});}
  });
 });
+
+describe('owner graph presentation projection',()=>{
+ it('filters retained internal nodes without removing owner correction authority',()=>{
+  let available=true;
+  const resolver=createConversationGraphViewerResolver({agentId:'echo',pairing:null,verifyDashboardOwner:()=>true,mayPresent:ref=>{
+   if(!available)throw Error('work-card-visibility-unavailable');
+   return ref.kind!=='conversation'||ref.platform!=='app'||ref.conversationKey!=='11111111-1111-4111-8111-111111111111';
+  }});
+  const viewer=resolver({get:()=> 'owner-session'} as unknown as Request,'dashboard')!;
+  expect(viewer.hasFullCorrectionScope?.()).toBe(true);
+  expect(viewer.mayView({kind:'conversation',platform:'app',conversationKey:'11111111-1111-4111-8111-111111111111'})).toBe(false);
+  expect(viewer.mayView({kind:'conversation',platform:'app',conversationKey:'22222222-2222-4222-8222-222222222222'})).toBe(true);
+  available=false;
+  expect(()=>viewer.mayView({kind:'conversation',platform:'app',conversationKey:'22222222-2222-4222-8222-222222222222'})).toThrow('work-card-visibility-unavailable');
+ });
+});

@@ -298,7 +298,9 @@ export type RefreshFn = (opts: {
   /** The account id to record on the resumed session. */
   accountId: string;
   /** Work-gate caller class (swap-continuity-antithrash §4.2) — server-internal only (I11). */
-  callerClass?: 'proactive-swap' | 'reactive-swap';
+  callerClass?: 'proactive-swap' | 'reactive-swap' | 'interactive-refresh';
+  /** Final synchronous consistency check after refresh work gates and before any kill. */
+  beforeKill?: () => boolean;
 }) => Promise<boolean | { ok: boolean; code?: string }>;
 
 export interface SwapResult {
@@ -426,10 +428,15 @@ export class QuotaAwareScheduler {
     /** Level-triggered source condition. Login loss is revalidated at the same
      * kill boundary as the untagged default-account identity. */
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+    /** Server-owned explicit manual balance intent; never read directly from a request. */
+    manualBalanceTarget?: string;
+    manualBalanceSourceCurrent?: () => boolean;
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
+    const isManual = args.manualBalanceTarget !== undefined;
     const isProactive = targetAccountId !== undefined;
-    const callerClass = args.callerClass ?? (isProactive ? 'proactive-swap' : 'reactive-swap');
+    if (isManual && isProactive) return { swapped: false, toAccountId: null, reason: 'conflicting-swap-intent' };
+    const callerClass = isManual ? 'interactive-refresh' : args.callerClass ?? (isProactive ? 'proactive-swap' : 'reactive-swap');
     const accounts = this.cfg.listAccounts();
     const sourceAccount = accounts.find((a) => a.id === exhaustedAccountId);
     const framework = args.framework ?? sourceAccount?.framework;
@@ -441,7 +448,16 @@ export class QuotaAwareScheduler {
     }
 
     let next: SubscriptionAccount | null;
-    if (isProactive) {
+    if (isManual) {
+      if (!args.manualBalanceSourceCurrent?.()) return { swapped: false, toAccountId: null, reason: 'manual-balance-source-changed' };
+      // Manual authority is the authenticated, explicit opt-in; this is not a quota-wall intent.
+      // The route revalidates source identity and supplies only fresh measured eligible targets.
+      next = accounts.find((a) => a.id === args.manualBalanceTarget) ?? null;
+      const eligible = rankAccounts(accounts, { nowMs, framework: CODEX_CLI_FRAMEWORK, excludeId: exhaustedAccountId, softThresholdPct: Math.min(this.cfg.softThresholdPct ?? 90, 100) }).ranked;
+      if (framework !== CODEX_CLI_FRAMEWORK || !next || !eligible.some((x) => x.account.id === next!.id && x.tier === 'measured')) {
+        return { swapped: false, toAccountId: next?.id ?? null, reason: 'manual-target-ineligible' };
+      }
+    } else if (isProactive) {
       // ── Execute-time revalidation (§3.3, R4-m4) — refuse, never re-select ──
       const at = this.cfg.antiThrash;
       next = accounts.find((a) => a.id === targetAccountId) ?? null;
@@ -503,20 +519,22 @@ export class QuotaAwareScheduler {
       }
     }
 
+    if (isManual && !args.manualBalanceSourceCurrent?.()) return { swapped: false, toAccountId: next.id, reason: 'manual-balance-source-changed' };
     let refreshOutcome: boolean | { ok: boolean; code?: string };
     try {
       refreshOutcome = await this.cfg.refreshFn({
         sessionName,
-        reason: `${args.sourceTrigger === 'login-loss' ? 'login-loss-swap' : 'quota-swap'}: ${exhaustedAccountId} → ${next.id}`,
+        reason: `${isManual ? 'manual-balance-swap' : args.sourceTrigger === 'login-loss' ? 'login-loss-swap' : 'quota-swap'}: ${exhaustedAccountId} → ${next.id}`,
         configHome: next.configHome,
         accountId: next.id,
         callerClass,
+        ...(isManual ? { beforeKill: args.manualBalanceSourceCurrent } : {}),
       });
     } catch (err) {
       // §3.1/§3.6 fix-alongside: reactive execution failures were previously a
       // silent discarded promise — now observed (failed rows, kind 'reactive')
       // before the error propagates exactly as before.
-      if (!isProactive) {
+      if (!isProactive && !isManual) {
         this.cfg.antiThrash?.onReactiveFailed?.({
           session: sessionName,
           from: exhaustedAccountId,
@@ -533,7 +551,7 @@ export class QuotaAwareScheduler {
       this.cfg.logger?.warn(
         `[QuotaAwareScheduler] ${sessionName}: swap to ${next.id} — refresh reported failure${code ? ` (${code})` : ''}`,
       );
-      if (!isProactive) {
+      if (!isProactive && !isManual) {
         if (code === 'rate_limited') {
           // The one state where a session is stranded on a walled account with
           // no further mechanical rescue this window (§3.1 trigger 2).
@@ -552,7 +570,7 @@ export class QuotaAwareScheduler {
     this.cfg.logger?.log(
       `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
     );
-    if (!isProactive) {
+    if (!isProactive && !isManual) {
       this.cfg.antiThrash?.onReactiveExecuted?.({
         session: sessionName,
         from: exhaustedAccountId,

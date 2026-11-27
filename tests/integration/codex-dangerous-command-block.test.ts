@@ -77,6 +77,18 @@ describe('Codex dangerous-command-guard (stdin payload)', () => {
     expect(res.status).toBe(0);
   });
 
+  it.each([['Codex', runCodex], ['Claude stdin', runClaudeStdin]] as const)(
+    '%s distinguishes literal search text from executable SQL in the installed hook', (_name, run) => {
+      const sql = ['DELETE', 'FROM', 'records'].join(' ');
+      const search = run(`rg -n '${sql}' src`);
+      expect(search.status, search.stderr).toBe(0);
+      const execute = run(`sqlite3 fixture.db '${sql}'`);
+      expect(execute.status, execute.stderr).toBe(2);
+      expect(execute.stderr).toContain('BLOCKED');
+      expect(fs.existsSync(path.join(dir, 'fixture.db'))).toBe(false);
+    },
+  );
+
   it('BLOCKS via the Claude stdin path (tool_input.command) — exit 2', () => {
     const res = runClaudeStdin('rm -rf /');
     expect(res.status, `expected block (exit 2), got ${res.status}; stderr=${res.stderr}`).toBe(2);
