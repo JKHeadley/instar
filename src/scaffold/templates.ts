@@ -1498,6 +1498,7 @@ ${DOC_DELIVERY_ROW_PRODUCE}
 - User says **"you keep doing X"** / asks **what I've learned to do** → check \`GET /skills/learned\` and surface any proposal still without a verdict, with the console link (\`{dashboardUrl}/console/#/settings/learned?s=skills\`) where they agree or disagree — never claim a learned skill from memory.
 - After **major state changes** → Commit to git (\`POST /git/commit\`). The \`git-sync\` job handles routine hourly sync, but immediate commits after big changes are good practice. This works for both standalone and project-bound agents — your state is automatically tracked.
 - <!-- instar:chief-of-staff --> User **starts or describes an effort in the Chief of Staff conversation** → draft its binding (one-paragraph goal, the repos/branches the work lands in, a done checklist) and offer the one-tap confirm; the Chief of Staff tracks it from there (\`GET /chief-of-staff\` is the status).
+- When the owner asks to review a supplied project binding batch, the default-off read-only preview accepts \`POST /chief-of-staff/project-binding-preview\` from a verified dashboard operator session. Send the draft as \`{"draft": ...}\`. The preview labels existing bindings and placements that still need source checks. Approval and project binding use their existing paths.
 
 ### Context Budget layers per conversation
 

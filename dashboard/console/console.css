@@ -364,6 +364,7 @@ details.more[open] summary .chev { transform: rotate(90deg); }
 }
 /* A link styled as the primary button centres its label the way a <button> does (it sat top-left, 2026-11-20 audit). */
 a.btn-primary { display: inline-flex; align-items: center; justify-content: center; text-align: center; text-decoration: none; padding: 10px 16px; box-sizing: border-box; }
+
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:disabled { opacity: .55; cursor: default; }
 #sec-auto-repair .btn-primary:disabled {

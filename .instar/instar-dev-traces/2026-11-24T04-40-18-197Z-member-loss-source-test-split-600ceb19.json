@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "member-loss-source-test-split",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T04:40:18.197Z",
+  "artifactPath": "upgrades/side-effects/member-loss-source-test-split.md",
+  "artifactSha256": "e896a24a866083c0bd1d621be4f629b41b44a00703688ceb8b4545c2e0d6c1a7",
+  "coveredFiles": [
+    "docs/specs/member-loss-source-test-split.eli16.md",
+    "tests/helpers/conversation-graph-held-member-loss.ts",
+    "tests/integration/conversation-graph-member-loss-reader.test.ts",
+    "tests/integration/conversation-graph-member-loss-source.test.ts",
+    "upgrades/next/member-loss-source-test-split.md",
+    "upgrades/side-effects/member-loss-source-test-split.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The test file partition and shared fixture are reversible and change no production behavior.",
+  "eli16Path": "docs/specs/member-loss-source-test-split.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/member-loss-source-test-split.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Finite test registrations and per-case cleanup are explicitly invoked by the verifier."
+  }
+}
