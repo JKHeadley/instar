@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-16T23:33:44.770Z",
+  "slug": "whatsapp-dm-sender-identity",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/WhatsAppAdapter.ts",
+      "src/messaging/backends/BaileysBackend.ts",
+      "src/messaging/shared/PhoneUtils.ts"
+    ],
+    "addedLines": 51,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

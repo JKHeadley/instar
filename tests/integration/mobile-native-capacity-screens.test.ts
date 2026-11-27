@@ -123,8 +123,8 @@ describe('owner phone: served, trimmed', () => {
     expect(r.body.notices).toEqual([expect.objectContaining({ tone: 'bad', title: 'Mac Mini has no signed-in account, so nothing can run there.', action: { kind: 'sign-in', accounts: [r.body.accounts[0].key] } })]);
     expect(r.body.headline).toBe(r.body.notices[0].title);
     expect(r.body.accounts.map((a: { name: string }) => a.name)).toEqual(['Adriana Pro', 'Justin Max']);
-    expect(r.body.accounts[0]).toMatchObject({ signIn: 'needs-sign-in', email: 'adriana@example.com', machines: [{ name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in' }] });
-    expect(r.body.accounts[1]).toMatchObject({ signIn: 'signed-in', inUse: true, kind: 'Claude', usageLine: '62% of 5-hour', windows: [{ label: '5-hour', pct: 62, resetsAt: '2026-11-04T04:10:00.000Z' }, { label: 'weekly', pct: 30 }] });
+    expect(r.body.accounts[0]).toMatchObject({ signIn: 'needs-sign-in', email: 'adriana@example.com', machines: [{ name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in', machineKey: expect.stringMatching(/^[0-9a-f]{16}$/), present: true }] });
+    expect(r.body.accounts[1]).toMatchObject({ signIn: 'signed-in', inUse: true, kind: 'Claude', usageLine: '62% of 5-hour', windows: [{ label: '5-hour', name: '5-hour', pct: 62, resetsAt: '2026-11-04T04:10:00.000Z', tone: null, rolledOver: false }, { label: 'weekly', name: 'Weekly', pct: 30, tone: null, rolledOver: false }] });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
   });
@@ -139,6 +139,24 @@ describe('owner phone: served, trimmed', () => {
     const down = await signedGet(setup({ reloginBlockers: async () => { throw new Error('unreachable'); } }), '/mobile/accounts');
     expect(down.status).toBe(200);
     expect(down.body.needsSignIn).toBe(1);
+  });
+
+  it('GET /mobile/accounts reads every machine\'s repairs: a peer repair in flight is not a sign-in for the person', async () => {
+    const busy = await signedGet(setup({ poolRepairs: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', state: 'browser-driving', updatedAt: '2026-11-04T01:59:00.000Z' }] }), '/mobile/accounts');
+    expect(busy.status).toBe(200);
+    expect(busy.body.needsSignIn).toBe(0);
+    expect(busy.body.notices).toEqual([]);
+    const adriana = busy.body.accounts.find((a: { name: string }) => a.name === 'Adriana Pro');
+    expect(adriana).toMatchObject({ signIn: 'signing-in', machines: [{ name: 'Mac Mini', state: 'working', label: 'signing in now' }] });
+    // A repair that failed for good says why, and is counted.
+    const failed = await signedGet(setup({ poolRepairs: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', state: 'failed', failureClass: 'agent-sign-in-unfinished', slowRetryHeld: true }] }), '/mobile/accounts');
+    expect(failed.body.needsSignIn).toBe(1);
+    expect(failed.body.accounts[0].machines[0].label).toBe("automatic repair failed: the sign-in helper couldn't finish");
+    // An unreadable pooled read falls back to this machine's own list.
+    const down = await signedGet(setup({ poolRepairs: async () => { throw new Error('unreachable'); } }), '/mobile/accounts');
+    expect(down.status).toBe(200);
+    expect(down.body.needsSignIn).toBe(1);
+    expect(JSON.stringify(busy.body)).not.toContain('browser-driving');
   });
 
   it('GET /mobile/spend gives recorded cost with its basis, limits without the credential reference, token totals', async () => {

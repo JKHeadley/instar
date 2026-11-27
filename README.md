@@ -5,7 +5,7 @@
 <h1 align="center">instar</h1>
 
 <p align="center">
-  <strong>Coherence infrastructure for your self-evolving agent.</strong>
+  <strong>Your own AI agent. A colleague you can trust.</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a> · <a href="https://instar.sh/exo3">EXO&nbsp;3.0</a>
+  <a href="https://www.npmjs.com/package/instar">npm</a> · <a href="https://github.com/JKHeadley/instar">GitHub</a> · <a href="https://instar.sh">instar.sh</a> · <a href="https://instar.sh/introduction/">Docs</a> · <a href="https://instar.sh/#download">Get the apps</a> · <a href="https://instar.sh/exo3">Our purpose</a>
 </p>
 
 ---
@@ -27,79 +27,63 @@
   <img src="assets/demo.gif" alt="Instar demo — Kira agent handling an email notification via Telegram" width="300" />
 </p>
 
+Instar turns an AI you chat with into an agent that works with you over time. It remembers what you talked about last week, keeps the promises it makes, works while you are away, and asks you only when a decision is really yours. You talk to it from the Instar app on your phone or computer, or from Telegram or Slack. It runs on the **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** or **[Codex](https://github.com/openai/codex)** subscription you already have.
+
+## Get started
+
+**No terminal needed:** [download the Mac app](https://instar.sh/#download), open it and tap **Create my agent**. Then pair **Instar Agents** from the App Store on your iPhone and talk to your agent from anywhere.
+
+**From the terminal:**
+
 ```bash
 npx instar
 ```
 
-One command. Guided setup. Talking to your agent from your phone within minutes.
+A guided setup discovers your environment, connects a way to talk to your agent (usually a Telegram bot it helps you create; without Telegram it works from its dashboard and the Instar app), sets up its identity and starts it.
 
----
-
-Your AI agent shouldn't have amnesia. This one doesn't.
-
-Most agent frameworks ship something hobbled — spun up with no memory across boundaries, no way to be accountable for what a past instance did, and no machinery to grow themselves. Users hit the same wall every time: *"My agent forgot what I told it three sessions ago." "It contradicted its own past decisions." "It broke when the framework updated."*
-
-Instar is the scaffolding that un-hobbles them. It remembers what you discussed last week, catches its own contradictions before you do, follows through on commitments across restarts, and carries the same self-improving loop that built Instar itself. It runs on the **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** or **[Codex](https://github.com/openai/codex)** subscription you already have — engine-agnostic, with local open-source models on the roadmap.
-
-The architecture was distilled from [**Dawn**](https://dawn.bot-me.ai) — an AI running continuously since early 2026, holding ~700 tracked relationships and hundreds of learned lessons across thousands of restarts — and packaged so every agent you build starts from the same foundation.
-
-### Every other agent fails the same way
-
-| Other AI agents | Your Instar agent |
-|---|---|
-| Forgets what you told it last week. | Remembers across thousands of sessions. <br/>*(SQLite + FTS5, rolling summaries)* |
-| Contradicts its own past decisions. | Catches contradictions before they ship. <br/>*(Coherence Gate, 9 reviewers)* |
-| Loses the thread when the window fills. | Comes back with the full thread, every time. <br/>*(CompactionSentinel, WorkingMemoryAssembler)* |
-| Silently stops shipping when a release stalls. | Surfaces the blocked release as ONE deduped, age-escalating Attention item. <br/>*(ReleaseReadinessSentinel — instar-dev / maintainer environments)* |
-| Drops commitments after a session boundary. | Tracks commitments durably; nudges itself when they go overdue. <br/>*(CommitmentTracker, PromiseBeacon)* |
-| Breaks when the framework updates. | Updates without breaking what you've deployed. <br/>*(Migration Parity Standard)* |
-| Default ALLOW-ALL permissions. | Layered safety gates by default. <br/>*(PEL + Coherence Gate + Operation Gate)* |
-| Different identity per channel. | One identity across Telegram, WhatsApp, iMessage, Slack. <br/>*(Cross-platform identity resolution)* |
-| Has no machinery to evolve itself. | Carries the same self-improving engine that grew Instar. <br/>*(Evolution System: proposals, learnings, gaps)* |
-
-> Most AI agents are hobbled at birth. **Instar is the scaffolding that un-hobbles them.** When you instantiate intelligence, the structure that lets it cohere isn't optional polish — it's what you owe it.
-
-## Quick Start
-
-Three steps to a running agent:
-
-```bash
-# 1. Run the setup wizard
-npx instar
-
-# 2. Start your agent
-instar server start
-
-# 3. Message it from your phone — it responds, runs jobs, and remembers everything
-```
-
-The wizard discovers your environment, configures messaging (Telegram, WhatsApp, and/or iMessage), sets up identity files, and gets your agent running. **Within minutes, you're talking to your partner from your phone.**
-
-**Requirements:** Node.js 20+ · [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) · [API key](https://console.anthropic.com/) or Claude subscription
+**Requirements (terminal):** Node.js 20+ · [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex or Gemini CLI signed in to your subscription
 
 > **Full guide:** [Installation](https://instar.sh/installation/) · [Quick Start](https://instar.sh/quickstart/)
+
+## Why it exists
+
+Most AI forgets you the moment the chat ends. Agents built on it fail the same ways: *"My agent forgot what I told it three sessions ago." "It contradicted its own past decisions." "It broke when the framework updated."*
+
+Instar is what was left after most of a year of finding the ways an agent fails when nobody is watching, and making each fix part of the system so it does not depend on the agent remembering. It grew out of [**Dawn**](https://dawn.bot-me.ai), an AI that has run continuously since January 2026 and has talked with about 2,000 people, about 800 of them more than once. Every Instar agent starts from that foundation.
+
+| Agents without structure | Your Instar agent |
+|---|---|
+| Forget what you told them last week. | Remembers across sessions. <br/>*(SQLite + FTS5, rolling summaries)* |
+| Contradict their own past decisions. | Catches contradictions before they ship. <br/>*(Coherence Gate)* |
+| Lose the thread when the window fills. | Comes back with the full thread. <br/>*(CompactionSentinel, WorkingMemoryAssembler)* |
+| Drop commitments after a session ends. | Tracks promises and follows up on its own. <br/>*(CommitmentTracker, PromiseBeacon)* |
+| Break when the framework updates. | Updates without breaking what you've deployed. <br/>*(Migration Parity Standard)* |
+| Can do anything, decided by nobody. | Layered safety gates; trust earned per service; sensitive approvals on your phone. |
+| Live on one machine. | One agent and one memory across all your computers. |
+| Never learn from correction. | Turns repeated corrections into lasting preferences. <br/>*(Correction & Preference Learning, Evolution System)* |
+
+> The rule behind Instar is **structure over willpower**: a correction should become a check that runs every time, because a lesson that lives only in notes is forgotten after the next restart. And honesty comes before polish.
 
 ## How It Works
 
 ```
-You (Telegram / WhatsApp / iMessage / Terminal)
+You (Instar app / Telegram / Slack / dashboard)
          │
     conversation
          │
          ▼
 ┌─────────────────────────┐
-│    Your AI Partner       │
-│    (Instar Server)       │
+│       Your agent         │
+│    (Instar server)       │
 └────────┬────────────────┘
-         │  manages its own infrastructure
+         │  runs and supervises its own sessions
          │
-         ├─ Claude Code session (job: health-check)
-         ├─ Claude Code session (job: email-monitor)
-         ├─ Claude Code session (interactive chat)
-         └─ Claude Code session (job: reflection)
+         ├─ session (job: email check)
+         ├─ session (your conversation about a project)
+         └─ session (job: reflection)
 ```
 
-Each session is a **real Claude Code process** with extended thinking, native tools, sub-agents, hooks, skills, and MCP servers. Not an API wrapper -- the full development environment. The agent manages all of this autonomously.
+Each session is a **real Claude Code or Codex process** with its native tools, sub-agents, hooks and skills. Not an API wrapper. The server supervises all of it: memory, scheduling, recovery after crashes and restarts, and the checks that keep the agent honest.
 
 ## Why Coherence Is the Foundation
 
@@ -195,25 +179,6 @@ Instar ships fifteen skills total — thirteen user-facing, plus two internal sk
 | [instar-feedback](skills/instar-feedback/) | Report issues directly to the Instar maintainers from inside your agent |
 
 Browse all skills: [agent-skills.md/authors/sagemindai](https://agent-skills.md/authors/sagemindai)
-
-## How Instar Compares
-
-Different tools solve different problems. Here's where Instar fits:
-
-| | Instar | Claude Code (standalone) | OpenClaw | LangChain/CrewAI |
-|---|--------|-------------------------|----------|-----------------|
-| **Runtime** | Real Claude Code CLI processes | Single interactive session | Gateway daemon with API calls | Python orchestration |
-| **Persistence** | Multi-layered memory across sessions | Session-bound context | Plugin-based memory | Framework-dependent |
-| **Identity** | Hooks enforce identity at every boundary | Manual CLAUDE.md | Not addressed | Not addressed |
-| **Scheduling** | Native cron with priority & quotas | None | None | External required |
-| **Messaging** | Telegram + WhatsApp + iMessage (two-way) | None | 22+ channels, voice, device apps | External required |
-| **Safety** | LLM-supervised gates, decision journaling | Permission prompts | Behavioral hooks | Guardrails libraries |
-| **Process model** | One process per session, isolated | Single process | All agents in one Gateway | Single orchestrator |
-| **State storage** | 100% file-based (JSON/JSONL/SQLite) | Session only | Database-backed | Framework-dependent |
-
-OpenClaw excels at **breadth** -- channels, voice, device apps, and a massive plugin ecosystem. Instar focuses on **depth** -- coherence, identity, memory, and safety for long-running autonomous agents. They solve different problems.
-
-> **Full comparison:** [Instar vs OpenClaw](https://instar.sh/guides/vs-openclaw/)
 
 <details>
 <summary><strong>Security Model</strong></summary>
@@ -323,3 +288,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full story.
 ## License
 
 MIT
+
+### Storage errors and backups
+
+Storage refusals and failed saves name the computer that produced them, using its machine nickname or hostname. If a phone reports that Mac Studio is nearly out of disk space, free space on Mac Studio. Another computer receiving that error keeps the original machine name.
+
+Use `instar backup create` to snapshot agent state, `instar backup list` to inspect snapshots, and `instar backup restore [id]` to restore one. A storage failure during a backup or restore identifies the computer performing the operation; check its available space and directory permissions before retrying.
+
+Owner requests are kept by the [TeamRequests store](src/core/TeamRequests.ts). Asking for access does not grant it: the owner's phone must sign the access change. If storage fails while handling a signed team action, the reply names the computer needing attention and keeps private file paths out of the response.

@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-10T20:19:07.202Z",
+  "slug": "cb-row-writer",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 596,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationStore.ts",
+      "src/memory/TopicMemory.ts",
+      "src/memory/topicRowWriter.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/shared/MessageLogger.ts",
+      "src/monitoring/foldCoordinatorBoot.ts",
+      "src/threadline/TelegramBridge.ts"
+    ],
+    "addedLines": 564,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven action, not a self-triggered loop: the row writer reports a refusal at most once per inbound message it was handed; it never retries, re-drives or re-fires on its own"
+  },
+  "verdict": "pass"
+}

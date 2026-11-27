@@ -36,13 +36,17 @@ afterAll(() => {
 
 /** One concrete path for an allowlist pattern. */
 function sample(re: RegExp): string {
-  return re.source
+  let s = re.source
     .replace(/^\^/, '').replace(/\$$/, '')
     .replace(/\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-[^)]*?\{12\}/g, UUID)
     .replace(/\[0-9a-f\]\{64\}/g, 'a'.repeat(64))
-    .replace(/\(\?:/g, '(')
-    .replace(/\(([^()|]+)(\|[^()]*)?\)\??/g, '$1')
-    .replace(/\[[^\]]*\](\{[^}]*\}|\+|\*)?/g, 'x')
+    .replace(/\[0-9a-f-\]\{36\}/g, UUID)
+    .replace(/\(\?:/g, '(');
+  // Innermost groups first, repeated until none is left, so a group that holds groups is read too.
+  for (let prev = ''; prev !== s;) { prev = s; s = s.replace(/\(([^()|]+)(\|[^()]*)?\)\??/g, '$1'); }
+  return s
+    // A character class becomes as many x's as its quantifier's minimum, so `[a-z]{8,80}` still matches.
+    .replace(/\[[^\]]*\](\{(\d+)(,\d*)?\}|\+|\*)?/g, (_m, _q, min) => 'x'.repeat(Math.max(1, Number(min ?? 1))))
     .replace(/\\d(\{[^}]*\}|\+)?/g, '50')
     .replace(/\\\//g, '/').replace(/\\\./g, '.').replace(/\\-/g, '-');
 }
@@ -100,6 +104,9 @@ type Phone = ReturnType<Env['makePhone']> & { presence?: ReturnType<typeof makeD
 
 let tick = 0;
 async function hit(e: Env, p: Phone, method: string, url: string, body: string | undefined): Promise<number> {
+  // This table is about who passes which route, not rate limits: shared per-device buckets (e.g.
+  // 'permission-actions', 12 a minute across several routes) would otherwise run out mid-table.
+  (e.svc as unknown as { deviceBucket: Map<string, number[]> }).deviceBucket.clear();
   const octet = body === 'octet';
   const raw = body === 'json' ? Buffer.from('{}') : octet ? Buffer.from('x') : undefined;
   const time = String(Date.now() + (tick++ % 1000));
@@ -153,11 +160,19 @@ async function teamOff(e: Env, owner: Phone) {
 /** Patterns the generator cannot read: a lookahead, or a shape it would get wrong. */
 const NAMED: Array<[RegExp, string]> = [
   [/attention/, '/mobile/attention/item-1/choice'],
+  [/chat\\\/slack.*pins/, '/mobile/chat/slack/-5/pins'],
+  [/chat\\\/\[1-9\].*pins/, '/mobile/chat/50/pins'],
   [/chat\\\/slack.*messages/, '/mobile/chat/slack/-5/messages'],
   [/chat\\\/slack/, '/mobile/chat/slack/-5'],
   [/sessions\\\/door/, '/mobile/sessions/door/50'],
   [/sessions\\\/move/, '/mobile/sessions/move/50'],
   [/secrets\\\/requests.*cancel/, '/mobile/secrets/requests/abcdef0123456789/cancel'],
+  [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
+  [/work-board\\\/cards/, '/mobile/work-board/cards/wc_0123456789abcdef'],
+  [/trust\\\/requests\\\/tr-/, '/mobile/trust/requests/tr-0123456789ab-abc123/approve'],
+  [/suggestions.*accept/, '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/accept'],
+  [/suggestions.*reject/, '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/reject'],
+  [/projects\\\/drafts/, '/mobile/work/projects/drafts/gpd-0123456789abcdef0123/confirm'],
 ];
 const pathFor = (re: RegExp) => {
   const s = sample(re);

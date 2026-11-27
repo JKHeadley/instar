@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-10T12:22:49.715Z",
+  "slug": "cb-sentinel",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 644,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/ContextBudgetSentinel.ts",
+      "src/monitoring/FoldCoordinator.ts",
+      "src/monitoring/contextBudgetSentinelBoot.ts",
+      "src/monitoring/engineCheckpoint.ts",
+      "src/monitoring/foldCarriers.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/selfaction/policies.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 638,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "context-budget-quarantine-reconcile is registered in selfActionRegistry: per fold at most 12 attempts within a 45-minute wall clock, then exhausted and retained 24 h (no re-open); ring of four per topic+cause; governor policy 12/fold, 48/day"
+    }
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-precompact-steer",
+  "sessionId": "8678c84d-037f-4b82-a432-297906c6bdba",
+  "timestamp": "2026-11-10T06:22:43.649Z",
+  "artifactPath": "upgrades/side-effects/cb-precompact-steer.md",
+  "artifactSha256": "48e0098eef8eb254c665b598ae2a5a28f5210f358917c10f8bd34f55a4bb5c51",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/keepInstructions.ts",
+    "src/templates/hooks/settings-template.json",
+    "tests/e2e/pre-compact-steer-lifecycle.test.ts",
+    "tests/integration/pre-compact-steer-settings.test.ts",
+    "tests/unit/pre-compact-steer.test.ts",
+    "upgrades/next/cb-precompact-steer.md",
+    "upgrades/side-effects/cb-precompact-steer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide hook and settings migration that changes what Claude Code's compaction prompt receives; converged and approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

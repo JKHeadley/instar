@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-18T14:16:49.158Z",
+  "slug": "messages-reach-renamed-sessions",
+  "carriers": {
+    "CMT-1940": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Machine stewardship designs the fixes: triage the 10 items, spec the structural ones through spec-converge, and report the plan in topic 144503."
+    }
+  }
+}

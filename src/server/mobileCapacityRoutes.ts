@@ -42,7 +42,70 @@ export const SAMPLE_STALE_MS = 5 * 60_000;
 export const FUTURE_SKEW_MS = 5 * 60_000;
 /** Pool-wide answers (accounts, spend) are cached this long, single-flight, so phone refreshes never multiply peer reads. */
 export const POOL_READ_CACHE_MS = 15_000;
-const REPAIR_WORKING = new Set(['approved', 'starting', 'running', 'in-progress', 'navigating', 'awaiting-code']);
+// The repair store's own in-flight states (SUBSCRIPTION_RELOGIN_STATES), plus the older names the
+// phone used to read. Every one means "Instar is signing this account in now; nothing for you to do".
+const REPAIR_WORKING = new Set([
+  'approved', 'cli-starting', 'artifact-ready', 'browser-driving', 'cli-finishing', 'identity-verifying', 'auth-verifying',
+  'starting', 'running', 'in-progress', 'navigating', 'awaiting-code',
+]);
+/** A repair that keeps failing stops counting as "being handled" after this many slow retries. */
+export const REPAIR_RETRY_GRACE = 2;
+
+/** One repair attempt for one account on one machine, from the merged `/subscription-relogin?scope=pool`. */
+export interface RepairView {
+  accountId: string;
+  machineId: string;
+  state: string;
+  mode?: string | null;
+  nextAttemptAt?: string | null;
+  slowRetryHeld?: boolean | null;
+  slowRetryCount?: number | null;
+  failureClass?: string | null;
+  updatedAt?: string | null;
+}
+
+const FAILURE_WORDS: Record<string, string> = {
+  'agent-sign-in-unfinished': "the sign-in helper couldn't finish",
+  'seat-busy': 'no helper was free to sign in',
+  'target-unreachable': "the machine couldn't be reached",
+  'artifact-expired': 'the sign-in link expired',
+  'provider-transient': 'the sign-in service had a temporary problem',
+  'wrong-identity': 'the sign-in came back as a different account',
+  'captcha': 'the sign-in page asked for a human check',
+  'phone-confirmation': 'the sign-in needs a tap on your phone',
+  'passkey-refused': 'the passkey was refused',
+  'vault-reference-missing': 'a saved password is missing',
+  'automation-permission': 'macOS has not allowed the browser to be controlled',
+  'verification-failed': 'the new sign-in did not pass its check',
+};
+
+/**
+ * What a cell should say about an account that needs signing in, from its latest repair on that
+ * machine. null = no repair evidence (the pool status decides). A repair Instar is running, about to
+ * run, or will retry on its own is NOT shown as needing the person (Justin 2026-11-15, topic 33890:
+ * "maybe we shouldn't be presenting this to the user"); one that needs them says why.
+ */
+export function repairCellView(r: RepairView | null | undefined, nowMs: number): { state: MobileAccountMachine['state']; label: string } | null {
+  if (!r) return null;
+  if (REPAIR_WORKING.has(r.state)) return { state: 'working', label: 'signing in now' };
+  if (r.state === 'suggested') {
+    return r.mode === 'unattended'
+      ? { state: 'working', label: 'automatic repair starting' }
+      : { state: 'attn', label: 'needs your OK to repair' };
+  }
+  if (r.state === 'waiting-operator-only') return { state: 'attn', label: 'needs you to finish signing in' };
+  if (r.state === 'failed') {
+    const why = (r.failureClass && FAILURE_WORDS[r.failureClass]) || null;
+    const next = Date.parse(String(r.nextAttemptAt ?? ''));
+    const retrying = r.slowRetryHeld !== true && Number.isFinite(next) && next > nowMs;
+    if (retrying && (r.slowRetryCount ?? 0) < REPAIR_RETRY_GRACE) {
+      const at = new Date(next).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+      return { state: 'unknown', label: `automatic repair will try again at ${at}` };
+    }
+    return { state: 'attn', label: why ? `automatic repair failed: ${why}` : 'automatic repair failed' };
+  }
+  return null;
+}
 
 type Rec = Record<string, unknown>;
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
@@ -97,8 +160,23 @@ const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
 const KIND_WORDS: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 export function kindWord(framework: unknown): string { return (typeof framework === 'string' && KIND_WORDS[framework]) || 'Other'; }
 
-export interface MobileAccountWindow { label: string; pct: number; resetsAt: string | null }
-export interface MobileAccountMachine { name: string; isSelf: boolean; state: 'ok' | 'attn' | 'working' | 'unknown'; label: string }
+/**
+ * One usage limit on an account. `label` is unchanged for older apps. `name` is the display word
+ * ("5-hour", "Weekly", "Fable weekly"); `tone` is the colour for the rounded, displayed percentage
+ * (`usageTone`); `rolledOver` means the reset time has passed since the reading, so the figure is
+ * no longer true and gets no colour (DF-0001, docs/specs/design-standard-enforcement.md §4).
+ */
+export interface MobileAccountWindow { label: string; name: string; pct: number; resetsAt: string | null; tone: UsageTone; rolledOver: boolean }
+export type UsageTone = 'bad' | 'attn' | null;
+export interface MobileAccountMachine {
+  name: string;
+  isSelf: boolean;
+  state: 'ok' | 'attn' | 'working' | 'unknown';
+  label: string;
+  /** Stable identity for grouping only, never an action target. */
+  machineKey: string | null;
+  present: true;
+}
 export interface MobileAccount {
   key: string;
   name: string;
@@ -119,9 +197,13 @@ export interface MobileAccount {
  * running an automatic sign-in repair for the row (only known for this machine's own rows). A login
  * check that found the login signed out reads as needing sign-in even while the status says active.
  */
-export function accountCellState(row: Rec, repairing = false, blockerReason: string | null = null, nowMs = Date.now()): { state: MobileAccountMachine['state']; label: string } {
+export function accountCellState(row: Rec, repairing = false, blockerReason: string | null = null, nowMs = Date.now(), repair: RepairView | null = null): { state: MobileAccountMachine['state']; label: string } {
   const status = str(row.status);
   if (repairing) return { state: 'working', label: 'signing in now' };
+  if (status && NEEDS_SIGN_IN.has(status)) {
+    const view = repairCellView(repair, nowMs);
+    if (view) return view;
+  }
   // A slot proven to hold another account's login. Same rule as the console's accounts-model.js:
   // a fresh mismatch may correct itself; after a day it needs a new sign-in. The other account's
   // address stays off the phone.
@@ -145,20 +227,53 @@ export function accountCellState(row: Rec, repairing = false, blockerReason: str
   return { state: 'unknown', label: status && /^[a-z-]{1,24}$/.test(status) ? status.replace(/-/g, ' ') : 'unknown' };
 }
 
-/** Every usage window on a reading, highest first (the console's `tightest`, all windows kept). */
-export function usageWindows(q: unknown): MobileAccountWindow[] {
+/**
+ * Usage colour bands. The web console holds the same two numbers in
+ * dashboard/console/accounts-model.js; src/data/design/usage-tone-vectors.json pins both sides to
+ * one set of boundary cases (tests/unit/usage-tone-parity.test.ts).
+ */
+export const USAGE_TONE_ATTN_PCT = 75;
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+
+/** The colour for a limit or an account: from the rounded percentage that is displayed; none once reset. */
+export function usageTone(pct: number, rolledOver = false): UsageTone {
+  if (rolledOver || !Number.isFinite(pct)) return null;
+  const shown = Math.round(pct);
+  return shown >= NEAR_OUT_PCT ? 'bad' : shown >= USAGE_TONE_ATTN_PCT ? 'attn' : null;
+}
+
+const WINDOW_ORDER = [['fiveHour', '5-hour', '5-hour'], ['sevenDay', 'weekly', 'Weekly'], ['fable', 'Fable weekly', 'Fable weekly'], ['primary', '5-hour', '5-hour'], ['secondary', 'weekly', 'Weekly']] as const;
+const WINDOW_RANK: Record<string, number> = { '5-hour': 0, weekly: 1, 'Fable weekly': 2 };
+
+/**
+ * Every usage window on a reading, in a fixed order (5-hour, weekly, Fable weekly), never re-sorted
+ * by percentage, so every app draws the rows in the same order. `now` decides `rolledOver`.
+ */
+export function usageWindows(q: unknown, now: number = Date.now()): MobileAccountWindow[] {
   const r = rec(q);
   const wins: MobileAccountWindow[] = [];
   const seen = new Set<string>();
-  for (const [k, label] of [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']] as const) {
+  for (const [k, label, name] of WINDOW_ORDER) {
     const w = rec(r[k]);
     if (!Object.keys(w).length || seen.has(label)) continue;
     const pct = Number(w.utilizationPct ?? w.usedPercent);
     if (!Number.isFinite(pct)) continue;
     seen.add(label);
-    wins.push({ label, pct: Math.max(0, Math.round(pct)), resetsAt: iso(w.resetsAt ?? w.resetsAtIso) });
+    const resetsAt = iso(w.resetsAt ?? w.resetsAtIso);
+    const t = resetsAt ? Date.parse(resetsAt) : NaN;
+    const rolledOver = Number.isFinite(t) && t <= now;
+    const shown = Math.max(0, Math.round(pct));
+    wins.push({ label, name, pct: shown, resetsAt, tone: usageTone(shown, rolledOver), rolledOver });
   }
-  return wins.sort((a, b) => b.pct - a.pct);
+  return wins.sort((a, b) => WINDOW_RANK[a.label] - WINDOW_RANK[b.label]);
+}
+
+/** The highest limit that has not reset since the reading (the one that decides the account), or null. */
+export function topWindow(windows: readonly MobileAccountWindow[]): MobileAccountWindow | null {
+  let top: MobileAccountWindow | null = null;
+  for (const w of windows) if (!w.rolledOver && (top === null || w.pct > top.pct)) top = w;
+  return top;
 }
 
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
@@ -177,6 +292,8 @@ export interface AccountsOptions {
   nicknameOf?: (machineId: string) => string | null;
   /** This machine's own repair episodes (accountId + state); remote rows are never matched. */
   localRepairs?: Array<{ accountId: string; state: string }>;
+  /** Every machine's repairs (merged read). When present it decides each cell; localRepairs is the fallback. */
+  repairs?: RepairView[];
   /** Repair blockers across machines; a machine with no row here keeps its pool status. */
   blockers?: Array<{ accountId: string; machineId: string; reason: string }>;
   /** The verified name of the machine answering, for wording that would otherwise say "this machine". */
@@ -184,9 +301,6 @@ export interface AccountsOptions {
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
 }
-
-/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
-export const NEAR_OUT_PCT = 90;
 
 /**
  * Something on the Accounts screen that needs the person or changes what they can do. The screen's
@@ -207,7 +321,7 @@ type NoticeAccount = Pick<MobileAccount, 'key' | 'name' | 'kind' | 'signIn' | 'w
 
 /** When this account has room again: every window at or over the line must reset (null if one has no time). */
 function roomReturnsAt(a: NoticeAccount): number | null {
-  const full = a.windows.filter((w) => w.pct >= NEAR_OUT_PCT);
+  const full = a.windows.filter((w) => !w.rolledOver && w.pct >= NEAR_OUT_PCT);
   let latest = 0;
   for (const w of full) {
     const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
@@ -260,10 +374,10 @@ export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadabl
   for (const kind of kinds) {
     const list = usable.filter((a) => a.kind === kind);
     if (list.some((a) => a.windows.length === 0)) continue; // one we can't read may have room
-    if (list.every((a) => (a.windows[0]?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+    if (list.every((a) => (topWindow(a.windows)?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
   }
   const roomNotice = (list: NoticeAccount[], kind: string | null): AccountNotice => {
-    const usedUp = list.every((a) => (a.windows[0]?.pct ?? 0) >= 100);
+    const usedUp = list.every((a) => (topWindow(a.windows)?.pct ?? 0) >= 100);
     const state = usedUp ? 'used up' : 'nearly out';
     const noun = kind ? `${kind} account` : 'account';
     const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
@@ -333,9 +447,18 @@ export function summarizeAccounts(
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
-    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === String(c.row.machineId ?? ''))?.reason ?? null, opts.now) }));
-    const windows = usageWindows(g.reading);
-    const top = windows[0] ?? null;
+    const machines = g.cells.map((c) => {
+      const mid = String(c.row.machineId ?? '');
+      const sourceId = str(c.row.machineId);
+      const stableId = sourceId && sourceId !== 'self' ? sourceId : c.isSelf && selfId !== 'self' ? selfId : null;
+      // Latest repair for this account on THIS machine (self rows may carry no machineId: match self).
+      const latest = (opts.repairs ?? [])
+        .filter((r) => r.accountId === g.id && (r.machineId === mid || (c.isSelf && (!mid || r.machineId === selfId))))
+        .sort((a, b) => Date.parse(String(b.updatedAt ?? '')) - Date.parse(String(a.updatedAt ?? '')))[0] ?? null;
+      return { name: c.machine, isSelf: c.isSelf, machineKey: stableId ? rowKey('account-machine', stableId) : null, present: true as const, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
+    });
+    const windows = usageWindows(g.reading, opts.now);
+    const top = topWindow(windows);
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
       : machines.some((m) => m.state === 'working') ? 'signing-in'
         : machines.some((m) => m.state === 'ok' && m.label === 'signed in') ? 'signed-in'
@@ -350,7 +473,7 @@ export function summarizeAccounts(
       signIn,
       windows: windows.map((w) => ({ ...w, resetsAt: w.resetsAt && Date.parse(w.resetsAt) > opts.now ? w.resetsAt : null })),
       usageLine: top ? `${top.pct}% of ${top.label}` : g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.',
-      tone: top && top.pct >= 90 ? 'bad' : top && top.pct >= 75 ? 'attn' : null,
+      tone: top ? usageTone(top.pct) : null,
       readingAt: g.readingAt ? new Date(g.readingAt).toISOString() : null,
       stale: !!g.readingAt && opts.now - g.readingAt > READING_STALE_MS,
       machines,
@@ -443,7 +566,8 @@ export function routeStatusWord(k: Rec): 'Frozen' | 'Open' | 'Closed' | 'Not ope
 }
 
 export interface MobileSpendRow { key: string; model: string; route: string; basis: string; usd: number | null; tokens: number; unpricedTokens: number; priceStale: boolean; notLiveYet: boolean }
-export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' | 'Open' | 'Closed' | 'Not open'; committedDayUsd: number | null; dailyCapUsd: number | null; committedLifetimeUsd: number | null; lifetimeCapUsd: number | null; heldBy: string | null; committedElsewhere: boolean }
+/** `committedMonthUsd` / `monthlyCapUsd`: the monthly row (gemini-payg §7); null on a lifetime-only route. */
+export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' | 'Open' | 'Closed' | 'Not open'; committedDayUsd: number | null; dailyCapUsd: number | null; committedLifetimeUsd: number | null; lifetimeCapUsd: number | null; committedMonthUsd: number | null; monthlyCapUsd: number | null; heldBy: string | null; committedElsewhere: boolean }
 /** One machine's ledger read for the spend answer. `name` is the registry nickname (unverified; verified against `machineId` here). */
 export interface SpendMachine { name: string | null; machineId?: string; isSelf: boolean; summary: SpendPart; tokens: SpendPart }
 function machineName(m: SpendMachine): string {
@@ -568,6 +692,8 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
           dailyCapUsd: num(k.dailyCapUsd),
           committedLifetimeUsd: elsewhere ? null : nonNeg(k.committedLifetimeUsd),
           lifetimeCapUsd: num(k.lifetimeCapUsd),
+          committedMonthUsd: elsewhere || num(k.monthlyCapUsd) === null ? null : nonNeg(k.committedMonthUsd),
+          monthlyCapUsd: num(k.monthlyCapUsd),
           heldBy: holder === null ? null : isSelf(holder) ? (selfName ?? 'the machine the app reached') : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
           committedElsewhere: elsewhere,
         };
@@ -805,6 +931,8 @@ export interface MobileCapacityDeps {
   offlineMachineIds?: () => string[];
   /** This machine's sign-in repair episodes (`/subscription-relogin`, local store). */
   localRepairs: () => Array<{ accountId: string; state: string }>;
+  /** Every machine's repairs from the merged read; absent ⇒ only this machine's are known. */
+  poolRepairs?: () => Promise<RepairView[]>;
   /** Repair blockers across machines; unavailable means cells keep their pool status. */
   reloginBlockers?: () => Promise<Array<{ accountId: string; machineId: string; reason: string }>>;
   /** This machine's `/routing-spend/summary?grain=day&sinceHours=N` and `/tokens/summary?since=` reads. */
@@ -889,11 +1017,12 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
     if (!guard(req, res)) return;
     try {
       const body = await cached('accounts', async () => {
-        const [payload, inUse, blockers] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null), deps.reloginBlockers?.().catch(() => []) ?? Promise.resolve([])]);
+        const [payload, inUse, blockers, poolRepairs] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null), deps.reloginBlockers?.().catch(() => []) ?? Promise.resolve([]),
+          deps.poolRepairs ? deps.poolRepairs().catch(() => undefined) : Promise.resolve(undefined)]);
         let repairs: Array<{ accountId: string; state: string }> = [];
         try { repairs = deps.localRepairs(); } catch { /* @silent-fallback-ok — no repair evidence: cells show their pool status */ }
         // generatedAt is stamped when the answer is built, so a cached answer keeps its own time.
-        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [], selfName: phoneText(deps.selfName(), 60) }) } as unknown as Rec;
+        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, ...(poolRepairs ? { repairs: poolRepairs } : {}), blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [], selfName: phoneText(deps.selfName(), 60) }) } as unknown as Rec;
       });
       res.json(body);
     } catch (err) {

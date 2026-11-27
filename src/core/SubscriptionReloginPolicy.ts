@@ -12,6 +12,7 @@ const ACTIONABLE_CAUSES = new Set<SubscriptionLoginCauseClass>([
   'still-authfailed-after-refresh',
   'cli-signed-out-auth-refused',
   'cli-login-expired-observed',
+  'cli-auth-status-signed-out',
 ]);
 const SUPPORTED_PROVIDER_PATHS = new Set(['anthropic:claude-code', 'openai:codex-cli']);
 /** Whether the automatic repair supports this provider × framework at all. */

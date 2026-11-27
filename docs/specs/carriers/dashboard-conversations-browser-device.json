@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-11-08T14:41:29.678Z",
+  "slug": "dashboard-conversations-browser-device",
+  "carriers": {
+    "CMT-002": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Make the iPhone app show signed from a browser when a history row carries originClient browser (feedback fb-c5049bee-69a); required before mobilePairing.browser graduates to the fleet"
+    },
+    "CMT-003": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Repair PIN unlock on PIN-protected /view pages for link-holders (feedback fb-fa94058c-e42): needs a durable escalating lockout, a relay, and a Bearer exemption, specced and converged on its own"
+    }
+  }
+}

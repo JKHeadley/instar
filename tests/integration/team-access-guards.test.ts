@@ -27,6 +27,7 @@ import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSi
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { TeamConfinement, placeForEntry } from '../../src/users/TeamConfinement.js';
+import { ConversationListPinStore } from '../../src/core/ConversationListPins.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -73,6 +74,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
     dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
   });
   pairing.useAppConversationStore(svc.store);
+  const listPins = new ConversationListPinStore({ stateDir: dir });
   const session = (id: string, extra: Record<string, unknown>) => ({ id, name: `secret-${id}`, status: 'running', tmuxSession: id, startedAt: new Date().toISOString(), ...extra });
   const running = [
     session('s-granted', { telegramTopicId: GRANTED }), session('s-other', { telegramTopicId: OTHER }),
@@ -102,12 +104,12 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
   }));
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({
-    config: config as never, pairing, service: svc, machineId: () => 'm1',
+    config: config as never, pairing, service: svc, machineId: () => 'm1', listPins,
     sentinel: { decideInboundDisposition: async () => ({ disposition: spies.disposition, category: 'normal' }) } as never,
     telegramTopics: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
-  return { app, pairing, svc, spies, dir, registry, dispatched };
+  return { app, pairing, svc, spies, dir, registry, dispatched, listPins };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; id: string };
@@ -178,6 +180,39 @@ describe('the conversation list', () => {
     const { e, owner, msp } = await withMember();
     expect(JSON.stringify((await send(e, owner, 'GET', '/mobile/conversations')).body)).toContain(`Topic ${OTHER}`);
     expect(JSON.stringify((await send(e, msp, 'GET', '/mobile/conversations')).body)).toContain(`Topic ${OTHER}`);
+  });
+});
+
+describe('pinning conversations to the top of the list (conversation-list-pins)', () => {
+  it('a member pins a conversation shared with them, cannot pin one that is not, and never sees an unshared pin', async () => {
+    const { e, mia } = await withMember();
+    const pin = await send(e, mia, 'POST', '/mobile/conversations/pins', { ref: `telegram:${GRANTED}`, pinned: true });
+    expect(pin.status).toBe(200);
+    expect(pin.body).toMatchObject({ ok: true, changed: true, pinned: [{ ref: `telegram:${GRANTED}` }] });
+    const refused = await send(e, mia, 'POST', '/mobile/conversations/pins', { ref: `telegram:${OTHER}`, pinned: true });
+    expect(refused.status).toBe(404);
+    expect(refused.body.error).toBe('unknown-conversation');
+    expect(e.listPins.isPinned('team:mia', `telegram:${OTHER}`)).toBe(false);
+    // A pin row for the unshared topic (one replicated from a time it was shared, say) is never shown to her.
+    e.listPins.setPinned('team:mia', `telegram:${OTHER}`, true);
+    const list = await send(e, mia, 'GET', '/mobile/conversations');
+    expect(list.status).toBe(200);
+    expect(list.body.pinnedRefs.map((p: { ref: string }) => p.ref)).toEqual([`telegram:${GRANTED}`]);
+    expect(list.body.pinnedRows.map((r: { id: number }) => r.id)).toEqual([GRANTED]);
+    const text = JSON.stringify({ refs: list.body.pinnedRefs, rows: list.body.pinnedRows });
+    expect(text).not.toContain(`Topic ${OTHER}`);
+    expect(text).not.toContain(`words in ${OTHER}`);
+    expect(text).not.toContain(`telegram:${OTHER}`);
+    // She can still clear that stale pin herself.
+    expect((await send(e, mia, 'POST', '/mobile/conversations/pins', { ref: `telegram:${OTHER}`, pinned: false })).body).toMatchObject({ ok: true, changed: true });
+  });
+
+  it('a read-only grant may still pin (it orders her own list), and her pins are not the owner\'s', async () => {
+    const { e, owner, mia } = await withMember('read');
+    expect((await send(e, mia, 'POST', '/mobile/conversations/pins', { ref: `telegram:${GRANTED}`, pinned: true })).status).toBe(200);
+    expect((await send(e, owner, 'GET', '/mobile/conversations')).body.pinnedRefs).toEqual([]);
+    expect((await send(e, owner, 'POST', '/mobile/conversations/pins', { ref: `telegram:${OTHER}`, pinned: true })).status).toBe(200);
+    expect((await send(e, mia, 'GET', '/mobile/conversations')).body.pinnedRefs.map((p: { ref: string }) => p.ref)).toEqual([`telegram:${GRANTED}`]);
   });
 });
 
@@ -574,6 +609,29 @@ describe('with no access log able to open', () => {
     e.pairing.keyLedger = null;
     expect(e.pairing.teamLog()).toBeNull();
     expect(e.pairing.teamOn()).toBe(true);
+  });
+});
+
+describe('phones across machines', () => {
+  it('an active team phone is bound in the log, once', async () => {
+    const { e, mia } = await withMember();
+    e.pairing.bindTeamPhones();
+    e.pairing.bindTeamPhones();
+    const binds = e.pairing.teamLog()!.allRows().flatMap((r) => (r.kind === 'machine' ? r.events.filter((x) => x.type === 'phone-bind' && x.deviceId === mia.id) : []));
+    expect(binds).toHaveLength(1);
+  });
+
+  it('a removal that arrives here revokes this machine\'s phones for that person, and nobody else\'s', async () => {
+    const { e, mia, owner } = await withMember();
+    const stranger = phone(e, { userId: 'not-in-the-log-yet', role: 'team' });
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('active');
+    e.pairing.teamLog()!.appendMachineEvents([{ type: 'lower', personKey: 'mia', remove: true }]); // as a peer's row would fold
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('revoked');
+    expect(e.pairing.devices.get(owner.id)!.status).toBe('active');
+    // A phone can pair before its person's row reaches this machine.
+    expect(e.pairing.devices.get(stranger.id)!.status).toBe('active');
   });
 });
 

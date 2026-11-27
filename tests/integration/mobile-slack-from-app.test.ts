@@ -8,7 +8,7 @@
  * emergency stop over the rate limit, token removal, the device allowlist, and a dispatched
  * message recovered from the store after slack-messages.jsonl rotates away.
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,6 +30,7 @@ import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import type { Message } from '../../src/core/types.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 
 const HOST = 'echo.example.dev';
 const OWNER = 'U0OWNER1';
@@ -56,6 +57,8 @@ async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?
   const threadId = registry.mintForInbound('C0123ABC:1793600000.000100').id!;
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => true };
   const pairing = new MobilePairingService(deps);
+  // Keep the real request-store clock injectable across an expiry/restart fixture.
+  pairing.useChatRequests(new MobileChatRequestStore(dir, () => Date.now()));
   pairing.nativeOn = true;
   cleanups.push(() => pairing.stop());
   const signer = loadMachineSigner(dir)!;
@@ -93,9 +96,10 @@ async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?
     killAllSessions: () => { killed++; return true; }, sendEscape: () => undefined, holdsLease: () => opts.holdsLease ?? true,
   });
   const app = express();
+  const originDisplay = { enabled: true, machine: true, harness: true, model: true };
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
-  app.use(createMobileSlackRouter({ config: config as never, pairing, service: svc, slack: opts.slack === false ? null : () => bridge, machineId: () => 'm1' }));
+  app.use(createMobileSlackRouter({ config: config as never, pairing, service: svc, now: () => Date.now(), slack: opts.slack === false ? null : () => bridge, machineId: () => 'm1', originDisplay: () => originDisplay }));
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1',
     pool: { config: config as never, resolvePeerUrls: () => (opts.peerUrls ?? []).map((url, i) => ({ machineId: `m_peer${i}`, url, kind: 'lan' })) } as never,
@@ -107,7 +111,7 @@ async function setup(opts: { owner?: string | null; slack?: boolean; holdsLease?
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   const code = pairing.confirm.issue(c.device.id, Date.now() + 60_000);
-  const e = { app, dir, svc, dev, deviceId: c.device.id, dispatched, outcomes, posted, mirrorFailures, logPath, channelId, threadId, kills: () => killed, registry };
+  const e = { app, dir, svc, config, dev, deviceId: c.device.id, dispatched, outcomes, posted, mirrorFailures, logPath, channelId, threadId, kills: () => killed, registry, originDisplay };
   const confirmed = await signed(e, 'POST', '/mobile/device/confirm', { code });
   expect(confirmed.body.status).toBe('active');
   return e;
@@ -167,6 +171,99 @@ describe('Slack from the app — list and history', () => {
     expect(tok.status).toBe(200);
     // The thread conversation shows none of the channel's rows.
     expect((await signed(e, 'GET', `/mobile/chat/slack/${e.threadId}/messages?machine=m1`)).body.messages).toHaveLength(0);
+  });
+
+  it('fingerprints the finished page, returns no idle duplicates, and still sends a late message despite a future timestamp', async () => {
+    const e = await setup();
+    const path = `/mobile/chat/slack/${e.channelId}/messages?machine=m1`;
+    const old = new Date(Date.now() - 10 * 60_000).toISOString();
+    const future = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+    const log = (messageId: string, text: string, timestamp: string) => fs.appendFileSync(e.logPath,
+      `${JSON.stringify({ messageId, channelId: 'C0123ABC', text, fromUser: true, timestamp, senderName: 'Ada' })}\n`);
+    log('1793615200.000000', 'ten minutes ago', old);
+    log('1793615300.000000', 'future clock', future);
+    const plain = await signed(e, 'GET', path);
+    expect(plain.body.messages.map((m: { text: string }) => m.text)).toEqual(['ten minutes ago', 'future clock']);
+    expect(plain.body.changeFeed).toBeUndefined();
+    const initial = await signed(e, 'GET', `${path}&knownRows=`);
+    expect(initial.status).toBe(200);
+    expect(initial.body.messages).toEqual(plain.body.messages);
+    expect(initial.body.changeFeed.rowHashes).toHaveLength(2);
+    expect(initial.body.changeFeed.rowHashes.every((h: string) => /^[a-f0-9]{64}$/.test(h))).toBe(true);
+    const known = encodeURIComponent(initial.body.changeFeed.rowHashes.join(','));
+    const idle = await signed(e, 'GET', `${path}&knownRows=${known}`);
+    expect(idle.body.messages).toEqual([]);
+    expect(idle.body.changeFeed).toEqual(initial.body.changeFeed);
+    log('1793615100.000000', 'arrived late with an older timestamp', new Date(Date.parse(old) - 60_000).toISOString());
+    const late = await signed(e, 'GET', `${path}&knownRows=${known}`);
+    expect(late.body.messages.map((m: { text: string }) => m.text)).toEqual(['arrived late with an older timestamp']);
+    expect(late.body.changeFeed.rowHashes).toHaveLength(3);
+  });
+
+  it('refuses malformed fingerprint lists and combinations with older-history cursors', async () => {
+    const e = await setup();
+    const path = `/mobile/chat/slack/${e.channelId}/messages?machine=m1`;
+    for (const known of ['soon', 'A'.repeat(64), 'x'.repeat(6500), Array.from({ length: 101 }, () => 'a'.repeat(64)).join(',')]) {
+      const invalid = await signed(e, 'GET', `${path}&knownRows=${encodeURIComponent(known)}`);
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toBe('bad-known-rows');
+    }
+    const both = await signed(e, 'GET', `${path}&knownRows=&before=${encodeURIComponent('2026-11-22T08:00:00Z,x')}`);
+    expect(both.status).toBe(400);
+    expect(both.body.error).toBe('known-rows-with-before');
+  });
+
+  it('sends a delivery-state update even though the stored message timestamp is unchanged', async () => {
+    const e = await setup();
+    e.outcomes.push(new Error('dispatch outcome unknown'));
+    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'waiting for confirmation', requestId: rid() });
+    expect(sent.body.messageId).toBeTruthy();
+    const path = `/mobile/chat/slack/${e.channelId}/messages?machine=m1&knownRows=`;
+    const initial = await signed(e, 'GET', path);
+    expect(initial.body.messages).toHaveLength(1);
+    expect(initial.body.messages[0].deliveryState).toBe('unknown');
+    const key = (e.registry.resolve(e.channelId) as { key: string }).key;
+    e.svc.appendDelivery(key, sent.body.messageId as string, 'delivered', 'confirmed-later');
+    const changed = await signed(e, 'GET', `${path}${encodeURIComponent(initial.body.changeFeed.rowHashes.join(','))}`);
+    expect(changed.body.messages).toHaveLength(1);
+    expect(changed.body.messages[0]).toMatchObject({ eventId: initial.body.messages[0].eventId, at: initial.body.messages[0].at, deliveryState: 'delivered' });
+    expect(changed.body.changeFeed.rowHashes).not.toEqual(initial.body.changeFeed.rowHashes);
+  });
+
+  it('sends an origin display change without requiring a new message or a new timestamp', async () => {
+    const e = await setup();
+    fs.appendFileSync(e.logPath, `${JSON.stringify({ messageId: '1793615300.000000', channelId: 'C0123ABC', text: 'agent reply', fromUser: false, timestamp: '2026-11-22T08:00:00.000Z' })}\n`);
+    const path = `/mobile/chat/slack/${e.channelId}/messages?machine=m1&knownRows=`;
+    const initial = await signed(e, 'GET', path);
+    expect(initial.body.messages[0].origin.display.model).toBe(true);
+    e.originDisplay.model = false;
+    const changed = await signed(e, 'GET', `${path}${encodeURIComponent(initial.body.changeFeed.rowHashes.join(','))}`);
+    expect(changed.status).toBe(200);
+    expect(changed.body.messages).toHaveLength(1);
+    expect(changed.body.messages[0]).toMatchObject({ at: initial.body.messages[0].at, origin: { display: { model: false } } });
+    expect(changed.body.changeFeed.rowHashes).not.toEqual(initial.body.changeFeed.rowHashes);
+  });
+
+  it('fingerprints the verified stored copy after dedupe, so a newer mirror never displaces its caption or exposes private paths', async () => {
+    const e = await setup();
+    const sent = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'verified caption', requestId: rid() });
+    expect(sent.status).toBe(200);
+    const path = `/mobile/chat/slack/${e.channelId}/messages?machine=m1&knownRows=`;
+    const initial = await signed(e, 'GET', path);
+    expect(initial.status).toBe(200);
+    expect(initial.body.messages[0]).toMatchObject({ eventId: sent.body.eventId, text: 'verified caption', originVerified: 'verified' });
+    const storedAt = Date.parse(initial.body.messages[0].at);
+    const mirror = JSON.parse(fs.readFileSync(e.logPath, 'utf8').trim());
+    fs.writeFileSync(e.logPath, `${JSON.stringify({ ...mirror, timestamp: new Date(storedAt + 120_000).toISOString(), text: 'photo: /Users/private/.instar/app-media/secret.jpg' })}\n`);
+    const unchanged = await signed(e, 'GET', `${path}${encodeURIComponent(initial.body.changeFeed.rowHashes.join(','))}`);
+    expect(unchanged.status).toBe(200);
+    expect(unchanged.body.messages).toEqual([]);
+    expect(unchanged.body.changeFeed).toEqual(initial.body.changeFeed);
+    expect(JSON.stringify(unchanged.body)).not.toContain('/Users/private/');
+    const fresh = await signed(e, 'GET', path);
+    expect(fresh.body.messages).toHaveLength(1);
+    expect(fresh.body.messages[0]).toMatchObject({ eventId: sent.body.eventId, text: 'verified caption', originVerified: 'verified' });
+    expect(JSON.stringify(fresh.body)).not.toContain('/Users/private/');
   });
 
   it('a dispatched message is still returned from the store after slack-messages.jsonl rotates away', async () => {
@@ -324,5 +421,38 @@ describe('Slack from the app — send', () => {
     // media-off refusal (media-target-unsupported) is covered in mobile-media-to-platform.test.ts.
     expect(f.status).toBe(400);
     expect(f.body.error).toBe('bad-attachments');
+  });
+});
+
+
+describe('durable browser outbox — Slack recovery authority', () => {
+  afterEach(() => vi.restoreAllMocks());
+  it('a pruned old Slack stop has no new effect, while a fresh stop still bypasses chat-off', async () => {
+    const e = await setup();
+    const requestId = rid();
+    const body = { machine: 'm1', text: 'stop everything', requestId };
+    expect((await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, body)).status).toBe(200);
+    expect(e.kills()).toBe(1);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 60 * 60_000);
+    const old = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, body);
+    expect(old.status).toBe(400);
+    expect(old.body.error).toBe('request-id-too-old');
+    expect(e.svc.deps.requests.get(e.deviceId, requestId)).toBeNull();
+    expect(e.kills()).toBe(1);
+    (e.config.mobilePairing as any).chat = { enabled: false };
+    const fresh = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { ...body, requestId: rid() });
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.outcome).toBe('sentinel-kill');
+    expect(e.kills()).toBe(2);
+  });
+  it('an exact frozen Slack body naming another holder never forwards a write or dispatches locally', async () => {
+    const e = await setup();
+    const requestId = rid();
+    const result = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm-elsewhere', text: 'do not rebind this', requestId });
+    expect(result.status).toBe(409);
+    expect(result.body.error).toBe('wrong-machine');
+    expect(e.dispatched).toHaveLength(0);
+    expect(e.posted).toHaveLength(0);
+    expect(e.svc.deps.requests.get(e.deviceId, requestId)).toBeNull();
   });
 });

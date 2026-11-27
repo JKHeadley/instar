@@ -32,8 +32,13 @@ references on every multi-machine agent, to serve a rare event. A restart reuses
 anything else that keys off the boot role. It costs about a minute of startup after a takeover, and up to 15
 minutes more with no jobs if the machine already used its restart in that window.
 
-**Conditions.** `soloCaptainHold` on, no machine named preferred, at least one non-revoked peer. So this is dark
-by default, and Echo, which names a preferred machine, is unchanged.
+**Conditions.** As shipped: `scheduler.enabled` on this machine (PR #2783, "start jobs after lease takeover", widened
+the condition from the one first written here, `soloCaptainHold` on and no machine named preferred, so that a holder on a
+pool with a named preferred machine runs its jobs after a takeover). The widening is kept: without it a pool like Echo's
+would take the lead and run no jobs. Its cost was a restart loop on a preferred machine whose boot outlasts the lease
+TTL (hand-back → role restart → lapse → takeover → hand-back), recorded and fixed by
+docs/specs/planned-restart-keeps-lead.md, which keeps the lead through a planned restart. Requesting the restart now waits
+(bounded, at most the broadcast deadline) for the holder's extended renewal before the request is written.
 
 **Losing authority stops jobs at once.** On any change away from awake, under those conditions, the scheduler is
 paused immediately, whatever a restart is waiting on. A restart rebuilds; it is never what stops work. Returning

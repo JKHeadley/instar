@@ -25,7 +25,7 @@ export const MEMORY_PRIVACY_CLAUDE_FLOOR = '2.1.316';
 
 const BASELINE_WAIT_MS = 2 * 60_000;
 
-const REPLY_SCRIPTS = ['telegram-reply.sh', 'slack-reply.sh', 'app-reply.sh', 'whatsapp-reply.sh', 'app-media-path'];
+const REPLY_SCRIPTS = ['telegram-reply.sh', 'slack-reply.sh', 'app-reply.sh', 'whatsapp-reply.sh', 'app-media-path', 'threadline-reply.sh'];
 
 interface MessagingEntry { type: string; config?: Record<string, unknown> }
 

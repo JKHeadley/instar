@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "default-model-coherence",
+  "sessionId": "b3764692-84d4-4b5d-b26b-b7ce2de8141e",
+  "timestamp": "2026-11-10T00:37:33.035Z",
+  "artifactPath": "upgrades/side-effects/default-model-coherence.md",
+  "artifactSha256": "a28c9ccd8dd83cbe718f419ea6d8371043c2010bea412ac69fcf7e1934d26c64",
+  "coveredFiles": [
+    "src/core/machineCoherenceManifest.ts",
+    "src/monitoring/machineCoherenceEpisodeManager.ts",
+    "tests/unit/machine-coherence-default-model.test.ts",
+    "tests/unit/machine-coherence-episode-manager.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Signal-only: two rows in the existing machine-coherence manifest plus a no-auto-propose rule for them; a revert fully undoes it",
+  "eli16Path": "docs/eli16/default-model-coherence.md",
+  "sideEffectsPath": "upgrades/side-effects/default-model-coherence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

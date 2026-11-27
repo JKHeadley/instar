@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import {
   BusinessApiBackend,
   type WebhookPayload,
@@ -724,6 +729,7 @@ describe('BusinessApiBackend', () => {
         connected: false,
         phoneNumberId: '123456789',
         webhookConfigured: true,
+        webhookSignatureConfigured: false,
         lastWebhookReceived: null,
         messagesSent: 0,
         messagesReceived: 0,
@@ -990,4 +996,97 @@ describe('BusinessApiBackend', () => {
       );
     });
   });
+});
+
+describe('BusinessApiBackend webhook signature (SEC-086)', () => {
+  const body = Buffer.from(JSON.stringify({ object: 'whatsapp_business_account', entry: [] }));
+  const sign = (secret: string, b: Buffer) => 'sha256=' + crypto.createHmac('sha256', secret).update(b).digest('hex');
+
+  it('accepts a body signed with the app secret', () => {
+    const { backend } = createBackend({ appSecret: 'app-secret-1' });
+    expect(backend.verifyPayloadSignature(body, sign('app-secret-1', body))).toBe('ok');
+  });
+
+  it('refuses a body signed with another secret, a changed body, or no header', () => {
+    const { backend } = createBackend({ appSecret: 'app-secret-1' });
+    expect(backend.verifyPayloadSignature(body, sign('other', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(Buffer.concat([body, Buffer.from(' ')]), sign('app-secret-1', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(body, undefined)).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(undefined, sign('app-secret-1', body))).toBe('bad-signature');
+    expect(backend.verifyPayloadSignature(body, 'sha1=abc')).toBe('bad-signature');
+  });
+
+  it('reports no-secret when no app secret is configured', () => {
+    const { backend } = createBackend({});
+    expect(backend.verifyPayloadSignature(body, sign('', body))).toBe('no-secret');
+    expect(backend.hasAppSecret()).toBe(false);
+    expect(backend.getStatus().webhookSignatureConfigured).toBe(false);
+  });
+
+  it('tells the owner once, not per delivery, that deliveries are unverified', () => {
+    const onUnverifiedDelivery = vi.fn();
+    const { backend } = createBackend({}, undefined, { ...createMockHandlers(), onUnverifiedDelivery });
+    backend.noteUnverifiedDelivery();
+    backend.noteUnverifiedDelivery();
+    expect(onUnverifiedDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the owner as told only after a confirmed send, and only once ever', async () => {
+    const { notifyOwnerUnverifiedOnce, UNVERIFIED_DELIVERY_NOTICE } = await import('../../src/messaging/backends/BusinessApiBackend.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-notice-'));
+    const marker = path.join(dir, 'state', 'whatsapp-unverified-notice.json');
+    try {
+      expect(await notifyOwnerUnverifiedOnce(marker, undefined)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => null)).toBe('not-sent');
+      expect(await notifyOwnerUnverifiedOnce(marker, async () => { throw new Error('down'); })).toBe('not-sent');
+      expect(fs.existsSync(marker)).toBe(false);
+      const send = vi.fn(async () => ({ messageId: 1 }));
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('sent');
+      expect(send).toHaveBeenCalledWith(UNVERIFIED_DELIVERY_NOTICE);
+      expect(await notifyOwnerUnverifiedOnce(marker, send)).toBe('already-sent');
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(UNVERIFIED_DELIVERY_NOTICE).not.toMatch(/paste/i);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/BusinessApiBackend.test.ts:notice-once' });
+    }
+  });
+
+  it('verification GET still matches the verify token and refuses a wrong one', () => {
+    const { backend } = createBackend({});
+    expect(backend.verifyWebhook('subscribe', 'test-verify-token', 'c1')).toBe('c1');
+    expect(backend.verifyWebhook('subscribe', 'test-verify-tokeX', 'c1')).toBeNull();
+  });
+});
+
+describe('SEC-132: every Graph API call has a timeout', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const ok = () => new Response(JSON.stringify({ messages: [{ id: 'wamid.x' }], display_phone_number: '+1' }), { status: 200 });
+
+  it('passes an AbortSignal timeout of 15 seconds on all six calls', async () => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => realTimeout(ms));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ok());
+    const { backend } = createBackend();
+    await backend.connect();
+    await backend.sendTextMessage('15551234567', 'hi');
+    await backend.sendTemplateMessage('15551234567', { name: 't', language: { code: 'en' } } as never);
+    await backend.sendInteractiveMessage('15551234567', { type: 'button', body: { text: 'b' }, action: { buttons: [] } } as never);
+    await backend.markMessageRead('wamid.1');
+    await backend.sendReaction('15551234567', 'wamid.1', '👍');
+    expect(fetchSpy).toHaveBeenCalledTimes(6);
+    for (const call of fetchSpy.mock.calls) expect((call[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect(timeoutSpy.mock.calls.map((c) => c[0])).toEqual([15_000, 15_000, 15_000, 15_000, 15_000, 15_000]);
+  });
+
+  it('a call to a server that never answers fails at the timeout instead of hanging', async () => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => realTimeout(20));
+    // A server that never answers: without a signal the call would wait forever (this test then times out).
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((_u, init) => new Promise((_resolve, reject) => {
+      const signal = (init as RequestInit | undefined)?.signal;
+      if (signal) signal.addEventListener('abort', () => reject(signal.reason));
+    }));
+    const { backend } = createBackend();
+    await expect(backend.sendTextMessage('15551234567', 'hi')).rejects.toThrow();
+  }, 2_000);
 });

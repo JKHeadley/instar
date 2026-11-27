@@ -1,0 +1,20 @@
+# Conversation and Effort Hierarchy — Focused Frontier Review Round 11
+
+**Status:** sixth independent GPT/Claude check complete; both returned `CHANGES_REQUIRED`. This round reviewed the frozen post-round-10 spec excerpts and complete sample, not the later changes described here. Convergence remains pending.
+
+## Provenance
+
+- GPT-6 Astra, Codex CLI 0.164.0, high reasoning, read-only, session `01a1a8ff-a57e-73d2-b441-081afaf1b862`: [exact packet](review-evidence/conversation-round11-input.txt), [result](review-evidence/conversation-round11-gpt-astra.json). Eight findings, chiefly sample state/dependency defects.
+- Claude Opus, Claude Code 2.1.318, medium effort, no tools, resolved model `claude-opus-5-5`, session `2bf1d97c-899a-4634-8de2-4096e10516c4`: [exact packet](review-evidence/conversation-round11-input.txt), [parsed result](review-evidence/conversation-round11-claude-opus.json), [stream](review-evidence/conversation-round11-claude-opus-stream.jsonl). Fourteen findings, including one spec-level adapter race and erasure/answer conflict. Neither model executed the browser sample.
+
+## Spec disposition
+
+The review found that a witness claim alone could not fence a delayed old writer's platform call. V3 now requires a single durable `AnswerSendGateway` for structured answers, a witness/epoch check at gateway dispatch admission, a durable dispatch-started record, and no automatic retry of an ambiguous platform call. A successor records `not-sent` only with positive proof that the gateway never dispatched and the old token is fenced; a missing ledger/platform message remains undetermined. Cancel and dispatch admission serialize on the same claim. The finite operation table now covers claim, dispatch, outcome, owner review, override, link, and mismatch resolution, with exact refs, owner proof, and concurrent results. An explicit owner possible-duplicate override is the sole retry exception.
+
+V3 now ranks `Checking answer`, `Answer needs review`, and `Answer needs linking` as actionable attention, protects them from Archive, carries them through rollups and overflow, and distinguishes one Decision plus pending Question from two certified Decisions. A shared placement guard covers Move, Unlink, Undo, Resolve, accepted suggestions, and dispatch placement for a certified front door or pending replacement target. Queue entries cite cross-subject dependencies, and cancel/refusal cascades visibly. Erasure now purges plaintext and derived content while retaining opaque send-claim, fence, outcome, and non-content reference metadata needed to prevent duplicate delivery. An explicit erasure/answer-state matrix defines recovery after question or answer text is forgotten.
+
+## Sample disposition under verification
+
+The sample now retains an uncertain answer through Wake and escalates to `Answer needs review`; its sheet offers owner Mark sent, Mark not sent, and a warned Send again path. Shared correction entry points are gated by witness readiness, and Cancel during outage remains `Canceling · Waiting for sync`. Queued placement overlays recompute from certified parents and refuse cycles or a move of a pending front-door target. Source erasure removes the exact transcript text and any derived update text; an erased open question has Dismiss, Re-source, and Supersede choices. The effort More sheet can set a front door after Clear, using certified direct children. Decision labels derive from current occurrence states; conflict explanations use one last-agreed placement and two proposals. The browser script exercises several of these cases at 320 px and desktop.
+
+The sample is still a behavior illustration. Its mocked gateway, owner review, and source deletion cannot demonstrate distributed transaction correctness or actual platform history/erasure. A focused recheck of the changed source and spec is required before a design verdict. The separate 94-standard advisory check still flags the sleeping-machine survivability tradeoff; that is disclosed and awaits owner adjudication.

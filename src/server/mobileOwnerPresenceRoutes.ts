@@ -13,6 +13,7 @@
  * a purpose-specific message. The session minted here is desktop-scoped (PhoneDesktopSessionStore),
  * never the dashboard operator session. Secrets never reach the audit, a log or a notice.
  */
+import crypto from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
@@ -22,6 +23,10 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { BoundSecretStore, ConsoleTicketAudit, activeOwnerPhone, signedHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import type { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
+import { OwnerApprovedActionStore } from './OwnerApprovedActionStore.js';
+import { PendingApprovalRegistry } from './PendingApprovalRegistry.js';
+
+const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
 export const DESKTOP_UNLOCK_CHALLENGE_PATH = '/mobile/desktop-unlock/challenge';
 export const DESKTOP_UNLOCK_PATH = '/mobile/desktop-unlock';
@@ -32,6 +37,24 @@ export const DESKTOP_UNLOCK_VERSION = 'instar-desktop-unlock-v1';
 export const PIN_REVEAL_VERSION = 'instar-pin-reveal-v1';
 /** Repeated reveals on one phone within this window send one notice (spec §2.3). */
 export const PIN_NOTICE_WINDOW_MS = 10 * 60_000;
+
+// ── Owner-approved sensitive action (SEC-018; docs/specs/owner-approved-sensitive-action.md) ──
+export const ACTION_APPROVAL_CHALLENGE_PATH = '/mobile/action-approval/challenge';
+export const ACTION_APPROVAL_PATH = '/mobile/action-approval';
+export const ACTION_APPROVAL_PENDING_PATH = '/mobile/action-approval/pending';
+export const ACTION_APPROVAL_DECLINE_PATH = '/mobile/action-approval/decline';
+export const ACTION_APPROVAL_VERSION = 'instar-owner-action-v1';
+/** The purposes an owner-presence approval may authorize (one per sensitive handler). */
+export const OWNER_ACTION_PURPOSES = ['thread-delete', 'trust-grant'] as const;
+export type OwnerActionPurpose = (typeof OWNER_ACTION_PURPOSES)[number];
+
+/** The exact bytes the presence key signs for a sensitive-action approval. Unlike the
+ *  desktop/PIN messages, this commits DIRECTLY to the purpose + the action key (the threadId,
+ *  or `fingerprint|level`), so a signature for one action can never authorize another even if
+ *  the opaque challenge were somehow reused. */
+export function actionApprovalMessage(deviceId: string, host: string, purpose: string, actionKey: string, challenge: string): string {
+  return `${ACTION_APPROVAL_VERSION}\n${deviceId}\n${host.toLowerCase()}\n${purpose}\n${actionKey}\n${challenge}`;
+}
 
 /** `mobilePairing.ownerPresence.enabled`: omitted ⇒ live on a development agent, dark on the fleet. Read live. */
 export function isOwnerPresenceEnabled(config: InstarConfig): boolean {
@@ -54,10 +77,48 @@ export function ownerPresenceMessage(version: typeof DESKTOP_UNLOCK_VERSION | ty
   return `${version}\n${deviceId}\n${host.toLowerCase()}\n${challenge}`;
 }
 
+/**
+ * Challenges for a sensitive-action approval. Unlike BoundSecretStore (deviceId + host only),
+ * each challenge is also bound to the exact {purpose, actionKey} it was minted for — so a
+ * challenge issued to approve deleting thread A can never approve deleting thread B, and the
+ * owner card (derived from this record) shows exactly what will happen. Single-use, TTL'd,
+ * in-memory (a restart drops pending challenges — fail-safe: the owner re-requests).
+ */
+class ActionChallengeStore {
+  private readonly entries = new Map<string, { deviceId: string; host: string; purpose: string; actionKey: string; expiresAt: number }>();
+  constructor(private readonly now: () => number, private readonly ttlMs = 60_000, private readonly max = 128) {}
+  issue(deviceId: string, host: string, purpose: string, actionKey: string): { secret: string; expiresAt: number } {
+    this.prune();
+    while (this.entries.size >= this.max) { const k = this.entries.keys().next().value as string | undefined; if (k === undefined) break; this.entries.delete(k); }
+    const secret = crypto.randomBytes(32).toString('base64url');
+    const expiresAt = this.now() + this.ttlMs;
+    this.entries.set(sha256(secret), { deviceId, host: host.toLowerCase(), purpose, actionKey, expiresAt });
+    return { secret, expiresAt };
+  }
+  /** Consume only when the secret is live AND matches the exact {deviceId, host, purpose, actionKey}. */
+  consume(secret: unknown, deviceId: string, host: string, purpose: string, actionKey: string): boolean {
+    if (typeof secret !== 'string') return false;
+    const digest = sha256(secret);
+    const e = this.entries.get(digest);
+    if (!e) return false;
+    if (e.expiresAt <= this.now()) { this.entries.delete(digest); return false; }
+    if (e.deviceId !== deviceId || e.host !== host.toLowerCase() || e.purpose !== purpose || e.actionKey !== actionKey) return false;
+    this.entries.delete(digest);
+    return true;
+  }
+  private prune(): void { const t = this.now(); for (const [k, e] of this.entries) if (e.expiresAt <= t) this.entries.delete(k); }
+}
+
 export interface OwnerPresenceDeps {
   pairing: () => MobilePairingService | null;
   config: () => InstarConfig;
   phoneSessions: PhoneDesktopSessionStore;
+  /** SEC-018: where a verified sensitive-action approval is recorded for the handler to consume. */
+  approvalStore?: OwnerApprovedActionStore;
+  /** SEC-018: pending requests the handler registered (what the phone discovers + gates the challenge). */
+  pendingRegistry?: PendingApprovalRegistry;
+  /** Emit the existing item push so a tap opens the card (fast-follow; optional). */
+  pushItem?: (itemId: string) => void;
   /** Applies a pending PIN change to the session stores before a new session is issued. */
   syncPinVersion?: () => void;
   /** The verified name of the machine answering, for "the PIN for Mac Studio". */
@@ -75,6 +136,7 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
   // Separate stores: a challenge minted for one purpose can never be spent on the other.
   const desktopChallenges = new BoundSecretStore(now);
   const pinChallenges = new BoundSecretStore(now);
+  const actionChallenges = new ActionChallengeStore(now);
   let audit: ConsoleTicketAudit | null = null;
   const lastNotice = new Map<string, number>();
   const auditOf = (svc: MobilePairingService): ConsoleTicketAudit => {
@@ -204,6 +266,78 @@ export function mountOwnerPresenceRoutes(router: Router, deps: OwnerPresenceDeps
     record(g.svc, { event: 'minted', deviceId: g.deviceId, reason: 'pin-revealed', ticketRef: ref });
     featureEvidence.record(OWNER_PRESENCE_FEATURE, { kind: 'fired', reason: 'pin-revealed' });
     res.json({ pin, machine, noticed });
+  });
+
+  // ── Owner-approved sensitive action (SEC-018) ──
+  // Both routes reuse the SAME gate() as desktop/PIN (feature on, device signature, local TLS,
+  // active owner phone, presence key) and additionally require security.ownerApprovedActions.
+  // The challenge is bound to {deviceId, host, purpose, actionKey}; the presence signature commits
+  // to the purpose + actionKey directly, so a tap can authorize only the exact action it was shown.
+  const actionApprovalsOn = (): boolean =>
+    (deps.config() as { security?: { ownerApprovedActions?: { enabled?: boolean } } }).security?.ownerApprovedActions?.enabled === true;
+  const validAction = (body: Record<string, unknown>): { purpose: OwnerActionPurpose; actionKey: string } | null => {
+    const { purpose, actionKey } = body;
+    if (typeof purpose !== 'string' || !(OWNER_ACTION_PURPOSES as readonly string[]).includes(purpose)) return null;
+    if (typeof actionKey !== 'string' || actionKey.length === 0 || actionKey.length > 512) return null;
+    return { purpose: purpose as OwnerActionPurpose, actionKey };
+  };
+
+  router.post(ACTION_APPROVAL_CHALLENGE_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
+    if (!a) { res.status(400).json({ error: 'action-invalid' }); return; }
+    // Only approve what the agent actually asked: a challenge is issued ONLY for a registered
+    // pending request. (So the phone — or anyone with the gate — can never pre-approve an action
+    // the agent never requested.)
+    if (!deps.pendingRegistry?.has(a.purpose, a.actionKey)) { res.status(409).json({ error: 'no-pending-request' }); return; }
+    const c = actionChallenges.issue(g.deviceId, g.host, a.purpose, a.actionKey);
+    res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString(), purpose: a.purpose, actionKey: a.actionKey });
+  });
+
+  router.post(ACTION_APPROVAL_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.approvalStore) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const a = validAction(body);
+    if (!a) { res.status(400).json({ error: 'action-invalid' }); return; }
+    if (!actionChallenges.consume(body.challenge, g.deviceId, g.host, a.purpose, a.actionKey)) {
+      record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `action:${a.purpose}:challenge-invalid` });
+      res.status(401).json({ error: 'challenge-invalid' });
+      return;
+    }
+    if (!verifyPresenceSignature(g.presenceKey, actionApprovalMessage(g.deviceId, g.host, a.purpose, a.actionKey, body.challenge as string), body.presenceSig)) {
+      record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `action:${a.purpose}:presence-invalid` });
+      res.status(401).json({ error: 'presence-invalid' });
+      return;
+    }
+    const ref = deps.approvalStore.record({ purpose: a.purpose, actionKey: a.actionKey });
+    deps.pendingRegistry?.remove(a.purpose, a.actionKey); // the request is answered
+    record(g.svc, { event: 'minted', deviceId: g.deviceId, reason: `action-approved:${a.purpose}`, ticketRef: ref });
+    featureEvidence.record(OWNER_PRESENCE_FEATURE, { kind: 'fired', reason: `action-approved:${a.purpose}` });
+    res.json({ ok: true, ref });
+  });
+
+  // Discovery: the owner's phone lists what is waiting (server-written title/why only).
+  router.get(ACTION_APPROVAL_PENDING_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    res.json({ pending: deps.pendingRegistry.list() });
+  });
+
+  // Decline needs NO presence signature — it only CANCELS a pending request, it grants nothing.
+  router.post(ACTION_APPROVAL_DECLINE_PATH, (req: Request, res: Response) => {
+    if (!actionApprovalsOn() || !deps.pendingRegistry) { res.setHeader('Cache-Control', 'no-store'); res.status(503).json({ error: 'owner-approved-actions-off' }); return; }
+    const g = gate(req, res, 'action');
+    if (!g) return;
+    const a = validAction((req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>);
+    if (!a) { res.status(400).json({ error: 'action-invalid' }); return; }
+    deps.pendingRegistry.remove(a.purpose, a.actionKey);
+    record(g.svc, { event: 'refused', deviceId: g.deviceId, reason: `action-declined:${a.purpose}` });
+    res.json({ ok: true, declined: true });
   });
 }
 

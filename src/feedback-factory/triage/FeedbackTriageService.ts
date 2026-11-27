@@ -109,7 +109,8 @@ export interface FeedbackTriageServiceOptions {
   raiseAttention: (item: AttentionInput) => Promise<unknown>;
   reportDegradation: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
   sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
-  dashboardLink: () => string;
+  /** The dashboard link for the operator, or null while it would not open on a phone yet (tunnel starting): the list waits. */
+  dashboardLink: () => string | null;
   maxWallClockMs?: number;
   clock?: () => number;
   /**
@@ -1044,6 +1045,7 @@ export class FeedbackTriageService {
     // Each entry carries the id or meta key it stamps, so only what is actually shown is stamped.
     const entries: Array<{ line: string; itemId?: string; metaKey?: string }> = [];
     const link = this.opts.dashboardLink();
+    if (link === null) return null;
     const state = this.authorityState();
     if (state.state === 'awaiting-approval' || state.state === 'binding-stale' || state.state === 'paused') {
       const key = `action_list:authority:${state.state}:${state.generation ?? 0}`;
@@ -1091,6 +1093,8 @@ export class FeedbackTriageService {
     if (inQuietWindow(nowDate, cfg.timeZone)) return { sent: false, reason: 'quiet-window' };
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: cfg.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(nowDate);
     if (this.opts.store.meta('action_list:last_day') === day || this.opts.store.meta('action_list:last_recorded_day') === day) return { sent: false, reason: 'already-sent-today' };
+    // A list whose links the operator's phone cannot open yet waits for the next tick (unstamped).
+    if (this.opts.dashboardLink() === null) return { sent: false, reason: 'public-link-pending' };
     const composed = this.composeActionList();
     if (!composed) return { sent: false, reason: 'nothing-new' };
     const epoch = this.opts.ownerEpoch();

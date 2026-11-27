@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-17T01:49:15.941Z",
+  "slug": "graph-certified-delivery-resume",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 42,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphCommitCoordinator.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 41,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

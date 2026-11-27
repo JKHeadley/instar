@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T01:39:20.548Z",
+  "slug": "org-never-actions",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 68,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/OrgActionCheck.ts",
+      "src/core/OrgPolicyGateHooks.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop: one judgment per tool call or outgoing message"
+  },
+  "verdict": "pass"
+}

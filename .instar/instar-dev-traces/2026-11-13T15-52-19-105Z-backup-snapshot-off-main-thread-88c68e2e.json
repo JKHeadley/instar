@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "backup-snapshot-off-main-thread",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T15:52:19.105Z",
+  "artifactPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "artifactSha256": "2e4355fbb83bc9ef45d5732b81db2715f17552e74d92d8ff1bbd00c6f14b1120",
+  "coveredFiles": [
+    "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+    "src/core/BackupManager.ts",
+    "src/core/backupSnapshot.worker.ts",
+    "src/core/backupSnapshotJob.ts",
+    "src/feedback-factory/drain/FeedbackDrainBackupCadence.ts",
+    "src/server/AgentServer.ts",
+    "tests/integration/backup-snapshot-worker.test.ts",
+    "tests/unit/BackupManager-staged-sources.test.ts",
+    "tests/unit/feedback-drain-backup-cadence.test.ts",
+    "upgrades/next/backup-snapshot-off-main-thread.md",
+    "upgrades/side-effects/backup-snapshot-off-main-thread.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace after merging main (one adjacent-import conflict in AgentServer.ts, both kept). The change itself is unchanged: one hourly development-agent snapshot's copy moves to a worker thread; a revert undoes it; independent review of three reads, concur.",
+  "eli16Path": "docs/specs/backup-snapshot-off-main-thread.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backup-snapshot-off-main-thread.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

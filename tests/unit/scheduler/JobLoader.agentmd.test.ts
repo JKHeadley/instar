@@ -700,4 +700,48 @@ describe('JobLoader · agentmd (Phase 1a)', () => {
       expect(result.problems.find((p) => p.slug === 'retired')).toBeUndefined();
     });
   });
+
+  // ── EVO-008: toolAllowlistEnforce enrolment (docs/specs/job-tool-allowlist-real-enforcement.md §2a) ──
+  describe('toolAllowlistEnforce frontmatter', () => {
+    it('accepts true beside a toolAllowlist array (FAILSAFE delivers it as a string)', () => {
+      const a = setup({
+        manifests: { enr: mkManifest({ slug: 'enr' }) },
+        instarMd: { enr: '---\nname: "ok"\ntoolAllowlist: ["Read"]\ntoolAllowlistEnforce: true\n---\nbody' },
+      });
+      const jobs = loadJobs(a.jobsFile);
+      expect(jobs).toHaveLength(1);
+      expect(String(jobs[0].frontmatter?.toolAllowlistEnforce)).toBe('true');
+    });
+    it('withholds enrolment without a list, or beside "*"', () => {
+      const a = setup({
+        manifests: { nolist: mkManifest({ slug: 'nolist' }), star: mkManifest({ slug: 'star' }) },
+        instarMd: {
+          nolist: '---\nname: "ok"\ntoolAllowlistEnforce: true\n---\nbody',
+          star: '---\nname: "ok"\ntoolAllowlist: "*"\ntoolAllowlistEnforce: true\n---\nbody',
+        },
+      });
+      expect(loadJobs(a.jobsFile)).toHaveLength(0);
+    });
+    it('withholds enrolment on a runner: script job (no session to limit)', () => {
+      const a = setup({
+        manifests: { scr: mkManifest({ slug: 'scr' }) },
+        instarMd: { scr: '---\nname: "ok"\nrunner: script\nscript: scr.mjs\ntoolAllowlist: ["Read"]\ntoolAllowlistEnforce: true\n---\nbody' },
+      });
+      expect(loadJobs(a.jobsFile).filter((j) => j.slug === 'scr')).toHaveLength(0);
+    });
+    it('withholds a non-boolean value', () => {
+      const a = setup({
+        manifests: { yes: mkManifest({ slug: 'yes' }) },
+        instarMd: { yes: '---\nname: "ok"\ntoolAllowlist: ["Read"]\ntoolAllowlistEnforce: yes\n---\nbody' },
+      });
+      expect(loadJobs(a.jobsFile)).toHaveLength(0);
+    });
+    it('false is accepted and changes nothing', () => {
+      const a = setup({
+        manifests: { off: mkManifest({ slug: 'off' }) },
+        instarMd: { off: '---\nname: "ok"\ntoolAllowlistEnforce: false\n---\nbody' },
+      });
+      expect(loadJobs(a.jobsFile)).toHaveLength(1);
+    });
+  });
 });

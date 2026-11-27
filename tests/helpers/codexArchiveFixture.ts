@@ -55,12 +55,12 @@ export function writeRollout(home: string, uuid: string, ymd: string, ts = '2026
 
 /**
  * Build a large date-partitioned archive: `partitions` consecutive days ending
- * at `end` (local), `perPartition` rollouts each, every file a realistic
+ * at `end` (local), with a fixed count or a count by days before `end`. Each file is a realistic
  * `rollout-<ts>-<uuidv7>.jsonl`. Returns the partitions oldest-first.
  */
 export function buildLargeArchive(
   home: string,
-  opts: { partitions: number; perPartition: number; end?: Date },
+  opts: { partitions: number; perPartition: number | ((daysBeforeEnd: number) => number); end?: Date },
 ): { files: number; partitions: string[] } {
   const end = opts.end ?? new Date(2026, 9, 12, 12, 0, 0);
   const partitions: string[] = [];
@@ -73,7 +73,8 @@ export function buildLargeArchive(
     fs.mkdirSync(dir, { recursive: true });
     partitions.push(ymd);
     const ts = `${day.getFullYear()}-${pad2(day.getMonth() + 1)}-${pad2(day.getDate())}T08-00-00`;
-    for (let i = 0; i < opts.perPartition; i++) {
+    const count = typeof opts.perPartition === 'number' ? opts.perPartition : opts.perPartition(p);
+    for (let i = 0; i < count; i++) {
       const uuid = uuidV7At(new Date(day.getTime() + i * 1000), p * 100_000 + i + 1);
       fs.closeSync(fs.openSync(path.join(dir, `rollout-${ts}-${uuid}.jsonl`), 'w'));
       files++;
@@ -83,9 +84,26 @@ export function buildLargeArchive(
 }
 
 /** A tmux stand-in that reports a live pane for every session (TopicResumeMap probes it). */
-export function writeTmuxStub(dir: string): string {
+/**
+ * A fake tmux. `liveSessions` is required on purpose: a stub that lists nothing makes
+ * the resume heartbeat skip every session, and a test asserting "nothing changed"
+ * would then pass without reaching the code it tests.
+ */
+export function writeTmuxStub(dir: string, liveSessions: string[]): string {
   const file = path.join(dir, 'tmux-stub.sh');
-  fs.writeFileSync(file, '#!/bin/sh\n# display-message -p "#{pane_id}||#{pane_dead}" → live pane; has-session → 0\necho "%1||0"\nexit 0\n');
+  // list-sessions -F "#{session_name}||#{pane_id}||#{pane_dead}" → one live pane per name in
+  // the sidecar file; display-message -p "#{pane_id}||#{pane_dead}" → live pane; has-session → 0.
+  fs.writeFileSync(`${file}.sessions`, liveSessions.map((name) => `${name}\n`).join(''));
+  fs.writeFileSync(file, [
+    '#!/bin/sh',
+    'if [ "$1" = "list-sessions" ]; then',
+    '  while IFS= read -r name; do printf \'%s||%%1||0\\n\' "$name"; done < "$0.sessions"',
+    '  exit 0',
+    'fi',
+    'echo "%1||0"',
+    'exit 0',
+    '',
+  ].join('\n'));
   fs.chmodSync(file, 0o755);
   return file;
 }

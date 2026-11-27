@@ -138,7 +138,7 @@ describe('what the waiting phone is told', () => {
     await ownerPhone(ctx2);
     const w = await waiting(ctx2);
     expect(w.redeem.body.confirmWith).toEqual(['owner-phone', 'code']);
-    expect(ctx2.pushes).toEqual([{ kind: 'notice', dedupeKey: `pairing-request:${w.deviceId}` }]);
+    expect(ctx2.pushes).toEqual([{ kind: 'notice', subject: 'phone-approval', dedupeKey: `pairing-request:${w.deviceId}` }]);
   });
 
   it('the status poll is signed as the waiting phone and follows it to the end', async () => {
@@ -363,7 +363,7 @@ describe('an owner phone, with Face ID', () => {
     const list = await signed(ctx.app, phone.dev, phone.deviceId, 'GET', '/mobile/pairing-requests');
     expect(list.status).toBe(200);
     expect(list.body.presenceKey).toBe(true);
-    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
+    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, client: 'phone', deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
     expect(list.body.waiting[0].code).toBeUndefined();
     const dmsBefore = ctx.dms.length;
     const a = await signed(ctx.app, phone.dev, phone.deviceId, 'POST', path_(w.deviceId, 'approve'), await faceId(ctx, phone, w.deviceId, 'approve', fp));

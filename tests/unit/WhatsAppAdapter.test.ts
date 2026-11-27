@@ -234,6 +234,106 @@ describe('WhatsAppAdapter', () => {
     });
   });
 
+  // ── Linked-identity (@lid) direct-message sender identity ──────
+  // A 1:1 chat can arrive with a linked-identity chat id for ANY sender, so the
+  // sender is identified from facts WhatsApp supplies, never assumed to be the
+  // connected account. Owner = +14155552671 (authorized).
+  describe('linked-identity direct messages', () => {
+    const STRANGER_LID = '999888777666555@lid';
+    async function connected(overrides: Record<string, unknown> = {}) {
+      const adapter = createAdapter({ authorizedNumbers: ['+14155552671'], ...overrides });
+      await adapter.setConnectionState('connected', '14155552671');
+      const got: any[] = [];
+      adapter.onMessage(async (m) => { got.push(m); });
+      return { adapter, got };
+    }
+
+    it('drops a linked-identity chat from someone else (no fromMe, no own LID, no phone alias)', async () => {
+      const { adapter, got } = await connected();
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-1', 'hello', 'Stranger', undefined, { fromMe: false, remoteJid: STRANGER_LID });
+      expect(got).toHaveLength(0);
+    });
+
+    it('drops it when no message key is supplied at all', async () => {
+      const { adapter, got } = await connected();
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-2', 'hello', 'Stranger');
+      expect(got).toHaveLength(0);
+    });
+
+    it('never derives a phone number from the LID digits, even when they match an authorized number', async () => {
+      const { adapter, got } = await connected({ authorizedNumbers: ['+14155552671', '+999888777666555'] });
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-3', 'hello', 'Stranger', undefined, { fromMe: false });
+      expect(got).toHaveLength(0);
+    });
+
+    it('admits the owner self-chat (fromMe) as the connected number', async () => {
+      const { adapter, got } = await connected();
+      await adapter.handleIncomingMessage('272404173598970@lid', 'lid-4', 'note to self', 'Me', undefined, { fromMe: true });
+      expect(got).toHaveLength(1);
+      expect(got[0].userId).toBe('+14155552671');
+    });
+
+    it("admits a chat whose LID is the account's own LID", async () => {
+      const { adapter, got } = await connected();
+      adapter.setOwnLid('272404173598970:12@lid');
+      await adapter.handleIncomingMessage('272404173598970@lid', 'lid-5', 'hi', 'Me', undefined, { fromMe: false });
+      expect(got).toHaveLength(1);
+      expect(got[0].userId).toBe('+14155552671');
+    });
+
+    it("uses WhatsApp's phone-form alias for the chat when present (authorized contact admitted as themselves)", async () => {
+      const { adapter, got } = await connected({ authorizedNumbers: ['+14155552671', '+447911123456'] });
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-6', 'hi', 'Contact', undefined, { fromMe: false, remoteJidAlt: '447911123456@s.whatsapp.net' });
+      expect(got).toHaveLength(1);
+      expect(got[0].userId).toBe('+447911123456');
+    });
+
+    it('a phone-form alias for an unauthorized number is not the owner', async () => {
+      const { adapter, got } = await connected();
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-7', 'hi', 'Stranger', undefined, { fromMe: false, remoteJidAlt: '15550001111@s.whatsapp.net' });
+      expect(got).toHaveLength(0);
+    });
+
+    it('ignores a non-phone alias (e.g. a group id) and falls back to the self checks', async () => {
+      const { adapter, got } = await connected();
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-8', 'hi', 'Stranger', undefined, { fromMe: false, remoteJidAlt: '120363187170797617@g.us' });
+      expect(got).toHaveLength(0);
+    });
+
+    it("drops the owner's own message in someone else's chat once the account LID is known", async () => {
+      const { adapter, got } = await connected();
+      adapter.setOwnLid('272404173598970:12@lid');
+      await adapter.handleIncomingMessage(STRANGER_LID, 'lid-10', 'see you at 6', 'Me', undefined, { fromMe: true, remoteJidAlt: '14155552671@s.whatsapp.net' });
+      expect(got).toHaveLength(0);
+    });
+
+    it('treats @hosted.lid chats as linked identities (digits never read as a phone number)', async () => {
+      const { adapter, got } = await connected({ authorizedNumbers: ['+14155552671', '+999888777666555'] });
+      await adapter.handleIncomingMessage('999888777666555@hosted.lid', 'lid-11', 'hi', 'Stranger', undefined, { fromMe: false });
+      expect(got).toHaveLength(0);
+    });
+
+    it('jidToPhone returns null for both linked-identity forms', async () => {
+      const { jidToPhone, isLidJid } = await import('../../src/messaging/shared/PhoneUtils.js');
+      expect(jidToPhone('999888777666555@hosted.lid')).toBeNull();
+      expect(jidToPhone('999888777666555@lid')).toBeNull();
+      expect(isLidJid('999888777666555@hosted.lid')).toBe(true);
+    });
+
+    it('the Baileys backend hands the account LID to the adapter on connect (wiring)', () => {
+      const src = fs.readFileSync(path.resolve(__dirname, '../../src/messaging/backends/BaileysBackend.ts'), 'utf-8');
+      expect(src).toMatch(/this\.adapter\.setOwnLid\(me\?\.lid/);
+    });
+
+    it('drops even a fromMe linked-identity chat before the account number is known', async () => {
+      const adapter = createAdapter({ authorizedNumbers: ['+14155552671'] });
+      const got: any[] = [];
+      adapter.onMessage(async (m) => { got.push(m); });
+      await adapter.handleIncomingMessage('272404173598970@lid', 'lid-9', 'hi', 'Me', undefined, { fromMe: true });
+      expect(got).toHaveLength(0);
+    });
+  });
+
   // ── Outbound messages ──────────────────────────────────────
 
   describe('send', () => {

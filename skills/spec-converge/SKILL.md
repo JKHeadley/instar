@@ -23,7 +23,7 @@ The purpose is to catch architectural, security, adversarial, scalability, and i
 Before `/instar-dev` touches any instar source, the change's spec must pass through this skill. `/instar-dev`'s pre-commit hook refuses work unless:
 
 1. The spec file has a `review-convergence: <timestamp>` entry in its frontmatter, written by this skill on successful convergence.
-2. The spec file has an `approved: true` entry in its frontmatter, written by the user after reading the convergence report.
+2. The spec file has an `approved: true` entry in its frontmatter, with `approved-by` naming who approved it and on what basis, written after reading the convergence report. The agent approves its own converged spec; the operator approves only a spec that amends the constitution or the protected list (the paths `.github/CODEOWNERS` assigns to an owner), or one their recorded instructions reserve to them.
 
 Both tags must be present. Without them, `/instar-dev` is blocked.
 
@@ -103,6 +103,10 @@ fill.
 - **Verify the State, Not Its Symbol — evidentiary review-check (P20).** For EVERY detector, metric, or gate the spec introduces, the spec MUST DECLARE: (a) the **SYMBOL** it reads (including a string, file presence, count, or rate); (b) the real-world **STATE** it claims that symbol proves; (c) the **independent corroboration** that is causally tied to that state and isolated from incidental writes by the subject; and (d) the explicit result when the symbol is **unmeasurable**, including the least-harmful action for that decision point. The reviewer then INDEPENDENTLY CONTESTS the declaration **BIDIRECTIONALLY**: can the symbol be present while the claimed state is absent, and can the claimed state be present while the symbol is absent, stale, invalid, or unavailable? A spec that treats a string, file presence, count, or rate as PROOF without naming both the corroboration and the unmeasurable case has a **MATERIAL FINDING**. A second proxy is not corroboration merely because it is different, and an unmeasurable value must remain explicit `unknown` rather than collapse to a flattering or alarming fabricated value. This is deliberately a full-context reviewer judgment, NOT a deterministic lint: mechanical searches may produce useful signals, but they do not hold blocking authority.
 - **Decision-Completeness.** (Autonomy Principle 2 — `docs/specs/AUTONOMY-PRINCIPLES-ENFORCEMENT-SPEC.md` Piece 2.) Enumerates every point where the building agent would have to **stop mid-run and ask the user**. Each must be either **frontloaded** into a `## Frontloaded Decisions` section or explicitly tagged **cheap-to-change-after** because the work ships behind a named dark/dry-run/read-only phase. The reviewer **CONTESTS every cheap tag** — it independently asserts reversibility, and a closed non-cheap taxonomy overrides any tag: anything touching **durable external side-effects, money, identity, or a published/user-visible interface is NEVER cheap**, regardless of a "ships dark" label. A contested tag the reviewer rejects is a **material finding that blocks convergence**. Prompt: `templates/reviewer-decision-completeness.md`. Applies to ALL specs through this skill (D7) — no size gate, no per-spec override (D11; the rejected `disposition: override` escape hatch would reopen the exact skip-hatch Principle 2 closes).
 - **Lessons-aware.** Loads the canonical Instar Design Principles + Lessons Learned index (`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md`) plus the running agent's local `.instar/memory/feedback_*.md` entries, then checks the spec for (a) direct contradictions of documented principles/lessons, (b) applicable lessons the spec fails to engage with, (c) behavioral lessons violated by agent-facing surfaces the spec proposes, and **(d) FOUNDATION/SUBSYSTEM AUDIT — the design the spec TESTS, EXTENDS, or BUILDS ON, not just the spec's own surface: does that foundation violate a known standard or repeat a known mistake?** The audit MUST reach one layer below the spec boundary. A spec can be internally clean while faithfully testing or extending a flawed foundation — e.g. a test-harness spec that correctly proves a permission gate which *itself* holds brittle blocking authority in violation of Signal-vs-Authority, or an extension spec built on a subsystem with an unaddressed gap. Taking the underlying subsystem "as given" is exactly how a standards violation survives review: the spec passes, the foundation's flaw is never weighed. When the foundation is flawed, the finding is "this spec is sound but the subsystem it depends on violates standard X / repeats mistake Y — surface it before building on/around it." Catches the "Phase 2" anti-pattern, the spec-converge-pre-auth-circular failure mode (see `feedback_spec_converge_pre_auth_circular`), and the foundation-not-audited gap (the Slack-permission-gate brittle-enum-as-authority that the harness convergence cleared because it audited only the harness, 2026-06-09).
+
+<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->
+**Experience fit is part of the mandatory Lessons-aware review**, including abbreviated rounds. Use Q5 in `templates/reviewer-lessons-aware.md`: independently compare the proposed ordinary journey with the person's stated outcome, and, where approvals or trust are involved, contest both needless repeat asks and coverage the record does not support. Record the source, contrasting cases, evidence limits and disposition in the report's **Experience fit** section. This is a contextual reviewer judgment under the existing convergence process, not a new numerical gate or permission rule. A rule-by-rule no-conflict result alone does not establish that the design delivers the person's goal.
+<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->
 
 **External reviewers (cross-model, via the agent's own installed CLIs — one pass PER AVAILABLE FAMILY):**
 
@@ -254,8 +258,8 @@ Produce a final report at `docs/specs/reports/<slug>-convergence.md` with the fo
 
 - `## Cross-model review: codex-cli:<model>` — RAN. A real GPT-tier external pass ran through the agent's codex CLI in at least one round. The ONLY state with no ⚠ (it is the clean pass).
 - `## ⚠ Cross-model review: codex-cli:<model> (degraded: <reason>)` — codex is installed but THIS round's call failed (timeout / error / rate-limited); the external pass was partial. State the reason. (Per-round status; if some OTHER round succeeded, the spec-level flag is the clean `codex-cli:<model>` instead.)
-- `## ⚠ Cross-model review: DEGRADED — ALL ROUNDS (degraded-all-rounds)` — codex was present every round but **ZERO rounds succeeded** (every attempt degraded). The spec converged having **never once received a real external opinion** — as loud as UNAVAILABLE. State the last round's reason. The user reads THIS before applying `approved: true`.
-- `## ⚠ Cross-model review: UNAVAILABLE` — no supported external (non-Claude) reviewer was installed/authed. Convergence ran on the internal Claude reviewers + the constitutional gate ONLY. State the specific reason (`codex-not-installed` / `codex-not-authed` / `codex-auth-apikey-forbidden`) and the one-line remediation (`codex login`, or install `@openai/codex`). The user reads THIS before applying `approved: true`, so the reduced-assurance state is an informed choice, not a silent one.
+- `## ⚠ Cross-model review: DEGRADED — ALL ROUNDS (degraded-all-rounds)` — codex was present every round but **ZERO rounds succeeded** (every attempt degraded). The spec converged having **never once received a real external opinion** — as loud as UNAVAILABLE. State the last round's reason. The approver reads THIS before applying `approved: true`.
+- `## ⚠ Cross-model review: UNAVAILABLE` — no supported external (non-Claude) reviewer was installed/authed. Convergence ran on the internal Claude reviewers + the constitutional gate ONLY. State the specific reason (`codex-not-installed` / `codex-not-authed` / `codex-auth-apikey-forbidden`) and the one-line remediation (`codex login`, or install `@openai/codex`). The approver reads THIS before applying `approved: true`, so the reduced-assurance state is an informed choice, not a silent one.
 - `## ⚠ Cross-model review: SKIPPED (abbreviated convergence)` — the author chose the fast path; the framework may be present but was deliberately skipped (the lessons-aware reviewer still ran). This is a **non-ran** state, so it carries the ⚠ too — "I skipped the outside opinion to save cost" must be as visible as "I had no outside opinion available," not a quiet footnote.]
 
 ## ELI10 Overview
@@ -291,7 +295,7 @@ at the cap with its one-line reason. Where an item is worth doing later, name th
 
 ## Convergence verdict
 
-[Plain statement: "Converged at round N. The final round found nothing that changes what gets built; M items left behind. Spec is ready for user review and approval."]
+[Plain statement: "Converged at round N. The final round found nothing that changes what gets built; M items left behind. Spec is ready to approve and build."]
 ```
 
 ### Phase 5 — Frontmatter tag
@@ -325,15 +329,15 @@ node skills/spec-converge/scripts/write-convergence-tag.mjs \
 
 (Specs converged BEFORE the Decision-Completeness reviewer shipped carry no `single-run-completable` field — that is honest, not a defect; the field binds only specs converged after it. A spec that modifies spec-converge itself runs under the old spec-converge, per the documented bootstrap exception extended in spirit.)
 
-This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the user reads the report banner and makes an informed choice).
+This is **DISCLOSURE, not a gate** — it does NOT change `/instar-dev`'s `review-convergence` + `approved: true` enforcement. An `unavailable` spec can still be approved (the approver reads the report banner and makes an informed choice).
 
 **Structural prerequisite — ELI16 overview.** Before the convergence tag is written, `skills/spec-converge/scripts/write-convergence-tag.mjs` verifies the spec ships with a plain-English ELI16 companion at `docs/specs/<slug>.eli16.md` (or the path declared via `eli16-overview:` frontmatter). The companion must be at least 800 characters. If the overview is missing or stub-length, convergence is refused — no tag is written. The dense technical spec is for reviewers; the ELI16 overview is the entry point for any reader who has to make a real decision. See `skills/instar-dev/templates/eli16-overview.md` for the expected shape.
 
-The `approved: true` tag is NOT written by this skill. That's the user's step.
+The `approved: true` tag is NOT written by this skill. It is the approver's separate, recorded step: the agent's for its own spec, the operator's for a constitution or protected-list amendment (see "When it runs").
 
 ### Phase 6 — User handoff
 
-When a spec is handed to the user for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
+A spec goes to the operator for approval only when it amends the constitution or the protected list, or their recorded instructions reserve it; any other converged spec gets no handoff message (it reaches them in the regular status update and the merged PR). When a spec IS handed to the operator for review, it MUST go out with a **rendered, verified ELI16 tunnel link** the user can tap and read — never a bare filename or a PR they have to dig through. This is the required delivery step, enforced structurally (not by memory):
 
 ```bash
 node skills/spec-converge/scripts/publish-spec-review.mjs \
@@ -346,14 +350,14 @@ node skills/spec-converge/scripts/publish-spec-review.mjs \
 
 Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.
 
-The skill does NOT auto-apply `approved: true`. That requires explicit human action — editing the frontmatter or running `instar spec approve <path>` (follow-on CLI command).
+The skill does NOT auto-apply `approved: true`. The approver applies it explicitly by editing the frontmatter, with `approved-by` recording who approved and why.
 
 ## What this skill does NOT do
 
 - It does not build code. That's `/instar-dev`'s job, after both tags are present.
 - It does not iterate on wording. Convergence is fractal 80/20: stop when a round would not change the build. The round cap exists to stop review costing more than the change is worth.
 - It does not skip reviewer perspectives. The six internal reviewers + the cross-model external pass run on every round (subject to the abbreviated-convergence exception, which still runs the non-skippable lessons-aware and decision-completeness reviewers).
-- It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.
+- It does not auto-approve. Approval is a separate, recorded step by the approver: the agent for its own spec, the operator for a constitution or protected-list amendment.
 
 ## Bootstrap exception
 

@@ -41,7 +41,8 @@ import { publicKeyFromDidKey } from './didkey.js';
 import { recordHash } from './record.js';
 import { verifyRecordWithBinding } from './localverify.js';
 import {
-  LOOKUP_MAX_LIMIT, RegistryError, UNVERIFIED_NOTE, assessLookupPage, assessSingleRecord, registryBase, registryRequest,
+  LOOKUP_MAX_LIMIT, RegistryError, UNVERIFIED_NOTE, assessLookupPage, assessSingleRecord, registryBase, registryErrorReason, registryRequest,
+  type RegistryResponse,
 } from './registry.js';
 import {
   SEAL_LABELS_NOTE, SEAL_REFERENCE_PROVISIONAL_NOTE, checkSealBytes, formatSealkeeperReference,
@@ -216,8 +217,8 @@ export async function run(argv: string[]): Promise<unknown> {
       throw err;
     }
   };
-  const unexpected = (what: string, status: number, text: string): never =>
-    fail(`registry answered ${status} to ${what}: ${text.slice(0, 300) || '(empty body)'}`);
+  const unexpected = (what: string, { status, json, text }: RegistryResponse): never =>
+    fail(`registry answered ${status} to ${what}: ${registryErrorReason(json) ?? (text.slice(0, 300) || '(empty body)')}`);
 
   switch (command) {
     case 'init': {
@@ -317,8 +318,8 @@ export async function run(argv: string[]): Promise<unknown> {
         // The server runs the same verify as this package; its reason is printed unchanged.
         fail(`registry refused the record: ${typeof body.reason === 'string' ? body.reason : res.text.slice(0, 300)}`);
       }
-      if (res.status !== 201 && res.status !== 200) unexpected('publish', res.status, res.text);
-      if (body.ok !== true || typeof body.recordHash !== 'string') unexpected('publish', res.status, res.text);
+      if (res.status !== 201 && res.status !== 200) unexpected('publish', res);
+      if (body.ok !== true || typeof body.recordHash !== 'string') unexpected('publish', res);
       if (body.recordHash !== localHash) {
         fail(`registry reports recordHash ${body.recordHash} but the record hashes to ${localHash} here; ` +
           'the server did not store what was sent, or hashes it differently. Not treating it as published.');
@@ -343,8 +344,8 @@ export async function run(argv: string[]): Promise<unknown> {
       }
       if (values.cursor) q.set('cursor', values.cursor);
       const res = await ask(`/witness/records?${q}`);
-      if (res.status !== 200) unexpected('lookup', res.status, res.text);
-      if (!res.json || typeof res.json !== 'object') unexpected('lookup', res.status, res.text);
+      if (res.status !== 200) unexpected('lookup', res);
+      if (!res.json || typeof res.json !== 'object') unexpected('lookup', res);
       const page = assessLookupPage(res.json as Parameters<typeof assessLookupPage>[0]);
       return {
         registry: registry().origin,
@@ -361,13 +362,13 @@ export async function run(argv: string[]): Promise<unknown> {
       if (!hash || !/^[0-9a-f]{64}$/.test(hash)) fail('get needs a recordHash (64 hex characters)');
       const res = await ask(`/witness/records/${hash}`);
       if (res.status === 404) fail(`the registry has no record ${hash}`);
-      if (res.status !== 200) unexpected('get', res.status, res.text);
+      if (res.status !== 200) unexpected('get', res);
       return { registry: registry().origin, ...assessSingleRecord(hash, res.json), note: UNVERIFIED_NOTE };
     }
     case 'stats': {
       const res = await ask('/witness/stats');
-      if (res.status !== 200) unexpected('stats', res.status, res.text);
-      if (res.json === undefined) unexpected('stats', res.status, res.text);
+      if (res.status !== 200) unexpected('stats', res);
+      if (res.json === undefined) unexpected('stats', res);
       return res.json; // the server's word, printed as-is; nothing here is verifiable locally
     }
     case 'seal-evidence': {

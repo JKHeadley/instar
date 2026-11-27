@@ -92,10 +92,16 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
     // by either the reroute branch (june15-headless-spawn-reroute: the
     // interactive lane reuses the SAME launchModel) or this headless builder.
     // The reroute branch legitimately sits between resolution and this build,
-    // so widen the look-back window past it — the invariant is "resolved
-    // before, passed as launchModel", not literal proximity.
-    const before = src.slice(Math.max(0, idx - 2500), idx);
+    // so the invariant is "resolved before, inside the same spawnSession,
+    // passed as launchModel", not literal proximity (a fixed character window
+    // broke whenever code was added to that branch).
+    const fnStart = src.lastIndexOf('async spawnSession(', idx);
+    expect(fnStart).toBeGreaterThan(0);
+    const before = src.slice(fnStart, idx);
     expect(before).toContain('this.resolveCodexLaunchModel(headlessFramework');
+    // no other class member starts between the resolution and the headless build
+    const r = before.lastIndexOf('this.resolveCodexLaunchModel(headlessFramework');
+    expect(before.slice(r)).not.toMatch(/\n  (?:private |public |protected )(?:async )?[A-Za-z_]\w*\(/);
     // the builder receives the resolved variable, not the raw options.model
     expect(src.slice(idx, idx + 200)).toMatch(/model:\s*launchModel/);
   });
@@ -103,16 +109,16 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
   it('interactive spawn (buildInteractiveLaunch) launches with the resolved model', () => {
     const idx = src.indexOf('buildInteractiveLaunch(framework');
     expect(idx).toBeGreaterThan(0);
-    // Same rationale as the headless case above: legitimate code can sit between
-    // resolution and the build — e.g. the subscription account-swap lane seeds a
-    // pool home's onboarding flags here (ensurePinnedHomeInteractiveReady) before
-    // launch, and (WS5.2 Step 8) the §2.10 credentialSource provenance derivation
-    // sits between effectiveAccountId and the build. The invariant is "resolved
-    // before, passed as launchModel", not literal proximity, so use a widened
-    // look-back window (3000 chars — bumped from 2500 for the Step 8 derivation;
-    // 6000 since Resume Follows the Account placed the conversation into the
-    // resolved login between account resolution and the build).
-    const before = src.slice(Math.max(0, idx - 6000), idx);
+    // Same rationale as the headless case above: legitimate code sits between
+    // resolution and the build (pool-home onboarding, the §2.10 credentialSource
+    // derivation, Resume Follows the Account's transcript placement and its Codex
+    // rollout placement). A fixed look-back window had to be widened each time
+    // (2500 → 3000 → 6000) without the invariant changing. The invariant is
+    // "resolved earlier in the same spawn function, passed as launchModel", so
+    // look back to the start of spawnInteractiveSessionUnlocked instead.
+    const fnStart = src.lastIndexOf('async spawnInteractiveSessionUnlocked(', idx);
+    expect(fnStart).toBeGreaterThan(0);
+    const before = src.slice(fnStart, idx);
     expect(before).toContain('this.resolveCodexLaunchModel(framework');
     expect(src.slice(idx, idx + 250)).toContain('launchDefaultModel');
   });

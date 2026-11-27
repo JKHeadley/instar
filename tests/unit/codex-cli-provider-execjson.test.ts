@@ -159,7 +159,8 @@ exit 0
     expect(argv).not.toContain('the json prompt');
     expect(fs.readFileSync(stdinFile(), 'utf-8')).toBe('the json prompt');
     // Per-call usage parsed from the event stream, cachedTokens included.
-    expect(usages).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
   });
 
   it('result comes from the FILE only — never stdout events', async () => {
@@ -389,6 +390,8 @@ describe('codex 0.144 shutdown-linger — early terminal settle', () => {
     fs.writeFileSync(
       p,
       `#!/bin/sh
+# A real codex answers --version at once (the older-CLI model check reads it).
+if [ "$1" = "--version" ]; then echo "codex-cli 0.169.0"; exit 0; fi
 cat > /dev/null
 printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"${resultText}"}}'
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":90,"output_tokens":8,"total_tokens":128}}'
@@ -415,7 +418,8 @@ exit 0
     expect(result).toBe('LINGER-OK');
     expect(elapsed).toBeLessThan(3000); // did NOT wait out the 30s linger
     // Usage from turn.completed was parsed and reported (success carries usage).
-    expect(usages).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
   }, 15000);
 
   it('records a SUCCESS (unclassified) row WITH usage through the funnel — not an error', async () => {

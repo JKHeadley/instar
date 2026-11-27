@@ -5,6 +5,7 @@ import { MigrationProvenance } from '../../src/core/MigrationProvenance.js';
 import { AutonomyProfileManager } from '../../src/core/AutonomyProfileManager.js';
 import type { MigrationResult } from '../../src/core/PostUpdateMigrator.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { provedProfile } from '../helpers/operatorProof.js';
 
 function makeMigrationResult(): MigrationResult {
   return {
@@ -75,7 +76,7 @@ describe('MigrationProvenance + AutonomyProfileManager integration', () => {
     prov.logMigration('0.12.0', '0.13.0', makeMigrationResult());
 
     // Change to autonomous
-    profileManager.setProfile('autonomous', 'user trusts agent');
+    provedProfile(profileManager).setProfile('autonomous', 'user trusts agent');
     prov.logMigration('0.13.0', '0.14.0', makeMigrationResult());
 
     // Both entries should be in the log

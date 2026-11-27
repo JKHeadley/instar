@@ -138,6 +138,70 @@ describe('SessionBuildContextStore', () => {
     expect(store.getRestore('agent-topic')).not.toBeNull();
   });
 
+  // 2026-11-13: one machine's store held 32,378 rows (8.2 MB), 99.7% of them past the max age,
+  // and every monitor pass parsed all of it for every running session.
+  it('a write drops rows past the max age and keeps the rest', () => {
+    const home = path.join(tmpDir, 'agent-home');
+    const worktree = path.join(home, '.worktrees', 'feature');
+    fs.mkdirSync(worktree, { recursive: true });
+    const maxAgeMs = 1000;
+    const store = new SessionBuildContextStore(state, { now: () => now, execFileSync: vi.fn(() => '') as any, maxAgeMs });
+
+    store.record('old-session', home, worktree);
+    now += 400;
+    store.record('middle-session', home, worktree);
+    now += 601; // old-session is now 1001 ms old (expired); middle-session is 601 ms old
+    expect(Object.keys(store.readAll()).sort()).toEqual(['middle-session', 'old-session']); // nothing written yet
+
+    store.record('new-session', home, worktree);
+    expect(Object.keys(store.readAll()).sort()).toEqual(['middle-session', 'new-session']);
+    // The row at exactly the max age is still restorable, so it is kept.
+    now += 399; // middle-session is exactly 1000 ms old
+    store.record('another-session', home, worktree);
+    expect(Object.keys(store.readAll()).sort()).toEqual(['another-session', 'middle-session', 'new-session']);
+    expect(store.getRestore('middle-session')).not.toBeNull();
+  });
+
+  it('shrinks a store that grew without bound, on the next write', () => {
+    const home = path.join(tmpDir, 'agent-home');
+    const store = new SessionBuildContextStore(state, { now: () => now, execFileSync: vi.fn(() => '') as any });
+    const bloated: Record<string, unknown> = {};
+    for (let i = 0; i < 5000; i++) bloated[`job-${i}`] = { spawnCwd: home, currentCwd: home, updatedAt: now - 7 * 60 * 60 * 1000 - i };
+    bloated['still-live'] = { spawnCwd: home, currentCwd: home, updatedAt: now - 60_000 };
+    state.set(store.stateKey(), bloated);
+    expect(Object.keys(store.readAll())).toHaveLength(5001);
+
+    store.record('fresh-session', home, home);
+    expect(Object.keys(store.readAll()).sort()).toEqual(['fresh-session', 'still-live']);
+  });
+
+  it('an unchanged session writes nothing, so it prunes nothing (no write on the hot path)', () => {
+    const home = path.join(tmpDir, 'agent-home');
+    const store = new SessionBuildContextStore(state, { now: () => now, execFileSync: vi.fn(() => '') as any, maxAgeMs: 1000 });
+    store.record('steady', home, home);
+    const setSpy = vi.spyOn(state, 'set');
+    now += 5000;
+    store.record('steady', home, home);
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  // A consequence of pruning, pinned so it is deliberate: a session that has sat in one worktree
+  // past the max age loses its row at the next write, and its next record() writes a fresh one.
+  // Before, its row stayed expired for good and a restart did not restore a place it was still in.
+  it('a long-lived session whose row was pruned is recorded again as current', () => {
+    const home = path.join(tmpDir, 'agent-home');
+    const worktree = path.join(home, '.worktrees', 'feature');
+    fs.mkdirSync(worktree, { recursive: true });
+    const store = new SessionBuildContextStore(state, { now: () => now, execFileSync: vi.fn(() => '') as any, maxAgeMs: 1000 });
+    store.record('long-lived', home, worktree);
+    now += 2000;
+    expect(store.getRestore('long-lived')).toBeNull(); // expired, as before
+    store.record('other', home, home); // any write prunes it
+    expect(store.readAll()['long-lived']).toBeUndefined();
+    store.record('long-lived', home, worktree); // the monitor's next pass for the same session
+    expect(store.getRestore('long-lived')?.entry.updatedAt).toBe(now);
+  });
+
   it('formats restore notes without a branch line when branch enrichment is absent', () => {
     const note = formatBuildContextRestoreNote({
       spawnCwd: '/agent-home',

@@ -114,12 +114,13 @@ describe('the list', () => {
   it('multi-machine: a machine that did not answer is named; idle machines get one line each', () => {
     const machines = [
       { machineId: 'm-studio', nickname: 'Mac Studio', isSelf: true, sessionCount: 1 },
-      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) } },
+      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) },
+        reach: { liveness: { state: 'unreachable', source: 'direct', evidenceAt: iso(NOW - 6 * 60_000) }, reconnect: { state: 'retrying' } } },
       { machineId: 'm-laptop', nickname: 'Laptop', sessionCount: 0, emptyState: { kind: 'online', text: 'online — no active sessions', lastSeen: null } },
     ];
     const m = buildSessions(poolOf([sess()], { enabled: true, machines, failed: [{ machineId: 'm-mini', error: 'timeout' }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
-    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering (last seen 6 min ago)' }]);
+    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering for 6 min; reconnecting by itself' }]);
     expect(m.idleMachines).toEqual([{ machineId: 'm-laptop', name: 'Laptop', words: 'answering, nothing running', ok: true }]);
     expect(partialWords(m)).toBe('Mac Mini did not answer; its sessions are not shown.');
     expect(sessionsFacts(m).at(-1)).toEqual({ n: '2 of 3', label: 'machines answering', tone: 'attn' });
@@ -419,24 +420,39 @@ describe('sessions in a DOM', () => {
     ws.push({ type: 'output', session: 'echo-fix', data: 'hello from the pane' });
     expect(written).toContain('hello from the pane');
 
-    // Composer → an input frame; an empty message sends nothing.
+    // Until the machine says what it can do, the composer waits (§3e item 1).
     const input = doc.querySelector('.sess-input') as HTMLTextAreaElement;
-    (doc.querySelector('button[data-send]') as HTMLButtonElement).click();
+    const sendBtn = doc.querySelector('button[data-send]') as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    expect(input.placeholder).toBe('Connecting to that machine…');
+    ws.push({ type: 'input_caps', session: 'echo-fix', inputAck: 2, remoteInput: true });
+    expect(sendBtn.disabled).toBe(false);
+
+    // Composer → an input frame with its id; an empty message sends nothing.
+    sendBtn.click();
     expect(ws.sent.filter((m) => m.type === 'input')).toHaveLength(0);
     input.value = 'line one\nline two';
-    (doc.querySelector('button[data-send]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'input', session: 'echo-fix', text: 'line one\nline two' });
+    sendBtn.click();
+    const sentInput = ws.sent.find((m) => m.type === 'input')!;
+    expect(sentInput).toEqual({ type: 'input', session: 'echo-fix', text: 'line one\nline two', clientInputId: expect.stringMatching(/^[A-Za-z0-9_-]{16,64}$/) });
+    // The text stays, marked as sending, until its own acknowledgement; an id-less one clears nothing.
+    expect(input.value).toBe('line one\nline two');
+    expect(input.readOnly).toBe(true);
+    ws.push({ type: 'input_ack', session: 'echo-fix', success: true });
+    expect(input.value).toBe('line one\nline two');
+    ws.push({ type: 'input_ack', session: 'echo-fix', success: true, clientInputId: sentInput.clientInputId });
     expect(input.value).toBe('');
+    expect(input.readOnly).toBe(false);
 
     // Keys tray: Enter goes at once; Stop asks once, then sends C-c.
     (doc.querySelector('button[data-keys]') as HTMLButtonElement).click();
     (doc.querySelector('button[data-key="Enter"]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'Enter' });
+    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'Enter', clientInputId: expect.any(String) });
     (doc.querySelector('button[data-stop]') as HTMLButtonElement).click();
     expect(ws.sent.some((m) => m.key === 'C-c')).toBe(false);
     expect(doc.querySelector('.keys-stop .confirm-text')!.textContent).toBe('Interrupt what it is doing?');
     (doc.querySelector('button[data-stop-confirm]') as HTMLButtonElement).click();
-    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'C-c' });
+    expect(ws.sent).toContainEqual({ type: 'key', session: 'echo-fix', key: 'C-c', clientInputId: expect.any(String) });
 
     // A refresh never rebuilds the open terminal.
     const canvas = doc.querySelector('.sess-term canvas');

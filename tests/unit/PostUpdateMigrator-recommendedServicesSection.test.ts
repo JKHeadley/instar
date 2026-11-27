@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PostUpdateMigrator, RECOMMENDED_SERVICES_CLAUDEMD_SECTION, RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, RECOMMENDED_SERVICES_CLAUDEMD_SECTION, RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL, RECOMMENDED_SERVICES_V3_TAIL } from '../../src/core/PostUpdateMigrator.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -29,21 +29,26 @@ describe('recommended services awareness', () => {
     const text = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
     expect(text.split(MARKER).length - 1).toBe(1);
   });
-  it('a legacy-layout agent on the v1 wording gets the v2 wording in place, once, and the template already carries it', () => {
-    expect(RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040)).toContain(RECOMMENDED_SERVICES_V2_TAIL);
+  it('a legacy-layout agent on the v1 or v2 wording reaches the v3 wording in place, once, and the template already carries it', () => {
+    expect(RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040)).toContain(RECOMMENDED_SERVICES_V3_TAIL);
     expect(RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040)).not.toContain(RECOMMENDED_SERVICES_V1_TAIL);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-mig-v2-'));
-    dirs.push(dir);
-    const stateDir = path.join(dir, '.instar');
-    fs.mkdirSync(stateDir, { recursive: true });
-    const v1 = RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040).replace(RECOMMENDED_SERVICES_V2_TAIL, RECOMMENDED_SERVICES_V1_TAIL);
-    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), `# Agent\n${v1}`);
-    const m = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4040, hasTelegram: false, projectName: 'p' } as never);
-    const run = () => (m as unknown as { migrateClaudeMd(r: { upgraded: string[]; skipped: string[]; errors: string[] }): void }).migrateClaudeMd({ upgraded: [], skipped: [], errors: [] });
-    run(); run();
-    const text = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
-    expect(text.split(MARKER).length - 1).toBe(1);
-    expect(text).not.toContain(RECOMMENDED_SERVICES_V1_TAIL);
-    expect(text.split(RECOMMENDED_SERVICES_V2_TAIL).length - 1).toBe(1);
+    expect(RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040)).not.toContain(RECOMMENDED_SERVICES_V2_TAIL);
+    expect(RECOMMENDED_SERVICES_V3_TAIL).toContain('recommendedServices.offers.enabled');
+    for (const older of [RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rec-mig-v3-'));
+      dirs.push(dir);
+      const stateDir = path.join(dir, '.instar');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const old = RECOMMENDED_SERVICES_CLAUDEMD_SECTION(4040).replace(RECOMMENDED_SERVICES_V3_TAIL, older);
+      fs.writeFileSync(path.join(dir, 'CLAUDE.md'), `# Agent\n${old}`);
+      const m = new PostUpdateMigrator({ projectDir: dir, stateDir, port: 4040, hasTelegram: false, projectName: 'p' } as never);
+      const run = () => (m as unknown as { migrateClaudeMd(r: { upgraded: string[]; skipped: string[]; errors: string[] }): void }).migrateClaudeMd({ upgraded: [], skipped: [], errors: [] });
+      run(); run();
+      const text = fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(text.split(MARKER).length - 1).toBe(1);
+      expect(text).not.toContain(RECOMMENDED_SERVICES_V1_TAIL);
+      expect(text).not.toContain(RECOMMENDED_SERVICES_V2_TAIL);
+      expect(text.split(RECOMMENDED_SERVICES_V3_TAIL).length - 1).toBe(1);
+    }
   });
 });

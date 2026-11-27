@@ -128,6 +128,15 @@ describe('team access — production wiring', () => {
     expect(waiting.body.waiting).toHaveLength(1);
     expect((await mia('POST', '/mobile/device/confirm', { code: waiting.body.waiting[0].code.replace(/\s/g, '') })).body.status).toBe('active');
 
+    // Her phone is bound in the log, so another machine could tell whose key it is.
+    expect(server.mobilePairing!.teamLog()!.allRows().some((r) => r.kind === 'machine' && r.events.some((e) => e.type === 'phone-bind' && e.boundTo === 'mia'))).toBe(true);
+    // A healthy log holds nobody, and the owner's screen says so.
+    const context = await owner('GET', '/mobile/team/context');
+    expect(context.body.held).toEqual([]);
+    expect(context.body.machinesBelowFloor).toEqual([]);
+    // A machine cannot declare the stream it is writing as gone.
+    expect(server.mobilePairing!.teamLog()!.currentIncarnation()).toMatch(/^[0-9a-f]{16}$/);
+
     expect((await mia('GET', '/mobile/device')).body.standing.tier).toBe('member');
     expect((await owner('GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(false);
     // She sees and talks only in what she was given.
@@ -142,6 +151,33 @@ describe('team access — production wiring', () => {
     expect((await mia('POST', `/mobile/chat/app/${secret}`, { text: 'x', requestId: rid() })).status).toBe(404);
     expect((await mia('POST', '/mobile/team/invites', invite)).status).toBe(403);
 
+    // A reply from a machine that had not heard of her grant: held from her, shown to the owner as held.
+    const store = server.appConversations!.store;
+    store.ingestReplicated({
+      eventId: 'held-1', kind: 'message', conversationKey: shared, at: new Date().toISOString(), machineId: 'laptop',
+      messageId: 'held-msg', role: 'agent', text: 'Words from before she joined',
+      accessStamp: { origin: 'laptop', incarnation: 'i1', seq: 1, access: {} },
+    });
+    const hers = await mia('GET', `/mobile/chat/app/${shared}/messages`);
+    expect(hers.status).toBe(200);
+    expect(JSON.stringify(hers.body)).not.toContain('Words from before');
+    expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/events`)).body)).not.toContain('Words from before');
+    expect((await mia('GET', `/mobile/chat/app/${shared}/preview/held-msg`)).status).toBe(404);
+    // Nor on the list line, whichever way it is asked for.
+    expect(JSON.stringify((await mia('GET', '/mobile/conversations')).body)).not.toContain('Words from before');
+    expect(JSON.stringify((await mia('GET', '/mobile/conversations?scope=pool')).body)).not.toContain('Words from before');
+    expect(JSON.stringify((await owner('GET', '/mobile/conversations')).body)).toContain('Words from before');
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(false); // no push about it either
+    // A push has no text, so a reply still on its way from a peer may announce itself, and a topic cannot be held.
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'not-here-yet')).toBe(true);
+    expect(server.mobilePairing!.mayReadMessageId(server.mobilePairing!.personOfDevice(server.mobilePairing!.devices.get(redeemed.body.deviceId)!) as never, 'telegram:50', 'topic-50-1')).toBe(true);
+    const theirs = await owner('GET', `/mobile/chat/app/${shared}/messages`);
+    expect(theirs.body.messages.find((m: { messageId?: string }) => m.messageId === 'held-msg').heldFrom).toEqual(['Mia']);
+    // The owner chooses to show it: a new grant, signed after this machine held the row.
+    expect((await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: shared, access: 'use' }] })).status).toBe(200);
+    expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/messages`)).body)).toContain('Words from before');
+    expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(true);
+
     // Someone asks: it reaches the owner and gives nothing until the owner signs exactly that.
     const asked = await auth(request(app).post('/team/proposals')).send({ change: { kind: 'grant', personKey: 'mia', ref: secret, access: 'read' }, reason: 'Needs the notes' });
     expect(asked.status).toBe(201);
@@ -155,6 +191,8 @@ describe('team access — production wiring', () => {
     expect(lowered.status).toBe(200);
     expect((await mia('GET', '/mobile/conversations')).status).toBe(401); // the phone itself is revoked
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
+    // The lock is told to peers as a row, so another machine would hold it too.
+    expect(server.mobilePairing!.teamLog()!.allRows().some((r) => r.kind === 'machine' && r.events.some((e) => e.type === 'confine' && e.ref === shared))).toBe(true);
     // A topic reference that is not the standard form is refused before anything is written.
     const odd = await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: 'telegram:01', access: 'use' }] });
     expect(odd.status).toBeGreaterThanOrEqual(400);

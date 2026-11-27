@@ -49,6 +49,20 @@ describe('MobilePushService', () => {
     expect(agg.aps.alert.body).toBe('2 more things need you');
   });
 
+  it('a pairing notice says what is waiting and tells the app to open the approval; no device name ever', () => {
+    // Operator 2026-11-09: "the description detail and the notifications is terrible".
+    const b = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'browser-approval', count: 1 }) as any;
+    expect(b.aps.alert).toEqual({ title: 'Echo', body: 'A new browser wants to use your conversations. Tap to approve with Face ID.' });
+    expect(b.instar).toMatchObject({ kind: 'notice', subject: 'browser-approval' });
+    const p = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'phone-approval', count: 1 }) as any;
+    expect(p.aps.alert.body).toBe('A new phone wants to pair. Tap to approve with Face ID.');
+    const plain = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', count: 1 }) as any;
+    expect(plain.aps.alert.body).toBe('Something needs you');
+    expect(plain.instar.subject).toBeUndefined();
+    const bogus = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'x' as never, count: 1 }) as any;
+    expect(bogus.aps.alert.body).toBe('Something needs you');
+  });
+
   it('JWT is ES256 with kid and iss, and verifies', () => {
     const jwt = signApnsJwt({ keyPem: KEY, keyId: 'KEY1', teamId: 'TEAM' }, 1000);
     const [h, c, sig] = jwt.split('.');
@@ -305,5 +319,31 @@ describe('MobilePushService — app conversation replies', () => {
     c.svc.onAppReply(KEY_A, 'msg-1');
     await new Promise((r) => setTimeout(r, 20));
     expect(c.sent).toHaveLength(0);
+  });
+});
+
+describe('MobilePushService — document answers (instar-document-viewer, app contract 6)', () => {
+  const DOC = '99999999-9999-4999-8999-999999999999';
+  it('the payload names the document and comment with fixed words, never the title or answer', () => {
+    const p = buildPayload('Echo', 'echo', 'd1', { kind: 'document', itemId: DOC, commentKey: 'mara:c1', machine: 'm1', count: 1 }) as any;
+    expect(p.aps.alert.body).toBe('New answers to your comments');
+    expect(p.instar).toEqual({ kind: 'document', agentId: 'echo', deviceId: 'd1', count: 1, itemId: DOC, commentKey: 'mara:c1', machine: 'm1' });
+  });
+  it('goes only to phones the document check allows, and to none when the check is missing', async () => {
+    const c = setup();
+    const mk = (may?: (d: string, doc: string, key: string) => boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, mayNotifyDocument: may,
+    });
+    await mk().receive({ kind: 'document', itemId: DOC, commentKey: 'owner:c1', dedupeKey: 'd1', sourceMachine: 'm1' }, false);
+    await mk(() => false).receive({ kind: 'document', itemId: DOC, commentKey: 'owner:c1', dedupeKey: 'd2', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(0);
+    const asked: string[] = [];
+    await mk((_d, doc, key) => { asked.push(`${doc}|${key}`); return true; }).receive({ kind: 'document', itemId: DOC, commentKey: 'owner:c1', dedupeKey: 'd3', sourceMachine: 'm1' }, false);
+    expect(asked).toEqual([`${DOC}|owner:c1`]);
+    expect(c.sent).toHaveLength(1);
+    expect((c.sent[0].body as any).instar.commentKey).toBe('owner:c1');
   });
 });

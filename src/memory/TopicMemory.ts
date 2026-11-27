@@ -18,6 +18,7 @@
  * of what the user and the agent have been working on." — Justin, 2026-02-24
  */
 
+import { literalFtsTerms, quoteFtsTerm } from './ftsQueryTerms.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -25,6 +26,23 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { boundedHead, BOUNDED_INPUT_MIN_CHARS } from '../core/boundedInput.js';
+import { deriveRowKey } from './topicRowWriter.js';
+import { reapplyImportedHistory, mergeSequence, readPublishedBatches, withTopicHistoryLock } from './topicHistoryImport.js';
+import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
+
+/**
+ * Per-message bound when a topic's history is rendered into a session's
+ * context (here and in the JSONL fallback in commands/server.ts). A fresh
+ * session continues the conversation FROM this text, and the bootstrap's own
+ * rule is "inject the FULL context inline — no truncation".
+ * Derived: a Telegram message cannot exceed 4096 characters, so every Telegram
+ * message (operator instructions included) now arrives whole; the old 2000 cut
+ * a long instruction in half with no sign. Disclosure room on top keeps that
+ * true when a longer Slack or app message is cut, and the cut says so.
+ * Cost: worst case 50 messages x ~4.3k, only when every message is maximal.
+ */
+export const SESSION_HISTORY_MESSAGE_CHARS = 4096 + BOUNDED_INPUT_MIN_CHARS;
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -48,7 +66,48 @@ export interface TopicMessage {
   privacyScope?: import('../core/types.js').PrivacyScopeType;
   /** Explicit platform forwarding provenance; undefined means legacy/unknown. */
   forwarded?: boolean;
+  /**
+   * The channel's own message id, kept verbatim (context-budget §14 key rule):
+   * Telegram the native id, Slack the `ts`, an app conversation the event id.
+   * Undefined on legacy rows and on writers that predate the row writer.
+   */
+  channelMessageId?: string;
+  /**
+   * Set only on rows that did not come from this machine's own live channel
+   * path: `relay` (a Threadline relay message mirrored in) or `a2a` (this
+   * agent's own agent-to-agent traffic mirrored in), context-budget §8; or
+   * `imported` (restored from a recovery file through POST /topic/import,
+   * topic-history-import spec). Such rows are kept and labelled, and carry no
+   * operator authority. Undefined otherwise.
+   */
+  origin?: TopicRowOrigin;
 }
+
+/** Row origins that mark a TopicMemory row as arriving from another agent (§8). */
+export const TOPIC_ROW_ORIGINS = ['relay', 'a2a', 'imported'] as const;
+export type TopicRowOrigin = (typeof TOPIC_ROW_ORIGINS)[number];
+
+/** A recorded origin, or undefined for anything else (an unknown value is never guessed). */
+export function coerceTopicRowOrigin(value: unknown): TopicRowOrigin | undefined {
+  return typeof value === 'string' && (TOPIC_ROW_ORIGINS as readonly string[]).includes(value)
+    ? value as TopicRowOrigin
+    : undefined;
+}
+
+/** What a keyed insert did (context-budget §14). */
+export type KeyedInsertResult =
+  /** A new row landed. */
+  | { outcome: 'inserted' }
+  /** The same channel message was already stored (a replay); nothing changed. */
+  | { outcome: 'duplicate' }
+  /** A legacy row with this integer key and no channel id was adopted: its channel id was filled in. */
+  | { outcome: 'adopted' }
+  /** The integer key is held by a DIFFERENT channel message: refused, the existing row is untouched. */
+  | { outcome: 'collision'; existingChannelMessageId: string }
+  /** The channel id is already stored under a DIFFERENT integer key: refused (a key-rule mismatch). */
+  | { outcome: 'key-mismatch'; existingMessageId: number }
+  /** TopicMemory is not open. */
+  | { outcome: 'not-ready' };
 
 export interface TopicSummary {
   topicId: number;
@@ -91,7 +150,207 @@ export interface TopicContext {
   topicName: string | null;
 }
 
-const SCHEMA_VERSION = '5';
+const SCHEMA_VERSION = '6';
+
+/**
+ * The Slack message log, a sibling of the Telegram log in the state dir.
+ *
+ * A rebuild has to replay EVERY log that feeds this store, not only the one it
+ * was handed: `rebuild()` deletes every row and then imports, so a log it does
+ * not read is a log whose rows it destroys and cannot restore.
+ */
+const SLACK_LOG_BASENAME = 'slack-messages.jsonl';
+/** Where imported history batches live, for log lines (topic-history-import spec). */
+const IMPORT_BATCH_DIR_LABEL = 'topic-history-imports/';
+
+/** The fields of a logged message that decide which row it becomes. */
+export interface LoggedMessageKeySource {
+  messageId?: number | string;
+  topicId?: number | null;
+  channelId?: number | string | null;
+  platform?: string;
+}
+
+/** A logged message's row key, or why it has none. */
+export type LoggedMessageKey =
+  /** A Slack entry keyed by the §14 key rule, with its channel id kept verbatim. */
+  | { kind: 'slack'; topicId: number; messageId: number; channelMessageId: string }
+  /** An entry that carries its own topic id (Telegram): unchanged, legacy path. */
+  | { kind: 'topic'; topicId: number; messageId: number }
+  /** No key: not a Slack shape and no topic id. */
+  | { kind: 'none' }
+  /** A Slack entry the key rule REFUSED, with the rule's own reason. */
+  | { kind: 'refused'; detail: string };
+
+/**
+ * The row key for one logged message, derived exactly as the LIVE write path
+ * derives it — which is the entire requirement here, not merely having some
+ * numeric key.
+ *
+ * `importFromJsonl` admits an entry only when it carries `entry.topicId`.
+ * Slack's logger writes `channelId` and never `topicId`
+ * (`MessageLogger.LogEntry`: "topic ID for Telegram, chat JID for WhatsApp"),
+ * so every line of slack-messages.jsonl failed that test and was counted as
+ * missing fields. That is why Slack history is unreplayable: the log is intact,
+ * with real `ts` values, and the importer cannot read a line of it.
+ *
+ * Both halves of the key come from the functions the live path uses, called
+ * rather than copied:
+ *
+ *   - `message_id` and `channel_message_id` from `deriveRowKey` in
+ *     topicRowWriter — the §14 key rule. For Slack that is `ts × 1e6` read
+ *     exactly, and for an id that is NOT a `ts` (a standalone file share) a
+ *     deterministic key in the fallback range above 2^52. Re-deriving "ts times
+ *     a million" here instead would agree with the rule on the common case and
+ *     disagree on exactly that fallback, which is the divergence a second copy
+ *     always produces.
+ *   - `topic_id` from `candidateIdForRoutingKey(channelId)`, the governed
+ *     32-bit sum-shift mint candidate. The live Slack dual-write passes
+ *     `topicIdFor: slackChannelToSyntheticId`, and topicRowCarrier's
+ *     `slackSyntheticTopicId` is the same call with a Slack-specific name; it
+ *     is not imported here because topicRowCarrier imports a VALUE from this
+ *     module (`coerceTopicRowOrigin`) and that would be a runtime cycle.
+ *     Measured against a live store: the five negative `topic_id` values in
+ *     sagemind's topic-memory.db are exactly this function's output for the
+ *     five channels in its slack-messages.jsonl.
+ *
+ * Two mistakes this shape exists to refuse, both pinned by tests:
+ *   - Keying on the raw `channelId` string (the shorthand "topicId ?? channelId")
+ *     puts TEXT in an INTEGER column and files every recovered message under a
+ *     SECOND topic per channel, beside the rows the live path already wrote.
+ *   - The routing key is the channel ALONE. `LogEntry.threadTs` exists and
+ *     `routingKeyForTuple` would fold it in, but the live dual-write hashes
+ *     `channelId` only, so a thread-aware key here would split a thread's
+ *     history away from the rows that path keeps writing.
+ *
+ * A refusal from the key rule is returned as a refusal, never as a guessed key.
+ */
+export function topicMemoryKeyForLogEntry(entry: LoggedMessageKeySource): LoggedMessageKey {
+  // An entry carrying its own topic id is already keyed — unchanged behaviour,
+  // and tested first so no Telegram row can take the Slack branch.
+  if (entry.topicId != null) {
+    return { kind: 'topic', topicId: entry.topicId as number, messageId: entry.messageId as number };
+  }
+
+  const channelId = entry.channelId == null ? '' : String(entry.channelId);
+  if (!channelId) return { kind: 'none' };
+  if (entry.platform != null && entry.platform !== 'slack') return { kind: 'none' };
+  // Slack channel / DM / group ids, the shape conversationIdentity clamps on.
+  if (!/^[CDG][A-Z0-9]+$/.test(channelId)) return { kind: 'none' };
+
+  const key = deriveRowKey({ channel: 'slack', ts: String(entry.messageId ?? '') });
+  if ('error' in key) return { kind: 'refused', detail: key.error };
+
+  return {
+    kind: 'slack',
+    topicId: candidateIdForRoutingKey(channelId),
+    messageId: key.messageId,
+    channelMessageId: key.channelMessageId,
+  };
+}
+
+/** What one line of a message log turned out to be. */
+type ParsedLogLine =
+  /** A Slack row: inserted under the key rule, so a clash is counted not dropped. */
+  | { kind: 'keyed'; msg: TopicMessage & { channelMessageId: string } }
+  /** A row carrying its own topic id: the legacy batched insert, unchanged. */
+  | { kind: 'message'; msg: TopicMessage }
+  /** Not JSON at all. */
+  | { kind: 'malformed' }
+  /** Valid JSON with no text, or no key this store can use. */
+  | { kind: 'missing-fields' }
+  /** A Slack entry the key rule refused. */
+  | { kind: 'unkeyed'; detail: string };
+
+/**
+ * Parse one JSONL line into the row it should become.
+ *
+ * ONE predicate, shared by `importFromJsonl` and by the pre-flight scan
+ * `rebuild()` runs BEFORE it deletes anything. Two copies of this decision
+ * would let the scan promise a restore the import does not perform — the same
+ * class of bug being fixed here, one layer up.
+ */
+function parseLogLine(line: string): ParsedLogLine {
+  let entry: any;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    // @silent-fallback-ok — JSONL parse error; counted and surfaced by the caller.
+    return { kind: 'malformed' };
+  }
+
+  if (!entry || !entry.text) return { kind: 'missing-fields' };
+
+  const key = topicMemoryKeyForLogEntry(entry);
+  if (key.kind === 'none') return { kind: 'missing-fields' };
+  if (key.kind === 'refused') return { kind: 'unkeyed', detail: key.detail };
+
+  const body: TopicMessage = {
+    messageId: key.messageId,
+    topicId: key.topicId,
+    text: entry.text,
+    fromUser: entry.fromUser ?? false,
+    timestamp: entry.timestamp,
+    sessionName: entry.sessionName ?? null,
+    senderName: entry.senderName ?? undefined,
+    senderUsername: entry.senderUsername ?? undefined,
+    telegramUserId: entry.telegramUserId ?? undefined,
+    userId: entry.userId ?? undefined,
+    privacyScope: entry.privacyScope ?? undefined,
+    forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
+    origin: coerceTopicRowOrigin(entry.rowOrigin),
+  };
+
+  if (key.kind === 'slack') {
+    return { kind: 'keyed', msg: { ...body, channelMessageId: key.channelMessageId } };
+  }
+  return { kind: 'message', msg: body };
+}
+
+/**
+ * Counters from one import, or summed across a rebuild's sources.
+ *
+ * The keyed outcomes exist because the §14 rule is that a key already held by a
+ * DIFFERENT channel message is a COUNTED refusal and never a silent drop. A
+ * Slack row goes through `insertKeyedMessage` for exactly that reason: the
+ * batched `INSERT OR IGNORE` the Telegram path uses would swallow a collision.
+ */
+export interface TopicImportStats {
+  /** New rows that landed. */
+  imported: number;
+  malformed: number;
+  missingFields: number;
+  /** Slack entries the key rule refused (no key was guessed for them). */
+  unkeyed: number;
+  /** The same channel message was already stored — a replay, nothing changed. */
+  duplicate: number;
+  /** A legacy row under this key had no channel id; this import filled it in. */
+  adopted: number;
+  /** Refused: the integer key is held by a different channel message. */
+  collision: number;
+  /** Refused: this channel message is stored under a different integer key. */
+  keyMismatch: number;
+}
+
+/** A zeroed counter set. */
+function emptyImportStats(): TopicImportStats {
+  return { imported: 0, malformed: 0, missingFields: 0, unkeyed: 0, duplicate: 0, adopted: 0, collision: 0, keyMismatch: 0 };
+}
+
+/** What the most recent `rebuild()` call did, including a refusal to do anything. */
+export interface TopicRebuildReport {
+  /** True when the rebuild declined to delete: nothing could have restored it. */
+  refused: boolean;
+  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | 'import-batch-unreadable' | null;
+  /** The logs the rebuild read, in order. */
+  sources: string[];
+  /** Rows in the store before the rebuild. */
+  existingMessages: number;
+  /** Rows the pre-flight scan found across every source. */
+  restorable: number;
+  deleted: number;
+  restored: number;
+}
 
 /**
  * Map a raw SQLite row to a TopicMessage with proper type coercion.
@@ -106,18 +365,9 @@ function mapRow(row: any): TopicMessage {
     userId: row.userId ?? undefined,
     privacyScope: row.privacyScope ?? undefined,
     forwarded: row.forwarded == null ? undefined : !!row.forwarded,
+    channelMessageId: row.channelMessageId ?? undefined,
+    origin: coerceTopicRowOrigin(row.origin),
   };
-}
-
-/**
- * Strip FTS5 special syntax characters from a query.
- */
-function sanitizeFtsQuery(query: string): string {
-  return query
-    .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-    .replace(/[*:"^{}().]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 export class TopicMemory {
@@ -127,7 +377,11 @@ export class TopicMemory {
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
   /** Stats from the most recent importFromJsonl() / rebuild() call */
-  private _lastImportStats: { imported: number; malformed: number; missingFields: number } | null = null;
+  private _lastImportStats: TopicImportStats | null = null;
+  /** What the most recent rebuild() call did — including a refusal. */
+  private _lastRebuild: TopicRebuildReport | null = null;
+  /** insertKeyedMessage's statements, prepared once per open handle. */
+  private keyedStmts: { db: Database; byKey: import('better-sqlite3').Statement; byChannel: import('better-sqlite3').Statement; adopt: import('better-sqlite3').Statement; fillOrigin: import('better-sqlite3').Statement } | null = null;
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
@@ -260,6 +514,8 @@ export class TopicMemory {
         user_id TEXT,
         privacy_scope TEXT DEFAULT 'private',
         forwarded INTEGER,
+        channel_message_id TEXT,
+        origin TEXT,
         UNIQUE(message_id, topic_id)
       );
 
@@ -313,6 +569,9 @@ export class TopicMemory {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(telegram_user_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_privacy ON messages(privacy_scope)');
+    // Context-budget §14: one row per channel message. Partial, so legacy rows
+    // (NULL channel id) never conflict with each other.
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_channel_msg ON messages(topic_id, channel_message_id) WHERE channel_message_id IS NOT NULL');
 
     // Set schema version
     this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('schema_version', SCHEMA_VERSION);
@@ -393,6 +652,21 @@ export class TopicMemory {
         this.db.exec('ALTER TABLE messages ADD COLUMN forwarded INTEGER');
       }
     }
+
+    if (currentVersion < '6') {
+      // Migration v5 → v6 (context-budget-layered-summaries §14, §8): the
+      // channel's own message id and the relay/A2A row origin. Both nullable
+      // and inert on existing rows (unknown, never guessed). The unique index
+      // on (topic_id, channel_message_id) is created after this pass.
+      const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+      const columnNames = new Set(columns.map(c => c.name));
+      if (!columnNames.has('channel_message_id')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN channel_message_id TEXT');
+      }
+      if (!columnNames.has('origin')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN origin TEXT');
+      }
+    }
   }
 
   // ── Message Operations ──────────────────────────────────────
@@ -405,8 +679,8 @@ export class TopicMemory {
     if (!this.db) return;
 
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
@@ -414,6 +688,7 @@ export class TopicMemory {
       msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
       msg.userId ?? null, msg.privacyScope ?? 'private',
       msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+      msg.channelMessageId ?? null, msg.origin ?? null,
     );
 
     // Update topic metadata
@@ -427,14 +702,67 @@ export class TopicMemory {
   }
 
   /**
+   * Insert a row keyed by the channel-neutral key rule (context-budget §14):
+   * the integer `messageId` derived deterministically per channel, and the
+   * channel's own id in `channelMessageId` (required here). Unlike
+   * `insertMessage`, this never ignores silently: a replay of the same channel
+   * message is `duplicate`, and an integer key already held by a DIFFERENT
+   * channel message is `collision` (refused, the stored row untouched), so the
+   * caller can count it. A legacy row with this key and no channel id is
+   * adopted (its channel id filled in), so rows written before the column
+   * existed do not read as collisions.
+   */
+  insertKeyedMessage(msg: TopicMessage & { channelMessageId: string }): KeyedInsertResult {
+    const db = this.db;
+    if (!db) return { outcome: 'not-ready' };
+    if (typeof msg.channelMessageId !== 'string' || msg.channelMessageId.length === 0) {
+      throw new Error('insertKeyedMessage requires a channelMessageId');
+    }
+    if (!Number.isSafeInteger(msg.messageId)) {
+      throw new Error(`insertKeyedMessage requires a safe-integer messageId (got ${String(msg.messageId)})`);
+    }
+    // Prepared once per open database (a corruption rebuild opens a new handle).
+    if (!this.keyedStmts || this.keyedStmts.db !== db) {
+      this.keyedStmts = {
+        db,
+        byKey: db.prepare('SELECT id, channel_message_id AS cmid FROM messages WHERE topic_id = ? AND message_id = ?'),
+        byChannel: db.prepare('SELECT id, message_id AS mid FROM messages WHERE topic_id = ? AND channel_message_id = ?'),
+        adopt: db.prepare('UPDATE messages SET channel_message_id = ?, origin = COALESCE(origin, ?) WHERE id = ?'),
+        fillOrigin: db.prepare('UPDATE messages SET origin = ? WHERE id = ? AND origin IS NULL'),
+      };
+    }
+    const st = this.keyedStmts;
+    return db.transaction((): KeyedInsertResult => {
+      const byKey = st.byKey.get(msg.topicId, msg.messageId) as { id: number; cmid: string | null } | undefined;
+      const byChannel = st.byChannel.get(msg.topicId, msg.channelMessageId) as { id: number; mid: number } | undefined;
+      if (byKey) {
+        if (byKey.cmid === msg.channelMessageId) {
+          // A replay that knows the row came from another agent (§8) labels an unlabelled copy:
+          // the relay-path carrier brings the label from the machine that sent it. A label only
+          // narrows authority, and an existing label is never changed.
+          if (msg.origin) st.fillOrigin.run(msg.origin, byKey.id);
+          return { outcome: 'duplicate' };
+        }
+        if (byKey.cmid !== null) return { outcome: 'collision', existingChannelMessageId: byKey.cmid };
+        if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
+        st.adopt.run(msg.channelMessageId, msg.origin ?? null, byKey.id);
+        return { outcome: 'adopted' };
+      }
+      if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
+      this.insertMessage(msg);
+      return { outcome: 'inserted' };
+    })();
+  }
+
+  /**
    * Batch-insert messages (for JSONL import).
    */
   insertMessages(messages: TopicMessage[]): number {
     if (!this.db) return 0;
 
     const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -446,6 +774,7 @@ export class TopicMemory {
           msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
           msg.userId ?? null, msg.privacyScope ?? 'private',
           msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+          msg.channelMessageId ?? null, msg.origin ?? null,
         );
         if (result.changes > 0) count++;
       }
@@ -468,12 +797,61 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ?
       ORDER BY timestamp DESC, id DESC
       LIMIT ?
     `).all(topicId, limit).reverse().map(mapRow) as TopicMessage[];
+  }
+
+  /**
+   * One row by the channel's own message id (context-budget §14 row carrier):
+   * the sender reads the exact row it stored before carrying it to the owner.
+   * Null when TopicMemory is closed or the row is absent.
+   */
+  getMessageByChannelId(topicId: number, channelMessageId: string): TopicMessage | null {
+    if (!this.db) return null;
+    const row = this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND channel_message_id = ?
+      LIMIT 1
+    `).get(topicId, channelMessageId);
+    return row ? mapRow(row) : null;
+  }
+
+  /**
+   * Which of these integer keys does the topic hold (context-budget §14)? The
+   * fold precondition reads it to confirm the carried rows are really present,
+   * not only acknowledged.
+   */
+  presentMessageKeys(topicId: number, messageIds: number[]): Set<number> {
+    return this.presentBy('message_id', topicId, messageIds) as Set<number>;
+  }
+
+  /** Which of these channel message ids does the topic hold (context-budget §14)? */
+  presentChannelIds(topicId: number, channelMessageIds: string[]): Set<string> {
+    return this.presentBy('channel_message_id', topicId, channelMessageIds) as Set<string>;
+  }
+
+  /** One IN query per chunk of 200 (bounded parameter count), not one read per id. */
+  private presentBy(column: 'message_id' | 'channel_message_id', topicId: number, values: Array<number | string>): Set<number | string> {
+    const out = new Set<number | string>();
+    if (!this.db || values.length === 0) return out;
+    const unique = [...new Set(values)];
+    for (let i = 0; i < unique.length; i += 200) {
+      const chunk = unique.slice(i, i + 200);
+      const rows = this.db.prepare(`SELECT ${column} AS v FROM messages WHERE topic_id = ? AND ${column} IN (${chunk.map(() => '?').join(',')})`)
+        .all(topicId, ...chunk) as Array<{ v: number | string }>;
+      for (const r of rows) out.add(r.v);
+    }
+    return out;
   }
 
   /**
@@ -494,7 +872,8 @@ export class TopicMemory {
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername,
              telegram_user_id AS telegramUserId, user_id AS userId,
-             privacy_scope AS privacyScope, forwarded
+             privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ? AND timestamp >= ?
       ORDER BY timestamp ASC, id ASC
@@ -521,7 +900,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ?
         AND (
@@ -566,6 +946,115 @@ export class TopicMemory {
   }
 
   /**
+   * How far a layer stamped at `messageId` is behind the topic: the messages
+   * (and the operator-typed ones among them) stored after that row, in
+   * storage order. `null` when the stamp's row is not in this database (the
+   * freshness is then unknown, never "fresh").
+   * context-budget-layered-summaries §6: "as of <time>, <n> messages behind".
+   */
+  countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null {
+    if (!this.db) return null;
+    const at = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as { id: number | null } | undefined;
+    if (!at || at.id === null || at.id === undefined) return null;
+    const row = this.db.prepare('SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN from_user = 1 THEN 1 ELSE 0 END), 0) AS fromUser FROM messages WHERE topic_id = ? AND id > ?').get(topicId, at.id) as { total: number; fromUser: number };
+    return { total: row?.total ?? 0, fromUser: row?.fromUser ?? 0 };
+  }
+
+  /**
+   * The sender rows the protected user corpus is built from
+   * (context-budget-layered-summaries §8: U is sourced by SENDER ROW, never by
+   * transcript role). Every `from_user=1` row plus every row that arrived
+   * through another agent (`origin` set), in insertion order, after the
+   * given SQLite row id. `complete:false` means the hard bound was hit and
+   * the caller must read again from the last `rowId` it got. `messageId`
+   * reads only that message's row (the current turn's, listed ahead of a
+   * backfill). `maxRowId` is the topic's highest row id, so a caller can tell
+   * a rebuilt database (its watermark above every row).
+   */
+  /**
+   * The message id of the topic's LAST row in insertion order (the order
+   * `messagePrecedes` uses), or null. Context-budget S7: the backfill's history bound.
+   */
+  lastMessageIdByRow(topicId: number): number | null {
+    if (!this.db) return null;
+    const r = this.db.prepare('SELECT message_id AS messageId FROM messages WHERE topic_id = ? ORDER BY id DESC LIMIT 1').get(topicId) as { messageId: number } | undefined;
+    return r && Number.isSafeInteger(r.messageId) ? r.messageId : null;
+  }
+
+  getUserCorpusRows(topicId: number, opts: { afterRowId?: number; limit?: number; messageId?: number } = {}): { rows: Array<{ rowId: number; message: TopicMessage }>; complete: boolean; maxRowId: number } {
+    if (!this.db) return { rows: [], complete: false, maxRowId: 0 };
+    const bounded = Math.max(1, Math.min(Math.floor(opts.limit ?? 2_000), 10_000));
+    const maxRowId = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM messages WHERE topic_id = ?').get(topicId) as { id: number } | undefined)?.id ?? 0);
+    const byMessage = opts.messageId !== undefined && Number.isSafeInteger(opts.messageId);
+    const raw = this.db.prepare(`
+      SELECT id AS rowId, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND id > ? AND (from_user = 1 OR origin IN ('relay', 'a2a'))${byMessage ? ' AND message_id = ?' : ''}
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(...[topicId, byMessage ? 0 : (opts.afterRowId ?? 0), ...(byMessage ? [opts.messageId] : []), bounded + 1]) as Array<Record<string, unknown>>;
+    const rows = raw.slice(0, bounded).map((r) => {
+      const { rowId, ...rest } = r;
+      return { rowId: Number(rowId), message: mapRow(rest) };
+    });
+    return { rows, complete: raw.length <= bounded, maxRowId };
+  }
+
+  /**
+   * True when `earlierMessageId` names a row of this topic inserted before the
+   * row `laterMessageId` names; null when either row is not in TopicMemory
+   * (the referent-stub validator reads null as "does not name a preceding message").
+   */
+  messagePrecedes(topicId: number, earlierMessageId: number, laterMessageId: number): boolean | null {
+    if (!this.db) return null;
+    const q = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?');
+    const a = (q.get(topicId, earlierMessageId) as { id: number | null } | undefined)?.id;
+    const b = (q.get(topicId, laterMessageId) as { id: number | null } | undefined)?.id;
+    if (a === null || a === undefined || b === null || b === undefined) return null;
+    return a < b;
+  }
+
+  /**
+   * The agent's own messages immediately preceding a row, oldest first
+   * (the referent candidates a stub may name). Empty when the row is unknown.
+   */
+  getAgentMessagesBefore(topicId: number, messageId: number, limit: number = 3): TopicMessage[] {
+    if (!this.db) return [];
+    const at = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as { id: number | null } | undefined;
+    if (!at || at.id === null || at.id === undefined) return [];
+    const bounded = Math.max(1, Math.min(Math.floor(limit), 20));
+    return (this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND id < ? AND from_user = 0 AND origin IS NULL
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(topicId, at.id, bounded) as unknown[]).reverse().map(mapRow);
+  }
+
+  /**
+   * The size of a topic's operator corpus (context budget §8/§11 "U size"):
+   * the operator-typed rows (`from_user = 1`), their total characters, and how
+   * many of them are forwarded (kept and labelled, no authority). `null` when
+   * the database is not open.
+   */
+  operatorCorpusSize(topicId: number): { messages: number; chars: number; forwarded: number } | null {
+    if (!this.db) return null;
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS messages, COALESCE(SUM(LENGTH(text)), 0) AS chars, COALESCE(SUM(CASE WHEN forwarded = 1 THEN 1 ELSE 0 END), 0) AS forwarded FROM messages WHERE topic_id = ? AND from_user = 1',
+    ).get(topicId) as { messages: number; chars: number; forwarded: number } | undefined;
+    return { messages: Number(row?.messages) || 0, chars: Number(row?.chars) || 0, forwarded: Number(row?.forwarded) || 0 };
+  }
+
+  /**
    * Get all messages by a specific user across all topics.
    * Used by /mydata export (GDPR Article 15).
    */
@@ -576,7 +1065,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE user_id = ?
       ORDER BY timestamp ASC
@@ -605,7 +1095,7 @@ export class TopicMemory {
   search(query: string, opts?: { topicId?: number; limit?: number }): TopicSearchResult[] {
     if (!this.db) return [];
 
-    const sanitized = sanitizeFtsQuery(query);
+    const sanitized = literalFtsTerms(query).map(quoteFtsTerm).join(' ');
     if (!sanitized) return [];
 
     const limit = Math.min(opts?.limit ?? 20, 100);
@@ -644,6 +1134,65 @@ export class TopicMemory {
       ...row,
       fromUser: !!row.fromUser,
     })) as TopicSearchResult[];
+  }
+
+  /**
+   * Keyword search for the conversation search route (docs/specs/conversation-search.md §2):
+   * an already-built FTS5 MATCH expression, restricted IN SQL to the given topics (an empty list
+   * finds nothing), best `bm25` first, newest first on a tie, at most `limit` rows. `marked` is
+   * the full text with each matched token wrapped in `open` / `close`. Null when the database is
+   * not open (the caller reports the index as unavailable, never as "no hits").
+   */
+  searchKeyword(match: string, topicIds: ReadonlyArray<number>, limit: number, open: string, close: string): Array<{
+    messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string; rank: number; marked: string;
+  }> | null {
+    if (!this.db) return null;
+    if (!match || topicIds.length === 0) return [];
+    const rows = this.db.prepare(`
+      SELECT m.message_id AS messageId, m.topic_id AS topicId, m.text, m.from_user AS fromUser,
+             m.timestamp, bm25(messages_fts) AS rank,
+             highlight(messages_fts, 0, ?, ?) AS marked
+      FROM messages_fts
+      JOIN messages m ON m.id = messages_fts.rowid
+      WHERE messages_fts MATCH ?
+        AND m.topic_id IN (SELECT value FROM json_each(?))
+      ORDER BY rank, m.timestamp DESC
+      LIMIT ?
+    `).all(open, close, match, JSON.stringify(topicIds), Math.max(1, Math.min(500, Math.floor(limit)))) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''), fromUser: !!r.fromUser,
+      timestamp: String(r.timestamp ?? ''), rank: Number(r.rank), marked: String(r.marked ?? ''),
+    }));
+  }
+
+  /**
+   * Meaning search (docs/specs/conversation-search.md §4): one page of rows for the embedding
+   * index, newest first by row id, older than `beforeId` (null ⇒ the newest). Null when the
+   * database is not open.
+   */
+  indexPage(beforeId: number | null, limit: number): Array<{ id: number; messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string }> | null {
+    if (!this.db) return null;
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const rows = (beforeId === null
+      ? this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages ORDER BY id DESC LIMIT ?').all(n)
+      : this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?').all(beforeId, n)) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id), messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''),
+      fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? ''),
+    }));
+  }
+
+  /** One row by topic and Telegram message id (meaning search re-reads each candidate), or null. */
+  messageByKey(topicId: number, messageId: number): { text: string; fromUser: boolean; timestamp: string } | null {
+    if (!this.db) return null;
+    const r = this.db.prepare('SELECT text, from_user AS fromUser, timestamp FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as Record<string, unknown> | undefined;
+    return r ? { text: String(r.text ?? ''), fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? '') } : null;
+  }
+
+  /** How many rows the index holds (meaning search coverage), or null when not open. */
+  totalMessages(): number | null {
+    if (!this.db) return null;
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
   }
 
   // ── Summaries ───────────────────────────────────────────────
@@ -697,7 +1246,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ? AND message_id > ?
       ORDER BY timestamp ASC
@@ -790,13 +1340,11 @@ export class TopicMemory {
 
     const db = this.db;
     const insert = db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    let count = 0;
-    let malformed = 0;
-    let missingFields = 0;
+    const tally = emptyImportStats();
     const BATCH_SIZE = 500;
     let batch: TopicMessage[] = [];
 
@@ -810,8 +1358,9 @@ export class TopicMemory {
             msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
             msg.userId ?? null, msg.privacyScope ?? 'private',
             msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+            msg.channelMessageId ?? null, msg.origin ?? null,
           );
-          if (result.changes > 0) count++;
+          if (result.changes > 0) tally.imported++;
         }
       });
       tx();
@@ -825,33 +1374,43 @@ export class TopicMemory {
 
     for await (const line of rl) {
       if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.topicId != null && entry.text) {
-          batch.push({
-            messageId: entry.messageId,
-            topicId: entry.topicId,
-            text: entry.text,
-            fromUser: entry.fromUser ?? false,
-            timestamp: entry.timestamp,
-            sessionName: entry.sessionName ?? null,
-            senderName: entry.senderName ?? undefined,
-            senderUsername: entry.senderUsername ?? undefined,
-            telegramUserId: entry.telegramUserId ?? undefined,
-            userId: entry.userId ?? undefined,
-            privacyScope: entry.privacyScope ?? undefined,
-            forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
-          });
-          if (batch.length >= BATCH_SIZE) {
-            flushBatch();
+      // parseLogLine is the single admission decision, shared with the
+      // pre-flight scan in rebuild(). A Slack entry reaches a key here through
+      // topicMemoryKeyForLogEntry; before that it fell into `missing-fields`.
+      const parsed = parseLogLine(line);
+      switch (parsed.kind) {
+        case 'message':
+          batch.push(parsed.msg);
+          if (batch.length >= BATCH_SIZE) flushBatch();
+          break;
+        case 'keyed': {
+          // A Slack row goes through the keyed insert, not the batch: the §14
+          // rule is that a key held by a DIFFERENT channel message is a counted
+          // refusal, and `INSERT OR IGNORE` cannot tell that from a replay.
+          // Ordering: flush first, so a batched row and a keyed row written in
+          // log order stay in log order if they ever share a topic.
+          flushBatch();
+          const r = this.insertKeyedMessage(parsed.msg);
+          switch (r.outcome) {
+            case 'inserted': tally.imported++; break;
+            case 'duplicate': tally.duplicate++; break;
+            case 'adopted': tally.adopted++; break;
+            case 'collision': tally.collision++; break;
+            case 'key-mismatch': tally.keyMismatch++; break;
+            case 'not-ready': return tally.imported;
           }
-        } else {
-          // Valid JSON but missing the fields we need — count separately from malformed JSON.
-          missingFields++;
+          break;
         }
-      } catch {
-        // @silent-fallback-ok — JSONL parse error; count so we can surface it at end.
-        malformed++;
+        case 'malformed':
+          tally.malformed++;
+          break;
+        case 'unkeyed':
+          tally.unkeyed++;
+          break;
+        default:
+          // Valid JSON but missing the fields we need — counted separately from
+          // malformed JSON.
+          tally.missingFields++;
       }
     }
 
@@ -863,14 +1422,17 @@ export class TopicMemory {
 
     // Surface parse / schema problems at end of import so operators can
     // diagnose corrupted JSONL without tailing logs during the hot path.
-    if (malformed > 0 || missingFields > 0) {
+    if (tally.malformed > 0 || tally.missingFields > 0 || tally.unkeyed > 0
+        || tally.collision > 0 || tally.keyMismatch > 0) {
       console.warn(
-        `[TopicMemory] importFromJsonl(${jsonlPath}): imported=${count} malformed_json=${malformed} missing_fields=${missingFields}`,
+        `[TopicMemory] importFromJsonl(${jsonlPath}): imported=${tally.imported} ` +
+        `malformed_json=${tally.malformed} missing_fields=${tally.missingFields} unkeyed=${tally.unkeyed} ` +
+        `duplicate=${tally.duplicate} adopted=${tally.adopted} collision=${tally.collision} key_mismatch=${tally.keyMismatch}`,
       );
     }
 
-    this._lastImportStats = { imported: count, malformed, missingFields };
-    return count;
+    this._lastImportStats = tally;
+    return tally.imported;
   }
 
   /**
@@ -878,22 +1440,294 @@ export class TopicMemory {
    * Useful for tests and /topic/rebuild endpoints that want to surface
    * parse-error counts in the API response.
    */
-  getLastImportStats(): { imported: number; malformed: number; missingFields: number } | null {
+  getLastImportStats(): TopicImportStats | null {
     return this._lastImportStats;
   }
 
+  /** What the most recent rebuild() call did, or null if none has run. */
+  getLastRebuildReport(): TopicRebuildReport | null {
+    return this._lastRebuild;
+  }
+
+  /** Rows currently in the messages table. */
+  private countMessages(): number {
+    if (!this.db) return 0;
+    const row = this.db.prepare('SELECT COUNT(*) as c FROM messages').get() as { c: number };
+    return row?.c ?? 0;
+  }
+
   /**
-   * Full rebuild — drop all data and reimport from JSONL.
+   * The message logs a rebuild or a full import should replay, in read order:
+   * the log the caller named, plus the Slack log beside it.
+   *
+   * Resolved from the named log's own directory rather than from `stateDir`, so
+   * a caller handing over a log somewhere else still gets that log's siblings
+   * and never this store's. Non-existent paths are dropped.
+   */
+  private replayableLogs(primaryJsonlPath: string): string[] {
+    const candidates = [
+      primaryJsonlPath,
+      path.join(path.dirname(primaryJsonlPath), SLACK_LOG_BASENAME),
+    ];
+    const seen = new Set<string>();
+    return candidates.filter((p) => {
+      if (seen.has(p)) return false;
+      seen.add(p);
+      return fs.existsSync(p);
+    });
+  }
+
+  /**
+   * Count the rows a set of logs could restore, WITHOUT writing anything.
+   *
+   * Streams every line through the same `parseLogLine` the importer uses, so
+   * the number it returns is the number the import would land in an empty
+   * store. This is `rebuild()`'s pre-flight: the decision to delete has to be
+   * made from what the sources actually hold, and the only way to know that
+   * before deleting is to read them first. One extra streaming pass on a rare,
+   * manual, destructive operation is the price of not guessing.
+   */
+  private async countRestorable(sources: string[]): Promise<number> {
+    let restorable = 0;
+    for (const src of sources) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(src, { encoding: 'utf-8' }),
+        crlfDelay: Infinity,
+      });
+      for await (const line of rl) {
+        if (!line) continue;
+        const kind = parseLogLine(line).kind;
+        if (kind === 'message' || kind === 'keyed') restorable++;
+      }
+    }
+    return restorable;
+  }
+
+  /**
+   * Import every replayable log beside `primaryJsonlPath` — non-destructive and
+   * idempotent (a Slack row already stored is a keyed `duplicate`, a Telegram
+   * row an ignored insert).
+   *
+   * This is the recovery path for Slack history that was logged but never
+   * importable: `importFromJsonl` could not read a Slack entry at all, so
+   * slack-messages.jsonl holds rows this store has never contained. Running
+   * this once replays them; running it again lands nothing.
+   *
+   * Defaults to the Telegram log in this store's own state dir, which is what
+   * every current caller passes.
+   */
+  async importAllLogs(primaryJsonlPath?: string): Promise<{ total: number; perSource: Record<string, number> }> {
+    const primary = primaryJsonlPath ?? path.join(this.stateDir, 'telegram-messages.jsonl');
+    const perSource: Record<string, number> = {};
+    let total = 0;
+    if (!this.db) return { total, perSource };
+
+    const totals = emptyImportStats();
+    for (const src of this.replayableLogs(primary)) {
+      const imported = await this.importFromJsonl(src);
+      perSource[path.basename(src)] = imported;
+      total += imported;
+      const st = this._lastImportStats;
+      if (st) {
+        totals.malformed += st.malformed;
+        totals.missingFields += st.missingFields;
+        totals.unkeyed += st.unkeyed;
+        totals.duplicate += st.duplicate;
+        totals.adopted += st.adopted;
+        totals.collision += st.collision;
+        totals.keyMismatch += st.keyMismatch;
+      }
+    }
+    // Recovered history (topic-history-import spec): published import batches
+    // beside the logs are re-applied through the time-ordered merge, never
+    // appended, so a rebuild restores them in message-time order. On a normal
+    // boot every imported row is already present and this only reads.
+    try {
+      const re = await reapplyImportedHistory(this, path.dirname(primary));
+      if (re.restored > 0) {
+        perSource['topic-history-imports'] = re.restored;
+        total += re.restored;
+      }
+    } catch (err) {
+      // @silent-fallback-ok — logged loudly; the live logs are already replayed and the batches stay on disk for the next pass
+      console.warn(`[TopicMemory] re-applying imported topic history failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    totals.imported = total;
+    // Stats for the whole run, not just the last source read: a caller that
+    // reports parse errors from one file of several reports a smaller number
+    // than actually occurred.
+    this._lastImportStats = totals;
+    return { total, perSource };
+  }
+
+  /**
+   * Replace an IMPORTED row's body with a live copy of the same message
+   * (topic-history-import spec, "live precedence"): the live path's text,
+   * sender and provenance win, and `origin` takes the live copy's own value.
+   * Touches only a row whose origin is `imported`; position (row id) is kept.
+   * Returns true when replaced.
+   */
+  supersedeImportedRow(msg: TopicMessage): boolean {
+    if (!this.db) return false;
+    const r = this.db.prepare(`
+      UPDATE messages SET text = ?, from_user = ?, timestamp = ?, session_name = ?, sender_name = ?, sender_username = ?,
+        telegram_user_id = ?, user_id = ?, forwarded = ?, origin = ?
+      WHERE topic_id = ? AND message_id = ? AND origin = 'imported'
+    `).run(
+      msg.text, msg.fromUser ? 1 : 0, msg.timestamp, msg.sessionName ?? null, msg.senderName ?? null, msg.senderUsername ?? null,
+      msg.telegramUserId ?? null, msg.userId ?? null, msg.forwarded == null ? null : (msg.forwarded ? 1 : 0), msg.origin ?? null,
+      msg.topicId, msg.messageId,
+    );
+    return r.changes > 0;
+  }
+
+  /**
+   * Re-sequence ONE topic so recovered rows sit at their message time
+   * (topic-history-import spec, "Timestamp-ordered merge").
+   *
+   * `imported` is every published imported row of the topic, present in the
+   * store or not. The store's other rows are the topic's live rows; they keep
+   * their exact relative order, and each imported row goes before the first
+   * live row whose time is strictly later (`mergeSequence`). An imported row
+   * already in the store keeps its stored copy (the store wins); one missing
+   * is inserted from the batch. When nothing is missing the topic is left
+   * untouched. Otherwise the topic's rows are removed and re-inserted in merged
+   * order inside ONE transaction, so row ids ascend in message-time order and
+   * the FTS triggers keep the search index in step. Synchronous: no live
+   * write can interleave with it.
+   */
+  mergeTopicHistory(topicId: number, imported: TopicMessage[]): { inserted: number; total: number } {
+    const db = this.db;
+    if (!db || imported.length === 0) return { inserted: 0, total: 0 };
+    const cols = 'message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin';
+    type Raw = { message_id: number; timestamp: string; [k: string]: unknown };
+    return db.transaction(() => {
+      const existing = db.prepare(`SELECT ${cols} FROM messages WHERE topic_id = ? ORDER BY id ASC`).all(topicId) as Raw[];
+      const importedKeys = new Set(imported.map((m) => m.messageId));
+      const storedByKey = new Map<number, Raw>();
+      const live: Raw[] = [];
+      for (const r of existing) {
+        if (importedKeys.has(r.message_id)) storedByKey.set(r.message_id, r);
+        else live.push(r);
+      }
+      const missing = imported.filter((m) => !storedByKey.has(m.messageId));
+      if (missing.length === 0) return { inserted: 0, total: existing.length };
+      const importedRows: Raw[] = imported.map((m) => storedByKey.get(m.messageId) ?? {
+        message_id: m.messageId, topic_id: topicId, text: m.text, from_user: m.fromUser ? 1 : 0,
+        timestamp: m.timestamp, session_name: m.sessionName ?? null,
+        sender_name: m.senderName ?? null, sender_username: m.senderUsername ?? null,
+        telegram_user_id: m.telegramUserId ?? null, user_id: m.userId ?? null,
+        privacy_scope: m.privacyScope ?? 'private',
+        forwarded: m.forwarded == null ? null : (m.forwarded ? 1 : 0),
+        channel_message_id: m.channelMessageId ?? null, origin: m.origin ?? null,
+      });
+      const merged = mergeSequence(live, importedRows.map((r) => ({ ...r, messageId: r.message_id })));
+      db.prepare('DELETE FROM messages WHERE topic_id = ?').run(topicId);
+      const insert = db.prepare(`INSERT INTO messages (${cols}) VALUES (@message_id, @topic_id, @text, @from_user, @timestamp, @session_name, @sender_name, @sender_username, @telegram_user_id, @user_id, @privacy_scope, @forwarded, @channel_message_id, @origin)`);
+      for (const m of merged) {
+        const r = m.row as Raw;
+        insert.run({
+          message_id: r.message_id, topic_id: topicId, text: r.text, from_user: r.from_user, timestamp: r.timestamp,
+          session_name: r.session_name ?? null, sender_name: r.sender_name ?? null, sender_username: r.sender_username ?? null,
+          telegram_user_id: r.telegram_user_id ?? null, user_id: r.user_id ?? null, privacy_scope: r.privacy_scope ?? 'private',
+          forwarded: r.forwarded ?? null, channel_message_id: r.channel_message_id ?? null, origin: r.origin ?? null,
+        });
+      }
+      db.prepare(`
+        INSERT OR REPLACE INTO topic_meta (topic_id, topic_name, message_count, last_activity)
+        SELECT ?, (SELECT topic_name FROM topic_meta WHERE topic_id = ?), COUNT(*), MAX(timestamp) FROM messages WHERE topic_id = ?
+      `).run(topicId, topicId, topicId);
+      return { inserted: missing.length, total: merged.length };
+    })();
+  }
+
+  /**
+   * Full rebuild — drop every message and reimport from the logs.
+   *
+   * Two properties this did not have, both measured against live stores:
+   *
+   *  1. It replays EVERY log beside the one it is given, not just that one.
+   *     Before this, a rebuild deleted all rows and then read
+   *     telegram-messages.jsonl alone, so every Slack row was destroyed and
+   *     none restored.
+   *  2. It REFUSES to delete when nothing it can read could restore what is
+   *     there. On an agent with no Telegram log, the old order (delete, then
+   *     import from a file that does not exist) emptied the store and returned
+   *     success. A rebuild with no source is not a rebuild; it is a wipe.
+   *
+   * What it still does NOT promise, stated rather than implied: a message older
+   * than its log's retention window is in no source, so a rebuild still loses
+   * it. That has always been true for Telegram and is now equally true for
+   * Slack. The counts are reported (`getLastRebuildReport()`) and a shortfall is
+   * logged, so the loss is visible instead of silent — the destructive contract
+   * itself is unchanged and remains the caller's to invoke.
+   *
+   * Summaries are kept either way: they are LLM-generated and expensive.
    */
   async rebuild(jsonlPath: string): Promise<number> {
+    // One lock with POST /topic/import (topic-history-import spec): an import's
+    // merge landing between the delete and the live replay below would place its
+    // rows among a partial live set, and the re-apply would then see them present.
+    return withTopicHistoryLock(() => this.rebuildUnlocked(jsonlPath));
+  }
+
+  private async rebuildUnlocked(jsonlPath: string): Promise<number> {
     if (!this.db) return 0;
+
+    const sources = this.replayableLogs(jsonlPath);
+    const existingMessages = this.countMessages();
+    // Imported history batches (topic-history-import spec). A damaged batch line is
+    // a row the rebuild could delete and never restore, so it refuses outright.
+    // Batch rows count as restorable ONLY when the store holds nothing but
+    // imported rows: with live rows present and no log to replay them, the
+    // no-source refusal below must still hold (a batch never licenses a wipe).
+    const batches = await readPublishedBatches(path.dirname(jsonlPath));
+    if (batches.unreadable > 0 && existingMessages > 0) {
+      console.warn(`[TopicMemory] rebuild REFUSED (import-batch-unreadable): ${batches.unreadable} damaged line(s) in ${IMPORT_BATCH_DIR_LABEL}. Nothing deleted.`);
+      this._lastRebuild = {
+        refused: true, reason: 'import-batch-unreadable', sources, existingMessages, restorable: 0, deleted: 0, restored: 0,
+      };
+      this._lastImportStats = emptyImportStats();
+      return 0;
+    }
+    let batchRows = 0;
+    for (const t of batches.byTopic.values()) batchRows += t.size;
+    const liveRows = (this.db.prepare("SELECT COUNT(*) AS c FROM messages WHERE origin IS NULL OR origin != 'imported'").get() as { c: number }).c;
+    const restorable = await this.countRestorable(sources) + (liveRows === 0 ? batchRows : 0);
+
+    if (existingMessages > 0 && restorable === 0) {
+      const reason = sources.length === 0 ? 'no-source-log' : 'sources-hold-no-restorable-message';
+      console.warn(
+        `[TopicMemory] rebuild REFUSED (${reason}): ${existingMessages} message(s) in the store and ` +
+        `0 restorable from ${sources.length} source(s) [${sources.map((p) => path.basename(p)).join(', ') || 'none'}]. ` +
+        `Nothing deleted. Check that the log you expect is where this store is looking.`,
+      );
+      this._lastRebuild = {
+        refused: true, reason, sources, existingMessages, restorable, deleted: 0, restored: 0,
+      };
+      this._lastImportStats = emptyImportStats();
+      return 0;
+    }
 
     this.db.exec('DELETE FROM messages');
     this.db.exec('DELETE FROM topic_meta');
     // Keep summaries — they're LLM-generated and expensive to recreate
     this.db.exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`);
 
-    return this.importFromJsonl(jsonlPath);
+    const { total: restored } = await this.importAllLogs(jsonlPath);
+
+    this._lastRebuild = {
+      refused: false, reason: null, sources, existingMessages, restorable,
+      deleted: existingMessages, restored,
+    };
+    if (restored < existingMessages) {
+      console.warn(
+        `[TopicMemory] rebuild restored ${restored} of ${existingMessages} message(s) — ` +
+        `${existingMessages - restored} were in the store and are in no source log ` +
+        `(older than its retention window, or written by a path that never logged them).`,
+      );
+    }
+    return restored;
   }
 
   /**
@@ -988,7 +1822,7 @@ export class TopicMemory {
           ? (m.senderName || 'User')
           : 'Agent';
         const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-        const text = (m.text || '').slice(0, 2000);
+        const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
     }
@@ -1002,17 +1836,23 @@ export class TopicMemory {
    * Format topic context as readable text for session injection.
    * This is the primary interface for loading topic context into a session.
    */
-  formatContextForSession(topicId: number, recentLimit: number = 50): string {
+  formatContextForSession(topicId: number, recentLimit: number = 50, opts: { standingPacket?: string | null } = {}): string {
     // Return empty string when db is not open — callers use this as a falsy check
     // to trigger JSONL fallback. A non-empty string from a broken db would
     // prevent the fallback and leave the session without conversation history.
     if (!this.db) return '';
 
     const ctx = this.getTopicContext(topicId, recentLimit);
+    // Context budget §6 (Phase 1 S10): with the layers on, the caller passes the
+    // topic's VERIFIED standing packet, which takes the summary's place (the
+    // Anchor, the live ledger and the operator's recent words verbatim, then
+    // H1/H2/H3 with freshness stamps). Without it: exactly today's block.
+    const packet = typeof opts.standingPacket === 'string' && opts.standingPacket.length > 0 ? opts.standingPacket : null;
+    if (packet) ctx.summary = null;
 
     // Also return empty if the db is open but has no data for this topic —
     // the JSONL might have messages that weren't imported yet.
-    if (ctx.recentMessages.length === 0 && !ctx.summary) return '';
+    if (ctx.recentMessages.length === 0 && !ctx.summary && !packet) return '';
 
     const lines: string[] = [];
 
@@ -1026,7 +1866,10 @@ export class TopicMemory {
       lines.push(`Current focus: ${ctx.purpose}`);
     }
 
-    if (ctx.summary) {
+    if (packet) {
+      lines.push('');
+      lines.push(packet);
+    } else if (ctx.summary) {
       lines.push('');
       lines.push('CONVERSATION SUMMARY:');
       lines.push(ctx.summary);
@@ -1042,7 +1885,7 @@ export class TopicMemory {
           ? (m.senderName || 'User')
           : 'Agent';
         const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
-        const text = (m.text || '').slice(0, 2000);
+        const text = boundedHead(m.text || '', SESSION_HISTORY_MESSAGE_CHARS);
         lines.push(`[${ts}] ${sender}: ${text}`);
       }
     }

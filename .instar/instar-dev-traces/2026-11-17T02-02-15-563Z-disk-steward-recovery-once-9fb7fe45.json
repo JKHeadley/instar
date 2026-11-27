@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "disk-steward-recovery-once",
+  "sessionId": "ca49562d-8438-4c10-9918-926f25d32e04",
+  "timestamp": "2026-11-17T02:02:15.563Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-recovery-once.md",
+  "artifactSha256": "875a1ec75b578c8bed20065b4e6fdf44ce70555f4638ce03ee8e0b4bda1a7c75",
+  "coveredFiles": [
+    "docs/specs/disk-steward.eli16.md",
+    "src/monitoring/DiskSteward.ts",
+    "tests/unit/diskSteward.test.ts",
+    "upgrades/next/disk-steward-recovery-once.md",
+    "upgrades/side-effects/disk-steward-recovery-once.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "docs/specs/disk-steward.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-recovery-once.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

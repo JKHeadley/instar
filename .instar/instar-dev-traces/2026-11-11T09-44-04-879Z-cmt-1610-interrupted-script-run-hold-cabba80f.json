@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "cmt-1610-interrupted-script-run-hold",
+  "sessionId": "b026d8f4-27ce-4691-b495-030c4038adea",
+  "timestamp": "2026-11-11T09:44:04.879Z",
+  "artifactPath": "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md",
+  "artifactSha256": "48e0c6053b64077c48ec6d06e480dfc76795231995d4723bb21b237bf8d0fa9d",
+  "coveredFiles": [
+    "tests/unit/job-cost-runner/JobScheduler-post-gate-definition.test.ts",
+    "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only follow-up to the CMT-1610 fix: one existing test's planted hold reason changed so it keeps its intent under the new census release.",
+  "eli16Path": "docs/specs/cmt-1610-interrupted-script-run-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cmt-1610-interrupted-script-run-hold.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

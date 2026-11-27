@@ -2598,6 +2598,11 @@
     #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .phone-approval, #phonesTab .phone-row { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); margin-bottom: 10px; overflow-wrap: anywhere; }
+    #phonesTab .phone-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+    #phonesTab .phone-row-words { display: flex; flex-direction: column; min-width: 0; }
+    #phonesTab .phone-row-name { font-weight: 600; }
+    #phonesTab .phone-row-detail { color: var(--text-dim); font-size: 0.9em; }
+    #phonesTab .phone-row .action-btn { white-space: nowrap; }
     #phonesTab .phone-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 8px 0; }
     #phonesTab [role=status]:empty { display: none; }
     #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
@@ -3786,6 +3791,10 @@
           <button onclick="loadRoutingSpend()" style="padding:6px 12px">Refresh</button>
         </div>
       </div>
+      <!-- gemini-payg §8 "Delivery": the setup card links HERE. Shown only while a proposal
+           waits on this machine; FIRST under the header so its lead line ("Gemini joins as a
+           reviewer and a second opinion. …") is on the first screen at 390x844. -->
+      <div id="geminiPaygSetup" class="spend-arm-root" style="display:none"></div>
       <div class="tab-purpose">
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
@@ -3928,6 +3937,18 @@
       .spend-arm-btn-commit { border-color:#16a34a; color:#22c55e; width:100%; margin-top:10px; }
       .spend-arm-plan { display:flex; flex-direction:column; gap:8px; }
       .spend-arm-plan-label { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; opacity:.6; }
+      .gp-setup-lead { font-size:16px; font-weight:600; line-height:1.4; margin:4px 0 10px; overflow-wrap:anywhere; }
+      /* The setup plan carries unbroken machine ids and a 64-hex key fingerprint: `anywhere`
+         lets them wrap inside a 390px phone screen (break-word alone still widened the
+         flex column to the longest token and pushed the page sideways). */
+      #geminiPaygSetup, #geminiPaygSetup .spend-arm-plan-text { min-width:0; overflow-wrap:anywhere; }
+      /* On a phone the dashboard's header is wider than the screen (its right-hand status
+         items do not wrap), and the single grid column grows to it — so every panel is
+         wider than a 390px screen and its text runs off the right edge. Pre-existing and
+         dashboard-wide; until the header is fixed, the setup panel is held to the screen
+         so the operator reads the whole plan, first line included, without scrolling
+         sideways (measured by the gemini-payg user-role live test at 390x844). */
+      #geminiPaygSetup { max-width: calc(100vw - 40px); box-sizing: border-box; }
       .spend-arm-plan-text { font-size:14px; line-height:1.5; padding:12px; border-radius:8px;
         border:1px solid var(--border,#2a2a2a); white-space:pre-wrap; word-break:break-word; }
       .spend-arm-plan-expiry, .spend-arm-note { font-size:12px; opacity:.7; }
@@ -4038,6 +4059,9 @@
       .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
       @keyframes subVerifiedPulse { 0%,100% { box-shadow:none; } 50% { box-shadow:0 0 0 4px rgba(22,163,74,.28); } }
       .sub-pending.sub-pending-done { border-color:#16a34a; background:rgba(22,163,74,.08); }
+      .sub-pending.sub-pending-finishing { border-color:#0ea5e9; background:rgba(14,165,233,.08); }
+      .sub-pending.sub-pending-finishing .sub-pending-status { font-size:15px; font-weight:600; color:#38bdf8; }
+      .sub-matrix-cell.sub-matrix-finishing .sub-matrix-glyph { color:#38bdf8; font-weight:600; font-size:14px; }
       .sub-pending-done-head { color:#22c55e; font-weight:600; }
       .sub-pending.sub-pending-failed { border-color:#f87171; background:rgba(248,113,113,.06); }
       .sub-pending-failed-head { color:#f87171; font-weight:600; }
@@ -4477,6 +4501,63 @@
     // API token is intentionally insufficient for operator-only actions.
     let operatorSessionToken = '';
     let operatorSessionExpiresAt = '';
+    // SEC-002b: when the dashboard runs on a scoped session token (dst_), it expires and must be
+    // refreshed before it lapses; a revoked/expired session falls back to the PIN screen.
+    let sessionExpiresAt = '';
+    let sessionRefreshTimer = null;
+    function isScopedToken() { return typeof token === 'string' && token.startsWith('dst_'); }
+    function scheduleSessionRefresh() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      if (!isScopedToken() || !sessionExpiresAt) return; // master token / dark mode: nothing to refresh
+      const ms = new Date(sessionExpiresAt).getTime() - Date.now();
+      // refresh at ~75% of the remaining life, clamped so a short window still refreshes soon
+      const delay = Math.max(5000, Math.floor(ms * 0.75));
+      sessionRefreshTimer = setTimeout(refreshDashboardSession, delay);
+    }
+    async function refreshDashboardSession() {
+      if (!isScopedToken()) return;
+      try {
+        const r = await fetch('/dashboard/session/refresh', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+        if (!r.ok) { handleSessionLost(); return; }
+        const d = await r.json();
+        if (!d.token) { handleSessionLost(); return; }
+        token = d.token; sessionExpiresAt = d.sessionExpiresAt || '';
+        try { localStorage.setItem('instar_token', token); } catch (_) {}
+        scheduleSessionRefresh();
+      } catch (_) { scheduleSessionRefresh(); } // transient network error: retry on schedule
+    }
+    // SEC-002b step-up: a credential operation (change PIN, read/rotate the API token) answers 403
+    // step-up-required when the browser holds a scoped token. Re-prove the live PIN, mint a one-time
+    // step-up proof, and retry with the X-Instar-Step-Up header. Credential-op call sites use this in
+    // place of a raw fetch; for the master token the first call already succeeds and no prompt shows.
+    async function fetchWithStepUp(path, opts) {
+      opts = opts || {};
+      const baseHeaders = Object.assign({ 'Authorization': 'Bearer ' + token }, opts.headers || {});
+      let r = await fetch(path, Object.assign({}, opts, { headers: baseHeaders }));
+      if (r.status !== 403) return r;
+      let body = {};
+      try { body = await r.clone().json(); } catch (_) { return r; }
+      if (!body || body.error !== 'step-up-required') return r;
+      const pin = window.prompt('For this security change, re-enter your dashboard PIN:');
+      if (!pin) return r; // cancelled → surface the 403
+      let su;
+      try { su = await fetch('/dashboard/session/step-up', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) }); } catch (_) { return r; }
+      if (!su.ok) return su; // wrong PIN etc. → surface the step-up failure
+      const d = await su.json().catch(() => ({}));
+      if (!d.stepUpToken) return r;
+      const h2 = Object.assign({}, baseHeaders, { 'X-Instar-Step-Up': d.stepUpToken });
+      return fetch(path, Object.assign({}, opts, { headers: h2 }));
+    }
+    // A scoped session that the server no longer honors (expired past the absolute cap, or revoked):
+    // clear it and show the PIN screen. The master-token path never calls this.
+    function handleSessionLost() {
+      if (sessionRefreshTimer) { clearTimeout(sessionRefreshTimer); sessionRefreshTimer = null; }
+      try { localStorage.removeItem('instar_token'); } catch (_) {}
+      token = ''; sessionExpiresAt = '';
+      const overlay = document.getElementById('authOverlay');
+      if (overlay) overlay.style.display = 'flex';
+      const app = document.getElementById('app'); if (app) app.style.display = 'none';
+    }
     let sessions = [];
     // Door + model controls (dashboard-door-model-controls §3.6).
     let topicProfileOptions = null;
@@ -4532,6 +4613,7 @@
             operatorSessionToken = typeof data.operatorSessionToken === 'string'
               ? data.operatorSessionToken : '';
             operatorSessionExpiresAt = typeof data.operatorSessionExpiresAt === 'string' ? data.operatorSessionExpiresAt : '';
+            sessionExpiresAt = typeof data.sessionExpiresAt === 'string' ? data.sessionExpiresAt : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -4542,6 +4624,7 @@
         .then(r => {
           if (r.ok) {
             localStorage.setItem('instar_token', token);
+            scheduleSessionRefresh(); // SEC-002b: keep a scoped session alive; no-op for the master token
             document.getElementById('authOverlay').style.display = 'none';
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
@@ -4579,6 +4662,12 @@
             startPoolSessionsPolling();
             if (typeof startPairingPanel === 'function') startPairingPanel();
             loadTopicProfileOptions();
+            // SEC-002b: a stored scoped token has an unknown expiry — exchange it for a fresh one to
+            // re-establish the refresh schedule (also detects a revoked/expired session → PIN screen).
+            if (isScopedToken()) refreshDashboardSession();
+          } else if (isScopedToken()) {
+            // A stored scoped token the server no longer honors → fall back to the PIN screen.
+            handleSessionLost();
           }
         })
         .catch(() => {});
@@ -7053,6 +7142,7 @@
       // gated calls would mean the one control that can fix a 503 disappears whenever the
       // 503 happens — which is exactly the state the operator is in when they need it.
       loadMoneyLayerEnable();
+      loadGeminiPaygSetup();
 
       const glance = await loadGlanceModule();
       if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
@@ -10091,6 +10181,115 @@
       }, 3000);
     }
 
+    // ── Spend tab — the Gemini pay-per-use setup plan (gemini-payg §8) ──
+    // The card links here. The plan is rendered FRESH by the server each time the tab
+    // opens (re-running its preconditions); the commit carries only the plan identity,
+    // the PIN and the proposal hash, and it schedules its own restart — the PIN approves
+    // that restart knowingly, so this screen never asks for a second PIN.
+    let __gpSetupPlan = null;
+    async function loadGeminiPaygSetup() {
+      const root = document.getElementById('geminiPaygSetup');
+      if (!root) return;
+      const M = await loadSpendArmModule();
+      if (!M || typeof M.geminiSetupShouldRender !== 'function') { root.style.display = 'none'; return; }
+      let proposal = null;
+      let release = null;
+      try {
+        proposal = await apiFetch('/routing-spend/gemini-payg/proposal');
+        release = await apiFetch('/routing-spend/gemini-payg/release');
+      } catch (err) {
+        root.style.display = 'none';
+        return;
+      }
+      if (!M.geminiSetupShouldRender(proposal, release)) { root.style.display = 'none'; root.replaceChildren(); return; }
+      root.style.display = '';
+      root.replaceChildren();
+      const h = document.createElement('h3');
+      h.className = 'spend-arm-h';
+      h.textContent = 'Gemini pay-per-use setup';
+      root.appendChild(h);
+      const planBox = document.createElement('div');
+      planBox.id = 'gpSetupPlan';
+      root.appendChild(planBox);
+      const st = document.createElement('div');
+      st.id = 'gpSetupStatus';
+      st.className = 'spend-arm-status';
+      __gpSetupPlan = null;
+      try {
+        const plan = await apiFetch('/routing-spend/plan-money-layer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'gemini-payg-setup', expectedProposalHash: proposal.proposalHash }),
+        });
+        M.renderGeminiSetupPlan(document, planBox, plan);
+        if (plan && plan.forwarded === true) {
+          // Rendered on the spending machine: it is approved THERE, not from this page.
+          st.textContent = plan.note ? String(plan.note) : 'This plan is approved on the machine that will spend, from its own Spend tab.';
+          root.appendChild(st);
+          return;
+        }
+        __gpSetupPlan = plan;
+        const row = document.createElement('div');
+        row.className = 'spend-arm-pin-row';
+        const pin = document.createElement('input');
+        pin.type = 'password';
+        pin.inputMode = 'numeric';
+        pin.id = 'gpSetupPin';
+        pin.className = 'spend-arm-pin';
+        pin.placeholder = 'Dashboard PIN';
+        pin.autocomplete = 'off';
+        const go = document.createElement('button');
+        go.id = 'gpSetupApprove';
+        go.className = 'spend-arm-btn spend-arm-btn-commit';
+        go.textContent = 'Approve with PIN';
+        go.addEventListener('click', () => gpSetupCommit((pin.value || '').trim()));
+        row.appendChild(pin);
+        row.appendChild(go);
+        root.appendChild(row);
+      } catch (err) {
+        planBox.replaceChildren();
+        st.textContent = M.geminiSetupRefusalWords(err);
+      }
+      root.appendChild(st);
+    }
+
+    async function gpSetupCommit(pinValue) {
+      const M = await loadSpendArmModule();
+      const st = document.getElementById('gpSetupStatus');
+      const say = (t) => { if (st) st.textContent = t || ''; };
+      if (!M || !__gpSetupPlan) { say('Open the plan first.'); return; }
+      if (!pinValue) { say('Enter your dashboard PIN to approve.'); return; }
+      const btn = document.getElementById('gpSetupApprove');
+      if (btn) btn.disabled = true;
+      try {
+        const out = await apiFetch('/routing-spend/money-layer/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.geminiSetupCommitRequest(__gpSetupPlan, pinValue)),
+        });
+        __gpSetupPlan = null;
+        const next = M.geminiSetupAfterCommit(out);
+        say(next.words);
+        if (next.state === 'restarting') gpSetupAwaitRestart(0);
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        say(M.geminiSetupRefusalWords(err, { duringCommit: true }));
+      }
+    }
+
+    // Wait for the server to go away and come back, then reload the tab's figures.
+    function gpSetupAwaitRestart(attempt) {
+      if (attempt > 80) return;
+      setTimeout(async () => {
+        try {
+          const r = await fetch('/health', { headers: { 'Authorization': `Bearer ${token}` } });
+          const h = r.ok ? await r.json() : null;
+          if (h && typeof h.uptime === 'number' && h.uptime < 120000 && attempt > 0) { loadRoutingSpend(); return; }
+        } catch (_) { /* restarting */ }
+        gpSetupAwaitRestart(attempt + 1);
+      }, 3000);
+    }
+
     // ── Spend tab — paid-door arming (Increment B UI) ──
     // Two PIN-committed steps (set both ceilings, then go live), each previewed as the
     // SERVER's rendered wording before the PIN box appears. The commit posts only the
@@ -10119,6 +10318,15 @@
       h.textContent = 'Paid doors';
       h.className = 'spend-arm-h';
       root.appendChild(h);
+
+      // gemini-payg §7: the monthly row (shown, never pushed at 50%/80%).
+      const monthly = typeof M.monthlyRowWords === 'function' ? M.monthlyRowWords(caps) : null;
+      if (monthly) {
+        const box = document.createElement('div');
+        box.className = 'spend-arm-note';
+        for (const line of monthly) { const d = document.createElement('div'); d.textContent = line; box.appendChild(d); }
+        root.appendChild(box);
+      }
 
       const rows = M.armableDoors(caps);
       if (rows.length === 0) {
@@ -11061,7 +11269,7 @@
           const response = await fetch('/feedback-factory/readiness-authorities', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
-            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef())),
+            body: JSON.stringify(M.authorityRequest(action, envelope, pin, M.newDecisionRef(), proposal.proposal && proposal.proposal.modelFamily)),
           });
           const data = await response.json().catch(() => ({}));
           const note = M.resultNote(response.ok, data);
@@ -11096,7 +11304,7 @@
       };
       M.renderTriageSection(document, root, { summary, queue, proposal, execute }, {
         submitAuthority: async (action, pin) => {
-          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef()));
+          const r = await post('/feedback-factory/triage/authority', M.triageAuthorityRequest(action, pin, M.newTriageDecisionRef(), proposal && proposal.proposal && proposal.proposal.modelFamily));
           const note = M.triageResultNote(r.ok, r.data);
           if (r.ok) await loadFeedbackTriage(note);
           return note;

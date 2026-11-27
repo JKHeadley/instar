@@ -453,6 +453,7 @@ export function discoverInstarRepoFromWorktrees(
     }
     for (const entry of entries) {
       if (inspected >= cap) break;
+      if (entry === '.trash') continue; // the reaper's renamed-away checkouts, never a live worktree
       const pointer = path.join(root, entry, '.git');
       let stat;
       try {

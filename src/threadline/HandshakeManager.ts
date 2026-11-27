@@ -101,6 +101,31 @@ function buildDeterministicSalt(pubA: Buffer, pubB: Buffer): Buffer {
 
 // ── HandshakeManager ─────────────────────────────────────────────────
 
+/**
+ * One refusal text for the pairing refusals this spec adds (key change, unusable name),
+ * so the refusal does not say why. It does not hide which names are paired: a caller can
+ * still tell from whether a hello succeeds.
+ */
+const HANDSHAKE_REFUSED = 'Handshake refused';
+
+/**
+ * A peer name may not be shaped like a fingerprint (hex, 16+ characters), equal this
+ * agent's own name, or be an object-prototype key: the first two could pass for a
+ * different principal where names are shown or compared, the last is not data in the
+ * pairing store. docs/specs/threadline-http-peer-trust.md §1.
+ */
+export function isUsablePeerName(name: string, localAgent: string): boolean {
+  if (typeof name !== 'string' || !name.trim()) return false;
+  // One spelling per name: no surrounding whitespace, Unicode NFC, so look-alike
+  // spellings cannot become separate pins.
+  if (name !== name.trim() || name !== name.normalize('NFC')) return false;
+  if (/^[0-9a-f]{16,}$/i.test(name.trim())) return false;
+  if (name.trim().toLowerCase() === localAgent.trim().toLowerCase()) return false;
+  // Pairings are kept in a plain object keyed by name; these keys are not data there.
+  if (['__proto__', 'constructor', 'prototype'].includes(name.trim())) return false;
+  return true;
+}
+
 export class HandshakeManager {
   private readonly stateDir: string;
   private readonly localAgent: string;
@@ -109,6 +134,8 @@ export class HandshakeManager {
   private readonly handshakes = new Map<string, HandshakeState>();
   private readonly rateLimits = new Map<string, RateLimitEntry>();
   private relayTokens: StoredRelayTokens = {};
+  /** True when relay-tokens.json exists but could not be parsed (fail closed for pinning). */
+  private pairingStoreUnreadable = false;
 
   constructor(stateDir: string, localAgent: string) {
     this.stateDir = path.join(stateDir, 'threadline');
@@ -116,6 +143,67 @@ export class HandshakeManager {
     this.identityManager = new IdentityManager(stateDir);
     this.ensureDirs();
     this.loadRelayTokens();
+  }
+
+  /** The identity key this agent name is paired with, or null. */
+  getPairedIdentityPub(agentName: string): string | null {
+    const entry = Object.prototype.hasOwnProperty.call(this.relayTokens, agentName) ? this.relayTokens[agentName] : undefined;
+    return entry?.theirIdentityPub ?? null;
+  }
+
+  /**
+   * Key pinning: an agent name already paired with one identity key may not be
+   * re-paired with a different one over this unauthenticated handshake. True when
+   * the name is paired and the key differs.
+   */
+  private keyConflict(agentName: string, identityPubHex: string): boolean {
+    // An existing pairing store that could not be read: every name may already be
+    // pinned, so no new key is accepted for any name until the store is repaired.
+    if (this.pairingStoreUnreadable) return true;
+    if (!Object.prototype.hasOwnProperty.call(this.relayTokens, agentName)) return false;
+    const pinned = this.getPairedIdentityPub(agentName);
+    // A stored entry with no key still holds the name: only the owner frees it.
+    if (typeof pinned !== 'string' || !pinned) return true;
+    return pinned.toLowerCase() !== identityPubHex.toLowerCase();
+  }
+
+  /**
+   * A failed confirm counts toward the per-name block only for a name that is not yet
+   * paired. For a paired name, the pinned PUBLIC key lets anyone start a hello under
+   * it, so counting failed confirms there would let anyone block its re-pairing.
+   */
+  /** Bound pending state: drop expired handshakes and keep at most one per presented key. */
+  private pruneHandshakes(forName: string, identityPubHex: string): void {
+    const now = Date.now();
+    for (const [name, st] of this.handshakes) {
+      const expired = now - new Date(st.startedAt).getTime() > HANDSHAKE_TIMEOUT_MS;
+      const sameKeyOtherName = name !== forName && st.state === 'hello-received'
+        && !!st.theirIdentityPub && st.theirIdentityPub.toString('hex').toLowerCase() === identityPubHex;
+      if (expired || sameKeyOtherName) this.handshakes.delete(name);
+    }
+  }
+
+  /**
+   * Record a handshake failure against a name, but only for a name that is not yet
+   * paired (a pinned name's PUBLIC key is known, so counting failures there would let
+   * anyone block its re-pairing). Used by the initiator path; the confirm path no
+   * longer counts.
+   */
+  private countFailureUnlessPinned(agentName: string): void {
+    if (this.getPairedIdentityPub(agentName)) return;
+    this.recordFailure(agentName);
+  }
+
+  /**
+   * Owner action (bearer-gated route): forget this agent name's direct-HTTP pairing,
+   * so the name can be paired again (for example after the peer reinstalled, or to
+   * free a name someone else took first). Returns whether a pairing was removed.
+   */
+  removePairing(agentName: string): boolean {
+    if (!Object.prototype.hasOwnProperty.call(this.relayTokens, agentName)) return false;
+    delete this.relayTokens[agentName];
+    this.saveRelayTokens();
+    return true;
   }
 
   // ── Public API ───────────────────────────────────────────────────
@@ -164,10 +252,29 @@ export class HandshakeManager {
    * Returns a hello response payload (with challenge response) or a confirm payload.
    */
   handleHello(hello: HelloPayload): { payload: HelloPayload } | { error: string } {
-    const rateCheck = this.checkRateLimit(hello.agent);
+    // Attempts are counted per PRESENTED KEY, not per name (threadline-http-peer-trust §1):
+    // the hello is unsigned and public keys are not secret, so a per-name counter would
+    // grow without bound under fresh names. The name's own failure block still applies.
+    const keyRateId = `key:${String(hello.identityPub).toLowerCase()}`;
+    const rateCheck = this.checkRateLimit(hello.agent) ?? this.checkRateLimit(keyRateId);
     if (rateCheck) return { error: rateCheck };
 
-    this.recordAttempt(hello.agent);
+    // A name that looks like a fingerprint, or is this agent's own name, could pass
+    // for another principal in thread-ownership and display checks. Refused.
+    if (!isUsablePeerName(hello.agent, this.localAgent)) {
+      return { error: HANDSHAKE_REFUSED };
+    }
+    // Refused BEFORE the attempt is counted, and never counted as a failure: counting
+    // it would let anyone keep a real peer's name rate-limited out of re-pairing by
+    // sending wrong keys under it. The refusal does no key work, so it costs nothing.
+    if (this.keyConflict(hello.agent, hello.identityPub)) {
+      return { error: HANDSHAKE_REFUSED };
+    }
+
+    this.recordAttempt(keyRateId);
+    // Bound pending state: drop expired handshakes, and keep at most ONE pending
+    // handshake per presented key, so pending state cannot outgrow the granted keys.
+    this.pruneHandshakes(hello.agent, String(hello.identityPub).toLowerCase());
 
     const theirIdentityPub = Buffer.from(hello.identityPub, 'hex');
     const theirEphemeralPub = Buffer.from(hello.ephemeralPub, 'hex');
@@ -236,21 +343,22 @@ export class HandshakeManager {
   handleConfirm(confirm: ConfirmPayload): { relayToken: string } | { error: string } {
     const state = this.handshakes.get(confirm.agent);
     if (!state) {
-      this.recordFailure(confirm.agent);
+      // Not counted as a failure: an unsolicited confirm needs no key, so counting it
+      // would let anyone block a name (threadline-http-peer-trust §1).
       return { error: 'No handshake in progress with this agent' };
     }
 
     // Check timeout
     const elapsed = Date.now() - new Date(state.startedAt).getTime();
     if (elapsed > HANDSHAKE_TIMEOUT_MS) {
+      // Expired state is dropped, but not counted: a confirm carries no key, so its
+      // arrival proves nothing about who sent it (threadline-http-peer-trust §1).
       state.state = 'failed';
       this.handshakes.delete(confirm.agent);
-      this.recordFailure(confirm.agent);
       return { error: 'Handshake timed out' };
     }
 
     if (!state.theirIdentityPub || !state.theirEphemeralPub) {
-      this.recordFailure(confirm.agent);
       return { error: 'Handshake state incomplete — missing their keys' };
     }
 
@@ -265,10 +373,17 @@ export class HandshakeManager {
 
     const isValid = verify(state.theirIdentityPub, expectedHash.digest(), challengeResponseBuf);
     if (!isValid) {
+      // A confirm that fails verification proves nothing about its sender, so it neither
+      // ends the granted peer's handshake nor counts against the name: the state stays
+      // until the real confirm arrives or it expires (threadline-http-peer-trust §1).
+      return { error: 'Challenge response verification failed' };
+    }
+
+    // Key pinning, re-checked at the write (a pairing may have landed since hello).
+    if (this.keyConflict(confirm.agent, state.theirIdentityPub.toString('hex'))) {
       state.state = 'failed';
       this.handshakes.delete(confirm.agent);
-      this.recordFailure(confirm.agent);
-      return { error: 'Challenge response verification failed' };
+      return { error: HANDSHAKE_REFUSED };
     }
 
     // Derive the relay token via X25519 ECDH + HKDF
@@ -327,8 +442,15 @@ export class HandshakeManager {
     if (!isValid) {
       state.state = 'failed';
       this.handshakes.delete(hello.agent);
-      this.recordFailure(hello.agent);
+      this.countFailureUnlessPinned(hello.agent);
       return { error: 'Challenge response verification failed' };
+    }
+
+    // Key pinning (initiator side): the responder must hold the key we paired with.
+    if (this.keyConflict(hello.agent, hello.identityPub)) {
+      state.state = 'failed';
+      this.handshakes.delete(hello.agent);
+      return { error: HANDSHAKE_REFUSED };
     }
 
     // Store their keys
@@ -440,9 +562,15 @@ export class HandshakeManager {
     const tokensPath = path.join(this.stateDir, 'relay-tokens.json');
     if (fs.existsSync(tokensPath)) {
       try {
-        this.relayTokens = JSON.parse(fs.readFileSync(tokensPath, 'utf-8'));
+        const parsed: unknown = JSON.parse(fs.readFileSync(tokensPath, 'utf-8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('relay-tokens.json is not an object');
+        this.relayTokens = parsed as StoredRelayTokens;
       } catch {
+        // Fail closed for pinning (keyConflict): the file is kept as it is, and no new
+        // pairing is written over it, so the pins it holds are not silently erased.
         this.relayTokens = {};
+        this.pairingStoreUnreadable = true;
+        console.warn('[HandshakeManager] relay-tokens.json is unreadable; new direct pairings are refused until the agent backs the file up, removes or repairs it, and restarts');
       }
     }
   }

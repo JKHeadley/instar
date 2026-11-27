@@ -12,7 +12,7 @@ const MAX_PLAINTEXT = 2 * 1024 * 1024;
 const MAX_FILES = 64;
 const MANIFEST_KEYS = new Set([
   'slug', 'origin', 'schedule', 'priority', 'model', 'framework', 'frameworkModel',
-  'leanContext', 'expectedDurationMinutes', 'enabled', 'catchUpPolicy', 'requiredPaths',
+  'leanContext', 'thinkingMode', 'expectedDurationMinutes', 'enabled', 'catchUpPolicy', 'requiredPaths',
   'portable', 'execute', 'tags', 'topicId', 'telegramNotify', 'machines', 'gate',
   'unrestrictedTools', 'manifestVersion', 'perMachineIndependent', 'mcpAccess',
   'disabledAtBodyHash', 'completionAudit', 'declaredEffects', 'conditionalEffects',

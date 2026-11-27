@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "ncb-3d-transcript-reads-ratchets",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T06:22:38.794Z",
+  "artifactPath": "upgrades/side-effects/ncb-3d-transcript-reads-ratchets.md",
+  "artifactSha256": "b7a0a037989518331149992c164d09a057e041097fbbb40f3a02fba46f634f50",
+  "coveredFiles": [
+    "src/core/SessionTranscriptReader.ts",
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Ratchet answers inside the slice 3d build: error text through the shared qualifier and two exemption tags; 9 lines, no decision point",
+  "eli16Path": "docs/specs/ncb-3d-transcript-reads-ratchets.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ncb-3d-transcript-reads-ratchets.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

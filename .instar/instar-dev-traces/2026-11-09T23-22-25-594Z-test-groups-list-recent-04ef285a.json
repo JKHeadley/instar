@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "test-groups-list-recent",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T23:22:25.594Z",
+  "artifactPath": "upgrades/side-effects/test-groups-list-recent.md",
+  "artifactSha256": "0b9c859a8397237bb7774e66b9f79fed3f3fdef66f97f3fee77866a65d4c56da",
+  "coveredFiles": [
+    "docs/eli16/test-groups-list-recent.md",
+    "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+    "tests/unit/telegram-origin/test-groups-page-scripts.test.ts",
+    "upgrades/next/test-groups-list-recent.md",
+    "upgrades/side-effects/test-groups-list-recent.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One more read-only call merged into the list; same marker checks; revert undoes it",
+  "eli16Path": "docs/eli16/test-groups-list-recent.md",
+  "sideEffectsPath": "upgrades/side-effects/test-groups-list-recent.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

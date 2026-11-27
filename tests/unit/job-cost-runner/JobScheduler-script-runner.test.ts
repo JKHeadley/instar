@@ -13,6 +13,7 @@ import { createTempProject, createMockSessionManager, type TempProject } from '.
 import { hashBody, hashFrontmatter, hashScriptBytes } from '../../../src/scheduler/AgentMdLockFile.js';
 import type { JobSchedulerConfig } from '../../../src/core/types.js';
 import type { ScriptRunContext } from '../../../src/scheduler/scriptRunObservers.js';
+import { SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS } from '../../../src/config/ConfigDefaults.js';
 
 const lockState: { value: unknown } = { value: { state: 'absent' } };
 vi.mock('../../../src/scheduler/AgentMdLockFile.js', async (importOriginal) => {
@@ -115,6 +116,36 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it('runs the throughput report only while the script runner is enabled', async () => {
+    project = createTempProject();
+    const slug = 'testing-throughput-report-script';
+    const source = new URL('../../../src/scaffold/templates/jobs/instar/scripts/testing-throughput-report-script.mjs', import.meta.url);
+    const script = fs.readFileSync(source, 'utf8');
+    addScriptJob(project.stateDir, slug, script);
+    lockState.value = trustedLockFor([{ slug, script }]);
+    const reportDir = path.join(project.stateDir, 'reports', 'throughput-improvement');
+    const journalDir = path.join(project.stateDir, 'state', 'local-verify');
+    fs.mkdirSync(reportDir, { recursive: true });
+    fs.mkdirSync(journalDir, { recursive: true });
+    const baseline = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(path.join(reportDir, 'acceleration-baseline-20261124.json'), JSON.stringify({ asOf: baseline }));
+    fs.writeFileSync(path.join(journalDir, 'journal.jsonl'), '');
+    const { s, sm, setCfg } = mkScheduler(project, { jobs: { scriptRunners: { enabled: false } } });
+    scheduler = s;
+    s.start();
+    expect(await s.triggerJob(slug, 'test')).toBe('skipped');
+    expect(sm._spawnCount).toBe(0);
+    expect(lastRun(s, slug)).toBeUndefined();
+
+    setCfg({ jobs: { scriptRunners: { enabled: true } } });
+    expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+    await waitFor(() => Boolean(lastRun(s, slug) && lastRun(s, slug).result !== 'pending'));
+    const run = lastRun(s, slug);
+    expect(run).toMatchObject({ result: 'success', runner: 'script', tokens: 0 });
+    expect(fs.readFileSync(path.join(reportDir, `${run.runId}.txt`), 'utf8')).toContain('Testing throughput report');
+    expect(sm._spawnCount).toBe(0);
+  });
+
   it('does not open the supervision journal on a read-only standby', () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");
@@ -413,11 +444,44 @@ describe('rollback projection (§8.4)', () => {
     project = createTempProject();
     const { s, setCfg } = mkScheduler(project, { developmentAgent: true });
     scheduler = s;
+    // No saved disabledSlugs: the shipped default list still excludes health-check.
     expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
     expect(s.scriptRunnersActiveFor('feedback-factory-process')).toBe(false);
     expect(s.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
     expect(s.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(false);
     setCfg({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } });
+    // Later waves stay code-gated even when config lists nothing.
+    expect(s.scriptRunnersActiveFor('feedback-factory-process')).toBe(false);
+    expect(s.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(false);
+  });
+
+  // CMT-1586 (fb-13940f65-ead): health-check makes no model call as a script
+  // (triage is code-dark), so removing it from disabledSlugs on a development
+  // agent must actually switch it to the script runner.
+  it('runs health-check as a script on a development agent once config stops excluding it', () => {
+    project = createTempProject();
+    const { s, setCfg } = mkScheduler(project, { developmentAgent: true });
+    scheduler = s;
+    const withoutHealthCheck = SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS.filter(slug => slug !== 'health-check');
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: withoutHealthCheck } } });
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(true);
+    // Other first-wave slugs the operator removed alongside stay on sessions.
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [] } } });
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(true);
+    expect(s.scriptRunnersActiveFor('doorway-scan')).toBe(false);
+    // Listing it again is the live rollback.
+    setCfg({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: ['health-check'] } } });
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
+  });
+
+  it('keeps health-check on its session on fleet agents (no development-agent flag)', () => {
+    project = createTempProject();
+    const { s, setCfg } = mkScheduler(project, {});
+    scheduler = s;
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
+    setCfg({ jobs: { scriptRunners: { disabledSlugs: [] } } });
+    expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
+    setCfg({ developmentAgent: false, jobs: { scriptRunners: { disabledSlugs: [] } } });
     expect(s.scriptRunnersActiveFor('health-check')).toBe(false);
   });
 

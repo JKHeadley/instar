@@ -1298,6 +1298,11 @@ export interface SafeGitOptions {
   encoding?: BufferEncoding;
   /** Timeout in ms, default 30000. */
   timeout?: number;
+  /**
+   * `spawn` only: start git as the leader of its own process group, so a caller that gives up on
+   * it can stop git's helper processes too (`git worktree add` checks out in a child).
+   */
+  detached?: boolean;
   /** Env passthrough — denylist for git-redirection variables applied. */
   env?: NodeJS.ProcessEnv;
   /** Optional: input string for the subprocess stdin. */
@@ -1368,6 +1373,53 @@ export interface LocalVerifyCloneScope {
   gitDir: string;
   /** The run worktree, for steps that read or write its working tree. */
   workTree?: string;
+}
+
+// ── Repository births (docs/specs/no-data-loss-on-machine-death.md §1.3, path 1) ──
+//
+// After a successful `init` or `clone` through this funnel, the owned-repository
+// registry is told where the new repository is, so it is registered at birth rather
+// than waiting for a scan. A signal only: the observer never affects the git command
+// (it runs after success, and a throwing observer is swallowed). Skipped: the bare
+// local-verify clones and the feedback-attempt clones (both are throwaway copies of a
+// repository already on this disk) and any clone of a local path.
+
+export type RepoBirthObserver = (repoPath: string, via: string) => void;
+let repoBirthObserver: RepoBirthObserver | null = null;
+
+/** Install (or clear, with null) the one repository-birth observer. */
+export function setRepoBirthObserver(fn: RepoBirthObserver | null): void {
+  repoBirthObserver = fn;
+}
+
+const CLONE_INIT_VALUE_FLAGS = new Set(['-b', '--branch', '-o', '--origin', '-c', '--config', '--depth', '--reference', '--reference-if-able', '--separate-git-dir', '--template', '--filter', '-u', '--upload-pack', '--jobs', '-j', '--shallow-since', '--shallow-exclude', '--bundle-uri', '--object-format', '--ref-format', '--initial-branch', '--shared']);
+
+/** Where `git init` / `git clone` put the new repository, or null when it cannot be told. Pure. */
+export function repoBirthPath(verb: string, verbArgs: readonly string[], cwd: string | undefined): string | null {
+  if (verb !== 'init' && verb !== 'clone') return null;
+  if (verbArgs.includes('--bare') || verbArgs.includes('--mirror')) return null;
+  const positional: string[] = [];
+  for (let i = 0; i < verbArgs.length; i++) {
+    const a = verbArgs[i];
+    if (a === '--') { positional.push(...verbArgs.slice(i + 1)); break; }
+    if (a.startsWith('-')) { if (CLONE_INIT_VALUE_FLAGS.has(a)) i++; continue; }
+    positional.push(a);
+  }
+  const base = cwd ?? process.cwd();
+  if (verb === 'init') return path.resolve(base, positional[0] ?? '.');
+  const source = positional[0];
+  if (!source) return null;
+  if (source.startsWith('/') || source.startsWith('.') || source.startsWith('file://')) return null; // a copy of something on this disk
+  const dir = positional[1] ?? path.basename(source.replace(/\/+$/, '')).replace(/\.git$/, '');
+  return dir ? path.resolve(base, dir) : null;
+}
+
+function noteRepoBirth(verb: string, verbArgs: readonly string[], opts: SafeGitOptions): void {
+  if (!repoBirthObserver || opts.localVerifyCloneOk) return;
+  try {
+    const p = repoBirthPath(verb, verbArgs, opts.cwd);
+    if (p && !isFeedbackAttemptClonePath(p)) repoBirthObserver(p, `${verb}:${opts.operation}`.slice(0, 80));
+  } catch { /* @silent-fallback-ok — the observer is a signal; the git command already succeeded */ }
 }
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -1451,6 +1503,7 @@ export class SafeGitExecutor {
       throw err;
     }
     audit('git', opts.operation, verb, targets[0], 'allowed');
+    noteRepoBirth(verb, verbArgs, opts);
     return stdout || '';
   }
 
@@ -1488,9 +1541,12 @@ export class SafeGitExecutor {
       cwd: opts.cwd,
       stdio: opts.stdio ?? 'pipe',
       env,
+      ...(opts.detached === true ? { detached: true } : {}),
     };
     audit('git', opts.operation, verb, targets[0], 'allowed');
-    return nodeSpawn('git', args as string[], spawnOpts);
+    const child = nodeSpawn('git', args as string[], spawnOpts);
+    if (verb === 'init' || verb === 'clone') child.once('close', (code) => { if (code === 0) noteRepoBirth(verb, verbArgs, opts); });
+    return child;
   }
 
   /**

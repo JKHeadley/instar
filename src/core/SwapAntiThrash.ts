@@ -28,8 +28,11 @@
  * OBSERVES reactive swaps (dwell clock-start, hop alerts, failed-row streaks).
  */
 
+import path from 'node:path';
+import { storageMachineName } from './storageMachineName.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
 import { bindingUtilization, scoreAccount } from './QuotaAwareScheduler.js';
+import { windowNow } from './windowAwareChoice.js';
 import { isLocallyExecutable } from './SubscriptionPool.js';
 import {
   SwapLedger,
@@ -153,14 +156,19 @@ export interface ReadingValidity {
   valid: boolean;
   /** bindingUtilization of the (possibly invalid) reading — 0 when absent. */
   utilPct: number;
-  /** Why invalid, when invalid. */
-  invalidReason?: 'absent' | 'stale';
+  /**
+   * Why invalid, when invalid. `rolled` / `unknown` / `unread` are quota pacing step 2
+   * (docs/specs/quota-pacing-account-choice.md §3 "Swap paths"), only while window-aware
+   * choice is on: a binding window that reset, is a placeholder, or belongs to an old cycle.
+   */
+  invalidReason?: 'absent' | 'stale' | 'rolled' | 'unknown' | 'unread';
 }
 
 export function readingValidity(
   acct: SubscriptionAccount,
   nowMs: number,
   quotaFreshnessMs: number,
+  opts: { windowAware?: boolean } = {},
 ): ReadingValidity {
   const snap = acct.lastQuota;
   const utilPct = bindingUtilization(snap);
@@ -168,6 +176,16 @@ export function readingValidity(
   const measured = snap.measuredAt ? Date.parse(snap.measuredAt) : NaN;
   if (!Number.isFinite(measured)) return { valid: false, utilPct, invalidReason: 'absent' };
   if (nowMs - measured > quotaFreshnessMs) return { valid: false, utilPct, invalidReason: 'stale' };
+  if (opts.windowAware === true) {
+    // The swap paths are model-blind: the 5-hour and weekly windows bind. Freshness is this
+    // engine's own knob (checked above), so the window read here ignores it.
+    for (const key of ['fiveHour', 'sevenDay'] as const) {
+      const r = windowNow(snap, key, nowMs, { provider: acct.provider, freshMs: Number.POSITIVE_INFINITY });
+      if (r.state === 'rolled') return { valid: false, utilPct, invalidReason: 'rolled' };
+      if (r.state === 'unknown') return { valid: false, utilPct, invalidReason: 'unknown' };
+      if (r.state === 'unread-old-cycle') return { valid: false, utilPct, invalidReason: 'unread' };
+    }
+  }
   return { valid: true, utilPct };
 }
 
@@ -231,6 +249,10 @@ export interface SwapAntiThrashEngineOptions {
   raiseAttention?: (id: string, title: string, body: string, conditionKey?: string) => void;
   /** attention-lifecycle-close-on-cause §3.3 — close a row whose condition ended (readings fresh again; hops below threshold). */
   clearAttention?: (conditionKey: string, resolution: string) => void;
+  /** quota-pacing step 2: window-aware validity (read live; absent/false = today's rule). */
+  windowAware?: () => boolean;
+  /** quota-pacing step 2: consecutive failed out-of-cycle reads (a rolled reading counts as blind only after 2). */
+  outOfCycleFailures?: (accountId: string) => number;
   logger?: { log: (m: string) => void; warn: (m: string) => void };
   now?: () => number;
 }
@@ -283,6 +305,30 @@ export class SwapAntiThrashEngine {
     this.clearAttention = opts.clearAttention ?? (() => {});
     this.logger = opts.logger ?? { log: () => {}, warn: () => {} };
     this.now = opts.now ?? (() => Date.now());
+    this.windowAwareFn = opts.windowAware;
+    this.outOfCycleFailures = opts.outOfCycleFailures;
+  }
+
+  private readonly windowAwareFn?: () => boolean;
+  private readonly outOfCycleFailures?: (accountId: string) => number;
+
+  /** Window-aware validity options, read live per decision (an unreadable switch is off). */
+  private validityOpts(): { windowAware?: boolean } {
+    let on = false;
+    try { on = this.windowAwareFn?.() === true; } catch { on = false; } // @silent-fallback-ok: unreadable = off
+    return on ? { windowAware: true } : {};
+  }
+
+  /**
+   * Whole-pool blindness counts a reading invalid only because a window ROLLED as valid until
+   * its out-of-cycle read has failed twice (about two poll intervals), so an ordinary
+   * pool-wide reset does not raise measurement-blind.
+   */
+  private blindValid(a: SubscriptionAccount, nowMs: number, freshnessMs: number): boolean {
+    const v = readingValidity(a, nowMs, freshnessMs, this.validityOpts());
+    if (v.valid) return true;
+    if (v.invalidReason === 'rolled') return (this.outOfCycleFailures?.(a.id) ?? 0) < 2;
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -494,7 +540,7 @@ export class SwapAntiThrashEngine {
     const blind =
       proactiveEnabled &&
       nonDisabled.length >= 2 &&
-      nonDisabled.every((a) => !readingValidity(a, nowMs, k.quotaFreshnessMs).valid);
+      nonDisabled.every((a) => !this.blindValid(a, nowMs, k.quotaFreshnessMs));
     if (!blind) {
       if (this.blindEpisodeId && this.alertedEpisodeIds.has(this.blindEpisodeId)) {
         this.clearAttention('swap-antithrash:measurement-blind', 'cleared: fresh quota readings are back on the pool');
@@ -526,7 +572,7 @@ export class SwapAntiThrashEngine {
   /** Is this account eligible as a proactive SOURCE (valid fresh reading ≥ threshold)? §3.3 source leg. */
   sourceEligible(acct: SubscriptionAccount, nowMs: number): boolean {
     const k = this.getKnobs();
-    const v = readingValidity(acct, nowMs, k.quotaFreshnessMs);
+    const v = readingValidity(acct, nowMs, k.quotaFreshnessMs, this.validityOpts());
     return isLocallyExecutable(acct) && v.valid && v.utilPct >= k.thresholdPct;
   }
 
@@ -589,7 +635,7 @@ export class SwapAntiThrashEngine {
     const filtered: Array<{ acct: SubscriptionAccount; utilPct: number }> = [];
     let validHotCount = 0;
     for (const a of alternates) {
-      const v = readingValidity(a, nowMs, k.quotaFreshnessMs);
+      const v = readingValidity(a, nowMs, k.quotaFreshnessMs, this.validityOpts());
       if (!v.valid) {
         unmeasuredAlternates += 1;
         continue;
@@ -606,6 +652,7 @@ export class SwapAntiThrashEngine {
       input.accounts.find((a) => a.id === input.fromAccountId) ?? ({ lastQuota: null } as SubscriptionAccount),
       nowMs,
       k.quotaFreshnessMs,
+      this.validityOpts(),
     );
 
     if (filtered.length === 0) {
@@ -703,6 +750,8 @@ export class SwapAntiThrashEngine {
     sourceWasUntagged?: boolean;
     dryRun?: boolean;
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+    /** A busy deferral escalated at the wall-imminent threshold. */
+    wallEscalated?: boolean;
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {
@@ -721,6 +770,7 @@ export class SwapAntiThrashEngine {
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
       ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
       ...(args.sourceTrigger ? { sourceTrigger: args.sourceTrigger } : {}),
+      ...(args.wallEscalated ? { wallEscalated: true } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 
@@ -1361,7 +1411,7 @@ export class SwapAntiThrashEngine {
     this.raiseAttention(
       'swap-antithrash-ledger-lost',
       'Swap ledger unwritable — proactive optimization paused',
-      'The swap-decision ledger cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.',
+      `The swap-decision ledger on ${storageMachineName(path.dirname(path.dirname(this.ledger.path)))} cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.`,
     );
   }
 }

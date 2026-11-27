@@ -30,6 +30,9 @@ function writeFile(file: string, content: string): void {
 }
 
 function writeMarker(root: string): void {
+  // Pin this fixture's git root. A checkout or another test may have placed
+  // .git in an ancestor of os.tmpdir(), which would hide this marker.
+  if (!fs.existsSync(path.join(root, '.git'))) fs.mkdirSync(path.join(root, '.git'));
   writeFile(path.join(root, '.instar-source-tree'), 'marker\n');
 }
 
@@ -40,6 +43,8 @@ function writeGitConfigWithOriginUrl(root: string, url: string): void {
 }
 
 function writeSignatureFiles(root: string, files: string[]): void {
+  // The signature is evaluated at the git root, not an ambient temp parent.
+  if (!fs.existsSync(path.join(root, '.git'))) fs.mkdirSync(path.join(root, '.git'));
   for (const rel of files) {
     writeFile(path.join(root, rel), '// sig\n');
   }

@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-peer-signature-auth",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T10:03:23.334Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-peer-signature-auth.md",
+  "artifactSha256": "c546209164d8b6424da8a1fad2426a3edad6bfe63c373f776bd25b3cf160fce2",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphDefaultSurface.ts",
+    "src/server/ConversationGraphReplicationRuntime.ts",
+    "tests/e2e/conversation-graph-surface-alive.test.ts",
+    "tests/helpers/conversation-graph-live-server.mjs",
+    "tests/helpers/graph-default-planned-transition.ts",
+    "tests/helpers/graph-member-loss-production-entry.ts",
+    "tests/helpers/graph-owned-cold-read.mjs",
+    "tests/helpers/graph-owned-defaults.ts",
+    "tests/integration/conversation-graph-default-local-capability.test.ts",
+    "tests/integration/conversation-graph-delegation-lazy.test.ts",
+    "tests/integration/conversation-graph-local-intent.test.ts",
+    "tests/integration/conversation-graph-local-read-capability.test.ts",
+    "tests/integration/graph-default-boot.test.ts",
+    "tests/integration/graph-default-peer-refusal.test.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "tests/integration/graph-owned-controller-framing.test.ts",
+    "tests/integration/graph-owner-member-loss-planning.test.ts",
+    "tests/integration/graph-peer-credential-guard.test.ts",
+    "upgrades/side-effects/conversation-graph-peer-signature-auth.eli16.md",
+    "upgrades/side-effects/conversation-graph-peer-signature-auth.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change adds no new trigger: the existing sync tick only logs a fixed-format reason when that reason changes, bounded by a single stored value."
+  }
+}

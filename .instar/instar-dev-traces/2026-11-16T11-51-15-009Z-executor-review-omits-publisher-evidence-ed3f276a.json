@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "executor-review-omits-publisher-evidence",
+  "sessionId": "7eecf2a5-8633-4577-90ab-6c95d33e2fef",
+  "timestamp": "2026-11-16T11:51:15.009Z",
+  "artifactPath": "upgrades/side-effects/executor-review-omits-publisher-evidence.md",
+  "artifactSha256": "c7a05334bca4a979aa0cdea22b1c925b4f9e49732a3d3b1acba3fc3e45bdaf77",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/independentReview.ts",
+    "src/feedback-factory/execute/publishEvidence.ts",
+    "tests/unit/feedback-factory/execute-publish-evidence.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/eli16/executor-review-omits-publisher-evidence.md",
+    "upgrades/next/executor-review-omits-publisher-evidence.md",
+    "upgrades/side-effects/executor-review-omits-publisher-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows the reviewer input by exact, content-verified match on two publisher-written files; rules and verdict logic unchanged; revert undoes it",
+  "eli16Path": "upgrades/eli16/executor-review-omits-publisher-evidence.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-review-omits-publisher-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

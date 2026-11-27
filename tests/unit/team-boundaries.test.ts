@@ -65,8 +65,17 @@ describe('POST /api/pair on an agent that has had a team', () => {
   it('refuses with a plain reason before reading anything', async () => {
     const r = await request(appWith(() => true)).post('/api/pair').send({ pairingCode: 'x' });
     expect(r.status).toBe(409);
-    expect(r.body.error).toBe('team-needs-one-machine');
-    expect(r.body.detail).toMatch(/second machine/);
+    expect(r.body.error).toBe('team-needs-newer-build');
+    expect(r.body.detail).toMatch(/Update it/);
+  });
+
+  it('the joiner\'s version is what is judged, and one with none counts as old', async () => {
+    const seen: number[] = [];
+    const app = appWith(((v: number) => { seen.push(v); return v < 1; }) as never);
+    expect((await request(app).post('/api/pair').send({ pairingCode: 'x' })).status).toBe(409);
+    expect((await request(app).post('/api/pair').send({ teamEnforcement: 'high' })).status).toBe(409);
+    expect((await request(app).post('/api/pair').send({ teamEnforcement: 1 })).status).toBe(400);
+    expect(seen).toEqual([0, 0, 1]);
   });
 
   it('carries on as before otherwise', async () => {

@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-18T08:56:15.013Z",
+  "slug": "quota-pacing-account-choice",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 1384,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/QuotaAwareScheduler.ts",
+      "src/core/QuotaPoller.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SubscriptionAccountMetaReplicatedStore.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/UsageWallRescue.ts",
+      "src/core/codexDeviceLimitWiring.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/core/windowAwareChoice.ts",
+      "src/core/windowAwarePlacement.ts",
+      "src/data/awareness/account-choice-shadow.md",
+      "src/data/feature-ladders.json",
+      "src/monitoring/AccountChoiceShadowLog.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/quotaPacingRoutes.ts"
+    ],
+    "addedLines": 1346,
+    "deletedLines": 38
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-14T22:24:36.800Z",
+  "slug": "jev-error-typing",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/JevFirstDecision.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "team-2b",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T19:19:38.114Z",
+  "artifactPath": "upgrades/side-effects/team-2b.md",
+  "artifactSha256": "3f90c62be94f86d6945fe85653b211cda51a086b4d8844fd05fa3280c4a798ac",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/TeamAccessLog.ts",
+    "src/core/TeamAccessSync.ts",
+    "src/server/AgentServer.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/team-access-alive.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "tests/unit/app-dispatch-engine.test.ts",
+    "tests/unit/team-access-sync.test.ts",
+    "tests/unit/team-guards.test.ts",
+    "tests/unit/zz-review-team2b.test.ts",
+    "upgrades/side-effects/team-2b.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

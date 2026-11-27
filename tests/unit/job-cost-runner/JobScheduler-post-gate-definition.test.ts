@@ -127,7 +127,9 @@ describe('post-gate check: projection is not a definition change', () => {
     const { s, sm } = mkScheduler(project, { developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: [] } } });
     scheduler = s;
     s.start();
-    s.getJobSupervisionStore().holdSlug('probe', 'independent-history-mismatch');
+    // A census-reason hold with no mismatching run behind it is lifted by the
+    // census itself (CMT-1610); a hold the census does not own stays.
+    s.getJobSupervisionStore().holdSlug('probe', 'write-failed:test-ledger');
 
     expect(await s.triggerJob('probe', 'test')).toBe('triggered');
     expect(sm._spawnCount).toBe(1);

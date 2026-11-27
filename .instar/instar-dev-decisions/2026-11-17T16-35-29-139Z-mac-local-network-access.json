@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-17T16:35:29.139Z",
+  "slug": "mac-local-network-access",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 244,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MacLocalNetworkAccess.ts",
+      "src/data/awareness/mac-local-network-access.md"
+    ],
+    "addedLines": 244,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

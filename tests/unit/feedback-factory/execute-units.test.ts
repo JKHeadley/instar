@@ -13,21 +13,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath, nodeInstallReadAllows,
-  pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
+  pathSlug, resolveExecuteConfig, systemTempDenies, systemTempRoots, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
-import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
+import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, readBaseFile, addsCredentialShape, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, dependencyManifestText, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
-import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
+import { attemptTrashPending, attemptTrashSettled, removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
+afterEach(async () => { await attemptTrashSettled(); for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
 function tmp(prefix = 'exec-units-'): string { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; }
 function write(root: string, rel: string, text: string | Buffer) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
 
@@ -92,6 +92,25 @@ describe('policy', () => {
     // With no attempt temp under it, the system temp stays denied (the must-fail probe's premise).
     expect(systemTempDenies('/h/.worktrees/w')).toContain(realTmp);
     expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
+  });
+
+  it('SEC-098: reads stay denied across the WHOLE shared temp even though the attempt temp lives under it', () => {
+    const realTmp = fs.realpathSync('/tmp');
+    const tmpDir = `${realTmp}/fb-abc1234567`;
+    const paths = { workspace: '/h/.worktrees/w', tmpDir, depsCache: '/h/.cache/deps', agentHome: '/h', publishClone: '/h/.worktrees/w-publish', homeDir: '/u', testRunnerHoldersFile: '/h/.instar/state/host-test-runner-holders.json' } as Parameters<typeof buildSandboxRuntimeSettings>[0];
+    const runtime = buildSandboxRuntimeSettings(paths);
+    // The read deny list carries every temp root, the attempt temp's ancestor included…
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', '/var/tmp', realTmp]));
+    expect(runtime.filesystem.denyRead).toEqual(expect.arrayContaining(systemTempRoots()));
+    // …and only the attempt's own temp is re-allowed (allowRead wins inside a denied region).
+    expect(runtime.filesystem.allowRead).toContain(tmpDir);
+    expect(runtime.filesystem.allowRead).not.toContain(realTmp);
+    // The write side keeps the ancestor filtering (the 2026-10-22 base-unit-smoke EPERM fix).
+    expect(runtime.filesystem.denyWrite).not.toContain(realTmp);
+    // The session worker inherits the same read deny list.
+    const worker = buildClaudeSandboxSettings({ paths, agentHomeChildren: [] }) as { sandbox: { filesystem: { denyRead: string[]; allowRead: string[] } } };
+    expect(worker.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['/tmp', '/private/tmp', realTmp]));
+    expect(worker.sandbox.filesystem.allowRead).toContain(tmpDir);
   });
 
   it('re-allows reads of a Node install under home (nvm), never one that would re-open a denied path (fb-c238c6c9-f0d)', () => {
@@ -332,6 +351,60 @@ describe('change set', () => {
     await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/binary content above 4 MiB/);
     write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0xff]), Buffer.alloc(4 * 1024 * 1024, 0x61)]));
     await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/non-UTF-8 content above 4 MiB/);
+  });
+
+  describe('secret gate judges a modified file on what it adds', () => {
+    const TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+    const clean = { notes: 'clean', prTitle: 't', prBody: 'b' };
+    const modified = (text: string) => ({ entries: [{ path: 'src/a.ts', kind: 'modified' as const, bytes: Buffer.from(text) }], totalBytes: text.length });
+    const base = `const old = '${TOKEN}';\nconst keep = 1;\n`;
+    it('holds nothing for a credential shape already in the base', () => {
+      expect(secretGate(modified(`${base}const added = 2;\n`), clean, () => Buffer.from(base))).toEqual([]);
+    });
+    it('holds a new credential in a file that already matched', () => {
+      expect(secretGate(modified(`${base}const added = '${TOKEN.replace('a1', 'z9')}';\n`), clean, () => Buffer.from(base))).toEqual(['src/a.ts']);
+    });
+    it('holds a value on a new line whose label was already in the base, across blank lines', () => {
+      const value = `Zx9${'q7W2e'.repeat(6)}`;
+      expect(addsCredentialShape(`password:\n\n\n${value}\n`, 'password:\n\n\n')).toBe(true);
+    });
+    it('holds a new value placed against a known one, which the scrub alone would mask as an overlap', () => {
+      const known = `password=abc.${'1'.repeat(12)}`;
+      const added = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+      expect(addsCredentialShape(`${known}:${added}\n`, `${known}\n`)).toBe(true);
+    });
+    it('holds a PEM body added under a BEGIN line the base already had, split by blank lines', () => {
+      const begin = '-----BEGIN RSA PRIVATE KEY-----', end = '-----END RSA PRIVATE KEY-----';
+      const body = 'MIIEvQ'.repeat(40);
+      expect(addsCredentialShape(`${begin}\n\n\n${body}\n${end}\n`, `${begin}\nnot a key\n`)).toBe(true);
+    });
+    it('sees a PEM block straddling a chunk boundary, even in an added file', () => {
+      const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIEvQ'.repeat(400)}\n-----END RSA PRIVATE KEY-----`;
+      expect(credentialShaped(`${'x '.repeat(32_000 - 600)}\n${pem}\n`)).toBe(true);
+    });
+    it('holds on any match when the base is unavailable, has a NUL byte, or no reader is given', () => {
+      const text = `${base}const added = 2;\n`;
+      expect(secretGate(modified(text), clean, () => null)).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean, () => Buffer.from(`${base}\0`))).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean)).toEqual(['src/a.ts']);
+    });
+    it('holds an added file on any match, whatever the reader returns', () => {
+      const entries = [{ path: 'src/new.ts', kind: 'added' as const, bytes: Buffer.from(base) }];
+      expect(secretGate({ entries, totalBytes: base.length }, clean, () => Buffer.from(base))).toEqual(['src/new.ts']);
+    });
+    it('readBaseFile refuses a path outside the clone, a symlink and a missing file', () => {
+      const { pub } = trees();
+      write(pub, 'src/real.ts', 'x');
+      fs.symlinkSync(path.join(pub, 'src/real.ts'), path.join(pub, 'src/link.ts'));
+      expect(readBaseFile(pub, 'src/real.ts')?.toString()).toBe('x');
+      expect(readBaseFile(pub, '../outside.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/link.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/none.ts')).toBeNull();
+    });
+    it('the executor passes the publish clone to the gate', () => {
+      const source = fs.readFileSync(path.join(process.cwd(), 'src/feedback-factory/execute/FeedbackExecutorService.ts'), 'utf-8');
+      expect(source).toContain('publishClone ? (rel) => readBaseFile(publishClone, rel) : undefined');
+    });
   });
 
   it('diff gate and secret gate (names only)', async () => {
@@ -634,7 +707,7 @@ describe('canary judgement', () => {
       const broken = await runRunnerCanary({ paths: p, fixture: fx, runner: runner(() => 1), fullGate: null });
       expect(verdictOf(broken, 's').ok).toBe(false);
       const leaky = await runRunnerCanary({ paths: p, fixture: fx, runner: runner((c) => (/^cat /.test(c) ? 0 : confinedOk(c))), fullGate: null });
-      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree']);
+      expect(leaky.filter((x) => !x.ok).map((x) => x.probe)).toEqual(['bash-read-agent-config', 'bash-read-secret', 'bash-read-home', 'bash-read-sibling-worktree', 'bash-read-system-temp']);
       // The sibling probe reads a nonce placed beside the workspace under .worktrees/.
       expect(fs.readFileSync(fx.siblingNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(path.dirname(fx.siblingNoncePath))).toBe(path.join(p.agentHome, '.worktrees'));
@@ -644,6 +717,31 @@ describe('canary judgement', () => {
       expect(fs.readFileSync(fx.homeNoncePath, 'utf8')).toBe(`canary-secret-${fx.nonce}`);
       expect(path.dirname(fx.homeNoncePath)).toBe(p.homeDir);
     } finally { await fx.close(); }
+  });
+
+  it('SEC-098: on Linux the shared-temp write probe is judged by its effect (a read-denied /tmp is a private writable tmpfs there)', async () => {
+    const p = paths(tmp());
+    const fx = await prepareCanaryFixture(p, { secretsDir: path.join(p.agentHome, '.instar', 'canary'), configPath: path.join(p.agentHome, '.instar', 'config.json') });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    // The write "succeeds" (exit 0) but nothing reaches the host's shared temp: the private-tmpfs case.
+    const privateTmpfs = runner((c) => (c.startsWith('echo x > ') && c.includes('feedback-canary-') && !c.includes('.worktrees') ? 0 : confinedOk(c)));
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const linux = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(linux.find((x) => x.probe === 'bash-write-system-temp')).toMatchObject({ ok: true, detail: 'written to the sandbox-private temp only' });
+      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+      const mac = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(mac.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+      // A write that really lands in the shared temp fails on every platform.
+      fs.writeFileSync(fx.systemTmpWritePath, 'x');
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      const landed = await runRunnerCanary({ paths: p, fixture: fx, runner: privateTmpfs, fullGate: null });
+      expect(landed.find((x) => x.probe === 'bash-write-system-temp')!.ok).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      try { SafeFsExecutor.safeUnlinkSync(fx.systemTmpWritePath, { operation: 'SEC-098 test cleanup' }); } catch { /* absent */ }
+      await fx.close();
+    }
   });
 
   it('effects are judged by trusted observation: a leaked nonce, an outside file, a changed .git/config, a listener hit', async () => {
@@ -795,7 +893,7 @@ describe('canary review-round regressions', () => {
       expect(prompt).toContain(`Read tool to read ${l.symLink}`);
       expect(prompt).toContain(`Write tool to create ${l.depsWriteViaLink}`);
       expect(prompt).not.toContain('ln -s'); // a model asked to build the link itself declines; trusted code builds it
-      expect(SESSION_CANARY_STEPS).toBe(21);
+      expect(SESSION_CANARY_STEPS).toBe(22);
       expect(prompt).toContain(`Bash tool: cat ${fx.siblingNoncePath}`);
       expect(prompt).toContain(`Read tool to read ${fx.siblingNoncePath}`);
       // The sibling directory is reached through a workspace symlink trusted code made: Read, Write
@@ -919,10 +1017,75 @@ describe('runner and filesystem helpers', () => {
     expect(await treeBytes(path.join(root, 'attempt'))).toBe(3);
     removeAttemptTree(path.join(root, 'attempt'), trash, 'test');
     expect(fs.existsSync(path.join(root, 'attempt'))).toBe(false);
+    // The path is free at once; the bytes go in the background.
+    await attemptTrashSettled();
     expect(fs.readdirSync(trash)).toHaveLength(0);
     removeAttemptTree(path.join(root, 'missing'), trash, 'test');
     write(trash, 'left/x', 'x');
     expect(sweepTrash(trash, 'test')).toBe(1);
+    // A second sweep before the delete ran must not queue the same leftover again.
+    expect(sweepTrash(trash, 'test')).toBe(0);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(0);
+    expect(attemptTrashPending()).toBe(0);
+  });
+
+  it('removing an attempt tree never deletes it on the calling thread, and deletes one tree at a time', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (const name of ['base', 'head', 'gate']) write(root, `${name}/node_modules/pkg/index.js`, 'x');
+    const syncRm = vi.spyOn(SafeFsExecutor, 'safeRmSync');
+    let running = 0; let peak = 0;
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      running++; peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 15));
+      try { await realRm(target, opts); } finally { running--; }
+    });
+    try {
+      for (const name of ['base', 'head', 'gate']) removeAttemptTree(path.join(root, name), trash, 'test');
+      // Synchronously: every path is gone from where it was, nothing was deleted yet, all three are parked.
+      for (const name of ['base', 'head', 'gate']) expect(fs.existsSync(path.join(root, name))).toBe(false);
+      expect(syncRm).not.toHaveBeenCalled();
+      expect(fs.readdirSync(trash)).toHaveLength(3);
+      expect(attemptTrashPending()).toBe(3);
+      await attemptTrashSettled();
+      expect(asyncRm).toHaveBeenCalledTimes(3);
+      expect(peak).toBe(1);
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { syncRm.mockRestore(); asyncRm.mockRestore(); }
+  });
+
+  it('a failed background delete leaves the tree parked for the next sweep and does not stop later deletes', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    write(root, 'first/x', 'x'); write(root, 'second/x', 'x');
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    let calls = 0;
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      if (++calls === 1) throw new Error('EBUSY');
+      await realRm(target, opts);
+    });
+    try {
+      removeAttemptTree(path.join(root, 'first'), trash, 'test');
+      removeAttemptTree(path.join(root, 'second'), trash, 'test');
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(1);
+      expect(attemptTrashPending()).toBe(0);
+      expect(sweepTrash(trash, 'test')).toBe(1);
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { asyncRm.mockRestore(); }
+  });
+
+  it('a sweep queues at most its limit of leftovers', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (let i = 0; i < 5; i++) write(trash, `left-${i}/x`, 'x');
+    expect(sweepTrash(trash, 'test', 2)).toBe(2);
+    expect(attemptTrashPending()).toBe(2);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(3);
   });
 });
 
@@ -1217,5 +1380,49 @@ describe('canary: a failing probe names what it observed', () => {
     const noisy = await gitProbe({ '9': "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-A' (errno=Operation not permitted)" });
     expect(noisy.ok).toBe(true);
     expect(noisy.detail).toContain('xcrun_db');
+  });
+});
+
+describe('related-test failure keys', () => {
+  it('reads failed tests, failed suites and unhandled-error origins, relative to the clone', async () => {
+    const { vitestFailureKeys, failuresAllPreexisting } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const json = JSON.stringify({ testResults: [
+      { name: '/c/head/tests/a.test.ts', status: 'failed', assertionResults: [{ fullName: 'a > breaks', status: 'failed' }, { fullName: 'a > ok', status: 'passed' }] },
+      { name: '/c/head/tests/b.test.ts', status: 'failed', assertionResults: [] },
+      { name: '/c/head/tests/c.test.ts', status: 'passed', assertionResults: [{ fullName: 'c', status: 'passed' }] },
+    ] });
+    const out = '\u001b[31mThis error originated in "\u001b[1mtests/d.test.ts\u001b[22m" test file.';
+    const head = vitestFailureKeys(json, out.replace(/\u001b\[[0-9;]*m/g, ''), '/c/head');
+    expect([...head.keys].sort()).toEqual(['tests/a.test.ts::a > breaks', 'tests/b.test.ts::<suite>', 'tests/d.test.ts::<unhandled>']);
+    expect(head.files).toEqual(['tests/a.test.ts', 'tests/b.test.ts', 'tests/d.test.ts']);
+    const base = vitestFailureKeys(json.replaceAll('/c/head/', '/c/base/'), out, '/c/base');
+    expect(failuresAllPreexisting(head.keys, base.keys)).toBe(true);
+    expect(failuresAllPreexisting(head.keys, new Set(['tests/a.test.ts::a > breaks']))).toBe(false);
+    expect(failuresAllPreexisting(new Set(), base.keys)).toBe(false);
+    expect(vitestFailureKeys('not json', '', '/c').keys.size).toBe(0);
+    const unsafe = vitestFailureKeys(null, 'originated in "../x.test.ts" test file. originated in "/etc/y.test.ts" test file. originated in "--config=z" test file.', '/c');
+    expect(unsafe.keys.size).toBe(0);
+  });
+});
+
+describe('filesNamingTest', () => {
+  it('keeps the files that contain the named test, and all of them when none do or the text is unknown', async () => {
+    const { filesNamingTest } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const texts: Record<string, string | null> = { 'tests/a.test.ts': "it('never routes the gate to gemini', () => {})", 'tests/b.test.ts': "it('other', () => {})", 'tests/c.test.ts': null };
+    const read = (f: string) => texts[f] ?? null;
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/a.test.ts', 'tests/b.test.ts'], 'routing > never routes the gate to gemini', read)).toEqual(['tests/a.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts', 'tests/c.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/c.test.ts']);
+    expect(filesNamingTest(['tests/b.test.ts'], 'never routes the gate to gemini', read)).toEqual(['tests/b.test.ts']);
+  });
+});
+
+describe('already-fixed claim in the session result', () => {
+  it('keeps a hex fixedByCommit only on not-reproducible', async () => {
+    const { parseSessionResult } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: ' ABC1234 ' }))?.fixedByCommit).toBe('abc1234');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'HEAD~1' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'abc12' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'gave-up', fixedByCommit: 'abc1234' }))?.fixedByCommit).toBeUndefined();
   });
 });

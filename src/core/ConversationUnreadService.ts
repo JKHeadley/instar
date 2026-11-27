@@ -18,6 +18,7 @@
  * CATCH_UP_RETRY_MS, at most CATCH_UP_MAX_FAILURES times in a row; then it waits for the peer to come
  * back (onPeerOnline) or the next boot. Proven in tests/unit/self-action-convergence.test.ts.
  */
+import { isPeerBooting } from '../server/BootReadiness.js';
 import type { OwnerIdentity, ResolvedPerson, ConversationOwner } from './MobilePeople.js';
 import type { BrowsedMessage, ConversationSummary } from './AppConversationStore.js';
 import type { PoolPeerTarget, RopeResultRecorder } from '../server/poolPeerFetch.js';
@@ -60,6 +61,8 @@ export type UnreadAppStore = {
   listConversations(opts?: { limit?: number; cursor?: string | null }): { conversations: ConversationSummary[]; nextCursor: string | null };
   eventAt(conversationKey: string, eventId: string): string | null;
   newestIngestSeq(conversationKey: string): number;
+  /** Owner discovery excludes internal work even when old history or a push trigger still names it. */
+  isHiddenConversation?(conversationKey: string): boolean;
 };
 
 export interface ConversationUnreadDeps {
@@ -81,6 +84,12 @@ export interface ConversationUnreadDeps {
   readerRemoved?: (key: string) => boolean;
   /** The one shared conversation access check (`MobilePairingService.mayUse`). */
   mayUse: (person: ResolvedPerson, ref: string, op?: 'read') => boolean;
+  /**
+   * Team access 2b (team-roles-and-access, "A cut-off machine's words are held back"): whether this
+   * reader may see one stored app message. A row held from them is not counted, so a count never
+   * announces it. Absent ⇒ every row of a readable conversation counts.
+   */
+  mayReadMessage?: (person: ResolvedPerson, conversationKey: string, m: BrowsedMessage) => boolean;
   /** The pool's peers, for forwarding a mark and for the boot catch-up. Absent ⇒ one machine. */
   peers?: () => PoolPeerTarget[];
   peerAllowlist?: () => string[] | undefined;
@@ -206,6 +215,7 @@ export class ConversationUnreadService {
   }
 
   private rowFieldsUnguarded(reader: Reader, row: { platform: 'app' | 'telegram' | 'slack'; id: string | number; lastActivity: string | null; machine?: string | null }): UnreadFields | null {
+    if (row.platform === 'app' && this.deps.app?.isHiddenConversation?.(String(row.id))) return null;
     const ref = this.refOfRow(row);
     if (!ref || !this.mayRead(reader, ref)) return null;
     const stored = this.store.storedPosition(reader.key, ref);
@@ -241,7 +251,7 @@ export class ConversationUnreadService {
   countFor(reader: Reader, ref: string): CountResult | null {
     const stored = this.store.storedPosition(reader.key, ref);
     if (!stored) return { count: 0, more: false, ownNewest: null, effective: null };
-    const src = this.sourceRows(ref);
+    const src = this.sourceRows(ref, reader);
     if (!src) return null;
     const posKey = `${stored.atMs}:${stored.id}`;
     const ck = `${reader.key}\u0000${ref}`;
@@ -275,7 +285,7 @@ export class ConversationUnreadService {
   }
 
   /** The conversation's rows newest first, from the source the list already loads. */
-  private sourceRows(ref: string): SourceRows | null {
+  private sourceRows(ref: string, reader?: Reader): SourceRows | null {
     if (ref.startsWith('app:')) {
       const key = ref.slice(4);
       const app = this.deps.app;
@@ -284,13 +294,18 @@ export class ConversationUnreadService {
       if (!conv || conv.tombstoned) return null;
       const page = app.browseMessages(key, null, 100);
       const rows: RawRow[] = [];
+      const mayRead = this.deps.mayReadMessage;
+      const person = reader?.person ?? null;
+      let held = 0;
       for (const m of page.messages) {
+        if (mayRead && person && !mayRead(person, key, m)) { held++; continue; }
         const atMs = atMsOf(m.at);
         if (atMs === null) continue;
         rows.push({ atMs, id: m.eventId, sender: m.role === 'agent' ? { kind: 'agent' } : { kind: 'operator', viaApp: true, role: m.senderRole, person: m.senderPerson ?? null } });
       }
       rows.reverse();
-      return { rows, complete: page.nextBefore === null, rev: String(app.newestIngestSeq(key)) };
+      // A grant that shows a held row changes the count without a new message, so it changes `rev` too.
+      return { rows, complete: page.nextBefore === null, rev: `${app.newestIngestSeq(key)}:${held}` };
     }
     if (ref.startsWith('telegram:')) {
       const tg = this.deps.telegram;
@@ -388,7 +403,7 @@ export class ConversationUnreadService {
         }
         cursor = page.nextCursor;
       } while (cursor && ++pages < 25);
-      if (triggering && !sawTrigger && this.mayRead(reader, `app:${triggering.conversationKey.toLowerCase()}`)) total += 1;
+      if (triggering && !sawTrigger && !this.deps.app.isHiddenConversation?.(triggering.conversationKey) && this.mayRead(reader, `app:${triggering.conversationKey.toLowerCase()}`)) total += 1;
       return total;
     } catch (err) {
       this.deps.report?.('ConversationUnread.badge', err instanceof Error ? err.message : String(err)); // @silent-fallback-ok — the push still sends without a badge
@@ -543,6 +558,7 @@ export class ConversationUnreadService {
             const r = await poolPeerFetch(this.deps.recordRope, p, `/mobile/conversations/read-markers?limit=${CATCH_UP_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, {
               headers: { Authorization: `Bearer ${this.deps.authToken()}` }, signal: AbortSignal.timeout(CATCH_UP_PAGE_TIMEOUT_MS), redirect: 'manual',
             }, this.deps.fetchImpl ?? fetch);
+            if (isPeerBooting(r)) throw new Error('peer-starting'); // still booting: retry later, never "done"
             if (r.status === 404 || r.status === 503) { // an older peer, or unread off there: nothing to merge, and nothing to retry
               this.store.setCatchUpState(p.machineId, { cursor: null, done: true, lastAttemptAt: this.now(), failures: st.failures });
               return;

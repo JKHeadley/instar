@@ -2,7 +2,7 @@
 // Reads only; the one frequent write is Rename (bearer). Identity reviews stay in
 // the legacy tab until their PIN sheet is rebuilt (the plan's first cut).
 
-import { buildMachinesPage, ropesFor, healthOf, poolUsageOf, machineCarePool } from './machines-model.js';
+import { buildMachinesPage, ropesFor, healthOf, poolUsageOf, machineCarePool, desktopPermissionFixes } from './machines-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, note, cantTell, firstPaint, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
@@ -11,7 +11,7 @@ const STATE_DOT = { ok: 'dot live', attn: 'dot attn', bad: 'dot bad', stale: 'do
 export async function renderMachines(main, ctx) {
   const { get } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Machines' }), el('h1', { class: 'page-title skeleton', text: 'Loading machines' })));
-  const [pool, health, guards, sessions, care, resources] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000)]);
+  const [pool, health, guards, sessions, care, resources, attention] = await Promise.all([get('/pool'), get('/health'), get('/guards'), get('/sessions?scope=pool', 8000), get('/machine-maintenance?scope=pool', 8000), get('/mobile/resources', 8000), get('/attention?scope=pool&status=OPEN', 8000)]);
   const usage = poolUsageOf(resources);
   const live = sessions.ok && Array.isArray(sessions.data && sessions.data.sessions) ? sessions.data.sessions.filter((s) => s.status === 'running' || s.status === 'starting') : [];
   const byMachine = {};
@@ -22,9 +22,11 @@ export async function renderMachines(main, ctx) {
   const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
 
-  const carePool = machineCarePool(care);
+  const carePool = machineCarePool(care, { pool });
   const careFor = (m) => (carePool ? (carePool.byMachine[m.id] || (m.isSelf ? carePool.selfLine : null)) : null);
   const cards = el('div', { class: 'machine-cards' }, page.machines.map((m) => {
+    // A legacy answer measures only the serving machine, regardless of its display name.
+    const reading = usage.pooled ? usage.byName[m.name] : m.isSelf ? usage.self : null;
     const card = el('button', { class: 'machine-card', type: 'button', 'data-state': m.state, 'data-focus-key': `m:${m.id}` },
       el('span', { class: 'mc-top' },
         el('span', { class: STATE_DOT[m.state] || 'dot' }),
@@ -33,18 +35,35 @@ export async function renderMachines(main, ctx) {
         el('span', { class: 'mc-state', text: m.label })),
       el('span', { class: 'mc-line', text: [m.verdict ? `${m.verdict}${typeof m.perCore === 'number' ? ` · load ${m.perCore.toFixed(1)} per core` : ''}` : 'no load reading', typeof m.sessions === 'number' ? `${m.sessions} ${m.sessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean).join(' · ') }),
       el('span', { class: 'mc-evidence', text: m.age ? `last evidence ${m.age}${m.estimated && !page.single ? ' (estimated)' : ''}` : 'no evidence since the agent last started' }),
-      usage.ok && usage.byName[m.name] ? el('span', { class: 'mc-evidence', text: `Using ${usage.byName[m.name].line}` }) : null,
+      reading ? el('span', { class: 'mc-evidence', text: `Using ${reading.line}` }) : null,
       careFor(m) ? el('span', { class: 'mc-evidence', text: `Restart care: ${careFor(m)}` }) : null,
     );
-    card.addEventListener('click', () => openMachine(m, { get, health, guards, names, usage }));
+    card.addEventListener('click', () => openMachine(m, { get, health, guards, names, usage, reading }));
     return card;
   }));
+  // A machine whose remote desktop lost its Mac permission: the problem and its one fix, first.
+  const query = new URLSearchParams((location.hash.split('?')[1] || ''));
+  const wantFix = query.get('fix') === 'desktop-permission' ? query.get('m') : null;
+  const fixes = desktopPermissionFixes(attention, Object.fromEntries(page.machines.map((m) => [m.id, m.name]))) || [];
+  fixes.sort((a, b) => Number(b.machineId === wantFix) - Number(a.machineId === wantFix));
+  const fixCards = fixes.map((f) => el('section', { class: 'need-card desktop-fix', id: `fix-${f.machineId}`, 'data-operator-need': 'desktop-permission' },
+    el('h2', { class: 'need-title', text: f.title }),
+    el('p', { class: 'need-sub', text: f.why }),
+    f.locked ? el('p', { class: 'need-line', text: f.locked }) : null,
+    el('p', { class: 'need-line', text: f.action }),
+    el('p', { class: 'need-sub', text: f.ifMissing }),
+    el('p', { class: 'confirm-row' }, el('a', { class: 'btn-primary btn-inline', href: f.retryHref, text: `Then open ${f.machine}’s remote desktop` }))));
+  const wantedGone = wantFix && !fixes.some((f) => f.machineId === wantFix) && attention && attention.ok;
   setKids(main, 
     pageHead({ eyebrow: 'Capacity · Machines', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
+    ...fixCards,
+    wantedGone ? note('Remote desktop on that Mac no longer reports a permission problem.') : null,
+    wantFix && attention && !attention.ok ? note(`Couldn't check the remote desktop permission: ${attention.reason || 'no answer'}.`) : null,
     !sessions.ok ? note(`Couldn't count sessions: ${sessions.reason}.`) : null,
     // warning-path: card click opens the machine, which says what isn't answering
     usage.ok ? note(['Resource use, last hour: ' + usage.summary, usage.busiest].filter(Boolean).join(' · ')) : note(`Can’t tell resource use: ${usage.reason}.`),
     carePool ? note([carePool.header, ...carePool.missing].join(' · ')) : null,
+    el('p', { class: 'foot-note' }, el('a', { href: '#/capacity/machine-care', text: 'Machine care: sign up, skip a night, change the hours, or restart now' })),
     cards,
     legacyLink(),
   );
@@ -65,7 +84,7 @@ function rowsList(rows) {
     el('span', { class: 'row-end', text: r.end || '' }))));
 }
 
-async function openMachine(m, { get, health, guards, usage }) {
+async function openMachine(m, { get, health, guards, usage, reading }) {
   const hw = m.hardware || {};
   const lines = [
     { label: 'State', text: `${m.label}${m.estimated ? ' (estimated from heartbeat age and load)' : ''}` },
@@ -79,12 +98,11 @@ async function openMachine(m, { get, health, guards, usage }) {
     const ropes = ropesFor(m.id, health);
     body.push(block('Connections', ropes && ropes.some((r) => r.state === 'bad') ? askLink(`The connections to ${m.name} are failing`) : null, ropes === null ? note('Can’t tell: the connection checks did not answer.') : ropes.length ? rowsList(ropes.map((r) => ({ main: r.kind, sub: r.label, tone: r.state === 'ok' ? null : r.state }))) : note(`No connection checks recorded to ${m.name} yet.`)));
   }
-  // What's using it: the pooled read covers every machine, whichever one served this page.
-  const u = usage && usage.ok ? usage.byName[m.name] : null;
+  // What's using it: a pooled read covers every machine; an older server's read covers only the serving machine.
   body.push(block('What’s using it',
-    u ? el('p', { class: 'card-line', text: u.state === 'answering' ? u.line : `${u.line}.` }) : note(usage && !usage.ok ? `Can’t tell: ${usage.reason}.` : `Can’t tell: ${m.name} has no resource reading here.`),
-    u && u.state !== 'answering' ? askLink(`${m.name}'s resource use: ${u.line}`) : null,
-    u && u.rows.length ? rowsList(u.rows) : null));
+    reading ? el('p', { class: 'card-line', text: reading.state === 'answering' ? reading.line : `${reading.line}.` }) : note(usage && !usage.ok ? `Can’t tell: ${usage.reason}.` : `Can’t tell: ${m.name} has no resource reading here.`),
+    reading && reading.state !== 'answering' ? askLink(`${m.name}'s resource use: ${reading.line}`) : null,
+    reading && reading.rows.length ? rowsList(reading.rows) : null));
   // Remote desktop for every machine; the desktop page explains a machine that isn't ready and shows its setup steps.
   if (m.id !== 'self') {
     body.push(block('Remote desktop',

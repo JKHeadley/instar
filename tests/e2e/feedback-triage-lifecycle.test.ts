@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
 import { createHmac } from 'node:crypto';
+import { promoteConsumerFromProposal } from '../helpers/feedbackConsumerPromotion.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
@@ -130,8 +131,8 @@ describe('feedback triage — production lifecycle (live on a development agent)
       provider: 'claude-code', modelFamily: 'fable-5', promptVersion: 'feedback-readiness-v1', schemaVersion: 'feedback-readiness-decision-v1',
       decisionPointId: 'feedback-cluster-readiness', maxBatch: 50, maxTokens: 900, maxDailySpendUsd: 5,
     })).status).toBe(200);
-    expect((await request(app).post('/feedback-factory/consumer/promote').set(HX)
-      .send({ pin: PIN, approvedBatchBound: 10, evidenceHash: 'b'.repeat(64), operatorDecisionId: 'operator-promote' })).status).toBe(200);
+    const { promote } = await promoteConsumerFromProposal(app, { auth: AUTH, pin: PIN, agentId: 'e2e', operatorDecisionId: 'operator-promote', noncePrefix: 'feedback-triage-sim' });
+    expect(promote.status, JSON.stringify(promote.body)).toBe(200);
     const drainTick = await request(app).post('/feedback-factory/drain/tick')
       .set({ ...HX, 'X-Instar-AgentId': 'e2e', 'X-Instar-Request-Nonce': 'feedback-triage-e2e-0001' });
     expect(drainTick.status).toBe(202);

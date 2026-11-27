@@ -178,6 +178,9 @@ export function desktopSetupStep(s: DesktopSetupStatus, ctx: DesktopSetupContext
     if (s.loginDone === false) {
       return atTheMac('sign-in-window', `Sign in at ${label}`, `It is at its sign-in window. Sign in at ${label}. This page updates by itself.`);
     }
+    if (s.screenLocked === true && s.wsl === true) {
+      return atTheMac('locked', `Unlock ${label}`, `${label} is locked. Remote Desktop cannot unlock Windows yet, so sign in at ${place}. This page updates by itself.`);
+    }
     if (s.screenLocked === true) {
       return atTheMac('locked', `Wake and unlock ${label}`, `${label} is locked. Pop-ups do nothing until it is unlocked, so wake it and sign in at ${place}. This page updates by itself.`);
     }

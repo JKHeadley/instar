@@ -113,7 +113,7 @@ The audience is computed in one place, `SessionManager.resolveSessionAudience`, 
 - Each session stores its `place`. Every respawn, resume and recovery recomputes from it. Places are also stored on the resume entries. A pre-existing resume entry has no place, so the place comes from the topic or channel binding.
 - Each place records its full audience: kind plus the person id or place key. If that differs in any part, the resume binding is dropped: the old transcript may hold what the new audience must not see.
 - Jobs pass `system`. On a multi-person agent, triage does not run on `person`, `place` or `none` sessions, because it runs with owner reach.
-- On a multi-person agent, inbound agent-to-agent sessions are refused. Trust levels limit what a peer may do, not what data its session can see, so a `verified` peer given owner reach could ask for a person's fact and pass it on, and scoped sessions have no MCP to reply with. Stated cost. An agent kept `open` by `sharedMemoryPeople` is unaffected.
+- On a multi-person agent, an inbound agent-to-agent conversation runs in a place of its own, keyed by the peer's authenticated fingerprint, with that place's memory only and a session-bound reply route (memory-privacy-agent-places.md). `memoryPrivacy.refuseAgentSessions: true` restores the refusal. An agent kept `open` by `sharedMemoryPeople` is unaffected.
 - Every inbound message checks the live session for its place and ends it if its audience differs, before the message reaches it, and any resume from a different audience is dropped. This close lifts the ordinary keep-guards, because a busy session is the one that would answer. If the session still cannot be ended, the message is not delivered and the sender gets the fixed reply. A same-name session is reused only for the same audience. That one rule covers sessions from before the update, a restart, and a place that lost its reader proof. Sessions that get no message are harmless until one arrives.
 - On a flip to multi-person, whatever caused it, every other interactive session whose audience would change is ended as well, once. Headless work is left alone.
 
@@ -175,7 +175,8 @@ The session token is a random value, like `ior1_` origin tokens (`OriginSessionR
 | Reply and send routes for each channel | Own place only |
 | Hook event routes | Own session only |
 | `GET /internal/stop-gate/hot-path`, `POST /internal/stop-gate/evaluate`, `/messaging/preflight`, `/telegram/origins/operations/*`, `/events/delivery-failed` | Session plumbing; no remembered content. Other stop-gate routes show all sessions or change agent-wide state, so they are refused. `/internal/compaction-resume` is refused because it accepts any session name |
-| `GET /identity/soul/integrity`, `POST /feedback` | Unchanged; `GET /feedback` is refused, because it lists free text from all sessions |
+| `GET /identity/soul/integrity`, `POST /feedback` | Unchanged; `GET /feedback` is refused, because it lists free text from all sessions. `POST /feedback` and `POST /team/proposals` are refused to another agent's place |
+| `POST /threadline/session-reply` | Another agent's place only; the recipient comes from the session token (memory-privacy-agent-places.md §5) |
 
 A test enumerates every route on every mounted router and fails on any route not classified. Exact-compare sites (`routes.ts:21128, 39371, 20460, 20286, 5422, 18799`, `WebSocketManager.ts:316`) refuse a session token, which is the wanted result. Absence of an audience on a request is never read as owner; only the agent's own token is. `serendipity-capture.sh` gets its existing `SERENDIPITY_SIGNING_KEY` rather than deriving from the env token.
 

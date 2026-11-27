@@ -17,6 +17,9 @@ import {
   isScopedAudience, type MemoryAudience, type MemoryPlace,
 } from './MemoryAudience.js';
 
+/** The synthetic place kind of a fold's shadow answerer (§10): never a channel's place. */
+export const FOLD_PROBE_PLACE_PREFIX = 'fold-probe:';
+
 /** How long proof that a place has one reader stays usable. Inbound re-checks every message. */
 export const READER_PROOF_MS = 5 * 60_000;
 
@@ -36,6 +39,10 @@ export interface MemoryPrivacyConfig {
   ownerUserId?: string;
   sharedMemoryPeople?: string[];
   privateGroups?: string[];
+  /** True restores the refusal of agent-to-agent conversations (memory-privacy-agent-places §7). Read live. */
+  refuseAgentSessions?: boolean;
+  /** Whether a peer's reply to a thread an owner or system session started is delivered into it (§3). Read live. */
+  linkedPeerReplies?: 'deliver' | 'post-only';
 }
 
 export interface ReachableLists {
@@ -131,6 +138,16 @@ export class MemoryPrivacy {
     this.state = this.load();
   }
 
+  /** `memoryPrivacy.refuseAgentSessions`, read live. Anything but exactly true is false. */
+  refuseAgentSessions(): boolean {
+    return this.deps.config().refuseAgentSessions === true;
+  }
+
+  /** `memoryPrivacy.linkedPeerReplies`, read live. Anything but 'post-only' delivers. */
+  linkedPeerReplies(): 'deliver' | 'post-only' {
+    return this.deps.config().linkedPeerReplies === 'post-only' ? 'post-only' : 'deliver';
+  }
+
   get enabled(): boolean {
     return this.deps.config().enabled !== false;
   }
@@ -177,6 +194,16 @@ export class MemoryPrivacy {
     for (const sender of pending) this.observeSender(sender);
     const group = this.deps.telegramGroupKey?.() ?? null;
     if (group) this.confirmExistingGroup(group);
+  }
+
+  /**
+   * A fingerprint of who counts as the operator (the baseline's operator keys,
+   * the owner, and the configured Telegram owner `isOwnerSender` compares with), so a reader that labelled rows earlier can tell the
+   * binding has changed and relabel (context-budget §8, U). Identity only.
+   */
+  operatorBindingFingerprint(): string {
+    const keys = [...this.state.operatorKeys].sort().join('\n');
+    return createHash('sha256').update(`${this.state.baselineDone ? 1 : 0}\n${this.ownerUserId() ?? ''}\n${this.deps.reachable().telegramOwnerId ?? ''}\n${keys}`).digest('hex');
   }
 
   /** True when this sender is the operator recorded at baseline. */
@@ -419,6 +446,18 @@ export class MemoryPrivacy {
     this.state.tokens[hashToken(token)] = { sessionId, audience, placeKey };
     this.save();
     return token;
+  }
+
+  /**
+   * A token for the context budget's shadow answerer (context-budget-layered-summaries §10): the
+   * system audience (owner reach, no person) bound to the SYNTHETIC place `fold-probe:<topic>`, a
+   * place no channel ever uses. The memory-session guard lets that place reach exactly its own
+   * topic's chunk lookups and nothing else. Revoke with `revokeSessionTokens(sessionId)` when the
+   * answerer ends.
+   */
+  issueFoldProbeToken(sessionId: string, topicKey: string): string {
+    if (!/^-?\d{1,15}$/.test(topicKey)) throw new Error('fold-probe-token: topic key must be a topic id');
+    return this.issueSessionToken(sessionId, { kind: 'system' }, `${FOLD_PROBE_PLACE_PREFIX}${topicKey}`);
   }
 
   /** The record for a session token, or null when it is not one. */

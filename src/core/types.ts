@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * Core type definitions for instar.
  *
@@ -44,6 +47,42 @@ export interface ProviderCredential {
 
 // ── Session Management ──────────────────────────────────────────────
 
+/** The neutral per-job / per-topic thinking-mode enum (mirrors THINKING_MODES in topicProfileValidation). */
+export type LaunchThinkingMode = 'off' | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Launch intent record (docs/specs/job-launch-intent-record.md §2/§4, D5 — FROZEN field names,
+ * published through GET /jobs/:slug/history). Defined here, in the dependency-free type module,
+ * so Session, the builders and JobRunHistory share one shape without new import edges.
+ * `applied` means "sent on this launch" (in the argv, or the env as `NAME=value`), never that the
+ * engine honoured it. Every enum is additive-only; readers must tolerate values they don't know.
+ */
+export interface LaunchFeature {
+  feature: 'thinkingMode';
+  requestedValue: LaunchThinkingMode;
+  value: string;
+  channel: 'argv' | 'env';
+}
+/** A requested launch feature that was NOT sent. `requestedValue` is omitted for `invalid`. */
+export interface LaunchDrop {
+  feature: 'thinkingMode';
+  requestedValue?: LaunchThinkingMode;
+  reason: 'not-supported' | 'overridden-by-effort-pin' | 'invalid';
+}
+/** The run row's / session's launch record. The row's own framework/model are the only copy of those. */
+export interface JobRunLaunch {
+  /** Parsed semver (≤64 chars), or 'unknown' until/unless the async probe patches it. */
+  cliVersion: string;
+  /** The validated requested value only — never raw text. */
+  requested: { thinkingMode?: LaunchThinkingMode };
+  /** ≤8 entries. */
+  applied: LaunchFeature[];
+  /** ≤8 entries. */
+  dropped: LaunchDrop[];
+  /** Entries beyond 8 across both arrays, removed from the record and counted here. */
+  omitted?: number;
+}
+
 export interface Session {
   id: string;
   name: string;
@@ -72,6 +111,10 @@ export interface Session {
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
+  /** EVO-008: the tool list this session was CONFINED to (no bypass flag; dontAsk +
+   *  --tools). Set by SessionManager only after the final launch argv passed the whole
+   *  confinement contract on a Claude lane; unset on every other launch and on old records. */
+  confinedTools?: string[];
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -158,6 +201,13 @@ export interface Session {
    * now for claude-code spawns; surfaced in GET /sessions and the reap-log so the
    * soak's success criterion (zero 'headless' under force) is machine-checkable. */
   launchLane?: 'headless' | 'rerouted-interactive';
+  /**
+   * The launch record (docs/specs/job-launch-intent-record.md §3/§4): built from the FINAL argv and
+   * `-e` env actually passed to tmux, immediately before the spawn, on both the headless and the
+   * rerouted-interactive lanes. `cliVersion` is the cached value or 'unknown' at spawn time.
+   * Absent when the session was not spawned through those lanes.
+   */
+  launch?: JobRunLaunch;
   /**
    * Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md D4):
    * the transport this session's Threadline tools were given at spawn. Persisted
@@ -538,6 +588,11 @@ export interface JobDefinition {
   frameworkModel?: string;
   /** Opt-in to reviewed, non-safety session-start context omissions. */
   leanContext?: boolean;
+  /** Per-job thinking mode (docs/specs/job-launch-intent-record.md): the neutral
+   *  `off|low|medium|high|max` intent each engine's launch builder translates or drops with a
+   *  recorded reason. Absent → the engine's default, argv/env unchanged. For agentmd jobs the
+   *  manifest value is authority. */
+  thinkingMode?: LaunchThinkingMode;
   /** Explicit missed-work handling after a verified lease promotion. Absent means ask. */
   catchUpPolicy?: 'skip' | 'run-once' | 'ask';
   /** Explicit project-relative prerequisites. Never interpreted as commands. */
@@ -599,6 +654,12 @@ export interface JobDefinition {
    *  When undefined, defaults to 'on-alert' — jobs are quiet unless they have
    *  something that needs the user's attention. */
   telegramNotify?: boolean | 'on-alert';
+  /**
+   * Where a report this job would send goes (docs/specs/backup-email-sending.md). Absent means Telegram only, as
+   * before. `['email']` emails the report that would have gone to Telegram; `['telegram', 'email']` does both.
+   * Never overrides a quiet job. Refused on script jobs (their runner has no report text).
+   */
+  deliver?: Array<'telegram' | 'email'>;
   /** Grounding configuration — what context this job needs at session start */
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
@@ -635,6 +696,11 @@ export interface JobDefinition {
    *  If omitted or empty, the job runs on ALL machines (default behavior).
    *  Example: ["m_abc123...", "justins-macbook"] */
   machines?: string[];
+  /** How much this job asks of a machine (docs/specs/resource-aware-placement.md §5).
+   *  `heavy` (builds, full test runs, simulators) never runs on a machine below the
+   *  heavy-work size floor unless `machines` explicitly names that machine.
+   *  Absent = `standard` (today's behaviour). */
+  workWeight?: 'light' | 'standard' | 'heavy';
   /** Common blockers — pre-confirmed resolution patterns for this job.
    *  Injected into working memory at session start and used by the
    *  EscalationResolutionReviewer to catch unnecessary human escalations. */
@@ -1156,6 +1222,27 @@ export interface IntelligenceProvider {
   evaluate(prompt: string, options?: IntelligenceOptions): Promise<string>;
 }
 
+/**
+ * Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 2): the split,
+ * disjoint token parts and the provider session id a one-shot returned, carried
+ * alongside the folded `inputTokens`/`outputTokens` so existing consumers are
+ * byte-identical. Every field is optional; null/absent means "not reported".
+ */
+export interface IntelligenceUsageDetail {
+  /** Provider session id: Claude `session_id`, Codex `thread_id`, Grok `sessionId`. */
+  sessionId?: string | null;
+  /** Fresh (uncached) input only. */
+  input?: number | null;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+  /** Output including reasoning. */
+  output?: number | null;
+  /** Subset of output (display only). */
+  reasoning?: number | null;
+  reportedUsd?: number | null;
+  reportedBasis?: 'actual' | 'plan-rate' | null;
+}
+
 export interface IntelligenceOptions {
   /** Optional shared-queue cancellation signal for preemptible background work. */
   signal?: AbortSignal;
@@ -1179,8 +1266,14 @@ export interface IntelligenceOptions {
   strictModelPin?: boolean;
   /** Execute this call only on the named CLI door and exact model, without router fallbacks. */
   requiredRoute?: { framework: 'codex-cli'; modelId: string };
-  /** Checked immediately before a fenced model child is spawned. False refuses the launch. */
-  launchGuard?: () => boolean;
+  /**
+   * Keep this call on one provider family: no category or nature routing and no
+   * failure swap. If that framework is unavailable the call throws; it never moves
+   * to another vendor (context-budget §9: conversation content stays on its family).
+   */
+  pinnedFramework?: IntelligenceFramework;
+  /** Codex: awaited immediately before the child is spawned. Pair with requiredRoute for strict routing. */
+  launchGuard?: () => boolean | Promise<boolean>;
   /** Maximum tokens for the response */
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
@@ -1301,7 +1394,7 @@ export interface IntelligenceOptions {
    * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
    * counts into the metrics ledger (/metrics/features).
    */
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; detail?: IntelligenceUsageDetail }) => void;
   /**
    * Observable Intelligence standard (docs/specs/observable-intelligence.md):
    * surface the resolved provider/model so the per-feature metrics funnel can
@@ -1480,6 +1573,7 @@ export type SkipReason =
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
+  | 'machine-too-small' // A `workWeight: 'heavy'` job on a machine below the heavy-work size floor (resource-aware placement §5)
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
@@ -2262,6 +2356,14 @@ export interface MachineRegistryEntry {
    */
   nickname?: string;
   /**
+   * Where `nickname` came from. `user`: typed by a person (never replaced automatically).
+   * `auto-self`: the machine's own friendly name (macOS ComputerName / Linux pretty hostname).
+   * `auto-derived`: derived from another machine's view of the hostname (e.g. at pairing); the
+   * machine itself upgrades it to its own friendly name on boot. Absent on older registries:
+   * treated like `user` (never replaced) when a nickname is present.
+   */
+  nicknameSource?: 'user' | 'auto-self' | 'auto-derived';
+  /**
    * Self-attested static hardware properties (Session Pool §L2) — captured by
    * the machine from `os` and recorded into ITS OWN registry entry, then synced
    * to peers via the registry. Surfaced on the Machines dashboard tab + GET /pool.
@@ -2506,6 +2608,12 @@ export interface MachineCapacity {
    *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
   seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
+    /** document-decisions §6: this build reads the decision row kinds (advertised whatever the documents switch says). */
+    documentsDecisionRows?: boolean;
+    /** member-browser-any-computer §5: this build reads the computer-* team-log rows (advertised whatever the switches say). Sticky on peers while unreachable. */
+    teamLogComputerRows?: boolean;
+    /** member-browser-any-computer §3.6: this machine's own document address (its named tunnel origin), display only. */
+    documentsOrigin?: string | null;
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
     ws11DeliverReceive?: boolean;
@@ -2788,6 +2896,25 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** N73 rollout: endpoint is always available; enable send-time generation
+   * binding only after the receiving pool supports it. Absent/false is off. */
+  messageSessionGeneration?: { enabled?: boolean };
+  /** Storage prerequisite only; never enables the Conversations read/UI increment. */
+  conversationGraph?: {
+    /** Release switches: leave absent/off until increment-A acceptance. Storage
+     * enablement alone does not expose even an opt-in read API. */
+    readEnabled?: boolean;
+    correctionsEnabled?: boolean;
+    /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
+    genesisMembers?: string[];
+    storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };
+    agentId?: string;
+    membership?: import('./GraphMembershipTypes.js').GraphMembershipEpoch;
+    ownerPublicKey?: string;
+    /** SecretStore key names, never bearer values in project configuration. */
+    peerBearerSecret?: string;
+    witness?: { baseUrl: string; witnessId: string; publicKey: string; failureDomain: string; bearerSecret?: string; historicalPublicKeys?: Record<string,string> };
+  };
   /** Whether multi-machine is enabled */
   enabled: boolean;
   /** Private, approved user-job transfer. Dark until paired-machine proof. */
@@ -2976,6 +3103,51 @@ export interface MultiMachineConfig {
    * namespace. See docs/specs/multi-machine-lease-self-heal.md.
    */
   leaseSelfHeal?: LeaseSelfHealConfig;
+  /**
+   * takeover-ready-pool (docs/specs/takeover-ready-pool.md) — losing any machine never
+   * silences a multi-machine agent. `enabled: false` turns every part off (the rollback);
+   * each part rides the development-agent gate (live on a development agent, dark on the
+   * fleet) unless set explicitly.
+   */
+  takeoverReadyPool?: {
+    enabled?: boolean;
+    /**
+     * stall-wake-lease-reconfirm (fb-fdb55c1c-a79): after a gap in this machine's awake clock
+     * (a long main-thread stall or a sleep, above 30% of the lease TTL by default), a claim on a
+     * lapsed-looking lease waits for evidence gathered after the gap: a full TTL awake with a pull
+     * round started after the gap and completed, or the ten-TTL chain cap. Dark: only an explicit
+     * `enabled: true` turns it on; `takeoverReadyPool.enabled: false` turns it off.
+     */
+    stallReconfirm?: {
+      enabled?: boolean;
+      /** Running time lost within one TTL that opens an episode, in ms (clamped to 1000..TTL/2). Default 30% of the lease TTL, floor 5 s. */
+      stallGapMs?: number;
+    };
+    /**
+     * R1 boot claim safety (fb-2bf6ccd0-705): a restarted machine never claims from its own
+     * lapsed lease before asking its peers, never claims while the named preferred machine
+     * answers, and claims only after the preferred machine (every known peer when none is
+     * named) has been silent on `silentProbes` probes spanning `silentSpanMs`.
+     */
+    bootClaimSafety?: {
+      enabled?: boolean;
+      /** Default 3. */
+      silentProbes?: number;
+      /** Default 45000. */
+      silentSpanMs?: number;
+    };
+    /**
+     * planned-restart-keeps-lead (fb-135e3043-add): while a restart of this server is pending, a
+     * holder's renewals carry a bounded window as their expiry and are persisted, so the lead
+     * survives its own boot; at boot a window lease is held only after a peer confirms. Rides the
+     * development-agent gate; `takeoverReadyPool.enabled: false` is the rollback.
+     */
+    plannedRestartLeaseContinuity?: {
+      enabled?: boolean;
+      /** Replaces the measured base of the window (still under the peer-enforced caps). */
+      windowMs?: number;
+    };
+  };
   /**
    * multi-transport-mesh-comms — multi-rope mesh transport (Tailscale/LAN/
    * Cloudflare failover). Ships ENABLED (Layers 0-2 are strictly additive); a
@@ -3352,6 +3524,8 @@ export interface SessionPoolConfig {
     ambiguityCeilingMultiple?: number;
     /** P19 per-tick claim cap. Default 2. */
     maxClaimsPerTick?: number;
+    /** Unroutable-owner release: claims from a revoked / unregistered-silent owner land even in dryRun. Default true. */
+    unroutableOwnerLive?: boolean;
     /** Bootstrap (R-r2-2): never-observed-since-boot expiry multiple. Default 3. */
     bootstrapNonObservationMultiple?: number;
     /** The owner self-fence TTL the §2.3 ordering invariant checks against. Default 60000. */
@@ -3659,6 +3833,19 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /** Owner-only Needs You projection. Enabled explicitly during acceptance. */
+  needsYou?: { ownerAdmission?: { enabled?: boolean } };
+  /**
+   * Voice transcription (docs/specs/backup-on-machine-voice.md). `local: false` turns off the free
+   * on-machine transcriber (whisper.cpp); absent means on. Read on every transcription.
+   */
+  voiceTranscription?: { local?: boolean };
+  /**
+   * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
+   * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
+   * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.
+   */
+  prLinkReviewRequest?: { enabled?: boolean; reviewer?: string };
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
@@ -3675,6 +3862,32 @@ export interface InstarConfig {
   messageOrigin?: {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
+  };
+  /** Project apps (docs/specs/project-apps.md): a project's own app one tap from its Work row and
+   *  conversation. `enabled` is dev-gated (omit it to follow the gate); it also needs the Chief of
+   *  Staff, which is where projects come from. */
+  projectApps?: {
+    enabled?: boolean;
+    /** Part 2 custom apps (docs/specs/project-apps-sandbox.md §9): dev-gated; omit to follow the gate. */
+    custom?: { enabled?: boolean };
+  };
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
+   *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
+   *  owner-tunable at the agent level; per-project values live on the binding. */
+  chiefOfStaff?: {
+    enabled?: boolean;
+    displayName?: string;
+    tickMinutes?: number;
+    defaultCadenceHours?: number;
+    maxRunHours?: number;
+    operatorLeaseHours?: number;
+    noteCadenceHours?: number;
+    noteTime?: string;
+    maxRestartsWithoutProgress?: number;
+    breakerRestartsPerWeek?: number;
+    immediateMessagesPerDay?: number;
+    judgeDailyCents?: number;
+    excludedAuthors?: string[];
   };
   /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
   machineMaintenance?: {
@@ -3709,6 +3922,8 @@ export interface InstarConfig {
     peerClaimRefused?: boolean;
     /** Guided setup (docs/specs/desktop-guided-setup.md). `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
     guidedSetup?: { enabled?: boolean };
+    /** Windows: H.264 video from the companion instead of pictures. `enabled` omitted ⇒ live on a development agent, dark on the fleet. */
+    windowsVideo?: { enabled?: boolean };
     /** Absent is off everywhere. Set only by the PIN route, never PATCH /config. */
     lockedScreen?: { enabled?: boolean; browserBox?: boolean; chime?: boolean };
   };
@@ -3924,6 +4139,15 @@ export interface InstarConfig {
       /** Candidates per readiness model call (default 10); a tick makes several calls up to the authority's maxBatch. */
       readinessChunkSize?: number;
     };
+    /**
+     * Which subscription account serves feedback readiness calls. Without `account`, readiness
+     * follows `triage.accountSelectionMode` (off = the shared provider, as before). With `account`
+     * (a subscription pool account id), readiness runs on exactly that verified account or is
+     * refused with a named reason, never on another account. Read live per readiness call.
+     */
+    readiness?: {
+      account?: string;
+    };
     /** Initiative handoff consumer. Dev-live in simulation until promoted. */
     consumer?: {
       enabled?: boolean;
@@ -4030,12 +4254,25 @@ export interface InstarConfig {
    * maturing feature. `enabled` is omitted by default so the developmentAgent gate decides.
    */
   /**
+   * Permanent agent links (docs/specs/permanent-agent-links.md): links on instar.sh that name this
+   * agent by its identity and open a page in the Instar app. Optional; absent or false = off. Read
+   * live, so turning it on needs no restart.
+   */
+  agentLinks?: {
+    enabled?: boolean;
+  };
+  /**
    * Mobile pairing links (docs/specs/mobile-pairing-link.md): one-time links that add this
    * agent to the Instar iPhone app. `enabled` is omitted by default so the developmentAgent
    * gate decides; read live by the routes.
    */
   mobilePairing?: {
     enabled?: boolean;
+    /** Team access (docs/specs/team-roles-and-access.md). */
+    team?: {
+      /** Refuse team phones after 24 hours with no peer answering, instead of serving on. Off by default. */
+      strictStaleness?: boolean;
+    };
     /** Code lifetime in minutes, default 10, clamped to 1–60. */
     codeTtlMinutes?: number;
     /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */
@@ -4057,6 +4294,32 @@ export interface InstarConfig {
        * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
        */
       unread?: { enabled?: boolean };
+      /**
+       * Pinned messages in conversations (docs/specs/conversation-pinned-messages.md). `enabled`
+       * omitted ⇒ true wherever native conversations are on; `false` turns pins off alone. Read live.
+       */
+      pins?: { enabled?: boolean };
+      /**
+       * Keyword search over conversations (docs/specs/conversation-search.md). `enabled` omitted ⇒
+       * true wherever native conversations are on; `false` ⇒ the search route answers 503 `search-off`. Read live.
+       * `meaning.enabled` (docs/specs/conversation-search.md §4): omitted ⇒ true wherever search is on;
+       * `false` ⇒ `mode=meaning` answers 503 `meaning-unavailable` and the background message
+       * embedder does no work (read live every tick). Keyword search is untouched.
+       */
+      search?: { enabled?: boolean; meaning?: { enabled?: boolean } };
+    };
+    /**
+     * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (read live); needs
+     * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
+     * (default 6) per machine.
+     */
+    browser?: {
+      enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number;
+      /** Disable new browser outbox network work while retaining logout/cleanup support. */
+      outboxEnabled?: boolean;
+      /** Advance before restoring after a historical downgrade; old entries require local review. */
+      outboxRecoveryGeneration?: string;
     };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
@@ -4079,6 +4342,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
      */
     permissionActions?: { enabled?: boolean };
+    /** Approving trust raises from a paired device (spec app-trust-approval). On for new installs; dark on the fleet until set. */
+    trustApproval?: { enabled?: boolean };
     /**
      * The operator's Slack user id (`U…`), the sender a message typed in the Instar app speaks as
      * in a Slack conversation (mobile-native-conversations §4.9). Never inferred: the agent
@@ -4133,6 +4398,18 @@ export interface InstarConfig {
     notices?: {
       /** Default true: log would-raise, raise nothing. */
       dryRun?: boolean;
+    };
+  };
+  /** Unified usage ledger (docs/specs/unified-usage-ledger.md). */
+  usage?: {
+    ledger?: {
+      /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+      enabled?: boolean;
+      /**
+       * quota-pacing step 3 (docs/specs/quota-pacing-spend-by-account.md): record which account
+       * actually served each request. OMITTED so the dev-agent gate decides (LIVE-dev / DARK-fleet).
+       */
+      servedAccount?: boolean;
     };
   };
   routingSpend?: {
@@ -4870,6 +5147,12 @@ export interface InstarConfig {
   /** Messaging adapters to enable */
   messaging: MessagingAdapterConfig[];
   /**
+   * Test-only fixtures (docs/specs/throwaway-owner-chat.md). `throwawayOwnerChat.enabled` asks for the
+   * stand-in owner chat; it is honoured only on a throwaway agent in a temporary folder with no owner,
+   * no messaging adapter and no other machine. Absent everywhere by default.
+   */
+  liveTest?: { throwawayOwnerChat?: { enabled?: boolean } };
+  /**
    * Operator config for the outbound Messaging Tone Gate, read LIVE via the
    * gate's config getter (no restart needed). TOP-LEVEL by necessity:
    * `messaging` is an array of adapter configs, so the historically-documented
@@ -4885,6 +5168,14 @@ export interface InstarConfig {
     toneTierDryRun?: boolean;
     /** Opt-in candidate-body capture for decision-quality benchmarking. */
     recordCandidateBody?: boolean;
+    /**
+     * B26_WAITING_ASK_UNLINKED (docs/specs/waiting-on-you-links.md): a reply that refers to
+     * something the agent is waiting on the person for must carry the ask's link and a
+     * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
+     */
+    waitingAskLinks?: { enabled?: boolean };
+    /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
+    siblingReach?: { enabled?: boolean };
   };
   /**
    * L0 zombie-free delivery invariant arm flag (drive12 UX-first enforcement
@@ -4925,6 +5216,46 @@ export interface InstarConfig {
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
   dashboardPin?: string;
+  /** Server-managed revocation generation, atomically coupled to each PIN write. */
+  dashboardPinGeneration?: string;
+  /** Security hardening knobs (dashboard-pin-throttle.md + dashboard-scoped-session-token.md). */
+  security?: {
+    /** identity-security piece 2b: the owner record on this machine. Default ON (it grants nothing by itself);
+     *  `enabled: false` stops it: GET /owner-record answers 503 and no owner-record mesh traffic runs. */
+    ownerRecord?: { enabled?: boolean };
+    /** Dashboard PIN brute-force throttle + known-browser bypass + owner alert. Default ON. */
+    pinThrottle?: {
+      enabled?: boolean;
+      softFailures?: number;
+      markedSoftFailures?: number;
+      markedAbuseCap?: number;
+      baseMs?: number;
+      maxBackoffMs?: number;
+      windowMs?: number;
+      globalFailureBudget?: number;
+      coarseFailureBudget?: number;
+      alertCooldownMs?: number;
+      maxSources?: number;
+      /** TTL of the prior-unlock cookie (ms). Default 30 days. */
+      markerTtlMs?: number;
+    };
+    /** SEC-002b: unlock returns a scoped, revocable dashboard session token instead of the master.
+     *  Ships DARK (enabled defaults false) until the full live dashboard proof passes. */
+    dashboardScopedToken?: {
+      enabled?: boolean;
+      ttlMs?: number;
+      absoluteMaxMs?: number;
+      maxTokens?: number;
+    };
+    /** SEC-018: sensitive MCP handlers (thread delete; trust elevation later) require a
+     *  Face-ID owner-presence approval (docs/specs/owner-approved-sensitive-action.md).
+     *  Ships DARK — absent/false = today's isLocal behaviour. */
+    ownerApprovedActions?: {
+      enabled?: boolean;
+      /** Approval TTL (ms) from the owner's tap to the handler's use. Default 5 min. */
+      approvalTtlMs?: number;
+    };
+  };
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
   /** Feedback loop config */
@@ -4933,7 +5264,41 @@ export interface InstarConfig {
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
   /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
-  recommendedServices?: { provingRecipes?: string[] };
+  recommendedServices?: {
+    provingRecipes?: string[];
+    /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
+    offers?: {
+      enabled?: boolean;
+      /**
+       * Rollout step 5 of recommended-services.md: existing agents (created before the offer shipped) stay out of the
+       * first list until this is true. Then this agent's owner is marked migration-complete at the next offer tick,
+       * and the first list follows the same rule as a new agent's (after a delivered first result, once).
+       */
+      existingAgents?: boolean;
+    };
+    /**
+     * Rollout step 4 of recommended-services.md: after a no, ask again only when a real problem shows up that the
+     * service would fix (deterministic table, cool-offs, one a day). Off by default: off records and sends nothing.
+     */
+    reoffers?: {
+      enabled?: boolean;
+    };
+  };
+  /**
+   * Sending email to the owner (docs/specs/backup-email-sending.md). Email only works after the owner's yes and the
+   * recipe's proof, so this block is optional. `enabled: false` drains the outbox to the topics and stops sending.
+   */
+  email?: {
+    enabled?: boolean;
+    /** How long a Resend send is watched for delivery before it falls back (default 30, at most 60). */
+    statusWindowMinutes?: number;
+    /** Transport timeout (default 15, 5 to 60). */
+    transportTimeoutSeconds?: number;
+    /** How often the plain fallback line is repeated per cause (default once a day, never more than hourly). */
+    fallbackLineEvery?: 'hour' | 'day';
+    /** The agent's email day timezone; defaults to the one recorded on the owner's yes. */
+    timezone?: string;
+  };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;
@@ -4966,6 +5331,8 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Optional expiring ordered placement for new headless Sol helpers and Sol reviews. */
+    routineCodexPlacement?: import('./routineCodexPlacement.js').RoutineCodexPlacementConfig;
     /** Bounded autonomous repair for corroborated Claude Code and Codex sign-in failures.
      *  Absent/off stays dark. `unattended` requires exact identity opt-in. */
     assistedRelogin?: {
@@ -4984,8 +5351,21 @@ export interface InstarConfig {
         /** Age of the oldest successful repair required in days. Default 30. */
         minimumEvidenceDays?: number;
       };
+      /**
+       * Monotonic write counter for this block (spec one-tap-unattended-repair §1). Incremented by
+       * every operator write (local configure, configure-pool, configure-with-mandate) and folded
+       * into the block's revision so A→B→A content still gets a new revision. Missing ⇒ 0.
+       */
+      generation?: number;
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
+      /**
+       * Remind the operator ONCE when an approval-mode repair has waited this many hours for its
+       * tap (CMT-1541). Absent ⇒ 4; 0 turns the reminder off. Delivered on the same attention row
+       * as the first notice (Quiet-by-Default applies) and never during `slowRetry.quietHours`.
+       * Signal only: it never approves a repair.
+       */
+      approvalReminderHours?: number;
       /**
        * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
        * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
@@ -5027,6 +5407,23 @@ export interface InstarConfig {
      *  failure falls back to the rollout-tail reader, so `false` only forces
      *  the old rollout-only behaviour. */
     codexLiveQuota?: boolean;
+    /**
+     * Quota pacing, step 1 (docs/specs/quota-pacing-forecast.md): a durable history of every
+     * quota reading and a read-only forecast (GET /quota-pacing). `enabled` is OMITTED from the
+     * defaults and resolved through resolveDevAgentGate: live on a development agent, off on the
+     * fleet; an explicit value always wins. Signal only: nothing reads the forecast to decide.
+     */
+    pacing?: {
+      enabled?: boolean;
+      /**
+       * Quota pacing, step 2 (docs/specs/quota-pacing-account-choice.md): account choice reads
+       * each limit window as it stands now (paired weekly deadlines, the Fable window for Fable
+       * launches, unmeasured never counted as room) and logs one shadow row per placement.
+       * OMITTED from defaults: resolved through the dev-agent gate (on for development agents,
+       * off for the fleet); an explicit value always wins.
+       */
+      windowAwareChoice?: boolean;
+    };
     /** DARK by default: when true, a RateLimitSentinel escalation on a
      *  pool-managed session auto-swaps it to another account. Opt-in (auto-
      *  swapping live sessions is real authority — tier-2). */
@@ -5162,6 +5559,12 @@ export interface InstarConfig {
       reactiveGraceMs?: number;
       /** Busy re-check cadence inside a grace window (default 10000). */
       recheckMs?: number;
+      /** Busy-deferral escalation (default 95): once a session's busy episode
+       *  has been deferred a full deferralCeilingMs and its account is at or
+       *  over this measured %, the proactive swap executes through the
+       *  reactive-swap class (bounded grace, then mitigations) instead of
+       *  being dropped again. Above 100 disables it. */
+      wallEscalationPct?: number;
     };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
@@ -5715,6 +6118,8 @@ export interface IntegratedBeingConfig {
 /** Ledger entry subsystem (who emitted). Always bound server-side. */
 export type LedgerEntrySubsystem =
   | 'threadline'
+  /** Work Board §6: one note per card handed to the agent (the card id only, never its title). */
+  | 'work-board'
   | 'outbound-classifier'
   | 'session-manager'
   | 'compaction-sentinel'
@@ -5944,6 +6349,9 @@ export interface FileViewerConfig {
   /** Maximum file size for editing (bytes). Default: 204800 (200KB) */
   maxEditableFileSize: number;
 
+  /** Maximum file size to download (bytes), separate from the preview cap. Default: 1073741824 (1GB) */
+  maxDownloadSize?: number;
+
   /** File patterns that are NEVER served, even within allowed directories. */
   blockedFilenames: string[];
 }
@@ -6018,6 +6426,11 @@ export interface ThreadlineConfig {
   spawn?: ThreadlineSpawnConfig;
   /** Warm-session A2A keep-alive integration (Arch Y). */
   warmSessionA2A?: ThreadlineWarmSessionConfig;
+  /**
+   * Memory privacy: sessions in other agents' places (docs/specs/memory-privacy-agent-places.md §4).
+   * `globalCap` (default 3) places live at once; `idleMs` (default 600000) idle end.
+   */
+  placeSessions?: { globalCap?: number; idleMs?: number };
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
   /** The owner's name stated in pairing invites. Omitted: the registered users, then the verified Telegram operator. */
@@ -6421,6 +6834,12 @@ export interface DispatchConfig {
   version?: string;
   /** Whether to auto-apply safe dispatches (lesson, strategy types with non-critical priority) */
   autoApply?: boolean;
+  /**
+   * SEC-153: pinned Ed25519 public keys (keyId → PEM) of the dispatch server. Only a dispatch signed by
+   * one of these is auto-applied or executed; every other dispatch waits for review. Not patchable over
+   * the API: set in the config file only.
+   */
+  trustedKeys?: Record<string, string>;
 }
 
 export interface UpdateConfig {
@@ -7545,6 +7964,16 @@ export interface MonitoringConfig {
     enabled?: boolean;
   };
   /**
+   * CMT-2204: the UnjustifiedStopGate records the credential-scrubbed stop
+   * reason + recent turns it judged under its provenance row's machine-local
+   * `_contentFull`, plus a content-free prompt sha, so its decisions can be
+   * replayed. `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+   * decides (LIVE on dev, DARK on the fleet). Registered in DEV_GATED_FEATURES.
+   */
+  stopGateReplayInput?: {
+    enabled?: boolean;
+  };
+  /**
    * StrandedTopicSentinel (stranded-inbound-self-heal) — a pure-signal detector
    * that surfaces a Telegram/Slack topic whose owner machine is online-by-
    * heartbeat but unable to serve (quota-walled or adapter-disconnected) while a
@@ -7885,6 +8314,13 @@ export interface MonitoringConfig {
     maxConcurrentPerTopic?: number;
     queueTtlMs?: number;
     redactIdentifiers?: boolean;
+    /**
+     * CMT-1679: record the arbiter's exact replay input (scrubbed message + bounded
+     * evidence) under the provenance row's machine-local `_contentFull`, plus a
+     * content-free prompt sha for parity. Dev-gated: OMITTED from ConfigDefaults so
+     * resolveDevAgentGate decides (live on dev agents, dark on the fleet).
+     */
+    recordReplayInput?: boolean;
   };
   /**
    * Bias-to-Action — standing-authorization signal for B17_FALSE_BLOCKER

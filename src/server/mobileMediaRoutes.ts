@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { deviceMayUse } from './mobilePairingRoutes.js';
+import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
@@ -28,6 +28,7 @@ import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } 
 import type { UploadRow } from '../core/AppMediaStore.js';
 import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
 import { slackMediaKeys } from '../core/appPlatformMedia.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
 export interface MobileMediaRouteDeps {
@@ -69,7 +70,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
   const gate = (req: Request, res: Response, opts: { evenWhenOff?: boolean } = {}): string | null => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc?.media || (!deps.mediaEnabled && !opts.evenWhenOff)) {
-      res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+      res.status(503).json(mediaOffBody());
       return null;
     }
     const p = principalOf(req);
@@ -111,7 +112,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     }
     if (prior.kind === 'request-id-reused') { res.status(409).json({ error: 'payload-conflict', detail: 'This request id was already used for something else.' }); return; }
     if (prior.kind === 'in-progress') { res.status(202).json({ state: 'in-progress' }); return; }
-    if (prior.kind === 'outcome-unknown') { res.status(409).json({ error: 'outcome-unknown', detail: 'Start the upload again with a new request id.' }); return; }
+    if (prior.kind === 'outcome-unknown') { res.status(409).json({ error: 'outcome-unknown', detail: 'The upload outcome is uncertain. Keep the original request and review it before trying again.' }); return; }
     if (!requestIdAgeOk(requestId as string, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     // The upload names the conversation its file will be sent into (§4.2, §4.9): a live native app
     // conversation, a Telegram topic this machine knows (`telegram:<topicId>`), or a Slack
@@ -121,16 +122,41 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (!uploadTargetKnown(conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
     // People and roles §3.4: an MSP phone uploads only into conversations it may use.
     if (!deviceMayUse(deps.pairing, req, conversationRef, 'upload')) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
-    const started = media.startUpload({ deviceId, conversationRef, size, sha256, declaredKind: declaredKind as MediaKind, declaredType, filename });
-    if ('status' in started) { res.status(started.status).json({ error: started.error, detail: started.detail }); return; }
-    const body = uploadView(started);
-    try {
-      const r = requests.reserve(deviceId, requestId as string, hash, 0);
-      if (r.kind === 'reserved') requests.finish(deviceId, requestId as string, { status: 200, body });
-    } catch (err) { // @silent-fallback-ok — reported through deps.reportDegradation
-      // E2E-PAIRING: EXEMPT — comment-only annotation; these routes are covered by tests/e2e/mobile-native-media-alive.test.ts
-      // The upload exists; a retry with a new id starts another, and this one expires by itself.
+    // The reservation must survive BEFORE allocation. Otherwise a lost response after a
+    // failed request-store write allocates another upload under the same original request id.
+    let reservation: ReturnType<typeof requests.reserve>;
+    try { reservation = requests.reserve(deviceId, requestId as string, hash, 0); } catch (err) {
       svc!.deps.reportDegradation?.('AppMedia.requestStore', err instanceof Error ? err.message : String(err));
+      res.status(503).json({ error: 'upload-unavailable', detail: 'The upload request could not be recorded, so it was not started. Try again.' });
+      return;
+    }
+    if (reservation.kind !== 'reserved') {
+      if (reservation.kind === 'done') res.status(reservation.status).json(reservation.body);
+      else if (reservation.kind === 'in-progress') res.status(202).json({ state: 'in-progress' });
+      else if (reservation.kind === 'full') res.status(429).json({ error: 'too-many-requests' });
+      else res.status(409).json({ error: reservation.kind === 'request-id-reused' ? 'payload-conflict' : 'outcome-unknown' });
+      return;
+    }
+    let started: ReturnType<typeof media.startUpload>;
+    try { started = media.startUpload({ deviceId, conversationRef, size, sha256, declaredKind: declaredKind as MediaKind, declaredType, filename }); } catch (err) {
+      // Allocation might have reached disk before throwing. The original reservation owns
+      // that uncertainty; never release it or suggest a new request id.
+      requests.markUnknown(deviceId, requestId as string);
+      svc!.deps.reportDegradation?.('AppMedia.startUpload', err instanceof Error ? err.message : String(err));
+      res.status(409).json({ error: 'outcome-unknown', detail: 'The upload may have started. Keep the original request for review.' });
+      return;
+    }
+    if ('status' in started) {
+      requests.release(deviceId, requestId as string); // definite pre-allocation refusal
+      res.status(started.status).json({ error: started.error, detail: started.detail });
+      return;
+    }
+    const body = uploadView(started);
+    if (!requests.finish(deviceId, requestId as string, { status: 200, body })) {
+      requests.markUnknown(deviceId, requestId as string);
+      svc!.deps.reportDegradation?.('AppMedia.requestStore', 'The upload was allocated but its result could not be recorded.');
+      res.status(409).json({ error: 'outcome-unknown', detail: 'The upload started but its result could not be recorded. Keep the original request for review.' });
+      return;
     }
     res.json(body);
   });
@@ -185,7 +211,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       && self !== undefined && req.query.machine === self && typeof req.query.ref === 'string' && req.query.ref.startsWith('slack:');
     if (hop) {
       res.setHeader('Cache-Control', 'no-store');
-      if (!deps.pairing.enabled() || !svc?.media || !deps.mediaEnabled) { res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
+      if (!deps.pairing.enabled() || !svc?.media || !deps.mediaEnabled) { res.status(503).json(mediaOffBody()); return; }
       if (req.headers.range !== undefined) { res.status(416).json({ error: 'range-unsupported' }); return; }
     } else if (!gate(req, res)) return;
     const media = svc!.media!;
@@ -229,6 +255,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (att) { refKey = k; break; }
     }
     if (!att) { notFound(); return; }
+    // A file belongs to its message: one held from this reader stays held.
+    if (!deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, att.messageId)) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
     if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
@@ -329,7 +357,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // The exact set is recorded in the reservation first, so a crash midway resumes it (§4.7).
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'purge', conversationKey: '', sets: JSON.stringify(sets) }); } catch {
-      res.status(503).json({ error: 'purge-unavailable', detail: 'The request could not be recorded, so nothing was removed. Try again.' });
+      res.status(503).json({ error: 'purge-unavailable', detail: `The request could not be recorded on ${s.media!.machineWords()}, so nothing was removed. Try again.` });
       return;
     }
     if (r.kind !== 'reserved') { res.status(429).json({ error: 'too-many-requests' }); return; }

@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-11-09T01:30:00.000Z",
+  "slug": "ps-table-max-buffer",
+  "riskFloor": 1,
+  "decision": "implement",
+  "scope": {
+    "summary": "SessionManager full process-table reads get a 32 MiB maxBuffer; native hook queue integration test asserts cap and accounting instead of an exact pending count",
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts"
+    ]
+  },
+  "evidence": {
+    "incident": "ps output past node's 1 MiB default fails with ENOBUFS; probes fall back to assume-active so idle sessions are never reaped; hook queue test failed with 740-981 pending on four unrelated PRs",
+    "focusedTests": "tests/unit/ps-table-max-buffer.test.ts guards every ps -eo read in src",
+    "signalVsAuthority": "no new authority; widens a read buffer only"
+  }
+}

@@ -14,7 +14,7 @@
  *     as a plan-rate figure.
  */
 
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
@@ -876,6 +876,35 @@ import {
 } from '../../src/providers/adapters/grok-build/policy.js';
 import { buildHeadlessLaunch } from '../../src/core/frameworkSessionLaunch.js';
 
+// Observe the real execFile callback; never replace the subprocess or its result.
+// Waiting for this callback also prevents cleanup/reset from racing a live probe.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFile: vi.fn(actual.execFile) };
+});
+
+async function probeVersionAndWait(grokPath: string): Promise<void> {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  let completion: Promise<void> | undefined;
+  vi.mocked(execFile).mockImplementationOnce(((...args: any[]) => {
+    let child: ReturnType<typeof execFile>;
+    completion = new Promise<void>((resolve) => {
+      const callback = args[args.length - 1];
+      args[args.length - 1] = (...result: unknown[]) => {
+        try { callback(...result); } finally { resolve(); }
+      };
+      child = (actual.execFile as any)(...args);
+    });
+    return child!;
+  }) as typeof execFile);
+  try {
+    checkGrokVersionDrift(grokPath);
+    await completion; // Cached/capped calls do not create a subprocess.
+  } finally {
+    vi.mocked(execFile).mockReset().mockImplementation(actual.execFile);
+  }
+}
+
 describe('checkGrokVersionDrift', () => {
   it('fires the warn on a drifted version (async probe; stub binary)', async () => {
     _resetGrokVersionDriftForTest();
@@ -889,8 +918,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800)); // async probe completes
+      await probeVersionAndWait(stub);
       checkGrokVersionDrift(stub); // second call emits from cache if needed
     } finally {
       console.warn = orig;
@@ -911,8 +939,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(stub);
       checkGrokVersionDrift(stub);
     } finally {
       console.warn = orig;
@@ -931,13 +958,13 @@ describe('checkGrokVersionDrift', () => {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'grok-drift-test3' }),
     );
     const stub = path.join(dir, 'grok');
-    fs.writeFileSync(stub, '#!/bin/sh\necho "grok 1.0.40 (deadbeef)"\n', { mode: 0o755 });
+    // A valid probe may take longer than the old 800ms snapshot.
+    fs.writeFileSync(stub, '#!/bin/sh\nsleep 1.2\necho "grok 1.0.40 (deadbeef)"\n', { mode: 0o755 });
     const warns: string[] = [];
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(stub);
       checkGrokVersionDrift(stub);
     } finally {
       console.warn = orig;
@@ -958,8 +985,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(stub);
       checkGrokVersionDrift(stub);
     } finally {
       console.warn = orig;
@@ -986,8 +1012,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(stub);
     } finally {
       console.warn = orig;
     }
@@ -1009,12 +1034,10 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(failing);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(failing);
       // The transient failure must NOT have consumed the single-flight slot
       // permanently — this second call has to actually spawn again.
-      checkGrokVersionDrift(drifted);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(drifted);
     } finally {
       console.warn = orig;
     }
@@ -1038,8 +1061,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      checkGrokVersionDrift(stub);
-      await new Promise((r) => setTimeout(r, 800));
+      await probeVersionAndWait(stub);
     } finally {
       console.warn = orig;
     }
@@ -1060,10 +1082,7 @@ describe('checkGrokVersionDrift', () => {
     const orig = console.warn;
     console.warn = (...a: unknown[]) => { warns.push(a.join(' ')); };
     try {
-      for (let i = 0; i < 5; i++) {
-        checkGrokVersionDrift(failing);
-        await new Promise((r) => setTimeout(r, 400));
-      }
+      for (let i = 0; i < 5; i++) await probeVersionAndWait(failing);
     } finally {
       console.warn = orig;
     }

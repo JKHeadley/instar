@@ -40,7 +40,16 @@ export type MeshCommand =
       transferEpoch: number;
       transfer: import('./InboundDeliveryStore.js').EncryptedDeliveryTransfer;
     }
-  | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
+  | {
+      type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number;
+      /** The message's TopicMemory row (context-budget §14 relay-path carrier). An older peer ignores it. */
+      row?: unknown;
+      /**
+       * Files by attachment id (native-conversation-base §3c). Never a path; validated on receipt by
+       * `parseInboundMediaField`. An older peer ignores it and injects the payload's path-free sentence.
+       */
+      media?: unknown;
+    }
   | {
       /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
       type: 'a2a-inbox-deliver';
@@ -99,6 +108,33 @@ export type MeshCommand =
       threadId: string;
     }
   | {
+      // Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4): the lease
+      // holder routes ONE claimed action to the conversation's OWNERSHIP machine. Registered-
+      // peer class — the envelope proves a machine of mine sent it; the HANDLER is the gate:
+      // it verifies the INNER holder signature against the current lease holder + a fresh
+      // renewal, re-checks ownership, the open-intent rule, the stand-down list and the
+      // dedupe index under the conversation lock, and refuses when the feature is off.
+      type: 'cos-action';
+      conversationKey: string;
+      action: 'restart-inject' | 'restart-run' | 'redirect' | 'close' | 'mirror-status';
+      leaseEpoch: number;
+      sequence: number;
+      holderMachineId: string;
+      holderSignature: string;
+      claimedAt: string;
+      payload: { text?: string; durationHours?: number };
+    }
+  | {
+      // Chief of Staff §2.4 step 4: the holder asks the owner to SETTLE an open intent (find
+      // the receipt by idempotency key ⇒ started, else tombstone ⇒ rejected). The holder may
+      // write `lost` only after this answers. Same class and gate as cos-action.
+      type: 'cos-settle';
+      conversationKey: string;
+      intentKey: string;
+      holderMachineId: string;
+      holderSignature: string;
+    }
+  | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
       // planner (router authority) tells the CURRENT owner of `session` to
       // drain its live session because a transfer to `target` is in flight.
@@ -137,8 +173,16 @@ export type MeshCommand =
       expiresAt: string;
     }
   | { type: 'capacity-report' }
+  // identity-security piece 2b §6: keep the owner record in step. The receiver judges every entry itself
+  // with the 2a evaluator, so the command carries no authority of its own.
+  | import('./ownerRecordSync.js').OwnerRecordPushCmd
+  | import('./ownerRecordSync.js').OwnerRecordPullCmd
   | { type: 'session-status'; session?: string }
   | { type: 'secret-share'; encrypted: string }
+  // org-pack-and-join §Multi-machine: a validated organization pack change for the same agent's other machines.
+  | { type: 'org-state-pull' }
+  | { type: 'org-forward'; forward: import('../server/orgPackRoutes.js').OrgForwardOp }
+  | { type: 'org-apply'; membership: import('./OrgPackStore.js').Membership; bundle: import('./OrgPack.js').OrgBundle | null; op?: 'hold' | 'member-side' | 'published-elsewhere'; memberSide?: import('./OrgMemberSide.js').MemberSideExport; publishedOrgId?: string; publishedOn?: string }
   // a2a-single-agent-identity §1.2 — the two AGENT-identity verbs. Structurally separate from
   // `secret-share` (credential-class payload, signed responses, own serving refusals).
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
@@ -280,6 +324,45 @@ export type MeshCommand =
       type: 'topic-history-pull';
       topic: number;
       limit?: number;
+      // native-conversation-any-machine-access §3d item 4: the pool History shape. Whole rows with
+      // their ids, provenance and origin join, up to 100 per page, a 512 KiB cap, an older-page
+      // cursor, and the oversized-row continuation (`row` + `byteFrom`). The answer echoes `shape`.
+      shape?: 'pool';
+      before?: number;
+      beforeMessageId?: number;
+      row?: string | number;
+      byteFrom?: number;
+    }
+  | {
+      // native-conversation-any-machine-access §3d item 1. Read/observe class: a registered
+      // same-operator peer asks for one page of a session's conversation record (mode
+      // 'transcript', for a session recorded on THIS machine, never a path) or for this
+      // machine's own session list (mode 'list'). Every transcript answer names the
+      // conversations the session served, so the machine answering a person applies the audience.
+      type: 'session-transcript-pull';
+      mode: 'transcript' | 'list';
+      session?: string;
+      before?: number;
+      beforeIndex?: number;
+      limit?: number;
+      full?: boolean;
+      row?: { offset: number; index: number };
+      byteFrom?: number;
+      include?: 'all';
+      status?: string;
+    }
+  | {
+      // Relay-path row carrier (context-budget-layered-summaries §14). Read/observe class:
+      // a registered same-operator peer asks for this machine's OWN TopicMemory rows of one
+      // topic — by seq of the stream this machine carried (a gap), or its recent rows and
+      // stream heads (a topic move). Bounded by its handler; the receiver re-validates every row.
+      type: 'topic-row-pull';
+      topic: number;
+      mode: 'seq' | 'recent';
+      stream?: string;
+      fromSeq?: number;
+      toSeq?: number;
+      limit?: number;
     }
   | {
       // session-pool-move-nudge. Registered-peer class: "pull placements from me now". Names the
@@ -288,6 +371,18 @@ export type MeshCommand =
       sessionKey: string;
       epoch: number;
       landedAt: number;
+    }
+  | {
+      // interrupted-move-resume (src/core/InterruptedMoveResume.ts). Registered-peer class: a
+      // move closed the conversation's session mid-step; "pick it back up". Carries no
+      // ownership: the receiver acts only when its OWN record says it owns the conversation
+      // at or past claimEpoch, once per (conversation, epoch).
+      type: 'interrupted-move-resume';
+      sessionKey: string;
+      claimEpoch: number;
+      fromName?: string | null;
+      /** The person's message the cut-off step served (the notice's conversation anchor). */
+      inboundMessageId?: string | null;
     }
   | {
       // Duplicate check (session-pool-activation-at-pairing, Change 8). Read/observe class:
@@ -336,6 +431,72 @@ export type MeshCommand =
       method: string;
       probeOnly?: boolean;
       assertion?: unknown;
+    }
+  | {
+      // docs/specs/backup-email-sending.md (Who sends): a standby forwards an email to the lease holder, the one
+      // voice. Carries a session's one-off or a standby-fired report; `id` is the caller's idempotency id, so a
+      // re-issue after a mesh timeout answers the existing row. The holder runs its own guard, outbox, budget and
+      // queue, and re-checks the fallback topic's readers itself. Mutating: the handler is the gate.
+      type: 'email-send-forward';
+      id: string;
+      kind: 'report' | 'one-off';
+      subject: string;
+      text: string;
+      topicText: string;
+      fallbackTopicId: number | null;
+      jobSlug?: string;
+    }
+  // ── Gemini pay-per-use lane (docs/specs/gemini-payg-metered-lane.md §6) ──
+  // One designated machine spends; every other machine forwards to it. All five are
+  // registered-peer class: verifyEnvelope proves the sending machine, and each handler
+  // is the real gate (the holder re-runs its own route guards, the money chokepoint,
+  // and the result-token check; stop actions can only ever REDUCE money).
+  | {
+      // Any peer → the holder: run one metered call. `op` is set by the ORIGIN server
+      // route, never by a request body. Idempotent by callId (the holder's ledger).
+      type: 'metered-gemini-call';
+      op: 'spec-review' | 'second-opinion' | 'release-proof-forward';
+      originMachine: string;
+      session: string;
+      callId: string;
+      requestSha256: string;
+      /** sha256 of the origin-generated result token (the token never travels here). */
+      resultTokenHash: string;
+      payload: Record<string, unknown>;
+    }
+  | {
+      // The origin → the holder: poll a forwarded call. Without the token: not-yours.
+      type: 'metered-gemini-result';
+      callId: string;
+      resultToken: string;
+    }
+  | {
+      // Any peer → the holder: freeze / lower / disable a caller / lower a share. Only
+      // ever reduces money; the holder applies it through its own reduce-only mutators.
+      type: 'metered-stop-action';
+      action: 'freeze' | 'lower' | 'disable-caller' | 'lower-share';
+      keyRef: string;
+      requestId: string;
+      params?: Record<string, unknown>;
+    }
+  | {
+      // The holder → any peer: lease confirmation. The peer echoes the nonce and reports
+      // the designation it has seen. Read-class.
+      type: 'designation-echo';
+      keyRef: string;
+      designationEpoch: number;
+      nonce: string;
+    }
+  | {
+      // The holder → any peer: vault key NAMES only (never values). Read-class; the
+      // go-live precondition that the key is on the designated machine only.
+      type: 'secret-names';
+    }
+  | {
+      // Any peer → the machine a go-live proposal names: render the `gemini-payg-setup`
+      // plan THERE (§8 "A request from another machine is forwarded there"). Rendering
+      // is not authority (the PIN commit on that machine is); read-class.
+      type: 'gemini-payg-setup-render';
     };
 
 export interface MeshEnvelope {
@@ -445,7 +606,7 @@ export interface RbacDeps {
    * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
    * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
    */
-  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
+  authorizeMandateDeliver?: (args: { sender: MachineId; command?: MeshCommand }) => boolean;
 }
 
 /**
@@ -518,11 +679,24 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
       // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
       // handler (this gate is the coarse, fail-closed pre-filter).
-      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      const authd = deps.authorizeMandateDeliver?.({ sender, command }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
+    // gemini-payg §6: registered-peer class. The holder's handlers are the gate (route
+    // guards + money chokepoint + result token; stop actions are reduce-only).
+    case 'metered-gemini-call':
+    case 'metered-gemini-result':
+    case 'metered-stop-action':
+    case 'designation-echo':
+    case 'secret-names':
+    case 'gemini-payg-setup-render':
+      return { ok: true, reason: 'ok' };
     case 'commitment-mutate':
     case 'telegram-origin':
+    // email-send-forward (backup-email-sending, Who sends): the same posture. verifyEnvelope proves the sending
+    // machine; the holder's handler re-runs the credential guard, the readers check on the carried topic, the
+    // budget and the owner-only transport, and answers an existing row for a repeated id.
+    case 'email-send-forward':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
       // §3.4/§5): any registered peer may issue it under the same-operator
       // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,
@@ -533,20 +707,30 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       return { ok: true, reason: 'ok' };
     case 'capacity-report':
     case 'session-status':
+    // owner-record-push / owner-record-pull (identity-security piece 2b §6): registered-peer class. The
+    // handler is the real gate: bounded, rate-limited, and every entry is judged by the 2a evaluator.
+    case 'owner-record-push':
+    case 'owner-record-pull':
     case 'pool-stream-ticket':
     case 'journal-sync':
     case 'working-set-pull':
     case 'app-media-pull':
     case 'topic-profile-pull':
+    case 'session-transcript-pull':
     case 'topic-history-pull':
+    case 'topic-row-pull':
     case 'session-live-probe':
     case 'ownership-nudge':
+    case 'interrupted-move-resume':
     case 'commitments-sync':
     case 'notification-preference':
     case 'preferences-sync':
     case 'state-snapshot':
     case 'pool-view-fetch':
     case 'secret-share':
+    case 'org-apply':
+    case 'org-forward':
+    case 'org-state-pull':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
     case 'recovery-enrollment-advert':
@@ -554,6 +738,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'a2a-relay-forward':
     case 'a2a-relay-forward-ack':
     case 'a2a-topic-reply-inject':
+    case 'cos-action':
+    case 'cos-settle':
     case 'agent-identity-observe':
     case 'agent-identity-request':
       // agent-identity-observe / agent-identity-request (a2a-single-agent-identity
@@ -592,6 +778,13 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
       // messages for one topic, the same disclosure the bearer history route makes to
       // this agent's own machines, capped in count and size by its handler.
+      // session-transcript-pull joins it (native-conversation-any-machine-access §3d): it serves
+      // OWN session records (the reader's digest, this machine's token and PIN removed) and its own
+      // session list, the same disclosure the bearer transcript and /sessions reads made to this
+      // agent's own machines; capped by its handler. The audience is applied where a person is answered.
+      // topic-row-pull joins it (context-budget §14): it serves OWN TopicMemory rows of one
+      // topic (the rows this machine carried, or its recent rows), the same disclosure the
+      // deliverMessage carrier already makes to the owner; capped by its handler.
       // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
       // verb is reachable by any registered peer, but its HANDLER is the real
       // gate — it serves a private view body ONLY when the carried user-auth

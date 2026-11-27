@@ -31,6 +31,8 @@ export interface BuildPerSlugManifestInput {
   framework?: IntelligenceFramework;
   frameworkModel?: string;
   leanContext?: boolean;
+  /** Per-job thinking mode (job-launch-intent-record §1); validateManifest checks the enum. */
+  thinkingMode?: PerSlugManifest['thinkingMode'];
   // Optional pass-throughs the loader reads from the MANIFEST (manifestToJobDefinition),
   // not the body frontmatter — so they must be carried here or they're silently dropped.
   tags?: string[];
@@ -47,6 +49,9 @@ export interface BuildPerSlugManifestInput {
   perMachineIndependent?: boolean;
   /** Preserved across regeneration (operator may have disabled the default). */
   disabledAtBodyHash?: string;
+  /** The template's schedule when this manifest was written. A `schedule`
+   *  that differs from it is an operator edit the installer keeps. */
+  shippedSchedule?: string;
   /** Jev job-completion audit eligibility (jev-job-supervision spec). Carried
    *  here because the loader reads it from the MANIFEST — the built-in batch
    *  job's own `completionAudit: excluded` is inert without this. */
@@ -72,6 +77,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.framework !== undefined) m.framework = input.framework;
   if (input.frameworkModel !== undefined) m.frameworkModel = input.frameworkModel;
   if (input.leanContext !== undefined) m.leanContext = input.leanContext;
+  if (input.thinkingMode !== undefined) m.thinkingMode = input.thinkingMode;
   if (input.tags !== undefined) m.tags = input.tags;
   if (input.unrestrictedTools !== undefined) m.unrestrictedTools = input.unrestrictedTools;
   if (input.gate !== undefined) m.gate = input.gate;
@@ -81,6 +87,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.mcpAccess !== undefined) m.mcpAccess = input.mcpAccess;
   if (input.perMachineIndependent !== undefined) m.perMachineIndependent = input.perMachineIndependent;
   if (input.disabledAtBodyHash !== undefined) m.disabledAtBodyHash = input.disabledAtBodyHash;
+  if (input.shippedSchedule !== undefined) m.shippedSchedule = input.shippedSchedule;
   if (input.completionAudit !== undefined) m.completionAudit = input.completionAudit;
   if (input.declaredEffects !== undefined) m.declaredEffects = input.declaredEffects;
   if (input.conditionalEffects !== undefined) m.conditionalEffects = input.conditionalEffects;

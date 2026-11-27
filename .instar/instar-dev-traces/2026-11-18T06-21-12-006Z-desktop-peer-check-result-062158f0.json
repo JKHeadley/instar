@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "desktop-peer-check-result",
+  "sessionId": "c5b58ce2-f04e-41b6-8948-f18ca1da5d5d",
+  "timestamp": "2026-11-18T06:21:12.006Z",
+  "artifactPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "artifactSha256": "9bdf58b017e90b7fa0626575456a9c9f1015727c0f53c9e59c91be0b4e20330f",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "tests/unit/desktop-video-viewer.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Preserve a user selection in the existing picker after refresh. No changes to readiness or access decisions.",
+  "eli16Path": "upgrades/side-effects/desktop-peer-check-result.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-peer-check-result.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/desktop-video-viewer.test.ts",
+      "howCaught": "Real picker in JSDOM retains the still-selectable machine and checks removed, unavailable and unsigned fallbacks."
+    }
+  }
+}

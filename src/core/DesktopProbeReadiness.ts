@@ -2,6 +2,12 @@
  * machine or the Instar agent is online or whether a screen is actually locked. */
 import type { DesktopHelperPermissionChange } from './DesktopHelperRetention.js';
 
+/** The longest readiness reason a peer's answer may carry. Each reason here is
+ * at most a few plain sentences plus a helper path; 160 cut real ones mid-word ("… The Ins"). */
+export const DESKTOP_PEER_REASON_MAX = 800;
+
+export const DESKTOP_CHECK_FAILED_REASON = 'Could not check this machine’s desktop. Select Check again to retry.';
+
 const PERMISSION_STEP = 'System Settings → Privacy & Security';
 
 /** macOS ties these permissions to the exact program, so a changed helper loses
@@ -10,10 +16,15 @@ function helperChangeReason(change: DesktopHelperPermissionChange, servingMissin
   // A tie keeps the kept copy serving, so granting it only what is missing
   // overall would leave it short and need a second trip. Ask for all of it.
   const missing = change.keptMissing || servingMissing;
-  const why = change.kind === 'source-changed'
-    ? `Instar's Mac desktop helper changed in update ${change.version}, and macOS ties ${missing} to the exact program, so the old permission no longer applies.`
-    : `Instar now keeps one permanent copy of its Mac desktop helper, so later updates that leave the helper unchanged cannot remove its permission. macOS needs to allow that copy once.`;
-  return `${why} This will not fix itself. Someone at this Mac needs to allow it again: ${PERMISSION_STEP} → ${missing}. `
+  // A first grant is also what a freshly installed or rebuilt Mac sees, where
+  // nothing was ever allowed: no "again", no update story, true either way.
+  if (change.kind === 'first-grant') {
+    return `macOS has not yet allowed Instar's Mac desktop helper on this Mac (the one copy Instar keeps, so later updates cannot remove its permission). `
+      + `This will not fix itself. Someone at this Mac needs to allow it once: ${PERMISSION_STEP} → ${missing}. `
+      + `If instar-desktop-host is listed, turn it on (or off and on). If it is not listed or that does not work, remove it with the minus button and add ${change.helperPath} with the plus button. Then tap Retry.`;
+  }
+  return `Instar's Mac desktop helper changed in update ${change.version}, and macOS ties ${missing} to the exact program, so the old permission no longer applies. `
+    + `This will not fix itself. Someone at this Mac needs to allow it again: ${PERMISSION_STEP} → ${missing}. `
     + `Turn instar-desktop-host off and on. If it is not listed or that does not work, remove it with the minus button and add ${change.helperPath} with the plus button. Then tap Retry.`;
 }
 
@@ -29,8 +40,10 @@ export function desktopProbeUnavailableReason(probe: {
   screenLocked?: boolean;
   helperChange?: DesktopHelperPermissionChange;
   linux?: { display: string | null; capturer: boolean; wayland?: boolean; compositor?: 'hyprland' };
+  windows?: { locked: boolean };
 }): string {
   if (probe.linux) return linuxUnavailableReason(probe, probe.linux);
+  if (probe.windows) return windowsUnavailableReason(probe, probe.windows);
   const missing = [!probe.screenPermission && 'Screen Recording',
     !probe.inputPermission && 'Accessibility'].filter(Boolean).join(' and ');
   const permissionStep = missing && probe.helperChange
@@ -92,5 +105,20 @@ function linuxUnavailableReason(probe: { sessionActive: boolean; displayCount: n
   if (!linux.capturer) {
     return 'The screen-capture tool is missing on this Linux machine. Install ImageMagick and xdotool (on Ubuntu: sudo apt install imagemagick xdotool), then tap Retry.';
   }
+  return 'Remote desktop is not ready on this machine.';
+}
+
+/** The Windows companion runs inside the signed-in user's session. Windows lets
+ * no program there see or type into the sign-in screen, so a locked PC cannot
+ * be opened or unlocked from Remote Desktop yet. */
+function windowsUnavailableReason(probe: { sessionActive: boolean; displayCount: number },
+  windows: { locked: boolean }): string {
+  if (windows.locked) {
+    return 'This Windows PC is locked. Remote desktop cannot unlock Windows yet: sign in at the PC, then tap Retry. The Instar agent is online.';
+  }
+  if (!probe.sessionActive) {
+    return 'This Windows PC is showing a screen that remote desktop cannot reach, such as the sign-in screen or a permission prompt, or nobody is signed in. Sign in or answer it at the PC, then tap Retry. The Instar agent is online.';
+  }
+  if (probe.displayCount === 0) return 'No active display is available to capture on this machine. Wake its screen or connect a display.';
   return 'Remote desktop is not ready on this machine.';
 }

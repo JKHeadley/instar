@@ -162,12 +162,15 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | PromptGate | src/monitoring/PromptGate.ts:656 | unanswered permission prompt? | A | OC(fast) | ⚠ |
 | SlackAdapter (alert-suppress) | src/messaging/slack/SlackAdapter.ts:844 | suppress a stall alert? | A | OC(default, maxTok 5) | ⚠ |
 | **InputClassifier** ⚠ | src/monitoring/InputClassifier.ts:246 | auto-approve vs relay | A | **AD(fast) → Claude** | ❌ not in map — silently on Claude |
+| ChiefOfStaffLoop | src/core/ChiefOfStaffEvidence.ts:buildJudge (prompt) → src/commands/server.ts (evaluate, attribution inlined) | per bound project: moving / stalled / drifting / waiting-on-user / claims-done / unknown over deterministic evidence + a byte-bounded untrusted conversation tail | **B** signal under deterministic floors (null ⇒ unknown, never an action) | OC(fast) | ✅ nature-B closed-set verdict; the floors hold authority (docs/specs/chief-of-staff-topic.md §2.5), one metered call per due project under the `chief-of-staff` LlmQueue budget (≤200/day) |
+| ConversationSilenceJudge | src/monitoring/neverSilent/ConversationSilenceJudge.ts (askJev + askReferee) | why a conversation that owes an answer went silent: engine-login / usage-or-subscription-wall / startup-dialog / crashed / working-slow / message-not-delivered / other, plus what the session did after the message | **B** signal under deterministic floors (undetermined ⇒ tell only; actions need confidence ≥ floor, untruncated input, and their own switches) | Jev first; referee OC(fast) on a DIFFERENT engine+account than the stuck session (never the stuck engine) | ✅ closed-set verdict; called only for an overdue message, backed off 60 s doubling to 10 min per incident; input scrubbed; a failed or slow call ⇒ undetermined, and the person is still told (docs/specs/never-silent-conversation.md §3.2) |
 
 ### Gates (router-backed)
 | Component | file:line | Decision | Nature | Route | Intentional? |
 |---|---|---|---|---|---|
 | MessagingToneGate | src/core/MessagingToneGate.ts:264 | outbound tone/leak/self-stop | A/B·gating | OC(fast) (override→pi) | ⚠ high-volume + fails closed; accuracy matters, but a fast small model likely fits |
 | AttributionJudge | src/core/attribution/AttributionJudge.ts | does this credit a person, do the logged words support it, lineage, source ranking | A/B·gating | OC(fast) | passes as `unchecked` with no model after failover (stated exception, attribution-paper-trail section 4); own queue and budgets |
+| WorkBoardSpecApprovalJudge | src/core/specConstitutionCheckLedger.ts (judgeSpecApprovalAsk) | does an agent-written Work Board card ask the owner to approve a spec/design without its constitution check result (rule B24) | A/B·gating | OC(fast), then OC(balanced) | low volume (agent card writes only); both tiers failing holds the write with a retryable 503; no provider configured lets it through, logged |
 | CoherenceGate / CoherenceReviewer | src/core/CoherenceReviewer.ts:295 | action coherent for project? | **B** (blocks work) | OC(fast) | ✅ keep reasoning |
 | ExternalOperationGate | src/core/ExternalOperationGate.ts:510 | external-op mutability class | **B** safety | OC(default)·gating | ✅ |
 | LLMSanitizer | src/security/LLMSanitizer.ts:110 | prompt-injection sanitize | **B** safety | OC(fast) | ✅ |
@@ -181,13 +184,15 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | TaskClassifier / OverrideDetector / AutoApprover / IntegrationGate / PromptGate | src/providers/uxConfirm/* | classification / approval verdicts | A | OC(fast) | ⚠ mostly nature A |
 | DiscoveryEvaluator | src/core/DiscoveryEvaluator.ts:467 | surface a feature discovery? | A | OC(fast) | ⚠ |
 | IntentLlmJudge / LlmIntentClassifier / AmbientContributionGate | src/core/IntentTestHarness.ts:246; src/permissions/* | intent-vs-org / permission intent / speak? | B·gating (explicit category) | OC(fast) | ✅ explicit-category, correct |
+| OrgPolicyJudge | src/core/IntentTestHarness.ts:318 | does this action or message break the organization's never rules? (org-never-actions) | B·gating (explicit category) | OC(fast) | ✅ explicit-category; observe by default, blocking only per org-never-actions block mode |
 | RelationshipAnomalyScorer | src/permissions/RelationshipAnomalyScorer.ts:387 | voice match vs principal | A·gating (explicit) | OC(fast) | ✅ |
 | **ResumeValidator** ⚠ | src/core/ResumeValidator.ts:211 | resume UUID matches topic? | A | **AD(fast) → Claude** | ❌ not in map |
 
 ### Reflectors / extractors (router-backed)
 | Component | file:line | Decision | Nature | Route | Intentional? |
 |---|---|---|---|---|---|
-| TopicSummarizer | src/memory/TopicSummarizer.ts:163 | topic summary + PURPOSE | D | OC(fast) | ⚠ cheap fits |
+| TopicSummarizer | src/memory/TopicSummarizer.ts:163 | topic summary + PURPOSE (off while the context layers are on: H3 is the summary table's single writer) | D | OC(fast) | ⚠ cheap fits |
+| ConversationGraphSuggestions | src/server/ConversationGraphSuggestionService.ts:218 | group unassigned conversations into proposed efforts (advice; owner accepts/rejects each) | D | OC(balanced) | ✅ intentional — advice only, output validated deterministically (offered aliases, 2-12, no overlap/project mix); bench `pending` wave-3, graded by owner Accept/Reject |
 | RelationshipManager ×2 | src/core/RelationshipManager.ts:328/381 | person match / dedup | D | OC(fast) | ⚠ |
 | StandardsConformanceReviewer ×2 | src/core/reviewers/standards-conformance.ts:206/256 | spec-vs-standards / fit | B | OC(capable) | ✅ |
 | JobReflector | src/core/JobReflector.ts:207 | reflect on job outcome | B/D | OC(capable) | ✅ |
@@ -199,6 +204,10 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **Usher** | src/core/Usher.ts:96 | route a turn to topics | A | **codex-cli (override)** | ✅ overridden off-Claude in Echo (would be ⚠ by default) |
 | **TopicIntentExtractor** | src/core/TopicIntentExtractor.ts:284 | extract topic intent | A | **codex-cli (override)** | ✅ overridden (default would be ⚠) |
 | **PreCompactionFlush** ⚠ | src/core/PreCompactionFlush.ts:162 | extract durable facts pre-compaction | D | **AD(default) → Claude** | ❌ not in map |
+| ContextLayerChunk | src/monitoring/contextLayers/chunkBuilder.ts | chunk (C) and range (C2) summaries of an archived transcript span (context-budget §6.5) | D | reflector (fast), queued background lane | ✅ in map (reflector); bench pending |
+| ContextLayerH3 | src/monitoring/contextLayers/h3Builder.ts | H3, the long-term view rebuilt from a bounded chunk/C2 selection; the topic summary table's single writer (context-budget §6, §6.5) | D | reflector (fast), queued background lane | ✅ in map (reflector); bench pending |
+| FoldAudit | src/monitoring/foldAudit.ts | checks a session's handoff note in a practice fold (context-budget §7.4) | D | **pinned to the conversation's provider family (Claude), no swap** (§9) | ✅ in map (reflector); bench pending |
+| FoldProbe | src/monitoring/foldProbe.ts, foldGrade.ts | writes and grades a practice fold's held-out quiz (context-budget §10) | D | **pinned to the conversation's provider family (Claude), no swap** (§9) | ✅ in map (reflector); bench pending |
 | **SessionSummarySentinel** ⚠ | src/messaging/SessionSummarySentinel.ts:181 | summarize tmux → task/phase | D | **AD(fast) → Claude** | ❌ not in map |
 | **openConversationBrief** ⚠ | src/threadline/openConversationBrief.ts:265 | A2A conversation brief | D | **AD(fast) → Claude** | ❌ not in map |
 | **TreeSynthesis** ⚠ | src/knowledge/TreeSynthesis.ts:63 | synthesize fragments → answer | D | **AD(fast) → Claude** | ❌ not in map |

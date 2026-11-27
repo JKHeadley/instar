@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-13T10:41:27.488Z",
+  "slug": "backup-snapshot-off-main-thread",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 478,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/core/backupSnapshot.worker.ts",
+      "src/core/backupSnapshotJob.ts",
+      "src/feedback-factory/drain/FeedbackDrainBackupCadence.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 453,
+    "deletedLines": 25
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

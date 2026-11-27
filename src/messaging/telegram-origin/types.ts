@@ -61,6 +61,11 @@ export interface TelegramOriginRecord extends TelegramOriginProducer {
   operationId: string;
   deliveryId: string;
   createdAt: number;
+  /** native-conversation-base §3a item 2 — a replacement's original draft time.
+   * Sealed in the envelope (never the admission, which the store rebuilds from
+   * fixed columns); the execution owner's content check looks back to it. An
+   * older receiver keeps the envelope bytes whole and ignores the field. */
+  firstPreparedAt?: number;
   operationKind: string;
   destination: OriginDestination;
   contentDigest: string;
@@ -136,6 +141,15 @@ export interface OriginConfig {
   browserSendAllowance?: {
     profileId: string; accountId: string; chatId: string; topicId: string | null; decisionRef: string;
   };
+  /** Agent-held grant for typed Telegram test groups (docs/specs/telegram-test-groups.md).
+   * Gates create only; list and delete act only on groups carrying this agent's marker. */
+  testGroups?: {
+    profileId: string; accountId: string; bots: { username: string; userId: string }[];
+    /** One attribution source marker naming the logged decision. */
+    decisionRef: string;
+    /** ISO-8601, at most 30 days after it is read. */
+    expiresAt: string;
+  };
   /** Application permission for the pre-recorded operator-hub outage notice.
    * Omitted means enabled; this never disables ordinary origin recording. */
   outageNotice?: { enabled?: boolean };
@@ -143,6 +157,8 @@ export interface OriginConfig {
    * the lease is FORWARDED to the holder (omitted ⇒ enabled). The durable held
    * state, its reason and the notice are NOT behind this switch. */
   forwardToHolder?: { enabled?: boolean };
+  /** native-conversation-base §3b — the outcome route asks the execution owner (default on; read inline). */
+  ownerRead?: { enabled?: boolean; budgetMs?: number; cacheEntries?: number };
   limits?: Partial<OriginLimits>;
 }
 export type BotParameters = { [key: string]: OriginJson };
@@ -170,7 +186,30 @@ export class TelegramOriginHoldError extends Error {
     super(`Telegram message held: ${reason}`);
     this.name = 'TelegramOriginHoldError';
   }
+  /** Set on a token-less hold (standby-durable-forward-without-token §9): only this
+   * machine has the reply until the sending machine is reachable. */
+  custody?: 'this-machine-only';
 }
+/** native-conversation-forwarded-advisory item 5 — an answer named a handed-back reply that is no
+ * longer held (it expired, or was already replaced). Nothing is admitted and nothing is sent; the
+ * caller is told to read the old reply's recorded outcome (a 409 that names its operation id). */
+export class AdvisoryAnswerClosedError extends TelegramOriginHoldError {
+  constructor(operationId: string) { super('advisory-answer-closed', operationId, 'held'); this.name = 'AdvisoryAnswerClosedError'; }
+}
+/** The relay failed before preparing or recording anything (holder unreachable,
+ * wrong protocol, owner mismatch at the capabilities step): no operation exists.
+ * Used only for reporting (standby-durable-forward-without-token §8, §10); the
+ * caller-facing outcome stays as on main, and native-conversation-base slice 3b
+ * owns how that outcome is worded. */
+export const RELAY_PRE_PREPARE_REASONS: ReadonlySet<string> = new Set(['origin-peer-unreachable', 'origin-peer-protocol-unavailable', 'execution-owner-mismatch']);
+/** §8 (standby-durable-forward-without-token): the producer ids of hub posts. Every one is
+ * notice-class (see `NOTICE_CLASS_PRODUCERS`), so it is never turned into a durable held reply. */
+export type HubNoticeClass = 'attention-hub-post' | 'held-expiry-report';
+
+export function relayNothingPrepared(error: unknown): boolean {
+  return error instanceof TelegramOriginHoldError && error.operationId === null && RELAY_PRE_PREPARE_REASONS.has(error.reason);
+}
+
 /** a2a-single-agent-identity §4.2 — the forward-to-holder path found, during
  * its lease-settling window, that THIS machine holds the lease after all. The
  * caller sends locally; nothing was forwarded, recorded or held. */

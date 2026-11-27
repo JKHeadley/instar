@@ -23,6 +23,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
+import { dashboardSecurityHeaders } from '../../src/server/middleware.js';
 import { MeshRpcDispatcher } from '../../src/core/MeshRpc.js';
 import { MeshRpcClient } from '../../src/core/MeshRpcClient.js';
 import { generateSigningKeyPair, sign, verify } from '../../src/core/MachineIdentity.js';
@@ -197,6 +198,8 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
     };
     const frontingApp = express();
     frontingApp.use(express.json());
+    // The real server mounts this before every route (AgentServer); it sandboxes /view responses.
+    frontingApp.use(dashboardSecurityHeaders);
     frontingApp.use(createRoutes(frontingCtx));
     frontingServer = await listen(frontingApp);
   });
@@ -210,7 +213,7 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
   async function getView(server: Server, id: string, headers: Record<string, string> = {}) {
     const res = await fetch(`${server.url}/view/${id}`, { headers });
     const text = await res.text();
-    return { status: res.status, text, cacheControl: res.headers.get('cache-control'), contentType: res.headers.get('content-type') };
+    return { status: res.status, text, cacheControl: res.headers.get('cache-control'), contentType: res.headers.get('content-type'), csp: res.headers.get('content-security-policy') };
   }
 
   it('FEATURE ALIVE: a /view/:id NOT held locally is proxied to the holder and served (200, holder body)', async () => {
@@ -218,6 +221,9 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
     expect(r.status).toBe(200);
     expect(r.text).toContain('holder-only body');
     expect(r.contentType).toMatch(/text\/html/);
+    // dashboard-conversations-browser-device §4.12: the answering machine sandboxes a relayed view,
+    // whatever the holder sent.
+    expect(r.csp).toBe('sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads');
   });
 
   it('private body is NEVER cached at the fronting edge (Cache-Control: no-store)', async () => {
@@ -321,5 +327,6 @@ describe('WS4.4 pool-view link proxy (§WS4.4 a–e)', () => {
     expect(r.status).toBe(200);
     // The holder returns its own PIN entry page — never the gated content.
     expect(r.text).not.toContain('pin gated'); // the gated markdown body is NOT leaked
+    expect(r.csp).toBe('sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads');
   });
 });

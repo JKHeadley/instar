@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-17T06:41:33.987Z",
+  "slug": "cos-owner-decision-delivery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/cosOwnerPauseSource.ts",
+      "src/messaging/NotificationSelectivityGate.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/notificationCategories.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -9,6 +9,7 @@
  * (specs/provider-portability/04-anthropic-path-constraints.md).
  */
 
+import { CLAUDE_CODE_FRAMEWORK } from './frameworkFacts.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
 import { guardChildStdin } from './pipeErrorGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
+import { applyClaudeChildAuth, applyClaudeReviewerLogin, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -102,6 +103,7 @@ export function buildClaudeReviewerArgs(model: string, jsonSchema?: string, noTo
 }
 
 export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
+  readonly frameworkId = CLAUDE_CODE_FRAMEWORK;
   private claudePath: string;
 
   constructor(claudePath: string) {
@@ -151,7 +153,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // The configured sign-in key goes on after the allowlist: it is what `claude -p` itself needs
       // on an agent with no stored login (spec cloud-key-internal-calls).
       const childEnv = applyClaudeChildAuth(hardened
-        ? buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema))
+        ? applyClaudeReviewerLogin(buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema)))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;
@@ -222,7 +224,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
  */
 export function parseJsonResult(
   stdout: string,
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
+  onUsage?: IntelligenceOptions['onUsage'],
   preferStructuredOutput = false,
   onServedModel?: (info: { model: string; framework?: string }) => void,
 ): string {
@@ -252,7 +254,23 @@ export function parseJsonResult(
       const outputTokens = num(u.output_tokens);
       const cachedTokens = num(u.cache_read_input_tokens);
       if (inputTokens > 0 || outputTokens > 0) {
-        onUsage({ inputTokens, outputTokens, cachedTokens });
+        // Unified usage ledger (Slice 2): the disjoint parts, the session id the
+        // ledger pairs with this call's transcript, and the metered dollars.
+        const part = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+        const usd = typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd) ? obj.total_cost_usd : null;
+        onUsage({
+          inputTokens, outputTokens, cachedTokens,
+          detail: {
+            sessionId: typeof obj.session_id === 'string' ? obj.session_id : null,
+            input: part(u.input_tokens),
+            cacheRead: part(u.cache_read_input_tokens),
+            cacheWrite: part(u.cache_creation_input_tokens),
+            output: part(u.output_tokens),
+            reasoning: null,
+            reportedUsd: usd,
+            reportedBasis: usd != null ? 'actual' : null,
+          },
+        });
       }
     } catch {
       /* @silent-fallback-ok — usage extraction must never break the result path. */

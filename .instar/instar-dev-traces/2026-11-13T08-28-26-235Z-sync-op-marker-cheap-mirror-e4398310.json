@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "sync-op-marker-cheap-mirror",
+  "sessionId": "9aa743e2-a071-40cd-b874-b36aa32443f5",
+  "timestamp": "2026-11-13T08:28:26.235Z",
+  "artifactPath": "upgrades/side-effects/sync-op-marker-cheap-mirror.md",
+  "artifactSha256": "12846efbc623c61358b806d6fab43d3da4f36a94a7fc7ac6fef12975ff3ff5dc",
+  "coveredFiles": [
+    "docs/specs/sync-op-marker-cheap-mirror.eli16.md",
+    "src/commands/server.ts",
+    "src/core/InFlightSyncOpMarker.ts",
+    "tests/integration/tmux-resilience-slow-stub.test.ts",
+    "tests/unit/InFlightSyncOpMarker.test.ts",
+    "tests/unit/wake-handler-amplifier-guard.test.ts",
+    "upgrades/next/sync-op-marker-cheap-mirror.md",
+    "upgrades/side-effects/sync-op-marker-cheap-mirror.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One leaf module plus one line in the wake handler; no stored data or config; a revert undoes it. Changes a signal the supervisor reads, so it had a second-pass review (two rounds, concur).",
+  "eli16Path": "docs/specs/sync-op-marker-cheap-mirror.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sync-op-marker-cheap-mirror.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

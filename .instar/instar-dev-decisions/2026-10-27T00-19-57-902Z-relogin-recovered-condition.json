@@ -1,0 +1,30 @@
+{
+  "ts": "2026-10-27T00:19:57.902Z",
+  "slug": "relogin-recovered-condition",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 143,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginAttention.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginService.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 130,
+    "deletedLines": 13
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

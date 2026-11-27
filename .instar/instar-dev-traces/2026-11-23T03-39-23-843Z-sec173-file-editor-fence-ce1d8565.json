@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "sec173-file-editor-fence",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T03:39:23.843Z",
+  "artifactPath": "upgrades/side-effects/sec173-file-editor-fence.md",
+  "artifactSha256": "cae3299a091954289084e657e393934732fca199b471c72bfb8622b610a7f3ef",
+  "coveredFiles": [
+    "docs/specs/sec173-file-editor-fence.eli16.md",
+    "src/server/fileRoutes.ts",
+    "tests/e2e/file-viewer-e2e.test.ts",
+    "tests/unit/sec173-file-editor-git-fence.test.ts",
+    "upgrades/next/sec173-file-editor-fence.md",
+    "upgrades/side-effects/sec173-file-editor-fence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-173: file editor fence gap; two never-editable entries and an execute-bit refusal in one source file; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec173-file-editor-fence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec173-file-editor-fence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

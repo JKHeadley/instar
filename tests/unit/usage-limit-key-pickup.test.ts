@@ -344,7 +344,15 @@ describe('which Claude home a session runs on, read from real tmux', () => {
 
   it('the usage proof opts in', () => {
     const src = fs.readFileSync(path.join(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
-    const at = src.indexOf('confirmSessionUsageLimit(tmuxSession: string)');
-    expect(src.slice(at, at + 900)).toContain('{ defaultWhenUnset: true, defaultWhenAbsent: true }');
+    // Both usage-evidence readers resolve the transcript through ONE lookup…
+    for (const method of ['confirmSessionUsageLimit(tmuxSession: string)', 'usageWallFromTranscript(tmuxSession: string)']) {
+      const at = src.indexOf(method);
+      expect(at).toBeGreaterThan(-1);
+      expect(src.slice(at, at + 400)).toContain('limitEvidenceTranscript(this, this.config.projectDir, tmuxSession)');
+    }
+    // …and that lookup opts in to the default home when unset AND absent.
+    const fn = src.indexOf('function limitEvidenceTranscript(');
+    expect(fn).toBeGreaterThan(-1);
+    expect(src.slice(fn, fn + 1200)).toContain('configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true })');
   });
 });

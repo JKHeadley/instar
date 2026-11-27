@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-live",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T00:21:08.717Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-live.md",
+  "artifactSha256": "603bb2748a4237179b70311b91c91acc5bd0edff8954ad4aeddc1bfb3f1da9cd",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/core/ChiefOfStaffActionProtocol.ts",
+    "src/messaging/invisible-payload.ts",
+    "tests/unit/ChiefOfStaffActionProtocol.test.ts",
+    "tests/unit/telegram-egress-boundary.test.ts",
+    "upgrades/next/chief-of-staff-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Settlement/execution authority seam in the action protocol plus an egress classification; live-proof fixes under the converged, approved Chief of Staff spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered controller: the holder-freshness split lets an already-bounded action execute where it was wrongly refused, and the egress classification admits two chat_id-only reads."
+  }
+}

@@ -37,8 +37,6 @@ export interface CatalogRow {
 
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';
 const OFF_MACHINE_SPEC = 'docs/specs/backup-off-machine-copy.md';
-const VOICE_SPEC = 'docs/specs/backup-on-machine-voice.md';
-const EMAIL_SPEC = 'docs/specs/backup-email-sending.md';
 
 export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze([
   {
@@ -64,7 +62,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Cloudflare account and a domain.',
     backup: 'Tailscale, your local network, the optional relay, or a temporary relay you agree to.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-16 (topic 135786, main 8bbc4f3db plus this row): a test agent took the person's yes, its setup session took the token through a Secret Drop, the server made the tunnel and DNS name on dawn-tunnel.dev and restarted, the check passed from the public internet, and the switch-off removed both.
+    setupRecipe: 'cloudflare-v1',
   },
   {
     id: 'telegram',
@@ -76,7 +75,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Telegram account, which needs a phone number, plus a bot I set up.',
     backup: 'Slack, WhatsApp, iMessage, the Instar app, or the dashboard.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-09 (topic 135786, PR 2950 head 0b9e3ca01d): a test agent with no Telegram took the person's yes, its own session made the bot and the topics group, the server stored the key and restarted, and the check passed.
+    setupRecipe: 'telegram-v1',
   },
   {
     id: 'jev',
@@ -101,7 +101,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'On a single machine, losing that machine loses the secrets.',
     gapSpec: OFF_MACHINE_SPEC,
-    setupRecipe: null,
+    // Proven live 2026-11-07 (topic 135786): a test agent took the person's yes, received the login through Secret Drop, had the server write the copy, and its check passed.
+    setupRecipe: 'bitwarden-v1',
   },
   {
     id: 'github-state-backup',
@@ -114,12 +115,12 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'Nothing else keeps a copy off the machine.',
     gapSpec: OFF_MACHINE_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'github-v1',
   },
   {
     id: 'second-ai-door',
     name: 'A second AI subscription',
-    benefit: 'Your agent keeps working when one AI provider is down or out of quota.',
+    benefit: 'A second AI provider your agent can work on: when the main one is down or out of quota, you can ask it to move a conversation over, so the work doesn’t stop.',
     dataLeaves: 'Your agent’s conversations and work go to that provider when it’s in use.',
     cost: 'A paid subscription. I confirm the price with you before anything is bought.',
     account: 'An account with the second provider.',
@@ -127,7 +128,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'With only one door, your agent stops when that provider does.',
     gapSpec: LOCAL_MODEL_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'second-door-v1',
   },
   {
     id: 'voice-transcription',
@@ -136,24 +137,23 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     dataLeaves: 'The audio of your voice notes goes to the provider.',
     cost: 'Groq has a limited free tier, and OpenAI charges by the minute. I confirm the price with you first.',
     account: 'An account and key with Groq or OpenAI, which I get myself.',
-    backup: 'Your agent says it can’t read the voice note.',
-    backupStatus: 'gap',
-    gapWhen: 'Nothing can read a voice note without a provider.',
-    gapSpec: VOICE_SPEC,
-    setupRecipe: null,
+    backup: 'Your agent reads voice notes on its own machine with whisper.cpp, free, once it’s installed (I can install it).',
+    backupStatus: 'exercised',
+    drillTest: 'tests/e2e/local-voice-transcription-lifecycle.test.ts',
+    setupRecipe: 'voice-v1',
   },
   {
     id: 'email',
     name: 'Email',
-    benefit: 'Scheduled reports in your inbox.',
-    dataLeaves: 'The reports go through the email provider. Which one is still to be chosen.',
-    cost: 'Not known until the provider is chosen.',
-    account: 'Not known until the provider is chosen.',
-    backup: null,
-    backupStatus: 'gap',
-    gapWhen: 'Your agent can’t send email yet.',
-    gapSpec: EMAIL_SPEC,
-    setupRecipe: null,
+    benefit: 'Reports you choose arrive in your inbox. I only ever email you, at the address you type here.',
+    dataLeaves: 'Those reports go through the email service you pick: Resend, or your own Gmail or iCloud.',
+    cost: 'Free: Resend’s free plan, or the mailbox you already have.',
+    account: 'Your choice: a free Resend account I open in your name, your own Gmail or iCloud, or a mailbox you give me.',
+    backup: 'The report comes to our conversation instead, with a line saying why.',
+    backupStatus: 'exercised',
+    drillTest: 'tests/e2e/email-sending-lifecycle.test.ts',
+    // Proven live 2026-11-09 (topic 135786, PR 2988 head d66982d9f5): a test agent took the person's yes, stored the mailbox key, the proof email was accepted and its code entered, and a scheduled report arrived by email.
+    setupRecipe: 'email-v1',
   },
 ] satisfies CatalogRow[]);
 

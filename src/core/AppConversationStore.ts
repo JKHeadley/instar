@@ -41,8 +41,10 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { canonicalConversationKey, cleanConversationTitle, derivedEventId } from './appConversationText.js';
 import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview } from './appMediaTypes.js';
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
+import type { AccessStamp } from './TeamAccessMerge.js';
+import { compareCreatedEvidence, creationBaseDigest, creationContextDigest, validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -83,7 +85,7 @@ export interface AppEventBase {
  * `ownerPerson` (people and roles §3.4): set when an MSP phone created the conversation, namespaced
  * by the machine whose user registry the id belongs to. Absent ⇒ the owner's conversation.
  */
-export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner }
+export interface CreatedEvent extends AppEventBase { kind: 'created'; title: string; ownerPerson?: ConversationOwner; creationContext?: AppCreationContext }
 export interface LabelEvent extends AppEventBase { kind: 'label'; title: string; setAt: string }
 export interface TombstoneEvent extends AppEventBase { kind: 'tombstone' }
 export interface MessageEvent extends AppEventBase {
@@ -106,6 +108,16 @@ export interface MessageEvent extends AppEventBase {
    * recorded in the same append as the reply. Information only; nothing decides on it.
    */
   agentOrigin?: MessageOriginEvidence;
+  /**
+   * Work Board §2: set ONLY by the server-side append of a `Work board:` line, never accepted from a
+   * request body. An older build's validator drops it and falls back to the line's own prefix.
+   * `work-board-note` (agent-work-cards-default §2): the agent's progress note, written through the notes route.
+   */
+  systemSource?: 'work-board' | 'work-board-note';
+  /** agent-work-cards-default §2: the binding of the session that wrote a `work-board-note` (audit only; never authority). */
+  writerBinding?: string;
+  /** team-roles-and-access, "Step 2b": what lets any machine judge who may read this. Absent on older events, which every grant opens. */
+  accessStamp?: AccessStamp;
 }
 export interface DeliveryEvent extends AppEventBase { kind: 'delivery'; messageId: string; state: DeliveryEventState }
 /** A message with files (media spec §4.1): every field of `message` plus 1-10 attachments. */
@@ -124,7 +136,47 @@ export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media
  * `media-message`. `late` marks a transcript that finished after the 60 s dispatch deadline.
  */
 export interface TranscriptEvent extends AppEventBase { kind: 'transcript'; messageId: string; attachmentId: string; text: string; provider: string; late?: true }
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent;
+/**
+ * A pin or unpin of one message (docs/specs/conversation-pinned-messages.md). Never a chat message:
+ * the target is `pinnedMessageId` (not `messageId`), so no message reader treats it as one. Per
+ * (conversation, pinnedMessageId) the greatest (at, machineId, eventId) wins, in any arrival order.
+ */
+export interface PinEvent extends AppEventBase {
+  kind: 'pin';
+  pinnedMessageId: string;
+  pinState: 'pinned' | 'unpinned';
+  pinnedBy: { name: string; role: PinnedByRole };
+  /** The pinned message's text as the pinning machine saw it (first 200 characters, paths removed). */
+  preview?: string;
+  source: 'app' | 'telegram';
+}
+export type PinnedByRole = 'owner' | 'msp' | 'team' | 'telegram';
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent;
+
+/** The id of a pinned message: an app message id, a Telegram message id, or a Slack ts. */
+export const PIN_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+export const PIN_PREVIEW_CHARS = 200;
+/** At most this many messages are pinned in one conversation (a further pin is refused). */
+export const MAX_PINS_PER_CONVERSATION = 100;
+
+/** One pinned message as the reads return it. */
+export interface PinnedMessage {
+  messageId: string;
+  pinnedAt: string;
+  pinnedBy: { name: string; role: PinnedByRole };
+  preview: string | null;
+  source: 'app' | 'telegram';
+  eventId: string;
+  machineId: string;
+}
+
+/** Whether a pin event beats the current winner for its message (the one order every machine uses). */
+export function pinEventWins(next: { at: string; machineId: string; eventId: string }, cur: { at: string; machineId: string; eventId: string } | null | undefined): boolean {
+  if (!cur) return true;
+  if (next.at !== cur.at) return next.at > cur.at;
+  if (next.machineId !== cur.machineId) return next.machineId > cur.machineId;
+  return next.eventId > cur.eventId;
+}
 
 /** A transcript event's id: one per attachment per machine (the index picks one winner, §4.5.1). */
 export function transcriptEventId(attachmentId: string, machineId: string): string {
@@ -175,6 +227,10 @@ export interface BrowsedMessage {
   /** Unread (mobile-unread-messages §3.4): the sender's registry person, so a count can tell a reader's own rows. */
   senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
+  /** Work Board §2: this line was written by the work board, not by the agent; `work-board-note` is the agent's own progress note (agent-work-cards-default §2). */
+  systemSource?: 'work-board' | 'work-board-note';
+  writerBinding?: string;
+  accessStamp?: AccessStamp;
 }
 
 /** One attachment reference as the index holds it. */
@@ -208,6 +264,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS media_totals (id INTEGER PRIMARY KEY CHECK (id = 1), liveBytes INTEGER NOT NULL DEFAULT 0)`,
   // Server transcripts (media spec §4.5.1): the one winning transcript event per attachment.
   `CREATE TABLE IF NOT EXISTS transcripts (attachmentId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
+  // Pinned messages (conversation-pinned-messages): the winning pin event per message.
+  `CREATE TABLE IF NOT EXISTS pins (canonicalKey TEXT NOT NULL, pinnedMessageId TEXT NOT NULL, eventId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, PRIMARY KEY (canonicalKey, pinnedMessageId))`,
+  `CREATE INDEX IF NOT EXISTS pins_state ON pins(canonicalKey, state, at)`,
 ];
 
 /**
@@ -243,7 +302,9 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       const title = cleanConversationTitle(r.title);
       if (!title) return null;
       const ownerPerson = validConversationOwner(r.ownerPerson);
-      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}) };
+      const creationContext = r.creationContext === undefined ? undefined : validateAppCreationContext(r.creationContext);
+      if (creationContext === null) return null;
+      return { ...base, kind: 'created', title, ...(ownerPerson ? { ownerPerson } : {}), ...(creationContext ? { creationContext } : {}) };
     }
     case 'label': {
       const title = cleanConversationTitle(r.title);
@@ -272,6 +333,8 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (receivedAt) out.receivedAt = receivedAt;
       const receipt = validateReceipt(r.receipt);
       if (receipt) out.receipt = receipt;
+      const accessStamp = validateAccessStamp(r.accessStamp);
+      if (accessStamp) out.accessStamp = accessStamp;
       const senderName = typeof r.senderName === 'string' && r.senderName.length > 0 && r.senderName.length <= 128 ? r.senderName : null;
       if (senderName) out.senderName = senderName;
       if (r.senderRole === 'owner' || r.senderRole === 'msp' || r.senderRole === 'team') out.senderRole = r.senderRole;
@@ -282,6 +345,12 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (r.role === 'agent' && r.agentOrigin !== undefined) {
         const agentOrigin = validateMessageOriginEvidence(r.agentOrigin);
         if (agentOrigin && agentOrigin.machineId === machineId) out.agentOrigin = agentOrigin;
+      }
+      // Work Board §2: a server-written card line, or (agent-work-cards-default §2) the agent's progress note. Only on an
+      // agent-role plain message; any other value is dropped. An older build drops `work-board-note` and keeps the line.
+      if (r.role === 'agent' && r.kind === 'message' && (r.systemSource === 'work-board' || r.systemSource === 'work-board-note')) {
+        (out as MessageEvent).systemSource = r.systemSource;
+        if (r.systemSource === 'work-board-note') { const wb = str(r.writerBinding, 200); if (wb) (out as MessageEvent).writerBinding = wb; }
       }
       return out;
     }
@@ -307,6 +376,22 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || !attachmentId || text === null || !provider) return null;
       if (r.late !== undefined && r.late !== true) return null;
       return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'pin': {
+      const pinnedMessageId = typeof r.pinnedMessageId === 'string' && PIN_MESSAGE_ID_RE.test(r.pinnedMessageId) ? r.pinnedMessageId : null;
+      const pinState = r.pinState === 'pinned' || r.pinState === 'unpinned' ? r.pinState : null;
+      const by = r.pinnedBy as Record<string, unknown> | undefined;
+      const name = by && typeof by.name === 'string' && by.name.length > 0 && by.name.length <= 128 ? by.name : null;
+      const role = by && (by.role === 'owner' || by.role === 'msp' || by.role === 'team' || by.role === 'telegram') ? by.role : null;
+      const source = r.source === 'app' || r.source === 'telegram' ? r.source : null;
+      if (!pinnedMessageId || !pinState || !name || !role || !source) return null;
+      // The winner is picked by comparing `at` as text, so only the one exact UTC form is accepted.
+      if (new Date(at).toISOString() !== at) return null;
+      if (r.preview !== undefined && (typeof r.preview !== 'string' || r.preview.length > PIN_PREVIEW_CHARS)) return null;
+      return {
+        ...base, kind: 'pin', pinnedMessageId, pinState, pinnedBy: { name, role }, source,
+        ...(typeof r.preview === 'string' && r.preview ? { preview: r.preview } : {}),
+      };
     }
     case 'purge': {
       const ids = r.attachmentIds;
@@ -362,6 +447,27 @@ function validateReceipt(raw: unknown): MachineReceipt | undefined {
   return { machineId, signerKeyHash, sig };
 }
 
+/** The line a conversation list shows for a message. */
+export function messagePreview(m: { text: string; attachments?: AppAttachment[] }): string {
+  return (m.attachments ? mediaPreview(m.attachments, m.text) : m.text.replace(/\s+/g, ' ').trim()).slice(0, PREVIEW_CHARS);
+}
+
+export interface AccessStamps {
+  stamp(event: MessageEvent | MediaMessageEvent): AccessStamp | null;
+  saw(stamp: AccessStamp): void;
+}
+
+function validateAccessStamp(raw: unknown): AccessStamp | null {
+  const r = raw as { origin?: unknown; incarnation?: unknown; seq?: unknown; access?: unknown } | null;
+  if (r === undefined) return null;
+  // A stamp that cannot be read is held from every reader, never taken as no stamp at all.
+  const bad = { origin: 'unreadable', incarnation: 'unreadable', seq: Number.MAX_SAFE_INTEGER, access: {} };
+  if (!r || typeof r !== 'object') return bad;
+  if (typeof r.origin !== 'string' || typeof r.incarnation !== 'string' || !Number.isSafeInteger(r.seq) || (r.seq as number) < 1) return bad;
+  if (!r.access || typeof r.access !== 'object' || Object.values(r.access).some((v) => typeof v !== 'number')) return bad;
+  return { origin: r.origin, incarnation: r.incarnation, seq: r.seq as number, access: r.access as Record<string, number> };
+}
+
 export interface AppConversationStoreOptions {
   stateDir: string;
   machineId: () => string;
@@ -372,6 +478,11 @@ export interface AppConversationStoreOptions {
   onLocalAppend?: (event: AppEvent) => void;
 }
 
+interface CreatedEvidenceBase {
+  event: CreatedEvent;
+  contexts: Map<string, AppCreationContext>;
+}
+
 export class AppConversationStore {
   readonly dir: string;
   private readonly deletedDir: string;
@@ -379,6 +490,15 @@ export class AppConversationStore {
   private readonly now: () => number;
   private readonly reported = new Set<string>();
   private onLocalAppend: ((event: AppEvent) => void) | undefined;
+  private readonly appendListeners = new Set<(event: AppEvent, how: { replicated: boolean }) => void>();
+  private stamps: AccessStamps | null = null;
+  // Durable observations retain conflicting/complete copies before event-id suppression.
+  // Retention: append-only alongside the canonical conversation files; no automatic expiry.
+  private readonly creationEvidence = new Map<string, Map<string, Map<string, CreatedEvidenceBase>>>();
+  private creationEvidenceUnreadable = false;
+  private creationVersion = 0;
+  private lastDataVersion = 0;
+  private evidenceDataVersion = 0;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
     this.dir = path.join(opts.stateDir, 'app-conversations');
@@ -388,10 +508,30 @@ export class AppConversationStore {
     fs.mkdirSync(this.deletedDir, { recursive: true, mode: 0o700 });
     this.db = this.openIndex();
     registerSqliteHandle(() => { try { this.db.close(); } catch { /* @silent-fallback-ok — already closed */ } });
+    this.loadCreationEvidence();
+    this.evidenceDataVersion = Number(this.db.pragma('data_version', { simple: true }));
     this.catchUp();
   }
 
   setReplicationHook(hook: ((event: AppEvent) => void) | undefined): void { this.onLocalAppend = hook; }
+
+  /**
+   * Observe every event that newly COMMITTED here, local or replicated (never a de-duplicated
+   * replay). Separate from the single replication hook, so an observer can never displace it.
+   * A listener's failure is contained: the commit already landed. Returns an unsubscribe.
+   */
+  addAppendListener(fn: (event: AppEvent, how: { replicated: boolean }) => void): () => void {
+    this.appendListeners.add(fn);
+    return () => { this.appendListeners.delete(fn); };
+  }
+
+  private notifyAppended(event: AppEvent, replicated: boolean): void {
+    for (const fn of this.appendListeners) {
+      try { fn(event, { replicated }); } catch (err) {
+        this.reportOnce('append-listener', `an observer of new conversation events failed (${err instanceof Error ? err.message : String(err)}); the event itself was stored`);
+      }
+    }
+  }
 
   // ── Index lifecycle ───────────────────────────────────────────────────────────────────
 
@@ -410,6 +550,7 @@ export class AppConversationStore {
       const cols = new Set((db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map((c) => c.name));
       if (!cols.has('ownerMachine')) db.exec('ALTER TABLE conversations ADD COLUMN ownerMachine TEXT');
       if (!cols.has('ownerUser')) db.exec('ALTER TABLE conversations ADD COLUMN ownerUser TEXT');
+      if (!cols.has('creationRecord')) db.exec('ALTER TABLE conversations ADD COLUMN creationRecord TEXT');
       const ok = db.pragma('quick_check', { simple: true });
       if (ok !== 'ok') throw new Error(`index quick_check: ${String(ok)}`);
       return db;
@@ -429,7 +570,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
-    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts;');
+    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
 
@@ -453,6 +594,7 @@ export class AppConversationStore {
       // The file is shorter than what was indexed (should not happen): re-index it from the start.
       this.dropMediaRefsOf(row.canonicalKey); // re-derived with the events
       this.db.prepare('DELETE FROM transcripts WHERE canonicalKey = ?').run(row.canonicalKey);
+      this.db.prepare('DELETE FROM pins WHERE canonicalKey = ?').run(row.canonicalKey);
       this.db.prepare('DELETE FROM events WHERE canonicalKey = ?').run(row.canonicalKey);
       from = 0;
     }
@@ -525,10 +667,46 @@ export class AppConversationStore {
     return `${crypto.createHash('sha256').update(canonicalKey).digest('hex')}.jsonl`;
   }
 
+  /**
+   * agent-work-cards-default §2 "Progress notes land in the conversation first": the replicated-journal emit is
+   * RESERVED before anything is written, and the durable local append runs only when the emit was accepted (enqueued
+   * for replication). A refused emit (`rate-limited`, or any other non-accepted outcome) writes nothing anywhere and
+   * is returned to the caller to retry; there is no rollback and no spool because nothing was written first.
+   * With no reserving hook configured (a single machine, or a test), this is a plain `append`.
+   */
+  appendWithEmit(input: AppEvent): { appended: boolean; ingestSeq: number; outcome: 'appended' | 'duplicate' | 'rate-limited' | 'not-accepted' } {
+    const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
+    const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
+    const canonicalKey = canonicalConversationKey(event.conversationKey);
+    const existing = this.db.prepare('SELECT ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, event.eventId) as { ingestSeq: number } | undefined;
+    if (existing) {
+      // Even a duplicate may carry creation evidence stripped by an older codec.
+      if (event.kind === 'created') this.write(event);
+      return { appended: false, ingestSeq: existing.ingestSeq, outcome: 'duplicate' };
+    }
+    if (this.reserveEmit) {
+      const r = this.reserveEmit(event);
+      const accepted = r.outcome === 'emitted' || r.outcome === 'disabled' || r.outcome === 'skipped';
+      if (!accepted) return { appended: false, ingestSeq: 0, outcome: /rate-limited/.test(r.outcome) ? 'rate-limited' : 'not-accepted' };
+      const w = this.write(event);
+      if (w.appended) this.notifyAppended(event, false);
+      return { ...w, outcome: w.appended ? 'appended' : 'duplicate' };
+    }
+    const r = this.append(event);
+    return { ...r, outcome: r.appended ? 'appended' : 'duplicate' };
+  }
+
+  /** The emit the reserving append runs FIRST (the same emitter the replication hook uses, returning its outcome). */
+  setReservingReplicationHook(hook: ((event: AppEvent) => { outcome: string }) | undefined): void { this.reserveEmit = hook; }
+  private reserveEmit: ((event: AppEvent) => { outcome: string }) | undefined;
+
   /** Append a locally-created event (dedup by eventId). The replication hook fires on a new commit. */
-  append(event: AppEvent): { appended: boolean; ingestSeq: number } {
+  append(input: AppEvent): { appended: boolean; ingestSeq: number } {
+    const stamp = (input.kind === 'message' || input.kind === 'media-message') && !input.accessStamp ? this.stamps?.stamp(input) ?? null : null;
+    const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
     const r = this.write(event);
     if (r.appended) { try { this.onLocalAppend?.(event); } catch { /* @silent-fallback-ok — replication emit is best-effort, the local commit already landed */ } }
+    if (r.appended) this.notifyAppended(event, false);
     return r;
   }
 
@@ -536,13 +714,34 @@ export class AppConversationStore {
   ingestReplicated(raw: unknown): { appended: boolean; ingestSeq: number } | null {
     const ev = validateAppEvent(raw);
     if (!ev) return null;
-    return this.write(ev);
+    const r = this.write(ev);
+    if (r.appended && (ev.kind === 'message' || ev.kind === 'media-message') && ev.accessStamp) this.stamps?.saw(ev.accessStamp);
+    if (r.appended) this.notifyAppended(ev, true);
+    return r;
   }
 
+  /** Team access stamps messages once it knows there is something to protect. */
+  useAccessStamps(stamps: AccessStamps): void { this.stamps = stamps; }
+
   private write(event: AppEvent): { appended: boolean; ingestSeq: number } {
+    if (event.kind === 'created') {
+      const normalized = validateAppEvent(event);
+      if (!normalized || normalized.kind !== 'created') throw new Error('invalid app creation evidence');
+      event = normalized;
+      const evidenceVersion = Number(this.db.pragma('data_version', { simple: true }));
+      if (this.evidenceDataVersion && evidenceVersion !== this.evidenceDataVersion) this.loadCreationEvidence();
+      this.evidenceDataVersion = evidenceVersion;
+      // A pre-upgrade index may not have replayed its canonical base into the new evidence cache.
+      const original = this.getEvent(event.conversationKey, event.eventId);
+      if (original?.kind === 'created') this.observeCreated(original, false);
+      this.observeCreated(event, true);
+    }
     const canonicalKey = canonicalConversationKey(event.conversationKey);
     const existing = this.db.prepare('SELECT ingestSeq FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, event.eventId) as { ingestSeq: number } | undefined;
-    if (existing) return { appended: false, ingestSeq: existing.ingestSeq };
+    if (existing) {
+      if (event.kind === 'created') this.indexCreationRecord(event);
+      return { appended: false, ingestSeq: existing.ingestSeq };
+    }
     const file = this.db.prepare('SELECT fileName, nextIngestSeq FROM files WHERE canonicalKey = ?').get(canonicalKey) as { fileName: string; nextIngestSeq: number } | undefined;
     const fileName = file?.fileName ?? this.fileNameFor(canonicalKey);
     const ingestSeq = file?.nextIngestSeq ?? 1;
@@ -603,6 +802,7 @@ export class AppConversationStore {
 
   /** Apply one event to the index tables. Idempotent per (canonicalKey, eventId). */
   private indexEvent(ev: StoredAppEvent, fileName: string, byteOffset: number, byteLength: number): void {
+    if (ev.kind === 'created') this.observeCreated(ev, false);
     const canonicalKey = canonicalConversationKey(ev.conversationKey);
     // The file's current location is the one being indexed (a moved-to-deleted file re-points it).
     this.db.prepare('INSERT INTO files (canonicalKey, fileName, indexedBytes, nextIngestSeq) VALUES (?, ?, 0, 1) ON CONFLICT(canonicalKey) DO UPDATE SET fileName = excluded.fileName')
@@ -611,7 +811,8 @@ export class AppConversationStore {
       .run(canonicalKey, ev.ingestSeq, ev.eventId, 'messageId' in ev ? ev.messageId : null, ev.kind, ev.at, ev.machineId, byteOffset, byteLength);
     this.db.prepare('UPDATE files SET nextIngestSeq = MAX(nextIngestSeq, ?) WHERE canonicalKey = ?').run(ev.ingestSeq + 1, canonicalKey);
     if (ins.changes === 0) return;
-    this.db.prepare('INSERT OR IGNORE INTO conversations (canonicalKey, conversationKey) VALUES (?, ?)').run(canonicalKey, ev.conversationKey);
+    const newConversation = this.db.prepare('INSERT OR IGNORE INTO conversations (canonicalKey, conversationKey) VALUES (?, ?)').run(canonicalKey, ev.conversationKey);
+    if (newConversation.changes) this.creationVersion++;
     switch (ev.kind) {
       case 'created':
       case 'label': {
@@ -625,15 +826,25 @@ export class AppConversationStore {
           this.db.prepare('UPDATE conversations SET createdAt = ?, ownerMachine = ?, ownerUser = ? WHERE canonicalKey = ?')
             .run(ev.at, ev.ownerPerson?.machineId ?? null, ev.ownerPerson?.userId ?? null, canonicalKey);
         }
+        if (ev.kind === 'created') this.indexCreationRecord(ev);
         return;
       }
       case 'tombstone':
+        this.creationVersion++;
         this.tombstoneMediaRefs(canonicalKey);
         this.db.prepare('UPDATE conversations SET tombstoned = 1 WHERE canonicalKey = ?').run(canonicalKey);
         return;
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
         return;
+      case 'pin': {
+        // Never a chat message: no messages row, no preview, no activity. One winner per message.
+        const cur = this.db.prepare('SELECT eventId, at, machineId FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalKey, ev.pinnedMessageId) as { eventId: string; at: string; machineId: string } | undefined;
+        if (pinEventWins(ev, cur)) {
+          this.db.prepare('INSERT OR REPLACE INTO pins (canonicalKey, pinnedMessageId, eventId, state, at, machineId) VALUES (?, ?, ?, ?, ?, ?)').run(canonicalKey, ev.pinnedMessageId, ev.eventId, ev.pinState, ev.at, ev.machineId);
+        }
+        return;
+      }
       case 'platform-media':
         // A reference only (§4.9): never a chat message, so no messages row and no preview.
         this.indexMediaRefs(canonicalKey, ev);
@@ -650,7 +861,7 @@ export class AppConversationStore {
       case 'message':
       case 'media-message': {
         const state = this.reduceFor(ev.messageId);
-        const preview = (ev.kind === 'media-message' ? mediaPreview(ev.attachments, ev.text) : ev.text.replace(/\s+/g, ' ').trim()).slice(0, PREVIEW_CHARS);
+        const preview = messagePreview(ev.kind === 'media-message' ? ev : { text: ev.text });
         if (ev.kind === 'media-message') this.indexMediaRefs(canonicalKey, ev);
         this.db.prepare('INSERT OR IGNORE INTO messages (messageId, canonicalKey, eventId, at, deliveryState, lastPreview) VALUES (?, ?, ?, ?, ?, ?)')
           .run(ev.messageId, canonicalKey, ev.eventId, ev.at, state, preview);
@@ -818,6 +1029,146 @@ export class AppConversationStore {
     } catch { return null; } finally { fs.closeSync(fd); } // @silent-fallback-ok — an unreadable row reads as absent
   }
 
+  private creationEvidencePath(): string { return path.join(this.dir, 'creation-evidence.jsonl'); }
+
+  /** Only new evidence is appended; identical stripped copies add no information. */
+  private observeCreated(event: CreatedEvent, durable: boolean): void {
+    const key = canonicalConversationKey(event.conversationKey);
+    const byId = this.creationEvidence.get(key);
+    const bases = byId?.get(event.eventId);
+    const digest = creationBaseDigest(event);
+    const held = bases?.get(digest);
+    const contextHash = event.creationContext ? creationContextDigest(event.creationContext) : null;
+    if (held && (!contextHash || held.contexts.has(contextHash))) return;
+    if (durable) {
+      if (this.creationEvidenceUnreadable) throw new Error('creation evidence log is unreadable; refusing to acknowledge new evidence');
+      const file = this.creationEvidencePath();
+      const created = !fs.existsSync(file);
+      const fd = fs.openSync(file, 'a', 0o600); /* state-registry: app-conversations */
+      try {
+        const bytes = Buffer.from(`${JSON.stringify({ v: 1, event })}\n`);
+        let offset = 0;
+        while (offset < bytes.length) offset += fs.writeSync(fd, bytes, offset, bytes.length - offset);
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+      if (created) this.fsyncDir(this.dir);
+    }
+    const ids = byId ?? new Map<string, Map<string, CreatedEvidenceBase>>();
+    const variants = bases ?? new Map<string, CreatedEvidenceBase>();
+    const base = held ?? { event: { ...event, creationContext: undefined }, contexts: new Map<string, AppCreationContext>() };
+    if (event.creationContext && contextHash) base.contexts.set(contextHash, event.creationContext);
+    variants.set(digest, base); ids.set(event.eventId, variants); this.creationEvidence.set(key, ids);
+    this.creationVersion++;
+  }
+
+  /** Replay observations without truncation, writes, repair, or a per-row file scan. */
+  private loadCreationEvidence(): void {
+    let fd: number;
+    try { fd = fs.openSync(this.creationEvidencePath(), 'r'); }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      this.creationEvidenceUnreadable = true;
+      this.reportOnce('creation-evidence-read', 'creation evidence could not be read; placement evidence is unavailable');
+      return;
+    }
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      let carry = Buffer.alloc(0), pos = 0;
+      for (;;) {
+        const n = fs.readSync(fd, chunk, 0, chunk.length, pos);
+        if (!n) break;
+        pos += n;
+        const bytes = Buffer.concat([carry, chunk.subarray(0, n)]);
+        let start = 0;
+        for (let i = 0; i < bytes.length; i++) {
+          if (bytes[i] !== 10) continue;
+          if (i > start) {
+            try {
+              const raw = JSON.parse(bytes.subarray(start, i).toString('utf8')) as { v?: unknown; event?: unknown };
+              const event = raw.v === 1 ? validateAppEvent(raw.event) : null;
+              if (!event || event.kind !== 'created') throw new Error('invalid creation observation');
+              this.observeCreated(event, false);
+            } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
+          }
+          start = i + 1;
+        }
+        carry = Buffer.from(bytes.subarray(start));
+        if (carry.length > MAX_LINE_BYTES) { this.creationEvidenceUnreadable = true; break; }
+      }
+      if (carry.length) this.creationEvidenceUnreadable = true;
+    } catch { this.creationEvidenceUnreadable = true; /* @silent-fallback-ok: reported once below and all placement evidence becomes unavailable. */ }
+    finally { fs.closeSync(fd); }
+    if (this.creationEvidenceUnreadable) this.reportOnce('creation-evidence-read', 'creation evidence has an unreadable observation; placement evidence is unavailable');
+  }
+
+  private parseCreationRecord(raw: unknown): CreatedEvent | null {
+    if (typeof raw !== 'string') return null;
+    try { const ev = validateAppEvent(JSON.parse(raw)); return ev?.kind === 'created' ? ev : null; }
+    catch { return null; /* @silent-fallback-ok: malformed historical evidence is explicitly unknown, never authoritative placement. */ }
+  }
+
+  private completeCreated(event: CreatedEvent): CreatedEvent {
+    const bases = this.creationEvidence.get(canonicalConversationKey(event.conversationKey))?.get(event.eventId);
+    const held = bases?.get(creationBaseDigest(event));
+    const context = held?.contexts.size === 1 ? held.contexts.values().next().value : undefined;
+    return { ...event, ...(context ? { creationContext: validateAppCreationContext(context)! } : {}) };
+  }
+
+  private indexCreationRecord(event: CreatedEvent): void {
+    const key = canonicalConversationKey(event.conversationKey);
+    const row = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(key) as { creationRecord: unknown } | undefined;
+    if (!row) return;
+    const prior = this.parseCreationRecord(row.creationRecord);
+    const chosen = !prior || compareCreatedEvidence(event, prior) < 0 ? event : prior;
+    const conflict = this.snapshotHasCreationConflict(row.creationRecord) || this.observedCreationConflict(key);
+    this.db.prepare('UPDATE conversations SET creationRecord = ? WHERE canonicalKey = ?').run(JSON.stringify({
+      ...this.completeCreated(chosen), ...(conflict ? { creationEvidenceConflict: true } : {}),
+    }), key);
+  }
+
+  private rawCreationRecord(key: string): CreatedEvent | null {
+    const r = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(canonicalConversationKey(key)) as { creationRecord: unknown } | undefined;
+    return r ? this.parseCreationRecord(r.creationRecord) : null;
+  }
+
+  private snapshotHasCreationConflict(raw: unknown): boolean {
+    if (typeof raw !== 'string') return false;
+    try { return (JSON.parse(raw) as { creationEvidenceConflict?: unknown }).creationEvidenceConflict === true; }
+    catch { return true; /* @silent-fallback-ok: unreadable evidence is conservatively conflicting, suppressing placement without losing the chat. */ }
+  }
+
+  private observedCreationConflict(key: string): boolean {
+    if (this.creationEvidenceUnreadable) return true;
+    for (const variants of this.creationEvidence.get(canonicalConversationKey(key))?.values() ?? []) {
+      if (variants.size > 1 || [...variants.values()].some((value) => value.contexts.size > 1)) return true;
+    }
+    return false;
+  }
+
+  hasCreationConflict(key: string): boolean {
+    const indexed = this.db.prepare('SELECT creationRecord FROM conversations WHERE canonicalKey = ?').get(canonicalConversationKey(key)) as { creationRecord: unknown } | undefined;
+    if (this.observedCreationConflict(key) || this.snapshotHasCreationConflict(indexed?.creationRecord)) return true;
+    const record = this.rawCreationRecord(key);
+    const owner = this.getConversation(key)?.ownerPerson ?? null;
+    return !!record && ((record.ownerPerson?.machineId ?? null) !== (owner?.machineId ?? null) || (record.ownerPerson?.userId ?? null) !== (owner?.userId ?? null));
+  }
+
+  /** Historical evidence only. A missing/stripped legacy context remains absent. */
+  getCreationRecord(key: string): CreatedEvent | null {
+    if (this.hasCreationConflict(key)) return null;
+    const record = this.rawCreationRecord(key);
+    return record ? this.completeCreated(record) : null;
+  }
+
+  /** Changes on new context/index evidence; external writers invalidate the cached projection too. */
+  get creationGeneration(): number {
+    const version = Number(this.db.pragma('data_version', { simple: true }));
+    if (version !== this.lastDataVersion) { this.lastDataVersion = version; this.creationVersion++; }
+    return this.creationVersion;
+  }
+  get generation(): number { return this.creationGeneration; }
+  getCreationGeneration(): number { return this.creationGeneration; }
+
   /** One event by id (the Telegram history join, §4.9), or null. */
   getEvent(conversationKey: string, eventId: string): StoredAppEvent | null {
     const canonicalKey = canonicalConversationKey(conversationKey);
@@ -840,26 +1191,131 @@ export class AppConversationStore {
    * `<activity>|<canonicalKey>`. App-sent Telegram/Slack messages kept here (§4.9) are not listed.
    */
   listConversations(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
+    return this.nativeConversationPage(opts, true);
+  }
+
+  /** Internal creation graph inventory; archived-card hiding is a user-list preference only. */
+  creationInventoryPage(opts: { limit?: number; cursor?: string | null } = {}): { conversations: ConversationSummary[]; nextCursor: string | null } {
+    return this.nativeConversationPage(opts, false);
+  }
+
+  private nativeConversationPage(opts: { limit?: number; cursor?: string | null }, applyHiddenFilter: boolean): { conversations: ConversationSummary[]; nextCursor: string | null } {
     const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
-    let rows: Array<Record<string, unknown>>;
     const act = `COALESCE(lastActivity, createdAt, '')`;
-    if (opts.cursor && opts.cursor.includes('|')) {
-      const i = opts.cursor.lastIndexOf('|');
-      const ca = opts.cursor.slice(0, i);
-      const ck = opts.cursor.slice(i + 1);
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, limit + 1) as Array<Record<string, unknown>>;
-    } else {
-      rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(limit + 1) as Array<Record<string, unknown>>;
+    // Work Board §2: conversations of archived or removed cards are left out BEFORE paging. If the
+    // An unreadable classification is a failed read, never permission to expose internal work.
+    let hidden: Set<string> | null = null;
+    try { hidden = applyHiddenFilter ? this.hiddenConversationKeys?.() ?? null : null; }
+    catch { throw new Error('work-card-visibility-unavailable'); }
+    const isHidden = (r: Record<string, unknown>): boolean => !!hidden && hidden.size > 0 && hidden.has(String(r.canonicalKey).replace(/^app:/, ''));
+    const kept: Array<Record<string, unknown>> = [];
+    let cursor = opts.cursor && opts.cursor.includes('|') ? opts.cursor : null;
+    // Each pass reads one batch after the cursor; hidden rows are skipped and the read continues,
+    // bounded by the table size (every pass advances the keyset cursor or ends).
+    for (;;) {
+      let rows: Array<Record<string, unknown>>;
+      const want = limit + 1 - kept.length + (hidden?.size ? Math.min(hidden.size, 200) : 0);
+      if (cursor) {
+        const i = cursor.lastIndexOf('|');
+        const ca = cursor.slice(0, i);
+        const ck = cursor.slice(i + 1);
+        rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' AND (${act} < ? OR (${act} = ? AND canonicalKey < ?)) ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(ca, ca, ck, want) as Array<Record<string, unknown>>;
+      } else {
+        rows = this.db.prepare(`SELECT * FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%' ORDER BY ${act} DESC, canonicalKey DESC LIMIT ?`).all(want) as Array<Record<string, unknown>>;
+      }
+      for (const r of rows) { if (!isHidden(r) && kept.length < limit + 1) kept.push(r); }
+      if (rows.length < want || kept.length >= limit + 1) break;
+      const lastRow = rows[rows.length - 1];
+      cursor = `${(lastRow.lastActivity as string | null) ?? (lastRow.createdAt as string | null) ?? ''}|${String(lastRow.canonicalKey)}`;
     }
-    const more = rows.length > limit;
-    const page = rows.slice(0, limit).map(toSummary);
+    const more = kept.length > limit;
+    const page = kept.slice(0, limit).map(toSummary);
     const last = page[page.length - 1];
     return { conversations: page, nextCursor: more && last ? `${last.lastActivity ?? last.createdAt ?? ''}|${last.canonicalKey}` : null };
+  }
+
+  /** Work Board §2: set by the wiring; returns the conversation keys of archived or removed cards. */
+  hiddenConversationKeys: (() => Set<string>) | null = null;
+
+  /** Human discovery only; direct history, replication and worker execution keep their existing access rules. */
+  isHiddenConversation(conversationKey: string): boolean {
+    return this.hiddenConversationKeys?.().has(conversationKey.replace(/^app:/, '').toLowerCase()) === true;
+  }
+
+  /** The pin state of one message (conversation-pinned-messages): its winning event's state, or null when never pinned. */
+  pinState(conversationKey: string, messageId: string): 'pinned' | 'unpinned' | null {
+    const r = this.db.prepare('SELECT state FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalConversationKey(conversationKey), messageId) as { state: string } | undefined;
+    return r ? (r.state === 'pinned' ? 'pinned' : 'unpinned') : null;
+  }
+
+  /** The winning pin event of one message: its state and time, or null when never pinned. */
+  pinRecord(conversationKey: string, messageId: string): { state: 'pinned' | 'unpinned'; at: string } | null {
+    const r = this.db.prepare('SELECT state, at FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalConversationKey(conversationKey), messageId) as { state: string; at: string } | undefined;
+    return r ? { state: r.state === 'pinned' ? 'pinned' : 'unpinned', at: r.at } : null;
+  }
+
+  /** How many messages are pinned in a conversation now. */
+  pinCount(conversationKey: string): number {
+    return (this.db.prepare("SELECT COUNT(*) AS c FROM pins WHERE canonicalKey = ? AND state = 'pinned'").get(canonicalConversationKey(conversationKey)) as { c: number }).c;
+  }
+
+  /** The pinned messages of a conversation, newest pin first (at most MAX_PINS_PER_CONVERSATION). */
+  listPins(conversationKey: string, limit = MAX_PINS_PER_CONVERSATION): PinnedMessage[] {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const n = Math.max(1, Math.min(MAX_PINS_PER_CONVERSATION, Math.floor(limit)));
+    const rows = this.db.prepare("SELECT eventId FROM pins WHERE canonicalKey = ? AND state = 'pinned' ORDER BY at DESC, machineId DESC, eventId DESC LIMIT ?").all(canonicalKey, n) as Array<{ eventId: string }>;
+    const out: PinnedMessage[] = [];
+    for (const r of rows) {
+      const ev = this.getEvent(conversationKey, r.eventId);
+      if (!ev || ev.kind !== 'pin') continue;
+      out.push({ messageId: ev.pinnedMessageId, pinnedAt: ev.at, pinnedBy: ev.pinnedBy, preview: ev.preview ?? null, source: ev.source, eventId: ev.eventId, machineId: ev.machineId });
+    }
+    return out;
+  }
+
+  /**
+   * Meaning search (docs/specs/conversation-search.md §4): one page of message identities in live
+   * NATIVE app conversations for the embedding index, newest stored first (row order), older than
+   * `beforeRow` (null ⇒ the newest). No text: the indexer reads an event only when it lacks it.
+   */
+  messageIndexPage(beforeRow: number | null, limit: number): Array<{ row: number; canonicalKey: string; eventId: string; at: string }> {
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const live = `canonicalKey IN (SELECT canonicalKey FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%')`;
+    return (beforeRow === null
+      ? this.db.prepare(`SELECT rowid AS row, canonicalKey, eventId, at FROM messages WHERE ${live} ORDER BY rowid DESC LIMIT ?`).all(n)
+      : this.db.prepare(`SELECT rowid AS row, canonicalKey, eventId, at FROM messages WHERE rowid < ? AND ${live} ORDER BY rowid DESC LIMIT ?`).all(beforeRow, n)) as Array<{ row: number; canonicalKey: string; eventId: string; at: string }>;
+  }
+
+  /** How many messages live native app conversations hold (meaning search coverage). */
+  liveMessageCount(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE canonicalKey IN (SELECT canonicalKey FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%')`).get() as { n: number }).n;
   }
 
   /** Every live conversation key (boot alias re-derivation and lease-acquisition binds). */
   liveConversationKeys(): string[] {
     return (this.db.prepare('SELECT conversationKey FROM conversations WHERE tombstoned = 0').all() as Array<{ conversationKey: string }>).map((r) => r.conversationKey);
+  }
+
+  /** Bounded registration snapshot, including removals, without message or title data. */
+  inventoryFrontier(limit = 1001): {
+    keys: Array<{ conversationKey: string; tombstoned: boolean }>;
+    overflow: boolean;
+    eventWatermark: number;
+    liveCount: number;
+  } {
+    const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(10001, Math.floor(limit))) : 1001;
+    return this.db.transaction(() => {
+      const rows = this.db.prepare('SELECT conversationKey, tombstoned FROM conversations ORDER BY canonicalKey LIMIT ?')
+        .all(bounded + 1) as Array<{ conversationKey: string; tombstoned: number }>;
+      const watermark = this.db.prepare('SELECT COALESCE(MAX(rowid), 0) AS value FROM events').get() as { value: number };
+      const live = this.db.prepare('SELECT COUNT(*) AS value FROM conversations WHERE tombstoned = 0').get() as { value: number };
+      return {
+        keys: rows.slice(0, bounded).map(row => ({ conversationKey: row.conversationKey, tombstoned: row.tombstoned !== 0 })),
+        overflow: rows.length > bounded,
+        eventWatermark: watermark.value,
+        liveCount: live.value,
+      };
+    })();
   }
 
   deliveryState(messageId: string): ReducedDeliveryState | null {
@@ -929,6 +1385,8 @@ export class AppConversationStore {
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
         ...(ev.senderPerson ? { senderPerson: ev.senderPerson } : {}),
         ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
+        ...((ev as MessageEvent).systemSource ? { systemSource: (ev as MessageEvent).systemSource } : {}),
+        ...(ev.accessStamp ? { accessStamp: ev.accessStamp } : {}),
       });
     }
     out.reverse();

@@ -149,6 +149,7 @@ function parseErrorCode(body: string | null | undefined): string | null {
  *   408                           → finalize-ambiguous (no retry)
  *   422                           → finalize-tone-gated (re-gate path
  *                                    in §3d step 3 already triggered)
+ *   409 fold-hold                 → retry (a pre-fold reply waits out the fold)
  *   409 standing-down             → finalize-standing-down (terminal, SILENT —
  *                                    the muzzled copy's send; the owner answers)
  *   400 / 401 / 404               → escalate (terminal client error)
@@ -209,6 +210,17 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
     const code = parseErrorCode(input.responseBody ?? null);
     if (code === DELIVERY_IN_FLIGHT_ERROR) {
       return scheduleRetryOrEscalate(input, now, 'delivery_in_flight');
+    }
+    // The egress fold hold (context-budget-layered-summaries §10): a fold is
+    // replacing this conversation's context right now. A row the sentinel is
+    // redriving was a real reply queued BEFORE the fold (a refused live send is never queued), so it is
+    // retried with the normal backoff and delivered once the hold ends; it is
+    // never escalated as a loss. The hold is bounded by the lock TTL ceiling.
+    // NOT covered: a fold-turn send the relay QUEUED (HTTP 000/5xx while the
+    // server was down) is redriven after the fold; Phase 2 must refuse rows
+    // first attempted inside a hold window before any hold is written.
+    if (code === 'fold-hold') {
+      return scheduleRetryOrEscalate(input, now, 'fold_hold');
     }
     // The duplicate-session stand-down muzzle refused the send: this copy is
     // standing down because the conversation is served on another machine.

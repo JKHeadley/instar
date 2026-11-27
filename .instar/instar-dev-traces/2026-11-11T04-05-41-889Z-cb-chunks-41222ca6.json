@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cb-chunks",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T04:05:41.889Z",
+  "artifactPath": "upgrades/side-effects/cb-chunks.md",
+  "artifactSha256": "17a05543671c9d296986379ce525b51b0b7842fb87335c14a17be21a6c45987e",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "site/src/content/docs/features/memory.md",
+    "src/monitoring/contextLayers/chunkBuilder.ts",
+    "upgrades/side-effects/cb-chunks.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI fix on a Tier-2 slice, no behaviour change",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "CI ratchet/registry follow-up, no behaviour change"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "recommended-services-github-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T23:34:29.933Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-github-recipe.md",
+  "artifactSha256": "62a474d8ff396d5fbb05af8e2327160e311525363923c7395065f9375134061c",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-github-recipe.eli16.md",
+    "src/recommended/githubBackup.ts",
+    "src/recommended/recipes.ts",
+    "src/recommended/setupState.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-github.test.ts",
+    "tests/unit/recommended-services-github-recipe.test.ts",
+    "tests/unit/recommended-services-github-surface.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-github-recipe.md",
+    "upgrades/side-effects/recommended-services-github-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A GitHub token is stored and used and the agent's state folder is pushed to an outside service; the push to a public repository is a hard refusal; full chain with second-pass review (concern on origin rewrite resolved).",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

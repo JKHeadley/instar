@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-15T15:43:52.788Z",
+  "slug": "spec-approval-constitution-check",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/componentCategories.ts",
+      "src/core/specConstitutionCheckLedger.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "not a self-triggered loop: the peer-record refresh runs only when an outbound review or card write asks for records, at most once per 60s (SpecCheckPeerCache.refreshMs), with in-flight dedupe and no retry; a failed refresh waits for the next interval"
+  },
+  "verdict": "blocked"
+}

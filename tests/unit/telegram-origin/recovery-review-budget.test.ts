@@ -116,7 +116,7 @@ describe('durable recovery review pacing', () => {
       if (outcome === 'known-failed') expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now: now + 60_000 })).toBe(true);
     }
     const suppressed = admission('suppressed', now); await store.admit(suppressed);
-    await store.recordOperationState({ operationId: suppressed.operationId, state: 'suppressed' });
+    await store.recordOperationState({ operationId: suppressed.operationId, state: 'suppressed', holdReason: 'recorded-by-caller' });
     expect(await store.reserveRecoveryAttempt({ operationId: suppressed.operationId, now })).toBe(false);
   });
 });

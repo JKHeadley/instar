@@ -1,3 +1,4 @@
+import { validateAppCreationContext, type AppCreationContext } from './AppCreationContext.js';
 /**
  * AppConversationService — the native app conversation core
  * (docs/specs/mobile-native-conversations.md, increment 1).
@@ -19,13 +20,15 @@ import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
 import { AppConversationStore, MAX_STORED_TEXT, transcriptEventId, type AppEvent } from './AppConversationStore.js';
 import type { ConversationOwner } from './MobilePeople.js';
-import { derivedEventId, isAppConversationKey, removeAuthorityTokens } from './appConversationText.js';
+import { derivedEventId, isAppConversationKey, removeAuthorityTokens, removeAuthorityTokensAndKeys } from './appConversationText.js';
 import { appInjectionTag, type AppInboundDispatch } from './appInboundDispatch.js';
-import { ledgerViewKey, verifyRecordedOrigin, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
-import type { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { ledgerViewKey, verifyRecordedOrigin, loadMachineSigner, identityKeyLookup, type MachineKeyLookup, type MachineSigner, type OriginVerdict, type VerifiableRecord } from './AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from './MobileDeviceKeyLedger.js';
+import { DeviceRegistry } from './MobileDeviceKeys.js';
+import { assertGraphLocalPath } from './GraphLocalFiles.js';
 import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
-import { TranscriptionUnavailableError } from './VoiceTranscription.js';
+import { TranscriptionFailedError, TranscriptionUnavailableError, transcriptionFailureReason } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
 import { MAY_NOT_BE_DELIVERED, type AppPoolHandle } from './appConversationPool.js';
 import fs from 'node:fs';
@@ -47,8 +50,12 @@ export function availableLine(filePath: string, caption: string): string {
 }
 
 export interface AppConversationServiceDeps {
+  /** SEC-164 §3.5: read live; when true a server transcript has its live keys masked before it is stored. */
+  credentialScrubEnabled?: () => boolean;
   stateDir: string;
   machineId: () => string;
+  /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
+  machineName?: () => string | null;
   registry: ConversationRegistry;
   requests: MobileChatRequestStore;
   store?: AppConversationStore;
@@ -56,6 +63,11 @@ export interface AppConversationServiceDeps {
   /** The session pool (app-conversations-in-the-pool). Absent, or `active()` false: the lease holder serves every conversation, as before. */
   pool?: () => AppPoolHandle | null;
   ownerName: () => string;
+  /**
+   * The conversation's documents block (instar-document-viewer §3.7), or null. Called on each
+   * dispatch; returns lines only when the list changed since the last time it was sent here.
+   */
+  documentNotes?: (conversationKey: string) => string[] | null;
   dispatch: () => AppInboundDispatch | null;
   /** Stop / pause the session serving an app conversation (by tmux name). */
   killSession?: (tmuxSession: string) => boolean;
@@ -91,11 +103,13 @@ export interface AppConversationServiceDeps {
   clearAttention?: (conditionKey: string) => void;
   /**
    * Server-side voice transcription (docs/specs/mobile-native-chat-media.md §4.5.1, increment 2):
-   * the shared `transcribeAudioFile` Telegram voice notes use. Rejects with
-   * `TranscriptionUnavailableError` when no provider is configured. Absent ⇒ every voice note
-   * without a phone transcript reads "transcription unavailable".
+   * the shared transcription Telegram voice notes use (paid provider, else whisper.cpp on this machine,
+   * docs/specs/backup-on-machine-voice.md). Resolves to the text, or `{ text, provider }` naming the
+   * provider that actually produced it (the stored transcript's label). Rejects with
+   * `TranscriptionUnavailableError` when nothing can transcribe, `TranscriptionFailedError` (plain
+   * `reason`) on failure. Absent ⇒ every voice note without a phone transcript reads "transcription unavailable".
    */
-  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string>;
+  transcribeVoice?: (filePath: string, mediaType: string, timeoutMs?: number) => Promise<string | { text: string; provider: string }>;
   /** How long one dispatch waits for a server transcript (default 60 s, the spec's fixed deadline). */
   transcribeDeadlineMs?: number;
   /** At most this many provider calls run at once in this process (default 3). */
@@ -105,7 +119,7 @@ export interface AppConversationServiceDeps {
    * at the ceiling ends "timed out waiting"; a running call gets only what is left of it.
    */
   transcribeCeilingMs?: number;
-  /** The provider name stored on a transcript event (e.g. `groq`); absent ⇒ `server`. */
+  /** Fallback provider label when `transcribeVoice` returns bare text (e.g. `groq`); absent ⇒ `server`. */
   voiceProviderName?: () => string | undefined;
 }
 
@@ -168,9 +182,10 @@ const CUT_NOTE = ' … (transcript cut here; the audio file has the rest)';
  * (§4.3, §4.5.1): `scanInbound` first (so a dictated pending pairing code declines that pairing),
  * then exact-token removal. Text past the store's limit is cut with a note, never refused.
  */
-export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null): { text: string; kinds: string[] } {
+export function scrubServerTranscript(text: string, scan?: ((t: string) => void) | null, maskKeys = false): { text: string; kinds: string[] } {
   try { scan?.(text); } catch { /* @silent-fallback-ok — the scan only declines leaked pairings; token removal still runs */ }
-  const removed = removeAuthorityTokens(text);
+  // SEC-164 §3.5: with the switch on, live keys are masked too and their kinds join the attestation.
+  const removed = removeAuthorityTokensAndKeys(text, maskKeys);
   let out = removed.text;
   if (out.length > MAX_STORED_TEXT) out = out.slice(0, MAX_STORED_TEXT - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '') + CUT_NOTE;
   return { text: out, kinds: removed.kinds };
@@ -192,7 +207,8 @@ class TranscriptionCeilingTimeout extends Error { constructor() { super('the tra
  * can never carry a pairing invite or a desktop code anywhere (second-pass review, finding 2).
  */
 export function transcriptForDelivery(text: string): string {
-  return removeAuthorityTokens(text).text;
+  // SEC-164 §3.5: the read path also masks live keys, always; it only shows text and keeps nothing.
+  return removeAuthorityTokensAndKeys(text, true).text;
 }
 
 const MEDIA_SWEEP_MS = 60 * 60_000;
@@ -212,6 +228,7 @@ export class AppConversationService {
    * follow-up of §4.12). Wired where the dispatch is; absent ⇒ the line waits for the next delivery.
    */
   private followUp: ((alias: number, line: string) => boolean) | null = null;
+  private platformFollowUp: ((conversationKey: string, line: string) => boolean) | null = null;
   private lastRefusalSweep = 0;
   private readonly refusedConditions = new Set<string>();
   /* @self-action-controller: app-media-capacity-notice */
@@ -233,10 +250,27 @@ export class AppConversationService {
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
 
+  /** Late first identity setup only. Read the real local signer; never accept
+   * caller-supplied keys, ledger rows or a permission flag. Reconcile before
+   * publishing any binding; existing or partial signing state is not replaced. */
+  initializeNativeSigning(devices:DeviceRegistry):MobileDeviceKeyLedger|null{
+    if(this.deps.signer||this.deps.keyLedger)return this.deps.signer&&this.deps.keyLedger?this.deps.keyLedger:null;
+    const root=fs.realpathSync(this.deps.stateDir);
+    if(!(devices instanceof DeviceRegistry)||path.basename(devices.file)!=='mobile-devices.json'||path.basename(path.dirname(devices.file))!=='state'||fs.realpathSync(path.dirname(path.dirname(devices.file)))!==root)throw new Error('app-native-signing-device-scope-mismatch');
+    assertGraphLocalPath(root,path.join(root,'state','mobile-devices.json'));
+    const signer=loadMachineSigner(this.deps.stateDir);if(!signer)return null;
+    const priorMachine=this.deps.machineId();if(priorMachine!=='local'&&priorMachine!==signer.machineId())throw new Error('app-native-signing-machine-mismatch');
+    const keyLookup=identityKeyLookup(this.deps.stateDir),keyLedger=new MobileDeviceKeyLedger({stateDir:this.deps.stateDir,signer,keyLookup});
+    keyLedger.reconcile(devices);
+    this.deps.signer=signer;this.deps.keyLookup=keyLookup;this.deps.keyLedger=keyLedger;
+    if(priorMachine==='local')this.deps.machineId=()=>signer.machineId();
+    return keyLedger;
+  }
+
   constructor(readonly deps: AppConversationServiceDeps) {
     this.now = deps.now ?? Date.now;
     this.store = deps.store ?? new AppConversationStore({
-      stateDir: deps.stateDir, machineId: deps.machineId, now: this.now,
+      stateDir: deps.stateDir, machineId: () => this.deps.machineId(), now: this.now,
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
     });
     this.channels = new SessionChannelRegistry({ registryPath: path.join(deps.stateDir, 'state', 'app-session-registry.json') });
@@ -246,9 +280,10 @@ export class AppConversationService {
       ...(deps.mediaDiskSpace ? { diskSpace: deps.mediaDiskSpace } : {}),
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
       onRefused: (error) => this.onMediaRefused(error),
+      machineName: () => deps.machineName?.() ?? '',
     });
     this.replicator = new AppMediaReplicator({
-      media: this.media, store: this.store, selfId: deps.machineId, now: this.now,
+      media: this.media, store: this.store, selfId: () => this.deps.machineId(), now: this.now,
       report: (detail) => deps.reportDegradation?.('AppMediaReplicator', detail),
       raiseAttention: (item) => deps.raiseAttention?.(item),
       clearAttention: (key) => deps.clearAttention?.(key),
@@ -305,7 +340,9 @@ export class AppConversationService {
    * cleared (re-armed) only when the condition is gone.
    */
   private updateMediaNotices(): void {
-    const machine = this.deps.machineId();
+    // The key stays per machine id; the words use its name (the title used to show the raw id).
+    const machineKey = this.deps.machineId();
+    const machine = this.media.machineWords();
     const raiseOnce = (key: string, item: { title: string; body: string }) => {
       if (this.raisedNotices.has(key)) return;
       this.raisedNotices.add(key);
@@ -320,7 +357,7 @@ export class AppConversationService {
         const gib = (n: number) => (n / 1024 ** 3).toFixed(1);
         const h = this.media.health();
         raiseOnce('app-media:store-full', {
-          title: 'The app media store is full',
+          title: `The app file store on ${machine} is full`,
           body: `${gib(this.media.liveBytes())} GiB of ${gib(this.media.maxBytes())} GiB is in use and ${gib(Number(h.deletedBytes))} GiB sits in deleted conversations. New files are refused until space is freed: the app's Storage screen can permanently remove files, or the limit can be raised.`,
         });
       } else {
@@ -329,9 +366,9 @@ export class AppConversationService {
       }
     }
     if (this.refusedConditions.has('media-disk-floor')) {
-      const key = `app-media:disk-floor:${machine}`;
+      const key = `app-media:disk-floor:${machineKey}`;
       if (this.media.belowDiskFloor()) {
-        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: 'New files are refused on this machine until its disk has more free space (5% or 2 GiB, whichever is larger).' });
+        raiseOnce(key, { title: `${machine} is too low on disk to store app files`, body: `New files are refused on ${machine} until its disk has more free space (5% or 2 GiB, whichever is larger).` });
       } else {
         this.refusedConditions.delete('media-disk-floor');
         clear(key);
@@ -369,6 +406,14 @@ export class AppConversationService {
   // ── Delivering media the owner does not hold yet (§4.12) ─────────────────────────
 
   setFollowUp(fn: ((alias: number, line: string) => boolean) | null): void { this.followUp = fn; }
+
+  /**
+   * The second injector (native-conversation-base §3c item 6): a file of a `telegram:<topicId>`
+   * conversation that lands later is typed to the session serving that topic on this machine.
+   * Returns true only when the line was typed; otherwise the row stays `ready` and the platform
+   * media sweep retries it.
+   */
+  setPlatformFollowUp(fn: ((conversationKey: string, line: string) => boolean) | null): void { this.platformFollowUp = fn; }
 
   /**
    * The session lines for a media message on the machine that delivers it (§4.5, §4.12): a private
@@ -478,10 +523,16 @@ export class AppConversationService {
       .then(
         (raw): VoiceOutcome => this.storeTranscript(conversationKey, messageId, a, raw, entry.late),
         (err: unknown): VoiceOutcome => {
-          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: 'no transcription provider is configured' };
+          // Not-installed and per-note outcomes (silent, busy, too long) carry their plain reason and are
+          // not degradation reports; only real faults are (spec: What the person and the agent see).
+          if (err instanceof TranscriptionUnavailableError) return { ok: false, reason: transcriptionFailureReason(err) };
+          if (err instanceof TranscriptionQueueTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'timed out waiting' }; }
+          if (err instanceof TranscriptionCeilingTimeout) { this.report('voice transcription', err); return { ok: false, reason: 'the transcription service timed out' }; }
+          if (err instanceof TranscriptionFailedError) {
+            if (err.fault) this.report('voice transcription', err);
+            return { ok: false, reason: err.reason };
+          }
           this.report('voice transcription', err);
-          if (err instanceof TranscriptionQueueTimeout) return { ok: false, reason: 'timed out waiting' };
-          if (err instanceof TranscriptionCeilingTimeout) return { ok: false, reason: 'the transcription service timed out' };
           return { ok: false, reason: 'the transcription service failed' };
         },
       )
@@ -503,7 +554,7 @@ export class AppConversationService {
    * gets the remaining time (passed to the provider as its own timeout) and is abandoned at the
    * ceiling. The slot is held until the provider call itself settles, so at most N ever run.
    */
-  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string> {
+  private async limitedTranscribe(transcribe: NonNullable<AppConversationServiceDeps['transcribeVoice']>, copy: string, mediaType: string): Promise<string | { text: string; provider: string }> {
     const ceilingMs = this.deps.transcribeCeilingMs ?? VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS;
     const startedAt = Date.now();
     if (!(await this.acquireTranscribeSlot(ceilingMs))) throw new TranscriptionQueueTimeout();
@@ -539,10 +590,14 @@ export class AppConversationService {
   }
 
   /** Scrub, then store the transcript as its own unsigned event (§4.5.1). The session gets it either way. */
-  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, raw: string, late: boolean): VoiceOutcome {
-    const scrubbed = scrubServerTranscript(raw, this.inboundScan);
+  private storeTranscript(conversationKey: string, messageId: string, a: AppAttachment, result: string | { text: string; provider: string }, late: boolean): VoiceOutcome {
+    const raw = typeof result === 'string' ? result : result.text;
+    let maskKeys = false;
+    try { maskKeys = this.deps.credentialScrubEnabled?.() === true; } catch { maskKeys = false; } // @silent-fallback-ok — unreadable switch is off
+    const scrubbed = scrubServerTranscript(raw, this.inboundScan, maskKeys);
     const machineId = this.deps.machineId();
-    const provider = (this.deps.voiceProviderName?.() ?? 'server').toLowerCase();
+    // The provider that produced THIS text (no shared "last provider" state, so concurrent transcripts can't swap labels).
+    const provider = (typeof result === 'string' ? (this.deps.voiceProviderName?.() ?? 'server') : result.provider).toLowerCase();
     try {
       this.store.append({
         eventId: transcriptEventId(a.attachmentId, machineId), kind: 'transcript', conversationKey, messageId,
@@ -610,8 +665,9 @@ export class AppConversationService {
         }
         const alias = this.deps.registry.appAliasFor(r.conversationKey);
         const title = this.store.getConversation(r.conversationKey)?.title ?? 'Untitled';
-        const sent = alias !== null && this.ownsAlias(alias)
-          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true;
+        const sent = alias !== null
+          ? this.ownsAlias(alias) && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true
+          : r.conversationKey.startsWith('telegram:') && this.platformFollowUp?.(r.conversationKey, `${availableLine(copy, r.caption)}${tail}`) === true;
         if (sent) {
           this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
           // The transcript rode on this line: a note for it would repeat it (second-pass finding 3).
@@ -622,12 +678,22 @@ export class AppConversationService {
     }
   }
 
+  private heldCheck: ((conversationKey: string, messageId: string) => boolean) | null = null;
+
+  /** Team access says which messages a session must not be given yet. */
+  useHeldCheck(check: (conversationKey: string, messageId: string) => boolean): void { this.heldCheck = check; }
+
   /**
    * Lines for the next delivery's context: files that became available with no live session to
    * tell, and files that could not be copied within 7 days. `ack` removes them once delivered.
    */
   pendingContext(conversationKey: string): { lines: string[]; ack: () => void } {
-    const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[];
+    // A session serves every reader, so a file or transcript of a held message waits with it.
+    const open = <T extends { attachmentId: string }>(r: T): boolean => {
+      const messageId = this.store.mediaRef(r.attachmentId)?.messageId;
+      return !messageId || !this.heldCheck?.(conversationKey, messageId);
+    };
+    const rows = (this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[]).filter(open);
     const carried = new Set<string>();
     const lines = rows.map((r) => {
       if (!(r.state === 'ready' && r.path)) return `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`;
@@ -639,7 +705,7 @@ export class AppConversationService {
     });
     // Late transcripts that found no live session (§4.5.1), oldest first — except one whose
     // transcript the "now available" line above already carries (said once, never twice).
-    const notes = this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>;
+    const notes = (this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>).filter(open);
     for (const n of notes) if (!carried.has(n.attachmentId)) lines.push(transcriptForDelivery(n.line));
     return {
       lines,
@@ -687,6 +753,18 @@ export class AppConversationService {
     if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
     if (verdict !== 'verified' && verdict !== 'redacted') return null;
     try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.approvedVia ?? null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
+  }
+
+  /**
+   * `'browser'` when the signed ledger activation row of the key that signed this record says so
+   * (dashboard-conversations-browser-device §4.3), only for a `verified` or `redacted` verdict;
+   * otherwise (or unreadable) null. Display detail only; the verdict is unaffected.
+   */
+  originClient(record: Pick<VerifiableRecord, 'origin'>, verdict: OriginVerdict): 'browser' | null {
+    const o = record.origin as { keyHash?: unknown; deviceId?: unknown } | undefined;
+    if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
+    if (verdict !== 'verified' && verdict !== 'redacted') return null;
+    try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.client === 'browser' ? 'browser' : null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
   }
 
   /** Mint (idempotently) a local alias for every live conversation in the store. */
@@ -960,7 +1038,12 @@ export class AppConversationService {
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
         if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
-        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
+        let creationContext: AppCreationContext | null = null;
+        try { creationContext = x.creationContext ? validateAppCreationContext(JSON.parse(x.creationContext)) : null; }
+        catch (err) { this.deps.reportDegradation?.('AppConversations.creation-recovery', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok: invalid reservation becomes outcome-unknown below, never a guessed parent.
+
+        if (x.creationContext && !creationContext) { this.deps.requests.markUnknown(rec.deviceId, rec.requestId); continue; }
+        const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner, creationContext ?? undefined);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {
         this.applyRename(rec.deviceId, rec.requestId, key, x.title);
@@ -974,7 +1057,7 @@ export class AppConversationService {
 
   /** Create: alias first (a refusal leaves no store event), then the `created` event, then bind. */
   /** `ownerPerson`: the MSP phone's person that creates it (people and roles §3.4); null ⇒ the owner's. */
-  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null): { status: number; body: Record<string, unknown> } {
+  applyCreate(deviceId: string, requestId: string, conversationKey: string, title: string, ownerPerson: ConversationOwner | null = null, creationContext?: AppCreationContext): { status: number; body: Record<string, unknown> } {
     const mint = this.deps.registry.mintAppAlias(conversationKey);
     if (!mint.ok) {
       if (mint.error === 'conversation-recording-disabled') {
@@ -982,10 +1065,14 @@ export class AppConversationService {
       }
       return { status: 503, body: { error: 'conversation-unavailable', detail: 'The conversation could not be created on this machine. Try again.' } };
     }
-    this.store.append({
-      eventId: derivedEventId('cr', deviceId, requestId), kind: 'created', conversationKey, title,
+    const createEventId = derivedEventId('cr', deviceId, requestId);
+    // A crash after the durable created event but before request completion must not mint a new
+    // timestamp/base under that same event id and manufacture a metadata conflict on recovery.
+    if (!this.store.hasEvent(conversationKey, createEventId)) this.store.append({
+      eventId: createEventId, kind: 'created', conversationKey, title,
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
       ...(ownerPerson ? { ownerPerson } : {}),
+      ...(creationContext ? { creationContext } : {}),
     });
     if (this.deps.holdsLease()) {
       this.createdHere.add(conversationKey);

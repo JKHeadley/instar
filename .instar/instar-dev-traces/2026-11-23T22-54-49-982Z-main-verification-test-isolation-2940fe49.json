@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "main-verification-test-isolation",
+  "sessionId": "fb2d9241-bc5a-479b-9443-bbce50a353bc",
+  "timestamp": "2026-11-23T22:54:49.982Z",
+  "artifactPath": "upgrades/side-effects/main-verification-test-isolation.md",
+  "artifactSha256": "25a3f982baf7477531d5027ca41aef85a028718a1f273b7410751036cc56c82a",
+  "coveredFiles": [
+    "upgrades/next/main-verification-test-isolation.md",
+    "upgrades/side-effects/main-verification-test-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only release-note format correction. Adds the required summary section; all tested runtime/test/configuration hashes remain unchanged.",
+  "eli16Path": "docs/specs/main-verification-test-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/main-verification-test-isolation.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This follow-up changes release-note documentation only and adds no self-triggered controller or runtime behavior."
+  }
+}

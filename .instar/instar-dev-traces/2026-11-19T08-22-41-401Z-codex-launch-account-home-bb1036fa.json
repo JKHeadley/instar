@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "codex-launch-account-home",
+  "sessionId": "67b86979-6270-4259-9115-b0a451a0856f",
+  "timestamp": "2026-11-19T08:22:41.401Z",
+  "artifactPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "artifactSha256": "f79be7ab4eef172a9a599f12224433c2dbed2cc07bd510dcfd5b7626dd72364b",
+  "coveredFiles": [
+    "docs/specs/codex-launch-account-home.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/core/codexResumeRollout.ts",
+    "tests/unit/codexResumeRollout.test.ts",
+    "tests/unit/interactive-session-pin.test.ts",
+    "upgrades/side-effects/codex-launch-account-home.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to the same Tier-1 fix from an independent review: an atomic rollout copy, and placement for Codex resumes on the default login so a post-swap relaunch does not resume a stale copy. No new authority, no credential handled, revert undoes it. Independent subagent review ran; both should-fix findings are fixed with tests.",
+  "eli16Path": "docs/specs/codex-launch-account-home.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/codex-launch-account-home.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

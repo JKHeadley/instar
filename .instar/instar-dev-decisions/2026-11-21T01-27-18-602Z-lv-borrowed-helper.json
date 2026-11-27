@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-21T01:27:18.602Z",
+  "slug": "lv-borrowed-helper",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1653,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/localVerify/BorrowedRunMachine.ts",
+      "src/localVerify/BorrowedShadow.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/borrowedCompare.ts",
+      "src/localVerify/borrowedLaneFlow.ts",
+      "src/localVerify/borrowedPractice.ts",
+      "src/localVerify/borrowedState.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/mainRunObserver.ts",
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts"
+    ],
+    "addedLines": 1571,
+    "deletedLines": 82
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "every self-triggered action stage 5 adds has a brake: the verify child's proxy calls are 5 s each with no retry and a 2 s poll that ends with the verify; preparation is one request per verify; slices are at most 60 per lane under the helper's queue bound of 200; the failing-direction request is one slice per lane after the record and waits at most 10 minutes; a pass that made main red is told once per counted entry, which is then dropped; a session whose result never arrives is dropped after 15 minutes. The feature is dark; registry models are added with stage 6."
+    }
+  },
+  "verdict": "pass"
+}

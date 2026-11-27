@@ -1,0 +1,14 @@
+# Side-effects: the phone's account list reads every machine's repairs
+
+Tier 1. 4 files, about 150 lines (two source files, one unit file, one integration file). One commit attempt so far, no spec review rounds (the PR is the review surface).
+
+What changed: `GET /mobile/accounts` (`src/server/mobileCapacityRoutes.ts`) now takes an optional `poolRepairs` dep, wired in `src/server/routes.ts` from the same merged `/subscription-relogin?scope=pool` read the blockers already used (one shared read, 2 s). For an account that needs signing in, its latest repair on that machine decides the cell: a repair in flight (the store's real states `approved`, `cli-starting`, `artifact-ready`, `browser-driving`, `cli-finishing`, `identity-verifying`, `auth-verifying`) reads "signing in now"; an unattended `suggested` reads "automatic repair starting"; an approval-mode `suggested` reads "needs your OK to repair"; `waiting-operator-only` reads "needs you to finish signing in"; a `failed` repair with a pending slow retry (fewer than 2 slow retries so far, not held) reads "automatic repair will try again at <time>" and is not counted; any other failure reads "automatic repair failed: <plain reason>" and is counted. Before this, only the answering machine's own repairs were read, so every peer machine's cell said a bare "needs sign-in", even while a repair was running there (Justin, topic 33890, 2026-11-15 13:01).
+
+1. Over-block: none; this route decides nothing and blocks nothing. A cell can now read "signing in now" or "will try again" and drop out of the count. That is wrong only if the repair row is stale; the row's own state and nextAttemptAt decide, and a retry that keeps failing (2+ slow retries) or is held goes back to counted.
+2. Under-block: a repair that failed and will not retry still counts and now names its reason. An account with no repair row keeps today's wording.
+3. Level-of-abstraction fit: the wording table sits next to the existing cell-state function; the repair store is unchanged.
+4. Signal vs authority: display only. No new authority; the repair runtime still decides when to retry.
+5. Interactions: the blockers list (`SubscriptionReloginRuntime.blockers()`) hides an account once it has any repair row; the repair row now supplies the wording that blockers no longer give. The local-only list stays as the fallback when the pooled read is unavailable.
+6. External surfaces: the phone app's Accounts screen and its "N need signing in" count. Labels are free text the app already shows; states stay inside the app's existing list (working / attn / unknown / ok).
+7. Multi-machine posture: reads the merged pool view (already fanned out by `/subscription-relogin?scope=pool`); no new cross-machine call. A peer that does not answer leaves its cells as before.
+8. Rollback cost: revert the commit; no state, config or migration.

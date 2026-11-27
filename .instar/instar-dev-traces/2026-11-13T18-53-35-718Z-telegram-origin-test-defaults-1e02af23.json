@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-test-defaults",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T18:53:35.718Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-test-defaults.md",
+  "artifactSha256": "00c5e203ac2e25b13745bac30c3d2f073a0ef34f72610c9a07a5b35933b29b71",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-test-defaults.eli16.md",
+    "src/messaging/telegram-origin/OriginStageDeadlines.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/JobScheduler-script-job.test.ts",
+    "tests/unit/telegram-origin/origin-stage-deadlines.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/telegram-origin-test-defaults.md",
+    "upgrades/side-effects/telegram-origin-test-defaults.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-harness change: production budgets and hold logic unchanged (pinned by a source scan); moves constants to an import-free module; revert fully undoes it",
+  "eli16Path": "docs/specs/telegram-origin-test-defaults.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-test-defaults.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

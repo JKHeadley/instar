@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "machine-operations-docs",
+  "sessionId": "f6048ef3-0b6d-4266-92e6-cfac0f0efb81",
+  "timestamp": "2026-11-22T09:44:30.819Z",
+  "artifactPath": "upgrades/side-effects/machine-operations-docs.md",
+  "artifactSha256": "fdb6096f455a333e3a004aec1b3bf9848c21378ca74db5a563e75ac462f76b20",
+  "coveredFiles": [
+    "site/src/content/docs/reference/file-structure.md",
+    "site/src/content/docs/reference/machine-operations.md",
+    "upgrades/next/machine-operations-docs.md",
+    "upgrades/side-effects/machine-operations-docs.eli16.md",
+    "upgrades/side-effects/machine-operations-docs.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: source-linked reference and navigation link; no code, coverage thresholds, workflow, configuration, permissions or data change.",
+  "eli16Path": "upgrades/side-effects/machine-operations-docs.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/machine-operations-docs.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

@@ -307,3 +307,22 @@ export function ownershipRetryDelayMs(
   const yieldBias = selfMachineId > contenderMachineId ? backoff : Math.floor(backoff / 2);
   return Math.min(max, yieldBias);
 }
+
+/**
+ * fb-faa9d074-e09: take a peer's ACTIVE record for `selfId` when that peer cannot take the
+ * waiting message (gone, or alive without durable receive). A plain `place` never moves an
+ * active record, so without this the message waits until it expires. Guarded: only while
+ * `fromMachine` still holds the record active, so a concurrent move is never overwritten.
+ * Returns the CAS result, or null when the guard refused (nothing written).
+ */
+export function takeOverActiveRecord(
+  reg: Pick<SessionOwnershipRegistry, 'read' | 'cas'>,
+  sessionKey: string,
+  fromMachine: string,
+  selfId: string,
+  nonce: string,
+): CasResult | null {
+  const cur = reg.read(sessionKey);
+  if (!cur || cur.status !== 'active' || cur.ownerMachineId !== fromMachine || fromMachine === selfId) return null;
+  return reg.cas({ type: 'force-claim', machineId: selfId }, { sessionKey, sender: selfId, nonce });
+}

@@ -16,6 +16,7 @@
  * (§4.2 steps 4-5, §4.3 recovery). A message event is never written before its blobs are durable.
  * Nothing here decides by content: sizes, hashes and fixed limits only.
  */
+import { storageMachineName } from './storageMachineName.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,6 +37,10 @@ const DEVICE_MAX_STAGED = 256 * 1024 * 1024;
 const MACHINE_MAX_STAGED = 1024 * 1024 * 1024;
 const FLOOR_ABS_BYTES = 2 * 1024 * 1024 * 1024;
 const FLOOR_FRACTION = 0.05;
+/** Free bytes below which media uploads are refused. The disk steward imports this so the two never disagree. */
+export function mediaDiskFloorBytes(totalBytes: number): number {
+  return Math.max(FLOOR_FRACTION * totalBytes, FLOOR_ABS_BYTES);
+}
 export const UPLOAD_TTL_MS = 24 * 60 * 60_000;
 const EXPIRED_ROW_KEEP_MS = 7 * 24 * 60 * 60_000;
 export const CLAIM_RECOVERY_AGE_MS = 5 * 60_000;
@@ -65,6 +70,11 @@ export interface AppMediaStoreOptions {
   reportDegradation?: (what: string, detail: string) => void;
   /** An admission was refused for capacity (the service self-heals, then raises one notice). */
   onRefused?: (error: string) => void;
+  /**
+   * This machine's name for refusal words ("Mac Studio is nearly out of disk space"). The person reads
+   * them on a phone that talks to the agent, not to one machine, so a refusal always names its machine.
+   */
+  machineName?: () => string;
 }
 
 const SCHEMA = [
@@ -110,6 +120,12 @@ export class AppMediaStore {
   private replicationHealth: (() => { unrecoverableBlobs: number | null; singleCopyBlobs: number | null }) | null = null;
   private sweepRunning = false;
 
+  /** The machine's name for a refusal (never "this machine"); the host's own name when none was given. */
+  machineWords(): string {
+    try { const n = this.opts.machineName?.(); if (n && n.trim()) return n.trim(); } catch { /* @silent-fallback-ok — a name read that throws falls back to the host name below */ }
+    return storageMachineName(this.opts.stateDir);
+  }
+
   constructor(private readonly opts: AppMediaStoreOptions) {
     this.root = path.join(opts.stateDir, 'app-media');
     this.blobsDir = path.join(this.root, 'blobs');
@@ -142,7 +158,7 @@ export class AppMediaStore {
   close(): void { try { this.db.close(); } catch { /* @silent-fallback-ok — already closed */ } }
 
   private report(detail: string): void {
-    try { this.opts.reportDegradation?.('AppMediaStore', detail); } catch { /* @silent-fallback-ok — reporting never fails the store */ }
+    try { this.opts.reportDegradation?.('AppMediaStore', `${this.machineWords()}: ${detail}`); } catch { /* @silent-fallback-ok — reporting never fails the store */ }
   }
 
   // ── Blobs ────────────────────────────────────────────────────────────────────────
@@ -229,7 +245,7 @@ export class AppMediaStore {
 
   belowDiskFloor(): boolean {
     const d = this.diskSpace();
-    return !!d && d.free < Math.max(FLOOR_FRACTION * d.total, FLOOR_ABS_BYTES);
+    return !!d && d.free < mediaDiskFloorBytes(d.total);
   }
 
   /** Whether this hash already counts against the cap, so admitting it adds nothing. */
@@ -257,9 +273,9 @@ export class AppMediaStore {
 
   private capacityRefusal(size: number): Refusal | null {
     let refused: Refusal | null = null;
-    if (this.belowDiskFloor()) refused = { status: 507, error: 'media-disk-floor', detail: 'This machine is nearly out of disk space, so the file was not stored.' };
+    if (this.belowDiskFloor()) refused = { status: 507, error: 'media-disk-floor', detail: `${this.machineWords()} is nearly out of disk space, so the file wasn't stored.` };
     else if (this.opts.store.mediaLiveBytes() + this.reservedBytes() + size > this.opts.maxStoreBytes()) {
-      refused = { status: 507, error: 'media-store-full', detail: 'The media store is full. Permanently remove files in the app, or raise the limit.' };
+      refused = { status: 507, error: 'media-store-full', detail: `The file store on ${this.machineWords()} is full. Permanently remove files in the app, or raise the limit.` };
     }
     if (refused) { try { this.opts.onRefused?.(refused.error); } catch { /* @silent-fallback-ok — the refusal itself stands */ } }
     return refused;
@@ -298,7 +314,7 @@ export class AppMediaStore {
     const open = this.db.prepare(`SELECT COUNT(*) AS n FROM uploads WHERE deviceId = ? AND state IN ('open','assembling')`).get(input.deviceId) as { n: number };
     const staged = this.db.prepare(`SELECT COALESCE(SUM(size), 0) AS b FROM uploads WHERE deviceId = ? AND state IN ('open','assembling','complete','claimed')`).get(input.deviceId) as { b: number };
     if (open.n >= DEVICE_MAX_OPEN || staged.b + input.size > DEVICE_MAX_STAGED) return { status: 429, error: 'too-many-uploads', detail: 'Finish or wait for the uploads in progress first.' };
-    if (this.stagedBytes() + input.size > MACHINE_MAX_STAGED) return { status: 507, error: 'upload-staging-full', detail: 'This machine has too many uploads in progress. Try again shortly.' };
+    if (this.stagedBytes() + input.size > MACHINE_MAX_STAGED) return { status: 507, error: 'upload-staging-full', detail: `${this.machineWords()} has too many uploads in progress. Try again shortly.` };
     const adm = this.admission(input.sha256, input.size);
     if ('status' in adm) return adm;
     const uploadId = crypto.randomUUID();

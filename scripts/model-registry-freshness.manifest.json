@@ -73,9 +73,16 @@
           "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-10-25"
+        },
+        {
+          "id": "claude-fable-5-2",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-09"
         }
       ],
-      "note": "Primary door. Tier aliases fable/opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids in topModels are pinned. topModels seeded 1:1 from the reviewed frontierAllowlist (spec D4 carry-over); the first enabled scan re-verifies. UPDATE 2026-09-06: the Claude 5 family (claude-fable-5-1, claude-opus-5, claude-sonnet-5) plus the 'fable' tier alias were live-verified against claude-code CLI 2.1.263 and added to the ACCEPTANCE allowlist KNOWN_CLAUDE_MODEL_IDS — closing a real drift, since the 2026-08-18 review had already recorded claude-opus-5/claude-sonnet-5 as frontier here while the acceptance list still refused them off-enum (and the shipped frameworkDefaultModels['claude-code'] = 'claude-opus-5' was being dropped at the resolution clamp as a result). RECOGNIZED is not FRONTIER: claude-fable-5-1 is deliberately NOT added to topModels / promoted over claude-fable-5, and the escalated pin stays claude-fable-5 — a model earns the routing lane via benchmarks, not release date. Frontier/pin promotion of claude-fable-5-1 is a tracked follow-up (ACT-514 also tracks the missing freshness guard on the acceptance list itself, which is the layer that rotted)."
+      "note": "Primary door. Tier aliases fable/opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids in topModels are pinned. topModels seeded 1:1 from the reviewed frontierAllowlist (spec D4 carry-over); the first enabled scan re-verifies. UPDATE 2026-09-06: the Claude 5 family (claude-fable-5-1, claude-opus-5, claude-sonnet-5) plus the 'fable' tier alias were live-verified against claude-code CLI 2.1.263 and added to the ACCEPTANCE allowlist KNOWN_CLAUDE_MODEL_IDS — closing a real drift, since the 2026-08-18 review had already recorded claude-opus-5/claude-sonnet-5 as frontier here while the acceptance list still refused them off-enum (and the shipped frameworkDefaultModels['claude-code'] = 'claude-opus-5' was being dropped at the resolution clamp as a result). RECOGNIZED is not FRONTIER: claude-fable-5-1 is deliberately NOT added to topModels / promoted over claude-fable-5, and the escalated pin stays claude-fable-5 — a model earns the routing lane via benchmarks, not release date. Frontier/pin promotion of claude-fable-5-1 is a tracked follow-up (ACT-514 also tracks the missing freshness guard on the acceptance list itself, which is the layer that rotted). UPDATE 2026-11-09: claude-fable-5-2 live-verified (claude CLI 2.1.319, modelUsage=claude-fable-5-2) and added as RECOGNIZED, frontier:false, so operator pins to it validate; the capable/ultra pins and the escalated default are unchanged (a routing lane is earned by benchmark, not release date)."
     },
     "anthropic-headless": {
       "name": "Anthropic headless (claude -p)",
@@ -159,12 +166,36 @@
       },
       "topModels": [
         {
-          "id": "gpt-6-astra",
+          "id": "gpt-6.2-astra",
           "role": "capable-openai",
           "frontier": true,
+          "pricing": {
+            "inPerMtok": 8,
+            "outPerMtok": 40,
+            "currency": "USD"
+          },
+          "verifiedAt": "2026-11-17",
+          "note": "Released 2026-11-17. Live-probed that day on codex CLI 0.169.0 on all five Codex accounts (listed in models_cache.json; codex exec answered OK), and on CLI 0.166.0 and 0.168.0. CLI 0.165.0, 0.160.0 and 0.156.1 refuse it (400 'not supported when using Codex with a ChatGPT account'). The codex `capable` tier target since 2026-11-17 on the operator's directive to move all codex usage to the GPT-6.2 family; a CLI below 0.166.0 falls back to gpt-6-astra. List price from the OpenRouter models API on 2026-11-17 (also in routing-prices.manifest.json)."
+        },
+        {
+          "id": "gpt-6.2-sol",
+          "role": "mid-openai",
+          "frontier": false,
+          "pricing": {
+            "inPerMtok": 2,
+            "outPerMtok": 10,
+            "currency": "USD"
+          },
+          "verifiedAt": "2026-11-17",
+          "note": "Released 2026-11-17. Same live probe as gpt-6.2-astra (all five accounts on CLI 0.169.0; also 0.166.0 and 0.168.0; refused on 0.165.0 and older). The codex `balanced` tier target since 2026-11-17; a CLI below 0.166.0 falls back to gpt-6-sol. No gpt-6.2-luna exists, so `fast` stays gpt-6-luna. List price from the OpenRouter models API on 2026-11-17 (also in routing-prices.manifest.json)."
+        },
+        {
+          "id": "gpt-6-astra",
+          "role": "capable-openai-older-cli-fallback",
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-09-09",
-          "note": "Live-probed 2026-09-09 on the ChatGPT-account codex surface: answered a trivial prompt (15,449 input / 5 output). Promoted to frontier because the previous frontier id (gpt-5.5) was retired in the same sweep. Pricing not yet published for this id."
+          "note": "Live-probed 2026-09-09 on the ChatGPT-account codex surface: answered a trivial prompt (15,449 input / 5 output). Was the frontier/capable pin from 2026-09-09 until 2026-11-17, when the capable tier moved to gpt-6.2-astra; it remains the model a Codex CLI below 0.166.0 runs instead. Pricing not yet published for this id."
         },
         {
           "id": "gpt-6-sol",
@@ -172,7 +203,7 @@
           "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-09-23",
-          "note": "Live-probed 2026-09-23 on codex CLI 0.156.1 against the ChatGPT account: answered a trivial prompt (2,145 tokens). codex CLI 0.153.4 refuses it (400 'not supported when using Codex with a ChatGPT account'). The codex `balanced` tier target since 2026-09-23. Pricing not yet published for this id."
+          "note": "Live-probed 2026-09-23 on codex CLI 0.156.1 against the ChatGPT account: answered a trivial prompt (2,145 tokens). codex CLI 0.153.4 refuses it (400 'not supported when using Codex with a ChatGPT account'). The codex `balanced` tier target from 2026-09-23 until 2026-11-17 (now gpt-6.2-sol); remains the model a Codex CLI below 0.166.0 runs instead. Pricing not yet published for this id."
         },
         {
           "id": "gpt-6-luna",
@@ -223,6 +254,22 @@
             "currency": "USD"
           },
           "verifiedAt": "2026-07-09"
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 on codex CLI 0.169.0 against the ChatGPT account: answered a trivial prompt. RECOGNIZED, not promoted: the capable pin stays gpt-6-astra until a benchmark earns the lane. Found by the daily frontier-model-watch job (OpenAI lists GPT-6.1 Sol 2026-09-29, Terra 2026-10-26)."
+        },
+        {
+          "id": "gpt-6.1-terra",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 on codex CLI 0.169.0 against the ChatGPT account: answered a trivial prompt. RECOGNIZED, not promoted: the capable pin stays gpt-6-astra until a benchmark earns the lane. Found by the daily frontier-model-watch job (OpenAI lists GPT-6.1 Sol 2026-09-29, Terra 2026-10-26)."
         }
       ],
       "note": "codex CLI is NOT installed on this machine (which codex -> not found), yet componentFrameworks routes job/Usher/TopicIntentExtractor to it -> those fall back at runtime. Door-liveness gap flagged to operator. topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over). The GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified 2026-07-09 (codex CLI >= 0.144.0 required); it is now RECOGNIZED/spawnable (added to the acceptance allowlist KNOWN_CODEX_MODEL_IDS — since 2026-09-05 the single codex list; the spawn route's former CODEX_MODELS_SUBSCRIPTION duplicate is deleted) but is deliberately NOT promoted to frontier=true / the capable pin here — the capable pin stays gpt-5.5 pending a benchmark-based promotion (a model earns the routing lane via benchmarks, not GA date). The -pro variants are excluded (plan-gated + pricier). Frontier/pin promotion of gpt-5.6-sol is a tracked follow-up."
@@ -251,6 +298,22 @@
           "frontier": false,
           "pricing": null,
           "verifiedAt": "2026-10-25"
+        },
+        {
+          "id": "gemini-4-carbon",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 via the Gemini API (generateContent with the paid key): answered a trivial prompt; listed by the models endpoint (thinking model, 1,048,576 input tokens). The gemini CLI on the Studio is not signed in, so not CLI-probed. RECOGNIZED, not promoted: the capable pin stays gemini-3.1-pro-preview until a benchmark earns the lane. Found by the daily frontier-model-watch job (Google AI Studio changelog: GA 2026-11-10/12)."
+        },
+        {
+          "id": "gemini-4-hydrogen",
+          "role": "recognized-not-promoted",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "2026-11-15",
+          "note": "Live-probed 2026-11-15 via the Gemini API (generateContent with the paid key): answered a trivial prompt; listed by the models endpoint (thinking model, 1,048,576 input tokens). The gemini CLI on the Studio is not signed in, so not CLI-probed. RECOGNIZED, not promoted: the capable pin stays gemini-3.1-pro-preview until a benchmark earns the lane. Found by the daily frontier-model-watch job (Google AI Studio changelog: GA 2026-11-10/12)."
         }
       ],
       "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback (NOT frontier). Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door). topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."

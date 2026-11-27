@@ -55,6 +55,18 @@ describe('POST /spec/conformance-check', () => {
     expect(res.body.report.findings[0].standard).toMatch(/No Manual Work/);
   });
 
+  it('records the result in the constitution-check ledger read by B24 (Echo Bugs topic 10000002750)', async () => {
+    const res = await request(app({ intelligence: flagNoManualWork }))
+      .post('/spec/conformance-check')
+      .send({ markdown: '---\nslug: sync-design\n---\n# Sync design\nThe user must remember to run `sync`.' });
+    expect(res.status).toBe(200);
+    const ledger = JSON.parse(fs.readFileSync(path.join(tempDir, 'spec-constitution-checks.json'), 'utf-8'));
+    expect(ledger[0].slug).toBe('sync-design');
+    expect(ledger[0].title).toBe('Sync design');
+    expect(ledger[0].findingsCount).toBeGreaterThanOrEqual(1);
+    expect(ledger[0].atRisk[0]).toMatch(/No Manual Work/);
+  });
+
   it('degrades safe (empty report) with no intelligence provider', async () => {
     const res = await request(app({ intelligence: null }))
       .post('/spec/conformance-check')

@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Tiered Development*
+//   *Constitutional Traceability — No Unconstitutional Work*
+//   *Capacity Safety — No Unbounded Self-Action*
+//   *Iterative Audit to Convergence*
+//   *Operator-Surface Quality*
+
 /**
  * instar-dev-precommit.js — pre-commit gate enforcing /instar-dev skill usage.
  *
@@ -36,6 +43,7 @@ import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
+import { checkOpenPrOverlap } from './lib/open-pr-overlap.mjs';
 import { traceIsComplete, traceMissingCoverage, artifactSha256, MIN_ARTIFACT_CHARS as SHARED_MIN_ARTIFACT_CHARS } from './lib/instar-dev-trace.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
@@ -150,6 +158,13 @@ if (staged.length === 0 && scopeOnlyPaths.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
 }
+
+// ─── Step 1.2: open-PR overlap signal (Echo Bugs 10000002588) ────────────
+// Every commit, in or out of the gated scope (a plan-only docs commit counts),
+// is compared against other sessions' open PRs so cross-machine overlap is
+// seen without anyone remembering to run `instar dev:claim-check`. SIGNAL
+// ONLY: prints a notice, never blocks; fails open. Off: INSTAR_PR_OVERLAP_CHECK=off.
+checkOpenPrOverlap({ stagedFiles: [...staged, ...scopeOnlyPaths], cwd: ROOT });
 
 // ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
 // (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
@@ -669,7 +684,7 @@ if (!spec) {
       'Trace does not reference a spec (trace.specPath is missing).',
       '',
       'Every in-scope change must be driven by a spec that has passed /spec-converge',
-      'and been approved by the user. Write the trace with --spec <path>.',
+      'and been approved (approved: true + approved-by). Write the trace with --spec <path>.',
     ].join('\n'),
   );
 }
@@ -733,8 +748,10 @@ if (!recognition.approved) {
     inScopeFiles,
     [
       `Spec ${spec} has review-convergence but no approved: true tag.`,
-      'The user must review the convergence report and apply the approved tag',
-      'before /instar-dev can ship this change.',
+      'The approver reads the convergence report and applies approved: true with an',
+      'approved-by line naming who approved and why (the agent for its own spec; the',
+      'operator only for a constitution or protected-list amendment, or what their',
+      'recorded instructions reserve) before /instar-dev can ship this change.',
     ].join('\n'),
   );
 }

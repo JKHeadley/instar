@@ -7,6 +7,7 @@ import { promiseActionLinks } from './promise-actions.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, actionButton, note, cantTell, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { topicNameMap } from './topic-names.js';
 
 /** Telegram link to a topic in the agent's main group, when we know the group. */
 export function topicLink(chatId, topicId) {
@@ -24,9 +25,9 @@ export async function renderPromises(main, ctx) {
     const title = main.querySelector('.page-title.skeleton');
     if (title) title.textContent = 'Still checking promises…';
   }, 3000);
-  let res, pool;
+  let res, pool, topics;
   try {
-    [res, pool] = await Promise.all([ctx.getCommitments ? ctx.getCommitments() : get('/commitments?scope=mesh', 25000), get('/pool')]);
+    [res, pool, topics] = await Promise.all([ctx.getCommitments ? ctx.getCommitments() : get('/commitments?scope=mesh', 25000), get('/pool'), get('/telegram/topics?scope=pool', 8000)]);
   } finally {
     clearTimeout(slow);
     main.dataset.promisesLoading = '0';
@@ -40,7 +41,7 @@ export async function renderPromises(main, ctx) {
   const peerIds = pool.ok ? machines.filter((m) => !(m.isSelf || (selfId && m.machineId === selfId))).map((m) => m.machineId) : null;
   const hashParams = new URLSearchParams((location.hash.split('?')[1] || ''));
   const wantPriority = hashParams.get('p') || 'all';
-  const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, peerIds, names, priority: wantPriority });
+  const page = buildPromisesPage(res, Date.now(), { expectedPeers: peers, peerIds, names, priority: wantPriority, topicNames: topicNameMap(topics) });
 
   if (!page.ok) {
     const retrying = !res.ok && !['not signed in', 'switched off on this agent'].includes(res.reason);

@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "lv-deadline-forensics",
+  "sessionId": "9aa743e2-a071-40cd-b874-b36aa32443f5",
+  "timestamp": "2026-11-13T09:03:49.876Z",
+  "artifactPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "artifactSha256": "a06b6005e45ae1ec986c705f784e1587f63693c198b8e5bcefd8876c633991c5",
+  "coveredFiles": [
+    "docs/specs/lv-deadline-forensics.eli16.md",
+    "src/core/testRunnerRunClassifier.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/mainHealth.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/policy.ts",
+    "src/localVerify/unhandledErrorsReporter.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/fixtures/test-runner-bound/tests/fixture-helpers.ts",
+    "tests/fixtures/test-runner-bound/tests/nested.test.ts",
+    "tests/integration/test-runner-bound-meta.test.ts",
+    "tests/setup/test-runner-bound.config-eval.ts",
+    "tests/setup/test-runner-semaphore.globalSetup.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/mainHealth.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts",
+    "tests/unit/localVerify/unhandledErrorsReporter-progress.test.ts",
+    "tests/unit/test-runner-run-classifier.test.ts",
+    "upgrades/next/lv-deadline-forensics.md",
+    "upgrades/side-effects/lv-deadline-forensics.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Local Verify lane limits and the own-suite exemption: bounded harness change, a revert undoes it; three independent passes, the last concurring; then a textual merge of main.",
+  "eli16Path": "docs/specs/lv-deadline-forensics.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-deadline-forensics.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

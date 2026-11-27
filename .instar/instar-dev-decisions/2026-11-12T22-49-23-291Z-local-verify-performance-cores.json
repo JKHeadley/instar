@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-12T22:49:23.291Z",
+  "slug": "local-verify-performance-cores",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/LocalVerifyService.ts",
+      "src/localVerify/launchdSpawn.ts",
+      "src/localVerify/peer.ts",
+      "src/localVerify/serviceSeams.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 44
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

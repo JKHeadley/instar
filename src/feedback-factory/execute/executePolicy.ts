@@ -138,7 +138,7 @@ export const DEPS_STATUS_LATENCY_MS = 300_000;
 export const EXECUTE_TICK_MIN_INTERVAL_MS = 30_000;
 /** Bump when a canary probe changes: a new stamp forces a fresh full-gate base canary. */
 // A launch-path change must invalidate the full-gate stamp so deployed agents rehearse it.
-export const CANARY_VERSION = 'feedback-canary-v5';
+export const CANARY_VERSION = 'feedback-canary-v6';
 /** The exact sandbox runtime version this feature is pinned to (package.json pins the same). */
 export const SANDBOX_RUNTIME_PACKAGE = '@anthropic-ai/sandbox-runtime';
 export const SANDBOX_RUNTIME_VERSION = '0.0.77';
@@ -195,6 +195,14 @@ export interface ExecuteLiveConfig {
    * (docs/specs/feedback-executor-review-failed-recovery.md). 0 = never close (the old behaviour).
    */
   reviewFailedGraceHours: number;
+  /**
+   * What happens after a spec DRAFT (written from untrusted feedback) merges (SEC-096). The next step
+   * is a TRUSTED session (no confinement, auth kept) that converges the draft, so it never starts on
+   * the independent reviewers' word alone. `owner-approved` (the default): it starts only once the
+   * approver's own GitHub approval is on the merged head. `off`: it never starts; merged drafts wait
+   * for the owner by hand. There is deliberately no setting that starts it without the owner.
+   */
+  specFollowUp: 'owner-approved' | 'off';
   actionTopicId?: number;
 }
 
@@ -230,6 +238,8 @@ export function resolveExecuteConfig(raw: Record<string, unknown> | undefined, a
     publishRepo: publish,
     reviewGate: raw?.reviewGate === 'operator' ? 'operator' : 'independent',
     reviewFailedGraceHours: int(raw?.reviewFailedGraceHours, EXECUTE_CONFIG_DEFAULTS.reviewFailedGraceHours, 0, 168),
+    // SEC-096: anything but the exact word `off` keeps the owner-approval requirement (fail closed).
+    specFollowUp: raw?.specFollowUp === 'off' ? 'off' : 'owner-approved',
     ...(Number.isSafeInteger(topic) && topic !== 0 ? { actionTopicId: topic } : {}),
   };
 }
@@ -362,7 +372,12 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
       // homes, follow-me config homes, sign-in files, shell history, other users' temp files);
       // only the attempt's own trees are re-allowed, plus the Node install when it lives under home
       // (its global npm config stays denied: it can carry a registry token).
-      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir), ...nodeInstall.map((r) => path.join(r, 'etc', 'npmrc'))])],
+      // Reads use the UNFILTERED temp roots (SEC-098): allowRead wins inside a denied region, so the
+      // attempt's own temp directory under /private/tmp stays readable through allowRead. Filtering
+      // the ancestor out here (as the write side must) opened ALL of /private/tmp to reads:
+      // throwaway agents' configs with live bot and auth tokens, Claude scratchpads. The canary's
+      // `bash-read-system-temp` / `node-read-system-temp` must-fail probes prove it on every run.
+      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempRoots(), ...nodeInstall.map((r) => path.join(r, 'etc', 'npmrc'))])],
       allowRead: [p.workspace, p.depsCache, p.tmpDir, ...nodeInstall],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
       denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
@@ -371,6 +386,16 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
     enableWeakerNetworkIsolation: false,
     allowAppleEvents: false,
   };
+}
+
+/**
+ * Every shared system temp root, unfiltered. The READ deny list uses this whole list (SEC-098);
+ * only the WRITE deny list needs the ancestor filtering of systemTempDenies below.
+ */
+export function systemTempRoots(): string[] {
+  const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
+  try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
+  return [...new Set(candidates)];
 }
 
 /**
@@ -386,14 +411,15 @@ export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network
  * config resolution. Reads were unaffected, which is why only the smoke probe died and the lint gate
  * passed. Dropping the ancestor does NOT open the rest of the system temp: writes are allowlist-based
  * and the system temp itself is never in `allowWrite`, which the canary's `bash-write-system-temp`
- * must-fail probe proves on every run.
+ * must-fail probe proves on every run. This filtered list is for WRITES ONLY: the read deny list
+ * uses systemTempRoots() whole (SEC-098 — the filtered list once fed denyRead too and opened every
+ * other file in /private/tmp to reads).
  *
  * The workspace arm is the original one and still never fires in production, where the workspace
  * lives under the agent home.
  */
 export function systemTempDenies(workspace: string, attemptTmpDir?: string): string[] {
-  const candidates = ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp'];
-  try { candidates.push(fs.realpathSync(os.tmpdir())); } catch { candidates.push(os.tmpdir()); } // @silent-fallback-ok: the unresolved temp path is still denied
+  const candidates = systemTempRoots();
   // Compared by REAL path, because the two spellings differ per platform: `/tmp` is a symlink to
   // `/private/tmp` on macOS and `/private/tmp` resolves to `/tmp` on some Linux hosts. Resolving
   // only the leaf is not enough — an attempt temp directory that does not exist YET cannot be

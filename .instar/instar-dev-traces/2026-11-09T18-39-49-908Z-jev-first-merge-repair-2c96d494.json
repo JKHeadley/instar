@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "jev-first-merge-repair",
+  "sessionId": "fa047ce9-aeb1-4403-a8a2-043f6b4d0cb6",
+  "timestamp": "2026-11-09T18:39:49.908Z",
+  "artifactPath": "upgrades/side-effects/jev-first-merge-repair.md",
+  "artifactSha256": "198f68351f186c4c146eeaa23fb27446e9675c2fda2aaf137d736f9364ce2dee",
+  "coveredFiles": [
+    "docs/specs/jev-first-merge-repair.eli16.md",
+    "src/data/feature-ladders.json",
+    "upgrades/side-effects/jev-first-merge-repair.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible missing rollout metadata repair; no runtime code, configuration, authority or deployment change.",
+  "eli16Path": "docs/specs/jev-first-merge-repair.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/jev-first-merge-repair.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

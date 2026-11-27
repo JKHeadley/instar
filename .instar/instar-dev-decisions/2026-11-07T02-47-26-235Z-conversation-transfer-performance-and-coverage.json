@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-07T02:47:26.235Z",
+  "slug": "conversation-transfer-performance-and-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ConversationGraphSourceSweep.ts",
+      "src/core/GraphMemberLossNegativeTransfer.ts",
+      "src/core/GraphSourceStatusPoll.ts",
+      "src/server/AgentServer.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphSourceInventoryRuntime.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 71,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Checkpoint publish settles to an hourly heartbeat and the status poll stops at 120 seconds, both driven through their real decision functions under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

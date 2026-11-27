@@ -366,7 +366,7 @@ describe('the restart loop, through the real coordinator', () => {
     }
     expect(restartsByRound.slice(-3)).toEqual([0, 0, 0]);
     expect([live.aaa.lc.holdsLease(), live.bbb.lc.holdsLease()].filter(Boolean)).toHaveLength(1);
-  });
+  }, 90_000); // simulates ~2h of lease traffic with real ed25519 signing: ~15s locally, past the 10s CI default
 
   it('a running machine whose lease lapsed names a peer holding at its number, and stops renewing', async () => {
     const h = await boot('aaa');

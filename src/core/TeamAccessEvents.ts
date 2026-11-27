@@ -14,14 +14,56 @@ export type RequestEvent =
   | { type: 'person-set'; personKey: string; role: OrgRole }
   | { type: 'person-remove'; personKey: string }
   | { type: 'grant'; personKey: string; ref: string; access: GrantAccess }
-  | { type: 'grant-remove'; personKey: string; ref: string };
+  | { type: 'grant-remove'; personKey: string; ref: string }
+  /** The owner settles a gap: this machine's rows past `throughSeq` count only if they narrow. */
+  | { type: 'origin-gone'; machine: string; incarnation: string; throughSeq: number };
 
 export type MachineEvent =
   | { type: 'phone-bind'; keyHash: string; deviceId: string; boundTo: string }
   | { type: 'conversation-own'; ref: string; personKey: string }
   | { type: 'lower'; personKey: string; ref?: string; role?: OrgRole; remove?: boolean }
   /** The owner accepted the log as it stood after a restore, gaps included, through this row. */
-  | { type: 'restored'; throughSeq: number };
+  | { type: 'restored'; throughSeq: number }
+  /** A conversation is locked to its audience, on every machine. A restore's sweep is never one of these. */
+  | { type: 'confine'; ref: string; placeKey?: string; personKey?: string }
+  /**
+   * A member's computer, linked by their own phone (instar-document-viewer §3.6a). `signed` is the
+   * phone's whole device-signed `POST /mobile/browsers/link` request, so every machine checks the
+   * chain phone → browser itself and the browser binding is never weaker than the phone's.
+   * `linkedByKeyHash` names the phone key that signed it, so a later key rotation on that phone
+   * neither breaks the link nor lets a different key stand in for the signer.
+   */
+  | { type: 'browser-bind'; keyHash: string; deviceId: string; boundTo: string; linkedByDeviceId: string; linkedByKeyHash: string; linkedAt: string; expiresAt: string; scope: 'documents' | 'documents-read'; signed: LinkSignedRequest }
+  | { type: 'browser-unbind'; keyHash: string; deviceId: string }
+  /**
+   * A member's computer that joined from the owner's team invite, confirmed with the code shown only
+   * on the owner's phone (member-browser-any-computer §3.4). Machine-signed, as strong as `phone-bind`.
+   * `idleDays` and `endsBy` are the limits in force at admission, so a later limit change never moves it.
+   */
+  | ComputerBindEvent
+  /** The computer's home moved its end forward on use (§3.5). Counts only from the home, before the end it extends. */
+  | { type: 'computer-renew'; keyHash: string; expiresAt: string }
+  /** A machine serving the computer's address took it over, e.g. after a rebuild with a new identity (§3.5). */
+  | { type: 'computer-adopt'; keyHash: string; host: string }
+  /** Allowance and lifetimes for joined computers: agent-wide, or for one person (§3.5). Empty person row clears it. */
+  | ComputerLimitsEvent;
+
+export interface ComputerBindEvent {
+  type: 'computer-bind'; keyHash: string; deviceId: string; boundTo: string; host: string; browserPublicKey: string;
+  linkedAt: string; expiresAt: string; idleDays: number; endsBy: string; scope: 'documents' | 'documents-read';
+}
+
+export interface ComputerLimitsEvent {
+  type: 'computer-limits'; personKey?: string;
+  maxPerPerson?: number; maxNewPerHour?: number; idleDays?: number; maxDays?: number;
+}
+
+/** The fixed format bound every machine validates computer rows against, never a machine's settings (§3.4). */
+export const COMPUTER_MAX_DAYS = 365;
+const DAY_MS = 86_400_000;
+
+/** The phone's signed link request, as the device signature covers it (instar-device-v1). */
+export interface LinkSignedRequest { host: string; timeMs: string; sig: string; bodyB64: string }
 
 const MAX_EVENTS = 50;
 const str = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -68,6 +110,9 @@ export function validateRequestEvent(raw: unknown): RequestEvent | null {
       return { type: 'grant', personKey: e.personKey, ref: e.ref, access: e.access };
     case 'grant-remove':
       return str(e.personKey) && str(e.ref) ? { type: 'grant-remove', personKey: e.personKey, ref: e.ref } : null;
+    case 'origin-gone':
+      if (!str(e.machine) || !str(e.incarnation) || !Number.isSafeInteger(e.throughSeq) || (e.throughSeq as number) < 0) return null;
+      return { type: 'origin-gone', machine: e.machine, incarnation: e.incarnation, throughSeq: e.throughSeq as number };
     default: return null;
   }
 }
@@ -93,6 +138,9 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       return str(e.keyHash) && str(e.deviceId) && str(e.boundTo) ? { type: 'phone-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo } : null;
     case 'conversation-own':
       return str(e.ref) && str(e.personKey) ? { type: 'conversation-own', ref: e.ref, personKey: e.personKey } : null;
+    case 'confine':
+      if (!str(e.ref) || (e.placeKey !== undefined && !str(e.placeKey)) || (e.personKey !== undefined && !str(e.personKey))) return null;
+      return { type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey as string } : {}), ...(e.personKey ? { personKey: e.personKey as string } : {}) };
     case 'restored':
       return Number.isInteger(e.throughSeq) && (e.throughSeq as number) >= 0 ? { type: 'restored', throughSeq: e.throughSeq as number } : null;
     case 'lower':
@@ -101,6 +149,52 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       if (e.role !== undefined && !isGrantableRole(e.role)) return null;
       if (e.remove !== undefined && typeof e.remove !== 'boolean') return null;
       return { type: 'lower', personKey: e.personKey, ...(e.ref ? { ref: e.ref as string } : {}), ...(e.role ? { role: e.role as OrgRole } : {}), ...(e.remove ? { remove: true } : {}) };
+    case 'browser-bind': {
+      const g = e.signed as Record<string, unknown> | undefined;
+      const iso = (v: unknown): v is string => str(v, 40) && Number.isFinite(Date.parse(v as string));
+      if (!str(e.keyHash) || !str(e.deviceId) || !str(e.boundTo) || e.boundTo === 'owner' || e.boundTo === 'owner-browser' || !str(e.linkedByDeviceId) || !str(e.linkedByKeyHash)) return null;
+      if (!iso(e.linkedAt) || !iso(e.expiresAt) || (e.scope !== 'documents' && e.scope !== 'documents-read')) return null;
+      if (!g || !str(g.host) || !str(g.timeMs, 20) || !str(g.sig, 200) || !str(g.bodyB64, 2048)) return null;
+      return { type: 'browser-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo, linkedByDeviceId: e.linkedByDeviceId, linkedByKeyHash: e.linkedByKeyHash, linkedAt: e.linkedAt, expiresAt: e.expiresAt, scope: e.scope, signed: { host: g.host, timeMs: g.timeMs, sig: g.sig, bodyB64: g.bodyB64 } };
+    }
+    case 'browser-unbind':
+      return str(e.keyHash) && str(e.deviceId) ? { type: 'browser-unbind', keyHash: e.keyHash, deviceId: e.deviceId } : null;
+    case 'computer-bind': return validComputerBind(e);
+    case 'computer-renew': {
+      const iso = (v: unknown): v is string => str(v, 40) && Number.isFinite(Date.parse(v as string));
+      return str(e.keyHash) && iso(e.expiresAt) ? { type: 'computer-renew', keyHash: e.keyHash, expiresAt: e.expiresAt } : null;
+    }
+    case 'computer-adopt':
+      return str(e.keyHash) && str(e.host) ? { type: 'computer-adopt', keyHash: e.keyHash, host: e.host } : null;
+    case 'computer-limits': return validComputerLimits(e);
     default: return null;
   }
+}
+
+const isInt = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
+
+/** A joined computer's binding, checked against fixed format bounds only (§3.4). */
+function validComputerBind(e: Record<string, unknown>): ComputerBindEvent | null {
+  const iso = (v: unknown): v is string => str(v, 40) && Number.isFinite(Date.parse(v as string));
+  if (!str(e.keyHash) || !str(e.deviceId) || !str(e.boundTo) || e.boundTo === 'owner' || e.boundTo === 'owner-browser' || e.boundTo === 'msp') return null;
+  if (!str(e.host) || !str(e.browserPublicKey, 512) || (e.scope !== 'documents' && e.scope !== 'documents-read')) return null;
+  if (!iso(e.linkedAt) || !iso(e.expiresAt) || !iso(e.endsBy) || !isInt(e.idleDays, 1, COMPUTER_MAX_DAYS)) return null;
+  const linked = Date.parse(e.linkedAt), ends = Date.parse(e.endsBy), exp = Date.parse(e.expiresAt);
+  if (ends - linked > COMPUTER_MAX_DAYS * DAY_MS + 60_000 || exp > ends || exp <= linked) return null;
+  return {
+    type: 'computer-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo, host: e.host, browserPublicKey: e.browserPublicKey,
+    linkedAt: e.linkedAt, expiresAt: e.expiresAt, idleDays: e.idleDays, endsBy: e.endsBy, scope: e.scope,
+  };
+}
+
+/** Limits rows: every value optional and range-checked; a person row with no values clears that person's limits (§3.5). */
+function validComputerLimits(e: Record<string, unknown>): ComputerLimitsEvent | null {
+  if (e.personKey !== undefined && !str(e.personKey)) return null;
+  const out: ComputerLimitsEvent = { type: 'computer-limits', ...(e.personKey ? { personKey: e.personKey as string } : {}) };
+  if (e.maxPerPerson !== undefined) { if (!isInt(e.maxPerPerson, 1, 1000)) return null; out.maxPerPerson = e.maxPerPerson; }
+  if (e.maxNewPerHour !== undefined) { if (!isInt(e.maxNewPerHour, 1, 1000)) return null; out.maxNewPerHour = e.maxNewPerHour; }
+  if (e.idleDays !== undefined) { if (!isInt(e.idleDays, 1, COMPUTER_MAX_DAYS)) return null; out.idleDays = e.idleDays; }
+  if (e.maxDays !== undefined) { if (!isInt(e.maxDays, 1, COMPUTER_MAX_DAYS)) return null; out.maxDays = e.maxDays; }
+  if (out.idleDays !== undefined && out.maxDays !== undefined && out.maxDays < out.idleDays) return null;
+  return out;
 }

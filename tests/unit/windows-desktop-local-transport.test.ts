@@ -72,6 +72,29 @@ describe('Windows-local desktop transport', () => {
     ]), expect.objectContaining({ windowsHide: true }));
   });
 
+  it('carries H.264 video on the picture lane, never the input lane', async () => {
+    const lanes: string[][] = [];
+    launch.mockImplementation(() => { const seen: string[] = []; lanes.push(seen);
+      return serveChild(request => request.operation === 'capture-h264'
+        ? { status: 200, type: 'video/h264', body: Buffer.from([1, 0, 4, 0, 2, 0, 0, 0, 1, 0x67]).toString('base64'), ms: 9 }
+        : json({ ok: true }), seen); });
+    const send = windowsDesktopLocalSend(endpoint, script);
+    const headers = { 'X-Instar-Desktop-Time': '123', 'X-Instar-Desktop-Nonce': 'nonce', 'X-Instar-Desktop-Mac': 'mac' };
+    await send(endpoint + 'input', { method: 'POST', body: '{}', headers });
+    const video = await send(endpoint + 'capture-h264', { method: 'POST', body: '{}', headers });
+    expect(video.headers.get('content-type')).toBe('video/h264');
+    expect(video.headers.get('x-instar-relay-ms')).toBe('9');
+    expect(Buffer.from(await video.arrayBuffer())[0]).toBe(1);
+    await send(endpoint + 'capture', { method: 'POST', body: '{}', headers });
+    expect(lanes).toEqual([['input'], ['capture-h264', 'capture']]);
+  });
+
+  it('refuses a reply type the companion never sends', async () => {
+    launch.mockImplementation(() => serveChild(() => ({ status: 200, type: 'text/html', body: '' })));
+    const send = windowsDesktopLocalSend(endpoint, script);
+    await expect(send(endpoint + 'capture-h264', { method: 'POST', body: '{}', headers: {} })).rejects.toThrow(/reply/);
+  });
+
   it('falls back to one process per request when the installed script has no relay mode', async () => {
     launch.mockImplementationOnce(() => {
       const child = baseChild();
@@ -97,7 +120,7 @@ describe('Windows-local desktop transport', () => {
 
   it('lets the relay script carry every operation the transport allows', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'scripts/windows-desktop-local-transport.ps1'), 'utf8');
-    const allowed = fs.readFileSync(path.join(process.cwd(), 'src/core/WindowsDesktopLocalTransport.ts'), 'utf8').match(/ALLOWED = new Set\(\[([^\]]*)\]/)![1].match(/'[a-z]+'/g)!;
+    const allowed = fs.readFileSync(path.join(process.cwd(), 'src/core/WindowsDesktopLocalTransport.ts'), 'utf8').match(/ALLOWED = new Set\(\[([^\]]*)\]/)![1].match(/'[a-z0-9-]+'/g)!;
     const lists = source.match(/'probe'[^)\]]*/g)!;
     expect(lists).toHaveLength(2);
     for (const list of lists) for (const op of allowed) expect(list).toContain(op);

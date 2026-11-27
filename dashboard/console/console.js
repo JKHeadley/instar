@@ -1,4 +1,7 @@
 import { renderNotifications } from './notifications.js';
+import { installNetState } from './net-state.js';
+import { beginConsoleOutbox, getConsoleOutbox } from './outbox-runner.js';
+import { getChatOutbox } from './chat-outbox.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -7,13 +10,17 @@ import { renderNotifications } from './notifications.js';
 // The only innerHTML writes are the static SVG icon strings from nav-model.js.
 
 import {
-  failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
+  failure, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath, DOORS, doorHref, doorOf, resolveRoute, startDoor, FLEET_TILES } from './nav-model.js';
+import { homeNeedsModel, mountNeedsStrip, stripModel } from './needs-strip.js';
+import { mountAgentHealthNote } from './agent-health-note.js';
 import { fillPartial } from './home-model.js';
-import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
+import { readHeaders } from './needs-actions.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
+import { renderMachineCare } from './machine-care.js';
+import { renderRepos } from './repos.js';
 import { renderHealth } from './health.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
@@ -30,14 +37,22 @@ import { renderLearned } from './learned.js';
 import { topicNameMap } from './topic-names.js';
 import { renderInside } from './inside.js';
 import { renderFiles } from './files.js';
+import { renderContext } from './context.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
+import { renderWork } from './work.js';
+import { renderConversations, conversationsTile } from './conversations.js';
 import { paceCard } from './pace.js';
-import { takeTicket, signInAtBoot } from './ticket-model.js';
-import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids } from './ui.js';
+import { takeTicket, signInAtBoot, validToken } from './ticket-model.js';
+import { createLifecycle, splitHash } from './page-lifecycle.js';
+import { renderChats } from './chats.js';
+import { UNFINISHED_KEY } from './chats-model.js';
+import { renderDocuments } from './documents.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids, rememberOperatorSession, forgetOperatorSession } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
+const LOGOUT_FENCE_KEY = 'instar_console_logout_fence';
 const THEME_KEY = 'instar_console_theme';
 const TIMEOUT_MS = 20000;
 // Cross-machine reads can outlive a local read. A missed browser deadline is
@@ -47,7 +62,14 @@ const COMMITMENTS_TIMEOUT_MS = 25000;
 const REFRESH_MS = 30000;
 
 let token = '';
+let authGeneration = 0;
+let authLogoutFence = null;
+let authLogoutFenceBound = false;
+let outboxStart = null;
+let outboxProblem = '';
+let signOutPending = null;
 let refreshTimer = null;
+let refreshCurrent = null; // the current page's in-place refresh, for net-state's onBack
 let lastGood = {};                      // card id → last model that was not unknown
 const expanded = new Set();             // cards the operator expanded; kept across refreshes
 const openRows = new Set();             // rows the operator opened; kept across refreshes
@@ -56,6 +78,9 @@ let homeChatId = null;
 // The agent-wide Attention topic, where every attention item is posted.
 let attentionTopicId = null;
 let homeRun = null;
+const LAST_DOOR_KEY = 'console.lastDoor';
+// One visit per page render (page-lifecycle.js): disposers, query-only changes, self-refreshing pages.
+const lifecycle = createLifecycle({ report: (e) => { try { console.warn('console: a page clean-up failed', e); } catch { /* no console */ } } });
 // Phone mode (?phone=1, or phone=1 in the hash's query): the Instar app shows one
 // page in its own frame, so the console draws no top bar, nav or Legacy link.
 // Sticky for this page load: once on, every hash change stays in phone mode.
@@ -100,15 +125,17 @@ function toggleTheme() {
 // told "can't tell". Cross-machine reads in particular can be slow for a moment.
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
-async function getOnce(path, timeoutMs, soft403 = false) {
+async function getOnce(path, timeoutMs) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
-    if (r.status === 403 && soft403) return failure('the server answered 403');
-    if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
+    const r = await fetch(path, { headers: readHeaders(path, token), signal: ctl.signal, cache: 'no-store' });
+    const needs = path.split('?', 1)[0] === '/needs';
+    if (needs && r.headers.has('X-Instar-Saved-At')) return failure('a current list was not available');
+    if (r.status === 403 && needs) return { ...failure('the server answered 403'), status: r.status };
+    if (r.status === 401 || r.status === 403) { signOut(); return { ...failure('not signed in'), status: r.status }; }
     if (r.status === 503) return failure('switched off on this agent');
-    if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
+    if (!r.ok) return { ...failure(`the server answered ${r.status}`), status: r.status, retryable: r.status >= 500 };
     try { return { ok: true, data: await r.json() }; } catch { return failure('the answer was not readable'); }
   } catch (e) {
     return { ...failure(e && e.name === 'AbortError' ? `no answer within ${Math.round(timeoutMs / 1000)} seconds` : 'the server could not be reached'), retryable: true };
@@ -145,19 +172,110 @@ async function post(path, body) {
 }
 
 // ── auth ──────────────────────────────────────────────────────────────────
-async function validToken(t) {
-  if (!t) return false;
-  try {
-    const r = await fetch('/sessions', { headers: { Authorization: `Bearer ${t}` }, cache: 'no-store' });
-    return r.ok;
-  } catch { return false; }
+function outboxProblemNode() {
+  return outboxProblem ? el('p', { class: 'card-line chat-note console-outbox-problem', role: 'status', text: outboxProblem }) : null;
 }
+function showOutboxProblem(message) {
+  outboxProblem = message;
+  const existing = document.querySelector('.console-outbox-problem');
+  if (existing) existing.textContent = message;
+  else if (token) document.querySelector('.app')?.prepend(outboxProblemNode());
+}
+async function ensureConsoleOutbox() {
+  const current = getConsoleOutbox();
+  if (current) return current;
+  if (outboxStart) return outboxStart;
+  const generation = authGeneration;
+  outboxStart = beginConsoleOutbox({ bearer: () => token }).then((controller) => {
+    if (generation !== authGeneration || !token) { controller.dispose(); return controller; }
+    outboxProblem = '';
+    return controller;
+  }).catch((error) => {
+    if (generation === authGeneration && token) outboxProblem = 'This browser could not open its saved messages. Your draft stays in place if a message cannot be saved.';
+    throw error;
+  });
+  return outboxStart;
+}
+/** A sibling's logout ends this local session; it never signs in as the sibling's replacement. */
+function signedOutElsewhere(message = 'You were signed out in another tab. Unlock again to continue.') {
+  if (!token) return;
+  const controller = getConsoleOutbox();
+  authGeneration++;
+  authLogoutFenceBound = false;
+  token = '';
+  controller?.dispose();
+  lifecycle.dispose();
+  forgetOperatorSession();
+  net.clear();
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
+  outboxStart = null;
+  try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* the durable retirement fence still forbids later import */ }
+  // renderUnlock clears the old DOM synchronously before its first network await.
+  void renderUnlock(message);
+}
+function checkStoredSignIn() {
+  if (!token) return false;
+  try {
+    if ((localStorage.getItem(TOKEN_KEY) || '') !== token
+      || (authLogoutFenceBound && localStorage.getItem(LOGOUT_FENCE_KEY) !== authLogoutFence)) {
+      signedOutElsewhere();
+      return false;
+    }
+  } catch { /* storage may be unavailable; durable queue epochs remain the network-admission authority */ }
+  return true;
+}
+window.addEventListener('storage', (event) => {
+  if (!token) return;
+  if (event.key === TOKEN_KEY && event.newValue !== token) signedOutElsewhere();
+  else if (event.key === LOGOUT_FENCE_KEY && authLogoutFenceBound && event.newValue !== authLogoutFence) signedOutElsewhere();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkStoredSignIn();
+});
+window.addEventListener('pageshow', checkStoredSignIn);
+window.addEventListener('focus', checkStoredSignIn);
 
 function signOut() {
-  try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
+  if (signOutPending) return signOutPending;
+  const controller = getConsoleOutbox();
+  const pending = outboxStart;
+  authGeneration++;
+  authLogoutFenceBound = false;
+  // Stop immediately, before asynchronous storage work or another page can run.
+  if (controller) controller.dispose();
+  lifecycle.dispose();
+  forgetOperatorSession();
+  net.clear();
+  try {
+    // Unlike the bearer, this changes even when the next PIN unlock returns the same token.
+    localStorage.setItem(LOGOUT_FENCE_KEY, globalThis.crypto?.randomUUID?.() || `${Date.now()}:${Math.random()}`);
+    localStorage.removeItem(TOKEN_KEY);
+  } catch { /* durable epoch invalidation remains authoritative when storage is blocked */ }
+  try { sessionStorage.removeItem(UNFINISHED_KEY); } catch { /* durable retirement still forbids later import */ }
   token = '';
+  document.body.replaceChildren(el('main', { class: 'unlock' }, el('p', { text: 'Signing out…' })));
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  renderUnlock();
+  refreshCurrent = null;
+  outboxStart = null;
+  signOutPending = (async () => {
+    let message = '';
+    try {
+      const started = controller || (pending ? await pending.catch(() => null) : null);
+      if (started) { started.dispose(); await started.clearAll(); }
+      else await getChatOutbox().clearAll();
+      outboxProblem = '';
+    } catch (error) {
+      const phase = error && (error.phase || error.stage || error.code);
+      message = phase === 'erase' || phase === 'cleanup' || (error && error.invalidated === true)
+        ? 'You are signed out and saved sends are stopped, but their local copies could not be erased. Retry clearing them.'
+        : 'You are signed out here, but this browser could not confirm that saved sends in other tabs were stopped or cleared. Retry clearing them.';
+      outboxProblem = message;
+    }
+    await renderUnlock(message);
+    signOutPending = null;
+  })();
+  return signOutPending;
 }
 
 async function renderUnlock(message) {
@@ -186,6 +304,7 @@ async function renderUnlock(message) {
   );
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    if (btn.disabled) return;
     btn.disabled = true; err.textContent = '';
     try {
       const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: input.value }) });
@@ -199,24 +318,47 @@ async function renderUnlock(message) {
         err.textContent = data.error ? `${data.error}${typeof data.attemptsRemaining === 'number' ? ` · ${data.attemptsRemaining} tries left` : ''}` : 'That did not work. Try again.';
         btn.disabled = false; input.select(); return;
       }
-      // Only the bearer token is stored, exactly as the legacy dashboard does.
-      // The operator proof is deliberately not kept: the console is read-only.
+      // The bearer follows the existing dashboard storage policy. Human proof
+      // stays only in page memory for owner-only pages, until server expiry.
       try { localStorage.setItem(TOKEN_KEY, data.token); } catch { /* storage blocked */ }
+      rememberOperatorSession(data);
+      input.value = '';
       token = data.token;
       start();
     } catch { err.textContent = 'The server could not be reached.'; btn.disabled = false; }
   });
+  if (message) {
+    const retry = el('button', { class: 'btn-quiet', type: 'button', text: 'Retry clearing saved messages' });
+    retry.addEventListener('click', async () => {
+      retry.disabled = true; btn.disabled = true;
+      try { await getChatOutbox().clearAll(); outboxProblem = ''; await renderUnlock(); }
+      catch { err.textContent = message; retry.disabled = false; btn.disabled = false; }
+    });
+    form.append(retry);
+  }
   document.body.append(el('main', { class: 'unlock' }, form));
   input.focus();
 }
 
 // ── shell ─────────────────────────────────────────────────────────────────
+// The three doors (work-front-doors.md §2.3): Conversations, Work, Agent. Each front door's target
+// depends on whether its page is switched on here (the same probes its tile always used).
+const doorProbes = { chats: false, board: false, checked: false };
+function probeDoors() {
+  const probe = (path) => fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }).then((r) => r.ok).catch(() => false); // @silent-fallback-ok: an unreachable probe keeps the door on its always-present page
+  return Promise.all([probe('/mobile/browser-devices/status'), probe('/work-board')]).then(([chats, board]) => {
+    const changed = chats !== doorProbes.chats || board !== doorProbes.board || !doorProbes.checked;
+    Object.assign(doorProbes, { chats, board, checked: true });
+    if (changed) for (const a of document.querySelectorAll('nav.nav a[data-door]')) a.setAttribute('href', doorHref(a.dataset.door, doorProbes));
+    // The board answered after the first paint: a page already showing the bare Work address moves onto the board.
+    if (changed && board && /^#\/work\/?$/.test(location.hash)) location.replace('#/work/board');
+  });
+}
 function navItems(active) {
-  const items = [{ id: 'home', label: 'Home', icon: 'home' }, ...GROUPS];
   const nav = el('nav', { class: 'nav', 'aria-label': 'Console sections' });
-  for (const g of items) {
-    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active ? 'page' : null });
-    a.append(el('span', { text: g.label }));
+  for (const d of DOORS) {
+    const a = el('a', { href: doorHref(d.id, doorProbes), icon: d.icon, 'data-door': d.id, 'aria-current': d.id === active ? 'page' : null });
+    a.append(el('span', { text: d.label }));
     nav.append(a);
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
@@ -231,20 +373,25 @@ function renderShell(active) {
   if (phone) {
     // Only the page: the app's own frame holds the title bar and navigation.
     const main = el('main', { class: 'main', id: 'main' });
-    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), main));
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), net.lineElement(), outboxProblemNode(), main));
     applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
     return main;
   }
   const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
-  const brand = el('a', { class: 'brand', href: '#/home' },
+  const brand = el('a', { class: 'brand', href: doorHref('conversations', doorProbes) },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
     el('span', { text: 'instar' }),
     el('span', { class: 'agent', id: 'agentName' }),
   );
   const top = el('header', { class: 'topbar' }, brand, el('div', { class: 'spacer' }), legacyChip);
   const main = el('main', { class: 'main', id: 'main' });
-  const app = el('div', { class: 'app' }, previewBanner(), top, navItems(active), main);
+  // The Needs-you list sits above both front doors (spec decision 2); the Agent door has none.
+  const strip = active === 'conversations' || active === 'work' ? el('section', { class: 'needs-strip', id: 'needsStrip', 'aria-label': 'What needs you' }) : null;
+  const column = strip ? el('div', { class: 'main-column' }, strip, main) : main;
+  const app = el('div', { class: 'app' }, previewBanner(), net.lineElement(), outboxProblemNode(), top, navItems(active), column);
   document.body.replaceChildren(app);
+  mountAgentHealthNote(app.querySelector('nav a[data-door="agent"]'), { get });
+  if (strip) mountNeedsStrip(strip, { get, hrefFor: stripActionHref });
   applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
   fillAgentName();
   return main;
@@ -260,14 +407,13 @@ async function fillAgentName() {
 // ── Home ──────────────────────────────────────────────────────────────────
 // col: which desktop column the card sits in. On a phone both columns stack.
 const CARDS = [
-  { id: 'needs', title: 'What needs you', feature: true, col: 'main' },
   { id: 'promised', title: 'What I’ve promised', href: '#/work/promises', col: 'main' },
   { id: 'doing', title: 'What I’m doing', href: '#/work/sessions', col: 'main' },
   { id: 'running', title: 'Where I’m running', href: '#/capacity/machines', col: 'side' },
   { id: 'allowed', title: 'What I’m allowed to do', href: '#/settings/allowed', col: 'side' },
 ];
 
-const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'partial', stale: 'out of date' };
+const STATE_WORD = { ok: null, attn: null, bad: 'failing', unknown: 'can’t tell', partial: 'not every check answered', stale: 'out of date' };
 
 function actionHref(action) {
   if (!action) return null;
@@ -280,6 +426,12 @@ function actionHref(action) {
   if (action.kind === 'href') return action.href || null;
   if (action.kind === 'attention') return attentionTopicId ? topicLink(homeChatId, attentionTopicId) : null;
   return null;
+}
+
+/** Where a Needs-you row opens in the console: a conversation in the console's own list when it is on. */
+function stripActionHref(action) {
+  if (action && action.kind === 'topic' && doorProbes.chats) return `#/work/chats?c=${encodeURIComponent(`telegram:${Number(action.topicId)}`)}`;
+  return actionHref(action);
 }
 
 function cardShell(def) {
@@ -324,13 +476,12 @@ function paintCard(def, model, repaint = false) {
   });
   const visual = model.state === 'partial' || model.state === 'stale' ? 'unknown' : model.state;
   card.setAttribute('data-state', visual);
-  if (def.id === 'needs') card.hidden = (model.count === 1 && Boolean(actionHref(model.rows?.[0]?.action))) || (model.count === 0 && model.state !== 'unknown' && !model.retrying);
   card.removeAttribute('aria-busy');
   card.classList.add('resolved');
   card.querySelector('.dot').className = dotClass(model.state);
   const age = card.querySelector('.card-age');
   const word = STATE_WORD[model.state];
-  age.textContent = [model.coverage && !word ? model.coverage : word, model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
+  age.textContent = [model.coverageWords || (model.coverage && !word ? model.coverage : word), model.age && model.state !== 'stale' ? model.age : null].filter(Boolean).join(' · ');
   card.toggleAttribute('data-partial', Boolean(model.coverage));
 
   const value = card.querySelector('.card-value');
@@ -403,7 +554,7 @@ function paintCard(def, model, repaint = false) {
   if (model.note) body.append(el('p', { class: 'card-note', text: model.note }));
   const foot = card.querySelector('.card-foot');
   foot.replaceChildren();
-  const extra = model.all ? model.all.length - model.rows.length : (model.more || 0);
+  const extra = model.all ? model.all.length - (model.rows?.length || 0) : (model.more || 0);
   if (model.all && extra > 0) {
     const b = el('button', { class: 'link-btn', type: 'button', 'data-focus-key': `${def.id}:see-all`, 'aria-expanded': expandedNow ? 'true' : 'false', text: expandedNow ? 'Show fewer' : `See all ${model.all.length}` });
     b.addEventListener('click', () => { if (expanded.has(def.id)) expanded.delete(def.id); else expanded.add(def.id); paintCard(def, model, true); });
@@ -461,7 +612,7 @@ function paintHeadline(models) {
 // machine is slow still has it (page memory alone is lost on reload). Storage can be
 // absent or full; then it is page memory only, as before.
 const lastComplete = {};
-const ROW_LISTS = { attention: 'items', sessions: 'sessions' };
+const ROW_LISTS = { sessions: 'sessions' };
 const LAST_COMPLETE_STORE = 'console.lastComplete.';
 function rememberComplete(key, result) {
   if (!ROW_LISTS[key]) return;
@@ -479,50 +630,51 @@ function fillFromLastComplete(key, fresh) {
   return ROW_LISTS[key] && prev ? fillPartial(fresh, prev.result, ROW_LISTS[key], Date.now(), prev.at) : null;
 }
 
-function loadHome() {
+function loadHome(reconnecting = false) {
   const run = homeRun;
   if (!run || !run.active || run.document !== document) return;
   const { models, raw, results } = run;
+  const readsInThisCatchup = [];
+  run.inFlight ||= {};
   const paint = (id) => {
-    // "What needs you" is the one answer: queue items plus promises waiting on the operator.
-    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised, surfacedNeeds(run.sources)) : raw[id];
+    const model = raw[id];
     if (!model) return; // nothing read yet for this card
     const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
     models[id] = shown;
-    // The action queue must use the same last-known promise reading as its
-    // companion card. Otherwise a transient refresh failure hides known work.
-    if (id === 'promised') raw.promised = shown;
   };
   const set = (id, model) => {
     raw[id] = model;
     paint(id);
-    if (id === 'promised' && raw.needs) paint('needs');
     paintHeadline(models);
   };
   const annotate = (model, ...reads) => reads.some((r) => r && (r.retrying || (!r.ok && r.reason !== 'not signed in' && r.reason !== 'switched off on this agent')))
     ? { ...model, retrying: true, line: [model.line, 'Checking again automatically.'].filter(Boolean).join(' ') } : model;
   const refresh = (key) => {
     const names = results.pool ? machineNames(results.pool) : {};
-    if ((key === 'attention' || key === 'pool' || key === 'systemTopics') && results.attention) set('needs', annotate(buildNeeds(results.attention, Date.now(), names), results.attention));
     if ((key === 'sessions' || key === 'pool' || key === 'topics') && results.sessions) set('doing', annotate(buildDoing(results.sessions, Date.now(), names, topicNameMap(results.topics)), results.sessions));
     if (key === 'pool' && results.pool) set('running', annotate(buildRunning(results.pool), results.pool));
-    if ((key === 'commitments' || key === 'pool') && results.commitments) {
+    if ((key === 'commitments' || key === 'pool' || key === 'topics') && results.commitments) {
       const pool = results.pool;
       const peers = pool?.ok && Array.isArray(pool.data?.machines) ? pool.data.machines.filter((m) => m && !m.isSelf && m.machineId !== pool.data.selfMachineId).length : null;
-      set('promised', annotate(buildPromised(results.commitments, Date.now(), peers), results.commitments));
+      set('promised', annotate(buildPromised(results.commitments, Date.now(), peers, { topicNames: topicNameMap(results.topics), machineNames: names }), results.commitments));
     }
     if ((key === 'guards' || key === 'mandate') && results.guards && results.mandate) set('allowed', annotate(buildAllowed(results.guards, results.mandate), results.guards, results.mandate));
   };
   const read = (key, path, timeoutMs) => {
-    if (run.pending[key]) return;
+    if (run.inFlight[key]) { readsInThisCatchup.push(run.inFlight[key]); return; }
+    if (run.pending[key]) {
+      if (!reconnecting) return;
+      if (run.pending[key] !== true) clearTimeout(run.pending[key]);
+      run.pending[key] = null;
+    }
     const attempt = async () => {
-      if (!run.active || run.document !== document) return;
+      if (!run.active || run.document !== document) return false;
       run.pending[key] = true;
       const result = await get(path, timeoutMs);
-      if (!run.active || run.document !== document) return;
+      if (!run.active || run.document !== document) return false;
       // A 200 that omitted a peer is a partial answer, so keep it visible and
       // retry for coverage just as we do after a transport timeout.
-      const partial = result.ok && (['attention', 'sessions'].includes(key) && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
+      const partial = result.ok && (key === 'sessions' && Array.isArray(result.data?.pool?.failed) && result.data.pool.failed.length > 0
         || key === 'topics' && ((result.data?.pool?.failed?.length || 0) > 0 || (result.data?.pool?.unresolved?.length || 0) > 0));
       const retryable = partial || (!result.ok && !['not signed in', 'switched off on this agent'].includes(result.reason));
       const filled = partial ? fillFromLastComplete(key, result) : null;
@@ -540,45 +692,32 @@ function loadHome() {
       if (retryable) {
         run.failures[key] = (run.failures[key] || 0) + 1;
         const delay = Math.min(15000, 300 * (2 ** Math.min(run.failures[key] - 1, 6)));
-        run.pending[key] = setTimeout(attempt, delay);
+        run.pending[key] = setTimeout(launch, delay);
       } else { run.failures[key] = 0; run.pending[key] = null; }
+      return !retryable;
     };
-    attempt();
+    const launch = () => {
+      const work = attempt().finally(() => { if (run.inFlight[key] === work) delete run.inFlight[key]; });
+      run.inFlight[key] = work;
+      return work;
+    };
+    readsInThisCatchup.push(launch());
   };
-  // What needs the operator on other pages (needs-model.js): one in-flight read per source, no
-  // retry timer of its own (the next tick is the retry), and a 403 here never signs anyone out.
-  run.tick = (run.tick || 0) + 1;
-  for (const source of NEED_SOURCES) {
-    if (run.sourceBusy[source.id]) continue;
-    if (source.when && !source.when(run.sources)) continue;
-    if (source.everyTicks && run.sourceAt[source.id] && run.tick - run.sourceAt[source.id] < source.everyTicks) continue;
-    run.sourceAt[source.id] = run.tick;
-    run.sourceBusy[source.id] = true;
-    const keys = Object.keys(source.reads);
-    Promise.all(keys.map((k) => getOnce(source.reads[k], Math.max(TIMEOUT_MS, MIN_TIMEOUT_MS), true))).then((reads) => {
-      run.sourceBusy[source.id] = false;
-      if (!run.active || run.document !== document) return;
-      run.sources[source.id] = { ...(run.sources[source.id] || {}), results: Object.fromEntries(keys.map((k, i) => [k, reads[i]])) };
-      paint('needs');
-      paintHeadline(models);
-    });
-  }
-  // Every source has one in-flight request and its own bounded retry timer.
-  // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
-  // Open items only: a machine's full history (closed items included) can be
-  // over a megabyte, enough to miss the per-machine time limit.
-  read('attention', '/attention?scope=pool&status=OPEN', POOL_TIMEOUT_MS);
   read('systemTopics', '/telegram/system-topics');
   read('sessions', '/sessions?scope=pool', POOL_TIMEOUT_MS);
   read('topics', '/telegram/topics?scope=pool', POOL_TIMEOUT_MS);
   read('commitments', '/commitments?scope=mesh', COMMITMENTS_TIMEOUT_MS);
   read('guards', '/guards', TIMEOUT_MS);
   read('mandate', '/mandate', TIMEOUT_MS);
+  return Promise.allSettled(readsInThisCatchup).then((reads) => run.active && reads.every((r) => r.status === 'fulfilled' && r.value !== false));
 }
 
-function renderHome(main) {
-  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {}, sources: {}, sourceBusy: {}, sourceAt: {} };
+function renderHome(main, ctx) {
+  const models = Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }]));
+  models.needs = homeNeedsModel(stripModel(null));
+  const run = { active: true, document, models, raw: {}, results: {}, pending: {}, failures: {} };
+  homeRun = run;
   main.replaceChildren(
     el('section', { class: 'hero' },
       el('div', { class: 'eyebrow', id: 'heroTime', text: 'Checking in' }),
@@ -586,19 +725,36 @@ function renderHome(main) {
       el('p', { id: 'heroSub' }),
       el('a', { id: 'heroIssueLink', class: 'hero-issue-link', hidden: true }),
     ),
-    cardShell(CARDS[0]),
+    el('section', { class: 'needs-strip', id: 'homeNeedsStrip', 'aria-label': 'What needs you' }),
     el('details', { class: 'home-details' },
       el('summary', { text: 'See agent status' }),
       el('p', { id: 'homeStatusNote', class: 'home-status-note', hidden: true }),
       el('div', { class: 'home-cols' },
-        el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main' && c.id !== 'needs').map(cardShell)),
+        el('div', { class: 'col col-main' }, CARDS.filter((c) => c.col === 'main').map(cardShell)),
         el('div', { class: 'col col-side' }, CARDS.filter((c) => c.col === 'side').map(cardShell)),
       ),
     ),
   );
+  const stopNeeds = mountNeedsStrip(main.querySelector('#homeNeedsStrip'), {
+    get, hrefFor: stripActionHref, home: true, open: true,
+    onModel: (model) => {
+      run.models.needs = homeNeedsModel(model);
+      paintHeadline(run.models);
+    },
+  });
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => { if (document.visibilityState === 'visible' && location.hash.startsWith('#/home')) loadHome(); }, REFRESH_MS);
+  const timer = setInterval(() => { if (document.visibilityState === 'visible' && location.hash.startsWith('#/home')) loadHome(); }, REFRESH_MS);
+  refreshTimer = timer;
+  // Home's teardown is its own disposer, closing over this run: its retry timers and its refresh timer.
+  if (ctx) ctx.onDispose(() => {
+    run.active = false;
+    stopNeeds();
+    for (const p of Object.values(run.pending)) if (p && p !== true) clearTimeout(p);
+    clearInterval(timer);
+    if (refreshTimer === timer) refreshTimer = null;
+    if (homeRun === run) homeRun = null;
+  });
 }
 
 // ── Group pages (static directories) ──────────────────────────────────────
@@ -609,9 +765,24 @@ function tile(t, withIcon = true) {
   return a;
 }
 
-function renderGroup(main, g) {
-  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+/**
+ * A tile shown only when its probe answers 200 (e.g. Conversations, while its switch is on).
+ * A plain fetch: a refusal here must never sign the operator out.
+ */
+function probedTile(t) {
+  const host = el('div', { class: 'tiles tiles-inline', hidden: true }, tile(t));
+  fetch(t.probe, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+    .then((r) => { host.hidden = !r.ok; })
+    .catch(() => { /* @silent-fallback-ok: an unreachable probe leaves the tile hidden */ });
+  return host;
+}
+
+/** Tiles whose pages are a front door (Conversations, the board): shown on the doors, not again under Agent. */
+const FRONT_DOOR_TABS = ['chats', 'work-board'];
+
+function groupParts(g, { asSection = false } = {}) {
   const extras = [
+    ...(g.id === 'work' && !asSection ? [conversationsTile()] : []), // under Agent, Conversations is its own door
     ...groupExtras(g, { get }), // the Development tile (Work, maintainer mode only) and the developer-tools switch (Settings)
     ...(g.id === 'work' ? [maturationTile(get)] : []), // shown only when /maturation/board answers
     ...(g.id === 'work' ? [ideasTile(get)] : []), // shown only when /ecosystem-ideas answers
@@ -622,22 +793,49 @@ function renderGroup(main, g) {
   const tileHosts = extras.filter((n) => n && n.classList && n.classList.contains('tiles'));
   for (const h of tileHosts) h.classList.add('tiles-inline');
   const parts = [
-    el('section', { class: 'group-head' },
-      el('div', { class: 'eyebrow', text: g.label }),
-      el('h1', { text: g.question }),
-    ),
-    el('div', { class: 'tiles' }, [...g.tabs.map((t) => tile(t)), ...tileHosts]),
+    asSection
+      ? el('h2', { class: 'agent-section-title', id: `agent-${g.id}` }, el('a', { href: `#/${g.id}`, text: g.label }))
+      : el('section', { class: 'group-head' },
+        el('div', { class: 'eyebrow', text: g.label }),
+        el('h1', { text: g.question }),
+      ),
+    // Under Agent, a page Fleet already lists, or a front door's own page, is not repeated in its section.
+    el('div', { class: 'tiles' }, [...g.tabs.filter((t) => !asSection || !(FLEET_TILES.some((f) => f.id === t.id) || FRONT_DOOR_TABS.includes(t.id))).map((t) => (t.probe ? probedTile(t) : tile(t))), ...tileHosts]),
     ...extras.filter((n) => !tileHosts.includes(n)),
-    ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
+    ...(g.id === 'work' && !asSection ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
   if (g.hood && g.hood.length) {
     parts.push(
-      el('h2', { class: 'eyebrow section-label', text: 'Under the hood' }),
+      el('h3', { class: 'eyebrow section-label', text: 'Under the hood' }),
       el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
+  return parts;
+}
+
+function renderGroup(main, g) {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const parts = groupParts(g);
   if (!phone) parts.push(footNote());
   main.replaceChildren(...parts);
+}
+
+/** The Agent door (spec §2.1): Fleet first, then today's four groups as sections, so every page keeps a home. Names and icons only on the menu; each page keeps its purpose line. */
+function renderAgent(main) {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const parts = [
+    el('section', { class: 'group-head' },
+      el('div', { class: 'eyebrow', text: 'Agent' }),
+      el('h1', { text: 'How this agent runs' }),
+    ),
+    el('h2', { class: 'agent-section-title', id: 'agent-fleet', text: 'Fleet' }),
+    el('div', { class: 'tiles' }, FLEET_TILES.map((t) => tile(t))),
+    ...GROUPS.flatMap((g) => groupParts(g, { asSection: true })),
+  ];
+  if (!phone) parts.push(footNote());
+  // Names and icons only here (spec §2.1); each page keeps its own purpose line.
+  main.classList.add('agent-page');
+  setKids(main, ...parts);
 }
 
 function footNote() {
@@ -651,6 +849,7 @@ function footNote() {
 // ── routing ───────────────────────────────────────────────────────────────
 // Native feature pages, by hash path. A feature not listed here still opens its legacy tab.
 const NATIVE = {
+  'work/conversations': renderConversations,
   'work/promises': renderPromises,
   'work/plans': renderPlans,
   'work/plans/in-the-way': renderPlans,
@@ -658,8 +857,13 @@ const NATIVE = {
   'work/development': renderDevelopment,
   'work/maturation': renderMaturation,
   'work/ideas': renderIdeas,
+  'work/board': renderWork,
   'work/sessions': renderSessions,
+  'work/chats': renderChats,
+  'work/documents': renderDocuments,
   'capacity/machines': renderMachines,
+  'capacity/machine-care': renderMachineCare,
+  'capacity/repos': renderRepos,
   'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
@@ -673,6 +877,7 @@ const NATIVE = {
   'settings/learned': renderLearned,
   'settings/inside': renderInside,
   'settings/files': renderFiles,
+  'settings/context': renderContext,
 };
 
 // Pages that exist only in phone mode: the Work page's Pace card, on its own.
@@ -690,36 +895,72 @@ const PHONE_ONLY = {
 };
 
 function route() {
+  if (!token || !checkStoredSignIn()) return;
+  if (!phone && isPhoneMode('', location.hash)) phone = true;
+  const { path: hashPath, query } = splitHash(location.hash);
+  const path = pagePath(hashPath, phone);
+  // Only the query changed on a page that handles that itself: no rebuild, no sheet close, no scroll.
+  if (lifecycle.tryQuery(path, query)) return;
+  // The previous visit's disposers run before anything new is drawn.
+  lifecycle.dispose();
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
   newArrival();
-  if (!phone && isPhoneMode('', location.hash)) phone = true;
   document.documentElement.toggleAttribute('data-phone', phone);
-  const hashPath = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
-  const path = pagePath(hashPath, phone);
   const pages = phone ? { ...NATIVE, ...PHONE_ONLY } : NATIVE;
-  const id = path.split('/')[0];
-  const group = GROUPS.find((g) => g.id === id);
-  const active = group ? group.id : 'home';
+  const resolved = resolveRoute(path, { phone, ...doorProbes });
+  // An old address (Home, an empty or unknown hash) lands on a door; the old link keeps working.
+  if (resolved.kind === 'redirect' && !phone) { history.replaceState(null, '', resolved.to); route(); return; }
+  const group = resolved.kind === 'group' ? GROUPS.find((g) => g.id === resolved.path) : null;
+  const active = resolved.door;
+  if (active === 'conversations' || active === 'work') { try { localStorage.setItem(LAST_DOOR_KEY, active); } catch { /* @silent-fallback-ok: storage blocked; the console opens on Conversations */ } }
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  refreshCurrent = null;
+  const ctx = lifecycle.begin(path, query);
+  const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, onReconnect: c.onReconnect, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
   if (pages[path]) {
-    pages[path](main, { get, post, getCommitments });
+    pages[path](main, pageCtx(ctx));
     // Pages refresh in place every 30 s while visible, never over an open sheet or an
     // interaction in progress, and one at a time: a slow read cannot paint over a newer one.
-    let refreshing = false;
-    refreshTimer = setInterval(() => {
-      if (refreshing || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || (location.hash.replace(/^#\/?/, '').split('?')[0]) !== hashPath) return;
-      refreshing = true;
-      Promise.resolve().then(() => pages[path](main, { get, post, getCommitments })).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
-    }, REFRESH_MS);
-  } else if (group) renderGroup(main, group); else renderHome(main);
+    // A self-refreshing page (it registered ctx.selfRefreshing()) is never re-run by this cycle.
+    if (!lifecycle.isSelfRefreshing()) {
+      let refreshing = false;
+      const refreshNow = () => {
+        if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return false;
+        refreshing = true;
+        // Each re-run is a new visit: the previous run's disposers are called first.
+        const next = lifecycle.begin(path, splitHash(location.hash).query);
+        return Promise.resolve().then(() => pages[path](main, pageCtx(next))).then(() => next.isCurrent(), () => false).finally(() => { refreshing = false; });
+      };
+      const timer = setInterval(refreshNow, REFRESH_MS);
+      refreshCurrent = refreshNow;
+      // Cleared by the next route() (and signOut), never by a re-run's own visit change.
+      refreshTimer = timer;
+    }
+  } else if (group) renderGroup(main, group);
+  else if (resolved.kind === 'agent') renderAgent(main);
+  else renderHome(main, ctx); // phone mode keeps Home's own page for the app's frame
   window.scrollTo(0, 0);
 }
 
 async function start() {
+  if (signOutPending) await signOutPending;
+  if (!token) return;
+  if (!authLogoutFenceBound) {
+    try { authLogoutFence = localStorage.getItem(LOGOUT_FENCE_KEY); } catch { authLogoutFence = null; }
+    authLogoutFenceBound = true;
+  }
+  await ensureConsoleOutbox().catch(() => null);
+  if (!token) return;
   phone = phone || isPhoneMode(location.search, location.hash);
-  if (!location.hash) history.replaceState(null, '', '#/home');
+  // Land on the front door used last (Conversations or Work), once the doors know which pages are on.
+  await Promise.race([probeDoors(), new Promise((r) => setTimeout(r, 1500))]);
+  if (phone) { if (!location.hash) history.replaceState(null, '', '#/home'); } // the app's frame keeps Home
+  else if (!location.hash || /^#\/?(home)?(\?.*)?$/.test(location.hash)) {
+    let last = null; try { last = localStorage.getItem(LAST_DOOR_KEY); } catch { /* @silent-fallback-ok: storage blocked */ }
+    history.replaceState(null, '', doorHref(startDoor(last), doorProbes));
+  }
   window.removeEventListener('hashchange', route);
   window.addEventListener('hashchange', route);
   route();
@@ -750,6 +991,19 @@ function previewBanner() {
     el('a', { href: '/dashboard/console/', text: 'Live dashboard' }));
 }
 
+// A weak or missing connection: saved status reads, a short first try, one plain line (net-state.js).
+const net = installNetState({ getToken: () => token, onBack: async () => {
+  if (!token) return false;
+  const controller = getConsoleOutbox();
+  // Uploads do not keep the conversation's received-history catch-up Updating.
+  if (controller) void Promise.resolve(controller.reconnect()).catch(() => { showOutboxProblem('Saved messages could not be checked. Open Conversations to review them; their saved copies have not been discarded.'); });
+  const reconnected = await lifecycle.reconnectCurrent();
+  if (reconnected !== null) return reconnected;
+  if (refreshCurrent) return (await refreshCurrent()) !== false;
+  if (homeRun) return loadHome(true);
+  return true;
+} });
+
 (async function boot() {
   applyTheme(readTheme());
   await loadPreviewInfo();
@@ -757,7 +1011,7 @@ function previewBanner() {
   // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
   let ticket = '';
   try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
-  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  const signIn = await signInAtBoot({ storedToken: token, ticket, fetchFn: (p, o) => fetch(p, o) });
   if (signIn.via === 'ticket') {
     // Stored exactly as the PIN unlock stores it.
     try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }

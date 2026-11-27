@@ -53,6 +53,9 @@ export const SKILL_LEARNING_DEFAULTS = Object.freeze({
 } as const);
 
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  // These do not enable pairing, native conversations or browser enrollment. Their existing
+  // gates still apply; init and missing-only update migration share this one default.
+  mobilePairing: { browser: { outboxEnabled: true, outboxRecoveryGeneration: '1' } },
   notifications: {
     selectivity: {
       dryRun: true,
@@ -487,9 +490,32 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     agentWorktreeReaper: {
       enabled: false,
       dryRun: true,
-      reapIntervalMs: 86_400_000,
+      // Hourly (docs/specs/reaper-removal-out-of-process.md §4). An existing
+      // agent holding the old 24 h default is moved by migrateReaperHourlyCadence.
+      reapIntervalMs: 3_600_000,
       initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
+    },
+    // DiskSteward (docs/specs/disk-steward.md) — every machine watches its own
+    // free space and posts in the "Disk space (all machines)" topic when it gets
+    // low. Watching and posting are on for everyone. The cleanup of two tool
+    // caches (npm cache over 5 GiB, Xcode build files older than a day) deletes
+    // files, so it is OFF by default; the update migration turns it on only for
+    // development agents that have no value set.
+    diskSteward: {
+      enabled: true,
+      sampleIntervalMs: 900_000,
+      warnPercent: 15,
+      warnMinGiB: 100,
+      escalatePercent: 10,
+      escalateMinGiB: 60,
+      forecastEscalateDays: 3,
+      prune: {
+        enabled: false,
+        dryRun: false,
+        minIntervalMs: 21_600_000,
+        npmCacheMaxGiB: 5,
+      },
     },
     // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
     // topic 22367): detects an agent worktree with uncommitted work whose owning
@@ -1830,6 +1856,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     // preserves today's behavior exactly; a single-machine agent is a strict no-op.
     stateSync: {
       aggregateJournalBudgetBytes: 67108864, // 64 MiB (§10.2)
+      // native-conversation-any-machine-access §3f: session transcripts copied to every machine as
+      // checkpoints of whole redacted rows. A copy cannot be recalled once it lands, so it ships dark on
+      // every agent (a DARK_GATE_EXCLUSIONS entry) until its live date (CMT-047, 2026-12-02).
+      sessionTranscripts: {
+        enabled: false,
+        bytesPerDay: 268435456, // 256 MiB of source rows per machine per day
+      },
       maxDriftMs: 300000, // 5 min — the §3.4 default, within the [60s,15min] clamp
       maxCachedSnapshots: 16, // §8.2 snapshot-cache count ceiling
       maxCacheBytes: 67108864, // 64 MiB — §8.2 snapshot-cache byte ceiling (reconciled to spec §8.2 from the 32 MiB Step-2 literal)
@@ -2398,6 +2431,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 },
     },
   },
+  // Context Budget: Layered Summaries (docs/specs/context-budget-layered-summaries.md).
+  // compactionRecovery: the session-start hook reads Claude Code's stdin `source`
+  // so compaction recovery actually runs (§9.1). A user-facing bug fix: default
+  // on; the switch exists for rollback (off = exactly the old behaviour).
+  contextBudget: {
+    compactionRecovery: { enabled: true },
+  },
 };
 
 /**
@@ -2477,6 +2517,7 @@ const MIGRATION_OVERRIDES: Record<string, unknown> = {
  */
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
   for (const key of Object.keys(source)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue; // never follow object machinery (SEC-071)
     if (
       typeof target[key] === 'object' && target[key] !== null && !Array.isArray(target[key]) &&
       typeof source[key] === 'object' && source[key] !== null && !Array.isArray(source[key])

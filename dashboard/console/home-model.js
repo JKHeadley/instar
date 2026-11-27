@@ -9,8 +9,9 @@
 // are browser-native ESM with no DOM access so the unit tests exercise the
 // shipped code directly.
 
-import { verifiedDisplayName } from './display-identity.js';
+import { verifiedDisplayName, plainReferenceText } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export const FRESH_MS = 5 * 60 * 1000;
 export const MAX_ROWS = 3;
@@ -51,13 +52,26 @@ export function machineLabel(f, names = {}) {
   return verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || verifiedDisplayName(names[f.machineId], f.machineId) || 'a machine with no name on file';
 }
 
-/** "Couldn't reach Mac Mini, so its items may be missing." Empty when every machine answered. */
-export function unreachedLine(failed, names, what) {
+/**
+ * "Couldn't reach Mac Mini for 3 hours; reconnecting by itself. Its items may be missing."
+ * Each machine says how long and whether anything is fixing it (CMT-1541), read from the /pool
+ * rows `machineNames` carries. Empty when every machine answered.
+ */
+export function unreachedLine(failed, names, what, now = Date.now()) {
   if (!failed || failed.length === 0) return '';
-  const labels = [...new Set(failed.map((f) => machineLabel(f, names)))];
-  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-  return `Couldn't reach ${list}, so ${failed.length === 1 ? 'its' : 'their'} ${what} may be missing.`;
+  const seen = new Set();
+  const sentences = [];
+  for (const f of failed) {
+    const label = machineLabel(f, names);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    sentences.push(unreachableSentence(label, poolMachine({ machines: (names && names[POOL_ROWS]) || [] }, f && f.machineId), f, now));
+  }
+  return `${sentences.join(' ')} ${seen.size === 1 ? 'Its' : 'Their'} ${what} may be missing.`;
 }
+
+/** The /pool rows behind a name map, kept off its enumerable keys so it still reads as id → name. */
+export const POOL_ROWS = '__poolRows';
 
 /** Name map from a /pool answer: machineId → nickname. */
 export function machineNames(poolRes) {
@@ -67,6 +81,7 @@ export function machineNames(poolRes) {
     const name = verifiedDisplayName(m.nickname, m.machineId) || verifiedDisplayName(m.name, m.machineId);
     if (name) out[m.machineId] = name;
   }
+  Object.defineProperty(out, POOL_ROWS, { value: ms, enumerable: false });
   return out;
 }
 
@@ -126,6 +141,11 @@ export function needsOperator(item) {
 export function needAction(item) {
   if (item && item.topicId != null && Number.isFinite(Number(item.topicId))) return { kind: 'topic', topicId: Number(item.topicId) };
   const cat = String((item && item.category) || '');
+  // The Mac permission problem is explained, with its one fix, on that machine's own Machines card;
+  // the remote desktop page only asks for the PIN and says nothing about the permission.
+  if (/^desktop$/i.test(cat) && item.machineId && /^desktop-helper-permission/.test(String(item.sourceContext || item.conditionKey || item.id || ''))) {
+    return { kind: 'href', href: `#/capacity/machines?m=${encodeURIComponent(item.machineId)}&fix=desktop-permission` };
+  }
   if (/^desktop$/i.test(cat)) {
     const q = item.machineId ? `?machineId=${encodeURIComponent(item.machineId)}` : '';
     return { kind: 'href', href: `/dashboard/desktop.html${q}` };
@@ -191,12 +211,12 @@ export function buildNeeds(res, now = Date.now(), names = {}) {
   const tail = '';
   const partialLine = unreachedLine(failed, names, 'items');
   if (current.length === 0) {
-    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
+    return { state: partial ? 'partial' : 'ok', count: 0, coverage: partial ? 'partial view' : null, unanswered: failed.length, value: partial ? 'Nothing here' : 'Nothing needs you', line: [partialLine, tail].filter(Boolean).join(' ') || 'The queue is clear.', rows, all };
   }
   return {
     // warning-path: row
     state: partial ? 'partial' : 'attn', count: current.length,
-    coverage: partial ? 'partial view' : null,
+    coverage: partial ? 'partial view' : null, unanswered: failed.length,
     value: plural(current.length, 'thing', 'things'), valueTone: 'attn',
     // Machine coverage belongs under agent status, away from the request.
     line: '', note: null, statusNote: partialLine || null, rows, all,
@@ -284,7 +304,7 @@ export function needsPromiseReview(c, now = Date.now()) {
   return !!c && c.status === 'violated' && !isMissed(c, now);
 }
 
-export function buildPromised(res, now = Date.now(), expectedPeers = null) {
+export function buildPromised(res, now = Date.now(), expectedPeers = null, { topicNames = {}, machineNames: mNames = {} } = {}) {
   if (!res.ok) return unknownCard(`Couldn't read commitments: ${res.reason}.`);
   if (res.data && res.data.enabled === false) return unknownCard('Commitment tracking is switched off on this agent.');
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments
@@ -306,9 +326,9 @@ export function buildPromised(res, now = Date.now(), expectedPeers = null) {
     key: `${c.originMachineId || 'own'}:${c.id}`,
     detail: c.userRequest && c.agentResponse ? `You asked: ${c.userRequest}` : '',
     expandable: true,
-    main: (tone === 'attn'
+    main: plainReferenceText((tone === 'attn'
       ? verifiedDisplayName(c.userRequest, c.id) || verifiedDisplayName(c.agentResponse, c.id)
-      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable',
+      : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable', { topicNames, machineNames: mNames }),
     sub: [c.blockedOn && c.blockedOn !== 'none' ? `waiting on ${String(c.blockedOn).replace('user-', 'your ')}` : '',
       isMissed(c, now) ? `due ${new Date(Date.parse(c.hardDeadlineAt)).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '',
       c.viewSource === 'replica' && c.originMachineId ? `from another machine, ${Number.isFinite(Number(c.stalenessMs)) && c.stalenessMs !== null ? `as of ${ago(now - c.stalenessMs, now)}` : 'age unknown'}` : ''].filter(Boolean).join(' · '),
@@ -478,6 +498,66 @@ export function pullRequestRefs(row) {
   return [...out];
 }
 
+/** The words a row is known by, for spotting the same thing listed twice. */
+export function repeatKey(row) {
+  return String((row && row.main) || '').toLowerCase().replace(/\s+/g, ' ').replace(/[.\s…]+$/, '').trim();
+}
+
+/**
+ * One row per real thing: rows with the same words collapse into the first one, which says how
+ * many there are. `counted` is the set of rows that count toward "N things need you"; the
+ * result's `counted` is how many collapsed rows hold at least one of them.
+ */
+export function collapseRepeats(list, counted = null) {
+  const groups = new Map();
+  for (const r of list || []) {
+    if (!r) continue;
+    const k = repeatKey(r) || `\u0000${r.key || groups.size}`;
+    const g = groups.get(k);
+    if (g) { g.members.push(r); continue; }
+    groups.set(k, { first: r, members: [r] });
+  }
+  const rows = [];
+  let n = 0;
+  for (const g of groups.values()) {
+    if (!counted || g.members.some((m) => counted.has(m))) n++;
+    if (g.members.length === 1) { rows.push(g.first); continue; }
+    // The merged row keeps the place of the first one, and the words and link of the first one
+    // that links somewhere, so collapsing never loses a way to act.
+    const lead = g.members.find((m) => m.action && m.action.kind && m.action.kind !== 'attention') || g.first;
+    rows.push({ ...lead, repeats: g.members.length, keys: g.members.map((m) => m.key),
+      // The count, unless the words already start with it ("2 fixes need your look").
+      sub: [String(lead.main || '').trim().startsWith(`${g.members.length} `) ? null : `${g.members.length} of these`, lead.sub].filter(Boolean).join(' · '),
+      // warning-path: row
+      tone: g.members.some((m) => m.tone === 'bad') ? 'bad' : lead.tone });
+  }
+  return { rows, counted: n };
+}
+
+/** Why "What needs you" may be incomplete, in plain words for the card's corner. */
+export function partialWords({ unanswered = 0, unreadQueue = false, surfacedFailed = false, promisesUnread = false } = {}) {
+  const parts = [];
+  if (unanswered > 0) parts.push(unanswered === 1 ? 'a machine did not answer' : `${unanswered} machines did not answer`);
+  if (unreadQueue) parts.push('the notice list did not answer');
+  if (surfacedFailed && !parts.length) parts.push('some pages did not answer');
+  if (promisesUnread) parts.push('promises not checked');
+  const text = parts.length ? parts.join(', ') : 'some checks did not answer';
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+/**
+ * The rows the "What needs you" card lists. The headline already names the first item and links
+ * to it, so the card does not list that item again; when the headline is not a link (no action),
+ * the card keeps it so its detail can still be opened.
+ */
+export function needsCardList(model, leadIsLink) {
+  const all = (model && model.all) || [];
+  const rows = (model && model.rows) || [];
+  if (!model || !model.combined || !(model.count > 0) || !leadIsLink || !all.length) return { rows, all };
+  const rest = all.slice(1);
+  return { rows: rest.slice(0, MAX_ROWS), all: rest };
+}
+
 /**
  * The one count. Surfaced rows (needs-model.js) merge in even while the queue or the promises
  * are unread, so a slow read cannot hide a known need. A row naming the same thing as a queue
@@ -507,9 +587,16 @@ export function combineNeeds(needs, promised, surfaced) {
   const waiting = waitingAll.filter((r) => !pullRequestRefs(r).some((ref) => queueRefs.has(ref)))
     .map((r) => ({ ...r, sub: ['a promise', r.sub].filter(Boolean).join(' · ') }));
   const promisesKnown = !promisesRead || Number.isFinite(promised.count);
-  const count = needs.count + rows.length + waiting.length;
+  // A queue notice that a sign-in repair is waiting says the same thing as the Accounts rows that
+  // name each sign-in: the named rows carry the action, so the general notice is not listed again.
+  const accountRows = rows.some((r) => String(r.key || '').startsWith('need:account:'));
+  const queueShown = accountRows ? queue.filter((r) => !/^subscription-relogin\|/i.test(String(r.key || ''))) : queue;
   // Urgent queue items lead (the headline names the first row), then what is surfaced, then promises, then the rest.
-  const all = [...queue.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queue.filter((r) => r.tone !== 'bad')];
+  // A queue row is counted unless it is stale; surfaced rows and waiting promises are always counted.
+  const counted = new Set([...rows, ...waiting, ...queueShown.filter((r) => !r.stale)]);
+  const merged = collapseRepeats([...queueShown.filter((r) => r.tone === 'bad'), ...rows, ...waiting, ...queueShown.filter((r) => r.tone !== 'bad')], counted);
+  const all = merged.rows;
+  const count = merged.counted;
   const notes = !promisesKnown ? "Couldn't check for promises waiting on you."
     : promisesRead && promised.state === 'stale' ? 'Promise information is from the last successful check.' : '';
   const queueLine = needs.line === 'The queue is clear.' || needs.line === 'Waiting on you.' ? null : needs.line;
@@ -520,6 +607,8 @@ export function combineNeeds(needs, promised, surfaced) {
     note: count ? null : needs.note,
     statusNote: count ? [needs.statusNote, notes, queueLine].filter(Boolean).join(' ') : needs.statusNote,
     coverage: partial ? 'partial view' : needs.coverage,
+    // What "partial" means here, in plain words, for the card's corner tag.
+    coverageWords: partial ? partialWords({ unanswered: needs.unanswered, unreadQueue: needs.unreadQueue, surfacedFailed: failed, promisesUnread: !promisesKnown || (promisesRead && (promised.state === 'stale' || !!promised.coverage)) }) : null,
     // warning-path: row
     state: count > 0 ? (partial ? 'partial' : 'attn') : (partial ? 'partial' : 'ok'),
     value: count > 0 ? plural(count, 'thing', 'things') : (partial ? 'Nothing here' : 'Nothing needs you'),
@@ -549,7 +638,7 @@ export function headline(allCards) {
   const otherAttn = attention.length;
   const loading = list.filter((c) => c.state === 'loading').length;
   // Never announce a count, or "all quiet", before both counting cards answered.
-  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && cards.needs.surfacedCount > 0)) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
+  if (loading === list.length || (cards.needs && cards.needs.state === 'loading' && !Number.isFinite(cards.needs.count)) || (cards.promised && cards.promised.state === 'loading' && !(cards.needs && (cards.needs.authoritative || cards.needs.surfacedCount > 0))) || (cards.needs && cards.needs.surfacedPending && !(cards.needs.count > 0))) return { text: 'Checking in…', tone: 'muted' };
   // A known action survives incomplete coverage. Coverage belongs under agent
   // status, not in the sentence describing the action.
   const count = cards.needs && cards.needs.combined ? known(cards.needs) : known(cards.needs) + known(cards.promised);
@@ -565,7 +654,7 @@ export function headline(allCards) {
     const title = withContext ? withContext[1] : action;
     const context = withContext ? `${withContext[2].replace(/,\s*/g, ' · ')}.` : null;
     // warning-path: inline
-    return { text: title || 'Open what needs your attention', tone: 'attn',
+    return { text: title || (cards.needs?.authoritative ? `${plural(count, 'request')} ${count === 1 ? 'needs' : 'need'} your attention` : 'Open what needs your attention'), tone: 'attn',
       sub: [context, first?.action ? 'Tap to review and respond.' : null,
         count > 1 ? `${count - 1 === 1 ? 'One more thing needs' : `${count - 1} more things need`} you.` : null].filter(Boolean).join(' '),
       action: first?.action || null };

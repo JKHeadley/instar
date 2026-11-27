@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-20T19:09:58.129Z",
+  "slug": "commitments-same-origin-deliver",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CommitmentsSync.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -25,6 +25,8 @@
  * recognised shape after Codex upgrades.
  */
 
+import crypto from 'node:crypto';
+
 export interface ParsedCodexSession {
   /** Codex thread/session UUID (from session_meta.payload.id). */
   sessionId: string;
@@ -128,4 +130,86 @@ export function parseCodexRollout(content: string): ParsedCodexSession | null {
     firstTs,
     tokenCountEvents,
   };
+}
+
+/**
+ * One rollout entry, classified for the context-budget transcript detection
+ * channel (context-budget-layered-summaries §9.1, §9.6 Codex column).
+ *
+ * Measured 2026-11-10 on this machine's rollouts (Codex CLI 0.156.1, 0.166.0,
+ * 0.167.0; 173 `compacted` entries across a 606-file sample): Codex WRITES an
+ * engine-native compaction entry, `{"type":"compacted","payload":{...}}`, with
+ * a `window_id` on every one, an empty `message` (no summary) and the
+ * replacement history. A forked (subagent) rollout copies its parent's
+ * `compacted` entries into an inherited prefix BEFORE its own first
+ * `token_count` (11 of 11 pre-usage entries were in forked rollouts; 0 in root
+ * rollouts), so a compaction counts only after the rollout's first usage
+ * reading — the caller tracks that per transcript.
+ */
+export type CodexRolloutEntry =
+  | { kind: 'meta'; version: string | null; forkedFrom: string | null }
+  | { kind: 'usage'; contextUsed: number | null; contextWindow: number | null }
+  | { kind: 'compacted'; windowId: string; at: number | null; tokensBefore: number | null }
+  /**
+   * A real user prompt (a `response_item` message with role `user` whose text is
+   * not one of Codex's own tagged context blocks such as `<environment_context>`).
+   * `topic`: it names a topic (`[telegram:N]`), so the per-prompt hook would
+   * carry the next-prompt seed (§9.6) on it. `textSha256` identifies the prompt.
+   */
+  | { kind: 'prompt'; at: number | null; topic: boolean; textSha256: string }
+  /**
+   * The next-prompt seed as the MODEL received it: a developer message with a
+   * line that is the seed header (the per-prompt hook's output, recorded by
+   * Codex as model input). `nonce`: the delivered packet's 8-hex nonce, or null.
+   */
+  | { kind: 'seed'; at: number | null; nonce: string | null };
+
+/** The first line of a delivered Codex next-prompt seed (written by the server, read back from the rollout). */
+export const CODEX_SEED_HEADER = '=== CONTEXT RECOVERY (post-compaction, delivered with this prompt) ===';
+
+/** Cheap pre-filter: only these lines are parsed by the channel. */
+export function codexRolloutLineMayMatter(line: string): boolean {
+  return line.includes('"compacted"') || line.includes('"token_count"') || line.includes('"session_meta"') || line.includes('"role":"user"')
+    || line.includes('CONTEXT RECOVERY (post-compaction, delivered with this prompt)');
+}
+
+export function classifyCodexRolloutEntry(d: Record<string, unknown>): CodexRolloutEntry | null {
+  const type = d['type'];
+  const payload = (d['payload'] && typeof d['payload'] === 'object' ? d['payload'] : {}) as Record<string, unknown>;
+  if (type === 'session_meta') {
+    return { kind: 'meta', version: typeof payload['cli_version'] === 'string' ? payload['cli_version'] as string : null, forkedFrom: typeof payload['forked_from_id'] === 'string' ? payload['forked_from_id'] as string : null };
+  }
+  if (type === 'event_msg' && payload['type'] === 'token_count') {
+    const info = (payload['info'] && typeof payload['info'] === 'object' ? payload['info'] : {}) as Record<string, unknown>;
+    const last = (info['last_token_usage'] && typeof info['last_token_usage'] === 'object' ? info['last_token_usage'] : {}) as Record<string, unknown>;
+    const used = Number(last['input_tokens']);
+    const win = Number(info['model_context_window']);
+    return { kind: 'usage', contextUsed: Number.isFinite(used) && used > 0 ? used : null, contextWindow: Number.isFinite(win) && win > 0 ? win : null };
+  }
+  if (type === 'response_item' && payload['type'] === 'message' && (payload['role'] === 'user' || payload['role'] === 'developer')) {
+    const content = Array.isArray(payload['content']) ? payload['content'] as Array<Record<string, unknown>> : [];
+    const first = content.find((c) => typeof c?.['text'] === 'string');
+    const raw = typeof first?.['text'] === 'string' ? first['text'] as string : '';
+    const ts = typeof d['timestamp'] === 'string' ? Date.parse(d['timestamp'] as string) : NaN;
+    const at = Number.isFinite(ts) ? ts : null;
+    if (payload['role'] === 'developer') {
+      // The hook prints the time block first, so the header is a line of the message, not necessarily its start.
+      if (!raw.split('\n').some((ln) => ln.trim() === CODEX_SEED_HEADER)) return null;
+      const m = /\n--- STANDING PACKET ([0-9a-f]{8}) ---\n/.exec(raw);
+      return { kind: 'seed', at, nonce: m ? m[1] : null };
+    }
+    const text = raw.trimStart();
+    if (text === '' || text.startsWith('<')) return null; // Codex's own context blocks travel as user-role messages
+    return { kind: 'prompt', at, topic: /\[telegram:\d+/.test(text), textSha256: crypto.createHash('sha256').update(raw).digest('hex') };
+  }
+  if (type === 'compacted') {
+    const windowId = payload['window_id'];
+    if (typeof windowId !== 'string' || windowId.length === 0 || windowId.length > 200) return null;
+    const ts = typeof d['timestamp'] === 'string' ? Date.parse(d['timestamp'] as string) : NaN;
+    const rec = (payload['latest_token_usage_record'] && typeof payload['latest_token_usage_record'] === 'object' ? payload['latest_token_usage_record'] : null) as Record<string, unknown> | null;
+    const usage = (rec?.['usage'] && typeof rec['usage'] === 'object' ? rec['usage'] : null) as Record<string, unknown> | null;
+    const before = Number(usage?.['input_tokens']);
+    return { kind: 'compacted', windowId, at: Number.isFinite(ts) ? ts : null, tokensBefore: Number.isFinite(before) && before > 0 ? before : null };
+  }
+  return null;
 }

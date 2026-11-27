@@ -410,6 +410,17 @@ export function applyOutcome(
     next.state = 'gave-up';
     return { ep: next, terminal: true, feedsBreaker: false };
   }
+  // MAIN-RED (2026-11-08): the refusal is about main, not this PR. Counting it
+  // let a short red spell on main use up a PR's whole ladder: #2879 was green
+  // on one head from 11-06 23:08Z, gave up on 'refused:main-red' at 11-07 01:30Z,
+  // and waited about two days, since only a new head could re-arm it. Wait one base backoff and retry; never advance attempts,
+  // never feed the breaker.
+  if (outcome === 'refused:main-red') {
+    next.lastOutcome = outcome;
+    next.lastAttemptAt = nowMs;
+    next.nextEligibleAt = nowMs + cfg.backoffBaseMs;
+    return { ep: next, terminal: false, feedsBreaker: false };
+  }
   // A real refusal/error: advance the ladder.
   next.attempts = ep.attempts + 1;
   next.lastAttemptAt = nowMs;

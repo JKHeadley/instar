@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-front-doors-make-card",
+  "sessionId": "9ff214e1-274c-4f8e-a770-7b331015831c",
+  "timestamp": "2026-11-16T18:30:25.975Z",
+  "artifactPath": "upgrades/side-effects/work-front-doors-make-card.md",
+  "artifactSha256": "c2c4f63effc24a5a8bc33f6a32493e209f2c59f8ac66a355184adaf0fb10a8b3",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/conversations.js",
+    "dashboard/console/make-card.js",
+    "tests/unit/console-make-card.test.ts",
+    "upgrades/next/work-front-doors-make-card.md",
+    "upgrades/side-effects/work-front-doors-make-card.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

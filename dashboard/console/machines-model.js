@@ -6,6 +6,7 @@
 
 import { machineState, ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
 
 const STATE_ORDER = { bad: 0, attn: 1, stale: 2, unknown: 3, ok: 4 };
 
@@ -155,7 +156,8 @@ export function poolUsageOf(res) {
   if (!Array.isArray(d.machines)) {
     if (typeof d.headline !== 'string') return { ok: false, reason: 'the resource answer had no headline' };
     const rows = [d.server ? rowOf(d.server) : null, ...(Array.isArray(d.sessions) ? d.sessions.slice(0, 5).map(rowOf) : [])].filter(Boolean);
-    return { ok: true, pooled: false, summary: d.headline, busiest: null, byName: d.machine ? { [d.machine]: { line: d.headline, state: d.enabled ? 'answering' : 'off', rows } } : {} };
+    const self = { line: d.headline, state: d.enabled ? 'answering' : 'off', rows };
+    return { ok: true, pooled: false, summary: d.headline, busiest: null, self, byName: d.machine ? { [d.machine]: self } : {} };
   }
   const byName = {};
   for (const m of d.machines) {
@@ -181,6 +183,7 @@ export function machineCareLine(r) {
   return [`Restart care is watching only, nothing restarts.`, uptime, last, held.length ? `Holding now: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
 }
 
+const UNREACHED = new Set(['offline', 'peer-unreachable', 'timeout', 'unreachable']);
 const CARE_FAILED = {
   offline: 'offline',
   'not-enabled': 'not turned on there',
@@ -209,7 +212,7 @@ function careShort(d) {
  * Returns { header, byMachine: {machineId: line}, selfLine, missing: [line] } or null.
  * An older server ignores scope and answers its own status only: treated as self.
  */
-export function machineCarePool(r) {
+export function machineCarePool(r, { pool = null, now = Date.now() } = {}) {
   if (!r || !r.ok || !r.data) return null;
   const d = r.data;
   const header = 'Restart care is watching only, nothing restarts.';
@@ -225,6 +228,42 @@ export function machineCarePool(r) {
     if (m.self) selfLine = line;
   }
   const failed = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed : [];
-  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${CARE_FAILED[f.reason] || 'no answer'}`);
+  // A machine that is out of reach says for how long and whether anything is fixing it (CMT-1541).
+  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${UNREACHED.has(f.reason) ? unreachableClause(poolMachine(pool, f.machineId), f, now) : CARE_FAILED[f.reason] || 'no answer'}`);
   return { header, byMachine, selfLine, missing };
+}
+
+/**
+ * The Mac permission problem behind "Remote Desktop needs its Mac permission again", one card per
+ * machine, in plain words with the one fix (docs: the desktop-helper-permission notice). Reads the
+ * open notices from /attention; `names` maps machine id → the name the Machines page shows.
+ * Returns null when the notices could not be read (never "nothing wrong" from a failed read).
+ */
+export function desktopPermissionFixes(attentionRes, names = {}) {
+  if (!attentionRes || !attentionRes.ok) return null;
+  const items = Array.isArray(attentionRes.data && attentionRes.data.items) ? attentionRes.data.items : null;
+  if (!items) return null;
+  const out = [];
+  const seen = new Set();
+  for (const i of items) {
+    if (!i || i.status !== 'OPEN' || !/^desktop-helper-permission/.test(String(i.sourceContext || i.conditionKey || i.id || ''))) continue;
+    if (!i.machineId || seen.has(i.machineId)) continue;
+    seen.add(i.machineId);
+    const text = String(i.description || i.summary || '');
+    const fromTitle = /^(.+?):\s*Remote Desktop/i.exec(String(i.title || ''));
+    const machine = verifiedDisplayName(names[i.machineId], i.machineId) || verifiedDisplayName(i.machineNickname, i.machineId) || (fromTitle && verifiedDisplayName(fromTitle[1].trim())) || 'This Mac';
+    const helperPath = (/add\s+(\/\S*instar-desktop-host)\b/.exec(text) || [])[1] || null;
+    out.push({
+      key: `desktop-permission:${i.machineId}`,
+      machineId: i.machineId,
+      machine,
+      title: `Remote Desktop on ${machine} needs its Mac permission again`,
+      why: `macOS took back the permission Instar uses to see and control ${machine}’s screen. It will not come back by itself.`,
+      action: `Someone at ${machine}: open System Settings → Privacy & Security → Screen Recording and turn instar-desktop-host off and on. Do the same under Accessibility.`,
+      ifMissing: helperPath ? `If instar-desktop-host is not in the list, add it with the + button: ${helperPath}` : 'If instar-desktop-host is not in the list, add it with the + button.',
+      locked: /locked screen/i.test(text) ? `${machine}’s screen is also locked: unlock it at the Mac first.` : null,
+      retryHref: `/dashboard/desktop.html?machineId=${encodeURIComponent(i.machineId)}`,
+    });
+  }
+  return out;
 }

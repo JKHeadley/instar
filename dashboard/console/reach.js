@@ -17,8 +17,8 @@ function personCard(p) {
 
 export async function renderReach(main, ctx) {
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title', text: 'Reading who can reach this agent…' })));
-  const res = await ctx.get('/team/people?scope=pool');
-  const page = buildReachPage(res);
+  const [res, pool] = await Promise.all([ctx.get('/team/people?scope=pool'), ctx.get('/pool')]);
+  const page = buildReachPage(res, { pool });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: EYEBROW, headline: 'I can’t tell right now.' }), cantTell(page.reason)); return; }
   setKids(main, el('div', { class: 'reach-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.head.text, sub: page.head.sub, tone: page.head.tone }),

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "document-computer-link-owner-refusal",
+  "sessionId": "98b2a4db-db72-4f38-bc3a-4087791d97bf",
+  "timestamp": "2026-11-24T04:03:07.395Z",
+  "artifactPath": "upgrades/side-effects/document-computer-link-owner-refusal.md",
+  "artifactSha256": "9f98b9242f9a398ea657878ebadd6cf2a3b71408e43ead7f8ab1b0f8eb2cae72",
+  "coveredFiles": [
+    "dashboard/docs/doc-page-model.js",
+    "docs/specs/document-computer-link-owner-refusal.eli16.md",
+    "src/server/documentLinkRoutes.ts",
+    "tests/integration/documents-link.test.ts",
+    "tests/unit/documents-link-words.test.ts",
+    "upgrades/next/document-computer-link-owner-refusal.md",
+    "upgrades/side-effects/document-computer-link-owner-refusal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Existing refusal and navigation copy only. No new permission, storage mutation, or public link format.",
+  "eli16Path": "docs/specs/document-computer-link-owner-refusal.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/document-computer-link-owner-refusal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

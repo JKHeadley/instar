@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "wedge-canary-left-stopped",
+  "sessionId": "00592fa8-2a09-4506-8c5e-e34a3414a34c",
+  "timestamp": "2026-11-16T18:09:01.067Z",
+  "artifactPath": "upgrades/side-effects/wedge-canary-left-stopped.md",
+  "artifactSha256": "f438015d122bfad21b750c7189da77637f178b279f181e6923db88ffe6fec80b",
+  "specPath": "docs/specs/machine-self-maintenance.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-16T18-08-10-445Z-wedge-canary-left-stopped-3c7ee0a9.json",
+    "docs/specs/reports/machine-self-maintenance-convergence.md",
+    "src/commands/server.ts",
+    "src/monitoring/machineMaintenance/WedgeMonitor.ts",
+    "src/monitoring/machineMaintenance/readings.ts",
+    "src/monitoring/machineMaintenance/wedgeEvidence.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/machine-wedge-mac-canary.test.ts",
+    "upgrades/next/wedge-canary-left-stopped.md",
+    "upgrades/side-effects/wedge-canary-left-stopped.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds the authority to end a process (the feature's own stuck canary), so Tier 2 under the approved machine-self-maintenance spec",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "c6ba465a6e04",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Registered as machine-wedge-canary-reap, an Eternal Sentinel: it ends only the canary its own sample launched, one per sample, each pid once, at the sampler's single-flight 2-minute floor; a cleared wedge or a new boot stops it."
+    }
+  }
+}

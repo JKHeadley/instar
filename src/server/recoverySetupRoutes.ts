@@ -1,5 +1,6 @@
 /** Operator entry point. Machine keys and admission authority are never supplied by HTTP callers. */
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
+import { isStorageFailure, storageErrorResponse } from '../core/storageMachineName.js';
 import { recoveryCanonical, validRecoveryId, validateRecoveryPrincipals, type RecoveryPrincipal } from '../recovery/RecoveryProtocol.js';
 
 export interface RecoveryGrantRequest {
@@ -28,18 +29,24 @@ export function recoveryOwnerLink(relayOrigin:string,request:RecoveryGrantReques
 }
 export function createRecoverySetupRoutes(deps:RecoverySetupDeps):Router {
   const router=Router();
+  const failure=(error:unknown,res:Response,includeDetail=false)=>{
+    const reason=error instanceof Error&&/^recovery-[a-z-]+$/.test(error.message)?error.message:'recovery-setup-unavailable';
+    const body={error:reason,...(includeDetail?{detail:'Recovery setup is incomplete. This machine continues serving ordinary work.'}:{})};
+    // Keep private commissioning exceptions private; only the failing machine's name is added.
+    res.status(409).json(isStorageFailure(error)?storageErrorResponse({...body,detail:body.detail??'Recovery setup could not finish because storage is unavailable.'},res.app?.locals?.stateDir):body);
+  };
   router.use('/recovery/setup',(req,res,next)=>{
     if(!deps.verifyOperator(req)){res.status(403).json({error:'operator-session-required',detail:'Unlock the dashboard to set up recovery.'});return;}next();
   });
   router.get('/recovery/setup',(_req,res)=>res.json({setup:deps.status(),phonePath:'/dashboard/recovery.html'}));
   const action=(name:'prepare'|'install')=>async(_req:Request,res:import('express').Response)=>{
-    try {res.json(await deps[name]());}catch(error){const reason=error instanceof Error&&/^recovery-[a-z-]+$/.test(error.message)?error.message:'recovery-setup-unavailable';res.status(409).json({error:reason,detail:'Recovery setup is incomplete. This machine continues serving ordinary work.'});}
+    try {res.json(await deps[name]());}catch(error){failure(error,res,true);}
   };
   router.post('/recovery/setup/prepare',action('prepare'));
   router.post('/recovery/setup/install',action('install'));
   router.post('/recovery/setup/owner-link',async(_req,res)=>{
     try {const origin=deps.relayOrigin();if(!origin)throw new Error('recovery-authority-setup-required');const request=await deps.grantRequest();if(request.agentId!==deps.agentId)throw new Error('recovery-setup-agent-mismatch');res.json({url:recoveryOwnerLink(origin,request),state:'owner-approval-required',scope:'fixed-recovery-verbs-only'});}
-    catch(error){res.status(409).json({error:error instanceof Error&&/^recovery-[a-z-]+$/.test(error.message)?error.message:'recovery-setup-unavailable'});}
+    catch(error){failure(error,res);}
   });
   return router;
 }

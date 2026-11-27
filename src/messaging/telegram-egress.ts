@@ -70,6 +70,7 @@ import {
 export const TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const telegramDispatcher = new Agent({ connect: { autoSelectFamily: true, autoSelectFamilyAttemptTimeout: TELEGRAM_CONNECT_ATTEMPT_TIMEOUT_MS } as Agent.Options['connect'] });
 
+
 /**
  * Any Bot API URL — `api.telegram.org/bot<token>/<method>`. Case-INSENSITIVE: a hostname is
  * case-insensitive by RFC and Telegram accepts method names in any case. A matcher stricter than the
@@ -534,7 +535,7 @@ export async function telegramFetch(
       networkInit = { ...networkInit, signal: networkInit.signal
         ? AbortSignal.any([networkInit.signal, deadline]) : deadline };
     }
-    try { return await fetch(networkUrl, { ...networkInit, dispatcher: telegramDispatcher } as RequestInit); }
+    try { return await fetchWithTelegramDispatcher(networkUrl, networkInit); }
     catch (error) {
       // A caller can reuse an earlier known-unsent error as abort(reason).
       // Once fetch was invoked even that same object is no longer proof.
@@ -555,4 +556,39 @@ export async function telegramFetch(
     if (recorded) return recorded;
   }
   return network(href, outgoing);
+}
+
+/**
+ * The dispatcher above comes from the `undici` package, while `fetch` is Node's own, which bundles its
+ * own undici. When the two disagree on the dispatch handler interface (Node 26 with undici 6.x), Node's
+ * fetch rejects the dispatcher with `UND_ERR_INVALID_ARG` ("invalid onError method") inside
+ * `Agent.dispatch`, before any connection is opened, and every Bot API call through this file fails.
+ * That rejection is answered by sending the same request once with Node's default dispatcher and
+ * remembering, for this process, that the package dispatcher can't be used. Only the longer
+ * per-address connect wait is lost; the request itself is unchanged. A body that is a stream is never
+ * resent (it may be consumed), so that one case keeps the original error.
+ */
+let telegramDispatcherRejected = false;
+
+/** The undici error code a foreign dispatcher draws from Node's fetch before any network I/O. */
+function isDispatcherRejection(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+  return error instanceof TypeError && !!cause && cause.code === 'UND_ERR_INVALID_ARG';
+}
+
+/** For tests: whether this process has stopped passing the package dispatcher. */
+export function telegramDispatcherWasRejected(): boolean { return telegramDispatcherRejected; }
+/** For tests: forget a recorded rejection. */
+export function resetTelegramDispatcherRejection(): void { telegramDispatcherRejected = false; }
+
+async function fetchWithTelegramDispatcher(url: string, init: RequestInit): Promise<Response> {
+  if (telegramDispatcherRejected) return fetch(url, init);
+  try {
+    return await fetch(url, { ...init, dispatcher: telegramDispatcher } as RequestInit);
+  } catch (error) {
+    if (!isDispatcherRejection(error) || init.body instanceof ReadableStream) throw error;
+    telegramDispatcherRejected = true;
+    console.warn('[telegram-egress] Node\'s fetch refused the undici package dispatcher (UND_ERR_INVALID_ARG); using Node\'s default dispatcher for Bot API calls in this process.');
+    return fetch(url, init);
+  }
 }

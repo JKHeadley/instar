@@ -61,14 +61,15 @@ describe('transcribeAudioFile', () => {
   it('no provider is TranscriptionUnavailableError; an API error or a missing text is a plain error', async () => {
     const f = path.join(tmp(), 'v.ogg');
     fs.writeFileSync(f, 'x');
-    await expect(transcribeAudioFile(f, { env: {} })).rejects.toBeInstanceOf(TranscriptionUnavailableError);
+    await expect(transcribeAudioFile(f, { env: {}, storedKey: () => null, localEnabled: false })).rejects.toBeInstanceOf(TranscriptionUnavailableError);
     const bad = (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch;
-    const err = await transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: bad }).catch((e) => e);
+    const err = await transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: bad, localEnabled: false }).catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(TranscriptionUnavailableError);
     expect(String(err.message)).toContain('500');
+    expect(err.reason).toBe('Groq answered with an error (500)');
     const empty = (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
-    await expect(transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: empty })).rejects.toThrow('no text');
+    await expect(transcribeAudioFile(f, { env: { GROQ_API_KEY: 'k' }, fetchImpl: empty, localEnabled: false })).rejects.toThrow(/answered with an error|no text/);
   });
 });
 
@@ -143,7 +144,7 @@ describe('sessionLinesFor — voice notes', () => {
   it('no provider: an honest unavailable note with the path, nothing reported', async () => {
     const { svc, reports } = service(async () => { throw new TranscriptionUnavailableError(); });
     const ev = await voiceMessage(svc);
-    expect((await linesFor(svc, ev))[0]).toMatch(/^\[voice:.+\] \(transcription unavailable: no transcription provider is configured; the audio file is at that path\)$/);
+    expect((await linesFor(svc, ev))[0]).toMatch(/^\[voice:.+\] \(transcription unavailable: no transcription service is set up; the audio file is at that path\)$/);
     expect(reports).toEqual([]);
   });
 

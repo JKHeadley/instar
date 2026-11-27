@@ -16,7 +16,7 @@ unrestrictedTools: true
 mcpAccess: none
 runner: script
 script: feedback-factory-process.mjs
-scriptTimeoutMinutes: 4
+scriptTimeoutMinutes: 5
 supervision: tier0
 scriptSupervision: triage
 triageEvidence: structured-only
@@ -32,6 +32,7 @@ triageBareOk:
 triageBareSkipped:
   - feature-dark
   - status-unreadable-fleet
+  - status-busy
 ---
 Run one feedback-factory operating-drain tick. This is a near-silent operated cadence — do NOT message the user. The server owns every transition; this job only triggers one bounded run and records an honest outcome.
 
@@ -55,6 +56,8 @@ BASE = 'http://localhost:' + str(os.environ.get('INSTAR_PORT') or CONFIG.get('po
 DEVELOPMENT_AGENT = CONFIG.get('developmentAgent') is True
 # A run is capped at 115 s of wall clock; poll past that so a slow run's outcome is still read here.
 POLL_SECONDS = float(os.environ.get('FEEDBACK_DRAIN_POLL_SECONDS') or 180)
+# Tests shrink the status-read waits below; a run leaves this at 1.
+WAIT_SCALE = float(os.environ.get('FEEDBACK_DRAIN_STATUS_WAIT_SCALE') or 1)
 
 def fail(reason):
     path = os.environ.get('INSTAR_JOB_FAILURE_FILE')
@@ -68,24 +71,33 @@ def done(message):
     print('FEEDBACK_DRAIN_RESULT ' + message)
     sys.exit(0)
 
-def call(method, route, extra=None):
+def skip(reason):
+    path = os.environ.get('INSTAR_JOB_SKIP_FILE')
+    if path:
+        with open(path, 'w') as fh:
+            fh.write(reason[:480])
+    print('FEEDBACK_DRAIN_RESULT skipped: ' + reason)
+    sys.exit(0)
+
+def call(method, route, extra=None, timeout=10):
     headers = {'Authorization': 'Bearer ' + TOKEN, 'X-Instar-AgentId': AGENT_ID}
     headers.update(extra or {})
     request = urllib.request.Request(BASE + route, method=method, headers=headers, data=b'' if method == 'POST' else None)
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             code, raw = response.status, response.read()
     except urllib.error.HTTPError as error:
         code, raw = error.code, error.read()
     except Exception as error:
-        return None, 'unreachable (' + type(error).__name__ + ')'
+        timed_out = isinstance(error, TimeoutError) or isinstance(getattr(error, 'reason', None), TimeoutError) or 'timed out' in str(error)
+        return None, 'unreachable (' + ('timeout' if timed_out else type(error).__name__) + ')'
     try:
         return code, json.loads(raw.decode('utf8') or 'null')
     except Exception:
         return code, None
 
-def drain_status():
-    code, body = call('GET', '/feedback-factory/drain/status')
+def drain_status(timeout=10):
+    code, body = call('GET', '/feedback-factory/drain/status', timeout=timeout)
     posture = body.get('posture') if isinstance(body, dict) else None
     state = posture.get('state') if isinstance(posture, dict) else None
     return code, body, posture, state
@@ -100,8 +112,17 @@ def work_counts(body):
     work = ((body or {}).get('drain') or {}).get('work') or {}
     return count(work.get('claimed')) + count(work.get('completed'))
 
-# 1. Posture: the JSON posture decides, whatever the HTTP code.
-code, before, posture, state = drain_status()
+# 1. Posture: the JSON posture decides, whatever the HTTP code. A busy server can take
+# longer than 10 s to answer its own status read, so a read that gets no answer is retried
+# with longer waits; still no answer means the server was too busy, recorded as a skipped
+# run (no drain run started), not a failed one.
+for wait, pause in ((10, 5), (20, 10), (30, 0)):
+    code, before, posture, state = drain_status(wait * WAIT_SCALE)
+    if code is not None or before != 'unreachable (timeout)':
+        break
+    time.sleep(pause * WAIT_SCALE)
+else:
+    skip('server too busy to answer its drain status (3 tries, ' + str(before) + ')')
 if state == 'dark':
     done('dark')
 if state == 'unavailable':
@@ -150,7 +171,7 @@ FEEDBACK_DRAIN_TICK
 ```
 
 The script prints one `FEEDBACK_DRAIN_RESULT` line. It records a failed run itself by writing the reason to `$INSTAR_JOB_FAILURE_FILE` (the scheduler reads that file when the run ends); saying "failed" in your output does NOT record a failure. Outcomes it enforces:
-- Posture `dark` → silent exit. `unavailable` → failed run. Unreadable status → failed run on a development agent, silent exit on the fleet.
+- Posture `dark` → silent exit. `unavailable` → failed run. A status read that times out three times (10, 20, 30 s) → skipped run, written to `$INSTAR_JOB_SKIP_FILE` (the server was too busy; no drain run started). An answer without a readable posture → failed run on a development agent, silent exit on the fleet.
 - A refused tick (any HTTP code other than 202, e.g. `current registered readiness agent required` after the authority was demoted) → failed run, naming why the authority is paused when the status says.
 - A tick proxied to the owner machine → success here; its outcome lives in the owner's run history and status.
 - Terminal `succeeded` / `no-op` → success (a `succeeded` run may carry an informational reason such as `readiness-time-exhausted-rest-due`). Still in flight after 180 s → failed run. Terminal `degraded`, `failed` or `abandoned` → failed run carrying the drain's reason.

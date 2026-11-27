@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-07T18:50:42.806Z",
+  "slug": "executor-hold-yields-to-verifier-hold",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts",
+      "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+      "src/localVerify/LocalVerifyService.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

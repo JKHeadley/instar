@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "disk-steward-busy-not-failure",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T20:53:18.183Z",
+  "artifactPath": "upgrades/side-effects/disk-steward-busy-not-failure.md",
+  "artifactSha256": "ced36f00459e8579be9e6ca4f868cbb616c94c4690548b4d89d42833763855ac",
+  "coveredFiles": [
+    "docs/specs/disk-steward-busy-not-failure.eli16.md",
+    "src/monitoring/DiskSteward.ts",
+    "tests/unit/diskSteward-breaker-busy.test.ts",
+    "upgrades/next/disk-steward-busy-not-failure.md",
+    "upgrades/side-effects/disk-steward-busy-not-failure.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One counting rule in the cleanup breaker; a revert fully undoes it",
+  "eli16Path": "docs/specs/disk-steward-busy-not-failure.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/disk-steward-busy-not-failure.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
