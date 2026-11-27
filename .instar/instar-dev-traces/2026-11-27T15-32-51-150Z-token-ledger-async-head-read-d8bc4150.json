@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "token-ledger-async-head-read",
+  "sessionId": "181652f6-4f88-440e-9a91-37b0c12c33ce",
+  "timestamp": "2026-11-27T15:32:51.150Z",
+  "artifactPath": "upgrades/side-effects/token-ledger-async-head-read.md",
+  "artifactSha256": "4523f0133851d7a889be11e4fea01da142c25b4879c2b257170212dd772c909d",
+  "coveredFiles": [
+    "docs/specs/token-ledger-async-head-read.eli16.md",
+    "src/monitoring/TokenLedger.ts",
+    "tests/unit/token-ledger.test.ts",
+    "upgrades/next/token-ledger-async-head-read.md",
+    "upgrades/side-effects/token-ledger-async-head-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small local reliability repair to a scheduled fingerprint read. The shared checkpoint and public routes keep their existing contracts.",
+  "eli16Path": "docs/specs/token-ledger-async-head-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/token-ledger-async-head-read.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The scheduled legacy Claude scan called the synchronous fingerprint helper before checking each offset. The Laptop live CPU profile directly sampled that path for 1.518 seconds."
+  }
+}

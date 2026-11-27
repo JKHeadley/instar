@@ -6,7 +6,7 @@
  * inode rotation, dedupe).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -377,6 +377,78 @@ describe('TokenLedger.scanAll bounded behavior', () => {
     expect(r.inserted).toBe(8);
     expect(yieldCount).toBeGreaterThan(0);
     ledger.close();
+  });
+
+  it.each(['unchanged', 'close', 'replace'])('keeps the heartbeat while the scheduled head read waits (%s)', async scenario => {
+    const closeWhileWaiting = scenario === 'close';
+    const replaceWhileWaiting = scenario === 'replace';
+    const projDir = path.join(projectsDir, '-async-head');
+    fs.mkdirSync(projDir, { recursive: true });
+    const file = path.join(projDir, 'session.jsonl');
+    const first = assistantLine({ requestId: 'stable-a', sessionId: 'session' }) + '\n';
+    fs.writeFileSync(file, first);
+    const ledger = new TokenLedger({ dbPath: ':memory:', claudeProjectsDir: projectsDir, attributionBackfill: 'off' });
+    expect(ledger.scanAll().inserted).toBe(1);
+    if (replaceWhileWaiting) {
+      fs.appendFileSync(file, assistantLine({ requestId: 'old-append', sessionId: 'session' }) + '\n');
+    }
+    let enterHeadRead!: () => void;
+    let releaseHeadRead!: () => void;
+    const entered = new Promise<void>(resolve => { enterHeadRead = resolve; });
+    const release = new Promise<void>(resolve => { releaseHeadRead = resolve; });
+    const originalOpen = fs.promises.open.bind(fs.promises);
+    const asyncOpen = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === file) {
+        const originalRead = handle.read.bind(handle);
+        vi.spyOn(handle, 'read').mockImplementationOnce((async (...readArgs) => {
+          enterHeadRead();
+          await release;
+          return originalRead(...readArgs);
+        }) as typeof handle.read);
+      }
+      return handle;
+    });
+    const readSync = vi.spyOn(fs, 'readSync');
+    let settled = false;
+    const scan = ledger.scanAllAsync().finally(() => { settled = true; });
+    try {
+      expect(await Promise.race([entered.then(() => true), scan.then(() => false)])).toBe(true);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(readSync).not.toHaveBeenCalled();
+      const concurrent = ledger.scanAllAsync();
+      expect(ledger.scanAll()).toEqual({ filesScanned: 0, inserted: 0 });
+      if (closeWhileWaiting) ledger.close();
+      if (replaceWhileWaiting) {
+        fs.renameSync(file, file + '.rotated');
+        fs.writeFileSync(file, assistantLine({ requestId: 'new-path', sessionId: 'session' }) + '\n');
+      }
+      releaseHeadRead();
+      const result = { filesScanned: closeWhileWaiting ? 0 : 1, inserted: replaceWhileWaiting ? 1 : 0 };
+      expect(await scan).toEqual(result);
+      expect(await concurrent).toEqual(result);
+      expect(asyncOpen).toHaveBeenCalledTimes(1);
+      if (!replaceWhileWaiting) expect(readSync).not.toHaveBeenCalled();
+    } finally {
+      releaseHeadRead();
+      await scan.catch(() => undefined);
+      readSync.mockRestore();
+      asyncOpen.mockRestore();
+      if (closeWhileWaiting) ledger.close();
+    }
+    if (replaceWhileWaiting) {
+      expect((await ledger.scanAllAsync()).inserted).toBe(1);
+      expect((await ledger.scanAllAsync()).inserted).toBe(0);
+      ledger.close();
+    } else if (!closeWhileWaiting) {
+      const replacement = assistantLine({ requestId: 'stable-b', sessionId: 'session' }) + '\n';
+      expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(first));
+      fs.writeFileSync(file, replacement);
+      expect((await ledger.scanAllAsync()).inserted).toBe(1);
+      expect((await ledger.scanAllAsync()).inserted).toBe(0);
+      ledger.close();
+    }
   });
 
   it('scanAllAsync bails cleanly if close() races a yielded scan (no use-after-close)', async () => {

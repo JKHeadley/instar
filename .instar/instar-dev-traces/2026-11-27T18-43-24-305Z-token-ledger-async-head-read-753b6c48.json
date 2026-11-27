@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "token-ledger-async-head-read",
+  "sessionId": "181652f6-4f88-440e-9a91-37b0c12c33ce",
+  "timestamp": "2026-11-27T18:43:24.305Z",
+  "artifactPath": "upgrades/side-effects/token-ledger-async-head-read.md",
+  "artifactSha256": "f01598b7557256a6323a87eaf465dea1b1dee08c9e6b0808c1a7f54c8a09ebf0",
+  "coveredFiles": [
+    "docs/specs/token-ledger-async-head-read.eli16.md",
+    "src/monitoring/TokenLedger.ts",
+    "upgrades/side-effects/token-ledger-async-head-read.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Relocates a byte-identical helper to keep the existing fallback markers away from unrelated catches. No executable statements, callers, checkpoint rules, or baseline value changed.",
+  "eli16Path": "docs/specs/token-ledger-async-head-read.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/token-ledger-async-head-read.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}
