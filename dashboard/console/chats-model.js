@@ -1,3 +1,5 @@
+import { chatMessageActions, exactId, ownReaction, replyPreview } from './chat-message-actions.js';
+
 // Conversations page view models (docs/specs/dashboard-conversations-browser-device.md §4.8, §4.10).
 // Pure: no DOM, no fetch, no timers. chats.js renders these; tests/unit/console-chats-model.test.ts
 // checks them.
@@ -47,6 +49,7 @@ export function listRows(body) {
       lastActivity: typeof r.lastActivity === 'string' ? r.lastActivity : null,
       preview: typeof r.lastPreview === 'string' ? r.lastPreview : '',
       machine: typeof r.machine === 'string' ? r.machine : null,
+      ...(kind === 'app' && r.messageActions ? { messageActions: chatMessageActions(r.messageActions) } : {}),
       // The unread hook (§4.10): built separately; a badge only when the server sends a count.
       unread: Number.isInteger(r.unreadCount) && r.unreadCount >= 0 ? r.unreadCount : null,
       // Chief of Staff tree (chief-of-staff-topic.md §1.4): the parent conversation key, owner-only; absent ⇒ Unfiled.
@@ -183,6 +186,10 @@ export function bubble(kind, row, opts = {}) {
   return {
     id,
     pos: positionOf(kind, row),
+    ...(kind === 'app' && exactId(row.eventId) ? { eventId: row.eventId } : {}),
+    ...(kind === 'app' && row.reply ? { reply: replyPreview(row.reply) } : {}),
+    ...(kind === 'app' && row.reaction ? { reaction: ownReaction(row.reaction.own) } : {}),
+    ...(kind === 'app' && row.forwarded === true ? { forwarded: true } : {}),
     messageId: row.messageId != null ? String(row.messageId) : null,
     side, who,
     text: typeof row.text === 'string' ? row.text : '',
@@ -273,7 +280,11 @@ export function rebuildQuickPage(previous, data) {
 /** Merges new bubbles over the ones shown (a newer reading of the same id wins). */
 export function mergeBubbles(prev, next) {
   const m = new Map(prev.map((b) => [b.id, b]));
-  for (const b of next) m.set(b.id, b);
+  for (const b of next) {
+    const prior = m.get(b.id);
+    m.set(b.id, prior?.reaction && (b.reaction?.revision ?? -1) < prior.reaction.revision
+      ? { ...b, reaction: prior.reaction } : b);
+  }
   return sortBubbles([...m.values()]);
 }
 

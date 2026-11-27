@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "web-chat-followups",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T01:52:13.172Z",
+  "artifactPath": "upgrades/side-effects/web-chat-followups.md",
+  "artifactSha256": "d13acf15007b5d709c6853167218e8c26d254cc739884e02b677a150ed6141c6",
+  "coveredFiles": [
+    "dashboard/console/chat-message-actions.js",
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/next/chat-scroll-follow.md",
+    "upgrades/next/web-message-actions.md",
+    "upgrades/side-effects/chat-scroll-follow.eli16.md",
+    "upgrades/side-effects/chat-scroll-follow.md",
+    "upgrades/side-effects/web-chat-followups.eli16.md",
+    "upgrades/side-effects/web-chat-followups.md",
+    "upgrades/side-effects/web-message-actions.eli16.md",
+    "upgrades/side-effects/web-message-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible console merge preserves existing signed authority and scroll behavior.",
+  "eli16Path": "upgrades/side-effects/web-chat-followups.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-chat-followups.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

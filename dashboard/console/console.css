@@ -1395,6 +1395,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-sub { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
 .chat-menu { display: flex; gap: var(--s-2); flex: none; }
 .chat-messages { flex: 1; min-height: 280px; height: 58dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-2); }
+.chat-new-messages { align-self: center; min-height: 44px; flex-shrink: 0; border-radius: 999px; }
+.chat-new-messages[hidden] { display: none; }
 .chat-bubble { max-width: min(78%, 640px); padding: 8px 12px; border-radius: 16px; background: var(--surface-raised); border: 1px solid var(--hairline); align-self: flex-start; overflow-wrap: anywhere; }
 .chat-bubble.chat-right { align-self: flex-end; background: var(--accent-wash); border-color: rgb(75 168 170 / 0.35); }
 .chat-who { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 2px; }
@@ -1827,6 +1829,14 @@ a.needs-row:hover { background: var(--surface-raised); }
 .accounts-page .acct-list .list-rows { gap: 0; }
 .accounts-page .acct-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .acct-kind { display: block; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+.chat-reply-preview {
+  margin: 0 0 .4rem;
+  padding: .35rem .65rem;
+  border-inline-start: 2px solid currentColor;
+  overflow-wrap: anywhere;
+}
+.chat-reply-preview button { margin-inline-start: .5rem; min-height: 44px; }
 
 .needs-row .needs-instructions { margin: var(--s-2) 0 0; padding-inline-start: 1.5em; }
 .needs-row .needs-consent { align-self: flex-start; min-height: 44px; margin-top: var(--s-2); }
