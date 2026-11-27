@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "development-feedback-authority-limits",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T07:45:23.534Z",
+  "artifactPath": "upgrades/side-effects/development-feedback-authority-limits.md",
+  "artifactSha256": "5cb42d76a6f5e2ddfd51c6b9a4d6e6ef3689f72e29eb2452291fc45f97b0e1e7",
+  "coveredFiles": [
+    "dashboard/console/development-model.js",
+    "dashboard/console/development.js",
+    "docs/specs/development-feedback-authority-limits.eli16.md",
+    "src/feedback-factory/drain/FeedbackDrainService.ts",
+    "src/server/routes.ts",
+    "tests/e2e/feedback-factory-drain-lifecycle.test.ts",
+    "tests/integration/feedback-readiness-authority-routes.test.ts",
+    "tests/integration/feedback-triage-routes.test.ts",
+    "tests/unit/console-development.test.ts",
+    "upgrades/next/development-feedback-authority-limits.md",
+    "upgrades/side-effects/development-feedback-authority-limits.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only serving metadata and reversible wording, with no change to approval or reservations.",
+  "eli16Path": "docs/specs/development-feedback-authority-limits.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/development-feedback-authority-limits.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

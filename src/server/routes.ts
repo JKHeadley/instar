@@ -370,6 +370,7 @@ import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
 import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
+import { QUOTA_PAUSE_PERCENT } from '../feedback-factory/triage/FeedbackTriageService.js';
 import { brakePlainWords, buildReadinessAuthorityProposal, READINESS_ARBITER_ROUTING, READINESS_AUTHORITY_ID, type ReadinessEnvelope } from '../feedback-factory/drain/readinessAuthorityProposal.js';
 import { buildTriageAuthorityProposal, TRIAGE_ARBITER_ROUTING, TRIAGE_AUTHORITY_ID, type TriageEnvelope } from '../feedback-factory/triage/triageAuthorityProposal.js';
 import { FEEDBACK_TRIAGE_DECISION_POINT, FEEDBACK_TRIAGE_PROMPT_ID, FEEDBACK_TRIAGE_SCHEMA_ID } from '../feedback-factory/triage/FeedbackTriageArbiter.js';
@@ -907,7 +908,7 @@ import { parseKnownRows, filterKnownRows } from './changeFeed.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
-import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { CLAUDE_CODE_FRAMEWORK, CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
@@ -18520,6 +18521,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       throw new Error(`authority proposal changed since it was shown: it now names ${rebuilt}, not ${body.shownModelFamily}; review it again`);
     }
   };
+  // The current feedback route preview resolves CLI doors only. Codex and Claude
+  // are the subscription doors here. Other doors have no verified billing mode.
+  const feedbackAuthorityRoute = (framework: string | undefined, serving: boolean) =>
+    serving && (framework === CODEX_CLI_FRAMEWORK || framework === CLAUDE_CODE_FRAMEWORK)
+      ? 'subscription' as const : 'unknown' as const;
   const readinessAuthorityProposal = (envelope?: Partial<ReadinessEnvelope>) => {
     const drain = ctx.feedbackDrain!;
     const intel = ctx.intelligence;
@@ -18529,7 +18535,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : null;
     const current = drain.store.getAuthority(READINESS_AUTHORITY_ID);
     const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
-    return buildReadinessAuthorityProposal({
+    const built = buildReadinessAuthorityProposal({
       agentId: ctx.config.projectName ?? '',
       binding,
       route,
@@ -18541,6 +18547,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
       envelope,
     });
+    const billingRoute = feedbackAuthorityRoute(route?.framework, drain.service.isServingOwner());
+    const callsPerDay = billingRoute === 'subscription' && built.proposal
+      ? drain.service.estimatedReadinessCallsPerDay(built.proposal.maxDailySpendUsd) : undefined;
+    return { ...built, limits: { route: billingRoute, callsPerDay, callsEstimated: callsPerDay !== undefined } };
   };
 
   router.get('/feedback-factory/readiness-authorities/proposal', async (req, res) => {
@@ -18780,12 +18790,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const current = drain.store.getAuthority(TRIAGE_AUTHORITY_ID);
     const binding = drain.authorityBinding?.() ?? { ownerMachineId: null, ownerEpoch: 0 };
     const posture = current ? drain.store.authorityPosture(current.authorityId, current.generation) : null;
-    return buildTriageAuthorityProposal({
+    const triage = ctx.feedbackTriage!;
+    const callsPerDay = triage.service.maxCallsPerDay();
+    const built = buildTriageAuthorityProposal({
       agentId: ctx.config.projectName ?? '', binding, route, codexBinaryPath: codexBinaryForProposal(), piModel: ctx.config.sessions?.frameworkDefaultModels?.['pi-cli'], current,
       currentMode: posture?.mode, currentModeReason: posture?.reason,
       currentOwnerValid: Boolean(current && binding.ownerMachineId && drain.store.authorityOwnerCurrent(current, binding.ownerMachineId, binding.ownerEpoch)),
-      envelope, maxCallsPerDay: ctx.feedbackTriage!.service.summary().maxCallsPerDay as number,
+      envelope, maxCallsPerDay: callsPerDay,
     });
+    const billingRoute = feedbackAuthorityRoute(route?.framework, triage.isCanonicalOwner());
+    return {
+      ...built,
+      limits: { route: billingRoute, callsPerDay,
+        accountPausePercent: billingRoute === 'subscription' ? QUOTA_PAUSE_PERCENT : undefined },
+    };
   };
 
   router.get('/feedback-factory/triage/authority/proposal', async (req, res) => {

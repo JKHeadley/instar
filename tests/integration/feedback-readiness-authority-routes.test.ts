@@ -99,6 +99,7 @@ describe('readiness authority dashboard path — proposal → PIN approve → ti
     expect(proposal.status).toBe(200);
     expect(proposal.body).toMatchObject({
       status: 'none', approveAction: 'create', blockers: [],
+      limits: { route: 'subscription', callsPerDay: 500, callsEstimated: true },
       proposal: {
         authorityId: 'feedback-readiness-default', agentId: 'studio', ownerMachineId: 'studio', ownerEpoch: 1,
         provider: 'codex-cli', modelFamily: resolveCliModelFlag('capable'),

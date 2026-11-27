@@ -375,6 +375,30 @@ export function fixesAwaitingReview(queue) {
   return items.filter((i) => (i.executionState === 'pr-open' || i.executionState === 'spec-pr-open') && typeof i.prLink === 'string' && /^https:\/\/github\.com\//.test(i.prLink));
 }
 
+/** Only the serving route may identify the billing mode and its enforced limits. */
+function authorityLimits(p) {
+  const limits = p?.limits;
+  if (limits?.route === 'metered-api') return { metered: true, text: '' };
+  if (limits?.route !== 'subscription') return { metered: false, text: 'Serving route could not be confirmed.' };
+  const { callsPerDay: calls, accountPausePercent: pause, allowancePercent: share } = limits;
+  const daily = Number.isSafeInteger(calls) && calls >= 0
+    ? `Up to ${limits.callsEstimated ? 'about ' : ''}${plural(calls, 'call')} per day.`
+    : 'Daily call limit could not be confirmed.';
+  const allowance = Number.isFinite(share) && share >= 0 && share <= 100
+    ? `Up to ${share}% of the account’s allowance.`
+    : 'The model shares the account’s allowance with other work.';
+  const threshold = Number.isFinite(pause) && pause > 0 && pause <= 100
+    ? `It pauses when the account reaches ${pause}% of its allowance.` : '';
+  return { metered: false, text: `Uses a subscription. ${daily} ${threshold || allowance}` };
+}
+
+function authorityPauseReason(p) {
+  const reason = p?.pausedBecause;
+  return !authorityLimits(p).metered && reason?.toLowerCase() === 'the daily spend cap was reached.'
+    ? 'The daily processing limit was reached.'
+    : reason || 'a safety brake fired.';
+}
+
 /** Where an authority stands, in plain words (an authority "generation" is said as such, never "version"). */
 export function authorityStatusLine(kind, p) {
   const what = kind === 'readiness' ? 'sorting model' : 'triage model';
@@ -382,18 +406,23 @@ export function authorityStatusLine(kind, p) {
   const cur = (p && p.current) || null;
   if (s === 'none') return `No ${what} is approved yet; ${kind === 'readiness' ? 'incoming reports are not being sorted' : 'work items are not being decided'} until you approve one.`;
   if (s === 'revoked') return `The ${what} was revoked (generation ${cur ? cur.generation : '?'}); nothing is being ${kind === 'readiness' ? 'sorted' : 'decided'}.`;
-  if (s === 'proposal-only') return `The ${what} is paused: ${(p && p.pausedBecause) || 'a safety brake fired.'} Only your approval restarts it.`;
+  if (s === 'proposal-only') return `The ${what} is paused: ${authorityPauseReason(p)} Only your approval restarts it.`;
   if (cur && cur.matchesProposal === false) return `The ${what} is approved (generation ${cur.generation}) but out of date for this machine; approve to update it.`;
-  return `The ${what} is approved (generation ${cur ? cur.generation : '?'}): up to ${cur ? cur.maxBatch : '?'} ${kind === 'readiness' ? 'reports' : 'items'} a batch${kind === 'readiness' && cur ? `, $${cur.maxDailySpendUsd} a day` : ''}.`;
+  return `The ${what} is approved (generation ${cur ? cur.generation : '?'}): up to ${cur ? cur.maxBatch : '?'} ${kind === 'readiness' ? 'reports' : 'items'} a batch${authorityLimits(p).metered && cur ? `, $${cur.maxDailySpendUsd} a day` : ''}.`;
 }
 
 /** The card for one authority approval: everything the page shows above the Approve button. */
 export function authorityCard(kind, p) {
   const title = kind === 'readiness' ? 'Approve which model sorts incoming reports' : 'Approve which model decides which reports get fixed';
   const env = (p && p.proposal) || (kind === 'readiness' ? { maxBatch: 50, maxTokens: 1200, maxDailySpendUsd: 5 } : { maxBatch: 50, maxTokens: 1200, maxDailySpendUsd: 5 });
-  const why = p && p.status === 'proposal-only' ? `It was paused: ${p.pausedBecause || 'a safety brake fired.'}` : p && p.status === 'revoked' ? 'You turned it off earlier.' : '';
+  const limits = authorityLimits(p);
+  const summary = limits.metered ? p.summary || ''
+    : kind === 'readiness'
+      ? `Let the sorting model decide which feedback reports become work items, up to ${env.maxBatch} reports per batch. ${limits.text} It retries unusable answers and pauses at the daily limit, if a different model answers, or after three runs with no usable answer.`
+      : `Let the triage model decide which items to work on, hold or ignore, up to ${env.maxBatch} items per batch. ${limits.text} Ignore decisions stay in practice mode until enabled separately. Unusable answers leave items untouched. A different model answering pauses triage for your approval.`;
+  const why = p && p.status === 'proposal-only' ? `It was paused: ${authorityPauseReason(p)}` : p && p.status === 'revoked' ? 'You turned it off earlier.' : '';
   return {
-    kind, title, summary: (p && p.summary) || '', why, blockers: (p && p.blockers) || [], statusLine: authorityStatusLine(kind, p),
+    kind, title, summary, metered: limits.metered, why, blockers: (p && p.blockers) || [], statusLine: authorityStatusLine(kind, p),
     envelope: { maxBatch: env.maxBatch, maxTokens: env.maxTokens, maxDailySpendUsd: env.maxDailySpendUsd },
     boundTo: p && p.proposal ? `agent ${p.proposal.agentId} · machine ${p.proposal.ownerMachineId} (epoch ${p.proposal.ownerEpoch}) · model ${p.proposal.modelFamily} via ${p.proposal.provider}` : '',
     approveAction: (p && p.approveAction) || null,
@@ -443,7 +472,7 @@ const PROMOTION_NOTES = {
 export function operatorTodos({ readiness, triageProposal, execute, queue, consumerPromotion } = {}) {
   const todos = [];
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
-  if (pending(r)) todos.push({ kind: 'readiness-authority', action: r.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: `Approve which model sorts incoming reports.${r.status === 'proposal-only' ? ` It was paused: ${r.pausedBecause || 'a safety brake fired.'}` : r.status === 'revoked' ? ' You turned it off earlier.' : ''}`, button: r.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: r });
+  if (pending(r)) todos.push({ kind: 'readiness-authority', action: r.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: `Approve which model sorts incoming reports.${r.status === 'proposal-only' ? ` It was paused: ${authorityPauseReason(r)}` : r.status === 'revoked' ? ' You turned it off earlier.' : ''}`, button: r.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: r });
   const t = sourceState(triageProposal) === 'ok' ? triageProposal.data : null;
   if (pending(t)) todos.push({ kind: 'triage-authority', action: t.approveAction, sentence: 'Feedback is waiting on one approval from you.', detail: 'Approve which model decides which reports get fixed.', button: t.approveAction === 'restore' ? 'Approve (restore)' : 'Approve', proposal: t });
   const promotion = pendingConsumerPromotion(consumerPromotion);
@@ -471,7 +500,7 @@ export function progressLine(drain, readiness, now = Date.now()) {
   const d = drain.data || {};
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
   // warning-path: askLink
-  if (r && r.status === 'proposal-only') return { tone: 'attn', text: `Sorting is paused: ${r.pausedBecause || 'a safety brake fired.'} Only your approval restarts it.`, n: 'paused' };
+  if (r && r.status === 'proposal-only') return { tone: 'attn', text: `Sorting is paused: ${authorityPauseReason(r)} Only your approval restarts it.`, n: 'paused' };
   const p = d.readinessProgress;
   if (!p) return { tone: 'unknown', text: 'No sorting model is approved yet, so there is no progress to measure.', n: 'not set up' };
   // warning-path: askLink
