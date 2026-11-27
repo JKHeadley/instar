@@ -11,6 +11,7 @@
 // become a viewable blob:; everything else is a download.
 
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
+import { conversationSession } from './conversation-session.js';
 import { beginConsoleOutbox, getConsoleOutbox, tryLiveStop, isOutboxStorageFailure, captureSignInFence, signInFenceMatches } from './outbox-runner.js';
 import {
   createBrowserDevice, consolePathAllowed, secureContextOk, newRequestId, sha256Hex, DELETED_REASON, refusalWords, readRecord, readAllRecords, deleteRecord,
@@ -723,14 +724,33 @@ class ChatsPage {
     v.nodes = new Map();
     v.pinBar = this.pinBar(v);
     v.appStrip = el('div', { class: 'chat-appstrip', hidden: true });
+    v.liveSession = el('p', { class: 'card-line chat-muted chat-live-session', role: 'status', hidden: true });
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.appStrip, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.appStrip, v.liveSession, v.pinBar, v.paused, v.sourceNotice, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v, { recoverUnfinished: true });
     this.loadAppStrip(v);
+    this.loadLiveSession(v);
     this.announce();
+  }
+
+  /** "Watch the session" (Justin, topic 140618, 2026-11-14): the session answering this conversation, like the
+   *  app's Open session. Telegram and app conversations; Slack sessions are matched differently and come later. */
+  loadLiveSession(v) {
+    if (v.ref.kind !== 'telegram' && v.ref.kind !== 'app') return;
+    const key = refString(v.ref);
+    fetch('/sessions?scope=pool', { headers: { Authorization: `Bearer ${bearer()}` }, cache: 'no-store', signal: v.abort.signal })
+      .then(async (r) => ({ ok: r.ok, data: r.ok ? await r.json() : null }))
+      .catch(() => ({ ok: false }))
+      .then((res) => {
+        if (!v.live || this.view !== v) return;
+        const m = conversationSession(res, key);
+        if (!m) return;
+        setKids(v.liveSession, m.href ? el('a', { class: 'btn-quiet btn-inline', href: m.href, text: m.label }) : null, el('span', { text: m.href ? ` ${m.words}` : m.words }));
+        v.liveSession.hidden = false;
+      });
   }
 
   /** The project's app strip (headline + Open), drawn when the projects read lands; never awaited. */

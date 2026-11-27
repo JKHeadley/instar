@@ -15,6 +15,7 @@ import { ChromeCdpReloginBrowser, resolveChromeExecutable } from '../../src/core
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createMockSessionManager } from '../helpers/setup.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { useHermeticMediaDisk } from '../helpers/hermeticMediaDisk.js';
 
 const TOKEN = 'outbox-browser-fixture-token';
 const PIN = '482915';
@@ -75,6 +76,7 @@ async function boot() {
   const server = new AgentServer({ config, coordinator, meshSelfId: identity.machineId, sessionManager: manager, state, initiativeTracker: new InitiativeTracker(stateDir) });
   expect(server.appConversations).not.toBeNull();
   expect(server.appConversations!.deps.requests).toBe(server.mobilePairing!.chatRequests());
+  useHermeticMediaDisk(server); // the host's free space must not decide the result
   const listener = await new Promise<http.Server>((resolve, reject) => {
     const value = server.getApp().listen(0, '127.0.0.1', () => resolve(value));
     value.once('error', reject);

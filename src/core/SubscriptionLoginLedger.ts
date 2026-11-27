@@ -350,6 +350,12 @@ export class SubscriptionLoginLedger {
     supported: boolean;
     disabled: boolean;
     at: string;
+    /**
+     * The pool still marks this account `needs-reauth` (spec relogin-reopen-cancelled-incident).
+     * An admitted cell in that state whose latest incident was closed only by this bookkeeping
+     * (`cancelled`) has that incident reopened, so the repair it was waiting on can start again.
+     */
+    needsReauth?: boolean;
   }>, limit = 64): Set<string> {
     this.assertWritable();
     const boundedLimit = Math.max(0, Math.min(64, Math.floor(limit)));
@@ -383,11 +389,43 @@ export class SubscriptionLoginLedger {
         const cell = eligible.get(accountId)!;
         this.db.prepare(`INSERT OR IGNORE INTO admitted_cells(accountId,machineId,admittedAt) VALUES(?,?,?)`)
           .run(accountId, this.machineId, cell.at);
+        if (cell.needsReauth) this.reopenCancelledIncident(accountId, cell.at);
       }
       return admitted;
     })();
     this.noteWrite(cells[0]?.at ?? new Date().toISOString());
     return admitted;
+  }
+
+  /**
+   * Reopen the cell's latest incident when it was closed only by admission bookkeeping
+   * (`cancelled`) and the account is still signed out. The incident keeps its original cause,
+   * corroboration and provenance: the evidence that opened it was real, and nothing since has
+   * shown the account recovered. A `resolved` incident is never reopened (a recovery was observed),
+   * and an open one is left alone. Runs inside `reconcileAdmission`'s transaction.
+   */
+  private reopenCancelledIncident(accountId: string, at: string): void {
+    const open = this.db.prepare(
+      'SELECT id FROM episodes WHERE accountId=? AND machineId=? AND closedAt IS NULL',
+    ).get(accountId, this.machineId) as { id: number } | undefined;
+    if (open) return;
+    const last = this.db.prepare(
+      'SELECT id,outcome,closedAt,causeClass,corroboration FROM episodes WHERE accountId=? AND machineId=? ORDER BY id DESC LIMIT 1',
+    ).get(accountId, this.machineId) as { id: number; outcome: string | null; closedAt: string | null; causeClass: string; corroboration: string } | undefined;
+    // `cancelled` has exactly one writer: the eviction branch of reconcileAdmission above.
+    if (!last || last.outcome !== 'cancelled' || !last.closedAt) return;
+    // No recovery seen since the cancellation. The pool still marks the account needs-reauth (the
+    // caller checked), and every path that sees a recovery (a clean poll, a successful repair, a
+    // manual sign-in) sets it active again; on top of that, no clean or mixed read is in coverage.
+    const clean = Number((this.db.prepare(`SELECT COUNT(*) n FROM coverage WHERE accountId=? AND machineId=?
+      AND lastObservedAt>=? AND authResult IN ('clean','mixed')`).get(accountId, this.machineId, last.closedAt) as { n: number }).n);
+    if (clean > 0) return;
+    this.db.prepare(`UPDATE episodes SET closedAt=NULL, outcome=NULL WHERE id=?`).run(last.id);
+    // The event keeps the closure it undid, so the history stays complete.
+    this.db.prepare(`
+      INSERT INTO events(ts,kind,accountId,machineId,machineIdSource,episodeId,causeClass,corroboration,repairState)
+      VALUES(?,'relogin-reopened',?,?, 'stable',?,?,?,?)
+    `).run(at, accountId, this.machineId, last.id, last.causeClass, last.corroboration, `reopened-from-cancelled-at:${last.closedAt}`);
   }
 
   private recordStatusInTransaction(
