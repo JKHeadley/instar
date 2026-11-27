@@ -300,7 +300,17 @@ describe('accounts page in a DOM', () => {
     await tick(15);
     const doc = dom.window.document;
     expect(doc.querySelector('.page-title')!.textContent).toBe('Account usage'); // a missing cell is not "needs you"
+    expect(doc.querySelector('#sec-needs')).toBeNull();
+    expect(doc.querySelector('#sec-auto-repair')).toBeNull();
+    const repairLink = doc.querySelector<HTMLAnchorElement>('a[href="#/capacity/accounts?view=sign-in"]')!;
+    expect(repairLink.textContent).toBe('Sign-in repair');
+    repairLink.click();
+    await tick(15);
+    expect(doc.querySelector('.page-title')?.textContent).toBe('Sign-in repair');
+    expect(doc.querySelector('.acct-list')).toBeNull();
     expect(doc.querySelector('#sec-needs')?.textContent).toContain('Waiting for the agent to set up this account');
+    doc.querySelector<HTMLAnchorElement>('nav[aria-label="Accounts views"] a[href="#/capacity/accounts"]')!.click();
+    await tick(15);
     expect(doc.querySelector('.acct-list .mchip')).toBeNull();
     const lunaRow = [...doc.querySelectorAll('button.acct-row')].find(b => b.querySelector('.acct-name')?.textContent?.startsWith('Luna'));
     expect(lunaRow?.querySelector('[data-window="weekly"]')?.textContent).toContain('42%');
@@ -320,7 +330,7 @@ describe('accounts page in a DOM', () => {
   });
   it('signs in a cell: asks the PIN, sends it once, shows the sign-in page link, sends the code', async () => {
     const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
-    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts?s=needs' });
     const g = globalThis as Record<string, unknown>;
     Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
     dom.window.localStorage.setItem('instar_token', 't');
@@ -346,7 +356,7 @@ describe('accounts page in a DOM', () => {
     const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
     await tick(15);
     const doc = dom.window.document;
-    expect(doc.querySelector('.page-title')!.textContent).toBe('Account usage');
+    expect(doc.querySelector('.page-title')!.textContent).toBe('Sign-in repair');
     expect(doc.querySelector('#sec-notices')).toBeNull();
     expect(doc.querySelector('#sec-needs')?.textContent).toContain('This repair needs you to complete sign-in.');
 
@@ -375,7 +385,7 @@ describe('accounts page in a DOM', () => {
   const openSignIn = async (submitAnswer: Record<string, unknown>, completions: Array<Record<string, unknown>>) => {
     const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
     const gets: string[] = [];
-    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts?s=needs' });
     const g = globalThis as Record<string, unknown>;
     Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
     dom.window.localStorage.setItem('instar_token', 't');
