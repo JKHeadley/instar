@@ -32,6 +32,7 @@ import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
+import { useHermeticMediaDisk } from '../helpers/hermeticMediaDisk.js';
 
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -81,6 +82,7 @@ async function boot(developmentAgent: boolean, telegramFactory?: (stateDir: stri
   const conversationRegistry = slack ? new ConversationRegistry({ stateDir, machineId: () => 'e2e', isRecordingEnabled: () => true }) : undefined;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, ...(telegram ? { telegram } : {}), ...(slack ? { slack, conversationRegistry } : {}) });
   servers.push(server);
+  useHermeticMediaDisk(server); // the host's free space must not decide the result
   return { server, stateDir, dir, spawned, telegram, slack, conversationRegistry };
 }
 

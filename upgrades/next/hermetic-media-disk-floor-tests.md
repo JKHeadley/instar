@@ -1,0 +1,19 @@
+# Media tests no longer depend on the test machine's free disk
+
+<!-- internal-only -->
+
+## What Changed
+
+Four end-to-end test files (app-media-cross-machine-alive, local-voice-transcription-lifecycle, mobile-native-media-alive, web-chat-durable-outbox-alive) failed on any machine with under 5 percent free disk, because the test agent's media store applied the production disk floor to the host volume. They now give each test agent's media store a fixed reading with ample space through tests/helpers/hermeticMediaDisk.ts. The production floor is unchanged, and the existing test that simulates a full disk still proves the 507 refusal and its plain message.
+
+## What to Tell Your User
+
+None — internal change (no user-facing surface).
+
+## Summary of New Capabilities
+
+None — internal change (no user-facing surface).
+
+## Evidence
+
+On 2026-11-27 PR 3985, which cannot reach media code, failed those four files on the M5 with 41 GiB free against a 46.3 GiB floor (507 media-disk-floor plus downstream 403 and 400 sends); the previous M5 run, with more free space, passed them. Every media floor check reads AppMediaStore.diskSpace, which the helper now fixes for test agents.
