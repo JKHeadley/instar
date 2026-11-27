@@ -1,4 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { markRestartAdmissionTimeout, retireTimedOutRestartRequest } from '../../src/core/plannedRestartAdmissionTimeout.js';
+import { requestSelfHealRestart } from '../../src/feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
+import { publishRestartRequestFile } from '../../src/core/restartRequestFile.js';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
@@ -27,7 +31,7 @@ it('retains a planned request until its exact current lease window is admitted',
   const restart = vi.spyOn(supervisor, 'performGracefulRestart').mockResolvedValue(true);
   const check = () => (supervisor as unknown as { checkRestartRequest(): Promise<void> }).checkRestartRequest();
   const write = (requestedAt: string, requestedBy = 'fixture-supervisor') =>
-    writeFileSync(flag, JSON.stringify({ requestedAt, requestedBy, plannedRestart: true }));
+    publishRestartRequestFile(flag, JSON.stringify({ requestedAt, requestedBy, plannedRestart: true }));
   const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
   try {
     mkdirSync(join(stateDir, 'state'));
@@ -64,13 +68,24 @@ it('retains a planned request until its exact current lease window is admitted',
 
 
     const expired = new Date(Date.now() - 16 * 60_000).toISOString();
+    const clock = vi.spyOn(Date, 'now');
+    const now = Date.now();
     write(expired);
     await check();
+    expect(readPlannedRestartVerifyState(stateDir).pending).toBe(true);
+    clock.mockReturnValue(now + 15 * 60_000 + 1_000);
+    try {
+      await check();
+    } finally {
+      clock.mockRestore();
+    }
     expect(existsSync(flag)).toBe(true);
     expect(readPlannedRestartVerifyState(stateDir).pending).toBe(false);
     await checkWatcher();
     await checkWatcher();
     expect(report).toHaveBeenCalledOnce();
+    expect(existsSync(flag)).toBe(false);
+    expect(readdirSync(join(stateDir, 'state')).some(name => name.startsWith('restart-requested.json.admission-'))).toBe(false);
     expect(foregroundShutdown).not.toHaveBeenCalled();
     write(later);
     await checkWatcher();
@@ -80,5 +95,26 @@ it('retains a planned request until its exact current lease window is admitted',
   } finally {
     report.mockRestore();
     SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'planned-restart-lease-admission:cleanup' });
+  }
+});
+
+it('clears obsolete admission markers when self-heal replaces a retired request', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'restart-lease-retirement-'));
+  const state = join(stateDir, 'state');
+  const flag = join(state, 'restart-requested.json');
+  try {
+    mkdirSync(state);
+    const now = Date.now();
+    const stale = JSON.stringify({ requestedAt: new Date(now - 60 * 60_000).toISOString(), requestId: 'old' });
+    publishRestartRequestFile(flag, stale);
+    expect(requestSelfHealRestart(stateDir, 'repair')).toBe(false);
+    expect(markRestartAdmissionTimeout(flag, stale, now - 15 * 60_000)).toBe(false);
+    expect(markRestartAdmissionTimeout(flag, stale, now)).toBe(true);
+    expect(requestSelfHealRestart(stateDir, 'repair')).toBe(true);
+    retireTimedOutRestartRequest(flag, stale);
+    expect(JSON.parse(readFileSync(flag, 'utf8')).requestId).toBe('repair');
+    expect(readdirSync(state).some(name => name.startsWith('restart-requested.json.admission-'))).toBe(false);
+  } finally {
+    SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'restart-lease-retirement:cleanup' });
   }
 });

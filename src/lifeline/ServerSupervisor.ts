@@ -15,6 +15,7 @@
  * binary resolution failures, restart loops).
  */
 
+import { removeActiveRestartRequestFile } from '../core/restartRequestFile.js';
 import { describeRestartRequester, recordRestartRequest } from '../core/restartRequestAttribution.js';
 import { markRestartAdmissionTimeout, restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { BOOT_STATE_HEADER } from '../server/BootReadiness.js';
@@ -1720,7 +1721,18 @@ export class ServerSupervisor extends EventEmitter {
       }
       const raw = fs.readFileSync(flagPath, 'utf-8');
       if (restartAdmissionTimedOut(flagPath, raw)) return;
-      const data = JSON.parse(raw);
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        removeActiveRestartRequestFile(flagPath, raw);
+        return;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        removeActiveRestartRequestFile(flagPath, raw);
+        return;
+      }
+
 
       // Every planned restart writer uses this file, while only AutoUpdater
       // consults its in-process Local Verify hold. The verifier's durable
@@ -1738,7 +1750,7 @@ export class ServerSupervisor extends EventEmitter {
       // Check TTL
       if (data.expiresAt && new Date(data.expiresAt).getTime() < Date.now()
         && !recentlyRequestedPlannedRestart(this.stateDir, data)) {
-        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:827' }); } catch { /* ignore */ }
+        if (!removeActiveRestartRequestFile(flagPath, raw)) return;
         console.log('[Supervisor] Expired restart request — ignoring');
         return;
       }
@@ -1759,7 +1771,7 @@ export class ServerSupervisor extends EventEmitter {
           return; // The exact request was withdrawn or cannot still be read.
         }
         if (admission !== 'ready' && admission !== 'not-applicable') {
-          if (markRestartAdmissionTimeout(flagPath, raw, data.requestedAt)) {
+          if (markRestartAdmissionTimeout(flagPath, raw)) {
             console.warn('[Supervisor] Planned restart admission timed out; keeping the server running');
             return;
           }
@@ -1796,11 +1808,13 @@ export class ServerSupervisor extends EventEmitter {
 
       if (restartCount >= 2) {
         console.log(`[Supervisor] Restart loop detected — already restarted ${restartCount}x for v${data.targetVersion}. Skipping.`);
-        try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:850' }); } catch { /* ignore */ }
+        if (!removeActiveRestartRequestFile(flagPath, raw)) return;
         // Clean up the count file so it doesn't block future real updates
         try { SafeFsExecutor.safeUnlinkSync(restartCountFile, { operation: 'src/lifeline/ServerSupervisor.ts:853' }); } catch { /* ignore */ }
         return;
       }
+
+      if (!removeActiveRestartRequestFile(flagPath, raw)) return;
 
       // Increment restart count for this version (update restarts only)
       if (isUpdateRestart) try {
@@ -1824,9 +1838,6 @@ export class ServerSupervisor extends EventEmitter {
       // not the one that ended this process, so it must never show as previousRestart).
       recordRestartRequest(this.stateDir, data, 'supervisor');
 
-      // Clear the flag BEFORE restarting to prevent re-triggering
-      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:877' }); } catch { /* ignore */ }
-
       // Also clean up legacy flag if present
       this.clearLegacyRestartFlag();
 
@@ -1838,8 +1849,7 @@ export class ServerSupervisor extends EventEmitter {
         ? `update to v${data.targetVersion}`
         : `restart requested by ${requester.label}`);
     } catch {
-      // Malformed flag — clean up
-      try { SafeFsExecutor.safeUnlinkSync(flagPath, { operation: 'src/lifeline/ServerSupervisor.ts:890' }); } catch { /* ignore */ }
+      // The request may have been replaced after the read. Leave it for the next poll.
     }
   }
 

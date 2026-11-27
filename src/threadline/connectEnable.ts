@@ -32,6 +32,7 @@
  * Spec / review: upgrades/side-effects/threadline-enable-without-restart.md.
  */
 
+import { publishRestartRequestFile } from '../core/restartRequestFile.js';
 import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import fs from 'node:fs';
 import { announceRestartRequested } from '../core/restartRequestSignal.js';
@@ -338,9 +339,7 @@ export function writeConnectRestartRequest(stateDir: string, now = Date.now(), p
       pid,
     };
     const flagPath = flagPathFor(stateDir);
-    const tmp = `${flagPath}.${pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
-    fs.renameSync(tmp, flagPath);
+    publishRestartRequestFile(flagPath, JSON.stringify(body, null, 2));
     // The restart is queued from here on, so report it as queued even if the cooldown
     // record cannot be written (the only cost is a missing cooldown, logged).
     try {
