@@ -2257,6 +2257,21 @@ export class LocalVerifyService {
    * full verify, and try the rest least-loaded first. A skip is audited at most once
    * per peer per reason per PEER_SKIP_AUDIT_MS. Seam absent ⇒ the configured order.
    */
+  private meetsPeerLoadCeiling(peer: PeerTarget): boolean {
+    const ceiling = peer.maxLoadPerCore;
+    if (ceiling === undefined) return true;
+    if (ceiling === null) return false;
+    try {
+      const fit = this.peerFitFn?.(peer.machineId);
+      const score = fit?.score;
+      return !!fit && (fit.eligible || !!(fit.smallPeerHeadroom && this.smallPeerPolicy(peer.machineId)))
+        && typeof score === 'number' && Number.isFinite(score) && score >= 0 && score < ceiling;
+    } catch (error) {
+      this.audit({ event: 'peer-load-ceiling-read-failed', machineId: peer.machineId, detail: String(error) });
+      return false;
+    }
+  }
+
   private fitPeers(peers: PeerTarget[]): PeerTarget[] {
     const fitFn = this.peerFitFn;
     if (!fitFn || peers.length === 0) return peers;
@@ -3169,6 +3184,10 @@ export class LocalVerifyService {
         }
         if (trial && (JSON.stringify(this.smallPeerPolicy(peer.machineId)) !== JSON.stringify(trial)
           || !this.peerFitFn?.(peer.machineId).smallPeerHeadroom || entry.kind === 'main')) continue;
+        // Read live configuration and the existing fresh load metric at reservation time.
+        // This guard only applies to new offers, so results from accepted runs can still import.
+        const currentPeer = this.configuredPeers().find((target) => target.machineId === peer.machineId && target.url === peer.url);
+        if (!currentPeer || !this.meetsPeerLoadCeiling(currentPeer)) continue;
         // The head is fixed here, before the snapshot: a reserved entry is never retargeted.
         if (entry.kind === 'main') this.retargetStaleMain(entry);
         // Computed ONCE, before the marker exists: the list that is sent is the list the marker remembers.

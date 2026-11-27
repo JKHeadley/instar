@@ -1482,13 +1482,13 @@ describe('code review round 2 fixes', () => {
 // ── resource-aware placement §4: peers respect size and load ───────────
 
 describe('coordinator — peer fit (resource-aware placement)', () => {
-  function twoPeers(peerFit?: (id: string) => { eligible: boolean; reason: string; score: number | null }) {
+  function twoPeers(peerFit?: (id: string) => { eligible: boolean; reason: string; score: number | null }, maxLoadPerCore?: unknown) {
     const h = harness();
     const peer = fakePeer();
     const sentTo: string[] = [];
     const client: PeerClient = { ...peer.client, run: async (p, req) => { sentTo.push(p.machineId); return peer.client.run(p, req); } };
     h.svc.setPeerWiring({
-      peers: () => [{ machineId: 'mini', url: 'http://mini:4042' }, { machineId: 'm5pro', url: 'http://m5pro:4042' }],
+      peers: () => [{ machineId: 'mini', url: 'http://mini:4042', ...(maxLoadPerCore === undefined ? {} : { maxLoadPerCore }) }, { machineId: 'm5pro', url: 'http://m5pro:4042' }],
       client,
       lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
       ...(peerFit ? { peerFit } : {}),
@@ -1522,6 +1522,19 @@ describe('coordinator — peer fit (resource-aware placement)', () => {
     await c.svc.request(1);
     await c.runTimers();
     expect(c.sentTo).toEqual([]);
+  });
+
+  it.each([
+    { score: 0.834, ceiling: 0.85, expected: 'mini' },
+    { score: 0.85, ceiling: 0.85, expected: 'm5pro' },
+    { score: null, ceiling: 0.85, expected: 'm5pro' },
+    { score: 0.1, ceiling: '0.85', expected: 'm5pro' },
+  ])('applies the configured ceiling only to its peer ($score, $ceiling)', async ({ score, ceiling, expected }) => {
+    const c = twoPeers((id) => ({ eligible: true, reason: 'fits', score: id === 'mini' ? score : 0.9 }), ceiling);
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo[0]).toBe(expected);
   });
 
   it('eligible peers are tried least-loaded first', async () => {
