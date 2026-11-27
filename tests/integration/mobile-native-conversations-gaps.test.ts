@@ -10,7 +10,7 @@
  *  5. History says how the signing phone was approved (`originApprovedVia`), so the app can show
  *     "approved on dashboard" (§4.6).
  */
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,9 +20,10 @@ import request from 'supertest';
 import type { Server } from 'node:http';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
-import { authMiddleware } from '../../src/server/middleware.js';
+import { authMiddleware, buildRequestTimeoutOverrides, requestTimeout, resolveRequestTimeout, MOBILE_MEDIA_TIMEOUT_MS } from '../../src/server/middleware.js';
 import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
+import { attachmentIdFor } from '../../src/core/appMediaTypes.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../../src/core/conversationBindToken.js';
@@ -44,13 +45,16 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations-gaps.test.ts' });
 });
 
-interface Opts { topics?: Array<{ topicId: number; topicName: string; lastActivity: string | null }>; peerUrls?: string[]; nativeOff?: boolean }
+interface Opts { topics?: Array<{ topicId: number; topicName: string; lastActivity: string | null }>; peerUrls?: string[]; nativeOff?: boolean; attachmentBrowse?: boolean; mediaOff?: boolean; beforeRoutes?: express.RequestHandler }
 
 async function setup(opts: Opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mgaps-'));
   dirs.push(dir);
   await new MachineIdentityManager(dir).generateIdentity({ name: 'test machine' });
-  const config = { projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false } }, sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' } };
+  const config = { projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true, mobilePairing: { multiRoute: { enabled: false }, native: {
+    ...(opts.attachmentBrowse === undefined ? {} : { attachmentBrowse: { enabled: opts.attachmentBrowse } }),
+    ...(opts.mediaOff ? { media: { enabled: false } } : {}),
+  } }, sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' } };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
   const deps: MobilePairingDeps = { config: config as never, stateDir: dir, holdsLease: () => true };
   const pairing = new MobilePairingService(deps);
@@ -85,9 +89,11 @@ async function setup(opts: Opts = {}) {
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
+  app.use(requestTimeout(30_000, buildRequestTimeoutOverrides()));
+  if (opts.beforeRoutes) app.use(opts.beforeRoutes);
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({
-    config: config as never, pairing, service: svc, machineId: () => 'm1', pool: { config: config as never, resolvePeerUrls } as never,
+    config: config as never, pairing, service: svc, mediaEnabled: !opts.mediaOff, machineId: () => 'm1', pool: { config: config as never, resolvePeerUrls } as never,
     telegramTopics: () => topics.map((t) => ({ topicId: t.topicId, topicName: t.topicName, lastActivity: t.lastActivity, lastPreview: null })),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -431,5 +437,513 @@ describe('review follow-ups — peer rows are re-validated, and pool browse cove
     const d = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'approve this one\n/desktop\u00A0abc 123456', requestId: rid() });
     expect(d.body).toMatchObject({ ok: true, redacted: true, removed: ['desktop-code'] });
     expect(e.ingested[1]).toBe('approve this one\n[desktop code removed]');
+  });
+});
+
+
+function appendBrowseFile(e: Env, conversationKey: string, i: number, sha256 = 'b'.repeat(64), size = 123): string {
+  const messageId = 'attachment-message-' + i;
+  const attachmentId = attachmentIdFor(messageId, 0);
+  e.svc.store.append({
+    kind: 'media-message', eventId: 'attachment-event-' + i, conversationKey, messageId,
+    role: 'operator', text: 'private caption', at: new Date(Date.UTC(2026, 10, 23, 5, 0, i)).toISOString(), machineId: 'm1',
+    attachments: [{
+      attachmentId, index: 0, sha256, size,
+      kind: 'photo', declaredKind: 'photo', mediaType: 'image/jpeg', declaredType: 'image/jpeg', filename: 'photo.jpg',
+    }],
+  });
+  return attachmentId;
+}
+
+describe('attachment browse signed route', () => {
+  it('is dark by default and respects existing media-off and bearer boundaries', async () => {
+    const dark = await setup();
+    const darkKey = (await signed(dark, 'POST', '/mobile/conversations', { title: 'Dark', requestId: rid() })).body.conversationKey;
+    const url = (key: string) => '/mobile/chat/app/' + key + '/attachments?kind=photo';
+    expect((await signed(dark, 'GET', url(darkKey))).body.error).toBe('attachment-browse-off');
+
+    const off = await setup({ attachmentBrowse: true, mediaOff: true });
+    const offKey = (await signed(off, 'POST', '/mobile/conversations', { title: 'Files off', requestId: rid() })).body.conversationKey;
+    expect((await signed(off, 'GET', url(offKey))).body.error).toBe('media-off');
+    expect((await bearer(off, url(offKey))).body.error).toBe('owner-device-required');
+  });
+
+  it('serves exact local metadata and binds continuation to the signed scope', async () => {
+    const e = await setup({ attachmentBrowse: true });
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() })).body.conversationKey;
+    for (let i = 0; i < 16; i++) appendBrowseFile(e, key, i);
+    const route = '/mobile/chat/app/' + key + '/attachments';
+    const first = await signed(e, 'GET', route + '?kind=photo');
+    expect(first.status).toBe(200);
+    expect(first.headers['cache-control']).toBe('private, no-store');
+    expect(first.body).toMatchObject({ v: 1, scope: 'local', kind: 'photo', coverage: 'local' });
+    expect(first.body.rows).toHaveLength(15);
+    expect(first.body.rows[0]).toMatchObject({ eventId: 'attachment-event-15', attachments: [{ kind: 'photo', filename: 'photo.jpg' }] });
+    expect(JSON.stringify(first.body)).not.toMatch(/private caption|sha256|declaredType/);
+    const tail = '&cursor=' + first.body.nextCursor;
+    expect((await signed(e, 'GET', route + '?kind=file' + tail)).body.error).toBe('invalid-cursor');
+    const older = await signed(e, 'GET', route + '?kind=photo' + tail);
+    expect(older.body).toMatchObject({ rows: [{ eventId: 'attachment-event-0' }], nextCursor: null });
+    const browser = makeDevice();
+    const pending = e.pairing.devices.createPendingBrowser({
+      browserPublicKey: browser.publicKey, host: HOST, deviceName: 'Browser', enrollmentId: rid(),
+      session: 'browser-approval', maxBrowsers: 10, maxSetupsPerHour: 6,
+    });
+    if (!pending.ok) throw new Error('test browser setup refused');
+    const approvedAt = new Date().toISOString();
+    expect(e.pairing.devices.setActivating(pending.device.id, {
+      approvedVia: 'dashboard-pin', at: approvedAt, effects: [],
+    }, { ownRequest: true })).toBe(true);
+    e.keyLedger.recordActivation(pending.device, 'dashboard-pin', approvedAt);
+    expect(e.pairing.devices.activateBrowser(pending.device.id)?.status).toBe('active');
+    const browserEnv = { app: e.app, dev: browser, deviceId: pending.device.id };
+    expect((await signed(browserEnv, 'GET', route + '?kind=photo')).status).toBe(200);
+    expect((await signed(browserEnv, 'GET', route + '?kind=photo' + tail)).body.error).toBe('invalid-cursor');
+    for (const query of ['kind=PHOTO', 'kind=photo&kind=voice', 'kind%5B%5D=photo', 'kind=photo&scope=pool']) {
+      expect((await signed(e, 'GET', route + '?' + query)).body.error).toBe('invalid-attachment-query');
+    }
+  });
+
+  it('withholds private results when the signed owner is revoked during a read', async () => {
+    const e = await setup({ attachmentBrowse: true });
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() })).body.conversationKey;
+    appendBrowseFile(e, key, 0);
+    const original = e.svc.store.readExactAttachmentEvent.bind(e.svc.store);
+    const reader = vi.spyOn(e.svc.store, 'readExactAttachmentEvent').mockImplementationOnce(async (...args) => {
+      const event = await original(...args);
+      e.pairing.devices.revoke(e.deviceId, new Date().toISOString());
+      return event;
+    });
+    try {
+      const response = await signed(e, 'GET', '/mobile/chat/app/' + key + '/attachments?kind=photo');
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'owner-device-required' });
+      expect(reader).toHaveBeenCalledTimes(1);
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
+  it('returns retryable index pending without starting a scan or repairing the index', async () => {
+    const e = await setup({ attachmentBrowse: true });
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() })).body.conversationKey;
+    appendBrowseFile(e, key, 0);
+    const name = crypto.createHash('sha256').update('app:' + key).digest('hex') + '.jsonl';
+    fs.appendFileSync(path.join(e.dir, 'app-conversations', name), 'unindexed committed frame\n');
+    const scan = vi.spyOn(e.svc.store, 'attachmentIndexWindow');
+    const repair = vi.spyOn(e.svc.store, 'catchUp');
+    try {
+      const url = '/mobile/chat/app/' + key + '/attachments?kind=photo';
+      const pending = await signed(e, 'GET', url);
+      expect(pending.status).toBe(503);
+      expect(pending.body).toEqual({ error: 'attachment-index-pending' });
+      expect(scan).not.toHaveBeenCalled();
+      expect(repair).not.toHaveBeenCalled();
+      await e.svc.store.reconcileAttachmentIndexBatch(new AbortController().signal);
+      expect(repair).not.toHaveBeenCalled();
+      const recovered = await signed(e, 'GET', url);
+      expect(recovered.status).toBe(200);
+      expect(recovered.body.coverage).toBe('incomplete');
+      expect(scan).toHaveBeenCalledTimes(1);
+    } finally {
+      scan.mockRestore();
+      repair.mockRestore();
+    }
+  });
+
+  it('withholds an assembled page if an earlier match is purged during a later read', async () => {
+    const e = await setup({ attachmentBrowse: true });
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() })).body.conversationKey;
+    appendBrowseFile(e, key, 0);
+    const firstMatch = appendBrowseFile(e, key, 1);
+    const original = e.svc.store.readExactAttachmentEvent.bind(e.svc.store);
+    let reads = 0;
+    const reader = vi.spyOn(e.svc.store, 'readExactAttachmentEvent').mockImplementation(async (...args) => {
+      const event = await original(...args);
+      if (++reads === 2) e.svc.store.append({
+        kind: 'purge', conversationKey: 'app:' + key, eventId: 'held-page-purge',
+        at: new Date().toISOString(), machineId: 'local', attachmentIds: [firstMatch],
+      });
+      return event;
+    });
+    try {
+      const page = await signed(e, 'GET', '/mobile/chat/app/' + key + '/attachments?kind=photo');
+      expect(page.status).toBe(503);
+      expect(page.body).toEqual({ error: 'attachment-page-changed' });
+      expect(reads).toBeGreaterThanOrEqual(2);
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
+  it('keeps a timed-out device slot through a late descriptor close', async () => {
+    const e = await setup({ attachmentBrowse: true });
+    const key = (await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() })).body.conversationKey;
+    appendBrowseFile(e, key, 0);
+    const url = '/mobile/chat/app/' + key + '/attachments?kind=photo';
+    const filename = crypto.createHash('sha256').update('app:' + key).digest('hex') + '.jsonl';
+    const exactPath = path.join(e.dir, 'app-conversations', filename);
+    let entered!: () => void;
+    let release!: () => void;
+    let closed!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const lateClosed = new Promise<void>(resolve => { closed = resolve; });
+    const original = fs.promises.open.bind(fs.promises);
+    let holdFirstOpen = true;
+    let closeCount = 0;
+    const opener = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      if (String(args[0]) !== exactPath || !holdFirstOpen) return original(...args);
+      holdFirstOpen = false;
+      entered();
+      await blocked;
+      const handle = await original(...args);
+      const close = handle.close.bind(handle);
+      vi.spyOn(handle, 'close').mockImplementation(async () => {
+        await close();
+        closeCount++;
+        closed();
+      });
+      return handle;
+    });
+    try {
+      const held = signed(e, 'GET', url).then(response => response);
+      await started;
+      expect((await signed(e, 'GET', url)).body.error).toBe('attachment-browse-busy');
+      expect((await held).body.error).toBe('attachment-browse-unavailable');
+      expect((await signed(e, 'GET', url)).body.error).toBe('attachment-browse-busy');
+      release();
+      await lateClosed;
+      expect(closeCount).toBe(1);
+      expect((await signed(e, 'GET', url)).status).toBe(200);
+    } finally {
+      release();
+      opener.mockRestore();
+    }
+  });
+});
+
+
+async function contentFixture(beforeRoutes?: express.RequestHandler) {
+  const e = await setup({ attachmentBrowse: true, beforeRoutes });
+  const created = await signed(e, 'POST', '/mobile/conversations', { title: 'Photos', requestId: rid() });
+  const key = created.body.conversationKey as string;
+  const bytes = Buffer.from('local attachment bytes\n', 'utf8');
+  const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+  const first = appendBrowseFile(e, key, 0, sha, bytes.length);
+  const second = appendBrowseFile(e, key, 1, sha, bytes.length);
+  const temp = path.join(e.dir, 'fixture-blob');
+  fs.writeFileSync(temp, bytes);
+  expect(e.svc.media.publishPulled(temp, sha)).toBe(true);
+  const contentFor = async (owner: Pick<Env, 'app' | 'dev' | 'deviceId'>) => {
+    const page = await signed(owner, 'GET', '/mobile/chat/app/' + key + '/attachments?kind=photo');
+    expect(page.status).toBe(200);
+    const tokens = new Map<string, string>();
+    for (const row of page.body.rows) {
+      for (const item of row.attachments) tokens.set(item.attachmentId, item.openToken);
+    }
+    return (id: string) => '/mobile/chat/app/' + key + '/attachments/' + id + '/content?'
+      + new URLSearchParams({ replicaBinding: page.body.replicaBinding, openToken: tokens.get(id)! });
+  };
+  const content = await contentFor(e);
+  return { e, key, bytes, sha, first, second, content, contentFor };
+}
+
+describe('exact attachment content signed route', () => {
+  it('withholds a previously listed attachment when a durable purge is waiting to be indexed', async () => {
+    const { e, key, first, content, bytes } = await contentFixture();
+    const name = crypto.createHash('sha256').update('app:' + key).digest('hex') + '.jsonl';
+    const purge = JSON.stringify({
+      kind: 'purge', eventId: 'pending-exact-purge', conversationKey: key, machineId: 'm1',
+      at: new Date().toISOString(), attachmentIds: [first], ingestSeq: 4,
+    }) + '\n';
+    const verify = e.svc.media.openExactLocalAttachment.bind(e.svc.media);
+    const open = vi.spyOn(e.svc.media, 'openExactLocalAttachment').mockImplementationOnce(async (...args) => {
+      const descriptor = await verify(...args);
+      fs.appendFileSync(path.join(e.dir, 'app-conversations', name), purge);
+      return descriptor;
+    });
+    try {
+      const route = content(first);
+      const late = await signed(e, 'GET', route).set('Range', `bytes=${bytes.length}-`);
+      expect(late.status).toBe(503);
+      expect(late.body.error).toBe('attachment-open-retry');
+      expect(late.header['content-range']).toBeUndefined();
+      expect((await signed(e, 'GET', route)).body.error).toBe('attachment-open-retry');
+      expect(open).toHaveBeenCalledTimes(1);
+      await e.svc.store.reconcileAttachmentIndexBatch(new AbortController().signal);
+      expect((await signed(e, 'GET', route)).body.error).toBe('attachment-unavailable');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('rejects a missing replica binding and a valid token for a different occurrence before opening bytes', async () => {
+    const { e, first, second, content } = await contentFixture();
+    const url = content(first);
+    const raw = url.split('?')[0];
+    const otherOccurrence = content(second).replace('/' + second + '/content', '/' + first + '/content');
+    const open = vi.spyOn(e.svc.media, 'openExactLocalAttachment');
+    try {
+      expect((await signed(e, 'GET', raw)).body.error).toBe('attachment-replica-changed');
+      expect((await signed(e, 'GET', otherOccurrence)).body.error).toBe('attachment-unavailable');
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('serves the exact verified bytes and a signed single range, without broadening history timeout', async () => {
+    const { e, content, first, bytes } = await contentFixture();
+    const route = content(first);
+    const response = await signed(e, 'GET', route);
+    expect(response.status).toBe(200);
+    expect(response.headers).toMatchObject({
+      'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff', 'accept-ranges': 'bytes',
+      'content-length': String(bytes.length),
+    });
+    expect(response.body).toEqual(bytes);
+    const part = await signed(e, 'GET', route).set('Range', 'bytes=2-7');
+    expect(part.status).toBe(206);
+    expect(part.header['content-range']).toBe('bytes 2-7/' + bytes.length);
+    expect(part.body).toEqual(bytes.subarray(2, 8));
+    const overrides = buildRequestTimeoutOverrides();
+    const routePath = route.split('?')[0];
+    expect(resolveRequestTimeout(routePath, 30_000, overrides)).toBe(MOBILE_MEDIA_TIMEOUT_MS);
+    expect(resolveRequestTimeout(route.replace(/\/attachments\/.*/, '/messages'), 30_000, overrides)).toBe(30_000);
+    expect(resolveRequestTimeout(routePath, 30_000, overrides, 'POST')).toBe(30_000);
+    const open = vi.spyOn(e.svc.media, 'openExactLocalAttachment');
+    try {
+      expect((await signed(e, 'GET', route).set('Range', 'bytes=0-1,4-5')).status).toBe(416);
+      expect(open).not.toHaveBeenCalled();
+      const unsatisfied = await signed(e, 'GET', route).set('Range', `bytes=${bytes.length}-`);
+      expect(unsatisfied.status).toBe(416);
+      expect(unsatisfied.header['content-range']).toBe(`bytes */${bytes.length}`);
+      expect(open).toHaveBeenCalledTimes(1);
+
+      open.mockResolvedValueOnce(null);
+      const missing = await signed(e, 'GET', route).set('Range', `bytes=${bytes.length}-`);
+      expect(missing.status).toBe(404);
+      expect(missing.header['content-range']).toBeUndefined();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it.each([
+    ['owner revoked', 403, 'owner-device-required'],
+    ['conversation deleted', 404, 'unknown-conversation'],
+    ['attachment purged', 404, 'attachment-unavailable'],
+  ])('withholds size for an unsatisfiable range when %s during the record read', async (change, status, error) => {
+    const { e, key, content, first, bytes } = await contentFixture();
+    let markHeld!: () => void;
+    let resumeRead!: () => void;
+    const held = new Promise<void>(resolve => { markHeld = resolve; });
+    const resume = new Promise<void>(resolve => { resumeRead = resolve; });
+    const readRecord = e.svc.store.readExactAttachmentEvent.bind(e.svc.store);
+    const reader = vi.spyOn(e.svc.store, 'readExactAttachmentEvent').mockImplementationOnce(async (...args) => {
+      const event = await readRecord(...args);
+      markHeld();
+      await resume;
+      return event;
+    });
+    const open = vi.spyOn(e.svc.media, 'openExactLocalAttachment');
+    try {
+      const response = signed(e, 'GET', content(first)).set('Range', `bytes=${bytes.length}-`).then(result => result);
+      await held;
+      const at = new Date().toISOString();
+      if (change === 'owner revoked') e.pairing.devices.revoke(e.deviceId, at);
+      else if (change === 'conversation deleted') {
+        e.svc.store.append({ kind: 'tombstone', eventId: 'exact-content-delete', conversationKey: key, machineId: 'm1', at });
+      } else {
+        e.svc.store.append({ kind: 'purge', eventId: 'exact-content-held-purge', conversationKey: key, machineId: 'm1', at, attachmentIds: [first] });
+      }
+      resumeRead();
+      const denied = await response;
+      expect(denied.status).toBe(status);
+      expect(denied.body).toEqual({ error });
+      expect(denied.header['content-range']).toBeUndefined();
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      resumeRead();
+      open.mockRestore();
+      reader.mockRestore();
+    }
+  });
+
+  it('does not substitute another same-hash message for a purged reference or trust stale verification', async () => {
+    const { e, key, content, first, second, sha, bytes } = await contentFixture();
+    const fetchPeer = vi.spyOn(e.svc.replicator, 'want');
+    e.svc.store.append({
+      kind: 'purge', eventId: 'exact-content-purge', conversationKey: key, machineId: 'm1',
+      attachmentIds: [first], at: new Date().toISOString(),
+    });
+    try {
+      expect((await signed(e, 'GET', content(first))).body).toEqual({ error: 'attachment-unavailable' });
+      expect((await signed(e, 'GET', content(second))).status).toBe(200);
+      expect((await bearer(e, content(second))).status).toBe(403);
+      const file = e.svc.media.locateBlob(sha)!;
+      fs.writeFileSync(file, Buffer.alloc(bytes.length, 'X'));
+      expect((await signed(e, 'GET', content(second))).body).toEqual({ error: 'attachment-unavailable' });
+      expect(e.svc.media.locateBlob(sha)).toBe(file);
+      expect(fetchPeer).not.toHaveBeenCalled();
+    } finally {
+      fetchPeer.mockRestore();
+    }
+  });
+
+  it('closes the verified descriptor once when device admission disappears during hashing', async () => {
+    const { e, content, first } = await contentFixture();
+    const original = e.svc.media.openExactLocalAttachment.bind(e.svc.media);
+    let closeCount = 0;
+    const open = vi.spyOn(e.svc.media, 'openExactLocalAttachment').mockImplementationOnce(async (...args) => {
+      const verified = await original(...args);
+      if (!verified) throw new Error('fixture descriptor unavailable');
+      const close = verified.handle.close.bind(verified.handle);
+      vi.spyOn(verified.handle, 'close').mockImplementation(async () => { await close(); closeCount++; });
+      e.pairing.devices.revoke(e.deviceId, new Date().toISOString());
+      return verified;
+    });
+    try {
+      const denied = await signed(e, 'GET', content(first));
+      expect(denied.status).toBe(403);
+      expect(denied.body).toEqual({ error: 'owner-device-required' });
+      await vi.waitFor(() => expect(closeCount).toBe(1));
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('keeps the content slot through a late local open after its response deadline', async () => {
+    const { e, content, first, sha } = await contentFixture();
+    const url = content(first);
+    const expected = fs.realpathSync(e.svc.media.locateBlob(sha)!);
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const realTimer = globalThis.setTimeout;
+    let triggerDeadline!: () => void;
+    let started!: () => void;
+    let release!: () => void;
+    const opened = new Promise<void>(resolve => { started = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    let heldOnce = false;
+    let closeCount = 0;
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+      if (delay === 120_000) triggerDeadline = () => callback(...args);
+      return realTimer(callback, delay, ...args);
+    });
+    const open = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      if (String(args[0]) !== expected || heldOnce) return realOpen(...args);
+      heldOnce = true;
+      started();
+      await hold;
+      const handle = await realOpen(...args);
+      const close = handle.close.bind(handle);
+      vi.spyOn(handle, 'close').mockImplementation(async () => { await close(); closeCount++; });
+      return handle;
+    });
+    try {
+      const firstResponse = signed(e, 'GET', url).then(response => response);
+      await opened;
+      triggerDeadline();
+      expect((await firstResponse).body).toEqual({ error: 'attachment-open-retry' });
+      expect((await signed(e, 'GET', url)).body).toEqual({ error: 'attachment-open-busy' });
+      release();
+      await vi.waitFor(() => expect(closeCount).toBe(1));
+      expect((await signed(e, 'GET', url)).status).toBe(200);
+    } finally {
+      release();
+      open.mockRestore();
+      timer.mockRestore();
+    }
+  });
+
+  it('interrupts a stalled published response and reclaims the descriptor and device slot', async () => {
+    let entered!: () => void;
+    const backingUp = new Promise<void>(resolve => { entered = resolve; });
+    let stallFirstContent = true;
+    const { e, content, first } = await contentFixture((req, res, next) => {
+      if (req.path.endsWith('/content') && stallFirstContent) {
+        stallFirstContent = false;
+        // The mounted route sees a socket that never drains its first chunk.
+        res.write = () => { entered(); return false; };
+      }
+      next();
+    });
+    let triggerDeadline!: () => void;
+    let closes = 0;
+    const realTimer = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+      if (delay === 120_000) triggerDeadline = () => callback(...args);
+      return realTimer(callback, delay, ...args);
+    });
+    const realVerify = e.svc.media.openExactLocalAttachment.bind(e.svc.media);
+    const verify = vi.spyOn(e.svc.media, 'openExactLocalAttachment').mockImplementationOnce(async (...args) => {
+      const descriptor = await realVerify(...args);
+      if (!descriptor) throw new Error('test expected verified attachment');
+      const close = descriptor.handle.close.bind(descriptor.handle);
+      vi.spyOn(descriptor.handle, 'close').mockImplementation(async () => { await close(); closes++; });
+      return descriptor;
+    });
+    const url = content(first);
+    try {
+      const stalled = signed(e, 'GET', url).then(() => null, (failure: Error) => failure);
+      await backingUp;
+      expect((await signed(e, 'GET', url)).body).toEqual({ error: 'attachment-open-busy' });
+      triggerDeadline();
+      expect(await stalled).toBeInstanceOf(Error);
+      await vi.waitFor(() => expect(closes).toBe(1));
+      expect((await signed(e, 'GET', url)).status).toBe(200);
+    } finally {
+      verify.mockRestore();
+      timer.mockRestore();
+    }
+  });
+
+  it('rejects a fifth distinct signed device before opening a file', async () => {
+    const { e, contentFor, first } = await contentFixture();
+    const owners = [e];
+    for (let i = 0; i < 4; i++) {
+      const dev = makeDevice();
+      const pending = e.pairing.devices.createPending({ deviceName: 'Owner ' + i, label: null, publicKey: dev.publicKey, host: HOST });
+      if (!pending.ok) throw new Error('test device setup refused');
+      const confirmed = e.pairing.devices.applyConfirm(pending.device.id, { ok: true });
+      if (!confirmed) throw new Error('test device missing');
+      e.keyLedger.recordActivation(confirmed, 'telegram-dm', new Date().toISOString());
+      owners.push({ ...e, dev, deviceId: pending.device.id });
+    }
+    const realOpen = e.svc.media.openExactLocalAttachment.bind(e.svc.media);
+    const releases: Array<() => void> = [];
+    let closes = 0;
+    let allFourEntered!: () => void;
+    const allFour = new Promise<void>(resolve => { allFourEntered = resolve; });
+    const file = vi.spyOn(e.svc.media, 'openExactLocalAttachment').mockImplementation(async (...args) => {
+      if (releases.length < 4) {
+        await new Promise<void>(resolve => {
+          releases.push(resolve);
+          if (releases.length === 4) allFourEntered();
+        });
+      }
+      const opened = await realOpen(...args);
+      if (!opened) throw new Error('test expected a verified attachment');
+      const close = opened.handle.close.bind(opened.handle);
+      vi.spyOn(opened.handle, 'close').mockImplementation(async () => { await close(); closes++; });
+      return opened;
+    });
+    const urls: string[] = [];
+    for (const owner of owners) urls.push((await contentFor(owner))(first));
+    const running = owners.slice(0, 4).map((owner, index) => signed(owner, 'GET', urls[index]).then(response => response));
+    try {
+      await allFour;
+      expect((await signed(owners[4], 'GET', urls[4])).body).toEqual({ error: 'attachment-open-busy' });
+      expect(file).toHaveBeenCalledTimes(4);
+      releases[0]();
+      expect((await Promise.race(running)).status).toBe(200);
+      await vi.waitFor(() => expect(closes).toBe(1));
+      expect((await signed(owners[4], 'GET', urls[4])).status).toBe(200);
+    } finally {
+      for (const release of releases) release();
+      await Promise.all(running);
+      file.mockRestore();
+    }
   });
 });

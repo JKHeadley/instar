@@ -1,0 +1,53 @@
+{
+  "version": 3,
+  "slug": "conversation-media-discovery",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T02:34:39.773Z",
+  "artifactPath": "upgrades/side-effects/conversation-media-discovery.md",
+  "artifactSha256": "74adb90375f314b79da83b22453eb7321ceaf7d36e19f40341ad551558950771",
+  "specPath": "docs/specs/app-attachment-browse.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppAttachmentBrowse.ts",
+    "src/core/AppAttachmentContent.ts",
+    "src/core/AppAttachmentCursor.ts",
+    "src/core/AppAttachmentOpenToken.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppMediaStore.ts",
+    "src/core/types.ts",
+    "src/server/AgentServer.ts",
+    "src/server/middleware.ts",
+    "src/server/mobileAttachmentBrowseRoutes.ts",
+    "src/server/mobileAttachmentContentRoute.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobileMediaResponseHeaders.ts",
+    "src/server/mobileMediaRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/integration/mobile-native-conversations-gaps.test.ts",
+    "tests/unit/app-attachment-browse.test.ts",
+    "tests/unit/app-attachment-content.test.ts",
+    "tests/unit/app-attachment-cursor.test.ts",
+    "tests/unit/app-attachment-open-token.test.ts",
+    "tests/unit/app-conversation-store.test.ts",
+    "upgrades/side-effects/conversation-media-discovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed owner routes, exact file disclosure, and derived index reconciliation",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/app-attachment-browse-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

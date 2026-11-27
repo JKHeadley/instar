@@ -34,6 +34,55 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('bounds attachment index candidates and advances by the exact tuple', () => {
+    const { store } = mk();
+    store.append(created());
+    for (let i = 0; i < 52; i++) store.append(msg(String(i).padStart(2, '0') + ',key', 1));
+    const rows = store.attachmentIndexWindow(KEY, null);
+    expect(rows).toHaveLength(51);
+    expect(rows[0].eventId).toBe('ev-51,key');
+    expect(store.attachmentIndexWindow(KEY, rows[49]).map(row => row.eventId)).toEqual(['ev-01,key', 'ev-00,key']);
+  });
+
+  it('reads only the exact framed attachment candidate', async () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('first', 1));
+    store.append(msg('second', 2));
+    const [second, first] = store.attachmentIndexWindow(KEY, null);
+    const signal = new AbortController().signal;
+    expect(await store.readExactAttachmentEvent(KEY, first, signal)).toMatchObject({
+      eventId: first.eventId, at: first.at, messageId: 'msg-first',
+    });
+    for (const wrong of [
+      { ...first, byteLength: null },
+      { ...first, byteLength: 256 * 1024 },
+      { ...first, byteLength: first.byteLength! - 1 },
+      { ...first, byteLength: first.byteLength! + 1 },
+      { ...first, byteOffset: first.byteOffset! + 1 },
+      { ...first, byteOffset: second.byteOffset, byteLength: second.byteLength },
+      { ...first, at: second.at },
+    ]) expect(await store.readExactAttachmentEvent(KEY, wrong, signal)).toBeNull();
+
+    const file = fileOf(dir);
+    const bytes = fs.readFileSync(file);
+    bytes[first.byteOffset! + first.byteLength!] = 32;
+    fs.writeFileSync(file, bytes);
+    expect(await store.readExactAttachmentEvent(KEY, first, signal)).toBeNull();
+  });
+
+  it('rejects an aborted exact read and keeps store I/O failure distinct from corruption', async () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.append(msg('first', 1));
+    const [row] = store.attachmentIndexWindow(KEY, null);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(store.readExactAttachmentEvent(KEY, row, controller.signal)).rejects.toHaveProperty('name', 'AbortError');
+    fs.renameSync(fileOf(dir), fileOf(dir) + '.away');
+    await expect(store.readExactAttachmentEvent(KEY, row, new AbortController().signal)).rejects.toHaveProperty('code', 'ENOENT');
+  });
+
   it('captures a bounded content-free registration frontier including tombstones', () => {
     const { store } = mk();
     expect(store.inventoryFrontier()).toEqual({ keys: [], overflow: false, eventWatermark: 0, liveCount: 0 });
@@ -126,6 +175,80 @@ describe('AppConversationStore', () => {
     expect(rebuilt.browseMessages(KEY, null, 100).messages).toHaveLength(6);
     rebuilt.rebuildIndex();
     expect(rebuilt.syncEvents(KEY, null, 100).events.map((e) => e.ingestSeq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('recovers a frame spanning positional reads and resumes after an oversized line', () => {
+    const { dir, store } = mk();
+    store.append(created());
+    store.close();
+    fs.appendFileSync(fileOf(dir), [
+      ' '.repeat(70 * 1024) + JSON.stringify({ ...msg('spanning', 1), ingestSeq: 2 }),
+      'x'.repeat(300 * 1024),
+      JSON.stringify({ ...msg('after', 2), ingestSeq: 4 }),
+      '',
+    ].join('\n'));
+    const reports: string[] = [];
+    const caught = new AppConversationStore({
+      stateDir: dir, machineId: () => 'm1', reportDegradation: (_what, detail) => reports.push(detail),
+    });
+    try {
+      expect(caught.syncEvents(KEY, null, 100).events.map(event => event.ingestSeq)).toEqual([1, 2, 4]);
+      expect(reports.filter(detail => detail.includes('oversized committed line'))).toHaveLength(1);
+      caught.catchUp();
+      expect(caught.syncEvents(KEY, null, 100).events.map(event => event.ingestSeq)).toEqual([1, 2, 4]);
+    } finally {
+      caught.close();
+    }
+  });
+
+  it('reconciles an unindexed tail in bounded maintenance batches without permitting append to skip it', async () => {
+    const { dir, store: initial } = mk();
+    initial.close();
+    const store = new AppConversationStore({ stateDir: dir, machineId: () => 'm1', attachmentBrowseEnabled: () => true });
+    store.append(created());
+    const lines = Array.from({ length: 56 }, (_, i) => JSON.stringify({ ...msg('repair-' + i, i), ingestSeq: i + 2 }));
+    fs.appendFileSync(fileOf(dir), lines.join('\n') + '\n');
+    const signal = new AbortController().signal;
+    try {
+      expect(await store.attachmentIndexReady(KEY)).toBe(false);
+      expect(() => store.append(msg('new', 59))).toThrow('pending reconciliation');
+      let emitted = 0;
+      store.setReservingReplicationHook(() => { emitted++; return { outcome: 'emitted' }; });
+      expect(store.appendWithEmit(msg('new', 59)).outcome).toBe('not-accepted');
+      expect(emitted).toBe(0);
+      await store.reconcileAttachmentIndexBatch(signal);
+      expect(store.newestIngestSeq(KEY)).toBe(51);
+      expect(await store.attachmentIndexReady(KEY)).toBe(false);
+      await store.reconcileAttachmentIndexBatch(signal);
+      await store.reconcileAttachmentIndexBatch(signal);
+      expect(store.newestIngestSeq(KEY)).toBe(57);
+      expect(await store.attachmentIndexReady(KEY)).toBe(true);
+      expect(store.append(msg('new', 59)).ingestSeq).toBe(58);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('discards an oversized frame across maintenance batches before restoring readiness', async () => {
+    const { dir, store, reports } = mk();
+    store.append(created());
+    fs.appendFileSync(fileOf(dir), 'x'.repeat(2 * 1024 * 1024 + 7) + '\n'
+      + JSON.stringify({ ...msg('after-discard', 3), ingestSeq: 3 }) + '\n');
+    const signal = new AbortController().signal;
+    try {
+      for (let batch = 0; batch < 2; batch++) {
+        await store.reconcileAttachmentIndexBatch(signal);
+        expect(await store.attachmentIndexReady(KEY)).toBe(false);
+        expect(store.newestIngestSeq(KEY)).toBe(1);
+        expect(reports.filter(detail => detail.includes('oversized committed line'))).toHaveLength(0);
+      }
+      await store.reconcileAttachmentIndexBatch(signal);
+      expect(await store.attachmentIndexReady(KEY)).toBe(true);
+      expect(store.syncEvents(KEY, null, 100).events.map(event => event.ingestSeq)).toEqual([1, 3]);
+      expect(reports.filter(detail => detail.includes('oversized committed line'))).toHaveLength(1);
+    } finally {
+      store.close();
+    }
   });
 
   it('browses a long conversation backwards to its first message and syncs by cursor', () => {

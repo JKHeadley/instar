@@ -26,6 +26,7 @@ import { registerSqliteHandle } from './SqliteRegistry.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import type { AppConversationStore } from './AppConversationStore.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { openVerifiedAppAttachment, type VerifiedAppAttachmentDescriptor } from './AppAttachmentContent.js';
 import { assembleChunks, hashFile } from './appMediaWorker.js';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, isSha256Hex, safeFileName, sniffMediaType, type AppAttachment, type MediaKind,
@@ -171,6 +172,13 @@ export class AppMediaStore {
     if (!isSha256Hex(sha)) return null;
     for (const p of [this.blobPath(sha), this.deletedPath(sha)]) { if (fs.existsSync(p)) return p; }
     return null;
+  }
+
+  async openExactLocalAttachment(sha: string, size: number, signal: AbortSignal): Promise<VerifiedAppAttachmentDescriptor | null> {
+    signal.throwIfAborted();
+    const filename = this.locateBlob(sha);
+    if (!filename) return null;
+    return openVerifiedAppAttachment(filename, this.root, sha, size, signal);
   }
 
   isQuarantined(sha: string): boolean { return isSha256Hex(sha) && fs.existsSync(path.join(this.quarantineDir, sha)); }

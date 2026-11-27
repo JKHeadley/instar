@@ -23,12 +23,13 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
-import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
+import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isSha256Hex, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
 import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } from '../core/appConversationText.js';
 import type { UploadRow } from '../core/AppMediaStore.js';
 import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
 import { slackMediaKeys } from '../core/appPlatformMedia.js';
 import { mediaOffBody } from './mobileMediaOff.js';
+import { setMobileMediaResponseHeaders } from './mobileMediaResponseHeaders.js';
 import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
 export interface MobileMediaRouteDeps {
@@ -273,7 +274,6 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     }
     const attachment: AppAttachment | undefined = svc!.store.getMediaAttachments(refKey, att.messageId)?.[att.idx];
     const mediaType = attachment?.mediaType ?? 'application/octet-stream';
-    const inline = isInlineSafe(mediaType);
     let handle: fs.promises.FileHandle;
     try {
       const st = fs.lstatSync(blob);
@@ -283,13 +283,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (opened.ino !== st.ino || opened.dev !== st.dev) { await handle.close(); notFound(); return; }
     } catch { notFound(); return; } // @silent-fallback-ok — a blob that cannot be opened safely reads as absent
     const size = (await handle.stat()).size;
-    res.setHeader('Content-Type', inline ? mediaType : 'application/octet-stream');
-    if (!inline) res.setHeader('Content-Disposition', `attachment; filename="${safeFileName(attachment?.filename ?? 'file', mediaType)}"`);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-    res.setHeader('Accept-Ranges', hop ? 'none' : 'bytes');
+    setMobileMediaResponseHeaders(res, mediaType, attachment?.filename ?? 'file', !hop);
     if (hop) {
       res.setHeader(HOLDER_MEDIA_HEADER, '1');
       // Runs after the server's own finish handler. A queued pipelined response has taken the socket

@@ -638,3 +638,27 @@ describe('quick-page payload diff (telegram-slack-change-feed)', () => {
     expect(m.rebuildQuickPage(previous, data)).toEqual({ data, cache: null });
   });
 });
+
+describe('signed attachment browse pages', () => {
+  const attachment = {
+    attachmentId: 'a'.repeat(64), index: 2, kind: 'photo', filename: 'photo.jpg',
+    size: 658, mediaType: 'image/jpeg', openToken: 'b'.repeat(80),
+  };
+  const row = { eventId: 'event-1', messageId: 'message-1', at: '2026-11-24T17:00:00Z', attachments: [attachment] };
+  const body = { v: 1, kind: 'photo', scope: 'local', coverage: 'incomplete', rows: [row], nextCursor: 'cursor', replicaBinding: 'c'.repeat(80), attachmentContext: 'x'.repeat(43) };
+
+  it('accepts exact signed page metadata, including sparse continuation and tokens', () => {
+    expect(m.readAttachmentBrowsePage(body, 'photo')).toEqual(body);
+    expect(m.readAttachmentBrowsePage({ ...body, rows: [] }, 'photo')?.nextCursor).toBe('cursor');
+  });
+
+  it('rejects the entire page if its scope, version, binding or any row is wrong', () => {
+    for (const invalid of [
+      { ...body, v: 2 }, { ...body, scope: 'pool' }, { ...body, replicaBinding: null },
+      { ...body, nextCursor: ['cursor'] }, { ...body, rows: [row, row] },
+      { ...body, rows: [row, { ...row, messageId: 'other', attachments: [{ ...attachment, openToken: null }] }] },
+      { ...body, rows: [{ ...row, attachments: [{ ...attachment, sha256: 'private' }] }] },
+    ]) expect(m.readAttachmentBrowsePage(invalid, 'photo')).toBeNull();
+    expect(m.readAttachmentBrowsePage(body, 'video')).toBeNull();
+  });
+});

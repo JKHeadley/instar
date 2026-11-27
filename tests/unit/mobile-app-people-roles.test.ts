@@ -172,6 +172,7 @@ describe('DEVICE_ALLOWLIST coverage', () => {
   const TAKES_CONVERSATION = [
     'GET /mobile/conversations', 'PATCH /mobile/conversations/<uuid>', 'DELETE /mobile/conversations/<uuid>',
     'POST /mobile/chat/app/<uuid>', 'GET /mobile/chat/app/<uuid>/messages', 'GET /mobile/chat/app/<uuid>/events',
+    'GET /mobile/chat/app/<uuid>/attachments', 'GET /mobile/chat/app/<uuid>/attachments/<sha>/content',
     'GET /mobile/chat/app/<uuid>/preview/x', 'POST /mobile/chat/slack/-1', 'GET /mobile/chat/slack/-1/messages',
     'POST /mobile/media/uploads', 'GET /mobile/media/<sha>', 'POST /mobile/media/purge',
     'GET /mobile/conversations/session', 'GET /mobile/conversations/<uuid>/placement',

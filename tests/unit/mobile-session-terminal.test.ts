@@ -54,6 +54,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
       ['POST', '/sessions/a/input'],
+      ['GET', '/mobile/chat/app/22222222-2222-4222-8222-222222222222/attachments'],
+      ['GET', '/mobile/chat/app/22222222-2222-4222-8222-222222222222/attachments/' + 'a'.repeat(64) + '/content'],
       // Conversations' exact additive owner-only route families. Functional
       // signature/ledger and owner refusal are covered by graph HTTP tests.
       ['GET', '/mobile/conversation-graph/roots'],

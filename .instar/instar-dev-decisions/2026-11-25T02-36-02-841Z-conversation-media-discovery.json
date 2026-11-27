@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-25T02:36:02.841Z",
+  "slug": "conversation-media-discovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/AppAttachmentOpenToken.ts matches token handling",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1081,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppAttachmentBrowse.ts",
+      "src/core/AppAttachmentContent.ts",
+      "src/core/AppAttachmentCursor.ts",
+      "src/core/AppAttachmentOpenToken.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/AppConversationStore.ts",
+      "src/core/AppMediaStore.ts",
+      "src/core/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/middleware.ts",
+      "src/server/mobileAttachmentBrowseRoutes.ts",
+      "src/server/mobileAttachmentContentRoute.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileMediaResponseHeaders.ts",
+      "src/server/mobileMediaRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 1048,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

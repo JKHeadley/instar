@@ -20,7 +20,7 @@ import {
   parseConversationRef, refString, refFromQuery, messageFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
-  setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
+  setupRefusal, approvalWords, privateChatWords, blobTypeFor, attachmentView, readAttachmentBrowsePage, listPinned, orderWithTree,
   pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
   listPinnedRows, listPinRefOf, splitPinned, listPinOutcomeWords, messageTime, messagePieces,
   LIST_VIEW_KEY, listViewFrom, HIERARCHY_MAX_PAGES, hierarchyIndex, groupRows, groupCountWords,
@@ -128,6 +128,7 @@ class ChatsPage {
   }
   dispose() {
     this.live = false;
+    if (this.view?.attachmentSheet) closeSheet();
     this.outboxUnsubscribe?.();
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
@@ -366,6 +367,7 @@ class ChatsPage {
 
   // ── a refused signed call (§4.6) ──
   async handle401() {
+    if (this.view?.attachmentSheet) closeSheet();
     const d = await this.device.checkAfter401();
     if (!this.live) return 'gone';
     if (d.deleted) { this.clearUnfinished(); this.teardownApp(); this.paintSetup(DELETED_REASON[d.show] || DELETED_REASON.removed); return 'gone'; }
@@ -677,6 +679,7 @@ class ChatsPage {
     this.view = null;
     if (!v) return;
     v.live = false;
+    if (v.attachmentSheet) closeSheet();
     if (v.historyWaitTimer) { clearTimeout(v.historyWaitTimer); this.timers.delete(v.historyWaitTimer); }
     if (v.abort) { try { v.abort.abort(); } catch { /* done */ } }
     this.revokeBlobs();
@@ -697,6 +700,11 @@ class ChatsPage {
       rename.addEventListener('click', () => this.rename(v, title));
       const del = el('button', { class: 'btn-quiet chat-delete', type: 'button', text: 'Delete' });
       del.addEventListener('click', () => this.remove(v));
+      if (this.status?.attachmentBrowse === true) {
+        const attachments = el('button', { class: 'btn-quiet', type: 'button', text: 'Attachments' });
+        attachments.addEventListener('click', () => this.openAttachmentSheet(v));
+        menu.append(attachments);
+      }
       menu.append(rename, del);
     }
     v.msgs = el('div', { class: 'chat-messages', role: 'log', 'aria-live': 'polite' });
@@ -1506,6 +1514,183 @@ class ChatsPage {
     return true;
   }
 
+  openAttachmentSheet(v) {
+    const path = `/mobile/chat/app/${encodeURIComponent(v.ref.id)}/attachments`;
+    const record = this.device.record;
+    const authorization = bearer();
+    let current = true;
+    let request = null;
+    let open = null;
+    let openButton = null;
+    let playback = null;
+    let kind = null;
+    let incomplete = false;
+    let incoming = null;
+    const controls = el('div', { class: 'chat-attachment-types', role: 'group', 'aria-label': 'Attachment type' });
+    const status = el('p', { role: 'status' });
+    const results = el('div', { class: 'chat-attachment-results' });
+    const preview = el('div', { class: 'chat-attachment-preview' });
+    const alive = () => current && v.live && this.view === v && this.device.record === record && bearer() === authorization;
+    const clearOpen = () => {
+      open?.abort();
+      open = null;
+      if (openButton) openButton.disabled = false;
+      openButton = null;
+      setKids(preview);
+      if (playback) URL.revokeObjectURL(playback);
+      playback = null;
+    };
+    const clear = () => {
+      request?.abort();
+      request = null;
+      clearOpen();
+      setKids(results);
+    };
+    const retry = (label, action) => el('button', { class: 'btn-quiet', type: 'button', text: label, onclick: action });
+
+    const openFile = async (page, file, button) => {
+      clearOpen();
+      const attempt = new AbortController();
+      open = attempt;
+      openButton = button;
+      const query = new URLSearchParams({ replicaBinding: page.replicaBinding, openToken: file.openToken });
+      button.disabled = true;
+      try {
+        const response = await this.device.signedFetch('GET', `${path}/${file.attachmentId}/content?${query}`, { signal: attempt.signal });
+        if (!alive() || open !== attempt) return;
+        if (response.status === 401 || response.status === 403) { closeSheet(); return; }
+        if (response.status === 409) {
+          clear();
+          status.textContent = 'The connected computer changed.';
+          setKids(results, retry('Refresh', () => load(null, true)));
+          return;
+        }
+        if (!response.ok) {
+          const failure = await response.json().catch(() => null);
+          if (!alive() || open !== attempt) return;
+          if (failure?.error === 'unknown-conversation' || failure?.error === 'attachment-browse-off' || failure?.error === 'media-off') {
+            closeSheet();
+            return;
+          }
+          const unavailable = failure?.error === 'attachment-unavailable';
+          button.textContent = unavailable ? 'File unavailable' : 'Retry';
+          button.setAttribute('aria-label', unavailable ? `File unavailable: ${file.filename}` : `Retry opening ${file.filename}`);
+          button.disabled = unavailable;
+          openButton = null;
+          return;
+        }
+        if (Number(response.headers.get('content-length')) !== file.size) throw new Error('Unexpected attachment length');
+        const bytes = await response.arrayBuffer();
+        if (!alive() || open !== attempt) return;
+        if (bytes.byteLength !== file.size) throw new Error('Incomplete attachment');
+        const media = attachmentView(file);
+        playback = URL.createObjectURL(new Blob([bytes], { type: media.blobType }));
+        const holder = el('span');
+        setKids(preview, holder);
+        this.showMedia(media, preview, holder, playback, { autoSave: false });
+        button.disabled = false;
+        openButton = null;
+      } catch {
+        if (alive() && open === attempt) {
+          button.textContent = 'Retry';
+          button.setAttribute('aria-label', `Retry opening ${file.filename}`);
+          button.disabled = false;
+        }
+      }
+    };
+
+    const load = async (cursor, reset = false) => {
+      clear();
+      if (reset) incomplete = false;
+      incoming = cursor;
+      const attempt = new AbortController();
+      request = attempt;
+      const requestedKind = kind;
+      status.textContent = 'Loading attachments…';
+      let page;
+      for (let read = 0; read < 3; read++) {
+        if (document.visibilityState !== 'visible') { pauseWalk(); return; }
+        const query = new URLSearchParams({ kind: requestedKind });
+        if (incoming) query.set('cursor', incoming);
+        let response;
+        try {
+          this.spent();
+          response = await this.device.call('GET', `${path}?${query}`, { signal: attempt.signal });
+        } catch {
+          response = null;
+        }
+        if (!alive() || request !== attempt) return;
+        if (response?.status === 401 || response?.status === 403 || ['unknown-conversation', 'media-off', 'attachment-browse-off'].includes(response?.data?.error)) {
+          closeSheet();
+          return;
+        }
+        page = response?.ok ? readAttachmentBrowsePage(response.data, requestedKind) : null;
+        if (!page) {
+          request = null;
+          status.textContent = response?.status === 429 ? 'Attachments are busy. Try again shortly.' : 'Attachments are unavailable right now.';
+          const retryCursor = incoming;
+          setKids(results, retry('Retry', () => load(retryCursor)));
+          return;
+        }
+        if (v.attachmentSheet.context !== page.attachmentContext) {
+          v.attachmentSheet.context = page.attachmentContext;
+          v.attachmentSheet.contextAt = now();
+        }
+        incomplete ||= page.coverage === 'incomplete';
+        incoming = page.nextCursor;
+        if (page.rows.length || !incoming) break;
+      }
+      request = null;
+      const entries = page.rows.flatMap(row => row.attachments.map(file => {
+        const button = retry('Open', () => openFile(page, file, button));
+        button.setAttribute('aria-label', `Open ${file.filename}`);
+        const box = el('div', { class: 'chat-file chat-attachment-entry' },
+          el('span', { class: 'chat-file-name', text: file.filename }),
+          el('time', { datetime: row.at, text: messageTime(row.at) }), button);
+        return box;
+      }));
+      status.textContent = incomplete ? 'Some records could not be checked.'
+        : entries.length ? '' : page.nextCursor ? 'No matching attachments found on this page.' : 'No matching attachments found during this browse.';
+      setKids(results, entries, page.nextCursor
+        ? retry('Older', () => load(page.nextCursor))
+        : retry('Refresh', () => load(null, true)));
+    };
+
+    const pauseWalk = () => {
+      if (!request) return;
+      request.abort();
+      request = null;
+      const retryCursor = incoming;
+      status.textContent = 'Attachment browsing paused.';
+      setKids(results, retry('Continue', () => load(retryCursor)));
+    };
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') pauseWalk();
+    };
+
+    const kinds = [['photo', 'Photos'], ['video', 'Videos'], ['voice', 'Voice'], ['file', 'Files']];
+    const kindButtons = kinds.map(([value, label]) => retry(label, () => {
+      kind = value;
+      for (const [index, button] of kindButtons.entries()) button.setAttribute('aria-pressed', String(kinds[index][0] === kind));
+      void load(null, true);
+    }));
+    for (const button of kindButtons) button.setAttribute('aria-pressed', 'false');
+    controls.append(...kindButtons);
+    const onStorage = event => {
+      if ((event.key === TOKEN_KEY || event.key === null) && bearer() !== authorization) closeSheet();
+    };
+    sheet({ title: 'Attachments', onClose: () => {
+      current = false;
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('storage', onStorage);
+      clear();
+      v.attachmentSheet = false;
+    } }, controls, status, results, preview);
+    v.attachmentSheet = { record, authorization, openedAt: now() };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('storage', onStorage);
+  }
+
   // ── media display (§4.8) ──
   attachmentNode(v, a) {
     const label = `${a.filename}${a.size ? ` · ${humanSize(a.size)}` : ''}`;
@@ -1565,14 +1750,14 @@ class ChatsPage {
     v.media.set(a.sha256, url);
     this.showMedia(a, box, btn, url);
   }
-  showMedia(a, box, btn, url) {
+  showMedia(a, box, btn, url, { autoSave = true } = {}) {
     let node;
     if (a.display === 'image') node = el('img', { class: 'chat-img', src: url, alt: a.filename });
     else if (a.display === 'video') node = el('video', { class: 'chat-video', src: url, controls: true });
     else if (a.display === 'audio') node = el('audio', { class: 'chat-audio', src: url, controls: true });
     else node = el('a', { class: 'btn-quiet chat-download', href: url, download: a.filename, text: `Save ${a.filename}` });
     btn.replaceWith(node);
-    if (a.display === 'file') node.click();
+    if (a.display === 'file' && autoSave) node.click();
   }
 
   // ── one poller per browser (§4.8) ──
@@ -1614,7 +1799,19 @@ class ChatsPage {
     else if (m.type === 'withdraw' && m.tab) { this.announcements.delete(m.tab); if (this.leader) this.replan(); }
     else if (m.type === 'who') this.announce();
     else if (m.type === 'spent' && this.leader) this.scheduler.spend(Number(m.at) || now());
+    else if (m.type === 'attachment-access-unverified' || m.type === 'attachment-context-observed') this.clearUnverifiedAttachmentSheet(m);
     else if (m.type === 'result') this.applyResult(m);
+  }
+
+  clearUnverifiedAttachmentSheet(message) {
+    const v = this.view;
+    const sheet = v?.attachmentSheet;
+    if (sheet && this.device.record === sheet.record && bearer() === sheet.authorization
+      && message.ref === refString(v.ref) && message.machineId === sheet.record?.machineId
+      && message.deviceId === sheet.record?.deviceId && message.keyHash === sheet.record?.keyHash
+      && Number.isFinite(message.startedAt) && message.startedAt >= sheet.openedAt
+      && (message.type === 'attachment-access-unverified'
+        || (sheet.context && message.startedAt >= sheet.contextAt && message.context !== sheet.context))) closeSheet();
   }
 
   seekLeadership() {
@@ -1657,6 +1854,7 @@ class ChatsPage {
     if (!this.view) return;
     const mine = refString(this.view.ref);
     this.view.paused.hidden = !this.union.length || this.union.includes(mine);
+    if (this.view.attachmentSheet && !this.view.paused.hidden) closeSheet();
   }
 
   loop() {
@@ -1683,6 +1881,9 @@ class ChatsPage {
     this.scheduler.start(task, t0);
     // Snapshot the exact baseline sent: another tab's result may arrive while this read waits.
     const previous = task.mode === 'newest' ? this.quickPages.get(task.ref) || null : null;
+    const attachmentView = this.view;
+    const attachmentSheet = attachmentView?.attachmentSheet;
+    const attachmentReader = this.device.record;
     let r;
     try {
       const path = this.taskPath(task);
@@ -1691,6 +1892,21 @@ class ChatsPage {
     } catch { r = { ok: false, status: 0 }; }
     if (!this.live) return;
     this.scheduler.finish(task, now(), { status: r.status, retryAfterMs: r.retryAfterMs });
+    const contextUnverified = !r.ok || task.mode === 'fallback';
+    if (attachmentSheet && this.view === attachmentView && attachmentView.attachmentSheet === attachmentSheet
+      && task.ref === refString(attachmentView.ref)
+      && (this.device.record !== attachmentSheet.record || bearer() !== attachmentSheet.authorization
+        || (contextUnverified && t0 >= attachmentSheet.openedAt)
+        || (task.mode === 'events' && attachmentSheet.context && t0 >= attachmentSheet.contextAt
+          && r.data?.attachmentContext !== attachmentSheet.context))) closeSheet();
+    // A peer observation can clear a mismatched sheet. It never authorizes one.
+    if ((contextUnverified || task.mode === 'events') && task.ref && parseConversationRef(task.ref)?.kind === 'app' && attachmentReader?.keyHash) {
+      this.post({
+        type: contextUnverified ? 'attachment-access-unverified' : 'attachment-context-observed',
+        ref: task.ref, startedAt: t0, context: contextUnverified ? undefined : r.data?.attachmentContext,
+        machineId: attachmentReader.machineId, deviceId: attachmentReader.deviceId, keyHash: attachmentReader.keyHash,
+      });
+    }
     if (r.gone) return;
     if (task.mode === 'events' && r.status === 404) {
       (this.fallbacks || (this.fallbacks = new Set())).add(task.ref);
@@ -1749,9 +1965,17 @@ class ChatsPage {
   async pollNow(v) {
     if (!v || !v.live || v.historyPending) return;
     const ref = refString(v.ref);
-    if (this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
+    if (!v.attachmentSheet && this.leader && this.scheduler.tasks().some((t) => t.ref === ref && t.mode !== 'pool')) { this.scheduler.bump(ref, now()); this.loop(); return; }
     this.spent();
-    const r = await this.readHistory(v, this.historyPath(v, { pool: v.ref.kind !== 'slack' }));
+    const attachmentSheet = v.attachmentSheet;
+    const context = attachmentSheet?.context;
+    // An open attachment sheet needs a read that starts now, so it never shares an in-flight
+    // history read begun before the sheet opened or its context changed (readHistory dedupes by path).
+    const historyPath = this.historyPath(v, { pool: !attachmentSheet && v.ref.kind !== 'slack' });
+    const r = attachmentSheet ? await this.call('GET', historyPath) : await this.readHistory(v, historyPath);
+    if (attachmentSheet && v.attachmentSheet === attachmentSheet && this.view === v
+      && (!r.ok || this.device.record !== attachmentSheet.record || bearer() !== attachmentSheet.authorization
+        || (context && context === attachmentSheet.context && r.data?.attachmentContext !== context))) closeSheet();
     if (r.ok && v.live) this.applyHistory(v, r.data);
   }
 }

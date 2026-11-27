@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "app-attachment-sheet",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-25T06:11:48.245Z",
+  "artifactPath": "upgrades/side-effects/app-attachment-sheet.md",
+  "artifactSha256": "fe744ebe270a5e738b3e71095ac2780d7026b10ca6588385b93d5982593498ea",
+  "specPath": "docs/specs/app-attachment-browse.md",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/app-attachment-browse.eli16.md",
+    "docs/specs/app-attachment-browse.md",
+    "src/core/AppAttachmentBrowse.ts",
+    "src/core/AppAttachmentOpenToken.ts",
+    "src/server/mobileAttachmentBrowseRoutes.ts",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/side-effects/app-attachment-sheet.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Signed owner context plus browser privacy and explicit attachment opening",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/app-attachment-browse-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}
