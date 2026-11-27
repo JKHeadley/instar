@@ -62,7 +62,10 @@ describe('getDefaultJobs script-runner entries', () => {
     ]);
     expect(hc.expectedDurationMinutes).toBe(1);
     expect(hc.triageBareOk).toEqual(['healthy']);
-    expect(hc.execute.value).toContain('curl http://localhost:${INSTAR_PORT:-4321}/health');
+    // SEC-130: the detail (degradationSummary, llmReliability) is authenticated-only, so the
+    // prompt body must read /health with the bearer token.
+    expect(hc.execute.value).toContain('curl -s -H "Authorization: Bearer $AUTH" http://localhost:${INSTAR_PORT:-4321}/health');
+    expect(hc.execute.value).not.toContain('(curl http://localhost:${INSTAR_PORT:-4321}/health)');
   });
 
   it('script-job-supervisor is a daily deterministic job whose rollback body posts the pass', () => {

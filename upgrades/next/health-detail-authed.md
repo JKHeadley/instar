@@ -6,6 +6,8 @@
 
 SEC-130. `GET /health` is public. It used to return `degradationSummary` (the written notes for recent problems, which are built from runtime values such as local paths, account ids and session names) and `llmReliability` to any caller. Both are now returned only to a caller with a valid bearer token. The public answer keeps `status`, `uptime`, the `degradations` count and the gate route versions, and the `degraded` status still counts both signals.
 
+The built-in health-check job's prompt text now reads `/health` with the agent's token as well, so a health check that runs as a prompt still sees the details. An agent-awareness note's `/health` example shows the token header too.
+
 ## What to Tell Your User
 
 - **A quieter public health check**: "My public health check now only says whether I'm OK. The details of what went wrong are only shown to you and my own machines."

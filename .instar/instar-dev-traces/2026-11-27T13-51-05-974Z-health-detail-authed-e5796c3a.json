@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "health-detail-authed",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T13:51:05.974Z",
+  "artifactPath": "upgrades/side-effects/health-detail-authed.md",
+  "artifactSha256": "b118253ea0370567261d8c7f839d4e77d6e7140899e3ab7aaa095dc77b7b064a",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/data/awareness/llm-error-classes.md",
+    "tests/unit/job-scripts/default-jobs-entries.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Prompt-text and awareness-text edits so the health-check job and an awareness example send the bearer token; no runtime logic change.",
+  "eli16Path": "docs/eli16/health-check-authed-prompt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/health-detail-authed.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

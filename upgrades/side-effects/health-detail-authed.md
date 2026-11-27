@@ -14,6 +14,8 @@ Tier 1. Size: 1 source file (5 lines), 2 new unit cases (one in a new file), 1 n
 - The dashboard sends its token on every `/health` read, and no dashboard page reads either field.
 - The peer health read used for the pool (`serverHealthFromResponse`) does not read either field.
 - The mobile health summary (`healthIssues.ts`) is computed server-side.
+- The health-check job's prompt body (its narrator and rollback path) now reads `/health` with the bearer token too; see below.
+- The agent-awareness note on LLM error classes (`src/data/awareness/llm-error-classes.md`) now shows the bearer header on its `/health` example.
 
 ## Signal vs authority
 Read-side disclosure only. It grants nothing and blocks nothing; the degraded signal stays public.
@@ -27,8 +29,8 @@ Revert the commit. No state change.
 - Also pass: `server`, `middleware`, `mobile-health-issues`, `job-scripts/health-check`.
 - `tests/unit/health-llm-reliability-authed.test.ts` (new, fails on main): a real FeatureMetricsLedger with a failing component behind the real route and a configured token. Anonymous and wrong-token reads say `degraded` but carry no `llmReliability` and no component name; the bearer read carries the component.
 
-## Follow-up (not in this PR)
-The health-check job's prompt body (its rollback and narrator path) reads `/health` without the bearer token, so a health check run as a prompt rather than as its script misses the notes that are now signed-in only. Tracked as commitment CMT-022 on the M5 (m_a804869356): its own tier-1 PR with a migration step, opened by 2026-11-24 17:00 PST.
+## The health-check prompt body (folded into this PR, 2026-11-27)
+The health-check job's prompt body (its narrator and rollback path) used to read `/health` without the bearer token, so a health check run as a prompt rather than as its script would miss the now signed-in-only notes. This was first tracked separately as CMT-022. The second-pass review asked for it here, so it is now in this PR. The canonical text lives in `src/commands/init.ts` (`getDefaultJobs`, health-check `execute.value`), and the generated template `src/scaffold/templates/jobs/instar/health-check.md` matches it exactly (pinned by `tests/unit/job-scripts/default-jobs-entries.test.ts`). The token lookup is the same one the other built-in job templates use, and the token appears only inside the request header. Existing agents receive it because `PostUpdateMigrator.migrateBuiltinJobs` re-installs the built-in job templates on every update.
 
 ## Second-pass review
 
