@@ -40,9 +40,14 @@ function syntheticPack() {
   return dir;
 }
 
-test('criteria follow a fixed rule: decision, each must-convey, each must-not-convey as a critical absence', () => {
+test('criteria follow a fixed rule: decision, no wrong decision, each must-convey, each must-not-convey', () => {
+  assert.deepEqual(criteriaFor({ critical: true, mustConvey: [], mustNotConvey: [] }), [
+    { id: 'decision', absence: false, critical: false },
+    { id: 'no-wrong-decision', absence: true, critical: true },
+  ]);
   assert.deepEqual(criteriaFor({ critical: false, mustConvey: ['a', 'b'], mustNotConvey: ['c'] }), [
     { id: 'decision', absence: false, critical: false },
+    { id: 'no-wrong-decision', absence: true, critical: false },
     { id: 'convey-0', absence: false, critical: false },
     { id: 'convey-1', absence: false, critical: false },
     { id: 'avoid-0', absence: true, critical: true },
@@ -192,7 +197,7 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   assert.equal(totals.arms.full.allCriteriaPass, 4);
   assert.equal(totals.arms.reduced.allCriteriaPass, 4);
   assert.equal(totals.arms.none.allCriteriaPass, 0);
-  assert.equal(totals.arms.none.criticalFailureTrials, 2); // q1 decision is critical, failed in both repeats
+  assert.equal(totals.arms.none.criticalFailureTrials, 0); // a justified refusal fails decision, not critically
   assert.deepEqual(totals.arms.full.independence, { supported: 4 });
   assert.equal(totals.paired['full-minus-none'].better, 4);
   assert.equal(totals.arms.full.outputTokens, 20);

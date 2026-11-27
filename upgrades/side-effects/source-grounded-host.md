@@ -9,6 +9,8 @@ A manual tool plans, answers, judges and totals the private source-grounded case
 5. **Interactions.** Every step writes into a caller-chosen run directory, with owner-only permissions, and skips trials already recorded. A rerun therefore resumes rather than repeats. Each model turn runs in its own empty folder under the run's scratch folder. The folders are kept, not deleted, and a turn that leaves any file there fails as tool activity. One ordinal counter orders model completions against the first combining of judge outputs, which is what the independence check needs.
 6. **External surfaces.** An invocation uses Anthropic inference on the selected authorized subscription and OpenAI inference through the selected Codex login, and may consume quota on both. Private source, question, label, answer and judge text stays in the run directory. The totals file carries identifiers and counts only, and a test asserts that no case text reaches it.
 7. **Multiple machines.** The pack and the logins live on one machine, and the run happens there. Nothing replicates.
+Scoring rule for the case decision. Two criteria come from it. "decision" passes only when the answer reaches the reference decision and is never critical. "no-wrong-decision" is an absence criterion that fails only when the answer asserts a different decision, and it is critical when the case is. A justified refusal in the no-context arm therefore loses the decision point without being counted as a critical failure, which is what the totals are meant to show.
+
 8. **Rollback.** Remove the script or revert the commit. There is no activation, state migration or runtime caller.
 
 ## Second-pass review

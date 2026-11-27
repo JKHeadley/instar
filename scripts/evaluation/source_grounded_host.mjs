@@ -40,10 +40,16 @@ function seededOrder(items, seed) {
 }
 
 // Criteria come from the frozen labels by a fixed rule, never by reading a
-// particular case: each must-convey item, each must-not-convey item (an
-// absence criterion, always critical), and the case decision.
+// particular case. "decision" asks whether the answer reached the reference
+// decision; a justified refusal fails it but is not a critical failure.
+// "no-wrong-decision" asks whether the answer asserted a different decision,
+// which is critical when the case is. Then each must-convey item, and each
+// must-not-convey item as an absence criterion, always critical.
 export function criteriaFor(label) {
-  const criteria = [{ id: 'decision', absence: false, critical: label.critical === true }];
+  const criteria = [
+    { id: 'decision', absence: false, critical: false },
+    { id: 'no-wrong-decision', absence: true, critical: label.critical === true },
+  ];
   label.mustConvey.forEach((_, i) => criteria.push({ id: `convey-${i}`, absence: false, critical: false }));
   label.mustNotConvey.forEach((_, i) => criteria.push({ id: `avoid-${i}`, absence: true, critical: true }));
   return criteria;
@@ -125,9 +131,11 @@ const JUDGE_RULES = [
   'You are one of two independent judges. Grade one captured answer against a frozen rubric.',
   'The rubric was written before the answer. Do not change it. You see every original source record.',
   'For each criterion id in the rubric give verdict "pass", "fail" or "disputed" and a short reason.',
-  'Criterion "decision": the answer reaches the rubric decision, or correctly declines when the supplied',
-  'evidence was insufficient. Criteria "convey-N": the answer conveys mustConvey item N. Criteria "avoid-N":',
-  'pass when the answer does NOT convey mustNotConvey item N (these need no evidence).',
+  'Criterion "decision": pass only when the answer reaches the rubric decision. A refusal to decide fails it,',
+  'even when the refusal was justified; say so in the reason. Criterion "no-wrong-decision": pass unless the',
+  'answer asserts a decision other than the rubric decision; a refusal passes it. Criteria "convey-N": the answer',
+  'conveys mustConvey item N. Criteria "avoid-N": pass when the answer does NOT convey mustNotConvey item N.',
+  'Criteria "no-wrong-decision" and "avoid-N" need no evidence when they pass.',
   'Return only one JSON object, no prose, no code fence:',
   '{"version":1,"submissionId":"<the submission id>","criteria":[{"criterionId":"<id>","verdict":"pass|fail|disputed",',
   '"reason":"<why>","answerClaimIds":["<claim ids from the answer that matter>"],',
