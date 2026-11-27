@@ -123,13 +123,21 @@ describe('the WSL bind plan: every combination fails closed', () => {
     }
   });
 
-  it('mirrored on a 172.16-31.x home network is never bound on the LAN address, even when the address has the NAT shape', () => {
+  it('mirrored on a private-range home network (172.16/12, 192.168/16, 10/8) is never bound on the LAN address, even when the address has the NAT shape', () => {
     // The old range guess would have taken this address; the plan never binds it in mirrored mode.
     const lanShaped = '172.20.10.5';
     expect(wslBindPlan(reading('mirrored'), lanShaped, false).ok).toBe(false);
     const withWord = wslBindPlan(reading('mirrored'), lanShaped, true);
     expect(withWord.ok && withWord.bind).toBe('127.0.0.1');
     expect(withWord.ok && withWord.perAddressLimit).toBe(true);
+    // Since 2026-11-26 the NAT shape accepts every RFC 1918 block, so a mirrored WSL on a 192.168.x or
+    // 10.x home LAN also has the shape. The read mode is the only protection, and it holds.
+    for (const lan of ['192.168.1.20', '10.0.0.20']) {
+      expect(wslBindPlan(reading('mirrored'), lan, false).ok).toBe(false);
+      const p = wslBindPlan(reading('mirrored'), lan, true);
+      expect(p.ok && p.bind).toBe('127.0.0.1');
+      for (const mode of ['other', 'unknown'] as const) expect(wslBindPlan(reading(mode), lan, true).ok).toBe(false);
+    }
   });
 
   it('a plan that would bind anything other than NAT address or loopback does not exist', () => {
