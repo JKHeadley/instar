@@ -20,3 +20,7 @@ When this is enabled, use Copy Message Link from a message’s options. Anyone o
 ## Configuration
 
 The feature starts off. The setting is `mobilePairing.native.messageLinks.enabled`. Copying requires a configured shareable HTTPS origin. Links can be disabled without changing ordinary conversation history or pin navigation.
+
+## Evidence
+
+Not reproducible in dev — this is a new default-off feature, not a fix of observed behavior, so there is no before/after run. Focused store, browser, signed HTTP and production wiring tests cover it (tests/unit/console-chats-page.test.ts passed 54 of 54 on 2026-11-27). Real Chrome compatibility, peak scan timing and full verification remain required before activation. The quoted-reply scope decision and its independent review are recorded in `docs/specs/reports/quoted-replies-bounded-decision-20261123.md`; it describes future behavior, not an executed feature.
