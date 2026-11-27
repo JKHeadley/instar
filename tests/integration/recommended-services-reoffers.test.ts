@@ -127,4 +127,42 @@ describe('recommended services: re-offers after a real problem', () => {
     ledger.recordReofferEvent = () => { throw new Error('disk full'); };
     expect(() => handle.recordProblem('voice-unreadable', 'telegram')).not.toThrow();
   });
+
+  describe('secret-lost: a boot check over the loaded config', () => {
+    const noVault = () => { ledger.recordNo({ service: 'bitwarden', shutdown: 'none', reason: 'not-needed', origin: 'first-offer' }); clock += 1000; };
+
+    it('a missing secret after a no on Bitwarden is asked about once, with its own words, checked once per start', async () => {
+      let reads = 0;
+      build({ unresolvedSecrets: () => { reads += 1; return ['messaging.0.config.token']; } });
+      noVault();
+      await tick!();
+      await tick!();
+      expect(reads).toBe(1);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.text).toContain('no vault holding a copy');
+      expect(sent[0]!.text).toContain('/dashboard/service-yes?service=bitwarden');
+      expect(sent[0]!.text).not.toContain('messaging.0');
+      expect(ledger.reofferRows('42')[0]).toMatchObject({ kind: 'secret-lost', service: 'bitwarden', evidenceRef: 'boot' });
+      expect(ledger.effective('bitwarden').choice).toBe('no');
+    });
+
+    it('nothing missing, the switch off, or a vault already chosen: nothing is recorded', async () => {
+      build({ unresolvedSecrets: () => [] });
+      noVault();
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+      enabled = false;
+      build({ unresolvedSecrets: () => ['authToken'] });
+      await tick!();
+      expect(ledger.reofferRows()).toEqual([]);
+    });
+
+    it('a check that throws is reported, never reaches the tick, and sends nothing', async () => {
+      build({ unresolvedSecrets: () => { throw new Error('unreadable'); } });
+      noVault();
+      await expect(tick!()).resolves.toBeUndefined();
+      expect(ledger.reofferRows()).toEqual([]);
+      expect(sent).toEqual([]);
+    });
+  });
 });

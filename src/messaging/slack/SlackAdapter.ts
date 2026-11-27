@@ -2373,12 +2373,15 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       this.onMessageLogged?.(row);
     } catch (err) {
-      console.error(`[slack] onMessageLogged failed for a logged row: ${(err as Error).message}`);
+      // Normalize first: a subscriber may throw a non-Error (even null or undefined),
+      // and reading `.message` off that would escape this containment.
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[slack] onMessageLogged failed for a logged row: ${detail}`);
       DegradationReporter.getInstance().report({
         feature: 'TopicMemory.dualWrite',
         primary: 'SQLite dual-write of messages for search and summaries',
         fallback: 'Message only in slack-messages.jsonl (no search, no summary updates)',
-        reason: `onMessageLogged callback failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `onMessageLogged callback failed: ${detail}`,
         impact: 'Message may be missing from topic search and context summaries; delivery itself is unaffected.',
       });
     }

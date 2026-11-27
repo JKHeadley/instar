@@ -1,3 +1,4 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile, replaceRestartRequestFile, withRestartRequestFileAsync } from '../core/restartRequestFile.js';
 import { workBoardEnabled } from '../core/WorkCardStore.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Live-User-Channel Proof Before Done*
@@ -119,6 +120,7 @@ import { FeedbackDrainService } from '../feedback-factory/drain/FeedbackDrainSer
 import { FeedbackDrainTickProxy, resolveFeedbackDrainOwnerMachineId, type DrainTickGatewayResult } from '../feedback-factory/drain/FeedbackDrainTickProxy.js';
 import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/FeedbackFactoryDefaultsSelfHeal.js';
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
+import { deriveConsumerPromotionProposal, effectiveClaimsPerRun, promotionRecordMarker, type PromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
@@ -358,6 +360,8 @@ import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvi
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
+import { buildReadinessAccountAdmission, resolveReadinessAccountConfig } from '../feedback-factory/drain/readinessAccountAdmission.js';
+import { FeedbackTriageAccountSelector } from '../feedback-factory/triage/FeedbackTriageAccountSelector.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
 import { BlockerLifecycleLedger } from '../monitoring/BlockerLifecycleLedger.js';
@@ -388,6 +392,7 @@ import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
 import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
 import { moneyLayerShouldConstruct } from '../core/moneyLayerEnable.js';
 import { PinAttemptStore } from '../core/PinAttemptStore.js';
+import { PUBLIC_PIN_REQUEST_MAX, type PublicPinHook, type PublicPinPath, type PublicPinVerdict } from './publicPinHook.js';
 import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertResolver.js';
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
@@ -1051,6 +1056,8 @@ export class AgentServer {
   private meteredSpendGate: MeteredSpendGate | null = null;
   private spendPlanStore: RenderedPlanStore | null = null;
   private pinAttemptStore: PinAttemptStore | null = null;
+  /** SEC-135: sign-in's public PIN limits, handed to routes as ctx.publicPin. Set in the constructor. */
+  private publicPinHook: PublicPinHook | null = null;
   private meteredSweepTimer: ReturnType<typeof setInterval> | null = null;
   private spendAlertResolver: SpendAlertResolver | null = null;
   private spendAlertTimer: ReturnType<typeof setInterval> | null = null;
@@ -1143,6 +1150,8 @@ export class AgentServer {
     service: FeedbackDrainService;
     store: FeedbackDrainStore;
     promotion: FeedbackConsumerPromotionStore;
+    /** The current consumer-promotion proposal (state + hashed batch), derived fresh on every call. */
+    promotionProposal: () => PromotionProposal;
     tickProxy: FeedbackDrainTickProxy;
     checkpointBackup: (trigger: 'promotion' | 'failover') => void;
     finalizeFailoverRestore: (input: { restoredOwnerAuthorityEpoch: number; operatorDecisionRef: string; snapshotId: string; manifestChecksum: string;
@@ -1393,6 +1402,7 @@ export class AgentServer {
   }
 
   constructor(options: {
+    plannedRestartLeaseAdmission?: import('./routes.js').RouteContext['plannedRestartLeaseAdmission'];
     config: InstarConfig;
     sessionManager: SessionManager;
     terminateSessionAuthority?: SessionTerminateAuthority;
@@ -1489,6 +1499,7 @@ export class AgentServer {
     greenPrAutoMerger?: import('../monitoring/GreenPrAutoMerger.js').GreenPrAutoMerger;
     localVerify?: import('../localVerify/LocalVerifyService.js').LocalVerifyService;
     localVerifyStatus?: import('../localVerify/StatusReconciler.js').StatusReconciler;
+    localVerifyHelper?: import('../localVerify/helper/helperWiring.js').HelperRuntime;
     guardLatchStore?: import('../monitoring/GuardLatchStore.js').GuardLatchStore;
     agentStopSurfacer?: import('../monitoring/agentStopRelease.js').AgentStopSurfacer;
     workingMemory?: import('../memory/WorkingMemoryAssembler.js').WorkingMemoryAssembler;
@@ -1951,6 +1962,8 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1.7): GET /repos. */
+    ownedRepos?: () => import('./ownedRepoRoutes.js').OwnedRepoRouteDeps | null;
     /** identity-security piece 2b: the owner record on this machine (GET /owner-record). */
     ownerRecord?: () => import('./ownerRecordRoutes.js').OwnerRecordRouteDeps | null;
     /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
@@ -1986,6 +1999,8 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
+    ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
     chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
     chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** Project apps (docs/specs/project-apps.md): late-bound runtime, null where the feature is off. */
@@ -2261,52 +2276,72 @@ export class AgentServer {
       const markerId = readPinMarker(req);
       return { ip, markerId, isLocalDirect, localUnmarked: isLocalDirect && !markerId };
     };
-    /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
-    const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
-      if (c.localUnmarked && localPinBlocked(now)) {
-        res.status(429).json({
-          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
-          retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000),
-        });
-        return false;
-      }
-      if (c.isLocalDirect && !c.markerId) return true;
+    // SEC-135: admission, failure and success are decided here once and shared by sign-in, step-up
+    // and the confirm-page verifier (ctx.publicPin.verify), so the limits cannot drift apart.
+    // Sign-in and step-up render their own answers (publicPinAdmit); the confirm route renders its own.
+    type PublicPinAdmission = { ok: true } | { ok: false; limit: 'local' | 'throttle' | 'durable'; retryAfterSeconds: number };
+    const publicPinAdmission = (c: PublicPinCtx, now: number): PublicPinAdmission => {
+      if (c.localUnmarked && localPinBlocked(now)) return { ok: false, limit: 'local', retryAfterSeconds: Math.ceil(LOCAL_PIN_WINDOW_MS / 1000) };
+      if (c.isLocalDirect && !c.markerId) return { ok: true };
       const decision = pinThrottle.consult(c.ip, c.markerId, now);
-      if (!decision.allow) {
-        res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: decision.retryAfterSeconds });
-        return false;
-      }
+      if (!decision.allow) return { ok: false, limit: 'throttle', retryAfterSeconds: decision.retryAfterSeconds as number };
       if (!c.isLocalDirect && !c.markerId) {
         // Durable cross-restart backstops, never applied to a known browser: the real client's own
         // budget, and the shared unmarked budget (a restart no longer resets it).
         if ((c.ip && this.pinAttemptStore?.blocked(c.ip)) || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS)) {
-          res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
-            ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
-            : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
-          return false;
+          return { ok: false, limit: 'durable', retryAfterSeconds: this.pinAttemptStore?.windowSeconds ?? 300 };
         }
       }
-      return true;
+      return { ok: true };
     };
-    const publicPinFailure = (c: PublicPinCtx, now: number): void => {
+    /** True when the attempt may reach the compare; otherwise the 429 is already sent. */
+    const publicPinAdmit = (c: PublicPinCtx, res: Response, now: number): boolean => {
+      const admission = publicPinAdmission(c, now);
+      if (admission.ok) return true;
+      if (admission.limit === 'local') {
+        res.status(429).json({
+          error: 'Too many wrong PINs from this machine. Use a browser you have unlocked before or the paired phone app, or try again in a few minutes.',
+          retryAfterSeconds: admission.retryAfterSeconds,
+        });
+      } else if (admission.limit === 'throttle') {
+        res.status(429).json({ error: 'Too many PIN attempts. Try again later.', retryAfterSeconds: admission.retryAfterSeconds });
+      } else {
+        res.status(429).json({ error: this.pinAttemptStore?.pausedAfterCorruptLoad
+          ? 'PIN sign-in is paused for a few minutes. Use a browser you have signed in with before, your phone, or this computer.'
+          : 'Too many attempts. Try again later.', code: this.pinAttemptStore?.pausedAfterCorruptLoad ? 'pin-paused' : undefined });
+      }
+      return false;
+    };
+    /**
+     * Charge one wrong PIN. Every durable key it counts against (the caller's class budget plus any
+     * `extra` key, e.g. an approval link's per-request key) is written in ONE store write. Returns
+     * each charged key's attempts remaining (empty when there is no store).
+     */
+    const publicPinFailure = (c: PublicPinCtx, now: number, extra: ReadonlyArray<{ key: string; max?: number }> = []): Map<string, number> => {
+      const keys: Array<{ key: string; max?: number }> = [];
+      let bruteForceAlert = false;
       if (!c.isLocalDirect || c.markerId) {
-        const { alert } = pinThrottle.recordFailure(c.ip, c.markerId, now);
+        bruteForceAlert = !!pinThrottle.recordFailure(c.ip, c.markerId, now).alert;
         if (!c.isLocalDirect && !c.markerId) {
-          if (c.ip) this.pinAttemptStore?.recordFailure(c.ip);
-          this.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS);
-        }
-        if (alert) {
-          // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
-          DegradationReporter.getInstance().report({
-            feature: 'DashboardPin.bruteForce',
-            primary: 'An attack on the dashboard PIN is under way',
-            fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
-            reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
-            impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
-          });
+          if (c.ip) keys.push({ key: c.ip });
+          keys.push({ key: GLOBAL_PIN_KEY, max: GLOBAL_MAX_ATTEMPTS });
         }
       }
-      if (c.localUnmarked && recordLocalPinFailure(now) && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
+      if (c.localUnmarked && this.pinAttemptStore) keys.push({ key: LOCAL_PIN_KEY, max: LOCAL_PIN_MAX_FAILURES });
+      keys.push(...extra);
+      const remaining = this.pinAttemptStore ? this.pinAttemptStore.recordFailures(keys) : new Map<string, number>();
+      if (bruteForceAlert) {
+        // Plain-words owner alert, downstream of the self-healing cap (Self-Heal Before Notify).
+        DegradationReporter.getInstance().report({
+          feature: 'DashboardPin.bruteForce',
+          primary: 'An attack on the dashboard PIN is under way',
+          fallback: 'Unknown browsers are being refused by the hard cap; a known browser or the paired phone app still works',
+          reason: 'Sustained wrong-PIN guessing drained the unknown-source cap',
+          impact: 'To unlock, use a browser you have unlocked before, or the paired phone app.',
+        });
+      }
+      const localCapReached = c.localUnmarked && (this.pinAttemptStore ? (remaining.get(LOCAL_PIN_KEY) ?? 1) <= 0 : recordLocalPinFailureInMemory(now));
+      if (localCapReached && now - lastLocalPinAlertAt >= LOCAL_PIN_ALERT_COOLDOWN_MS) {
         lastLocalPinAlertAt = now;
         DegradationReporter.getInstance().report({
           feature: 'DashboardPin.localGuessing',
@@ -2316,11 +2351,23 @@ export class AgentServer {
           impact: 'If this was not you, a program on this machine may be trying to guess your PIN. Your PIN was not accepted.',
         });
       }
+      return remaining;
     };
     /** A correct PIN clears only this source's own counters, never a shared budget. */
     const publicPinSuccess = (c: PublicPinCtx): void => {
       pinThrottle.recordSuccess(c.ip, c.markerId);
       if (c.ip) this.pinAttemptStore?.recordSuccess(c.ip);
+    };
+    /**
+     * The PIN sign-in compares against, read the way sign-in reads it (the durable owner credential
+     * when that policy is in use, else the config). 'unreadable' when the credential read failed.
+     */
+    const readCurrentPin = (): string | null | 'unreadable' => {
+      if (this.usesDurableGraphOwnerPolicy()) {
+        try { configRef.dashboardPin = readConversationGraphOwnerCredential({ stateDir: this.config.stateDir, forceFileKey: this.config.secrets?.forceFileKey }) ?? undefined; }
+        catch { return 'unreadable'; } // @silent-fallback-ok — the caller answers 503; nothing is compared
+      }
+      return configRef.dashboardPin || null;
     };
 
     // One rule for whether this connection may unlock, shared by the unlock route
@@ -2348,9 +2395,8 @@ export class AgentServer {
       if (this.pinAttemptStore) return this.pinAttemptStore.blocked(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES);
       return now <= localPinMem.resetAt && localPinMem.count >= LOCAL_PIN_MAX_FAILURES;
     };
-    /** Records one local failure; true when this failure reached the cap (alert once). */
-    const recordLocalPinFailure = (now: number): boolean => {
-      if (this.pinAttemptStore) return this.pinAttemptStore.recordFailure(LOCAL_PIN_KEY, LOCAL_PIN_MAX_FAILURES) <= 0;
+    /** Records one local failure when there is no durable store; true when it reached the cap (alert once). */
+    const recordLocalPinFailureInMemory = (now: number): boolean => {
       if (now > localPinMem.resetAt) localPinMem = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS };
       localPinMem.count++;
       return localPinMem.count === LOCAL_PIN_MAX_FAILURES;
@@ -2358,15 +2404,69 @@ export class AgentServer {
     const LOCAL_PIN_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
     let lastLocalPinAlertAt = -Infinity;
 
+    // SEC-135 (docs/specs/sec135-approval-link-guess-bound.md §1-2): one synchronous verifier for the
+    // recommended-services confirm page, on sign-in's own limits. No await anywhere in it, so parallel
+    // requests (sign-in or confirm) cannot pass a limit together.
+    const requestKeyMem = new Map<string, { count: number; resetAt: number }>();
+    const memRequestBlocked = (key: string, now: number): boolean => {
+      const e = requestKeyMem.get(key);
+      if (e && now > e.resetAt) { requestKeyMem.delete(key); return false; }
+      return !!e && e.count >= PUBLIC_PIN_REQUEST_MAX;
+    };
+    const memRequestCharge = (key: string, now: number): void => {
+      let e = requestKeyMem.get(key);
+      if (!e || now > e.resetAt) { e = { count: 0, resetAt: now + LOCAL_PIN_WINDOW_MS }; requestKeyMem.set(key, e); }
+      e.count++;
+      if (requestKeyMem.size > 4096) { const oldest = requestKeyMem.keys().next().value; if (oldest !== undefined) requestKeyMem.delete(oldest); }
+    };
+    /** Whether the strangers' shared aggregate is used up right now (read-only). */
+    const publicAggregateFull = (now: number): boolean =>
+      pinThrottle.consult(UNATTRIBUTED_PIN_SOURCE, null, now).reason === 'global-cap'
+      || this.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_MAX_ATTEMPTS) === true;
+    const publicPinVerify = (req: Request, candidate: unknown, opts: { requestKey: string; alertKey?: string }): PublicPinVerdict => {
+      if (unlockRefusedHere(req)) return { ok: false, reason: 'insecure-connection' };
+      const current = readCurrentPin();
+      if (current === 'unreadable' || !current) return { ok: false, reason: 'unavailable' };
+      const now = Date.now();
+      const c = publicPinContext(req);
+      const path: PublicPinPath = c.isLocalDirect && !c.markerId ? 'local' : c.markerId ? 'marker' : 'public';
+      const store = this.pinAttemptStore;
+      const admission = publicPinAdmission(c, now);
+      if (!admission.ok) return { ok: false, reason: 'paused', path, retryAfterSeconds: admission.retryAfterSeconds, aggregateFull: publicAggregateFull(now) };
+      // The per-request key is enforced on all three paths, durable when the store is there, else in memory.
+      if (store ? store.blocked(opts.requestKey, PUBLIC_PIN_REQUEST_MAX) : memRequestBlocked(opts.requestKey, now)) {
+        return { ok: false, reason: 'paused', path, retryAfterSeconds: store?.windowSeconds ?? Math.ceil(LOCAL_PIN_WINDOW_MS / 1000), aggregateFull: publicAggregateFull(now) };
+      }
+      if (typeof candidate !== 'string' || !candidate) return { ok: false, reason: 'missing', path };
+      const ha = createHash('sha256').update(candidate).digest();
+      const hb = createHash('sha256').update(current).digest();
+      if (!timingSafeEqual(ha, hb)) {
+        const extra: Array<{ key: string; max?: number }> = [{ key: opts.requestKey, max: PUBLIC_PIN_REQUEST_MAX }];
+        // Stranger guesses feed the throttle's brute-force alert; marked and local ones feed the alert-only count.
+        const countAlert = path !== 'public' && !!opts.alertKey && !!store && !store.blocked(opts.alertKey, GLOBAL_MAX_ATTEMPTS);
+        if (countAlert) extra.push({ key: opts.alertKey as string, max: GLOBAL_MAX_ATTEMPTS });
+        const remaining = publicPinFailure(c, now, store ? extra : []);
+        if (!store) memRequestCharge(opts.requestKey, now);
+        if (countAlert && remaining.get(opts.alertKey as string) === 0) {
+          DegradationReporter.getInstance().report({ feature: 'DashboardPin.approvalLinkGuessing',
+            primary: 'Wrong PINs are being entered on approval links', fallback: 'Each approval link allows only a few wrong PINs',
+            reason: `${GLOBAL_MAX_ATTEMPTS} wrong PINs on approval links within the window`,
+            impact: 'If this was not you, someone may be trying to guess your PIN through an approval link.' });
+        }
+        return { ok: false, reason: 'wrong-pin', path, retryAfterSeconds: 0, aggregateFull: publicAggregateFull(now) };
+      }
+      const aggregateFull = publicAggregateFull(now);
+      publicPinSuccess(c);
+      return { ok: true, path, aggregateFull };
+    };
+    this.publicPinHook = { context: publicPinContext, verify: publicPinVerify };
+
     this.app.post('/dashboard/unlock', (req: Request, res: Response) => {
       if (unlockRefusedHere(req)) {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
         return;
       }
-      if(this.usesDurableGraphOwnerPolicy()){
-        try{configRef.dashboardPin=readConversationGraphOwnerCredential({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})??undefined;}
-        catch{return void res.status(503).json({error:'PIN authentication is temporarily unavailable.'});}
-      }
+      if (readCurrentPin() === 'unreadable') return void res.status(503).json({error:'PIN authentication is temporarily unavailable.'});
       if (!configRef.dashboardPin || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
@@ -2576,6 +2676,7 @@ export class AgentServer {
       // The same namespace the app conversation store stamps (people and roles §5).
       peopleMachineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
       holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
+      leaseFreshness: () => options.coordinator?.enabled ? options.coordinator.leaseFreshness() : null,
       // Multi-route: the real Tailscale CLI only outside a test run (a test injects its own).
       tailscaleExec: options.mobileRoutes && 'tailscaleExec' in options.mobileRoutes
         ? options.mobileRoutes.tailscaleExec ?? null
@@ -4807,6 +4908,16 @@ export class AgentServer {
         // Queue pace measures the feedback queues only on their configured operated host.
         if (ownerHost !== null && selfMachineId === ownerHost) this.feedbackDrainDb = () => store.sharedDatabase();
         const arbiter = options.intelligence ? new FeedbackReadinessArbiter(options.intelligence) : null;
+        // Readiness reuses the triage account selector (same pool, same live quota reader), read
+        // live per call: a pin or triage.accountSelectionMode set later takes effect without a restart.
+        const readinessUsageReader = options.codexLiveUsageReader !== undefined ? options.codexLiveUsageReader : buildCodexLiveUsageReader(options.config.subscriptionPool);
+        const readinessAccount = buildReadinessAccountAdmission({
+          config: () => resolveReadinessAccountConfig(options.config.feedbackFactory),
+          selector: options.subscriptionPool && readinessUsageReader
+            ? new FeedbackTriageAccountSelector(options.subscriptionPool, (opts) => readinessUsageReader(opts))
+            : null,
+          pool: options.subscriptionPool ?? null,
+        });
         let service!: FeedbackDrainService;
         service = new FeedbackDrainService({
           store,
@@ -4819,10 +4930,12 @@ export class AgentServer {
           isCanonicalOwner,
           isConsumerLive: () => consumerEnabled && options.config.feedbackFactory?.consumer?.dryRun === false && promotion.isLive(),
           consumerBatchBound: () => promotion.read()?.approvedBatchBound ?? 0,
+          consumerApprovedWorkIds: () => promotion.approvedWorkIds(),
           maxReadyScansPerTick: options.config.feedbackFactory?.drain?.maxReadyScansPerTick,
           maxClaimsPerTick: options.config.feedbackFactory?.consumer?.maxClaimsPerTick,
           maxWallClockMs: options.config.feedbackFactory?.drain?.maxWallClockMs,
           readinessChunkSize: options.config.feedbackFactory?.drain?.readinessChunkSize,
+          readinessAccount,
           raiseAttention: async (item) => {
             const enqueue = this.telegramAdapter?.createAttentionItem;
             if (!enqueue) throw new Error('durable attention enqueue unavailable');
@@ -4886,7 +4999,24 @@ export class AgentServer {
           restorePending = false;
           return { ...finalized, reconciliation };
         };
-        this.feedbackDrain = { service, store, promotion, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
+        // The exact batch the operator approves on consumer promotion (proposal-set bound):
+        // re-derived on every read and again immediately before the promote write.
+        const promotionProposal = (): PromotionProposal => {
+          const claimsPerRun = effectiveClaimsPerRun(options.config.feedbackFactory?.consumer?.maxClaimsPerTick);
+          const currentRecord = promotion.read();
+          return deriveConsumerPromotionProposal({
+            available: true,
+            restorePending,
+            isCanonicalOwner: holdsCanonicalLease(),
+            consumerEnabled,
+            configuredDryRun: options.config.feedbackFactory?.consumer?.dryRun,
+            promotionRecord: currentRecord ? { approvedBatchBound: currentRecord.approvedBatchBound, revokedAt: currentRecord.revokedAt, proposalBound: FeedbackConsumerPromotionStore.isProposalBound(currentRecord) } : null,
+            priorRecordMarker: promotionRecordMarker(currentRecord),
+            claimsPerRun,
+            claimable: store.claimableWork(claimsPerRun),
+          });
+        };
+        this.feedbackDrain = { service, store, promotion, promotionProposal, tickProxy, checkpointBackup, finalizeFailoverRestore, isRestorePending: () => restorePending,
           // The exact owner binding canAgentMutateReadiness compares, for the operator's authority proposal.
           authorityBinding: () => ({ ownerMachineId: ownerHost, ownerEpoch: options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch }) };
         // Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1). Same owner
@@ -6661,6 +6791,7 @@ export class AgentServer {
         { ...cadenceRaw, enabled: true },
       ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
+      plannedRestartLeaseAdmission: options.plannedRestartLeaseAdmission,
       windowLifecycleNow: options.windowLifecycleNow,
       windowRunLivenessAuthority,
       windowRunCadenceExecutor,
@@ -6766,6 +6897,7 @@ export class AgentServer {
       greenPrAutoMerger: options.greenPrAutoMerger ?? null,
       localVerify: options.localVerify ?? null,
       localVerifyStatus: options.localVerifyStatus ?? null,
+      localVerifyHelper: options.localVerifyHelper ?? null,
       guardLatchStore: options.guardLatchStore ?? null,
       agentStopSurfacer: options.agentStopSurfacer ?? null,
       workingMemory: options.workingMemory ?? null,
@@ -6878,6 +7010,7 @@ export class AgentServer {
       meteredLaneRuntime: this.meteredLaneRuntime,
       requestSupervisedRestart: (reason: string, requestedBy?: string) => this.requestSupervisedRestart(reason, requestedBy),
       pinAttemptStore: this.pinAttemptStore,
+      publicPin: this.publicPinHook,
       pinEntryRefusedHere: (req) => dashboardUnlockRefused(Boolean(this.directDesktopAccess), req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto']),
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
@@ -7080,6 +7213,7 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      ownedRepos: options.ownedRepos ?? null,
       ownerRecord: options.ownerRecord ?? null,
       workBoard: options.workBoard ?? null,
       workBoardLate: options.workBoardLate ?? null,
@@ -7094,6 +7228,8 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      ownerNeedsCandidate: options.ownerNeedsCandidate,
+      ownerNeedsWithdrawalJournalFor: options.ownerNeedsWithdrawalJournalFor,
       chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
       groupProjectConfirm: this.groupProjectConfirm,
       projectAppsRuntime: options.projectAppsRuntime,
@@ -8113,6 +8249,8 @@ export class AgentServer {
         listPins: options.conversationListPins !== undefined ? options.conversationListPins : (this.appConversations ? new ConversationListPinStore({ stateDir: options.config.stateDir }) : null),
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        // SEC-164 §4.5: the removed-key notice, built by createRoutes (it holds Secret Drop).
+        credentialNotice: (input) => routeCtx.appCredentialNotice?.(input),
         mediaEnabled: isMobileMediaEnabled(options.config),
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
@@ -9966,9 +10104,13 @@ export class AgentServer {
         expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         pid: process.pid,
       };
-      const tmp = `${flagPath}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, flagPath);
+      const existingUpdate = await withRestartRequestFileAsync(flagPath, () => {
+        const previous = readRestartRequestFile(flagPath);
+        const update = pendingUpdateRestartTarget(flagPath, previous);
+        if (!update) replaceRestartRequestFile(flagPath, JSON.stringify(data, null, 2), previous);
+        return update;
+      });
+      if (existingUpdate) return true;
       console.log(`[instar] supervised restart requested by ${requestedBy} (${reason})`);
       return true;
     } catch (err) {

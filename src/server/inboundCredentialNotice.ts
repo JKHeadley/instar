@@ -10,10 +10,13 @@ import {
   maskInbound, isTeamSender, teamMemberNotice, sessionRemovedKeyNote,
   type InboundMaskResult, type TeamSenderInput,
 } from '../messaging/inboundCredentialMask.js';
+import type { OwnCredentialMatcher } from '../messaging/outbound-credential-guard.js';
 
 export interface InboundCredentialDeps {
   /** Read live for every message (`security.credentialScrub.enabled`, dev-gated). */
   enabled: () => boolean;
+  /** The agent's own configured keys (bot, API and tunnel tokens), matched by exact value. Absent ⇒ patterns only. */
+  ownCredentials?: () => OwnCredentialMatcher | null;
   /** Mints a Secret Drop request for the conversation (`target` is the Telegram topic id or the Slack channel id) and returns its link, or null if it cannot. */
   mintResendLink: (input: { target: string; channel: TeamSenderInput['channel'] }) => string | null;
   /** Sends the fixed notice into the same conversation. Server-written text, never a session's. */
@@ -43,7 +46,9 @@ export class InboundCredentialNotice {
   mask(text: string, sender: TeamSenderInput): MaskedInbound {
     let enabled = false;
     try { enabled = this.deps.enabled(); } catch { enabled = false; } // @silent-fallback-ok — an unreadable switch is off, as before this change
-    const r = maskInbound(text, { enabled, onFailure: (reason) => this.safeReport(reason) });
+    let own: OwnCredentialMatcher | null = null;
+    try { own = this.deps.ownCredentials?.() ?? null; } catch { own = null; } // @silent-fallback-ok — patterns alone still mask every wall kind
+    const r = maskInbound(text, { enabled, ownCredentials: own, onFailure: (reason) => this.safeReport(reason) });
     const removed = r.outcome === 'masked' || r.outcome === 'fallback';
     let team = false;
     if (removed) {

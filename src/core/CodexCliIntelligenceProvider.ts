@@ -18,6 +18,7 @@
  * restores the previous plain-output invocation byte-for-byte.
  */
 
+import { codexToolFreeArgs } from './codexToolFreeProfile.js';
 import { execFile } from 'node:child_process';
 import { mkdtempSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -434,7 +435,8 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     return [
       // A read-only sandbox can still read local files, so a call carrying outside text
       // asks for no tools at all (docs/specs/ecosystem-idea-pipeline.md §1).
-      ...(noLocalTools ? ['--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'apps', '--disable', 'browser_use', '--disable', 'computer_use', '-c', 'mcp_servers={}'] : []),
+      // The tool-free profile also turns off web search, which Codex leaves on by default (SEC-175).
+      ...(noLocalTools ? codexToolFreeArgs() : []),
       '--model',
       model,
       '--sandbox',
@@ -578,13 +580,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
    * Flipping the kill-switch therefore re-opens this pre-existing
    * prompt-disclosure channel in addition to going token-blind.
    */
-  private evaluatePlain(
+  private async evaluatePlain(
     prompt: string,
     options: IntelligenceOptions | undefined,
     model: string,
     account: CodexCallAccount | null,
   ): Promise<string> {
     const scratchDir = resolveIntelligenceScratchDir();
+    if (options?.signal?.aborted || (options?.launchGuard && !(await options.launchGuard()))) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
 
     return new Promise((resolve, reject) => {
       const args = [
@@ -614,7 +617,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           : { subscriptionOnly: options?.requiredRoute !== undefined },
       );
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) {
         reject(new Error('CodexCliIntelligenceProvider: launch guard refused'));
         return;
       }
@@ -718,7 +721,9 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '-',
       ];
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
+      const launchAllowed = !options?.launchGuard || await options.launchGuard();
+      if (options?.signal?.aborted || !launchAllowed) {
         throw new Error('CodexCliIntelligenceProvider: launch guard refused');
       }
       const result = await spawnCodexExecJson(this.codexPath, args, {

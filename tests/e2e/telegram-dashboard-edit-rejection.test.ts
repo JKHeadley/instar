@@ -52,6 +52,21 @@ async function fixture() {
 }
 
 describe('dashboard edits through production origin startup', () => {
+  it('holds a tokenless adapter edit at active origin egress without reaching the network', async () => {
+    const f = await fixture();
+    const adapter = new TelegramAdapter({ token: undefined as never, chatId: '-100123',
+      dashboardTopicId: 5, dashboardPin: '123456' }, path.dirname(path.dirname(f.savedPath)), { suppressLifelineAutoCreate: true });
+    cleanup.push(() => adapter.stop());
+    const wire = vi.fn();
+    vi.stubGlobal('fetch', wire);
+    const send = vi.spyOn(adapter, 'sendToTopic');
+    await expect(adapter.broadcastDashboardUrl('https://fixture.example.test', 'quick'))
+      .rejects.toMatchObject({ reason: 'unregistered-credential-owner' });
+    expect(wire).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(fs.readFileSync(f.savedPath, 'utf8')).toBe(f.saved);
+  });
+
   it.each([true, false])('requires durable evidence for a managed unchanged no-op (recorded: %s)', async recorded => {
     const f = await fixture();
     if (!recorded) vi.spyOn(f.runtime.store, 'recordOutcome').mockResolvedValue({ recorded: false } as never);

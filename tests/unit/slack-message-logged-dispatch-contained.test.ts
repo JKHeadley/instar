@@ -122,6 +122,25 @@ describe('SlackAdapter onMessageLogged dispatch is contained', () => {
     expect(reported[0].reason).toContain(BOOM);
   });
 
+  it('_handleMessage: a subscriber that throws a non-Error (null) is still contained', async () => {
+    // Reading `.message` off a thrown null would itself throw and escape the guard.
+    const { adapter, messages } = createTestAdapter();
+    adapter.onMessageLogged = () => { throw null; };
+
+    await expect(
+      (adapter as any)._handleMessage.bind(adapter)({
+        user: 'U_TEST', text: 'route me despite a null throw', channel: 'C_TEST', ts: '1774829441.000013',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(messages.length).toBe(1);
+    expect(messages[0].content).toContain('route me despite a null throw');
+    const reported = DegradationReporter.getInstance().getEvents()
+      .filter((e) => e.feature === 'TopicMemory.dualWrite');
+    expect(reported.length).toBe(1);
+    expect(reported[0].reason).toContain('null');
+  });
+
   it('_handleFileShared: a throwing subscriber does not stop the file reaching its handler', async () => {
     const control = createTestAdapter();
     mockFileShare(control.adapter);

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "host-semaphore-atomic-lock",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T04:20:06.487Z",
+  "artifactPath": "upgrades/side-effects/host-semaphore-atomic-lock.md",
+  "artifactSha256": "dac3b479b84ae0acf94d028ec6d55e1c44067799e6bb599f2536a5aaffbb8923",
+  "specPath": "docs/specs/test-runner-concurrency-bound.md",
+  "coveredFiles": [
+    "src/core/hostSemaphoreCore.ts",
+    "src/core/hostSpawnSemaphore.ts",
+    "tests/unit/host-semaphore-core.test.ts",
+    "tests/unit/host-spawn-semaphore-burst-invariant.test.ts",
+    "upgrades/side-effects/host-semaphore-atomic-lock.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

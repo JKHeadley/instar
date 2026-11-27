@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T00:14:22.149Z",
+  "slug": "mac-setup-launch-and-sign-in",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/install.ts",
+      "src/commands/server.ts",
+      "src/install/doorSteps.ts"
+    ],
+    "addedLines": 23,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
