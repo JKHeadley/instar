@@ -2722,11 +2722,14 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /** identity-security piece 3d: the owner's `/approver_reset [code]` in the private chat. Wired by AgentServer. */
+  public approverResetHandler: ((args: string) => { text: string; buttons?: Array<{ text: string; data: string }> }) | null = null;
+
   /** Mobile push (docs/specs/mobile-push.md): fired after an accepted Attention hub post. Wired by AgentServer. */
   public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
-  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser' }) | null = null;
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser'; text?: string }) | null = null;
   /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
@@ -6706,6 +6709,19 @@ export class TelegramAdapter implements MessagingAdapter {
           if (typeof masked === 'string') raw[field] = masked;
         } catch { /* @silent-fallback-ok — the masker reports its own failures; delivery continues */ }
       }
+    }
+
+    // identity-security piece 3d: `/approver_reset` from the owner, in the owner's private chat, not forwarded, read
+    // here from Telegram's own updates. Handled before any session or command routing; nothing else sees it.
+    if (this.approverResetHandler && typeof msg.text === 'string' && /^\/approver_reset(@\w+)?(\s|$)/.test(msg.text) && msg.chat?.type === 'private' && msg.from) {
+      const owner = this.getOwnerUserId();
+      const raw = msg as unknown as Record<string, unknown>;
+      const forwarded = !!(raw.forward_origin || raw.forward_from || raw.forward_date);
+      if (owner && msg.from.id === owner && String(msg.chat.id) === String(owner) && !forwarded) {
+        const r = this.approverResetHandler(msg.text.replace(/^\/approver_reset(@\w+)?/, '').trim());
+        await this.sendOwnerDMWithButton(r.text, r.buttons ?? null);
+      }
+      return;
     }
 
     // Trust-journey decision 5: a text message in a sender's own private chat with the bot, read here

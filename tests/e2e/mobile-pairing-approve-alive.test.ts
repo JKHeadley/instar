@@ -23,6 +23,7 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { pairingApproveLine, pairingApproveMessage } from '../../src/server/mobilePairingApproval.js';
 import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-approve-e2e.example.dev';
 const PIN = '482913';
@@ -134,7 +135,7 @@ describe('Approve instead of a code — production wiring', () => {
     expect((await send(app, first.dev, first.deviceId, 'GET', '/mobile/device')).body).toMatchObject({ status: 'active', approvedVia: 'telegram-dm' });
 
     const presence = makeDevice();
-    expect(mp.devices.setPresenceKey(first.deviceId, presence.publicKey)).toBe('set');
+    expect(markApproverForTest(mp, first.deviceId, presence.publicKey)).toBe('set');
     const second = await redeemNew(app);
     expect(second.body.confirmWith).toEqual(['owner-phone', 'telegram', 'code']);
     const fp = mp.devices.get(second.deviceId)!.fingerprint!;

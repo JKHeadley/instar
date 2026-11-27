@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece3d-approver-recovery",
+  "sessionId": "cbc625bf-a039-4c78-b762-e62f28313a67",
+  "timestamp": "2026-11-21T20:41:56.212Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece3d-approver-recovery.md",
+  "artifactSha256": "1772f6d488f455570492cdd5368d266a453c26699b4c1d204dbf38387fa54db7",
+  "specPath": "docs/specs/identity-security-piece3d-approver-recovery.md",
+  "coveredFiles": [
+    "src/server/mobileApproverGrant.ts",
+    "src/server/mobileApproverRecovery.ts",
+    "tests/unit/identity-piece3d-recovery-flow.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "app contract fixes inside the approved 3d spec: 409 for a bad approval signature, seen checks its recoveryId, a peer recovery's app-facing shape",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}

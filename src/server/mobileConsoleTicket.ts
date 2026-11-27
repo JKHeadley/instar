@@ -10,6 +10,7 @@
  * Challenges and tickets live only in this process's memory, bound to the device and the Host
  * the request was signed for (machine-local by design: spec, Multi-machine posture).
  */
+import { approverPresenceKey, approverSigRefusal, isRecordOwnerKeyFree, mayApprove, proveCandidatePresenceKey, verifyApproverPresence, APPROVER_REQUIRED } from './mobileApprover.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -281,15 +282,21 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
     if (typeof key !== 'string' || key.length > 128 || !parseDevicePublicKey(key)) { res.status(400).json({ error: 'bad-public-key' }); return; }
     const d = svc.devices.get(deviceId);
     if (!d) { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    // identity-security piece 3a (mobile-approver-mark §3.2): this route stores a key only for a device that may
+    // approve. Any other device becomes an approver by the private-chat claim or an approver's grant.
+    // A key that is already an owner key in the record may be registered here by the device that holds it (§7: the
+    // mark is agent-wide); its possession proof is checked below.
+    if (!mayApprove(svc, deviceId) && !isRecordOwnerKeyFree(svc, deviceId, key)) { res.status(403).json({ error: 'approver-required', detail: 'Update the Instar app to set this device up to approve.' }); return; }
     if (d.publicKey && samePublicKey(key, d.publicKey)) { res.status(400).json({ error: 'bad-public-key', detail: 'The presence key must differ from the device key.' }); return; }
     // Proof of possession: the key signs, so a wrong or broken key is refused now, not stored.
-    if (!verifyPresenceSignature(key, presenceEnrollMessage(deviceId, signedHost(req, svc, deviceId), key), body.proof)) {
+    if (!proveCandidatePresenceKey(key, presenceEnrollMessage(deviceId, signedHost(req, svc, deviceId), key), body.proof)) {
       st().audit.record({ event: 'refused', deviceId, reason: 'presence-proof-invalid' });
       res.status(400).json({ error: 'presence-proof-invalid' });
       return;
     }
     // Same key again (as decoded bytes) is idempotent: store the stored text form.
-    const stored = d.presenceKey && samePublicKey(key, d.presenceKey) ? d.presenceKey : key;
+    const held = approverPresenceKey(svc, deviceId); // piece 3a: the key on file, read through the one reader
+    const stored = held && samePublicKey(key, held) ? held : key;
     let r: ReturnType<typeof svc.devices.setPresenceKey>;
     try { r = svc.devices.setPresenceKey(deviceId, stored); } catch (err) {
       svc.deps.reportDegradation?.('MobileConsoleTicket.presenceKey', err);
@@ -314,7 +321,8 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
     if (!deviceId) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const d = svc.devices.get(deviceId);
-    if (!d?.presenceKey) { res.status(409).json({ error: 'presence-key-missing' }); return; }
+    const approverKey = approverPresenceKey(svc, deviceId); // identity-security piece 3a: only an approving device
+    if (!approverKey) { res.status(403).json(APPROVER_REQUIRED); return; }
     const host = signedHost(req, svc, deviceId);
     const c = st().challenges.consume(body.challenge);
     if (!c || c.deviceId !== deviceId || c.host !== host) {
@@ -322,9 +330,11 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
       res.status(401).json({ error: 'challenge-invalid' });
       return;
     }
-    if (!verifyPresenceSignature(d.presenceKey, presenceMessage(deviceId, host, body.challenge as string), body.presenceSig)) {
-      st().audit.record({ event: 'refused', deviceId, reason: 'presence-invalid' });
-      res.status(401).json({ error: 'presence-invalid' });
+    const presenceCheck = verifyApproverPresence(svc, deviceId, presenceMessage(deviceId, host, body.challenge as string), body.presenceSig);
+    if (presenceCheck !== 'ok') {
+      const r = approverSigRefusal(presenceCheck, 'presence-invalid');
+      st().audit.record({ event: 'refused', deviceId, reason: r.body.error });
+      res.status(r.status).json(r.body);
       return;
     }
     const t = st().tickets.issue(deviceId, host);

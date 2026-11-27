@@ -6711,6 +6711,9 @@ export function createRoutes(ctx: RouteContext): Router {
       status: isDegraded ? 'degraded' : 'ok',
       uptime: uptimeMs,
       uptimeHuman: formatUptime(uptimeMs),
+      // identity-security piece 3a: devices approve only through the owner record here (the Windows app checks this
+      // before pairing; the agent's own rule is the protection).
+      approverMark: 1,
       degradations: degradations.length,
       ...(llmReliability ? { llmReliability } : {}),
       ...(degradations.length > 0 && {

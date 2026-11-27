@@ -22,6 +22,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { presenceEnrollMessage, presenceMessage } from '../../src/server/mobileConsoleTicket.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-console-ticket-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -87,6 +88,7 @@ describe('console ticket — production wiring', () => {
     };
     expect((await send('/mobile/device/confirm', { code })).body.status).toBe('active');
 
+    markApproverForTest(server.mobilePairing!, deviceId, presence.publicKey); // piece 3a: the route stores a key only for an approver
     const enrolled = await send('/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) });
     expect(enrolled.status).toBe(200);
     const challenge = await send('/mobile/console-ticket/challenge', {});

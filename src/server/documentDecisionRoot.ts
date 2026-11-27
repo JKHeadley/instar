@@ -14,14 +14,15 @@ import { notADocumentDevice } from './documentPageRoutes.js';
 
 export interface DecisionRootDeps {
   device: (id: string) => DeviceRecord | null;
-  /** activeOwnerPhone(svc, id) in production. */
+  /** In production `activeOwnerPhone(svc, id) && mayApprove(svc, id)`: an active owner phone whose presence key
+   *  the approver module accepts (identity piece 3a; only that module reads presence keys). */
   activeOwnerPhone: (id: string) => boolean;
   agentHasTelegramOwner: () => boolean;
 }
 
 export function documentDecisionRootOf(deps: DecisionRootDeps, deviceId: string): 'telegram' | 'pin' | null {
   let d = deps.device(deviceId);
-  if (!d || !deps.activeOwnerPhone(deviceId) || !d.presenceKey) return null;
+  if (!d || !deps.activeOwnerPhone(deviceId)) return null; // piece 3a: the approver check covers the presence key
   if (notADocumentDevice(d)) return null;
   for (let depth = 0; depth < 8 && d; depth++) {
     if (isBrowserDevice(d) || d.deviceKind === 'computer') return null;

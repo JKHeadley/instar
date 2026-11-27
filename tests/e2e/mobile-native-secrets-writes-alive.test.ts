@@ -24,6 +24,7 @@ import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
 import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo-secrets-writes-e2e.example.dev';
 const PIN = '424242';
@@ -106,7 +107,8 @@ describe('phone ask and cancel — production wiring', () => {
     const before = await signed('GET', '/mobile/permissions/slips');
     expect(before.status).toBe(200);
     expect(before.body.actions).toEqual({ state: 'available', reason: null, presenceKey: false });
-    expect((await signed('POST', '/mobile/permissions/challenge', { action: 'set-feature', target: 'dashboard-file-viewer', value: 'disabled' })).status).toBe(409);
+    expect((await signed('POST', '/mobile/permissions/challenge', { action: 'set-feature', target: 'dashboard-file-viewer', value: 'disabled' })).status).toBe(403); // piece 3a: not an approver yet
+    markApproverForTest(server.mobilePairing!, deviceId, presence.publicKey); // piece 3a: the route stores a key only for an approver
     expect((await signed('POST', '/mobile/device/presence-key', { publicKey: presence.publicKey, proof: presence.sign(presenceEnrollMessage(deviceId, HOST, presence.publicKey)) })).status).toBe(200);
 
     const act = async (issue: Record<string, unknown>, route: string, body: Record<string, unknown>, line: string) => {

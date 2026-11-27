@@ -7161,7 +7161,12 @@ export async function startServer(options: StartOptions): Promise<void> {
       };
       // Unproved, the inviter serves as it always did; only the joiner must wait.
       const acquireHeldBack = (): boolean => config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.pairRole === 'joiner' && noLinkProved();
-      const survivorMayHold = (): boolean => !config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId
+      // identity-security piece 2d §2: a preferred captain below the minimum build counts as no preference.
+      const effectivePreferred = (): string | null => {
+        const p = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null;
+        return p && ownerRecordWiring.ownerRecordIsBelow(p) ? null : p;
+      };
+      const survivorMayHold = (): boolean => !effectivePreferred()
         && livePeerIds().length > 0
         && !acquireHeldBack();
       _noLastingLinkYet = noLinkProved;
@@ -7356,6 +7361,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           store: leaseStore,
           tunnel: leaseTransport,
           presumedDeadHolders: leaseLiveness.presumedDeadHolders,
+          // identity-security piece 2d §2: take the lease from a holder below the minimum build, within a budget.
+          belowFenceHolders: () => ownerRecordWiring.belowFenceHoldersForLease(config.stateDir),
+          onBelowFenceTakeover: (holder) => ownerRecordWiring.noteBelowFenceTakeover(config.stateDir, holder),
           // a2a-single-agent-identity §1.1: an unprovisioned machine yields the lease ONLY to
           // a live provisioned sibling (read live; adoption lifting the posture needs no restart).
           isLeaseEligible: () => _identityLeaseEligible(),
@@ -7542,7 +7550,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             selfMachineId: () => selfMachineId,
             // F4's ONE authority — the SAME config field shouldDeferToPreferred
             // reads (multiMachine.leaseSelfHeal.preferredAwakeMachineId).
-            preferredAwakeMachineId: () => config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null,
+            // identity-security piece 2d §2: never hand the lease back to a captain below the minimum build.
+            preferredAwakeMachineId: () => { const p = config.multiMachine?.leaseSelfHeal?.preferredAwakeMachineId ?? null; return p && ownerRecordWiring.ownerRecordIsBelow(p) ? null : p; },
             holdsLease: () => coordinator.holdsLease(),
             currentEpoch: () => leaseCoordinator.currentEpoch(),
             preferredHealth: (machineId) => {
@@ -31821,6 +31830,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           ownerRecordWiring.startOwnerRecordSync({
             config: config as never, identity: meshIdMgr, selfMachineId: meshSelfId,
+            // Piece 2d: conversation delivery to a below machine only for a session it actively owns at that epoch.
+            activeOwner: (sk) => { const reg = sessionOwnershipRegistry; const r = reg?.read(sk); return r && reg ? { owner: reg.ownerOf(sk), epoch: r.ownershipEpoch, status: r.status } : { owner: null, epoch: 0, status: null }; },
             send: async (machineId, cmd) => { const url = peerUrl(machineId); if (!url) return { ok: false }; const r = await meshClient.send({ machineId, url }, cmd, 0); return { ok: r.ok, result: r.result }; },
             leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
             splitBrain: () => coordinator.getSyncStatus().splitBrainState !== 'clear',
@@ -33730,6 +33741,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
+              // identity-security piece 2d §2c: the fence refuses a forward exactly when the record no longer names that
+              // owner at that epoch, which is what stale-ownership means: the router looks the owner up again, never
+              // marks it suspect.
+              if (res.reason === 'below-minimum-build') return { messageId: env.messageId, accepted: 'stale-ownership' };
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
             // The placement hop is a deliverMessage at the epoch the CAS just

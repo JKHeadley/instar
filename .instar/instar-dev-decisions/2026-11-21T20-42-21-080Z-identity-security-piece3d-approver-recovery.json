@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-21T20:42:21.080Z",
+  "slug": "identity-security-piece3d-approver-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/mobileApproverGrant.ts",
+      "src/server/mobileApproverRecovery.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

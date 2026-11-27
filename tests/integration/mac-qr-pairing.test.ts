@@ -89,7 +89,7 @@ async function ownerPhone(ctx: Ctx, opts: { presence?: boolean } = {}) {
   const p = await waiting(ctx);
   expect(ctx.svc.approvePending(p.deviceId, 'dashboard-pin')).toBe('approved');
   const presence = makeDevice();
-  if (opts.presence !== false) expect(ctx.svc.devices.setPresenceKey(p.deviceId, presence.publicKey)).toBe('set');
+  if (opts.presence !== false) expect(markApproverForTest(ctx.svc, p.deviceId, presence.publicKey)).toBe('set');
   return { ...p, presence };
 }
 async function faceId(ctx: Ctx, phone: Awaited<ReturnType<typeof ownerPhone>>, id: string, action: 'approve' | 'decline', fingerprint: string) {
@@ -100,6 +100,7 @@ async function faceId(ctx: Ctx, phone: Awaited<ReturnType<typeof ownerPhone>>, i
 }
 
 import { deviceFingerprint } from '../../src/core/MobileDeviceKeys.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 async function phoneMint(ctx: Ctx, phone: Awaited<ReturnType<typeof ownerPhone>>, macKey: string, name = 'Studio Mac') {
   return signed(ctx.app, phone.dev, phone.deviceId, 'POST', '/mobile/pairing-codes', { forDevice: { publicKey: macKey, name } });

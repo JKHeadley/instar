@@ -157,6 +157,11 @@ export interface LeaseTransport {
 export type LeaseHoldVerdict = 'holding' | 'suspended' | 'not-current-holder' | 'renewal-lapsed' | 'superseded';
 
 export interface LeaseCoordinatorDeps {
+  /** identity-security piece 2d §2: holders below the minimum build that may be taken over now (within the
+   *  takeover budget). Read live; absent or empty refuses nothing. */
+  belowFenceHolders?: () => ReadonlySet<string>;
+  /** Counts a takeover from a below holder against its budget. */
+  onBelowFenceTakeover?: (holder: string) => void;
   lease: FencedLease;
   store: LeaseStore;
   tunnel?: LeaseTransport;
@@ -1338,6 +1343,8 @@ export class LeaseCoordinator {
       this.d.presumedDeadHolders(),
       this.now(),
       this.staleHolderOpts(view.lease),
+      undefined,
+      this.d.belowFenceHolders?.(),
     ).can;
   }
 
@@ -1508,7 +1515,7 @@ export class LeaseCoordinator {
           && (view.lease.holder !== this.selfMachineId || view.epoch > this.bootReclaim.lease.epoch)) {
         this.finishReclaim('superseded', 'none', null);
       }
-      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease));
+      const decision = this.fl.canAcquire(view.lease, dead, this.now(), this.staleHolderOpts(view.lease), undefined, this.d.belowFenceHolders?.());
       if (!decision.can) {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
@@ -1568,6 +1575,7 @@ export class LeaseCoordinator {
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (view.lease && decision.reason.startsWith('holder-below-minimum-build')) this.d.onBelowFenceTakeover?.(view.lease.holder);
         if (stallVerdict?.claim) this.noteStallConfirmedClaim(stallVerdict, { holder: view.lease && !view.lease.released ? view.lease.holder : '(none)', epoch: view.epoch }, candidate.epoch);
         if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
           this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };

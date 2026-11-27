@@ -30,6 +30,7 @@ import { TeamConfinement, placeForEntry } from '../../src/users/TeamConfinement.
 import { ConversationListPinStore } from '../../src/core/ConversationListPins.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const GRANTED = 50;
@@ -120,7 +121,7 @@ function phone(e: Env, person?: { userId: string; role: 'msp' | 'team' }): Phone
   if (!c.ok) throw new Error('setup');
   e.pairing.devices.applyConfirm(c.device.id, { ok: true });
   e.pairing.keyLedger!.recordActivation(e.pairing.devices.get(c.device.id)!, 'telegram-dm', new Date(Date.now() - 60_000).toISOString());
-  e.pairing.devices.setPresenceKey(c.device.id, makeDevice().publicKey);
+  markApproverForTest(e.pairing, c.device.id, makeDevice().publicKey);
   return { dev, id: c.device.id };
 }
 let tick = 0;

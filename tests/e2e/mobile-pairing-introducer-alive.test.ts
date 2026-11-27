@@ -22,6 +22,7 @@ import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { IdentityManager } from '../../src/threadline/client/IdentityManager.js';
 import { deriveIntroducerKey, introduceLine, introducePresenceMessage } from '../../src/server/mobilePairingIntroducer.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const A_HOST = 'echo-intro-e2e.example.dev';
 const N_HOST = 'pairtest-intro-e2e.example.dev';
@@ -100,7 +101,7 @@ describe('Add a new agent from a phone you already use — production wiring', (
     const owner = await redeemNew(A);
     expect(A.mp.approvePending(owner.deviceId, 'dashboard-pin')).toBe('approved');
     const presence = makeDevice();
-    expect(A.mp.devices.setPresenceKey(owner.deviceId, presence.publicKey)).toBe('set');
+    expect(markApproverForTest(A.mp, owner.deviceId, presence.publicKey)).toBe('set');
 
     // The same phone, with a new key, waits on N and is offered the paired agent first.
     const w = await redeemNew(N);

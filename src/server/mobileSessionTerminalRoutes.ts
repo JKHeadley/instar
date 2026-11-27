@@ -22,6 +22,7 @@
  * without those routes answers as before, so a mixed pool never types through a weaker path.
  */
 import crypto from 'node:crypto';
+import { isBelowFence } from '../core/meshVerbFenceClass.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Router, type Request, type Response, type NextFunction } from 'express';
@@ -381,6 +382,11 @@ export function createMobileSessionTerminalRouter(deps: MobileSessionTerminalDep
     const machine = g.relayTo as string;
     const nick = verifiedEntityName(machine, deps.nicknameOf(machine)) ?? null;
     let answer: { status: number; body: unknown } | null = null;
+    // identity-security piece 2d §2b: no remote input to a machine below the minimum build; reading stays allowed.
+    if (method === 'POST' && isBelowFence(machine)) {
+      res.status(409).json({ error: 'below-minimum-build', message: 'That computer runs an older version of Instar, so typing into its sessions is paused until it is updated.' });
+      return 409;
+    }
     try { answer = await deps.relayToPeer!(machine, method, path, body); } catch { answer = null; } // @silent-fallback-ok — answered as not answering, below
     if (!answer) { res.status(503).json({ error: 'peer-unreachable', reason: peerUnreachableReason(nick) }); return null; }
     const b = answer.body && typeof answer.body === 'object' && !Array.isArray(answer.body) ? answer.body as Record<string, unknown> : null;

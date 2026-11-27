@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "identity-security-piece2d-fence-lease-routing",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-23T01:39:29.567Z",
+  "artifactPath": "upgrades/side-effects/identity-security-piece2d-fence-lease-routing.md",
+  "artifactSha256": "956a589202a9ddb2fc5c1c893b9f0fe9ecf636ba90dab68db39348dc184e75fd",
+  "specPath": "docs/specs/identity-security-piece2d-fence-lease-routing.md",
+  "coveredFiles": [
+    "src/core/LeaseCoordinator.ts",
+    "upgrades/side-effects/identity-security-piece2d-fence-lease-routing.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Normal main/prerequisite merge preserving existing approved build fence and main lease safety; no new effect authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

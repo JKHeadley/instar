@@ -60,13 +60,15 @@ export interface PushTrigger {
 }
 
 /** A notice the alert names. The device's own (caller-chosen) name is never put in an alert. */
-export type PushSubject = 'browser-approval' | 'phone-approval' | 'trust-request' | 'trust-device-change';
+export type PushSubject = 'browser-approval' | 'phone-approval' | 'trust-request' | 'trust-device-change' | 'approver-recovery';
 const SUBJECT_TEXT: Record<PushSubject, string> = {
   'browser-approval': 'A new browser wants to use your conversations. Tap to approve with Face ID.',
   'phone-approval': 'A new phone wants to pair. Tap to approve with Face ID.',
   // App trust approval (docs/specs/app-trust-approval.md): fixed words, never the change's own text.
   'trust-request': 'Your agent is asking to change what it may do without asking you. Open Instar to decide.',
   'trust-device-change': 'Which devices can approve changes for your agent has changed. Open Instar to check.',
+  // identity-security piece 3d: a recovery of the right to approve is running. Fixed words.
+  'approver-recovery': 'Someone started recovering who can approve changes for your agent. Open Instar: any device that can approve can stop it.',
 };
 /** Android text never says "Face ID" (mobile-android-app §2.3 Message). */
 const FCM_SUBJECT_TEXT: Record<PushSubject, string> = {
@@ -74,6 +76,7 @@ const FCM_SUBJECT_TEXT: Record<PushSubject, string> = {
   'phone-approval': 'A new phone wants to pair. Tap to approve.',
   'trust-request': 'Your agent is asking to change what it may do without asking you. Open Instar to decide.',
   'trust-device-change': 'Which devices can approve changes for your agent has changed. Open Instar to check.',
+  'approver-recovery': 'Someone started recovering who can approve changes for your agent. Open Instar: any device that can approve can stop it.',
 };
 export type PushProvider = 'apns' | 'fcm';
 

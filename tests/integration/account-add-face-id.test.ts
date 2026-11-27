@@ -18,6 +18,7 @@ import { mountMobilePermissionsRoutes, permissionPresenceMessage, type MobilePer
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { markApproverForTest } from '../../src/server/mobileApprover.js';
 
 const HOST = 'echo.example.dev';
 const ROUTE = '/mobile/accounts/add';
@@ -64,7 +65,7 @@ function setup(opts: { withCore?: boolean } = {}) {
     const created = svc.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST, ...(person ?? {}) });
     if (!created.ok) throw new Error('setup');
     svc.devices.applyConfirm(created.device.id, { ok: true });
-    svc.devices.setPresenceKey(created.device.id, presence.publicKey);
+    markApproverForTest(svc, created.device.id, presence.publicKey);
     return { dev, presence, id: created.device.id };
   };
   return { app, calls, pair, dir };
