@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "project-registry-approved-anchors",
+  "sessionId": "559b0c03-cadb-4294-9ea6-3ed1a043b221",
+  "timestamp": "2026-11-27T21:36:35.358Z",
+  "artifactPath": "upgrades/side-effects/project-registry-approved-anchors.md",
+  "artifactSha256": "709971acc98c0c433e4c09c7b3454bedb3a852f834a1ca8bf870afa875f554b7",
+  "specPath": "docs/specs/project-registry-approved-anchors.md",
+  "coveredFiles": [
+    "docs/specs/project-registry-approved-anchors.md",
+    "src/core/ChiefOfStaffProjectProgress.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/server/routes.ts",
+    "tests/integration/chief-of-staff-check-in.test.ts",
+    "tests/unit/chief-of-staff-project-progress.test.ts",
+    "tests/unit/chief-of-staff-surfaces-wiring.test.ts",
+    "upgrades/side-effects/project-registry-approved-anchors.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This repair changes an authenticated registry write boundary and progress evidence diagnostics.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

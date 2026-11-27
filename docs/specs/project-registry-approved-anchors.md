@@ -73,4 +73,4 @@ The project registry remains responsible for stored state. The pilot admits a wr
 - **fleet:** expose the operator-authenticated storage path after verification. No project acquires an anchor until an operator designates a source or a reviewed batch applies one.
 - **graduation criterion:** the exact saved purpose recovers across fresh start, restart and compaction for the Context Budget and Chief of Staff pilot conversations. Unverified sources and absent registry state retain ordinary recovery.
 - **dark-window:** project records retain their current behavior before an operator selects a verified source.
-- **ladder:** disposable agent, then Studio pilot, then multi-machine pilot once trusted remote lookup is verified, then routine operator use.
+- **ladder:** not applicable: no new runtime flag. The existing operator authorization and verified source requirements govern every registry write. The pilot steps above verify readiness before broader use.

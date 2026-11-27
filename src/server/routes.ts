@@ -26596,19 +26596,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.put('/projects/:id/alignment-anchor', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    const { expectedVersion, conversationKey, sourceMessage } = req.body ?? {};
     if (ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session')) !== true) {
       res.status(403).json({ error: 'dashboard-operator-session-required' });
       return;
     }
+    if (refuseUnsupportedFields(res, req.body, ['expectedVersion', 'conversationKey', 'sourceMessage'])) return;
+    const { expectedVersion, conversationKey, sourceMessage } = req.body ?? {};
     const tracker = ctx.initiativeTracker;
     if (!tracker || ctx.state.readOnly || (ctx.coordinator?.enabled && !ctx.coordinator.holdsLease())) {
       res.status(503).json({ error: 'project-registry-writer-unavailable' });
       return;
     }
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof conversationKey !== 'string' ||
-      !/^telegram:[1-9]\d*$/.test(conversationKey) || !isProjectAnchorSourceMessage(sourceMessage) ||
-      req.body.anchor !== undefined) {
+      !/^telegram:[1-9]\d*$/.test(conversationKey) || !isProjectAnchorSourceMessage(sourceMessage)) {
       res.status(400).json({ error: 'invalid-project-anchor' });
       return;
     }

@@ -167,7 +167,11 @@ describe('source-backed project purpose', () => {
     await request(a).put(route).set(auth).send(body).expect(403);
     await request(a).put(route).set(operator).send({ ...body, expectedVersion: project.version! + 1 })
       .expect(409, { error: 'project-anchor-stale-or-not-stored' });
-    await request(a).put(route).set(operator).send({ ...body, anchor: { done: [] } }).expect(400);
+    await request(a).put(route).set(operator).send({ ...body, anchor: { done: [] }, ignored: true }).expect(400, {
+      error: 'Unsupported field(s): anchor, ignored',
+      unsupportedFields: ['anchor', 'ignored'],
+      supportedFields: ['expectedVersion', 'conversationKey', 'sourceMessage'],
+    });
     await request(a).put(route).set(operator).send({
       ...body, sourceMessage: { ...sourceMessage, messageId: '12' },
     }).expect(409, { error: 'project-anchor-owner-source-unverified' });

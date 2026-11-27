@@ -599,6 +599,9 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
+  // PUT /projects/:id/alignment-anchor updates the shared project registry on the coordinator.
+  reg.add({ kind: 'route', method: 'PUT', pathPrefix: '/projects/', domain: 'cluster-shared' });
+
   // POST /chief-of-staff/* — the Chief of Staff owner routes (docs/specs/chief-of-staff-topic.md §4/§5):
   // check-in, project bind, Unpark/Confirm-done taps, the one-shot triage view. Each writes a record to
   // THIS machine's own chief-of-staff journal stream (origin = this machine, single writer), which

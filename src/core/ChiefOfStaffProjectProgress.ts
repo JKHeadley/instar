@@ -2,6 +2,7 @@ import type { BoundProject } from './ChiefOfStaffLoop.js';
 import type { Initiative } from './InitiativeTracker.js';
 import type { GhExec } from './ChiefOfStaffEvidence.js';
 import type { LocalVerifyRecord } from '../localVerify/record.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 const HOUR_MS = 3_600_000;
 const STALL_MS = 6 * HOUR_MS;
@@ -38,6 +39,13 @@ export async function readProgressWithin<T>(deadline: number, read: () => Promis
       new Promise<T>((resolve) => { timer = setTimeout(() => resolve(unavailable), remaining); }),
     ]);
   } catch {
+    DegradationReporter.getInstance().report({
+      feature: 'chiefOfStaff.projectProgress.doneItemRead',
+      primary: 'Read the project completion evidence',
+      fallback: 'Leave the item unverified',
+      reason: 'The bounded evidence read failed.',
+      impact: 'The failed read cannot verify completion.',
+    });
     return unavailable;
   } finally {
     if (timer) clearTimeout(timer);
@@ -64,6 +72,15 @@ export async function readProjectEvidencePage(url: URL, deadline = performance.n
       text += decoder.decode(value, { stream: true });
     }
   } catch {
+    if (!ctl.signal.aborted) {
+      DegradationReporter.getInstance().report({
+        feature: 'chiefOfStaff.projectProgress.evidencePageRead',
+        primary: 'Read the linked project evidence page',
+        fallback: 'Treat the page as unavailable',
+        reason: 'The evidence page could not be read.',
+        impact: 'The failed read supplies no progress evidence.',
+      });
+    }
     return null;
   } finally {
     clearTimeout(timer);
@@ -122,9 +139,9 @@ function linkedPull(child: Initiative, repos: string[]): { repo: string; pr: num
 
 async function readPullProgress(deps: PullProgressDeps, repo: string, pr: number): Promise<VerifiedProgress[] | null> {
   if (!deps.gh) return null;
-  const request = deps.gh(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid,baseRefName,mergedAt,state']);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    const request = deps.gh(['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefOid,baseRefName,mergedAt,state']);
     const result = await Promise.race([
       request,
       new Promise<null>((resolve) => { timeout = setTimeout(() => resolve(null), 5000); }),
@@ -148,7 +165,13 @@ async function readPullProgress(deps: PullProgressDeps, repo: string, pr: number
     }
     return evidence;
   } catch {
-    // An unreadable source cannot establish a stall.
+    DegradationReporter.getInstance().report({
+      feature: 'chiefOfStaff.projectProgress.pullEvidenceRead',
+      primary: 'Read pull request and verification evidence',
+      fallback: 'Leave the evidence sample incomplete',
+      reason: 'The pull request or verification evidence could not be read.',
+      impact: 'An incomplete evidence sample cannot establish a stall.',
+    });
     return null;
   } finally {
     if (timeout) clearTimeout(timeout);

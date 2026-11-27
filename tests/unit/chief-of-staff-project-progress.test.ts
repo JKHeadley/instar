@@ -3,6 +3,7 @@ import { buildProjectCoverage, buildProjectProgressReader, matchProgressProject,
 import type { Initiative } from '../../src/core/InitiativeTracker.js';
 import type { BoundProject } from '../../src/core/ChiefOfStaffLoop.js';
 import type { LocalVerifyRecord } from '../../src/localVerify/record.js';
+import { DegradationReporter } from '../../src/monitoring/DegradationReporter.js';
 
 const now = Date.parse('2026-11-26T22:00:00Z');
 const baseline = '2026-11-26T10:00:00Z';
@@ -75,6 +76,34 @@ describe('verified Chief of Staff project progress', () => {
       expect(await readProjectEvidencePage(url)).toBe('bounded evidence');
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports unexpected evidence page failures and ignores its own timeout', async () => {
+    vi.useFakeTimers();
+    const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+    const fetcher = vi.fn()
+      .mockImplementationOnce((_url, { signal }: { signal: AbortSignal }) => new Promise<Response>((_, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      }))
+      .mockRejectedValueOnce(new Error('connection lost'));
+    vi.stubGlobal('fetch', fetcher);
+    const url = new URL('https://example.com/evidence');
+    try {
+      const bounded = readProjectEvidencePage(url, performance.now() + 20);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(await bounded).toBeNull();
+      expect(report).not.toHaveBeenCalled();
+
+      expect(await readProjectEvidencePage(url)).toBeNull();
+      expect(report).toHaveBeenCalledTimes(1);
+      expect(report).toHaveBeenCalledWith(expect.objectContaining({
+        feature: 'chiefOfStaff.projectProgress.evidencePageRead',
+      }));
+    } finally {
+      report.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
     }
   });
 

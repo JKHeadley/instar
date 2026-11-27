@@ -69,7 +69,10 @@ describe('Chief of Staff surfaces — static wiring', () => {
     const routes = read('src/server/routes.ts');
     expect(routes).toContain("router.post('/chief-of-staff/check-in'");
     expect(routes).toContain("if (!requireMandatePin(req, res)) return;\n    const r = ctx.chiefOfStaffLoop.checkIn(");
-    expect(routes).toContain("conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null");
+    const statusRoute = routes.split("router.get('/chief-of-staff',")[1]?.split('\n  router.')[0] ?? '';
+    expect(statusRoute).toContain("const cosTopic = ctx.state.get<number>('chief-of-staff-topic');");
+    expect(statusRoute).toContain("const conversationKey = typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null;");
+    expect(statusRoute).toMatch(/res\.json\(\{[\s\S]*?,\s*conversationKey,/);
   });
   it('the CLAUDE.md template carries the marker line and the registry row; the console carries the feature', () => {
     const t = read('src/scaffold/templates.ts');
