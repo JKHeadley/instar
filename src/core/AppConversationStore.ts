@@ -1376,7 +1376,51 @@ export class AppConversationStore {
       const loc = this.db.prepare('SELECT byteOffset, byteLength FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, r.eventId) as { byteOffset: number; byteLength: number } | undefined;
       const ev = loc ? this.readEventAt(canonicalKey, loc.byteOffset, loc.byteLength) : null;
       if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message')) continue;
-      out.push({
+      out.push(this.projectMessage(ev));
+    }
+    out.reverse();
+    const oldest = page[page.length - 1];
+    return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+  }
+
+  /** Resolve using the selected ID domain. Legacy ambiguity is decided by the caller's ACL. */
+  exactMessageCandidates(conversationKey: string, target: string, kind: 'event' | 'message' | 'legacy'): BrowsedMessage[] {
+    const key = canonicalConversationKey(conversationKey);
+    type Hit = { eventId: string; at: string; domain: 'event' | 'message' };
+    const rows = this.db.prepare(
+      `SELECT eventId, at, 'event' AS domain FROM events WHERE canonicalKey = ? AND eventId = ? AND kind IN ('message', 'media-message')
+       UNION ALL SELECT eventId, at, 'message' AS domain FROM messages WHERE canonicalKey = ? AND messageId = ?`,
+    ).all(key, kind === 'message' ? null : target, key, kind === 'event' ? null : target) as Hit[];
+    const candidates = new Map<string, BrowsedMessage>();
+    for (const row of rows) {
+      const message = this.readIndexedMessage(key, row);
+      if (row.domain === 'message' && message.messageId !== target) throw new Error('indexed message identity unavailable');
+      candidates.set(message.eventId, message);
+    }
+    return [...candidates.values()];
+  }
+
+  /** Descending physical chunk, anchored to a raw stored tuple independent of delimiter syntax. */
+  exactMessageChunk(conversationKey: string, boundary: { at: string; eventId: string }, inclusive: boolean, limit: number): BrowsedMessage[] {
+    const key = canonicalConversationKey(conversationKey);
+    const comparison = inclusive ? '<=' : '<';
+    const rows = this.db.prepare(
+      `SELECT eventId, at FROM messages WHERE canonicalKey = ? AND (at, eventId) ${comparison} (?, ?) ORDER BY at DESC, eventId DESC LIMIT ?`,
+    ).all(key, boundary.at, boundary.eventId, limit) as Array<{ eventId: string; at: string }>;
+    return rows.map((row) => this.readIndexedMessage(key, row));
+  }
+
+  private readIndexedMessage(key: string, row: { eventId: string; at: string }): BrowsedMessage {
+    const ev = this.getEvent(key, row.eventId);
+    if (!ev || (ev.kind !== 'message' && ev.kind !== 'media-message') || ev.eventId !== row.eventId
+      || ev.at !== row.at || canonicalConversationKey(ev.conversationKey) !== key) {
+      throw new Error('indexed message unavailable');
+    }
+    return this.projectMessage(ev);
+  }
+
+  private projectMessage(ev: StoredAppEvent & (MessageEvent | MediaMessageEvent)): BrowsedMessage {
+    return {
         eventId: ev.eventId, messageId: ev.messageId, role: ev.role, text: ev.text, at: ev.at, machineId: ev.machineId,
         deliveryState: this.deliveryState(ev.messageId) ?? 'pending',
         ...(ev.origin ? { origin: ev.origin } : {}), ...(ev.receivedAt ? { receivedAt: ev.receivedAt } : {}),
@@ -1387,11 +1431,7 @@ export class AppConversationStore {
         ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
         ...((ev as MessageEvent).systemSource ? { systemSource: (ev as MessageEvent).systemSource } : {}),
         ...(ev.accessStamp ? { accessStamp: ev.accessStamp } : {}),
-      });
-    }
-    out.reverse();
-    const oldest = page[page.length - 1];
-    return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+    };
   }
 
   /**

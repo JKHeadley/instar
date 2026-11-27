@@ -1,0 +1,169 @@
+{
+  "pairing": {
+    "agent": "echo",
+    "origin": "https://echo.example.dev",
+    "conversationRef": "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c"
+  },
+  "conversationCapability": {
+    "copyLink": true,
+    "exactContext": true
+  },
+  "recent": {
+    "selectedRow": {
+      "eventId": "event-54",
+      "messageId": "message-54",
+      "at": "2025-01-01T00:54:00.000Z",
+      "role": "agent",
+      "text": "Message 54"
+    },
+    "copy": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "platform": "app",
+        "ref": "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+        "messageId": "message-54",
+        "url": "https://echo.example.dev/dashboard/console/message-link-v1/#/work/chats?c=app%3Aa71db421-e49c-4e29-91ca-f9bc545d3d1c&e=event-54",
+        "servedBy": "m1",
+        "authority": {
+          "kind": "native-store",
+          "scope": "held-source"
+        },
+        "position": {
+          "eventId": "event-54",
+          "at": "2025-01-01T00:54:00.000Z"
+        }
+      }
+    },
+    "open": {
+      "status": 200,
+      "body": {
+        "conversationKey": "a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+        "messages": [
+          {
+            "eventId": "event-53",
+            "messageId": "message-53",
+            "at": "2025-01-01T00:53:00.000Z",
+            "role": "agent",
+            "text": "Message 53"
+          },
+          {
+            "eventId": "event-54",
+            "messageId": "message-54",
+            "at": "2025-01-01T00:54:00.000Z",
+            "role": "agent",
+            "text": "Message 54"
+          }
+        ],
+        "nextBefore": null,
+        "nextContextBefore": {
+          "at": "2025-01-01T00:53:00.000Z",
+          "eventId": "event-53"
+        },
+        "anchorApplied": {
+          "requestedTarget": "event-54",
+          "messageId": "message-54",
+          "eventId": "event-54"
+        }
+      }
+    }
+  },
+  "offPageOlder": {
+    "selectedRow": {
+      "eventId": "event-02",
+      "messageId": "message-02",
+      "at": "2025-01-01T00:02:00.000Z",
+      "role": "agent",
+      "text": "Message 02"
+    },
+    "copy": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "platform": "app",
+        "ref": "app:a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+        "messageId": "message-02",
+        "url": "https://echo.example.dev/dashboard/console/message-link-v1/#/work/chats?c=app%3Aa71db421-e49c-4e29-91ca-f9bc545d3d1c&e=event-02",
+        "servedBy": "m1",
+        "authority": {
+          "kind": "native-store",
+          "scope": "held-source"
+        },
+        "position": {
+          "eventId": "event-02",
+          "at": "2025-01-01T00:02:00.000Z"
+        }
+      }
+    },
+    "open": {
+      "status": 200,
+      "body": {
+        "conversationKey": "a71db421-e49c-4e29-91ca-f9bc545d3d1c",
+        "messages": [
+          {
+            "eventId": "event-01",
+            "messageId": "message-01",
+            "at": "2025-01-01T00:01:00.000Z",
+            "role": "agent",
+            "text": "Message 01"
+          },
+          {
+            "eventId": "event-02",
+            "messageId": "message-02",
+            "at": "2025-01-01T00:02:00.000Z",
+            "role": "agent",
+            "text": "Message 02"
+          }
+        ],
+        "nextBefore": null,
+        "nextContextBefore": {
+          "at": "2025-01-01T00:01:00.000Z",
+          "eventId": "event-01"
+        },
+        "anchorApplied": {
+          "requestedTarget": "event-02",
+          "messageId": "message-02",
+          "eventId": "event-02"
+        }
+      }
+    }
+  },
+  "denied": {
+    "target": "event-20",
+    "copy": {
+      "status": 409,
+      "body": {
+        "error": "message-not-available-here",
+        "retryable": true,
+        "scope": "held-source"
+      }
+    },
+    "open": {
+      "status": 409,
+      "body": {
+        "error": "message-not-available-here",
+        "retryable": true,
+        "scope": "held-source"
+      }
+    }
+  },
+  "removed": {
+    "target": "event-removed",
+    "copy": {
+      "status": 409,
+      "body": {
+        "error": "message-not-available-here",
+        "retryable": true,
+        "scope": "held-source"
+      }
+    },
+    "open": {
+      "status": 409,
+      "body": {
+        "error": "message-not-available-here",
+        "retryable": true,
+        "scope": "held-source"
+      }
+    }
+  }
+}

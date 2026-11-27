@@ -24,6 +24,9 @@ import { createConversationBindAuth } from '../../src/core/conversationBindToken
 import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
+import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
+import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MobileChatRequestStore } from '../../src/core/MobileChatRequests.js';
 import { originLeaseDependencyFixture } from '../helpers/originLeaseDependency.js';
@@ -38,7 +41,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-native-conversations.test.ts' });
 });
 
-interface Opts { lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
+interface Opts { links?: boolean; lease?: { held: boolean }; holdsLease?: () => boolean; recording?: { on: boolean }; dispatchThrows?: boolean; nativeOff?: boolean; dispatchDelayMs?: number }
 
 function setup(opts: Opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mnative-'));
@@ -47,7 +50,7 @@ function setup(opts: Opts = {}) {
     projectName: 'echo', projectDir: dir, stateDir: dir, port: 0, authToken: 'tok-1', developmentAgent: true,
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Justin' },
     // Multi-route off: these tests cover the single paired host (mobile-multi-route.md, flag off).
-    mobilePairing: { ...(opts.nativeOff ? { native: { enabled: false } } : {}), multiRoute: { enabled: false } },
+    mobilePairing: { native: { enabled: !opts.nativeOff, messageLinks: { enabled: opts.links } }, multiRoute: { enabled: false } },
   };
   const lease = opts.lease ?? { held: true };
   const recording = opts.recording ?? { on: true };
@@ -86,7 +89,7 @@ function setup(opts: Opts = {}) {
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createRoutes(ctx));
-  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', now: () => Date.now() }));
+  app.use(createMobileConversationRouter({ config: config as never, pairing, service: svc, machineId: () => 'm1', now: () => Date.now(), messageLinkOrigin: () => `https://${HOST}` }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
@@ -343,6 +346,63 @@ describe('native app conversations — a Telegram-free agent keeps its own lease
   });
 });
 
+
+describe('signed exact App message links', () => {
+  it('returns recent and off-page fixtures, masking denied and removed targets alike', async () => {
+    const e = setup({ links: true });
+    await new MachineIdentityManager(e.dir).generateIdentity({ name: 'exact link test machine' });
+    e.pairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: e.dir, signer: loadMachineSigner(e.dir)!, keyLookup: identityKeyLookup(e.dir) });
+    const key = await create(e);
+    const lookup = (id: string) => signed(e, 'GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=${id}&targetKind=event`);
+    const context = (id: string) => signed(e, 'GET', `/mobile/chat/app/${key}/message-context?target=${id}&targetKind=event&limit=2`);
+    for (let i = 0; i < 55; i++) {
+      const n = String(i).padStart(2, '0');
+      e.svc.store.append({ kind: 'message', eventId: `event-${n}`, messageId: `message-${n}`, conversationKey: key,
+        machineId: 'm1', at: new Date(Date.UTC(2025, 0, 1, 0, i)).toISOString(), role: 'agent', text: `Message ${n}` });
+    }
+    const automatic = await signed(e, 'GET', `/mobile/chat/app/${key}/messages?limit=50`);
+    expect(automatic.body.messages.some((m: { eventId: string }) => m.eventId === 'event-02')).toBe(false);
+    const list = await signed(e, 'GET', '/mobile/conversations');
+    expect(list.body.conversations[0].messageActions).toMatchObject({ copyLink: true, exactContext: true, visibility: expect.any(String) });
+    for (const n of ['54', '02']) {
+      const link = await lookup(`event-${n}`);
+      expect(link.status, JSON.stringify(link.body)).toBe(200);
+      expect(link.body).toMatchObject({ ref: `app:${key}`, messageId: `message-${n}`, servedBy: 'm1',
+        url: `https://${HOST}/dashboard/console/message-link-v1/#/work/chats?c=app%3A${key}&e=event-${n}`,
+        position: { eventId: `event-${n}` } });
+      const page = await context(`event-${n}`);
+      expect(page.status).toBe(200);
+      expect(page.body.anchorApplied).toEqual({ requestedTarget: `event-${n}`, messageId: `message-${n}`, eventId: `event-${n}` });
+      expect(page.body.messages.at(-1).eventId).toBe(`event-${n}`);
+      expect(page.body.nextBefore).toBeNull();
+      const { at, eventId } = page.body.nextContextBefore;
+      const continued = await signed(e, 'GET', `/mobile/chat/app/${key}/message-context?beforeAt=${encodeURIComponent(at)}&beforeEventId=${eventId}`);
+      expect(continued.status).toBe(200);
+      expect(continued.body.contextApplied).toEqual({ at, eventId });
+    }
+    const canRead = e.pairing.mayReadStored.bind(e.pairing);
+    const spy = vi.spyOn(e.pairing, 'mayReadStored').mockImplementation((person, ref, row) =>
+      (row as { eventId?: string }).eventId !== 'event-20' && canRead(person, ref, row));
+    try {
+      for (const id of ['event-20', 'event-removed']) {
+        for (const response of [await lookup(id), await context(id)]) {
+          expect(response.status).toBe(409);
+          expect(response.body).toEqual({ error: 'message-not-available-here', retryable: true, scope: 'held-source' });
+        }
+      }
+    } finally { spy.mockRestore(); }
+  });
+
+  it('keeps both exact routes dark by default and leaves ordinary history available', async () => {
+    const e = setup();
+    const key = await create(e);
+    const r = await signed(e, 'GET', `/mobile/conversations/message-link?ref=app%3A${key}&messageId=event-a`);
+    expect(r.status).toBe(503);
+    expect(r.body.error).toBe('message-link-unavailable');
+    expect((await signed(e, 'GET', `/mobile/chat/app/${key}/message-context?target=event-a`)).status).toBe(503);
+    expect((await signed(e, 'GET', `/mobile/chat/app/${key}/messages`)).status).toBe(200);
+  });
+});
 
 describe('durable browser outbox — original stop age', () => {
   afterEach(() => vi.restoreAllMocks());

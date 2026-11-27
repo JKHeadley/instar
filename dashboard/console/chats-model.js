@@ -44,6 +44,8 @@ export function listRows(body) {
     out.push({
       ref, key: refString(ref), kind, kindLabel: KIND_LABEL[kind],
       title: typeof r.title === 'string' && r.title.trim() ? r.title : (kind === 'telegram' ? `Topic ${r.id}` : 'Untitled'),
+      ...(r.messageActions?.copyLink === true ? { copyLink: true } : {}),
+      ...(r.messageActions?.exactContext === true ? { exactContext: true, exactVisibility: r.messageActions.visibility } : {}),
       lastActivity: typeof r.lastActivity === 'string' ? r.lastActivity : null,
       preview: typeof r.lastPreview === 'string' ? r.lastPreview : '',
       machine: typeof r.machine === 'string' ? r.machine : null,

@@ -4287,6 +4287,9 @@ export interface InstarConfig {
      */
     native?: {
       enabled?: boolean;
+      /** Exact message locators and context reads. Off unless explicitly enabled. */
+      messageLinks?: { enabled?: boolean };
+      contextHistoryMaxConcurrentScans?: number;
       /**
        * Media in app conversations (docs/specs/mobile-native-chat-media.md). `enabled` omitted ⇒
        * the developmentAgent gate decides, read at boot; needs `native.enabled`.

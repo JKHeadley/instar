@@ -1,3 +1,6 @@
+import { setImmediate as yieldScan } from 'node:timers/promises';
+import { exactMessageReader } from './mobileExactMessageAuthority.js';
+import { MESSAGE_LINK_CONSOLE_PATH } from './dashboardPaths.js';
 import {DegradationReporter} from '../monitoring/DegradationReporter.js';
 /**
  * Native app conversations — the device routes (docs/specs/mobile-native-conversations.md,
@@ -246,6 +249,7 @@ async function fetchPeers<T>(
 }
 
 export interface MobileConversationRouteDeps {
+  messageLinkOrigin?: () => string | null;
   config: InstarConfig;
   /** SEC-164 §4.5: posts the fixed removed-key notice into the conversation. Absent ⇒ no notice. */
   credentialNotice?: ((input: { conversationKey: string; messageId: string }) => void) | null;
@@ -426,6 +430,8 @@ export function answerRouted(s: Pick<AppConversationService, 'appendDelivery' | 
   }
   return { status: 503, body: { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.' } };
 }
+
+const exactScans = new WeakMap<object, number>();
 
 export function createMobileConversationRouter(deps: MobileConversationRouteDeps): Router {
   const router = Router();
@@ -679,6 +685,24 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.json({ dryRun: true, canApply: false, rows, nextCursor: page.nextCursor });
   });
 
+  const exactVisibilityKey = crypto.randomBytes(32);
+  const exactVisibility = (person: ResolvedPerson | null, key: string) => {
+    const grants = person?.role === 'team' && person.userId
+      ? deps.pairing.teamLog()?.readerGrantsOf(person.userId, key) ?? null : null;
+    return crypto.createHmac('sha256', exactVisibilityKey)
+      .update(JSON.stringify([person?.role, person?.userId, person?.tier, grants])).digest('base64url');
+  };
+  const exactLinksOn = () => deps.config.mobilePairing?.native?.messageLinks?.enabled === true;
+  const exactLinkOrigin = () => {
+    const raw = deps.messageLinkOrigin?.();
+    if (!raw) return null;
+    try {
+      const url = new URL(raw);
+      return url.protocol === 'https:' && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash
+        ? url.origin : null;
+    } catch { return null; } // @silent-fallback-ok — no valid shareable origin means no copy capability
+  };
+
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
     try {
     if (!readGate(req, res)) return;
@@ -691,6 +715,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // (filtered after the merge, so the cursor still advances over rows it does not see).
     const person = devicePersonOf(req);
     /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
+    const messageLinkSupport = exactLinksOn() ? { messageLinkSupport: { exactContext: true } } : {};
     const shownPreview = (r: ConversationListRow): ConversationListRow => {
       if (person?.role !== 'team' || r.platform !== 'app') return r;
       const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
@@ -700,7 +725,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return !svc!.store.isHiddenConversation?.(String(r.id)) && deviceMayUse(deps.pairing, req, String(r.id));
-    }).map(shownPreview);
+    }).map(shownPreview).map((row) => row.platform === 'app' && exactLinksOn() ? {
+      ...row, messageActions: { exactContext: true, visibility: exactVisibility(person, String(row.id)), ...(exactLinkOrigin() ? { copyLink: true } : {}) },
+    } : row);
     // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
     // anything after the page is unread. A Bearer read without a forwarded reader gets none.
     const unread = unreadOn();
@@ -795,7 +822,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withTree(withFields(visible(m.rows), false));
-      res.json({ ownerProjectionVersion: 1, conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      res.json({ ownerProjectionVersion: 1, conversations: rows, ...messageLinkSupport, nextCursor: m.nextCursor, ...pinnedOut(rows), ...listPinsOut(rows, []), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -835,7 +862,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
     const treeRows = withTree(rows);
-    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
+    res.json({ ownerProjectionVersion: 1, conversations: treeRows, ...messageLinkSupport, ...pinnedOut(rows), ...listPinsOut(treeRows, peerPages.flatMap((p) => p.rows)), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...(unreadProjectionIncomplete ? { unreadProjectionIncomplete: true } : {}), ...totals(rows, beyond) });
     } catch (error) {
       if (error instanceof Error && error.message === 'work-card-visibility-unavailable') {
         res.status(503).json({ error: 'work-card-visibility-unavailable', detail: 'Work card visibility is not ready. Try this read again.' });
@@ -1248,6 +1275,131 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!allowed(req, res, key)) return;
     if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     res.json(getAppPoolMoves()?.placement(key) ?? { conversationRef: `app:${key}`, moved: false, bringBack: { can: false } });
+  });
+
+  const exactUnavailable = (res: Response) =>
+    res.status(409).json({ error: 'message-not-available-here', retryable: true, scope: 'held-source' });
+  const exactKind = (value: unknown) => value === undefined ? 'legacy' as const
+    : value === 'event' || value === 'message' || value === 'legacy' ? value : null;
+  const exactScalar = (value: unknown, max: number): value is string =>
+    typeof value === 'string' && value.length > 0 && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
+  const exactGate = (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const principal = principalOf(req);
+    if (principal.kind !== 'device' && principal.kind !== 'token') {
+      res.status(403).json({ error: 'reader-required' }); return null;
+    }
+    if ((principal.kind === 'token' && req.query.reader !== 'owner')
+      || (principal.kind === 'device' && req.query.reader !== undefined)) {
+      res.status(403).json({ error: 'reader-required' }); return null;
+    }
+    if (!exactLinksOn() || !deps.pairing.enabled() || !svc) {
+      res.status(503).json({ error: 'message-link-unavailable' }); return null;
+    }
+    return exactMessageReader(deps.pairing, req);
+  };
+  const currentExactReader = (read: () => ResolvedPerson | null, res: Response, key: string) => {
+    const person = read();
+    if (!person) { res.status(403).json({ error: 'reader-no-longer-authorized' }); return null; }
+    if (!deps.pairing.mayUse(person, key, 'read') || !svc!.liveConversation(key)) {
+      res.status(404).json({ error: 'unknown-conversation' }); return null;
+    }
+    return person;
+  };
+  const exactTarget = (key: string, target: string, kind: 'event' | 'message' | 'legacy', person: ResolvedPerson) => {
+    const candidates = svc!.store.exactMessageCandidates(key, target, kind)
+      .filter((row) => deps.pairing.mayReadStored(person, key, row));
+    return candidates.length === 1 ? candidates[0]! : null;
+  };
+
+  router.get('/mobile/conversations/message-link', (req, res) => {
+    const read = exactGate(req, res);
+    if (!read) return;
+    const ref = typeof req.query.ref === 'string' && req.query.ref.startsWith('app:') ? canonicalConversationRef(req.query.ref) : null;
+    const target = req.query.messageId;
+    const kind = exactKind(req.query.targetKind);
+    if (!ref?.startsWith('app:') || !exactScalar(target, 128) || !kind
+      || Object.keys(req.query).some((k) => !['ref', 'messageId', 'targetKind', 'reader'].includes(k))) {
+      res.status(400).json({ error: 'bad-message-link-request' }); return;
+    }
+    const key = ref.slice(4);
+    const person = currentExactReader(read, res, key);
+    if (!person) return;
+    try {
+      const row = exactTarget(key, target, kind, person);
+      if (!row) { exactUnavailable(res); return; }
+      const origin = exactLinkOrigin();
+      if (!origin) { res.status(503).json({ error: 'message-link-unavailable' }); return; }
+      const url = origin + MESSAGE_LINK_CONSOLE_PATH + '#/work/chats?' + new URLSearchParams({ c: ref, e: row.eventId });
+      res.json({ ok: true, platform: 'app', ref, messageId: row.messageId, url, servedBy: deps.machineId(),
+        authority: { kind: 'native-store', scope: 'held-source' }, position: { at: row.at, eventId: row.eventId } });
+    } catch {
+      exactUnavailable(res); // @silent-fallback-ok — exact source failures and invisible targets share a wire outcome
+    }
+  });
+
+  router.get('/mobile/chat/app/:key/message-context', async (req, res) => {
+    const read = exactGate(req, res);
+    if (!read) return;
+    const key = String(req.params.key).toLowerCase();
+    const { target, targetKind, beforeAt, beforeEventId, limit } = req.query;
+    const direct = target !== undefined;
+    const kind = exactKind(targetKind);
+    if (!isAppConversationKey(key) || (direct
+      ? !exactScalar(target, 128) || !kind || beforeAt !== undefined || beforeEventId !== undefined
+      : targetKind !== undefined || !exactScalar(beforeAt, 64) || !exactScalar(beforeEventId, 128))
+      || (limit !== undefined && (typeof limit !== 'string' || !/^[0-9]+$/.test(limit)))
+      || Object.keys(req.query).some((k) => !['target', 'targetKind', 'beforeAt', 'beforeEventId', 'limit', 'reader'].includes(k))) {
+      res.status(400).json({ error: 'bad-message-target' }); return;
+    }
+    const person = currentExactReader(read, res, key);
+    if (!person) return;
+    const admittedVisibility = exactVisibility(person, key);
+    const store = svc!.store;
+    const active = exactScans.get(store) ?? 0;
+    const configured = deps.config.mobilePairing?.native?.contextHistoryMaxConcurrentScans;
+    const capacity = typeof configured === 'number' && Number.isSafeInteger(configured) && configured > 0 ? configured : 2;
+    if (active >= capacity) { res.status(429).json({ error: 'context-busy', retryable: true }); return; }
+    exactScans.set(store, active + 1);
+    try {
+      const n = Math.max(1, Math.min(100, limit === undefined ? 50 : Number(limit)));
+      const boundary = direct ? exactTarget(key, target as string, kind!, person) : exactTarget(key, beforeEventId as string, 'event', person);
+      if (!boundary || (!direct && boundary.at !== beforeAt)) { exactUnavailable(res); return; }
+      const visible: BrowsedMessage[] = [];
+      let cursor = boundary;
+      let inclusive = direct;
+      for (;;) {
+        const chunk = store.exactMessageChunk(key, cursor, inclusive, 32);
+        inclusive = false;
+        for (const row of chunk) {
+          if (deps.pairing.mayReadStored(person, key, row)) visible.push(row);
+          if (visible.length > n) break;
+        }
+        if (visible.length > n || chunk.length < 32) break;
+        cursor = chunk[chunk.length - 1]!;
+        await yieldScan();
+        if (res.destroyed) return;
+      }
+      const current = currentExactReader(read, res, key);
+      if (!current) return;
+      if (admittedVisibility !== exactVisibility(current, key) || !deps.pairing.mayReadStored(current, key, boundary)
+        || visible.some((row) => !deps.pairing.mayReadStored(current, key, row))
+        || (direct && !visible.some((row) => row.eventId === boundary.eventId))) { exactUnavailable(res); return; }
+      const page = visible.slice(0, n);
+      const oldest = page[page.length - 1];
+      const originCtx = { display: deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY }, selfMachineId: deps.machineId() };
+      const messages = page.reverse().map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
+      res.json({ conversationKey: key, messages, nextBefore: null, visibility: admittedVisibility,
+        nextContextBefore: visible.length > n && oldest ? { at: oldest.at, eventId: oldest.eventId } : null,
+        ...(direct ? { anchorApplied: { requestedTarget: target, messageId: boundary.messageId, eventId: boundary.eventId } }
+          : { contextApplied: { at: boundary.at, eventId: boundary.eventId } }) });
+    } catch {
+      if (!res.destroyed) exactUnavailable(res); // @silent-fallback-ok — incomplete context cannot return a partial private page
+    } finally {
+      const remaining = (exactScans.get(store) ?? 1) - 1;
+      if (remaining) exactScans.set(store, remaining);
+      else exactScans.delete(store);
+    }
   });
 
   // ── Browse ──

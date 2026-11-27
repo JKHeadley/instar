@@ -2656,6 +2656,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  ['GET', /^\/mobile\/conversations\/message-link$/.source],
   ['GET', /^\/mobile\/conversations\/parent-preview$/.source],
   // Keyword search over conversations (conversation-search): the same visibility as the list.
   ['GET', /^\/mobile\/conversations\/search$/.source],
@@ -2668,6 +2669,7 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/messages$`).source],
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/message-context$`).source],
   ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/events$`).source],
   ['GET', /^\/telegram\/topics$/.source],
   ['GET', /^\/topic\/list$/.source],
@@ -2709,6 +2711,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  ['GET', /^\/mobile\/conversations\/message-link$/, 'guest'],
   // Instar Documents (instar-document-viewer §4.2): the document list and summary are guest reads; the
   // documents router applies its own per-document access (mayDoDocument) on top.
   ['GET', /^\/mobile\/docs$/, 'guest'],
@@ -2734,6 +2737,7 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['POST', /^\/mobile\/conversations\/pins$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/message-context$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), 'guest'],
   ['GET', /^\/mobile\/media\/[0-9a-f]{64}$/, 'guest'],
@@ -2769,7 +2773,7 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   if (m) return { ref: `slack:${m[1]}`, op: method === 'POST' ? 'send' : 'read' };
   m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
-  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/pins|/preview/.+)?$`).exec(pathNorm);
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/message-context|/events|/pins|/preview/.+)?$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'POST' && (!m[2] || m[2] === '/pins') ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
@@ -2849,6 +2853,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/conversations\/message-link$/, statuses: active, body: 'none', conversationRef: true },
     // Imported Claude/ChatGPT history (import-from-claude-chatgpt §B.3, §D): the owner's app only, never a
     // browser device or a team member. Kept on this machine; the routes read raw for the owner.
     { method: 'GET', re: /^\/mobile\/imported-history\/(conversations|projects)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 60, bucket: 'imported-reads' },
@@ -2891,6 +2896,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/messages$`), statuses: active, conversationRef: true },
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/message-context$`), statuses: active, body: 'none', conversationRef: true },
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
     // "Open session": which session drives a conversation on this machine, plus a dashboard link. Read-only.
     { method: 'GET', re: /^\/mobile\/conversations\/session$/, statuses: active, body: 'none', conversationRef: true },

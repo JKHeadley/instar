@@ -2180,7 +2180,7 @@ export class AgentServer {
     // the same object in the integration test (no wiring drift).
     // /dashboard opens the console; the legacy page lives at /dashboard/legacy, and any
     // /dashboard?… deep link opens there (docs/specs/dashboard-console-default-and-pair-page.md).
-    mountDashboardEntryRoutes(this.app, { dashboardDir });
+    mountDashboardEntryRoutes(this.app, { dashboardDir, messageLinksOn: () => options.config.mobilePairing?.native?.messageLinks?.enabled === true });
     // The pairing code page: its own strict policy, files outside the static mount (§3.2, §3.5).
     mountPairPage(this.app, { pairDir: resolvePairDir() });
     this.app.get('/dashboard/desktop.html', (_req, res) => {
@@ -8251,6 +8251,7 @@ export class AgentServer {
         // SEC-164 §4.5: the removed-key notice, built by createRoutes (it holds Secret Drop).
         credentialNotice: (input) => routeCtx.appCredentialNotice?.(input),
         mediaEnabled: isMobileMediaEnabled(options.config),
+        messageLinkOrigin: () => options.config.tunnel?.hostname ? `https://${options.config.tunnel.hostname}` : null,
         machineId: () => this.appConversations?.deps.machineId() ?? 'local',
         sentinel: options.sentinel ?? null,
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.

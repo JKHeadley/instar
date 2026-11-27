@@ -1,0 +1,160 @@
+{
+  "spec": "docs/specs/conversation-replies-message-links.md",
+  "status": "in-progress; round2 not converged; no quoted runtime source or approval",
+  "authorFramework": "codex",
+  "externalDisclosure": "Independent installed Codex CLI gpt-6.2-astra reader. The raw helper reports crossFamily relative to its framework catalog; this Codex-authored run does not claim cross-vendor diversity. Gemini not authenticated; Grok disabled.",
+  "rounds": [
+    {
+      "round": 1,
+      "conformance": {
+        "standardsChecked": 102,
+        "degraded": false,
+        "flags": 4,
+        "fit": "weak"
+      },
+      "internalModel": "inherited authoring-session model; no override",
+      "internalReports": [
+        "docs/specs/reports/conversation-replies-message-links-adversarial-round1.md",
+        "docs/specs/reports/conversation-replies-message-links-decisions-round1.md",
+        "docs/specs/reports/conversation-replies-message-links-integration-round1.md",
+        "docs/specs/reports/conversation-replies-message-links-lessons-round1.md",
+        "docs/specs/reports/conversation-replies-message-links-scalability-round1.md",
+        "docs/specs/reports/conversation-replies-message-links-security-round1.md"
+      ],
+      "external": {
+        "status": "ok",
+        "framework": "codex-cli",
+        "model": "gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "report": "docs/specs/reports/conversation-replies-message-links-external-round1.json"
+      },
+      "designFindings": [
+        {
+          "id": "F1",
+          "finding": "Exact lookup, not page-boundary absence",
+          "proposedResolution": "D2",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F2",
+          "finding": "Authenticated complete evidence versus stripped duplicate and total legacy loss",
+          "proposedResolution": "D8,D9,D10",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F3",
+          "finding": "Automatic exact old-message navigation",
+          "proposedResolution": "D14,D16",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F4",
+          "finding": "Person-facing standalone introduction",
+          "proposedResolution": "D18",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F5",
+          "finding": "Closed wire/storage/output/link/mirror schemas",
+          "proposedResolution": "D1,D3,D13,D14,D15",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F6",
+          "finding": "Exact v3 bytes and supported-version dispatch",
+          "proposedResolution": "D6",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F7",
+          "finding": "Quote-proof validity plus independent original ACL",
+          "proposedResolution": "D7,D11",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F8",
+          "finding": "Fixed reservation/proof/replay dispositions",
+          "proposedResolution": "D4",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F9",
+          "finding": "Cached quotes revalidate without a new reply event",
+          "proposedResolution": "D12",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F10",
+          "finding": "Provider versus Instar open-time URL authority",
+          "proposedResolution": "D15",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F11",
+          "finding": "Emergency stop priority independent of quote preflight",
+          "proposedResolution": "D5",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F12",
+          "finding": "Old serving holder cannot silently ignore replyTo",
+          "proposedResolution": "D1",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        },
+        {
+          "id": "F13",
+          "finding": "Per-decision invariant basis and count",
+          "proposedResolution": "D1-D18",
+          "status": "addressed-in-round2-draft-awaiting-review"
+        }
+      ],
+      "precision": [
+        "Request-local indexed lookup reuse",
+        "Whole private-proof stripping",
+        "Standalone intro and parent-fit explanation",
+        "Explicit compatibility and uncertain provider replay"
+      ]
+    },
+    {
+      "round": 2,
+      "reviewableBodyHash": "550a5c9a66052104a32528a1ca172db6cc2b11891d996d3256457d973234b837",
+      "status": "not-converged; resumed round2 complete; author dispositions in progress",
+      "preResumeDraftBodyHash": "e06da537ddf3a14173b98ea5f11281e52e03fc28cc4940c3b42fac67804c73f5",
+      "resumedConformance": {
+        "standardsChecked": 102,
+        "degraded": false,
+        "registryCanaryValid": true,
+        "flags": 4,
+        "fit": "weak",
+        "report": "docs/specs/reports/conversation-replies-message-links-conformance-round2-resumed.json"
+      },
+      "resumedInternalReports": [
+        "docs/specs/reports/conversation-replies-message-links-security-round2-resumed.md",
+        "docs/specs/reports/conversation-replies-message-links-scalability-round2-resumed.md",
+        "docs/specs/reports/conversation-replies-message-links-adversarial-round2-resumed.md",
+        "docs/specs/reports/conversation-replies-message-links-integration-round2-resumed.md",
+        "docs/specs/reports/conversation-replies-message-links-decisions-round2-resumed.md",
+        "docs/specs/reports/conversation-replies-message-links-lessons-round2-resumed.md"
+      ],
+      "resumedExternal": {
+        "status": "ok",
+        "framework": "codex-cli",
+        "model": "gpt-6.2-astra",
+        "verdict": "SERIOUS ISSUES",
+        "promptTruncated": false,
+        "report": "docs/specs/reports/conversation-replies-message-links-external-round2-resumed.json",
+        "crossFamilyEstablishedRelativeToAuthor": false
+      },
+      "cleanDoorAnthropic": "disabled by actual config specConverge.reviewers.anthropic.enabled=false; no call claimed",
+      "comparison": "docs/specs/reports/conversation-replies-message-links-comparison-round2-resumed.json",
+      "declaredDesignFindings": 18,
+      "declaredPrecisionFindings": 5,
+      "separatePrecisionDispositions": 2,
+      "deduplicatedDesignThemes": 15,
+      "openUserDecisionsReportedByDecisionReviewer": 0,
+      "crossMachineDisagreement": "Integration sustains single-machine-survivability gap; several other lenses treat it as disclosed compatibility. Exact registry Rule/Amendment6 read by root confirms hierarchy-only Pending scope. Dependency/disposition requested from Chief15bd3e38, no borrowed exception or convergence claimed.",
+      "draftSnapshot": "docs/specs/reports/conversation-replies-message-links-draft-round2-resumed.md",
+      "sourceSha256": "f1c75226eff845655cd289d1a7ee94f9bc13d73e344d25afdeb1f8064210ed01"
+    }
+  ]
+}

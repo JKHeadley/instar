@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import type { Application, Request, Response } from 'express';
 import { dashboardCacheControl } from './middleware.js';
 
-import { CONSOLE_PATH, LEGACY_PATH, PAIR_PAGE_PATH } from './dashboardPaths.js';
+import { CONSOLE_PATH, LEGACY_PATH, MESSAGE_LINK_CONSOLE_PATH, PAIR_PAGE_PATH } from './dashboardPaths.js';
 export { CONSOLE_PATH, LEGACY_PATH, PAIR_PAGE_PATH, codePageUrlForDevice, codePageUrlForOrigin } from './dashboardPaths.js';
 
 /**
@@ -45,10 +45,21 @@ export function dashboardEntryTarget(originalUrl: string): string {
  * `/dashboard` → console (302, never 301 so a revert takes effect), `/dashboard/legacy` → the
  * legacy page. Register before the static `/dashboard` mount.
  */
-export function mountDashboardEntryRoutes(app: Application, opts: { dashboardDir: string }): void {
+export function mountDashboardEntryRoutes(app: Application, opts: { dashboardDir: string; messageLinksOn?: () => boolean }): void {
   app.get('/dashboard', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     res.redirect(302, dashboardEntryTarget(req.originalUrl));
+  });
+  app.get(MESSAGE_LINK_CONSOLE_PATH, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!opts.messageLinksOn?.()) {
+      res.status(503).type('text').send('This message link is unavailable.');
+      return;
+    }
+    const html = fs.readFileSync(path.join(opts.dashboardDir, 'console', 'index.html'), 'utf8')
+      .replace('href="console.css"', 'href="/dashboard/console/console.css?message-link-v1"')
+      .replace('src="console.js"', 'src="/dashboard/console/console.js?message-link-v1"');
+    res.type('html').send(html);
   });
   app.get(LEGACY_PATH, (req: Request, res: Response) => {
     // One address for the legacy page: a trailing slash would move relative URLs under

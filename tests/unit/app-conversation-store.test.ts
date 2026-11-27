@@ -34,6 +34,22 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('keeps exact ID domains distinct and seeks within the raw timestamp tuple', () => {
+    const { store } = mk();
+    store.append(created());
+    store.append(msg('a', 1));
+    const collision = { ...msg('b', 1), messageId: 'ev-a' } as AppEvent;
+    store.append(collision);
+    store.append(msg('newer', 2));
+    expect(store.exactMessageCandidates(KEY, 'ev-a', 'event').map((row) => row.eventId)).toEqual(['ev-a']);
+    expect(store.exactMessageCandidates(KEY, 'ev-a', 'message').map((row) => row.eventId)).toEqual(['ev-b']);
+    expect(store.exactMessageCandidates(KEY, 'ev-a', 'legacy').map((row) => row.eventId)).toEqual(['ev-a', 'ev-b']);
+    expect(store.exactMessageCandidates(KEY, 'cr-1', 'event')).toEqual([]);
+    const boundary = { at: at(1), eventId: 'ev-b' };
+    expect(store.exactMessageChunk(KEY, boundary, true, 4).map((row) => row.eventId)).toEqual(['ev-b', 'ev-a']);
+    expect(store.exactMessageChunk(KEY, boundary, false, 4).map((row) => row.eventId)).toEqual(['ev-a']);
+  });
+
   it('captures a bounded content-free registration frontier including tombstones', () => {
     const { store } = mk();
     expect(store.inventoryFrontier()).toEqual({ keys: [], overflow: false, eventWatermark: 0, liveCount: 0 });

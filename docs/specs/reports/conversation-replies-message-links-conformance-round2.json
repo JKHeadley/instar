@@ -1,0 +1,36 @@
+{
+  "report": {
+    "standardsChecked": 102,
+    "checkedAt": "2026-11-23T01:45:30.619Z",
+    "findings": [
+      {
+        "standard": "An Instar Agent Is Always a Multi-Machine Entity",
+        "family": "Building",
+        "status": "possible-violation",
+        "reason": "The design allows a completed App reply\u2019s only surviving copy to lose which message it answered, although completed answers require all-member durability and the Pending exception covers only temporary gaps."
+      },
+      {
+        "standard": "Archiving May Never Mean Deleting",
+        "family": "The Substrate",
+        "status": "possible-violation",
+        "reason": "Replay or rollback through an older codec can permanently erase the only copy of a reply relation needed to interpret the conversation, without an operator deletion request or erasure obligation."
+      }
+    ],
+    "degraded": false,
+    "fit": {
+      "parentPrinciple": "Operator-Surface Quality",
+      "checkedAt": "2026-11-23T01:45:41.450Z",
+      "verdict": "weak",
+      "parentResolved": true,
+      "reason": "Opening the selected message automatically improves the operator\u2019s experience, but the design chiefly governs message identity and access while leaving primary-action visibility, plain-language presentation, and phone-width usability unspecified.",
+      "degraded": false
+    }
+  },
+  "registryCanary": {
+    "ok": true,
+    "articleCount": 102,
+    "failures": [],
+    "articleHeadings": 102,
+    "completenessAssessed": true
+  }
+}

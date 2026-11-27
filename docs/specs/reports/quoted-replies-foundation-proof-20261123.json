@@ -1,0 +1,34 @@
+{
+  "head": "80c92dc38a88bd1763ca674dce5395c795fcd3f1",
+  "scope": "Historical baseline characterization, not quote implementation or feature acceptance",
+  "foundationRun": {
+    "files": [
+      "tests/unit/mobile-chat-requests.test.ts",
+      "tests/unit/app-record-signatures.test.ts"
+    ],
+    "passed": 21,
+    "failed": 0,
+    "durationSeconds": 2.02,
+    "log": ".instar/state/build/quoted-foundation-focused.log"
+  },
+  "historicalProbe": {
+    "passed": 3,
+    "failed": 0,
+    "durationSeconds": 1.59,
+    "log": ".instar/state/build/quoted-baseline-probe.log",
+    "archivedFixture": ".instar/state/build/quoted-baseline-probe.fixture.txt",
+    "fixtureSha256": "a61d2e56003cb9b505797d2aa43c6703e8c52b5b9f4329f6496daa3f633a8ce4",
+    "discovery": "One-shot probe removed from tests/unit after normal actual run; it characterizes old code and is not a future feature test"
+  },
+  "runtimeSha256": {
+    "src/core/AppRecordSignatures.ts": "69ad1451171e452236805e932fea2380d34970b9ae988183dfe9c2e4fb07dd61",
+    "src/core/AppConversationStore.ts": "35f70be6cc322957bfa6cf1204afc2cfd618bdb8f2940cda7be55abaf34dcb1d",
+    "src/core/MobileChatRequests.ts": "d6117fc8bd2c939ceff5fb01da88ae63a9ef519351fb5330a4250508aa948554",
+    "src/core/AppConversationService.ts": "057b7c062e1da9ec8440fd072bff60770a5224cde5c680f26162b145d51307a2",
+    "src/server/mobileConversationRoutes.ts": "d6447ce057621777cca255ded12bd54838241fb20922167b6e1bf8ac413490a8",
+    "src/server/mobileSlackRoutes.ts": "40c60843b4538ed635eb624aea655a12fe19fc45f4a0e206687a13926f2f0be2",
+    "src/core/MessageSentinel.ts": "17213f96ee47923e31f86da1e48040c90a1fab13b0119743df57024701f4b995"
+  },
+  "admission": "normal enforcing targeted unit admission, no override or competing full suite",
+  "archivedFixture": "docs/specs/reports/quoted-replies-baseline-probe-20261123.fixture.txt"
+}
