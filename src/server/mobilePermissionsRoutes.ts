@@ -146,7 +146,12 @@ export type PermissionAction =
   /** Check or uncheck one judged done item (work-door-project-rows §3.3): the item by its checkRef (goal, id, text). */
   | { kind: 'project-item-check'; target: string; itemId: string; checkRef: string; value: 'checked' | 'unchecked' }
   /** Finish a project (work-door-project-rows §3.5): the binding version the owner saw. */
-  | { kind: 'project-finish'; target: string; bindingRef: string };
+  | { kind: 'project-finish'; target: string; bindingRef: string }
+  /**
+   * Record the owner's approving review on a code-owner pull request (github-approval-from-the-app.md). The
+   * signed line names the PR number only (the app's contract); the head the owner saw is stored with the challenge.
+   */
+  | { kind: 'github-approval'; target: string };
 
 /** The three project actions (work-door-project-rows §3.3–3.5). */
 export type ProjectAction = Extract<PermissionAction, { kind: 'project-pause' | 'project-item-check' | 'project-finish' }>;
@@ -211,6 +216,7 @@ export function actionLine(a: PermissionAction): string {
     case 'project-pause': return `project-pause ${a.target} ${a.value} ${a.noteHash ?? 'none'}`;
     case 'project-item-check': return `project-item-check ${a.target} ${a.checkRef} ${a.value}`;
     case 'project-finish': return `project-finish ${a.target} ${a.bindingRef}`;
+    case 'github-approval': return `github-approval ${a.target}`;
   }
 }
 
@@ -223,6 +229,10 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
+/** A pull request number as a GitHub approval's signed target: a plain positive decimal. */
+export const GITHUB_PR_TARGET = /^[1-9][0-9]{0,9}$/;
+/** A commit sha as GitHub writes one. */
+export const GITHUB_HEAD_SHA = /^[0-9a-f]{40}$/;
 /** A trust request id as AccountPathService mints one: `tr-<12 hex>-<code>`. */
 export const TRUST_REQUEST_ID = /^tr-[0-9a-f]{12}-[0-9A-Z]{6}$/;
 /** A device key fingerprint as `deviceFingerprint` writes one. */
@@ -296,6 +306,8 @@ export function buildAction(kind: unknown, target: unknown, extra: { closeAs?: u
     if (typeof extra.bindingRef !== 'string' || !BINDING_REF_PATTERN.test(extra.bindingRef)) return { ok: false, error: 'bad-binding-ref' };
     return { ok: true, action: { kind, target, bindingRef: extra.bindingRef } };
   }
+  // A GitHub approval names the pull request by its number, as a plain decimal string.
+  if (kind === 'github-approval') return typeof target === 'string' && GITHUB_PR_TARGET.test(target) ? { ok: true, action: { kind, target } } : { ok: false, error: 'bad-target' };
   // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
   if (kind === 'account-sign-in') {
     if (typeof target !== 'string') return { ok: false, error: 'bad-target' };
@@ -469,7 +481,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'github-approval' | 'project-tap' | 'trust-approved' | 'trust-acceptance' | 'trust-withdrawn' | 'work-card-tap' | 'work-card-created' | 'work-card-replayed' | 'group-project-confirmed' | 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -783,6 +795,8 @@ export interface MobilePermissionsDeps {
   addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
   /** Apply the owner's tap to a work card (work-board-asks §4); absent ⇒ the work board is off here. */
   workCardTap?: (cardId: string, tap: WorkCardTapFields) => Promise<ActionResult>;
+  /** Approve a code-owner PR on GitHub (docs/specs/github-approval-from-the-app.md); absent ⇒ 503 here. */
+  githubApproval?: GithubApprovalPort;
   /**
    * Confirm a "make this group a project" draft (conversation-groups-phone §3): Face ID over the draft's exact
    * hash stands in for the dashboard PIN on POST /chief-of-staff/projects. The body carries the self-certifying draft back
@@ -809,6 +823,13 @@ export interface MobilePermissionsDeps {
    * before `apply`, which runs only after the proof.
    */
   projects?: ProjectTapPort;
+}
+
+/** The GitHub approval port (routes.ts wires it to GithubOwnerApproval). */
+export interface GithubApprovalPort {
+  precheck: (pr: number, headSha: unknown) => Promise<ActionResult | null>;
+  start: (input: { pr: number; headSha: string; deviceId: string | null }) => Promise<ActionResult>;
+  runView: (pr: number, attemptId?: string) => Promise<Record<string, unknown>>;
 }
 
 /** The project actions' port (routes.ts wires it to the Chief of Staff loop). */
@@ -857,6 +878,9 @@ export function actionsState(req: Request, deps: Pick<MobilePermissionsDeps, 'pa
 export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermissionsDeps): void {
   const now = () => (deps.now ? deps.now() : Date.now());
   const challenges = new ActionChallengeStore(now);
+  /** The head stored with each GitHub-approval challenge, by the challenge's reference. */
+  const githubHeads = new Map<string, { headSha: string; expiresAt: number }>();
+  const pruneGithubHeads = (): void => { const t = now(); for (const [k, v] of githubHeads) if (v.expiresAt <= t) githubHeads.delete(k); };
   const audit = new PermissionActionAudit(deps.stateDir, now);
   const head = () => ({ schemaVersion: MOBILE_PERMISSIONS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString() });
   const readGuard = (req: Request, res: Response): boolean => {
@@ -949,7 +973,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     return { deviceId, personId: person.userId ?? null, host, presenceKey: d.presenceKey, svc };
   };
 
-  router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
+  router.post('/mobile/permissions/challenge', async (req: Request, res: Response) => {
     const b = rec(req.body);
     const g = writeGate(req, res, b.action === 'approve-widening' || b.action === 'accept-device' ? 'trust'
       : b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
@@ -967,6 +991,19 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       if (!port) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'trust-approvals-unavailable', status: 503 }); res.status(503).json({ error: 'trust-approvals-unavailable' }); return; }
       if (!port.holdsLease()) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'not-holder', status: 409 }); res.status(409).json({ error: 'not-holder', detail: 'This machine is not the one deciding approvals right now. Try again in a moment.' }); return; }
     }
+    // A GitHub approval (github-approval-from-the-app §Routes): the head the owner is looking at is required and
+    // checked live before any Face ID, then stored with the challenge; the approve must name the same head.
+    let githubHead: string | null = null;
+    if (built.action.kind === 'github-approval') {
+      const port = deps.githubApproval;
+      const refusal: ActionResult | null = !port
+        ? { status: 503, body: { error: 'github-approval-unavailable', detail: 'Approving pull requests from the app is not available on this agent.' } }
+        : typeof b.headSha !== 'string' || !GITHUB_HEAD_SHA.test(b.headSha)
+          ? { status: 400, body: { error: 'bad-head-sha', detail: 'The version you are approving was not sent.' } }
+          : await port.precheck(Number(built.action.target), b.headSha);
+      if (refusal) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: errorCode(refusal.body), status: refusal.status }); res.status(refusal.status).json(refusal.body); return; }
+      githubHead = b.headSha as string;
+    }
     // A group-project confirm that this machine cannot decide gets no challenge, so no Face ID is spent on it.
     if (built.action.kind === 'group-project-confirm') {
       const refusal = deps.confirmGroupProject ? deps.groupProjectRefusal?.() ?? null : { status: 503, body: { error: 'chief-of-staff-off' } };
@@ -974,6 +1011,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     }
     const line = actionLine(built.action);
     const c = challenges.issue(g.deviceId, g.host, line);
+    if (githubHead) { githubHeads.set(c.ref, { headSha: githubHead, expiresAt: c.expiresAt }); pruneGithubHeads(); }
     audit.record({ event: 'challenge', deviceId: g.deviceId, personId: g.personId, action: built.action.kind, target: built.action.target, ...(built.action.kind === 'set-feature' ? { value: built.action.value } : {}) });
     res.json({ challenge: c.secret, expiresAt: new Date(c.expiresAt).toISOString() });
   });
@@ -1261,6 +1299,55 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       r = { status: 500, body: { error: 'account-add-failed', detail: 'The account was not added. Try again in a moment.' } };
     }
     finish(res, 'account-add', a, g, r);
+  });
+
+  // ── Approve a code-owner pull request on GitHub (docs/specs/github-approval-from-the-app.md) ──
+  // The owner's phone only: the write gate, Face ID over `github-approval <n>`, and the head stored with the
+  // challenge must equal the head in this (device-signed) body. The service re-checks everything live, records
+  // the approval in the owner's GitHub profile and answers what GitHub shows (200, or 202 while it runs).
+  router.post('/mobile/github/approvals/:pr/approve', async (req: Request, res: Response) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('github-approval', String(req.params.pr), {});
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+    if (typeof b.headSha !== 'string' || !GITHUB_HEAD_SHA.test(b.headSha)) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: 'bad-head-sha', status: 400 }); res.status(400).json({ error: 'bad-head-sha', detail: 'The version you are approving was not sent.' }); return; }
+    const proof = provenDetail(req, res, g, built.action);
+    if (!proof) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'github-approval' }>;
+    const stored = githubHeads.get(proof.ref);
+    githubHeads.delete(proof.ref);
+    if (!stored) {
+      finish(res, 'github-approval', a, g, { status: 409, body: { error: 'challenge-expired', detail: 'That approval timed out. Tap Approve again.' } });
+      return;
+    }
+    if (stored.headSha !== b.headSha) {
+      finish(res, 'github-approval', a, g, { status: 409, body: { error: 'head-changed', detail: 'The version you approved is not the one you were shown. Look again and approve the version on screen.' } });
+      return;
+    }
+    let r: ActionResult;
+    try {
+      r = deps.githubApproval ? await deps.githubApproval.start({ pr: Number(a.target), headSha: b.headSha, deviceId: g.deviceId }) : { status: 503, body: { error: 'github-approval-unavailable', detail: 'Approving pull requests from the app is not available on this agent.' } };
+    } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told to check GitHub before retrying
+      report('MobilePermissions.githubApproval', 'a phone GitHub approval runs', 'the phone is told to check GitHub', err);
+      r = { status: 500, body: { error: 'approval-failed', detail: 'The approval did not finish. Check on GitHub before trying again.' } };
+    }
+    finish(res, 'github-approval', a, g, r);
+  });
+
+  // The result of an approval that answered 202 (or the latest for this PR). Read-only.
+  router.get('/mobile/github/approvals/:pr', async (req: Request, res: Response) => {
+    if (!readGuard(req, res)) return;
+    const pr = String(req.params.pr);
+    if (!GITHUB_PR_TARGET.test(pr)) { res.status(400).json({ error: 'bad-target' }); return; }
+    if (!deps.githubApproval) { res.status(503).json({ error: 'github-approval-unavailable' }); return; }
+    const attempt = typeof req.query.attempt === 'string' && /^[0-9a-f-]{36}$/.test(req.query.attempt) ? req.query.attempt : undefined;
+    try { res.json(await deps.githubApproval.runView(Number(pr), attempt)); } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told to look on GitHub
+      report('MobilePermissions.githubApproval', 'GET /mobile/github/approvals/:pr reads an approval', 'the phone is told to look on GitHub', err);
+      res.status(500).json({ error: 'approval-read-failed', detail: 'I could not read that approval. Open it on GitHub to see.' });
+    }
   });
 
   // ── Approving a trust raise from the app (docs/specs/app-trust-approval.md) ──────────────

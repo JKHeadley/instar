@@ -909,6 +909,7 @@ import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
+import { createGithubOwnerApproval } from '../core/GithubOwnerApproval.js';
 import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
 import { DISPATCH_ORIGIN_KEYS } from '../config/bearerConfigWrite.js';
 import { cleanTitle as cleanDispatchTitle } from '../core/DispatchManager.js';
@@ -20403,6 +20404,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // The watcher is null on installs with no analyzable instar repo + safe-merge,
   // or when disabled in config → routes 503. The GuardLatchStore may exist even
   // when the watcher does not (single-machine rollback still needs to persist).
+  // Approve a code-owner PR on the owner's Face ID tap (docs/specs/github-approval-from-the-app.md). Built here so
+  // GET /green-pr-automerge can say whether it is available on this machine; the phone routes use it below.
+  const githubOwnerApproval = createGithubOwnerApproval({
+    stateDir: ctx.config.stateDir,
+    projectDir: ctx.config.projectDir,
+    config: () => ctx.config as unknown as { github?: { ownerApproval?: { enabled?: unknown; profileId?: unknown; playwrightCoreDir?: unknown } } },
+    merger: () => ctx.greenPrAutoMerger ?? null,
+  });
+
   router.get('/green-pr-automerge', (_req, res) => {
     if (!ctx.greenPrAutoMerger) {
       res.status(503).json({ error: 'green-pr auto-merge not configured (no analyzable instar repo + safe-merge, or disabled)' });
@@ -20452,6 +20462,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       configuration,
       gate: latch,
       invariantOk: ctx.greenPrAutoMerger.invariantOk,
+      // github-approval-from-the-app: the repository every GitHub link uses, and whether this machine can
+      // record the owner's approval on a Face ID tap (read from files and the vault; no network call).
+      repo: ctx.greenPrAutoMerger.repo,
+      ownerApproval: githubOwnerApproval.availability(),
     });
   });
 
@@ -43805,6 +43819,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
       addAccount: (input) => runAddAccountSignIn(input),
+      // Approve a code-owner PR on GitHub (github-approval-from-the-app): the write gate proved the owner's phone and Face ID.
+      githubApproval: {
+        precheck: (pr, headSha) => githubOwnerApproval.precheck(pr, headSha),
+        start: (input) => githubOwnerApproval.start(input),
+        runView: (pr, attemptId) => githubOwnerApproval.runView(pr, attemptId),
+      },
       // The owner's project taps (docs/specs/work-door-project-rows.md §3.3–3.5): the write gate proved the owner's phone and Face ID.
       ...(ctx.chiefOfStaffLoop ? { projects: projectTapPort(ctx.chiefOfStaffLoop, (req, key) => _projectsRoute.rowFor(req, key)) } : {}),
       // A tap on a work card (work-board-asks §4): the write gate proved the owner's phone and Face ID.
