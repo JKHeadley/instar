@@ -15,6 +15,7 @@ import express from 'express';
 import request from 'supertest';
 import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { COMBINED_FIT_MARKER } from '../../src/core/reviewers/standards-conformance.js';
 
 const REGISTRY_PATH = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
 const SPECS_DIR = path.join(process.cwd(), 'docs/specs');
@@ -109,17 +110,20 @@ describe('disabled', () => {
 });
 
 describe('POST /spec/conformance-check — Constitutional Traceability fit verdict', () => {
-  // The route calls reviewer.review() (expects a findings array) AND, when a
-  // parent-principle is present, reviewer.judgeFit() (expects a {verdict} object) —
-  // both via the same IntelligenceProvider. Key the stub on the fit prompt's marker.
+  // With a resolvable parent-principle the route makes ONE combined call
+  // (reviewWithFit: findings + fit in one JSON object); otherwise the plain review
+  // (a findings array). Key the stub on the combined prompt's marker and count calls.
+  let calls = 0;
   const fitStub: IntelligenceProvider = {
     async evaluate(prompt: string) {
-      if (prompt.includes('Constitutional Traceability reviewer')) {
-        return '{"verdict":"fit","reason":"plainly an instance of the named standard"}';
+      calls += 1;
+      if (prompt.includes(COMBINED_FIT_MARKER)) {
+        return '{"findings":[],"fit":{"verdict":"fit","reason":"plainly an instance of the named standard"}}';
       }
       return '[]';
     },
   };
+  beforeEach(() => { calls = 0; });
 
   it('attaches report.fit when the spec frontmatter names a resolvable parent-principle', async () => {
     const md = '---\nparent-principle: "No Manual Work"\n---\n# Spec\nA design.';
@@ -128,6 +132,38 @@ describe('POST /spec/conformance-check — Constitutional Traceability fit verdi
     expect(res.body.report.fit).toBeTruthy();
     expect(res.body.report.fit.verdict).toBe('fit');
     expect(res.body.report.fit.parentResolved).toBe(true);
+    expect(res.body.report.fit.degraded).toBe(false);
+    expect(res.body.report.degraded).toBe(false);
+    // Both judgments in ONE provider call (token cost: no second spec + preamble).
+    expect(calls).toBe(1);
+  });
+
+  it('one call does not loosen the check: a "weak" or "none" fit still comes back as its own non-degraded verdict', async () => {
+    for (const verdict of ['weak', 'none'] as const) {
+      let n = 0;
+      const failing: IntelligenceProvider = {
+        async evaluate(prompt: string) {
+          n += 1;
+          expect(prompt).toContain(COMBINED_FIT_MARKER);
+          return `{"findings":[{"standard":"No Manual Work","reason":"relies on remembering"}],"fit":{"verdict":"${verdict}","reason":"not plainly its parent"}}`;
+        },
+      };
+      const md = '---\nparent-principle: "No Manual Work"\n---\n# Spec\nthe user must remember to do X';
+      const res = await request(app({ intelligence: failing })).post('/spec/conformance-check').send({ markdown: md });
+      expect(res.status).toBe(200);
+      expect(n).toBe(1);
+      expect(res.body.report.fit).toMatchObject({ verdict, parentResolved: true, degraded: false });
+      expect(res.body.report.degraded).toBe(false);
+      expect(res.body.report.findings.map((f: { standard: string }) => f.standard).join(' ')).toMatch(/No Manual Work/);
+    }
+  });
+
+  it('an unresolvable parent makes one plain review call and a real "none"', async () => {
+    const md = '---\nparent-principle: "Totally Made Up Standard"\n---\n# Spec\nx';
+    const res = await request(app({ intelligence: fitStub })).post('/spec/conformance-check').send({ markdown: md });
+    expect(res.status).toBe(200);
+    expect(calls).toBe(1);
+    expect(res.body.report.fit).toMatchObject({ verdict: 'none', parentResolved: false, degraded: false });
   });
 
   it('accepts parentPrinciple from the request body', async () => {

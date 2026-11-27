@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T14:16:18.054Z",
+  "slug": "conformance-review-one-call",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 201,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/reviewers/standards-conformance.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/server/specReviewRoutes.ts"
+    ],
+    "addedLines": 182,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

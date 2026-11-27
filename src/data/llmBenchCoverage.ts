@@ -658,10 +658,10 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'extracts relationship facts as open-set structured content — no closed taught vocabulary a prompt promises and a parser gates on',
   },
-  StandardsConformanceReviewer: {
-    false:
-      'reviews artifact-vs-standard conformance as content — no closed output vocabulary the prompt teaches and a parser must accept',
-  },
+  // The combined review+fit call (reviewWithFit) teaches the closed fit|weak|none
+  // verdict under this attribution; the contract test feeds back the exact reply
+  // shape the combined prompt teaches.
+  StandardsConformanceReviewer: { contractTest: 'tests/unit/standards-conformance-gate.test.ts' },
   DiscoveryEvaluator: {
     false:
       'evaluates serendipity discoveries into content — no closed taught verdict vocabulary a parser accepts a promised form of',

@@ -20,6 +20,7 @@ import request from 'supertest';
 import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
 import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { COMBINED_FIT_MARKER } from '../../src/core/reviewers/standards-conformance.js';
 
 const REGISTRY_PATH = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
 const SPECS_DIR = path.join(process.cwd(), 'docs/specs');
@@ -28,18 +29,17 @@ const SPECS_DIR = path.join(process.cwd(), 'docs/specs');
 // "remember to" manual step — mimicking what the real LLM would catch.
 const stubIntelligence: IntelligenceProvider = {
   async evaluate(prompt: string) {
-    // The Constitutional Traceability fit prompt is distinct from the violations
-    // review prompt — serve a fit verdict object for it.
-    if (prompt.includes('Constitutional Traceability reviewer')) {
-      return '{"verdict":"fit","reason":"plainly an instance of the named standard"}';
-    }
     // The spec block is the tail after this anchor (the examples/instructions,
     // which also mention "remember", are all BEFORE it).
     const spec = prompt.split('The draft spec to review:')[1] ?? '';
-    if (/remember to|must run/i.test(spec)) {
-      return '[{"standard":"No Manual Work (user *or* agent)","reason":"the design relies on someone remembering to perform a manual step"}]';
+    const findings = /remember to|must run/i.test(spec)
+      ? '[{"standard":"No Manual Work (user *or* agent)","reason":"the design relies on someone remembering to perform a manual step"}]'
+      : '[]';
+    // A spec naming a resolvable parent gets ONE combined call (findings + fit).
+    if (prompt.includes(COMBINED_FIT_MARKER)) {
+      return `{"findings":${findings},"fit":{"verdict":"fit","reason":"plainly an instance of the named standard"}}`;
     }
-    return '[]';
+    return findings;
   },
 };
 

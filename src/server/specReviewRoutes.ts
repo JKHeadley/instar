@@ -164,19 +164,19 @@ export function createSpecReviewRoutes(deps: {
     // the one that catches a truncated constitution — silently does not happen.
     const canary = runRegistryCanary(articles, detailed.diagnostics);
 
-    const report = await reviewer.review(markdown, articles);
-
     // Constitutional Traceability (Part C): attach the fit verdict for the spec's
     // named parent constitutional standard. parentPrinciple comes from the request
-    // body or the spec's frontmatter; when present, judgeFit returns fit/weak/none
+    // body or the spec's frontmatter; when present, the fit verdict is fit/weak/none
     // (and fails open to 'fit' when the reviewer is degraded). Absent → no fit field
     // (the caller — e.g. the pre-commit gate — treats a missing parent as block).
+    // With a parent named, both judgments ride on ONE provider call (reviewWithFit):
+    // the separate fit call re-sent the whole spec and the provider preamble.
     const parentPrinciple = (typeof req.body?.parentPrinciple === 'string' && req.body.parentPrinciple.trim())
       ? req.body.parentPrinciple.trim()
       : extractParentPrinciple(markdown);
-    if (parentPrinciple) {
-      report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
-    }
+    const report = parentPrinciple
+      ? await reviewer.reviewWithFit(markdown, parentPrinciple, articles)
+      : await reviewer.review(markdown, articles);
 
     // Record metrics (best-effort).
     try {
@@ -238,10 +238,9 @@ export async function runConformanceCheck(
   const articles = parseStandardsRegistry(registryMarkdown);
   const canary = runRegistryCanary(articles);
   const reviewer = new StandardsConformanceReviewer(intelligence, { model });
-  const report = await reviewer.review(markdown, articles);
   const parentPrinciple = extractParentPrinciple(markdown);
-  if (parentPrinciple) {
-    report.fit = await reviewer.judgeFit(markdown, parentPrinciple, articles);
-  }
+  const report = parentPrinciple
+    ? await reviewer.reviewWithFit(markdown, parentPrinciple, articles)
+    : await reviewer.review(markdown, articles);
   return { report, registryCanary: canary };
 }

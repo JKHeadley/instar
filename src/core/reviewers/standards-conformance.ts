@@ -192,6 +192,112 @@ export function parseFitResponse(raw: string): { verdict: ConformanceFitVerdict;
   return { verdict: v, reason };
 }
 
+/**
+ * Marker line that opens the fit section of the COMBINED prompt. Test stubs and
+ * the parser key on the response shape, not on this text; it is exported so a
+ * stub can recognise a combined call without copying prose.
+ */
+export const COMBINED_FIT_MARKER = 'SECOND TASK — Constitutional Traceability fit';
+
+/**
+ * One prompt for BOTH judgments: the violations review and the fit verdict for
+ * the spec's named parent standard.
+ *
+ * Why one call (engine optimization, token cost): the two separate calls each paid
+ * the provider's fixed preamble (about 15k tokens on codex-cli) and each re-sent the
+ * whole spec. Measured on the Studio over 7 days to 2026-11-27: 562 fit calls,
+ * 12.1M tokens. The fit call needs only the spec and one article, both already in
+ * the review prompt, so its judgment rides on the review call instead.
+ *
+ * The trusted standards block stays first and unchanged, so the stable prefix a
+ * provider can cache is the same as the review-only prompt's.
+ */
+export function buildCombinedPrompt(specMarkdown: string, articles: StandardArticle[], parentArticle: StandardArticle): string {
+  // Derived from the review prompt (one source of truth for every instruction):
+  // only the output contract changes, and the fit task is inserted before the
+  // untrusted spec block, which stays last.
+  // 'first' for text before the untrusted spec block, 'last' for text after it, so
+  // a spec that quotes these lines can never move where the swap lands.
+  const swaps: Array<[string, string, 'first' | 'last']> = [
+    [
+      'Output ONLY a JSON array of findings (possibly empty). Each finding:',
+      'Each finding:',
+      'first',
+    ],
+    [
+      'If the spec conforms to all standards, return [].\n\nThe draft spec to review:',
+      `If the spec conforms to all standards, "findings" is [].
+
+${COMBINED_FIT_MARKER}. The spec claims to serve this PARENT constitutional standard (trusted):
+[${parentArticle.family}] ${parentArticle.name} — ${parentArticle.rule}
+
+Decide the FIT verdict between the spec's design and this parent standard, independently of the findings.
+- "fit": the spec's core purpose is plainly an application or instance of this standard. A reasonable reviewer would not dispute it.
+- "weak": there is a real but stretched/partial connection — the standard rhymes with the work but is not plainly its parent (e.g. the standard is scoped to a different domain than the work).
+- "none": the spec does not fall under this standard at all, or names it only as a hand-wave.
+Be strict: a hand-wave parent ("this loosely relates to coherence") is "none", not "fit". The fit must be INDISPUTABLE to pass.
+
+Output ONLY one JSON object:
+{"fit":{"verdict":"fit"|"weak"|"none","reason":"<one sentence>"},"findings":[<findings as described above, possibly empty>]}
+
+The draft spec to review:`,
+      'first',
+    ],
+    ['Return ONLY the JSON array.', 'Return ONLY the JSON object.', 'last'],
+  ];
+  let prompt = buildConformancePrompt(specMarkdown, articles);
+  // 'first' swaps search only AFTER the trusted standards list, so a rule that ever
+  // quoted an instruction line could not be edited in its place.
+  const instructionsStart = prompt.indexOf('Your job: identify standards');
+  if (instructionsStart === -1) throw new Error('buildCombinedPrompt: review prompt no longer contains its instructions anchor');
+  for (const [from, to, where] of swaps) {
+    const at = where === 'first' ? prompt.indexOf(from, instructionsStart) : prompt.lastIndexOf(from);
+    // A drifted review template must fail loudly in tests, never send a prompt
+    // that asks for two incompatible output shapes.
+    if (at === -1) throw new Error(`buildCombinedPrompt: review prompt no longer contains "${from.slice(0, 40)}"`);
+    prompt = prompt.slice(0, at) + to + prompt.slice(at + from.length);
+  }
+  return prompt;
+}
+
+/**
+ * Parse the combined reply. Each half parses on its own so one malformed half never
+ * costs the other: findings null = review unparseable; fit null = fit unparseable
+ * (the caller fails that half open, exactly as the separate calls did).
+ */
+export function parseCombinedResponse(
+  raw: string,
+  articles: StandardArticle[],
+): { findings: ConformanceFinding[] | null; fit: { verdict: ConformanceFitVerdict; reason: string } | null } {
+  let cleaned = (raw || '').trim();
+  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenceMatch) cleaned = fenceMatch[1];
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  let obj: Record<string, unknown> | null = null;
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(start, end + 1));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed as Record<string, unknown>;
+    } catch { /* fall through: obj stays null */ }
+  }
+  if (!obj) return { findings: null, fit: null };
+  const findings = Array.isArray(obj.findings)
+    ? parseConformanceResponse(JSON.stringify(obj.findings), articles)
+    : null;
+  const fit = obj.fit && typeof obj.fit === 'object' ? parseFitResponse(JSON.stringify(obj.fit)) : null;
+  return { findings, fit };
+}
+
+/** Resolve a named parent principle to a registry article (exact, then substring-tolerant). */
+export function resolveParentArticle(parentPrincipleName: string, articles: StandardArticle[]): StandardArticle | undefined {
+  const name = (parentPrincipleName || '').trim();
+  if (!name) return undefined;
+  const lower = name.toLowerCase();
+  return articles.find(a => a.name.toLowerCase() === lower)
+    ?? articles.find(a => lower.includes(a.name.toLowerCase()) || a.name.toLowerCase().includes(lower));
+}
+
 export class StandardsConformanceReviewer {
   constructor(
     private intelligence: IntelligenceProvider | null,
@@ -232,12 +338,8 @@ export class StandardsConformanceReviewer {
   async judgeFit(specMarkdown: string, parentPrincipleName: string, articles: StandardArticle[]): Promise<FitReport> {
     const base = { parentPrinciple: parentPrincipleName || '', checkedAt: new Date().toISOString() };
     const name = (parentPrincipleName || '').trim();
-    const lower = name.toLowerCase();
     // Structural half: resolve the named parent to a real registry article (substring-tolerant).
-    const resolved = name
-      ? (articles.find(a => a.name.toLowerCase() === lower)
-         ?? articles.find(a => lower.includes(a.name.toLowerCase()) || a.name.toLowerCase().includes(lower)))
-      : undefined;
+    const resolved = resolveParentArticle(name, articles);
     if (!resolved) {
       // NOT a degrade — this is the gate doing its job: name a parent that resolves.
       return {
@@ -270,5 +372,67 @@ export class StandardsConformanceReviewer {
       return { ...base, verdict: 'fit', parentResolved: true, reason: 'fit judgment unparseable — fail-open', degraded: true, degradeReason: 'unparseable' };
     }
     return { ...base, verdict: parsed.verdict, parentResolved: true, reason: parsed.reason, degraded: false };
+  }
+
+  /**
+   * Review AND fit in ONE provider call when the spec names a parent standard.
+   * Same results contract as `review()` followed by `judgeFit()`: the structural
+   * half of the fit (the parent must resolve) runs first and needs no LLM; an
+   * unresolved parent gets the plain review plus a real 'none' (not a degrade). The
+   * review half degrades to an empty report on its own. When the reply carries no
+   * usable fit half, the fit question is asked again in its own call (judgeFit), so
+   * the combined call never lets a weak/none fit through that the two calls caught.
+   */
+  async reviewWithFit(specMarkdown: string, parentPrincipleName: string, articles: StandardArticle[]): Promise<ConformanceReport> {
+    const resolved = resolveParentArticle(parentPrincipleName, articles);
+    const twoCalls = async (): Promise<ConformanceReport> => {
+      const report = await this.review(specMarkdown, articles);
+      report.fit = await this.judgeFit(specMarkdown, parentPrincipleName, articles);
+      return report;
+    };
+    if (!resolved || !this.intelligence) {
+      // Nothing for the LLM to judge on the fit side (unresolved parent), or no LLM
+      // at all: the existing paths make no fit call and give the exact same answers.
+      return twoCalls();
+    }
+    let prompt: string;
+    try {
+      prompt = buildCombinedPrompt(specMarkdown, articles, resolved);
+    } catch (err) {
+      // A drifted review template: say so loudly and keep the old two-call path,
+      // never send a prompt asking for two incompatible output shapes.
+      console.error(`[StandardsConformanceReviewer] combined prompt unavailable, using two calls: ${(err as Error).message}`);
+      return twoCalls();
+    }
+    const base = { standardsChecked: articles.length, checkedAt: new Date().toISOString() };
+    let raw: string | null = null;
+    try {
+      raw = await this.intelligence.evaluate(prompt, {
+        model: this.opts.model ?? 'capable',
+        temperature: 0,
+        // The two separate budgets (1200 + 400): the reply carries both halves.
+        maxTokens: 1600,
+        timeoutMs: CONFORMANCE_REVIEW_TIMEOUT_MS,
+        attribution: { component: 'StandardsConformanceReviewer' },
+      });
+    } catch { /* raw stays null: review half degrades 'error' below */ }
+    const parsed = raw === null ? { findings: null, fit: null } : parseCombinedResponse(raw, articles);
+    const report: ConformanceReport = raw === null
+      ? { ...base, findings: [], degraded: true, degradeReason: 'error' }
+      : parsed.findings === null
+        ? { ...base, findings: [], degraded: true, degradeReason: 'unparseable' }
+        : { ...base, findings: parsed.findings, degraded: false };
+    if (parsed.fit !== null) {
+      report.fit = {
+        parentPrinciple: parentPrincipleName || '', parentResolved: true, checkedAt: base.checkedAt,
+        verdict: parsed.fit.verdict, reason: parsed.fit.reason, degraded: false,
+      };
+      return report;
+    }
+    // No usable fit half (the call failed, or the reply was cut off or malformed).
+    // The fit verdict can block work, so it must never fail open more often than the
+    // old separate call did: ask the fit question on its own, exactly as before.
+    report.fit = await this.judgeFit(specMarkdown, parentPrincipleName, articles);
+    return report;
   }
 }
