@@ -5176,6 +5176,8 @@ export interface InstarConfig {
      * restatement. Advisory nudge. Unset = live on development agents, dark on the fleet.
      */
     waitingAskLinks?: { enabled?: boolean };
+    /** Off-by-default retrospective ask-link response trial. */
+    askLinksEscalation?: { enabled?: boolean };
     /** sibling-machine-reach (CMT-2073): the outbound check sees what the agent's OTHER machines hold. Unset = live on development agents, dark on the fleet. */
     siblingReach?: { enabled?: boolean };
   };
