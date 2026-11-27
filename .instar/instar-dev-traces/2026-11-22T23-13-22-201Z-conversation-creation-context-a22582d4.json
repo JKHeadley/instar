@@ -1,0 +1,87 @@
+{
+  "version": 3,
+  "slug": "conversation-creation-context",
+  "sessionId": "f0b47883-4726-4441-84f5-2b8e78d38ce9",
+  "timestamp": "2026-11-22T23:13:22.201Z",
+  "artifactPath": "upgrades/side-effects/conversation-creation-context.md",
+  "artifactSha256": "be8f1636f5257c6ed5a97392ee1bfde2f4a487033b2fe36294551e7e1bc6bf14",
+  "specPath": "docs/specs/conversation-creation-context.md",
+  "coveredFiles": [
+    "docs/audits/conversation-creation-context.md",
+    "docs/specs/conversation-creation-context.eli16.md",
+    "docs/specs/conversation-creation-context.md",
+    "docs/specs/reports/conversation-creation-context-convergence.md",
+    "docs/specs/reports/creation-context-bounded-conformance.json",
+    "docs/specs/reports/creation-context-bounded-external.json",
+    "docs/specs/reports/creation-context-conformance-round1.json",
+    "docs/specs/reports/creation-context-conformance-round2.json",
+    "docs/specs/reports/creation-context-conformance-round3.json",
+    "docs/specs/reports/creation-context-conformance-round4.json",
+    "docs/specs/reports/creation-context-conformance-round5.json",
+    "docs/specs/reports/creation-context-conformance-round6.json",
+    "docs/specs/reports/creation-context-external-round1.json",
+    "docs/specs/reports/creation-context-external-round2.json",
+    "docs/specs/reports/creation-context-external-round3.json",
+    "docs/specs/reports/creation-context-external-round4.json",
+    "docs/specs/reports/creation-context-external-round5.json",
+    "docs/specs/reports/creation-context-external-round6.json",
+    "docs/specs/reports/creation-context-full-design-capped.md",
+    "docs/specs/reports/creation-context-internal-round1.json",
+    "docs/specs/reports/creation-context-internal-round2.json",
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/AppConversationStore.ts",
+    "src/core/AppConversationsReplicatedStore.ts",
+    "src/core/AppCreationContext.ts",
+    "src/core/ChiefOfStaffLoop.ts",
+    "src/core/ConversationRegistry.ts",
+    "src/core/CreationPlacementSnapshot.ts",
+    "src/core/WorkBoardRuntime.ts",
+    "src/data/awareness/conversation-creation-context.md",
+    "src/server/AgentServer.ts",
+    "src/server/appCreationHierarchy.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/session-app-new-alive.test.ts",
+    "tests/fixtures/conversation-creation-context/previous-codec.json",
+    "tests/integration/app-creation-hierarchy.test.ts",
+    "tests/integration/session-app-new.test.ts",
+    "tests/unit/app-conversation-service.test.ts",
+    "tests/unit/app-creation-context.test.ts",
+    "tests/unit/app-creation-hierarchy.test.ts",
+    "tests/unit/creation-placement-snapshot.test.ts",
+    "tests/unit/work-board-creation-context.test.ts",
+    "upgrades/next/conversation-creation-context.md",
+    "upgrades/side-effects/conversation-creation-context.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Additive creation metadata, durable evidence migration and new owner-only read surface require approved bounded spec, three-tier checks and independent review.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": null,
+        "verified": false
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/audits/conversation-creation-context.md",
+      "iterations": 2,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Coalesced background read refresh is triggered by external source changes, requests or the existing Chief tick; it never recursively schedules itself or adds a timer, retry loop or autonomous action."
+  }
+}

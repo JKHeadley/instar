@@ -388,6 +388,7 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
       try {
         return await doorSignInStep(env, answers.door!, {
           words: INSTALL_RESUME_WORDS,
+          requireVerifiedSignIn: answers.forApp === true,
           awaiting: progress.awaiting,
           claudeTokenHeld: claudeToken.value !== null,
           obtainClaudeToken: () => askClaudeToken(env, claudeToken),

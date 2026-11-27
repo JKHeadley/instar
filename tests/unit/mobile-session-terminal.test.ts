@@ -59,6 +59,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/conversation-graph/roots'],
       ['GET', '/mobile/conversation-graph/nodes/e30'],
       ['GET', '/mobile/conversation-graph/nodes/e30/destinations'],
+      ['GET', '/mobile/conversation-graph/tree'],
       ['GET', '/mobile/conversation-graph/pending'],
       ['GET', '/mobile/conversation-graph/changes/request-1234'],
       ['GET', '/mobile/conversation-graph/erasures/erasev1_12345678'],
@@ -189,6 +190,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // A tap on a work card with Face ID (work-board-asks §4): only the team owner taps in phase 1.
       ['POST', '/mobile/work-board/cards/wc_0123456789abcdef/tap'],
       // Conversation groups from the owner's phone: suggestions and group -> project (conversation-groups-phone).
+      // Historical creation placement preview is restricted to the active owner.
+      ['GET', '/mobile/conversations/parent-preview'],
       ['GET', '/mobile/conversation-graph/suggestions'],
       ['POST', '/mobile/conversation-graph/suggestions/refresh'],
       ['POST', '/mobile/conversation-graph/suggestions/sg-0123456789abcdef0123/accept'],

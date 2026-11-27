@@ -32,6 +32,8 @@
  * Spec / review: upgrades/side-effects/threadline-enable-without-restart.md.
  */
 
+import { publishRestartRequestFile } from '../core/restartRequestFile.js';
+import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import fs from 'node:fs';
 import { announceRestartRequested } from '../core/restartRequestSignal.js';
 import path from 'node:path';
@@ -283,7 +285,10 @@ function writeConnectEnableStatus(stateDir: string, status: ConnectEnableStatus)
 /** A restart request (from anyone) is waiting and has not expired. */
 export function restartRequestPending(stateDir: string, now = Date.now()): boolean {
   try {
-    const data = JSON.parse(fs.readFileSync(flagPathFor(stateDir), 'utf-8')) as { expiresAt?: string };
+    const flagPath = flagPathFor(stateDir);
+    const raw = fs.readFileSync(flagPath, 'utf-8');
+    if (restartAdmissionTimedOut(flagPath, raw)) return false;
+    const data = JSON.parse(raw) as { expiresAt?: string };
     return !data.expiresAt || Date.parse(data.expiresAt) > now;
   } catch {
     return false; // @silent-fallback-ok — no readable flag means nothing is pending
@@ -334,9 +339,7 @@ export function writeConnectRestartRequest(stateDir: string, now = Date.now(), p
       pid,
     };
     const flagPath = flagPathFor(stateDir);
-    const tmp = `${flagPath}.${pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(body, null, 2));
-    fs.renameSync(tmp, flagPath);
+    publishRestartRequestFile(flagPath, JSON.stringify(body, null, 2));
     // The restart is queued from here on, so report it as queued even if the cooldown
     // record cannot be written (the only cost is a missing cooldown, logged).
     try {

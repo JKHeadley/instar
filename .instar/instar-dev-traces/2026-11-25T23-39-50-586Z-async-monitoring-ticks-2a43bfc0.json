@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "async-monitoring-ticks",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T23:39:50.586Z",
+  "artifactPath": "upgrades/side-effects/async-monitoring-ticks.md",
+  "artifactSha256": "aaf8c611c80df31bfb0e2bf5e70159fb5e518894da918763efbfce6f6ce18965",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/processIdentity.ts",
+    "src/messaging/SessionSummarySentinel.ts",
+    "src/monitoring/ActiveWorkSilenceSentinel.ts",
+    "src/monitoring/ContextWedgeSentinel.ts",
+    "src/monitoring/OrphanProcessReaper.ts",
+    "src/monitoring/sentinelWiring.ts",
+    "tests/e2e/monitoring-tick-health.test.ts",
+    "tests/unit/monitoring/ContextWedgeSentinel.test.ts",
+    "tests/unit/orphan-reaper-pane-identity.test.ts",
+    "tests/unit/orphan-reaper-ps-snapshot.test.ts",
+    "tests/unit/session-lifecycle-phase-2-wiring.test.ts",
+    "upgrades/eli16/async-monitoring-ticks.md",
+    "upgrades/next/async-monitoring-ticks.md",
+    "upgrades/side-effects/async-monitoring-ticks.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "The change switches monitor reads and checks to bounded async calls without changing persisted data or authority. Independent review checked recovery and process-signal races.",
+  "eli16Path": "upgrades/eli16/async-monitoring-ticks.md",
+  "sideEffectsPath": "upgrades/side-effects/async-monitoring-ticks.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

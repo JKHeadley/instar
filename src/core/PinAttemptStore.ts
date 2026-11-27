@@ -63,16 +63,36 @@ export class PinAttemptStore {
 
   /** Record a FAILED attempt; returns attempts remaining (≥ 0). */
   recordFailure(ip: string, maxAttempts = this.maxAttempts): number {
-    let e = this.current(ip);
-    if (!e) {
-      e = { count: 0, resetAt: this.now() + this.windowMs };
-      this.entries.set(ip, e);
-    }
-    e.count++;
-    this.prune();
-    this.persist();
-    return Math.max(0, maxAttempts - e.count);
+    return this.recordFailures([{ key: ip, max: maxAttempts }]).get(ip) ?? 0;
   }
+
+  /**
+   * SEC-135: charge one wrong PIN to several keys with ONE write, so a wrong guess costs one
+   * persist whatever budgets it counts against. Returns each key's attempts remaining (≥ 0), keyed
+   * by the key. A failed write keeps the counters in memory (see persist), so the limits still hold.
+   */
+  recordFailures(keys: ReadonlyArray<{ key: string; max?: number }>): Map<string, number> {
+    const remaining = new Map<string, number>();
+    if (keys.length === 0) return remaining;
+    let dirty = false;
+    for (const { key, max } of keys) {
+      let e = this.entries.get(key);
+      if (e && this.now() > e.resetAt) { this.entries.delete(key); e = undefined; }
+      if (!e) {
+        e = { count: 0, resetAt: this.now() + this.windowMs };
+        this.entries.set(key, e);
+      }
+      e.count++;
+      dirty = true;
+      remaining.set(key, Math.max(0, (max ?? this.maxAttempts) - e.count));
+    }
+    this.prune();
+    if (dirty) this.persist();
+    return remaining;
+  }
+
+  /** The counting window, in whole seconds (a durable block lasts at most this long). */
+  get windowSeconds(): number { return Math.ceil(this.windowMs / 1000); }
 
   /** Clear an IP's counter on a successful PIN entry. */
   recordSuccess(ip: string): void {

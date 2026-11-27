@@ -78,7 +78,12 @@ kept in `state/same-network.json`, so it survives a restart. Kill switch: `mobil
 The request handler is `gate(req) ? app(req) : (already answered)`: the same express app as the main
 listener, behind the gate of §3.3. Upgrades (WebSockets) are refused. Limits before it opens (A4 point 9):
 32 connections in total, a 10-second handshake timeout, header and request timeouts; where the agent
-listens directly, at most 6 open connections and 40 new ones a minute per address. Inside WSL the
+listens directly, at most 6 open connections and 40 new ones a minute per address (**raised 2026-11-21,
+builder #63**, after a live iPhone pairing over home Wi-Fi: a phone screen opens about 8 TLS connections at
+once and the old limits refused the rest, iOS error -1200; now 64 in total, 24 open and 240 new a minute per
+address, and in WSL mirrored mode the pass-through's one loopback address gets the whole door, 64 open and
+960 a minute, since the pass-through already limits each real phone. The listener also keeps a bounded
+refusal log, `state/same-network-refusals.json`, read through `GET /mobile/same-network/refusals`). Inside WSL the
 per-address limit is the pass-through's job (A4, Windows part), and the listener binds to WSL's own NAT
 address, not to loopback: **a change from A4's text, found live** (2026-11-19, Windows 11, WSL 3.0.1 in NAT
 mode): a listener on WSL's loopback is not reachable from Windows at all (only the main port, bound to
@@ -456,6 +461,8 @@ says the fresh check is the same for both addresses.
 4. WSL mirrored network mode opens only on the Windows app's word that it enforces the network rule, and then
    only on loopback with the per-address limit on. In a mirrored WSL every caller reaches loopback through
    the pass-through, so that limit counts them together (6 open, 40 a minute): enough for one phone's setup.
+   (2026-11-21, builder #63: not enough for real use; that address now gets the door's limits, 64 open and
+   960 a minute, and the pass-through limits each phone to 24 open and 240 a minute.)
 5. A phone paired at home reaches the agent only on that network, and needs a second pairing for an
    address that works from outside (A4 point 10).
 6. The first phone let in here cannot approve until 3b.

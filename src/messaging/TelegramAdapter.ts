@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { verifiedChannelIdentity, nameIdsInText } from './shared/channelIdentity.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import { telegramFetch } from './telegram-egress.js';
+import { withOriginBotAuthoredText } from './telegram-origin/OriginBotEgress.js';
 import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKindFor, telegramMethodFor, type TelegramMediaKind } from './telegramMedia.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
@@ -70,6 +71,8 @@ import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFil
 import { topicRef } from './shared/topicRef.js';
 import { composeInboundPayload, escapeTypedPathTags, historyTextFor, toWireMedia, type InboundMediaLocal } from '../core/inboundMedia.js';
 import { displayName as mediaDisplayName } from '../core/appMediaTypes.js';
+import { approveTapResult, declineTapResult } from './ownerChatTap.js';
+import { learningOwnerId } from '../core/ownerWords.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -1321,20 +1324,17 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    const browser = r.client === 'browser';
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
-    if (r.outcome === 'approved') {
-      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
-      // and once the phone is active any such code finishes it. Only the buttons go.
-      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+    // The visible result is shared with the throwaway stand-in owner chat (src/messaging/ownerChatTap.ts).
+    const shown = approveTapResult(r);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.approved) {
+      if (shown.removeButtons && typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
         // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
-        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
-        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
-      ));
+      const confirmation = shown.confirmation ?? '';
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(confirmation));
       return 'approved';
     }
     return r.outcome === 'ended' ? 'unknown' : 'held';
@@ -1357,16 +1357,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    const r = typeof raw === 'string' ? raw : raw.result;
-    const browser = typeof raw !== 'string' && raw.client === 'browser';
-    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
-    // way is answered "already approved", never as declined.
-    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
-      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
-      : 'This pairing has already ended.';
-    await this.answerCallback(t.callbackQueryId, toast);
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
-    return r === 'declined' ? 'declined' : 'unknown';
+    const shown = declineTapResult(raw);
+    await this.answerCallback(t.callbackQueryId, shown.toast);
+    if (shown.replaceText) await this.closeOwnerPairingMessage(owner, t.messageId, shown.replaceText);
+    return shown.declined ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -2587,6 +2581,14 @@ export class TelegramAdapter implements MessagingAdapter {
     return this.getCallbackApprover();
   }
 
+  /**
+   * Whose words may teach the agent preferences (SEC-105): the verified owner, else the one allowed
+   * sender of a single-person agent. Undefined means nobody's words teach.
+   */
+  getLearningOwner(): number | undefined {
+    return learningOwnerId(this.getVerifiedOwner(), this.config.authorizedUserIds);
+  }
+
   /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
   ownerSourcesReady(): boolean {
     return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
@@ -3672,6 +3674,25 @@ export class TelegramAdapter implements MessagingAdapter {
           console.error(`[telegram] topicRenamedHandler threw for ${numericTopicId}:`, err);
         }
       }
+    }
+  }
+
+  /**
+   * A message sent into a forum topic comes back replying to that topic's creation message, which
+   * carries the topic's name. Learning it here (only when no name is known; a rename still wins)
+   * lets a machine that lost its names, as after a rebuild, name its conversations again the next
+   * time it speaks in them, instead of showing "Conversation name unavailable". No extra request.
+   */
+  private learnTopicNameFromSent(result: unknown): void {
+    try {
+      const m = result as { chat?: { id?: number | string }; message_thread_id?: number; is_topic_message?: boolean; reply_to_message?: { forum_topic_created?: { name?: unknown } } } | null;
+      const name = m?.reply_to_message?.forum_topic_created?.name;
+      if (!m || m.is_topic_message !== true || typeof name !== 'string' || typeof m.message_thread_id !== 'number') return;
+      const topicId = inboundTopicId(m.chat?.id ?? this.config.chatId, m.message_thread_id, this.topicSpace());
+      if (typeof topicId === 'number' && !this.getTopicName(topicId)) this.captureTopicName(topicId, name, false);
+    } catch (err) {
+      // @silent-fallback-ok: a display name is optional; the send itself already succeeded
+      console.warn('[telegram] could not read the topic name from a sent message:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -7956,12 +7977,12 @@ export class TelegramAdapter implements MessagingAdapter {
     // Long polling uses 30s timeout in params — give extra headroom
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     // Origin review/storage/capacity must finish before this request's clock starts.
-    const response = await telegramFetch(url, {
+    const response = await withOriginBotAuthoredText(this.config.token, params.text, () => telegramFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sendParams.outgoingParams),
       networkTimeoutMs: timeoutMs,
-    });
+    }));
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after
@@ -8020,6 +8041,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     if (data.result && typeof data.result === 'object' && (data.result as QuietReceipt).recorded === true) throw new QuietRecordedError(data.result as QuietReceipt);
+    if (method === 'sendMessage') this.learnTopicNameFromSent(data.result);
     return data.result;
   }
 }

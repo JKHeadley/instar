@@ -9,7 +9,7 @@
  * step (classifyRelayIngress → recordGatePassedIngress).
  */
 
-// canonical-migration-validator: threadline-inbound-canonical-store@4
+// canonical-migration-validator: threadline-inbound-canonical-store@5
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';

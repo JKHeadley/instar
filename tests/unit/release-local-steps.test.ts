@@ -12,7 +12,7 @@
  *   - a non-zero `npm publish` is resolved against the registry.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -66,6 +66,7 @@ function runner(cwd: string, calls: string[][] = []) {
 }
 
 describe('release-local push + ref refresh (real git)', () => {
+  let fixture: string;
   let tmp: string;
   let bare: string;
   let clone: string;
@@ -76,23 +77,39 @@ describe('release-local push + ref refresh (real git)', () => {
     return r.stdout.trim();
   };
 
-  beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-local-steps-'));
-    bare = path.join(tmp, 'remote.git');
-    clone = path.join(tmp, 'clone');
-    other = path.join(tmp, 'other');
-    g(tmp, 'init', '--bare', '--initial-branch=main', bare);
-    g(tmp, 'clone', '-q', bare, clone);
+  beforeAll(() => {
+    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'release-local-steps-'));
+    const bare = path.join(fixture, 'remote.git');
+    const clone = path.join(fixture, 'clone');
+    const other = path.join(fixture, 'other');
+    g(fixture, 'init', '--bare', '--initial-branch=main', bare);
+    g(fixture, 'clone', '-q', bare, clone);
     fs.writeFileSync(path.join(clone, 'a.txt'), 'a\n');
     fs.writeFileSync(path.join(clone, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }, null, 2) + '\n');
     g(clone, 'add', '-A');
     g(clone, 'commit', '-qm', 'base');
     g(clone, 'push', '-q', 'origin', 'HEAD:main');
-    g(tmp, 'clone', '-q', bare, other);
+    g(fixture, 'clone', '-q', bare, other);
     // The release commit, made locally and not yet pushed.
     fs.writeFileSync(path.join(clone, 'version.txt'), '1.0.1\n');
     g(clone, 'add', '-A');
     g(clone, 'commit', '-qm', 'chore: release v1.0.1 [skip ci]');
+    // Each copy must push to its own test remote, not back to the fixture.
+    for (const checkout of [clone, other]) {
+      g(checkout, 'remote', 'set-url', 'origin', '../remote.git');
+    }
+  });
+
+  afterAll(() => {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-local-steps-'));
+    fs.cpSync(fixture, tmp, { recursive: true });
+    bare = path.join(tmp, 'remote.git');
+    clone = path.join(tmp, 'clone');
+    other = path.join(tmp, 'other');
   });
 
   afterEach(() => {
