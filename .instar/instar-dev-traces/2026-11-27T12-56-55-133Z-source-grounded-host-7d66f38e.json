@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T12:56:55.133Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "c1faf2ed3f0b4c1d87f06bafa850356ab87bfc9528bad5f51a19e59b05485b90",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual evaluation tool with no runtime callers; states the judge record-id forms exactly and adds finer diagnose classes; resolution and scoring unchanged.",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

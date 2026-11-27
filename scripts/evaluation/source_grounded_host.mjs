@@ -140,12 +140,16 @@ const JUDGE_RULES = [
   'answer asserts a decision other than the rubric decision; a refusal passes it. Criteria "convey-N": the answer',
   'conveys mustConvey item N. Criteria "avoid-N": pass when the answer does NOT convey mustNotConvey item N.',
   'Criteria "no-wrong-decision" and "avoid-N" need no evidence when they pass.',
+  'Record ids. With collection "source", recordId is a source record id exactly as listed, such as m12345.',
+  'With collection "answer", recordId is exactly one of: answer (the answer text), claims/CLAIMID/text',
+  '(CLAIMID is a claimId from the answer, for example claims/c1/text), or limitations/N (N counts from 0).',
+  'Never add a prefix such as "answer/", never use array positions, and never combine two ids in one.',
   'Return only one JSON object, no prose, no code fence:',
   '{"version":1,"submissionId":"<the submission id>","criteria":[{"criterionId":"<id>","verdict":"pass|fail|disputed",',
   '"reason":"<why>","answerClaimIds":["<claim ids from the answer that matter>"],',
-  '"evidence":[{"collection":"source|answer","recordId":"<source id, or answer / claims/<claimId>/text / limitations/<n>>",',
+  '"evidence":[{"collection":"source|answer","recordId":"<a record id: see the rules below>",',
   '"quote":"<exact words copied from that record>"}]}],',
-  '"unlistedMaterialClaims":[{"recordId":"<answer record id>","quote":"<exact words>","reason":"<why it matters>"}],',
+  '"unlistedMaterialClaims":[{"recordId":"<an answer-collection record id, as above>","quote":"<exact words>","reason":"<why it matters>"}],',
   '"limitations":["<anything that limited your judgment>"]}',
   'Criteria "decision" and "convey-N" need at least one evidence quote copied character for character;',
   '"no-wrong-decision" and "avoid-N" need none.',
@@ -572,6 +576,13 @@ export function recordIdPattern(collection, id, sourceIds, claimIds) {
   if (/^claims?\b/i.test(v)) return `${col} other-claim-form`;
   if (/^(m|msg|message)[-_ ]?[0-9]+$/i.test(v)) return `${col} other-message-form`;
   if (/^(source|record)s?[/:-]/i.test(v)) return `${col} prefixed-id`;
+  // Finer classes for forms seen in run 1, still pattern-only.
+  if (/^answer\s*[/.:#]/i.test(v)) return `${col} answer-prefixed${/claims/i.test(v) ? '-claims' : /limitations/i.test(v) ? '-limitations' : ''}`;
+  if (/^#?\//.test(v)) return `${col} json-pointer${/claims/i.test(v) ? '-claims' : ''}`;
+  if (/\[[0-9]+\]/.test(v)) return `${col} json-index${/claims/i.test(v) ? '-claims' : ''}`;
+  if (/\s/.test(v)) return `${col} has-space${/claims/i.test(v) ? '-claims' : ''}`;
+  if (/claims/i.test(v)) return `${col} mentions-claims`;
+  if (/^[0-9]+$/.test(v)) return `${col} bare-number`;
   return `${col} other`;
 }
 

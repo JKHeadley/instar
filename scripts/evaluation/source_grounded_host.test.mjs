@@ -261,8 +261,22 @@ test('an unresolved record id is reported as a pattern class only', () => {
   assert.equal(recordIdPattern('answer', 'c1', src, claims), 'answer bare-claim-id');
   assert.equal(recordIdPattern('source', 'message 12', src, claims), 'source other-message-form');
   assert.equal(recordIdPattern('source', 'limitations/3', src, claims), 'source is-limitation-out-of-range');
-  assert.equal(recordIdPattern('evidence', 'café secret', src, claims), 'bad-collection other');
+  assert.equal(recordIdPattern('evidence', 'cafésecret', src, claims), 'bad-collection other');
   assert.equal(recordIdPattern('source', '', src, claims), 'source empty-id');
+});
+
+test('finer record-id classes, and the judge rules state each id form', () => {
+  const src = new Set(['m10']); const claims = new Set(['c1']);
+  assert.equal(recordIdPattern('answer', 'answer/claims/c1/text', src, claims), 'answer answer-prefixed-claims');
+  assert.equal(recordIdPattern('answer', 'answer.limitations[0]', src, claims), 'answer answer-prefixed-limitations');
+  assert.equal(recordIdPattern('answer', '/claims/0/text', src, claims), 'answer json-pointer-claims');
+  assert.equal(recordIdPattern('answer', 'x[2]', src, claims), 'answer json-index');
+  assert.equal(recordIdPattern('answer', '3', src, claims), 'answer bare-number');
+  const pack = loadPack(syntheticPack());
+  const plan = buildPlan(pack, { reduced: 'R', repeats: 2, judges, seed: 'fixed' });
+  const text = judgePrompt(plan.trials[0], sourceRecords(pack, 'R'), Buffer.from('{}'), '{}');
+  assert.ok(text.includes('claims/CLAIMID/text') && text.includes('Never add a prefix such as "answer/"'));
+  assert.ok(!text.includes('answer / claims'));
 });
 
 test('shape codes name the schema rule and location, never the text', () => {
