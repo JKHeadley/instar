@@ -70,12 +70,15 @@ if [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ]; then
 fi
 
 TESTS_OK=0
+TEST_RC=0
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   if $TEST_CMD; then
     TESTS_OK=1
     break
+  else
+    TEST_RC=$?
   fi
-  if [ "$attempt" -eq 1 ]; then
+  if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
     echo ""
     echo "⚠️  Attempt 1 failed — retrying once (intermittent failures suspected)..."
     echo ""
@@ -83,7 +86,12 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
 done
 
 if [ "$TESTS_OK" != "1" ]; then
-  if [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ]; then
+  if [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ] && [ "$TEST_RC" = "3" ]; then
+    # pre-push-smoke.mjs exit 3 = PRE_PUSH_SMOKE_RESULT=VERIFY: the affected
+    # test set could not be determined, so ZERO tests ran. Nothing failed.
+    echo "❌ Push blocked: local smoke NOT VERIFIED — affected test set indeterminate, 0 tests ran (no test failed)."
+    echo "   Re-run with INSTAR_PRE_PUSH_FULL=1 git push to run the full push suite instead."
+  elif [ "$TEST_RETRY_MODE" = "handled-by-smoke-runner" ]; then
     echo "❌ Tests failed after smoke runner retry. Debug with: $TEST_CMD"
   else
     echo "❌ Tests failed on both attempts. Debug with: $TEST_CMD"
