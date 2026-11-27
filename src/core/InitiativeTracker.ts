@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { isValidProjectAnchor, type ApprovedProjectAnchor, type ApprovedProjectAnchorRecord, type ProjectAnchorChange } from './ProjectAnchorRegistry.js';
+import { projectAnchorOwnerBinding, isValidProjectAnchor, type ApprovedProjectAnchor, type ApprovedProjectAnchorRecord, type ProjectAnchorChange } from './ProjectAnchorRegistry.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
@@ -1163,16 +1163,18 @@ export class InitiativeTracker {
   }
 
   /** Only the authenticated owner-review route calls this entry point. */
-  async approveProjectAnchor(id: string, expectedVersion: number, conversationKey: string, anchor: ApprovedProjectAnchor): Promise<Initiative> {
+  async approveProjectAnchor(id: string, expectedVersion: number, conversationKey: string, anchor: ApprovedProjectAnchor, approvedByTelegramId: number): Promise<Initiative> {
     const current = this.get(id);
+    const approvedOwnerBinding = projectAnchorOwnerBinding(approvedByTelegramId);
     const lastRevision = current?.approvedProjectAnchorRevision ?? current?.approvedProjectAnchor?.anchor.revision ?? 0;
     if (!current || current.kind !== 'project' || current.status !== 'active' ||
       conversationKey !== `telegram:${current.telegramTopicId}` || !isValidProjectAnchor(anchor) ||
-      anchor.revision !== lastRevision + 1) {
+      !approvedOwnerBinding || anchor.revision !== lastRevision + 1) {
       throw new Error('Project anchor or membership changed');
     }
-    const stored = await this.update(id, { ifMatch: expectedVersion }, { conversationKey, approvedAt: new Date().toISOString(), anchor });
+    const stored = await this.update(id, { ifMatch: expectedVersion }, { conversationKey, approvedAt: new Date().toISOString(), approvedOwnerBinding, anchor });
     if (stored.approvedProjectAnchor?.conversationKey !== conversationKey ||
+      stored.approvedProjectAnchor.approvedOwnerBinding !== approvedOwnerBinding ||
       !isDeepStrictEqual(stored.approvedProjectAnchor?.anchor, anchor)) throw new Error('Project anchor approval was not stored');
     return stored;
   }

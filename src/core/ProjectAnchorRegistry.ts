@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Initiative } from './InitiativeTracker.js';
 
 export interface ProjectAnchorSourceMessage {
@@ -36,6 +37,7 @@ export interface ApprovedProjectAnchor {
 export interface ApprovedProjectAnchorRecord {
   conversationKey: string;
   approvedAt: string;
+  approvedOwnerBinding?: string;
   anchor: ApprovedProjectAnchor;
 }
 
@@ -71,11 +73,17 @@ export function isValidProjectAnchor(value: unknown): value is ApprovedProjectAn
       text(item.text, 1000) && (item.ownedByProjectId === undefined || text(item.ownedByProjectId, 63)));
 }
 
-export function readRegistryApprovedProjectAnchor(project: Initiative, conversationKey: string): ApprovedProjectAnchor | null {
+export function projectAnchorOwnerBinding(owner: number | undefined): string | undefined {
+  if (owner === undefined || !Number.isSafeInteger(owner) || owner < 1) return undefined;
+  return createHash('sha256').update(`project-anchor-telegram-owner:${owner}`).digest('hex');
+}
+
+export function readRegistryApprovedProjectAnchor(project: Initiative, conversationKey: string, currentOwner: number | undefined): ApprovedProjectAnchor | null {
   if (project.kind !== 'project' || project.status !== 'active' ||
     conversationKey !== `telegram:${project.telegramTopicId}`) return null;
   const record = project.approvedProjectAnchor;
-  if (!record || record.conversationKey !== conversationKey || !Number.isFinite(Date.parse(record.approvedAt))) return null;
+  const binding = projectAnchorOwnerBinding(currentOwner);
+  if (!binding || !record || record.approvedOwnerBinding !== binding || record.conversationKey !== conversationKey || !Number.isFinite(Date.parse(record.approvedAt))) return null;
   return isValidProjectAnchor(record.anchor) ? record.anchor : null;
 }
 

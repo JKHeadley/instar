@@ -2,7 +2,7 @@
 
 ## What Changed
 
-Recovery recognizes direct Telegram sender IDs that match both configured owner records. It gives the framing quote, recent owner messages, and current work room before bare ledger references. Claude checks staged protected quotes against current authority and source text before using them.
+Recovery recognizes direct Telegram sender IDs that match both configured owner records. It gives the framing quote, recent owner messages, and current work room before bare ledger references. Claude checks staged protected quotes against current authority and source text before using them. Approved project anchors record the verified Telegram owner at approval time. Recovery withholds older approvals without an owner binding and approvals belonging to a different owner.
 
 ## What to Tell Your User
 

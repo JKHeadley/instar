@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { buildContextLayers, contextLayersEnabled, type ContextLayers } from '../../src/monitoring/contextLayers/contextLayersBoot.js';
-import { PROJECT_ANCHOR_FIXTURE_LINE, persistedProjectAnchorFixture } from '../fixtures/project-standing-anchor.js';
+import { PROJECT_ANCHOR_FIXTURE_LINE, persistedProjectAnchorFixture, projectAnchorHistoryFixture, FIXTURE_PROJECT_ANCHOR_OWNER } from '../fixtures/project-standing-anchor.js';
 import { wireProjectAnchorRegistry, wireStandingPacket } from '../../src/monitoring/contextLayers/standingPacketBoot.js';
 import { rowRefFor } from '../../src/monitoring/contextLayers/LayerStore.js';
 import { CompactionCanary } from '../../src/monitoring/compactionCanary.js';
@@ -54,7 +54,7 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP });
   });
 
-  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }) {
+  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, currentAnchorOwner = projectAnchorHistoryFixture.getVerifiedOwner) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cbcs-e2e-')); dirs.push(root);
     const sd = path.join(root, '.instar'); fs.mkdirSync(sd);
     const topicMemory = new TopicMemory(sd); await topicMemory.open(); mems.push(topicMemory);
@@ -67,7 +67,7 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     const layers: ContextLayers | null = contextLayersEnabled(config, config.contextBudget?.enabled) ? buildContextLayers({ stateDir: sd, authToken: 'e2e-auth-token-0123456789' }) : null;
     if (layers) {
       const stager = wireStandingPacket({ layers, stateDir: sd, topicMemory, sessions: () => sessions, debounceMs: 60_000 });
-      stops.push(wireProjectAnchorRegistry(stager, await persistedProjectAnchorFixture(sd)), () => stager.stop());
+      stops.push(wireProjectAnchorRegistry(stager, await persistedProjectAnchorFixture(sd), { stateDir: sd, history: { ...projectAnchorHistoryFixture, getVerifiedOwner: currentAnchorOwner } }), () => stager.stop());
     }
     const ctx = {
       config: { projectName: 'e2e', projectDir: root, stateDir: sd, port: 0, authToken: 'e2e-auth-token-0123456789' } as never,
@@ -128,6 +128,18 @@ describe('Codex next-prompt seed — alive on the production init path', () => {
     expect(g).toMatchObject({ detected: 1, complete: 1, pending: 0, state: 'accruing', marking: 'synthesized' });
     expect(canary.report(true).recent.find((d) => d.boundaryUuid === 'w-e2e-seed')?.seededCarrier).toBe(offer.body.carrier);
     expect((await request(b.app).post('/context-budget/codex-seed').send(body)).body).toEqual({ deliver: false, reason: 'already-seeded' });
+  });
+
+  it('seeds recovery without an anchor approved by the previous owner', async () => {
+    let owner = FIXTURE_PROJECT_ANCHOR_OWNER;
+    const b = await boot({ developmentAgent: true }, () => owner);
+    expect(b.layers!.standingPacket()!.packetForSession(T)).toContain(PROJECT_ANCHOR_FIXTURE_LINE);
+    owner++;
+    const offer = await request(b.app).post('/context-budget/codex-seed').send({
+      topicId: T, sessionId: SID, transcriptPath: b.rollout, framework: 'codex-cli',
+    });
+    expect(offer.body).toMatchObject({ deliver: true });
+    expect(offer.body.text).not.toContain(PROJECT_ANCHOR_FIXTURE_LINE);
   });
 
   it('fleet agent: 503 — the hook falls through to today\'s output', async () => {

@@ -90,3 +90,7 @@ The continuation uses one signed payload for both checks. Its topic list must in
 - **graduation criterion:** Verify the owner framing, recent words and current work under budget, plus rejection after owner or source changes on both hooks.
 - **dark-window:** This repairs current standing recovery behind its existing switch. The separate proposed-purpose pilot remains disabled.
 - **ladder:** Reuse the contextBudget.layers ladder and its existing feature evidence.
+
+## Approved project anchors
+
+Persist the verified Telegram owner account at the time an approved project anchor is stored. Use the existing Telegram owner verifier and require an exact current-account match whenever the production standing packet reads the registry. A legacy approval without an account binding, or an approval from a different account, is missing for recovery. The current owner can approve an original direct message under the usual authenticated route and project version check. The anchor digest already checked on staged recovery must fail if its anchor no longer resolves. PreCompact steering excludes project anchors, while Codex recovery evaluates the registry at seed creation.

@@ -33,7 +33,7 @@ function keypair() {
 }
 const ctxV = () => ({ countDroppedField: () => {}, countJailReject: () => {} });
 
-function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean; preview?: boolean; incomplete?: boolean }) {
+function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean; currentAnchorOwner?: () => number; preview?: boolean; incomplete?: boolean }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-checkin-')); dirs.push(dir);
   const keys = keypair();
   const tracker = new InitiativeTracker(dir);
@@ -69,10 +69,13 @@ function app(opts: { loop: boolean; progress?: boolean; anchor?: boolean; previe
     ...(opts.anchor ? {
       verifyDashboardOperatorSession: (token?: string) => token === 'anchor-owner',
       telegram: {
-        getVerifiedOwner: () => 101,
+        getVerifiedOwner: opts.currentAnchorOwner ?? (() => 101),
         findTopicMessage: (topic: number, id: number) => ({ entry: topic === 141133 && id === 11 ? {
           messageId: 11, fromUser: true, forwarded: false, telegramUserId: 101,
           timestamp: '2026-11-26T22:00:00Z', text: 'Use fewer tokens while keeping context intact.',
+        } : topic === 141133 && id === 13 ? {
+          messageId: 13, fromUser: true, forwarded: false, telegramUserId: 102,
+          timestamp: '2026-11-27T12:00:00Z', text: 'Keep the recovery packet easy to follow.',
         } : null }),
       },
     } : {}),
@@ -154,7 +157,8 @@ describe('verified project progress on GET /chief-of-staff', () => {
 
 describe('source-backed project purpose', () => {
   it('copies an exact owner message across topics and refuses missing history or replacement', async () => {
-    const { a, tracker } = app({ loop: false, anchor: true });
+    let owner = 101;
+    const { a, tracker } = app({ loop: false, anchor: true, currentAnchorOwner: () => owner });
     const project = await tracker.create({
       id: 'context-budget', title: 'Context Budget', kind: 'project', description: 'Fixture',
       phases: [{ id: 'fold', name: 'Fold' }], telegramTopicId: '141134',
@@ -175,12 +179,25 @@ describe('source-backed project purpose', () => {
 
     await request(a).put(route).set(operator).send(body).expect(200);
     const saved = tracker.get(project.id)!;
-    expect(readRegistryApprovedProjectAnchor(saved, body.conversationKey)).toEqual({
+    expect(readRegistryApprovedProjectAnchor(saved, body.conversationKey, 101)).toEqual({
       revision: 1, purpose: 'Use fewer tokens while keeping context intact.',
       sourceMessages: [sourceMessage], done: [], outOfScope: [],
     });
     await request(a).put(route).set(operator).send({ ...body, expectedVersion: saved.version })
       .expect(409, { error: 'project-anchor-already-exists' });
+    owner = 102;
+    expect(readRegistryApprovedProjectAnchor(saved, body.conversationKey, owner)).toBeNull();
+    const renewal = { ...body, expectedVersion: saved.version };
+    await request(a).put(route).set(operator).send(renewal)
+      .expect(409, { error: 'project-anchor-owner-source-unverified' });
+    await request(a).put(route).set(operator).send({
+      ...renewal, sourceMessage: { ...sourceMessage, messageId: '13', at: '2026-11-27T12:00:00Z' },
+    }).expect(200);
+    const renewed = tracker.get(project.id)!;
+    expect(readRegistryApprovedProjectAnchor(renewed, body.conversationKey, owner))
+      .toMatchObject({ revision: 2, purpose: 'Keep the recovery packet easy to follow.' });
+    expect(readRegistryApprovedProjectAnchor(renewed, body.conversationKey, 101)).toBeNull();
+
   });
 });
 

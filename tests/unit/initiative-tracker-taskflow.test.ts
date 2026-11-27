@@ -124,7 +124,7 @@ describe('InitiativeTracker × TaskFlow Phase 4 — basic lifecycle', () => {
       done: [{ id: 'one', text: 'Complete the example', state: 'open' as const }],
       outOfScope: [],
     };
-    await r.tracker.approveProjectAnchor(project.id, waiting.version!, 'telegram:141133', anchor);
+    await r.tracker.approveProjectAnchor(project.id, waiting.version!, 'telegram:141133', anchor, 123);
 
     const after = r.registry.getFlow(prior.flowId, { bypassCache: true });
     expect(after).toMatchObject({

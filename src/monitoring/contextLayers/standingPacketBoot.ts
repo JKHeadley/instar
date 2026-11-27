@@ -119,7 +119,7 @@ export function wireProjectAnchorRegistry(
 ): () => void {
   stager.setProjectAnchorReader(createStandingProjectAnchorLookup({
     listProjects: () => tracker.list({ kind: 'project' }),
-    readApproved: readRegistryApprovedProjectAnchor,
+    readApproved: (project, key) => readRegistryApprovedProjectAnchor(project, key, pilot?.history?.getVerifiedOwner()),
     ...(pilot ? { readVerifiedProposal: createProjectPurposePilotReader(pilot.stateDir, pilot.history, pilot.machineId, pilot.allowedDesignationDigest) } : {}),
   }));
   return tracker.onProjectAnchorChanged(({ conversationKeys }) => {

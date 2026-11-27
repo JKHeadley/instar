@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "standing-packet-owner-coverage",
+  "sessionId": "0a4a1a61-9c43-440d-9534-78e60154a58c",
+  "timestamp": "2026-11-27T11:59:37.675Z",
+  "artifactPath": "upgrades/side-effects/standing-packet-owner-coverage.md",
+  "artifactSha256": "ab28fa446581508370538be10557238f2335303fa91e0f35cfbe488edebe7590",
+  "specPath": "docs/specs/standing-packet-owner-coverage.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T11-59-25-733Z-standing-packet-owner-coverage.json",
+    ".instar/instar-dev-traces/2026-11-27T11-57-31-377Z-standing-packet-owner-coverage-8d7165de.json",
+    "docs/specs/standing-packet-owner-coverage.eli16.md",
+    "docs/specs/standing-packet-owner-coverage.md",
+    "src/core/InitiativeTracker.ts",
+    "src/core/ProjectAnchorRegistry.ts",
+    "src/monitoring/contextLayers/standingPacketBoot.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-budget-codex-seed-alive.test.ts",
+    "tests/e2e/context-layer-standing-packet-alive.test.ts",
+    "tests/fixtures/project-standing-anchor.ts",
+    "tests/integration/chief-of-staff-check-in.test.ts",
+    "tests/unit/InitiativeTracker.project.test.ts",
+    "tests/unit/initiative-tracker-taskflow.test.ts",
+    "upgrades/next/standing-packet-owner-coverage.md",
+    "upgrades/side-effects/standing-packet-owner-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Bind approval provenance to the current verified owner and fail closed during recovery",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

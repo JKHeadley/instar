@@ -2,6 +2,12 @@ import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import type { ApprovedProjectAnchor } from '../../src/core/ProjectAnchorRegistry.js';
 import type { ReadProjectAnchor } from '../../src/monitoring/contextLayers/standingPacket.js';
 
+export const FIXTURE_PROJECT_ANCHOR_OWNER = 123;
+export const projectAnchorHistoryFixture = {
+  getVerifiedOwner: () => FIXTURE_PROJECT_ANCHOR_OWNER,
+  findTopicMessage: () => ({ entry: null }),
+};
+
 export const PROJECT_ANCHOR_FIXTURE_LINE = 'Approved project anchor for context-budget, revision 1';
 
 export const readProjectAnchorFixture: ReadProjectAnchor = (conversationKey) =>
@@ -36,6 +42,6 @@ export async function persistedProjectAnchorFixture(stateDir: string, confirmed 
     ...lookup.anchor,
     sourceMessages: lookup.anchor.sourceMessages.map((source) => ({ ...source, conversationKey: 'telegram:141385' })),
   };
-  await tracker.approveProjectAnchor(project.id, project.version ?? 1, 'telegram:141133', approved);
+  await tracker.approveProjectAnchor(project.id, project.version ?? 1, 'telegram:141133', approved, FIXTURE_PROJECT_ANCHOR_OWNER);
   return new InitiativeTracker(stateDir);
 }

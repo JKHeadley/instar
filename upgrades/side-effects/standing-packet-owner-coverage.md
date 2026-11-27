@@ -21,3 +21,11 @@ Revert the app and update the installed hooks with the matching release. Clear s
 ## Evidence
 
 A private replay of the Chief of Staff topic produced a verified 5,948-character packet with framing, fourteen recent owner messages, and current work. The focused tests cover owner transfer, alias unlink, budget pressure, recovery and steering output, and both framework lifecycle fixtures.
+
+## Approved project anchor owner change
+
+The approval route records the same verified Telegram owner whose direct message supplies the purpose. The standing packet checks that account against the current verified owner at each lookup. An unbound legacy approval or a different owner yields a missing project anchor. The current owner can approve a fresh source against the current project version. This adds no new authority to send messages or to enable the dormant pilot. The existing staged anchor digest check rejects previously staged packets when this lookup stops resolving the anchor. Fresh Claude packets and Codex seeds use the same lookup. The PreCompact steering text excludes the project anchor. The branch has no production writer of fold-sourced keep files. Existing fold-file cleanup and the setting that disables practice folding are unaffected by the code change.
+
+Registry storage and raw authenticated project reads now include a deterministic digest of the approving account. They do not include its raw Telegram identifier in the anchor record. The digest is an equality marker and does not conceal the account from someone who already knows or can guess its identifier. A rollback removes the read-time protection, so avoid reverting to a build that can deliver a stale approved anchor after a transfer. Persisted owner identity is checked on the current machine and follows its configured Telegram authority.
+
+Independent second pass concurred after verifying the live registry check, stored binding, renewal route and both recovery fixtures. The review raised the legacy revision fallback and the account identifier exposed in authenticated project reads. The revision fallback now matches the tracker, the marker is a digest, and HTTP coverage rejects the former owner's source before accepting a fresh one.

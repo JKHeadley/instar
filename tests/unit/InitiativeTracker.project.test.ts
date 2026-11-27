@@ -442,25 +442,30 @@ describe('approved project anchor persistence', () => {
       done: [{ id: 'fold', text: 'Fold one long conversation', state: 'open' }],
       outOfScope: [{ text: 'Benchmark expansion' }],
     };
-    const saved = await tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', anchor);
+    const saved = await tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', anchor, 123);
     expect(changes).toEqual([
       { projectId: initial.id, revision: null, conversationKeys: ['telegram:141133'] },
       { projectId: initial.id, revision: 1, conversationKeys: ['telegram:141133'] },
     ]);
-    await expect(tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', { ...anchor, revision: 2 }))
+    await expect(tracker.approveProjectAnchor(initial.id, initial.version ?? 1, 'telegram:141133', { ...anchor, revision: 2 }, 123))
       .rejects.toThrow(/version mismatch/);
     const restarted = new InitiativeTracker(tmpDir);
     const read = createProjectAnchorLookup({
-      listProjects: () => restarted.list({ kind: 'project' }), readApproved: readRegistryApprovedProjectAnchor,
+      listProjects: () => restarted.list({ kind: 'project' }), readApproved: (project, key) => readRegistryApprovedProjectAnchor(project, key, 123),
     });
     expect(read('telegram:141133')).toEqual({ status: 'resolved', projectId: initial.id, anchor });
+    const persisted = restarted.get(initial.id)!;
+    expect(readRegistryApprovedProjectAnchor(persisted, 'telegram:141133', 124)).toBeNull();
+    expect(readRegistryApprovedProjectAnchor(persisted, 'telegram:141133', undefined)).toBeNull();
+    const { approvedOwnerBinding: _owner, ...legacy } = persisted.approvedProjectAnchor!;
+    expect(readRegistryApprovedProjectAnchor({ ...persisted, approvedProjectAnchor: legacy }, 'telegram:141133', 123)).toBeNull();
     await restarted.update(initial.id, { ifMatch: saved.version, telegramTopicId: '141135' });
     expect(read('telegram:141133')).toEqual({ status: 'missing' });
     expect(read('telegram:141135')).toEqual({ status: 'missing' });
     const movedBack = await restarted.update(initial.id, { telegramTopicId: '141133' });
-    await expect(restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', anchor)).rejects.toThrow();
+    await expect(restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', anchor, 123)).rejects.toThrow();
     const replacement = { ...anchor, revision: 2, purpose: 'Updated and approved fixture purpose' };
-    await restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', replacement);
+    await restarted.approveProjectAnchor(initial.id, movedBack.version!, 'telegram:141133', replacement, 123);
     expect(read('telegram:141133')).toEqual({ status: 'resolved', projectId: initial.id, anchor: replacement });
   });
 });

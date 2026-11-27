@@ -21,7 +21,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { buildContextLayers, contextLayersEnabled, type ContextLayers } from '../../src/monitoring/contextLayers/contextLayersBoot.js';
-import { PROJECT_ANCHOR_FIXTURE_LINE, persistedProjectAnchorFixture } from '../fixtures/project-standing-anchor.js';
+import { PROJECT_ANCHOR_FIXTURE_LINE, persistedProjectAnchorFixture, projectAnchorHistoryFixture, FIXTURE_PROJECT_ANCHOR_OWNER } from '../fixtures/project-standing-anchor.js';
 import { wireProjectAnchorRegistry, wireStandingPacket } from '../../src/monitoring/contextLayers/standingPacketBoot.js';
 import { clearStagedStandingPackets, readStandingPacketPointer, standingPacketDir, SECTION } from '../../src/monitoring/contextLayers/standingPacket.js';
 import { rowRefFor } from '../../src/monitoring/contextLayers/LayerStore.js';
@@ -48,7 +48,7 @@ describe('standing packet — alive on the production init path', () => {
     for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP });
   });
 
-  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, o: { preStaged?: boolean; history?: ProjectAnchorHistoryReader; allowedDesignationDigest?: string; designation?: object } = {}) {
+  async function boot(config: { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, o: { preStaged?: boolean; currentAnchorOwner?: () => number | undefined; history?: ProjectAnchorHistoryReader; allowedDesignationDigest?: string; designation?: object } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clsp-e2e-')); dirs.push(root);
     const sd = path.join(root, '.instar');
     fs.mkdirSync(sd);
@@ -72,7 +72,7 @@ describe('standing packet — alive on the production init path', () => {
     if (_contextLayers && registry) {
       const stager = wireStandingPacket({ layers: _contextLayers, stateDir: sd, topicMemory, intent: (t) => topicIntentStore.read(t), sessions: () => sessions, debounceMs: 5 });
       stops.push(wireProjectAnchorRegistry(stager, registry, {
-        stateDir: sd, history: o.history, machineId: 'fixture-studio', allowedDesignationDigest: o.allowedDesignationDigest,
+        stateDir: sd, history: o.history ?? { ...projectAnchorHistoryFixture, getVerifiedOwner: o.currentAnchorOwner ?? projectAnchorHistoryFixture.getVerifiedOwner }, machineId: 'fixture-studio', allowedDesignationDigest: o.allowedDesignationDigest,
       }), () => stager.stop());
     } else {
       clearStagedStandingPackets(sd);
@@ -134,10 +134,21 @@ describe('standing packet — alive on the production init path', () => {
     const current = project.approvedProjectAnchor!.anchor;
     await b.registry!.approveProjectAnchor(project.id, project.version ?? 1, `telegram:${T}`, {
       ...current, revision: 2, purpose: 'Updated fixture purpose',
-    });
+    }, FIXTURE_PROJECT_ANCHOR_OWNER);
     await expect.poll(() => fs.readFileSync(path.join(standingPacketDir(b.sd), `${T}.md`), 'utf-8'))
       .toContain('\nUpdated fixture purpose\n[end project purpose quote ');
 
+  });
+
+  it('withdraws the staged project anchor when the verified owner changes', async () => {
+    let owner = FIXTURE_PROJECT_ANCHOR_OWNER;
+    const b = await boot({ developmentAgent: true }, { currentAnchorOwner: () => owner });
+    const stager = b.layers!.standingPacket()!;
+    expect(stager.packetForSession(T)).toContain(PROJECT_ANCHOR_FIXTURE_LINE);
+    const hash = readStandingPacketPointer(b.sd, String(T))!.sha256;
+    owner++;
+    expect(stager.stagedRecoveryCurrent(String(T), hash)).toBe(false);
+    expect(stager.packetForSession(T)).not.toContain(PROJECT_ANCHOR_FIXTURE_LINE);
   });
 
   it('recovers only the exact original Studio proposal and withdraws it when the designation changes', async () => {

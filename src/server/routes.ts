@@ -1,5 +1,5 @@
 import { buildProjectCoverage } from '../core/ChiefOfStaffProjectProgress.js';
-import { isProjectAnchorSourceMessage, isValidProjectAnchor, readVerifiedProjectAnchorSource } from '../core/ProjectAnchorRegistry.js';
+import { projectAnchorOwnerBinding, isProjectAnchorSourceMessage, isValidProjectAnchor, readVerifiedProjectAnchorSource } from '../core/ProjectAnchorRegistry.js';
 import { restartAdmissionTimedOut } from '../core/plannedRestartAdmissionTimeout.js';
 import { pendingUpdateRestartTarget, readRestartRequestFile } from '../core/restartRequestFile.js';
 import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
@@ -26708,23 +26708,25 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
       return;
     }
-    if (project.approvedProjectAnchor) {
+    const currentOwner = ctx.telegram?.getVerifiedOwner();
+    const ownerBinding = projectAnchorOwnerBinding(currentOwner);
+    if (ownerBinding && project.approvedProjectAnchor?.approvedOwnerBinding === ownerBinding) {
       res.status(409).json({ error: 'project-anchor-already-exists' });
       return;
     }
     const anchor = {
-      revision: (project.approvedProjectAnchorRevision ?? 0) + 1,
+      revision: (project.approvedProjectAnchorRevision ?? project.approvedProjectAnchor?.anchor.revision ?? 0) + 1,
       purpose: readVerifiedProjectAnchorSource(ctx.telegram ?? undefined, sourceMessage),
       sourceMessages: [sourceMessage],
       done: [],
       outOfScope: [],
     };
-    if (!isValidProjectAnchor(anchor)) {
+    if (currentOwner === undefined || !ownerBinding || !isValidProjectAnchor(anchor)) {
       res.status(409).json({ error: 'project-anchor-owner-source-unverified' });
       return;
     }
     try {
-      const saved = await tracker.approveProjectAnchor(req.params.id, expectedVersion, conversationKey, anchor);
+      const saved = await tracker.approveProjectAnchor(req.params.id, expectedVersion, conversationKey, anchor, currentOwner);
       res.json({ projectId: saved.id, revision: anchor.revision, projectVersion: saved.version });
     } catch {
       res.status(409).json({ error: 'project-anchor-stale-or-not-stored' });
