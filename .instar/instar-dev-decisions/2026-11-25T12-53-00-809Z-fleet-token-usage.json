@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-25T12:53:00.809Z",
+  "slug": "fleet-token-usage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/data/awareness/fleet-token-usage.md matches token handling",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 140,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/fleet-token-usage.md",
+      "src/server/CapabilityIndex.ts",
+      "src/server/fleetUsageRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 138,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

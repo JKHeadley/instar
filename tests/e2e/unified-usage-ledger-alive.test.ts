@@ -35,7 +35,7 @@ async function boot(developmentAgent: boolean) {
   for (const d of ['state/sessions', 'state/jobs', 'logs']) fs.mkdirSync(path.join(stateDir, d), { recursive: true });
   fs.writeFileSync(path.join(stateDir, 'config.json'), '{}');
   const config = {
-    projectName: 'usage-ledger-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', developmentAgent,
+    projectName: 'usage-ledger-e2e', projectDir: dir, stateDir, port: 0, authToken: 'e2e-token', dashboardPin: '246810', developmentAgent,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
   } as unknown as InstarConfig;
@@ -109,6 +109,46 @@ describe('unified usage ledger — production wiring', () => {
     } finally {
       homedir.mockRestore();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps the cross-agent fleet view off on a development server by default', async () => {
+    const { server } = await boot(true);
+    const app = server.getApp();
+    await auth(request(app).get('/usage/fleet/status')).expect(200, { enabled: false });
+    await auth(request(app).get('/usage/fleet')).expect(503, { error: 'fleet-usage-off' });
+  });
+
+  it('reads an enabled fleet summary through the real dashboard unlock on AgentServer', async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubEnv('INSTAR_FLEET_USAGE_ENABLED', 'true');
+    vi.stubEnv('INSTAR_FLEET_USAGE_SOURCES', JSON.stringify([
+      { id: 'EXAMPLE', agentId: 'example-agent', label: 'Example agent', origin: 'https://fleet-usage.example.test' },
+    ]));
+    vi.stubEnv('INSTAR_FLEET_USAGE_TOKEN_EXAMPLE', 'fixture-agent-token');
+    vi.stubGlobal('fetch', async (input: string | URL, init?: Parameters<typeof fetch>[1]) => {
+      const url = new URL(String(input));
+      if (url.hostname !== 'fleet-usage.example.test') return originalFetch(input, init);
+      expect(new Headers(init?.headers).get('X-Instar-AgentId')).toBe('example-agent');
+      return Response.json({
+        since: new Date(Number(url.searchParams.get('since'))).toISOString(),
+        grain: 'day', scope: 'pool', clamped: false, notReached: [], warming: [],
+        total: { tokens: { total: 47 }, partialCalls: 0 },
+      });
+    });
+    try {
+      const { server } = await boot(true);
+      const app = server.getApp();
+      await request(app).get('/usage/fleet').expect(401);
+      await auth(request(app).get('/usage/fleet')).expect(403);
+      const unlock = await request(app).post('/dashboard/unlock').send({ pin: '246810' }).expect(200);
+      const result = await auth(request(app).get('/usage/fleet')).set('X-Instar-Operator-Session', unlock.body.operatorSessionToken).expect(200);
+      expect(result.body).toMatchObject({
+        tokens: 47, complete: true, agents: [{ label: 'Example agent', tokens: 47, coverage: 'complete' }],
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
     }
   });
 

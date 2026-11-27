@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "fleet-token-usage",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T12:52:18.843Z",
+  "artifactPath": "upgrades/side-effects/fleet-token-usage.md",
+  "artifactSha256": "470335a12016c5b7bb1e29f9f1bcf8f39616f5be4fbb55dbac18288b073e4b54",
+  "coveredFiles": [
+    "dashboard/console/costs.js",
+    "dashboard/console/fleet-usage.js",
+    "src/data/awareness/fleet-token-usage.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/fleetUsageRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/unified-usage-ledger-alive.test.ts",
+    "tests/integration/fleet-usage-routes.test.ts",
+    "tests/unit/console-fleet-usage.test.ts",
+    "upgrades/next/fleet-token-usage.md",
+    "upgrades/side-effects/fleet-token-usage.eli16.md",
+    "upgrades/side-effects/fleet-token-usage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Default-off read-only view over individually owner-provisioned existing summary access; reversible with no migration or source policy change.",
+  "eli16Path": "upgrades/side-effects/fleet-token-usage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fleet-token-usage.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

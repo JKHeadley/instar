@@ -9,6 +9,7 @@ import { legacyHref } from './nav-model.js';
 import { sessionLabel } from './home-model.js';
 import { buildUsageSection, grainFor, drillQuery, ledgerOff } from './usage-model.js';
 import { usageSection } from './usage.js';
+import { fleetUsageSection } from './fleet-usage.js';
 import { topicNameMap } from './topic-names.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -36,7 +37,9 @@ export async function renderCosts(main, ctx) {
   // this agent) hides the section entirely; the reads above are unchanged.
   const uSince = Math.floor(w.sinceMs);
   const uGrain = grainFor(w.key);
-  const usageSummaryRes = await get(`/usage/summary?since=${uSince}&grain=${uGrain}`);
+  const [usageSummaryRes, fleetStatus] = await Promise.all([
+    get(`/usage/summary?since=${uSince}&grain=${uGrain}`), get('/usage/fleet/status'),
+  ]);
   let usageModel = { off: true };
   if (!ledgerOff(usageSummaryRes)) {
     const [uSeries, uTree, uTopic, uJob, uFeature, uCoverage, uTopics, uPool] = await Promise.all([
@@ -78,6 +81,7 @@ export async function renderCosts(main, ctx) {
       el('a', { class: 'btn-primary btn-inline', href: legacyHref('spend'), text: 'Open the spending controls' })), 'spending') : null,
     el('div', { class: 'page-controls' }, routingLink),
     usageSection(usageModel, { get, sinceMs: uSince, state: view.usage, repaint }),
+    fleetStatus?.ok && fleetStatus.data?.enabled === true ? fleetUsageSection() : null,
     el('div', { class: 'page-sections' },
       recordedSection(page, repaint),
       checksSection(page.checks),

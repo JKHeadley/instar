@@ -76,6 +76,7 @@ import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf, principalOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountUsageRoutes } from './usageRoutes.js';
+import { mountFleetUsageRoutes } from './fleetUsageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState, isTrustApprovalEnabled } from './mobilePermissionsRoutes.js';
@@ -43376,6 +43377,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     };
     mountUsageRoutes(router, () => ctx.usageRouteDeps?.() ?? null);
+    mountFleetUsageRoutes(router, { verifyOperator: token => ctx.verifyDashboardOperatorSession?.(token) === true });
     // One merged /subscription-relogin?scope=pool read shared by the blockers and repairs deps (2 s).
     type MobileReloginPool = { blockers?: Array<{ accountId: string; machineId: string; reason: string }>; episodes?: Array<import('./mobileCapacityRoutes.js').RepairView> };
     let mobileReloginPoolCache: { at: number; p: Promise<MobileReloginPool | null> } | null = null;
