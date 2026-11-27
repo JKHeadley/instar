@@ -134,6 +134,34 @@ function setup(opts: { beforePrView?: () => Promise<void>; views?: Record<number
 
 const ok = (r: LocalVerifyRecord): VerifyRunResult => ({ kind: 'record', record: r, reasons: [], overlaps: [], keptWorktree: null });
 
+describe('named flake quarantine', () => {
+  it('keeps the first three proved results and quarantines future retries by name', () => {
+    const { svc, stateDir } = setup();
+    const history = svc as unknown as {
+      noteNamedFlakes: (result: LocalVerifyRecord) => void;
+      namedFlakeRetryInput: () => { quarantined: { file: string; test: string }[] };
+    };
+    const file = 'tests/unit/repeated.test.ts';
+    const test = 'suite recurring failure';
+    svc.setNamedFlakeRetryEnabled(() => true);
+    for (let i = 0; i < 3; i++) {
+      expect(history.namedFlakeRetryInput().quarantined).toEqual([]);
+      const result = record({
+        finishedAt: `2026-10-21T10:40:0${i}.000Z`,
+        flakyRetried: [{ file, lane: 'unit', namedRetry: true, firstMessage: 'failure',
+          failedTests: [test], failedTestsTotal: 1, soloPassedByName: [test], testSetHash: 'a'.repeat(64) }],
+      });
+      history.noteNamedFlakes(result);
+      history.noteNamedFlakes(result);
+      expect(result.outcome).toBe('success');
+    }
+    expect(history.namedFlakeRetryInput().quarantined).toEqual([{ file, test }]);
+    const stored = JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'local-verify', 'flaky-history.json'), 'utf-8'));
+    expect(stored.named[0]).toMatchObject({ owner: 'Scaling the Test Line' });
+    svc.shutdown();
+  });
+});
+
 const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
   mode: 'enforce', outcome: 'red', reason: 'preflight-red', elapsedMs: 1000, changedFiles: 1,
   selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
