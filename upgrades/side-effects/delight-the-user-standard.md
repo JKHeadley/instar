@@ -95,3 +95,11 @@ Concur with the review. Notes: (1) the `secondPassReviewedScreenshots` docblock 
 - `tests/unit/operator-surface-gate.test.ts` — the §6b hollow-copy cases added; existing cases unchanged.
 - `tests/unit/delight-the-user-precommit.test.ts` — the real hook in a sandbox repo: screen-only commit without a trace refused; no §6c refused; missing screenshot refused; css-only and image-only refused without the answer; screenshots without a second reader refused; a review not naming the pictures refused; a deleted screen refused without the answer and passing with "screen removed"; complete reviewed answer passes; "no visible change" passes; non-screen change untouched.
 - Registry lints: insertion-placement, tree-parentage (47 relations, bidirectional), code-backreference (71/71), hierarchy `--check` current.
+
+## Pre-queue review (rule 7), 2026-11-27
+
+**Reviewer:** independent pre-queue reviewer, fresh Claude Opus 5.5 helper of the Design Standards session, not the author. Head 74ce1222c against main d66e82bd5a. Verdict: dissent on one item, now fixed.
+
+- Blocking, fixed: `tests/e2e/converging-audit-precommit-report-backing.test.ts` builds its hook sandbox from a fixed file list that lacked `scripts/lib/delight-the-user.mjs`, which the precommit and `operator-surface.mjs` now import, so the hook would fail on load there. The file is added to that list. The other hook sandboxes copy the whole `scripts/lib` folder.
+- Description, fixed: the ratchet line now says 102 to 103, the count after merging main.
+- Non-blocking, carried on CMT-1998: a Tier-2 trace naming a missing `sideEffectsPath` returns quietly from the delight check, as the §6b check does; a backtick-wrapped "no visible change" line is refused with a misleading message (fails closed); the section finder takes the first matching heading; the Tier-2 hook path is checked by a source grep, not a sandbox run.
