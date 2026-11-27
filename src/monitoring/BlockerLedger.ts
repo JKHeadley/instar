@@ -139,6 +139,12 @@ export interface TrueBlockerTerminal {
   recheckAfter: string;
   /** Consecutive re-settles with no new evidence — escalates to the user after N. */
   noEvidenceResettleCount: number;
+  /**
+   * True only when the ask was verified against a persisted delivery receipt
+   * (blocker hand-off spec §1). A settle through the legacy caller-reference path
+   * omits it, so later hand-off authority (fan-out, remote access) can require it.
+   */
+  deliveryReceiptVerified?: true;
 }
 
 export type BlockerTerminal = ResolvedTerminal | TrueBlockerTerminal;
@@ -183,6 +189,28 @@ interface BlockerStore {
  * Default-wired to the B17 gate at the server; tests inject a fake.
  * Returns allow/deny + a reason + a stable hash of the decision (for the audit line).
  */
+/**
+ * A persisted outbox receipt for the "only you can grant it" ask (blocker hand-off
+ * spec §1, two-phase admission). Written by the hand-off coordinator after the
+ * platform adapter answered; never minted from a caller's text.
+ */
+export interface DeliveryReceipt {
+  /** The reference the settle call passes as `accessRequest.messageRef`. */
+  ref: string;
+  /** The ledger entry the ask was sent for. */
+  blockerId: string;
+  /** `delivered` = a platform accepted the message. Only that state settles. */
+  state: 'send-intent' | 'delivered' | 'delivery-unknown' | 'failed';
+  platform: string;
+  /** ISO time the platform accepted the message. */
+  deliveredAt?: string;
+}
+
+/** Loads a persisted receipt by its reference; null when none exists. */
+export interface DeliveryReceiptLoader {
+  loadReceipt(ref: string): DeliveryReceipt | null;
+}
+
 export type SettleAuthority = (input: {
   entry: BlockerEntry;
   proposed: TrueBlockerTerminal;
@@ -203,6 +231,15 @@ export interface BlockerLedgerOptions {
    * unchanged. Spec: docs/specs/self-unblock-before-escalating.md.
    */
   selfUnblockRunStore?: SelfUnblockRunLoader;
+  /**
+   * The hand-off outbox receipt store (blocker hand-off spec §1). OPTIONAL — when
+   * injected, a true-blocker settle REQUIRES `accessRequest.messageRef` to name a
+   * persisted `delivered` receipt for this same entry, delivered no earlier than the
+   * failed attempt (which must carry a time), and the request time is the receipt's.
+   * The terminal is then marked `deliveryReceiptVerified`. When absent (dark
+   * default), the bounded caller-supplied reference path is unchanged.
+   */
+  deliveryReceiptStore?: DeliveryReceiptLoader;
   /** Move terminal entries older than this many days to the archive (default 30). */
   archiveAfterDays?: number;
   /** Default days until a settled true-blocker is reopened for a re-walk (default 30). */
@@ -267,6 +304,7 @@ export class BlockerLedger {
   private readonly settleAuthority?: SettleAuthority;
   /** When set, the Self-Unblock feature is ON: settle derives the failed attempt from a verified run. */
   private readonly selfUnblockRunStore?: SelfUnblockRunLoader;
+  private readonly deliveryReceiptStore?: DeliveryReceiptLoader;
   private readonly archiveAfterDays: number;
   private readonly recheckAfterDays: number;
   private readonly maxNoEvidenceResettles: number;
@@ -286,6 +324,7 @@ export class BlockerLedger {
     this.auditPath = path.join(opts.stateDir, '..', 'logs', 'blocker-decisions.jsonl');
     this.settleAuthority = opts.settleAuthority;
     this.selfUnblockRunStore = opts.selfUnblockRunStore;
+    this.deliveryReceiptStore = opts.deliveryReceiptStore;
     this.archiveAfterDays = opts.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
     this.recheckAfterDays = opts.recheckAfterDays ?? DEFAULT_RECHECK_AFTER_DAYS;
     this.maxNoEvidenceResettles = opts.maxNoEvidenceResettles ?? DEFAULT_MAX_NO_EVIDENCE_RESETTLES;
@@ -721,7 +760,8 @@ export class BlockerLedger {
     const failedAttemptAt = this.normalizeIso(failedAttempt.at) ?? this.iso();
     const accessRequestAt =
       this.normalizeIso(input.accessRequest?.at) ?? snapshot.accessRequest?.at ?? this.iso();
-    if (accessRequestAt < failedAttemptAt) {
+    // With a receipt store the delivery time is checked against the attempt in 3c.
+    if (!this.deliveryReceiptStore && accessRequestAt < failedAttemptAt) {
       throw new BlockerLedgerError(
         'the access-request must be recorded AFTER the failed self-fetch/dry-run — asking before trying does not settle a blocker',
         'access_request_before_attempt',
@@ -780,6 +820,33 @@ export class BlockerLedger {
       }
     }
 
+    // 3c. Two-phase admission (blocker hand-off spec §1): when the receipt store is
+    //     configured, the ask must be a REAL delivery the coordinator persisted, not a
+    //     caller string. A missing, foreign, undelivered or early receipt is refused,
+    //     and the request time is the receipt's delivery time, never the caller's. It runs
+    //     after the no-new-evidence check so a rubber-stamp re-settle is still counted.
+    if (this.deliveryReceiptStore) {
+      const receipt = this.deliveryReceiptStore.loadReceipt(accessRequestRef);
+      const deliveredAt = receipt?.state === 'delivered' ? this.normalizeIso(receipt.deliveredAt) : undefined;
+      const attemptTimed = this.normalizeIso(failedAttempt.at) !== undefined;
+      const problem =
+        !attemptTimed ? 'the failed attempt carries no time to compare the delivery with'
+        : !receipt ? 'no persisted receipt for this reference'
+        : receipt.ref !== accessRequestRef ? 'the receipt names a different reference'
+        : receipt.blockerId !== id ? 'the receipt belongs to a different blocker'
+        : receipt.state !== 'delivered' ? `the ask is ${receipt.state}, not delivered`
+        : !deliveredAt ? 'the receipt has no valid delivery time'
+        : deliveredAt < failedAttemptAt ? 'the ask was delivered before the failed attempt'
+        : null;
+      if (problem) {
+        throw new BlockerLedgerError(
+          `a true-blocker settle requires a delivered hand-off ask (${problem}). A caller-supplied ` +
+            'reference without a persisted delivery receipt does not settle a blocker.',
+          'missing_delivery_receipt',
+        );
+      }
+    }
+
     const proposed: TrueBlockerTerminal = {
       kind: 'true-blocker',
       reasonKind: input.reasonKind,
@@ -795,6 +862,7 @@ export class BlockerLedger {
       at: this.iso(),
       recheckAfter,
       noEvidenceResettleCount: 0,
+      ...(this.deliveryReceiptStore ? { deliveryReceiptVerified: true as const } : {}),
     };
 
     // 4. The settle JUDGMENT routes through the Tier-1 authority (B17), not a field check.

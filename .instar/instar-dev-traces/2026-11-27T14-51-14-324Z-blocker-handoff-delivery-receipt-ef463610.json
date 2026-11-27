@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "blocker-handoff-delivery-receipt",
+  "sessionId": "e197595b-784b-43bd-a9ea-d7c04634f1a7",
+  "timestamp": "2026-11-27T14:51:14.324Z",
+  "artifactPath": "upgrades/side-effects/blocker-handoff-delivery-receipt.md",
+  "artifactSha256": "024a9ccdacdeefe497c039254213b0f49d6165f7054c9f9dd6d29599e7ad9535",
+  "specPath": "docs/specs/blocker-handoff-across-machines-and-surfaces.md",
+  "coveredFiles": [
+    "src/monitoring/BlockerLedger.ts",
+    "tests/unit/BlockerLedgerDeliveryReceipt.test.ts",
+    "upgrades/next/blocker-handoff-delivery-receipt.md",
+    "upgrades/side-effects/blocker-handoff-delivery-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes the true-blocker settle contract in BlockerLedger (an authority path), behind an optional injected store that is dark by default.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "adds a check inside an existing caller-driven settle call; it sends, retries or triggers nothing"
+  }
+}
