@@ -120,6 +120,30 @@ describe('DeliveryRetryManager', () => {
       expect(updated!.delivery.phase).toBe('delivered');
     });
 
+    it.each(['recipient', 'message ID', 'phase'])('skips a candidate when replacement changes its %s', async field => {
+      const envelope = makeEnvelope();
+      await store.save(envelope);
+      const query = store.queryRetryInbox.bind(store);
+      store.queryRetryInbox = async agent => {
+        const candidates = await query(agent);
+        const file = path.join(tmpDir, 'store', envelope.message.id + '.json');
+        const replacement = structuredClone(envelope);
+        if (field === 'recipient') replacement.message.to.agent = 'another-agent';
+        else if (field === 'message ID') replacement.message.id = 'another-message';
+        else {
+          replacement.delivery.phase = 'sent';
+          replacement.delivery.deliveryPending = true;
+          replacement.delivery.typingStartedAt = new Date().toISOString();
+        }
+        fs.writeFileSync(file + '.replacement', JSON.stringify(replacement));
+        fs.renameSync(file + '.replacement', file);
+        return candidates;
+      };
+
+      expect(await manager.tick()).toEqual({ retried: 0, expired: 0, escalated: 0 });
+      expect((await store.get(envelope.message.id))?.delivery.phase).toBe(field === 'phase' ? 'sent' : 'queued');
+    });
+
     it('does not retry if delivery fails', async () => {
       tmuxOps = makeTmux({ isSessionAlive: () => false });
       delivery = new MessageDelivery(new MessageFormatter(), tmuxOps);

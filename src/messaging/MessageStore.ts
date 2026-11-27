@@ -27,6 +27,7 @@ import type {
   ThreadStatus,
   DeliveryState,
   MessageFilter,
+  RetryInboxEntry,
   MessagingStats,
 } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
@@ -36,8 +37,17 @@ import { isSafeFileId, MAX_FILE_ID_BYTES } from '../core/safeFileId.js';
 
 const DIRS = ['store', 'index', 'dead-letter', 'pending', 'threads', 'threads/archive', 'drop', 'outbound'];
 
+const RETRY_SCAN_BATCH = 16;
+
+interface CachedRetryEntry {
+  revision: string;
+  recipient: string;
+  entry: RetryInboxEntry;
+}
+
 export class MessageStore implements IMessageStore {
   private readonly basePath: string;
+  private retryInboxCache = new Map<string, CachedRetryEntry>();
 
   constructor(basePath: string) {
     this.basePath = basePath;
@@ -299,6 +309,57 @@ export class MessageStore implements IMessageStore {
     }
 
     return results;
+  }
+
+  async queryRetryInbox(agentName: string): Promise<RetryInboxEntry[]> {
+    const storeDir = path.join(this.basePath, 'store');
+    let files: string[];
+    try {
+      files = await fs.promises.readdir(storeDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      this.retryInboxCache.clear();
+      return [];
+    }
+
+    const names = files.filter(file => file.endsWith('.json'));
+    const nextCache = new Map<string, CachedRetryEntry>();
+    const entries: RetryInboxEntry[] = [];
+    for (let offset = 0; offset < names.length; offset += RETRY_SCAN_BATCH) {
+      const batch = names.slice(offset, offset + RETRY_SCAN_BATCH);
+      const results = await Promise.all(batch.map(file => this.readRetryEntry(storeDir, file)));
+      for (const [index, cached] of results.entries()) {
+        if (!cached) continue;
+        nextCache.set(batch[index], cached);
+        if (cached.recipient === agentName || cached.recipient === '*') entries.push(cached.entry);
+      }
+    }
+    this.retryInboxCache = nextCache;
+    return entries.sort((a, b) =>
+      new Date(b.message.createdAt).getTime() - new Date(a.message.createdAt).getTime());
+  }
+
+  private async readRetryEntry(storeDir: string, file: string): Promise<CachedRetryEntry | null> {
+    const filePath = path.join(storeDir, file);
+    try {
+      const stat = await fs.promises.stat(filePath, { bigint: true });
+      // Replacement can preserve size and mtime. Inode and ctime detect that write.
+      const revision = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+      const cached = this.retryInboxCache.get(file);
+      if (cached?.revision === revision) return cached;
+      const { message, delivery } = JSON.parse(await fs.promises.readFile(filePath, 'utf8')) as MessageEnvelope;
+      return {
+        revision,
+        recipient: message.to.agent,
+        entry: {
+          message: { id: message.id, createdAt: message.createdAt, ttlMinutes: message.ttlMinutes },
+          delivery: { phase: delivery.phase, expiresAt: delivery.expiresAt },
+        },
+      };
+    } catch {
+      // @silent-fallback-ok: preserve the inbox scan's handling of unreadable, removed, and corrupt files.
+      return null;
+    }
   }
 
   async queryOutbox(agentName: string, filter?: MessageFilter): Promise<MessageEnvelope[]> {

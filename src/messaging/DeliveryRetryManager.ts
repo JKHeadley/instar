@@ -266,17 +266,24 @@ export class DeliveryRetryManager {
     let expired = 0;
     let escalated = 0;
 
-    const inbox = await this.store.queryInbox(this.config.agentName);
+    const inbox = this.store.queryRetryInbox
+      ? await this.store.queryRetryInbox(this.config.agentName)
+      : await this.store.queryInbox(this.config.agentName);
 
     for (const snapshot of inbox) {
+      // These phases have no retry, expiry, or acknowledgement action in this loop.
+      if (['read', 'failed', 'expired', 'dead-lettered'].includes(snapshot.delivery.phase)) continue;
       // Sent has its initial synchronous router executor; a timer must not steal it.
       if (snapshot.delivery.phase === 'sent' && !this.isExpired(snapshot)) continue;
       const claim = beginDeliveryAttempt(snapshot.message.id);
       if (!claim) continue;
       try {
       const envelope = await this.store.get(snapshot.message.id);
-      if (!envelope) continue;
+      if (!envelope || envelope.message.id !== snapshot.message.id) continue;
+      const recipient = envelope.message.to.agent;
+      if (recipient !== this.config.agentName && recipient !== '*') continue;
       const phase = envelope.delivery.phase;
+      if (phase === 'sent' && !this.isExpired(envelope)) continue;
       const messageId = envelope.message.id;
       const local = this.config.isLocalEnvelope ? this.config.isLocalEnvelope(envelope) : true;
 
@@ -527,7 +534,10 @@ export class DeliveryRetryManager {
   }
 
   /** Check if a message's delivery TTL has expired */
-  private isExpired(envelope: MessageEnvelope): boolean {
+  private isExpired(envelope: {
+    message: Pick<MessageEnvelope['message'], 'createdAt' | 'ttlMinutes'>;
+    delivery: Pick<MessageEnvelope['delivery'], 'expiresAt'>;
+  }): boolean {
     const createdAt = new Date(envelope.message.createdAt).getTime();
     const ttlMs = envelope.message.ttlMinutes * 60_000;
     return Date.now() > (envelope.delivery.expiresAt ?? createdAt + ttlMs);
