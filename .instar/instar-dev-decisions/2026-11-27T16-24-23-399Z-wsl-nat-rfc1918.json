@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T16:24:23.399Z",
+  "slug": "wsl-nat-rfc1918",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SameNetworkNetwork.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

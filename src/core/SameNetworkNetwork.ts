@@ -157,7 +157,7 @@ export function rfc1918Block(ip: string): '10/8' | '172.16/12' | '192.168/16' | 
  * bind, 2026-11-26: the identity session required a POSITIVE discriminator, not the absence of a tunnel
  * marker, and the bind closed when ownership is ambiguous). It refuses a default route on a VPN tunnel or
  * any other non-Hyper-V interface: tunnels, bridges, VLANs and macvlan have no device link (an EXPECTED
- * ENOENT, read as 'not Hyper-V'). An UNEXPECTED read error on any interface, an unlistable
+ * ENOENT, read as 'not Hyper-V'; a regular file such as bonding_masters gives ENOTDIR, read the same way). An UNEXPECTED read error on any interface, an unlistable
  * /sys/class/net, an odd name, or a second Hyper-V NIC means uniqueness cannot be established: false. This does NOT tell NAT
  * from mirrored mode (mirrored NICs are Hyper-V NICs too): the READ mode guards that.
  */
@@ -169,13 +169,16 @@ export function isWslNatAdapter(
   const plain = (n: string) => /^[A-Za-z0-9_.:-]{1,15}$/.test(n) && n !== '.' && n !== '..';
   if (!plain(iface)) return false;
   // 'hv': a Hyper-V synthetic NIC. 'other': no device link (ENOENT, expected for tun, tap, wg, ppp, bridges,
-  // VLANs, lo) or another driver. 'error': any other read failure, which means the answer is not known.
+  // VLANs, lo), a regular file such as bonding_masters (ENOTDIR), or another driver. 'error': any other read failure, which means the answer is not known.
   const driverOf = (n: string): 'hv' | 'other' | 'error' => {
     try {
       return path.basename(realpath(`/sys/class/net/${n}/device/driver`)) === 'hv_netvsc' ? 'hv' : 'other';
     } catch (err) {
-      // @silent-fallback-ok — ENOENT is the expected absent device link of a virtual interface; anything else is reported as 'error', which closes the bind
-      return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'other' : 'error';
+      // @silent-fallback-ok — ENOENT is the expected absent device link of a virtual interface, and ENOTDIR is a
+      // regular file in /sys/class/net (bonding_masters when bonding is built in), not an interface; anything else
+      // is reported as 'error', which closes the bind
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return code === 'ENOENT' || code === 'ENOTDIR' ? 'other' : 'error';
     }
   };
   if (driverOf(iface) !== 'hv') return false;

@@ -123,7 +123,9 @@ started leaves no trace). VirtioProxy's other name, `consomme`, and any other va
   adapter may be bound: the absence of a tunnel marker is not enough. What it refuses: a default route on a
   VPN tunnel or any other non-Hyper-V interface (tun, tap, wg, ppp, bridges, VLANs, macvlan), in every
   range. Two different no-answers are kept apart. An EXPECTED absent device link (ENOENT), which is normal
-  for a virtual interface, means "not Hyper-V". An UNEXPECTED read error on any interface (permission,
+  for a virtual interface, means "not Hyper-V". A regular file in `/sys/class/net` (`bonding_masters`
+  when bonding is built into the kernel) gives ENOTDIR and is read the same way: it is not an interface
+  (independent pre-queue review, 2026-11-27). An UNEXPECTED read error on any interface (permission,
   I/O), an unlistable `/sys/class/net`, or an interface name that is not a plain name (no slashes, at most
   15 characters) means uniqueness cannot be established, and the bind stays closed.
   It must also be the ONLY Hyper-V NIC: a second one makes ownership ambiguous and closes the bind. The

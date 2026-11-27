@@ -137,6 +137,14 @@ describe('same-network network observation', () => {
     expect(isWslNatAdapter('eth0', flaky, () => ['eth0', 'tun0'])).toBe(true);
     expect(isWslNatAdapter('eth0', flaky, () => ['eth0', 'eth9'])).toBe(false);
     expect(isWslNatAdapter('eth0', realpath, () => ['eth0', 'bad/name'])).toBe(false);
+    // A regular file in /sys/class/net (bonding_masters when bonding is built into the kernel) gives ENOTDIR:
+    // not an interface, so it neither opens nor closes the bind (independent pre-queue review, 2026-11-27).
+    const notdir = () => Object.assign(new Error('ENOTDIR'), { code: 'ENOTDIR' });
+    const withBonding = (p: string) => { if (p.startsWith('/sys/class/net/bonding_masters/')) throw notdir(); return realpath(p); };
+    expect(isWslNatAdapter('eth0', withBonding, () => ['bonding_masters', 'bond0', 'dummy0', 'eth0', 'lo', 'sit0', 'tunl0'])).toBe(true);
+    expect(isWslNatAdapter('bonding_masters', withBonding, () => ['bonding_masters', 'eth0'])).toBe(false);
+    // No Hyper-V NIC at all: the default-route interface is not WSL's adapter, closed.
+    expect(isWslNatAdapter('eth1', realpath, () => ['lo', 'eth1', 'tun0'])).toBe(false);
     // The interface list cannot be read: not provably the only one, closed.
     expect(isWslNatAdapter('eth0', realpath, () => { throw new Error('EACCES'); })).toBe(false);
     for (const bad of ['', '.', '..', '../eth0', 'eth0/../../x', 'a'.repeat(16), 'eth 0']) expect(isWslNatAdapter(bad, () => '/sys/bus/vmbus/drivers/hv_netvsc', () => [bad])).toBe(false);
