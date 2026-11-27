@@ -3,7 +3,7 @@
 **Version / slug:** `telegram-send-timeout-flood`
 **Date:** `2026-10-26`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required (no gate, sentinel, block/allow or session-lifecycle change; a timeout constant and a log line)`
+**Second-pass reviewer:** independent sub-agent (general-purpose), CONCUR 2026-11-27; see the Second-pass review section
 
 ## Summary of the change
 
@@ -77,9 +77,13 @@ Revert the commit; the next release restores 15 s and main's shorter log line. N
 
 Safe to ship: a constant and a log line, no new authority, closes the silent loss seen on 2026-10-26.
 
-## Second-pass review (if required)
+## Second-pass review
 
-Not required.
+**Reviewer:** independent sub-agent (general-purpose), 2026-11-27 14:15 PT, read only (no tests run on the M5 under the disk hold). Verdict: CONCUR.
+
+Evidence it recorded: the log line at TelegramOriginService.ts:952 is built only from the operation id, `request.method` and `describeTransportFailure` (:1092-1095), whose code is bound by `PLAIN_CODE` (:1078), so a token, URL or chat id cannot match. `fetchFailureCode` (OriginTransportCancellation.ts:29-38) walks causes with a loop guard, and a DOMException TimeoutError maps by name. The no-resend order (:952 log, :953 `#outcomeUnknown`, :954 hold) is unchanged. It traced each new and existing test to pass, including the 429 path (:966-976, matching origin-service.test.ts:335-341). No catch block or fallback is added, so the silent-fallback and empty-catch ratchets are unaffected. Applied: this note's caller wording. Not applied (noted for later): allowlisting codes instead of a shape check, and a separate `aborted` category for a caller cancel after the request left (logged as `other` today).
+
+Earlier passes: none was required for the original two-file change (2026-10-26). The 2026-11-26 merge review is recorded under "Merge of main, 2026-11-26" below.
 
 ## Evidence pointers
 
@@ -102,10 +106,3 @@ No agent-authored-artifact defect (this is a source-code timeout/logging defect)
 The branch was merged with main twice (d8c928a64, then 6aeaf1974; the second merge was clean). On the brief's step 2, the outcome-unknown log line no longer carries the error message or its cause text. `describeTransportFailure` now returns one bounded category from `transportFailureCategory()` (`timeout`, `connection-reset`, `dns`, `tls`, `other`), read only from the error name and code, plus `code=<CODE>` when the code matches `^[A-Z][A-Z0-9_]{1,47}$`. The line still names the operation id, the method and the elapsed milliseconds. The earlier token redaction is no longer needed because no free text is written.
 
 Side effects: anyone reading server.log for these lines sees a category instead of Node's message (for example `connection-reset code=ECONNRESET` instead of `fetch failed code=ECONNRESET cause=socket hang up`). No other production caller uses the helper (`git grep describeTransportFailure`: this file, and the unit test that imports it). The send path itself is unchanged. The no-retry rule for an unknown outcome (`#outcomeUnknown` followed by the `outcome-unknown` hold) is untouched, and the new timeout test checks that recovery does not resend it. A 429 answer still goes through the known-failed `telegram-429` path and is retried by the outbox; a test now pins that it never logs "outcome unknown".
-
-## Second-pass review
-
-**Reviewer:** independent sub-agent (general-purpose), 2026-11-27 14:15 PT, read only (no tests run on the M5 under the disk hold). Verdict: CONCUR.
-
-Evidence it recorded: the log line at TelegramOriginService.ts:952 is built only from the operation id, `request.method` and `describeTransportFailure` (:1092-1095), whose code is bound by `PLAIN_CODE` (:1078), so a token, URL or chat id cannot match. `fetchFailureCode` (OriginTransportCancellation.ts:29-38) walks causes with a loop guard, and a DOMException TimeoutError maps by name. The no-resend order (:952 log, :953 `#outcomeUnknown`, :954 hold) is unchanged. It traced each new and existing test to pass, including the 429 path (:966-976, matching origin-service.test.ts:335-341). No catch block or fallback is added, so the silent-fallback and empty-catch ratchets are unaffected. Applied: this note's caller wording. Not applied (noted for later): allowlisting codes instead of a shape check, and a separate `aborted` category for a caller cancel after the request left (logged as `other` today).
-
