@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "wsl-nat-rfc1918",
+  "sessionId": "142f0843-bf86-44d2-b4e4-b4719ccc4b77",
+  "timestamp": "2026-11-27T16:24:35.140Z",
+  "artifactPath": "upgrades/side-effects/wsl-nat-rfc1918.md",
+  "artifactSha256": "9808714a3e28bb4523ed17bfabca4fd0e74a1f0e7d27e655d0f5879b83da94b3",
+  "specPath": "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T16-24-23-399Z-wsl-nat-rfc1918.json",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "src/core/SameNetworkNetwork.ts",
+    "tests/unit/same-network-network.test.ts",
+    "tests/unit/same-network-wsl-mode.test.ts",
+    "upgrades/next/wsl-nat-rfc1918.md",
+    "upgrades/side-effects/wsl-nat-rfc1918.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
