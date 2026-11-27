@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "plan-dialog-completion",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-25T02:46:18.016Z",
+  "artifactPath": "upgrades/side-effects/plan-dialog-completion.md",
+  "artifactSha256": "ca9e0e96fc793b9a9518547ba3f67d553fc1edd2f5a599d00a8956f78853fbfb",
+  "coveredFiles": [
+    "dashboard/console/plans-model.js",
+    "dashboard/console/plans.js",
+    "tests/unit/console-plan-dialog-completion.test.ts",
+    "tests/unit/console-plans.test.ts",
+    "upgrades/next/plan-dialog-completion.md",
+    "upgrades/side-effects/plan-dialog-completion.eli16.md",
+    "upgrades/side-effects/plan-dialog-completion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible browser wording and dialog ownership. Existing action and request authority, persistence and routing are preserved.",
+  "eli16Path": "upgrades/side-effects/plan-dialog-completion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/plan-dialog-completion.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

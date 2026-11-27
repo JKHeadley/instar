@@ -161,12 +161,17 @@ function openProject(r, { post, topicHref, refresh }) {
   const title = r.main.length > 70 ? r.main.slice(0, 68) + '…' : r.main;
   const summary = el('p', { class: 'card-line', text: r.detailFailed ? `Couldn't load its rounds: ${r.detailFailed}.` : r.sub });
 
-  const done = () => setTimeout(() => { closeSheet(); refresh(); }, 700);
+  let panel;
+  const finish = () => {
+    if (panel?.isConnected) closeSheet();
+    refresh();
+  };
+  const done = () => setTimeout(finish, 700);
   const write = async (kind, path, body) => {
     const x = await post(`/projects/${id}/${path}`, body);
     if (x.ok) return { ok: true, message: resultWords(kind, x.data) };
     const w = refusalWords(x.reason);
-    if (w.refresh) setTimeout(() => { closeSheet(); refresh(); }, 900);
+    if (w.refresh) setTimeout(finish, 900);
     return { ok: false, message: w.text };
   };
 
@@ -210,7 +215,7 @@ function openProject(r, { post, topicHref, refresh }) {
     })));
   }
   body.push(details(p, PROJECT_KEYS));
-  sheet({ title }, ...body);
+  panel = sheet({ title }, ...body);
 }
 
 /**
