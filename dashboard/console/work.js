@@ -13,7 +13,7 @@ import { hashFor } from './chats-model.js';
 import { projectsSection } from './projects.js';
 import {
   LANES, readBoard, readMyBoard, notStartedTag, headline, pickupLine, behindLine, machineWords, isOff, cardRow, cardActions, phoneOnlyLine, tapBody, tapCovers, pinExplain,
-  cardSourceLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
+  cardSourceLink, cardProjectLink, refusalWords, donePageFrom, cardFromQuery, donePaging, evidenceByItem, linkLines, principalWords,
   byWords, tapWords, capacityWords, whenWords, POLICIES, SETTING_FIELDS, settingValue, settingsPatch, policyPinExplain,
   cardBrief, CHECK_LOOK, statusChip, waitingWords, tileAsk, rankActions, chatLines, messagesPathOf,
   OUTWARD_WORDS, CLOSE_WORDS, CLOSE_TITLES, CLOSE_NOTE_MAX, closeoutLine, turnOf, coversWords, chiefOfStaffCard, CHIEF_OF_STAFF_WORDS,
@@ -386,6 +386,9 @@ function openCard(card, refresh) {
   if (brief.goal) detail.push(el('div', { class: 'wc-detail-block' }, el('h4', { class: 'wc-label', text: 'Goal' }), el('p', { class: 'wc-body', text: brief.goal })));
   if (brief.chiefSaid) detail.push(el('div', { class: 'wc-detail-block' }, el('h4', { class: 'wc-label', text: 'The Chief of Staff said' }), el('blockquote', { class: 'wc-quote', text: brief.chiefSaid })));
   for (const p of brief.intro) detail.push(el('p', { class: 'wc-body', text: p }));
+  const project = cardProjectLink(card);
+  if (project) detail.push(el('p', { class: 'card-line work-project' },
+    el('span', { text: 'Project: ' }), el('a', { href: project.href, text: project.label, onclick: () => closeSheet() })));
   const source = cardSourceLink(card);
   if (source) detail.push(el('p', { class: 'card-line work-source' },
     el('span', { text: 'From: ' }), source.href

@@ -114,7 +114,7 @@ export function conversationRef(conversationKey: string): Record<string, string>
   return { kind: 'app', key: conversationKey, ref: `app:${conversationKey}`, messagesPath: `/mobile/chat/app/${k}/messages`, sendPath: `/mobile/chat/app/${k}` };
 }
 
-export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** Materialized history, never an empty internal placeholder. */ conversationAvailable?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number }): Record<string, unknown> {
+export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, name: (k: string) => string, extra?: { behind?: BehindInfo | null; lastWrittenOn?: string | null; repliedAfterQuestion?: boolean; capacity?: { reason: string; nextCheckAt: number; since: number } | null; brokenAttachments?: string[]; /** A server-owned card the server refuses console taps on (project-apps-sandbox §3.4), except withdraw-approval. */ phoneOnly?: boolean; /** Materialized history, never an empty internal placeholder. */ conversationAvailable?: boolean; /** agent-work-cards-default §2: the card's last progress note, or `pending` when its event has not replicated here. */ lastNote?: { text: string; at: string; eventId: string } | { pending: true; eventId: string } | null; /** The request's own time (the durable row's), for "asked <n> days ago"; falls back to the card's creation. */ askedAt?: string | null; now?: number; /** The card project name, visible to the owner and agent only. */ projectTitle?: string | null }): Record<string, unknown> {
   const c = v.card;
   const lane: Lane = svc.lane(v, { isOwner: viewer.isOwner || viewer.isAgent, personKey: viewer.personKey });
   const phoneOnly = extra?.phoneOnly === true;
@@ -176,7 +176,11 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
 
   };
   // Internal references (§3): the agent and the owner read them; a member's view omits ids of cards they cannot read.
-  if (ownerish) { out.source = c.source; out.projectKey = c.projectKey; out.refs = c.refs; }
+  if (ownerish) {
+    out.source = c.source; out.projectKey = c.projectKey; out.refs = c.refs;
+    // The project's name rides with its key, to the same viewers only (a member never learns a private project's name, §4.4).
+    if (c.projectKey && typeof extra?.projectTitle === 'string' && extra.projectTitle.trim()) out.projectTitle = extra.projectTitle.trim();
+  }
   else out.refs = c.refs.filter((r) => r.kind !== 'parent-card');
   return out;
 }

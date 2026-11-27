@@ -3399,6 +3399,7 @@ export function createRoutes(ctx: RouteContext): Router {
   if (ctx.workBoardLate) { ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey; ctx.workBoardLate.displayName = workBoardName; }
   const workBoardRequirePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore,
     pinSource: (req, fwd) => signedInPinSource(req, { agentToken: () => ctx.config.authToken }, fwd) });
+  let workBoardProjectTitles: { at: number; titles: Map<string, string> } | null = null;
   const workBoardRouteDeps: WorkBoardRouteDeps = {
     // Read live, so turning the feature off takes effect without a restart; the boot value is the fallback.
     enabled: () => {
@@ -3463,6 +3464,16 @@ export function createRoutes(ctx: RouteContext): Router {
     // Project apps part 2 (project-apps-sandbox §3.4): a custom app's version cards are server-owned and phone-only.
     // Fails closed: an unreadable fold keeps the card phone-only (isPhoneOnlyCard).
     phoneOnlyCard: (cardId) => { let src: ReturnType<NonNullable<typeof ctx.projectAppCustom>> | null = null; try { src = ctx.projectAppCustom?.() ?? null; } catch { return true; } return isPhoneOnlyCard(src, cardId); }, // @silent-fallback-ok — fail closed: an unreadable source keeps the card phone-only
+    // A card's project name (work-front-doors §4.3), from the Chief of Staff's titles, read at most every 30 s.
+    projectTitle: (projectKey) => {
+      const now = Date.now();
+      if (!workBoardProjectTitles || now - workBoardProjectTitles.at > 30_000) {
+        let rows: Array<{ conversationKey: string; title: string }> | null = null;
+        try { rows = ctx.chiefOfStaffLoop?.projectsOverview() ?? null; } catch { rows = null; /* @silent-fallback-ok: no name is shown, the card keeps its project link */ }
+        workBoardProjectTitles = { at: now, titles: new Map((rows ?? []).map((r) => [r.conversationKey, r.title] as const)) };
+      }
+      return workBoardProjectTitles.titles.get(projectKey) ?? null;
+    },
   };
   let workBoardReadAs: ((req: import('express').Request, opts?: { full?: boolean }) => { status: number; body: unknown }) | null = null;
   registerWorkBoardRoutes(router, workBoardRouteDeps);

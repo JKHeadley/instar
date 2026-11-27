@@ -1,4 +1,5 @@
-import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
+import { parseConversationRef, hashFor, messageTarget, projectHref } from './chats-model.js';
+import { verifiedDisplayName } from './display-identity.js';
 
 // Work board page: pure view-model (docs/specs/work-board-asks.md §4, §5, §7).
 // No DOM, no fetch, no timers. work.js renders these; tests/unit/console-work-model.test.ts
@@ -7,7 +8,6 @@ import { parseConversationRef, hashFor, messageTarget } from './chats-model.js';
 // carries that card's titleHash so a tap made on an old copy of the card is refused.
 
 import { whenWords } from './mandates-model.js';
-import { verifiedDisplayName } from './display-identity.js';
 
 /** A Needs-you row's words for a card title: whole words, ending in "…" when cut (never "needs y"). */
 export const NEED_ROW_TITLE_MAX = 140;
@@ -552,6 +552,16 @@ export function workBoardNeedRows(wb) {
   }));
   // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
+}
+
+/**
+ * The card's project, as the board read gives it (work-front-doors §4.3, "the project name on a card"): a link to
+ * the project's row on the Work page. The server sends `projectKey` and `projectTitle` only to viewers who may see
+ * them, so a card without them shows nothing. A missing or ID-only name reads "Project name unavailable".
+ */
+export function cardProjectLink(card) {
+  if (!card || card.removed || typeof card.projectKey !== 'string' || !card.projectKey) return null;
+  return { href: projectHref(card.projectKey), label: verifiedDisplayName(card.projectTitle, card.projectKey) || 'Project name unavailable' };
 }
 
 /** Source is already viewer-filtered by the board read. Never infer it from placement. */

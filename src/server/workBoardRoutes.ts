@@ -87,6 +87,8 @@ export interface WorkBoardRouteDeps {
   /** Persist a settings change (live config); returns false on failure. */
   saveSettings: (patch: Record<string, unknown>) => boolean;
   log?: (event: string, detail: Record<string, unknown>) => void;
+  /** The name of the project a card's projectKey names (the Chief of Staff's title), or null. Absent: names are not shown. */
+  projectTitle?: (projectKey: string) => string | null;
   /** Receives the board read (as a status and body) so the Needs-you read can ask it as the same caller. */
   exposeBoardRead?: (read: (req: Request, opts?: { full?: boolean }) => { status: number; body: unknown }) => void;
   /**
@@ -192,6 +194,7 @@ export function registerWorkBoardRoutes(router: Router, deps: WorkBoardRouteDeps
     brokenAttachments: deps.brokenAttachments(v),
     phoneOnly: deps.phoneOnlyCard?.(v.card.cardId) === true,
     conversationAvailable: deps.conversationAvailable?.(v.card.cardId),
+    projectTitle: v.card.projectKey ? deps.projectTitle?.(v.card.projectKey) ?? null : null,
     lastNote: deps.notes?.last(v.card.cardId) ?? null,
   });
 
