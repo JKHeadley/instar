@@ -76,7 +76,16 @@ describe('renderReport', () => {
     expect(report.annotations[0]).toMatch(/^::warning title=Description check: eli16::no-eli16-heading/);
     expect(report.annotations.join('\n')).not.toMatch(/::error/);
     expect(report.summary).toContain('`topic/x`');
-    expect(report.summary).toContain('1 check(s) would refuse');
+    expect(report.summary).toContain('1 check(s) would make safe-merge refuse');
+  });
+  it('never describes a UX-only failure as a safe-merge refusal', () => {
+    const ux = { name: 'ux-impact', ok: false, detail: 'UX Impact section is required for user-facing paths' };
+    const report = renderReport({ checks: [{ name: 'eli16', ok: true }, ux], failing: [ux] });
+    expect(report.annotations[0]).toContain('the UX impact gate fails on this');
+    expect(report.annotations.join('\n')).not.toContain('safe-merge');
+    expect(report.summary).not.toMatch(/would make safe-merge refuse/);
+    expect(report.summary).toContain('its own gate, not a safe-merge check');
+    expect(report.summary).toContain('snapshot of this pull request as of this event');
   });
   it('says all pass when nothing fails', () => {
     expect(renderReport({ checks: [{ name: 'eli16', ok: true }], failing: [] }).summary).toContain('All description checks pass.');
@@ -103,5 +112,6 @@ describe('the workflow is an early warning on every base, never a gate', () => {
     expect(yml).toMatch(/continue-on-error: true/);
     expect(yml).toMatch(/ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
     expect(yml).toMatch(/run: node scripts\/pr-description-lint\.mjs/);
+    expect(yml).toMatch(/persist-credentials: false/);
   });
 });

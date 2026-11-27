@@ -13,7 +13,7 @@ This adds a new GitHub workflow, `.github/workflows/pr-description-lint.yml`, an
 - It reports warnings only: one warning annotation per failing check and a job summary. The job uses `continue-on-error`, always exits 0, and is not a required context.
 - For a failing UX check, it adds a plain hint when an apostrophe inside the UX Impact section breaks the lint's quote matching.
 
-Tier 1: four new files and no change to existing code. Effort: one design pass; the tests ran three times (one test-syntax fix, then one expectation fix).
+Tier 1: four new files and no change to existing code. Effort: one design pass, plus one round after the rule 7 DISSENT (wording, snapshot note, persisted credentials off, and the trust statement corrected); the tests ran four times.
 
 ## Decision-point inventory
 
@@ -71,7 +71,9 @@ It adds no static heuristic at a competing-signals decision point. It displays t
 ## 6. External surfaces
 
 - **GitHub:** one extra check row per pull request, "Description early warning", which always succeeds, with warning annotations. It is read-only (`contents: read`), and it runs on `pull_request`, never `pull_request_target`, so forks get no secrets.
-- **Checker trust:** the code is checked out from the default branch, never from the pull request's head, so a pull request cannot change the check that judges it.
+- **Checker trust, stated plainly (corrected after the rule 7 read by Jobs and Projects):** the checker script is checked out from the default branch with `persist-credentials: false`, and the pull request's commits are read only as data. But for `pull_request`, GitHub loads the workflow YAML from the pull request's merge commit, so **a pull request can change its own warning.** That is accepted because the warning gates nothing: it is not required, and safe-merge re-checks at merge time.
+  - The alternative was rejected. `pull_request_target` loads the YAML from the pull request's **base** branch. For a stacked pull request, that is a branch that may predate this file, so the stacked pull requests this exists for would get no warning at all. It would also run with base-side privileges next to untrusted data, which costs more risk than a self-editable warning.
+- **Wording:** the three safe-merge body checks and the UX Impact rule are reported separately. A UX-only failure is never described as a safe-merge refusal, and the summary says it is a snapshot of the event, since safe-merge re-reads live data at merge time. A test pins both.
 - **Other agents, users, persistent state:** none. Nothing is installed into agents, and no runtime source changes.
 - **Operator surface:** none.
 
@@ -105,5 +107,5 @@ Not required (not a gate, sentinel, watchdog, session or messaging change). An i
 
 ## Evidence pointers
 
-- `tests/unit/pr-description-lint.test.ts`: 13 tests pass. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
+- `tests/unit/pr-description-lint.test.ts`: 14 tests pass. Among them: verdict parity with `runLocalBodyChecks` on both sides, the CLI never blocking, and the workflow's base-agnostic, read-only, default-branch properties.
 - The existing gates' `branches: [main]` filters in `eli16-pr-gate.yml`, `decision-audit-gate.yml` and `release-fragment-gate.yml`.

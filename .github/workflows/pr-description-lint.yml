@@ -9,9 +9,15 @@
 # Signal, never authority: warnings and a job summary only, the job always
 # succeeds, and it is NOT a required context. The merge-time floor stays the gate.
 #
-# SECURITY: on: pull_request (never pull_request_target); read-only token; the
-# checker code is checked out from the default branch, never from the pull
-# request's head, so a pull request cannot rewrite the check that judges it.
+# SECURITY: on: pull_request (never pull_request_target); read-only token; no
+# persisted checkout credentials; the checker code is checked out from the
+# default branch and the pull request's commits are read only as data.
+# Trust boundary, stated plainly: GitHub loads this YAML from the pull request's
+# merge commit, so a pull request CAN change its own warning. That is accepted:
+# the warning gates nothing (not required; safe-merge re-checks at merge time).
+# pull_request_target would load the YAML from the BASE branch, which for a
+# stacked pull request is a branch that may predate this file, so the stacked
+# pull requests this exists for would get no warning at all.
 name: PR description lint
 
 on:
@@ -37,6 +43,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Fetch the pull request's base and head
         run: git fetch --no-tags origin ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4

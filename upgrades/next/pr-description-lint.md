@@ -9,4 +9,4 @@ Every pull request, whatever branch it targets, now gets an early-warning check 
 
 ## Evidence
 
-`tests/unit/pr-description-lint.test.ts` (13 tests) covers verdict parity with safe-merge's runLocalBodyChecks on both sides, the never-blocking CLI, and the workflow's any-base, read-only, default-branch properties.
+`tests/unit/pr-description-lint.test.ts` (14 tests) covers verdict parity with safe-merge's runLocalBodyChecks on both sides, the never-blocking CLI, and the workflow's any-base, read-only, default-branch properties.

@@ -8,7 +8,9 @@
  * description check until it is retargeted, and its first refusal is safe-merge's
  * merge-time `refused:body-checks`, after a full verifier run. This lint runs the
  * SAME body functions safe-merge runs at merge time (`runLocalBodyChecks`), plus
- * the UX Impact rule, on every pull request and every base, at open time.
+ * the UX Impact rule (its own gate, reported separately), on every pull request
+ * and every base, at open time. The result is a snapshot of the event; safe-merge
+ * re-reads live data at merge time.
  *
  * Signal, never authority: it writes a job summary and one warning annotation per
  * failing check and always exits 0. It is not a required context; admission stays
@@ -16,7 +18,10 @@
  *
  * Inputs come from the event and git (no network): PR_TITLE, PR_BODY,
  * PR_AUTHOR_LOGIN, PR_AUTHOR_TYPE, BASE_SHA, HEAD_SHA. The workflow runs this
- * file and its imports from `main`, never from the pull request's head.
+ * file and its imports from `main`, and treats the pull request's commits only as
+ * data. The workflow file itself comes from the pull request (pull_request), so a
+ * pull request can change its OWN warning; that is accepted because the warning
+ * gates nothing (see the side-effects review).
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -82,21 +87,38 @@ export function lintDescription({ title, body, authorLogin, authorType, files, d
   return { checks, failing: checks.filter((c) => !c.ok) };
 }
 
+/** Which gate a failing check belongs to, so a warning never names the wrong one. */
+export const SAFE_MERGE_BODY_CHECKS = Object.freeze(['eli16', 'decision-audit', 'release-fragment']);
+export function consequenceOf(name) {
+  return SAFE_MERGE_BODY_CHECKS.includes(name)
+    ? 'safe-merge refuses this at merge time'
+    : 'the UX impact gate fails on this for user-facing paths';
+}
+
 /** One GitHub warning annotation per failing check, plus a markdown summary. */
 export function renderReport({ checks, failing }, { baseRef } = {}) {
   const esc = (s) => String(s ?? '').replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
-  const annotations = failing.map((c) => `::warning title=Description check: ${c.name}::${esc(`${c.detail ?? 'failed'} (safe-merge will refuse this at merge time until it is fixed)`)}`);
-  const rows = checks.map((c) => `| ${c.name} | ${c.ok ? (c.unmeasured ? 'not measured' : 'passes') : 'fails'} | ${String(c.detail ?? '').replace(/\|/g, '\\|')} |`);
+  const annotations = failing.map((c) => `::warning title=Description check: ${c.name}::${esc(`${c.detail ?? 'failed'} (${consequenceOf(c.name)} until it is fixed)`)}`);
+  const row = (c) => `| ${c.name} | ${c.ok ? (c.unmeasured ? 'not measured' : 'passes') : 'fails'} | ${String(c.detail ?? '').replace(/\|/g, '\\|')} |`;
+  const body = checks.filter((c) => SAFE_MERGE_BODY_CHECKS.includes(c.name));
+  const other = checks.filter((c) => !SAFE_MERGE_BODY_CHECKS.includes(c.name));
+  const bodyFails = failing.filter((c) => SAFE_MERGE_BODY_CHECKS.includes(c.name)).length;
+  const otherFails = failing.length - bodyFails;
   const summary = [
     '## Pull-request description check (early warning)',
     '',
-    `These are the description checks safe-merge runs at merge time${baseRef ? `, run now against base \`${baseRef}\`` : ''}. This check never blocks; it only tells you early.`,
+    `A snapshot of this pull request as of this event${baseRef ? `, against base \`${baseRef}\`` : ''}. It never blocks. safe-merge re-reads the live description and GitHub's file list at merge time, so its answer can differ if the description or files change.`,
+    '',
+    '**The checks safe-merge runs at merge time**',
     '',
     '| Check | Result | Detail |',
     '|---|---|---|',
-    ...rows,
+    ...body.map(row),
+    ...(other.length ? ['', '**UX Impact (its own gate, not a safe-merge check)**', '', '| Check | Result | Detail |', '|---|---|---|', ...other.map(row)] : []),
     '',
-    failing.length ? `**${failing.length} check(s) would refuse this pull request at merge time.** Fix the description or files before asking for a test slot.` : 'All description checks pass.',
+    failing.length
+      ? [bodyFails ? `**${bodyFails} check(s) would make safe-merge refuse this pull request.**` : '', otherFails ? `**The UX Impact declaration would fail its gate.**` : '', 'Fix them before asking for a test slot.'].filter(Boolean).join(' ')
+      : 'All description checks pass.',
   ].join('\n');
   return { annotations, summary };
 }
