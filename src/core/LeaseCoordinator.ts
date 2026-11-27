@@ -269,6 +269,9 @@ export interface LeaseCoordinatorDeps {
    * base of the window.
    */
   plannedRestartContinuity?: () => { enabled: boolean; windowMs: number | null } | null;
+  /** Dark until the supervisor has a request-bound authenticated admission path. */
+  plannedRestartAdmissionEnabled?: () => boolean;
+  plannedRestartMinimumRemainingMs?: () => number | null;
   /** planned-restart-keeps-lead — this machine's continuity file and restart budget. */
   continuity?: LeaseContinuityStore;
   /** The renew tick's normal cadence (the pending cadence derives from it). */
@@ -1763,9 +1766,10 @@ export class LeaseCoordinator {
   }
 
   /** A slow broadcast must not replace a newer lease signed while it waited (a peer's pull). */
-  private installRenewal(renewed: LeaseRecord): void {
-    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce > renewed.nonce) return;
+  private installRenewal(renewed: LeaseRecord): boolean {
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce > renewed.nonce) return false;
     this.selfIssued = renewed;
+    return true;
   }
 
   async renew(): Promise<boolean> {
@@ -1791,6 +1795,7 @@ export class LeaseCoordinator {
 
     // Re-sign with a fresh expiry (same epoch — renewal never advances it). While a restart is
     // pending the expiry is the window, so the lease outlives the boot (planned-restart-keeps-lead §1).
+    const episodeAtSign = this.episode;
     const pendingWindow = this.pendingWindowMs();
     const renewed = this.fl.signLease(
       view.epoch,
@@ -1809,16 +1814,19 @@ export class LeaseCoordinator {
     if (this.d.tunnel) {
       const generation = this.relinquishGeneration;
       confirmed = await this.d.tunnel
-        .broadcast(renewed, () => this.adoptLateRenewal(renewed, generation))
+        .broadcast(renewed, () => {
+          if (this.episode === episodeAtSign) this.adoptLateRenewal(renewed, generation);
+        })
         .catch(() => false); // @silent-fallback-ok: a throw is an UNCONFIRMED renewal (fail-closed; hold/grace/suspend below)
-      // Relinquished while the broadcast was in flight: never re-install the lease.
+      // A relinquish or a different restart request supersedes the in-flight renewal.
       if (generation !== this.relinquishGeneration) return false;
+      if (this.episode !== episodeAtSign) return this.holdsLease();
     } else {
       confirmed = this.d.store.refresh(renewed);
     }
 
     if (confirmed) {
-      this.installRenewal(renewed);
+      if (!this.installRenewal(renewed)) return this.holdsLease();
       this.markRenewOk(renewed.nonce);
       if (pendingWindow !== null) this.persistPending(renewed, true);
       if (this.soloHoldEvidenceEpoch !== null) {
@@ -1969,18 +1977,28 @@ export class LeaseCoordinator {
     return { requestedBy: this.episode.requestedBy, since: new Date(this.episode.openedAtMs).toISOString(), windowMs: this.episode.windowMs };
   }
 
-  private resolveWindow(settings: { windowMs: number | null }): { windowMs: number; note: string | null } {
+  private resolveWindow(settings: { windowMs: number | null }, requestedBy: string): { windowMs: number; note: string | null } {
     const renewInterval = this.d.renewIntervalMs?.() ?? Math.max(5_000, Math.min(60_000, Math.round(this.fl.ttlMs * 0.5)));
+    const minimumRemainingMs = requestedBy !== 'role-change' && this.d.plannedRestartAdmissionEnabled?.()
+      ? this.d.plannedRestartMinimumRemainingMs?.() ?? null : null;
+    const admissionMinimumMs = minimumRemainingMs === null ? null : minimumRemainingMs + 20_000;
     const v = resolveWindowMs({
       ttlMs: this.fl.ttlMs,
       pendingRenewIntervalMs: pendingCadenceMs(renewInterval, !!this.d.tunnel),
       broadcastDeadlineMs: this.d.broadcastDeadlineMs?.() ?? 8_000,
       bootSamplesMs: this.d.continuity?.bootSamplesMs() ?? [],
       windowMsOverride: settings.windowMs,
+      admissionMinimumMs,
       ownNonRenewalMissedObservations: this.d.staleHolderTakeover?.()?.nonRenewalMissedObservations ?? null,
       failoverThresholdMs: this.fl.failoverThreshold,
       unsignedCeilingMs: UNSIGNED_WINDOW_CEILING_MS,
     });
+    if (admissionMinimumMs !== null && v.ceilingMs < admissionMinimumMs) {
+      featureEvidence.record('multiMachine.takeoverReadyPool', {
+        kind: 'error', reason: 'The peer-enforced restart lease ceiling cannot fit the measured boot allowance.',
+        context: { requiredWindowMs: admissionMinimumMs, ceilingMs: v.ceilingMs, ceilingSource: v.ceilingSource },
+      });
+    }
     const note = v.clamped
       ? `the window was clamped to its ${v.clamped} (${v.windowMs} ms; ${v.clamped === 'ceiling' ? `the ${v.ceilingSource} cap` : 'the lease TTL plus the margin'}) from a base of ${v.baseMs} ms`
       : null;
@@ -2054,9 +2072,10 @@ export class LeaseCoordinator {
       return null;
     }
     const generation = this.relinquishGeneration;
-    return this.d.tunnel.broadcast(renewed, () => this.adoptLateRenewal(renewed, generation)).then((ok) => {
-      if (ok && generation === this.relinquishGeneration) {
-        this.installRenewal(renewed);
+    return this.d.tunnel.broadcast(renewed, () => {
+      if (this.episode === ep) this.adoptLateRenewal(renewed, generation);
+    }).then((ok) => {
+      if (ok && generation === this.relinquishGeneration && this.episode === ep && this.installRenewal(renewed)) {
         this.markRenewOk(renewed.nonce);
         this.persistPending(renewed, true);
         return 'confirmed' as const;
@@ -2088,9 +2107,14 @@ export class LeaseCoordinator {
   private openEpisode(req: { requestedBy: string; reason: string; requestedAt: string | null }, source: 'announce' | 'sighting'): PendingEpisode | null {
     const settings = this.continuitySettings();
     if (!settings) return null;
-    if (this.episode) return this.episode;
+    if (this.episode) {
+      const sameRequest = this.episode.requestedBy === req.requestedBy && this.episode.requestedAt === req.requestedAt;
+      if (sameRequest) return this.episode;
+      if (source !== 'sighting') return null;
+      this.endEpisode('withdrawn');
+    }
     if (this.cappedRequest && this.cappedRequest.requestedBy === req.requestedBy && this.cappedRequest.requestedAt === req.requestedAt) return null;
-    const { windowMs, note } = this.resolveWindow(settings);
+    const { windowMs, note } = this.resolveWindow(settings, req.requestedBy);
     const ep: PendingEpisode = {
       id: this.d.continuity?.newEpisodeId() ?? `${Date.now()}`,
       openedAtMs: this.now(),
@@ -2190,14 +2214,14 @@ export class LeaseCoordinator {
       if (this.cappedRequest && (this.cappedRequest.requestedBy !== (file.requestedBy ?? 'unattributed') || this.cappedRequest.requestedAt !== (file.requestedAt ?? null))) {
         this.cappedRequest = null; // the file changed: a new request may extend again
       }
-      const hadEpisode = this.episode !== null;
+      const previousEpisode = this.episode;
       const ep = this.openEpisode({ requestedBy: file.requestedBy ?? 'unattributed', reason: file.reason ?? '', requestedAt: file.requestedAt ?? null }, 'sighting');
       if (ep) {
         ep.fileLastSeenMs = now;
         ep.filePresent = true;
         // A request written outside this process (the supervisor's consumers poll every 10 s): the
         // window renewal is signed, persisted and broadcast now rather than at the next renew tick.
-        if (!hadEpisode) void this.extendForEpisode(ep);
+        if (ep !== previousEpisode) void this.extendForEpisode(ep);
       }
       return;
     }
@@ -2302,11 +2326,37 @@ export class LeaseCoordinator {
     }
     if (this.d.tunnel) {
       const generation = this.relinquishGeneration;
-      void this.d.tunnel.broadcast(ttl, () => this.adoptLateRenewal(ttl, generation)).then((ok) => {
-        if (ok && generation === this.relinquishGeneration) { this.installRenewal(ttl); this.markRenewOk(ttl.nonce); }
+      const episodeAtSign = this.episode;
+      void this.d.tunnel.broadcast(ttl, () => {
+        if (this.episode === episodeAtSign) this.adoptLateRenewal(ttl, generation);
+      }).then((ok) => {
+        if (ok && generation === this.relinquishGeneration && this.episode === episodeAtSign && this.installRenewal(ttl)) {
+          this.markRenewOk(ttl.nonce);
+        }
       }, () => { /* @silent-fallback-ok: the renew tick retries at its cadence */ });
     }
     return true;
+  }
+
+  /**
+   * Evidence for a planned restart of the current holder. The caller must
+   * match its request and revalidate immediately before taking down the server.
+   */
+  confirmedPlannedRestartWindow(
+    request: { requestedBy: string; requestedAt: string; minimumRemainingMs: number },
+  ): { holder: string; epoch: number; nonce: number; expiresAt: string } | null {
+    if (this.d.plannedRestartAdmissionEnabled?.() !== true || !this.continuitySettings() ||
+        request.requestedBy === 'role-change' || !Number.isSafeInteger(request.minimumRemainingMs) ||
+        request.minimumRemainingMs <= 0 || !this.holdsLease()) return null;
+    const continuity = this.d.continuity?.read();
+    const file = continuity?.file;
+    const expiresAtMs = file ? Date.parse(file.lease.expiresAt) : NaN;
+    if (continuity?.verdict !== 'ok' || !file || file.meta.exitedAt !== null ||
+        file.meta.requestedBy !== request.requestedBy || file.meta.requestedAt !== request.requestedAt ||
+        !file.meta.confirmed || file.lease.nonce !== this.lastConfirmedNonce ||
+        file.lease.epoch !== this.currentEpoch() || file.lease.holder !== this.selfMachineId ||
+        !Number.isFinite(expiresAtMs) || expiresAtMs - this.now() < request.minimumRemainingMs) return null;
+    return { holder: file.lease.holder, epoch: file.lease.epoch, nonce: file.lease.nonce, expiresAt: file.lease.expiresAt };
   }
 
   /** §1 step 5 — the shutdown handler's one synchronous action. */

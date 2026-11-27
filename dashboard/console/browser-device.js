@@ -192,11 +192,51 @@ export function readRecord(machineId) {
 export function readAllRecords() {
   return tx('readonly', (s, set) => { const r = s.getAll(); r.onsuccess = () => set(r.result || []); });
 }
-export function writeRecord(rec) {
-  return tx('readwrite', (s) => { s.put(rec); });
+/** Identity comparison deliberately excludes mutable approval/status fields. */
+export function sameDeviceIdentity(a, b) {
+  if (!a || !b) return a === b;
+  return ['machineId', 'deviceId', 'host', 'keyHash']
+    .every((k) => (a[k] ?? null) === (b[k] ?? null));
 }
-export function deleteRecord(machineId) {
-  return tx('readwrite', (s) => { s.delete(String(machineId)); });
+let deviceCleanup = null;
+/** The console installs the outbox cleanup without making signing depend on its module. */
+export function setBrowserDeviceCleanup(fn) {
+  deviceCleanup = typeof fn === 'function' ? fn : null;
+}
+async function cleanupBeforeRemoval(rec) {
+  if (rec && deviceCleanup) await deviceCleanup(rec);
+}
+export async function writeRecord(rec, opts = {}) {
+  const prior = await readRecord(rec.machineId);
+  const expected = Object.prototype.hasOwnProperty.call(opts, 'expectedRecord') ? opts.expectedRecord : prior;
+  if (!sameDeviceIdentity(prior, expected)) throw new Error('browser-device-changed');
+  // Completing an enrollment does not retire its own key. Replacing an activated identity does.
+  if (prior && prior.deviceId && !sameDeviceIdentity(prior, rec)) await cleanupBeforeRemoval(prior);
+  const written = await tx('readwrite', (s, set) => {
+    const r = s.get(String(rec.machineId));
+    r.onsuccess = () => {
+      if (!sameDeviceIdentity(r.result || null, expected)) { set(false); return; }
+      s.put(rec); set(true);
+    };
+  });
+  if (!written) throw new Error('browser-device-changed');
+}
+export async function deleteRecord(machineId, expectedRecord) {
+  const prior = await readRecord(machineId);
+  const expected = expectedRecord === undefined ? prior : expectedRecord;
+  if (!prior && expected) await cleanupBeforeRemoval(expected);
+  else {
+    if (!prior || !sameDeviceIdentity(prior, expected)) return false;
+    await cleanupBeforeRemoval(prior);
+  }
+  return tx('readwrite', (s, set) => {
+    const r = s.get(String(machineId));
+    r.onsuccess = () => {
+      const current = r.result || null;
+      if (current && !sameDeviceIdentity(current, expected)) { set(false); return; }
+      s.delete(String(machineId)); set(true);
+    };
+  });
 }
 
 // ── what to do with the stored key (§4.6) ────────────────────────────────
@@ -248,12 +288,12 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
 
   const bearerHeaders = () => ({ Authorization: `Bearer ${bearer ? bearer() : ''}` });
 
-  async function readStatus(keyHash) {
+  async function readStatus(keyHash, signal) {
     const q = keyHash ? `?keyHash=${encodeURIComponent(keyHash)}` : '';
     const sentAt = Date.now();
     let r;
     // A dropped or missing connection is an answer too ("couldn't reach"), never a page stuck on "Checking this browser…".
-    try { r = await fetchFn(`/mobile/browser-devices/status${q}`, { headers: bearerHeaders(), cache: 'no-store' }); } catch (e) {
+    try { r = await fetchFn(`/mobile/browser-devices/status${q}`, { headers: bearerHeaders(), cache: 'no-store', ...(signal ? { signal } : {}) }); } catch (e) {
       if (e && e.name === 'AbortError') throw e;
       return { error: 'unreachable', networkError: true };
     }
@@ -267,9 +307,9 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
   }
 
   /** One status check at a time per page (§4.6); callers share the answer. */
-  function status(keyHash) {
+  function status(keyHash, { signal } = {}) {
     const k = keyHash || '';
-    if (!statusInFlight.has(k)) statusInFlight.set(k, readStatus(keyHash).finally(() => { statusInFlight.delete(k); }));
+    if (!statusInFlight.has(k)) statusInFlight.set(k, readStatus(keyHash, signal).finally(() => { statusInFlight.delete(k); }));
     return statusInFlight.get(k);
   }
 
@@ -278,11 +318,21 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
     return record;
   }
 
-  async function signedFetch(method, path, { json, bytes, contentType, signal, headers = {} } = {}) {
-    if (!record || !record.keyPair) throw new Error('no-device');
+  async function signedFetch(method, path, { json, bytes, contentType, signal, headers = {}, expectedRecord,
+    isCurrent = () => true, beforeFetch } = {}) {
+    const captured = record;
+    const current = () => sameDeviceIdentity(record, captured) && (!expectedRecord || sameDeviceIdentity(captured, expectedRecord))
+      && isCurrent() !== false && !(signal && signal.aborted);
+    if (!captured || !captured.keyPair) throw new Error('no-device');
+    if (!current()) throw new Error('browser-device-changed');
     const body = json !== undefined ? JSON.stringify(json) : bytes !== undefined ? bytes : undefined;
-    const h = await signRequest({ record, privateKey: record.keyPair.privateKey, method, path, body, timeMs: clock.now() });
+    const h = await signRequest({ record: captured, privateKey: captured.keyPair.privateKey, method, path, body, timeMs: clock.now() });
+    const persisted = await readRecord(captured.machineId);
+    if (!sameDeviceIdentity(persisted, captured) || !current()) throw new Error('browser-device-changed');
     const ct = json !== undefined ? { 'Content-Type': 'application/json' } : bytes !== undefined ? { 'Content-Type': contentType || 'application/octet-stream' } : {};
+    // This is the LAST asynchronous guard. An IDB read after it would reopen the logout gap.
+    if (beforeFetch && await beforeFetch(captured) === false) throw new Error('browser-device-changed');
+    if (!current()) throw new Error('browser-device-changed');
     return fetchFn(path, { method, headers: { ...headers, ...ct, ...h }, body, signal, cache: 'no-store' });
   }
 
@@ -304,12 +354,17 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
    */
   async function checkAfter401({ signal } = {}) {
     if (!record) return { action: 'keep', show: 'unknown' };
-    const original = record;
-    const st = await status(original.keyHash);
-    if (signal?.aborted || record !== original) return { action: 'keep', show: 'cancelled' };
+    const captured = record;
+    const st = await status(captured.keyHash);
+    if (signal?.aborted) return { action: 'keep', show: 'cancelled' };
+    if (!sameDeviceIdentity(record, captured)) return { action: 'keep', show: 'unknown' };
     if (!st.ok) return { action: 'keep', show: st.off ? 'off' : 'unknown' };
-    const d = keyDecision(st.data, record);
-    if (d.action === 'delete') { await deleteRecord(original.machineId); if (record === original) record = null; return { ...d, deleted: true }; }
+    const d = keyDecision(st.data, captured);
+    if (d.action === 'delete') {
+      const deleted = await deleteRecord(captured.machineId, captured);
+      if (deleted && sameDeviceIdentity(record, captured)) record = null;
+      return { ...d, deleted };
+    }
     return d;
   }
 
@@ -326,9 +381,10 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
       let rec = await readRecord(machineId);
       // A record still enrolling is reused: the same key and enrollmentId recover a lost answer (§4.2 step 4).
       if (!rec || !(rec.status === 'enrolling' || rec.status === 'pending' || rec.status === 'active')) {
+        const previous = rec;
         const { keyPair, publicKey } = await generateDeviceKey();
         rec = { machineId, keyPair, publicKey, keyHash: await keyHashOf(publicKey), fingerprint: await fingerprintOf(publicKey), enrollmentId: newRequestId(clock.now()), status: 'enrolling', createdAt: new Date().toISOString(), deviceName: deviceName || null };
-        await writeRecord(rec); // stored BEFORE sending, so a lost answer never loses the key
+        await writeRecord(rec, { expectedRecord: previous }); // stored BEFORE sending, so a lost answer never loses the key
       }
       if (rec.status !== 'enrolling') { record = rec; return { ok: true, answer: { deviceId: rec.deviceId, machineId: rec.machineId, host: rec.host, status: rec.status, fingerprint: rec.fingerprint } }; }
       // With a Telegram owner, the owner's approval on the phone or in Telegram is the proof: no PIN
@@ -373,13 +429,15 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
       if (r.status === 200 || r.status === 201) {
         // The record's machine is the one the setup answer names, not the earlier status read.
         const next = { ...rec, deviceId: d.deviceId, host: d.host, status: d.status, approval: d.approval || null, expiresAt: d.expiresAt || null, fingerprint: d.fingerprint || rec.fingerprint };
-        if (d.machineId && d.machineId !== rec.machineId) { await deleteRecord(rec.machineId); next.machineId = d.machineId; }
-        await writeRecord(next);
+        if (d.machineId && d.machineId !== rec.machineId) {
+          await deleteRecord(rec.machineId, rec); next.machineId = d.machineId;
+          await writeRecord(next, { expectedRecord: null });
+        } else await writeRecord(next, { expectedRecord: rec });
         record = next;
         return { ok: true, answer: d };
       }
       // A refusal: the key was never registered, so it is discarded and the next try starts clean.
-      if (r.status !== 429 && r.status !== 503) await deleteRecord(rec.machineId);
+      if (r.status !== 429 && r.status !== 503) await deleteRecord(rec.machineId, rec);
       return { ok: false, status: r.status, error: d.error || `http-${r.status}`, detail: d.detail || null, data: d };
     }
   }
@@ -387,30 +445,36 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
   /** Mark the loaded record with a new status (from GET /mobile/device). */
   async function setStatus(s) {
     if (!record) return;
-    record = { ...record, status: s };
-    await writeRecord(record);
+    const captured = record;
+    const next = { ...captured, status: s };
+    await writeRecord(next, { expectedRecord: captured });
+    if (sameDeviceIdentity(record, captured)) record = next;
   }
 
   /** Delete this machine's key (only on a definite answer, or after a confirmed revoke). */
   async function forget() {
     if (!record) return;
-    const id = record.machineId;
-    record = null;
-    await deleteRecord(id);
+    const captured = record;
+    const deleted = await deleteRecord(captured.machineId, captured);
+    if (deleted && sameDeviceIdentity(record, captured)) record = null;
   }
 
   /** Forget this browser: self-revoke (signed); on failure the Bearer revoke; the key goes only after a confirmed revoke. */
   async function revokeSelf() {
     if (!record || !record.deviceId) { await forget(); return { ok: true }; }
-    const path = `/mobile/devices/${encodeURIComponent(record.deviceId)}/revoke`;
-    let res = await call('POST', path, { json: {} });
+    const captured = record;
+    const path = `/mobile/devices/${encodeURIComponent(captured.deviceId)}/revoke`;
+    let res = await call('POST', path, { json: {}, expectedRecord: captured });
     if (!res.ok) {
       try {
         const r = await fetchFn(path, { method: 'POST', headers: { ...bearerHeaders(), 'Content-Type': 'application/json' }, body: '{}' });
         res = { ok: r.ok, status: r.status };
       } catch { res = { ok: false, status: 0 }; }
     }
-    if (res.ok) await forget();
+    if (res.ok) {
+      const deleted = await deleteRecord(captured.machineId, captured);
+      if (deleted && sameDeviceIdentity(record, captured)) record = null;
+    }
     return res;
   }
 

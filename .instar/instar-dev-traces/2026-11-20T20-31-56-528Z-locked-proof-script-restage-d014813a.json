@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "locked-proof-script-restage",
+  "sessionId": "32b26506-40bd-4e0e-8998-dbc1d8bf0fbe",
+  "timestamp": "2026-11-20T20:31:56.528Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-script-restage.md",
+  "artifactSha256": "939514906df92ba03f3c78b345fc9e30f4fc2f00cbfb0679736346c76fa3eb0b",
+  "coveredFiles": [
+    "docs/specs/locked-proof-script-restage.eli16.md",
+    "scripts/build-locked-proof.mjs",
+    "scripts/locked-proof/stage-proof-agents.sh",
+    "tests/unit/locked-proof-build.test.ts",
+    "tests/unit/locked-proof-driver.test.ts",
+    "upgrades/side-effects/locked-proof-script-restage.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two developer-only test scripts, ~20 lines, no runtime surface; a revert fully undoes it",
+  "eli16Path": "docs/specs/locked-proof-script-restage.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-script-restage.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

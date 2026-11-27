@@ -206,7 +206,7 @@ export function classifyVitestListRun({ status, signal }) {
   if (status === 0) return { action: 'parse' };
   if (signal === 'SIGTERM') {
     return {
-      action: 'skip-indeterminate',
+      action: 'verify-indeterminate',
       reason: 'affected-test listing timed out',
       testsRun: 0,
     };

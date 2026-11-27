@@ -18,8 +18,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
   runVerify, verifyPaths, splitScript, parseNameStatus, bareConfigTemplate,
-  type OrchestratorSeams, type VerifyRunInput, type GitResult, type ExecResult,
+  type OrchestratorSeams, type VerifyRunInput, type VerifyRunResult, type GitResult, type ExecResult,
 } from '../../../src/localVerify/orchestrator.js';
+import { parseVitestJson } from '../../../src/localVerify/laneReport.js';
+import { BORROWED_CANARY, BORROWED_CANARY_FILES } from '../../../src/localVerify/borrowedCanary.js';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS } from '../../../src/localVerify/policy.js';
 
 /** Lane processes in one verify: unit + the integration shards + the e2e shards. */
@@ -122,6 +124,8 @@ interface FakeOpts {
   preflightStatuses?: Array<'passed' | 'failed'>;
   preflightQuiescent?: boolean;
   preflightRunDurationMs?: number;
+  /** Answer some git calls differently (null: the default answer). */
+  gitOverride?: (args: string[]) => GitResult | null;
 }
 
 function fake(o: FakeOpts = {}) {
@@ -148,6 +152,8 @@ function fake(o: FakeOpts = {}) {
   const gitImpl = (args: string[]): GitResult => {
     const ok = (stdout = ''): GitResult => ({ status: 0, stdout, stderr: '', timedOut: false });
     const verb = args[0];
+    const over = o.gitOverride?.(args);
+    if (over) return over;
     if (o.gitTimeout === verb) return { status: null, stdout: '', stderr: 'timeout', timedOut: true };
     switch (verb) {
       case 'init': dirs.add(P.bare); dirs.add(path.join(P.bare, 'objects')); dirs.add(path.join(P.bare, 'refs')); files.set(path.join(P.bare, 'HEAD'), 'ref: refs/heads/main'); return ok();
@@ -558,6 +564,57 @@ describe('runVerify — errors', () => {
 });
 
 describe('runVerify — failures', () => {
+  it.each(['same inventory', 'failed again', 'different inventory'])('requires same-file recovery after a named retry: %s', async (confirmation) => {
+    const wholeFilePassed = confirmation === 'same inventory';
+    const file = 'tests/unit/a.test.ts';
+    const predecessor = { name: 'suite predecessor', status: 'passed' };
+    const affected = { name: 'suite failed [literal]', status: 'failed' };
+    const recovered = { ...affected, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [predecessor, affected] } }, rerunNamed: {
+      [file]: [[{ ...predecessor, status: 'skipped' }, recovered], [
+        confirmation === 'different inventory' ? { ...predecessor, name: 'replacement' } : predecessor,
+        confirmation === 'failed again' ? affected : recovered,
+      ]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: wholeFilePassed ? 'success' : 'failure' } });
+    const reruns = f.execCalls.filter((call) => call.args.some((arg) => arg.includes('/unit-rerun-')));
+    expect(reruns).toHaveLength(2);
+    expect(reruns[0].args).toContain('--testNamePattern=^(?:suite failed \\[literal\\])$');
+    expect(reruns[1].args.some((arg) => arg.startsWith('--testNamePattern'))).toBe(false);
+    if (wholeFilePassed) expect(result).toMatchObject({ record: { flakyRetried: [{ namedRetry: true, failedTests: [affected.name] }] } });
+    else expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it('rejects a whole-file proof that swaps which tests passed and skipped', async () => {
+    const file = 'tests/unit/a.test.ts';
+    const first = { name: 'first', status: 'passed' };
+    const second = { name: 'second', status: 'skipped' };
+    const failed = { name: 'target', status: 'failed' };
+    const recovered = { ...failed, status: 'passed' };
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [first, second, failed] } }, rerunNamed: {
+      [file]: [[recovered], [{ ...first, status: 'skipped' }, { ...second, status: 'passed' }, recovered]],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(result).not.toHaveProperty('flakyRetried');
+  });
+
+  it.each([1, 4])('only re-runs a small named failure set that is not quarantined, failures=%s', async (count) => {
+    const file = 'tests/unit/a.test.ts';
+    const failures = Array.from({ length: count }, (_, i) => ({ name: `suite case ${i}`, status: 'failed' }));
+    const f = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: failures } }, rerunNamed: {
+      [file]: [failures.map((test) => ({ ...test, status: 'passed' }))],
+    } });
+    const result = await runVerify(input({ namedFlakeRetry: { quarantined: [] } }), f.seams);
+    expect(result).toMatchObject({ kind: 'record', record: { outcome: count === 1 ? 'success' : 'failure' } });
+    expect(f.execCalls.filter((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toHaveLength(count === 1 ? 1 : 0);
+    const quarantined = fake({ diff: 'M\tsrc/index.ts\n', laneNamed: { unit: { [file]: [failures[0]] } } });
+    expect(await runVerify(input({ namedFlakeRetry: { quarantined: [{ file, test: failures[0].name }] } }), quarantined.seams))
+      .toMatchObject({ kind: 'record', record: { outcome: 'failure' } });
+    expect(quarantined.execCalls.some((call) => call.args.some((arg) => arg.startsWith('--testNamePattern')))).toBe(false);
+  });
+
   it('a failed test that fails again on its isolation re-run is a failure and the worktree is kept', async () => {
     const r = await runVerify(input(), fake({ laneStatuses: { integration: ['passed', 'failed'] }, rerun: { 'tests/integration/b.test.ts': ['passed', 'failed'] } }).seams);
     expect(r.kind).toBe('record');
@@ -932,6 +989,40 @@ describe('runVerify — retention of failed worktrees', () => {
     expect(modes).toEqual([{ mode: 0o600, flag: 'wx' }]);
     expect(f.removed).toContain(P.reportsDir);
   });
+  it('retains unit process output when the report lists no failed tests', async () => {
+    const f = fake();
+    const exec = f.seams.exec;
+    const persist = vi.fn(async () => '/private/unit-transcript.json');
+    f.seams.keepUnitTranscripts = persist;
+    const transcript = { prefix: 'The first diagnostic', suffix: 'The final diagnostic', omittedBytes: 10 };
+    f.seams.exec = async (command, args, options) => {
+      const result = await exec(command, args, options);
+      if (!command.endsWith('vitest') || !args.some(a => a.endsWith('/unit.json'))) return result;
+      f.files.set(options.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!, JSON.stringify({
+        v: 1, unhandledErrors: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)),
+      }));
+      expect(options.captureUnitOutput).toBe(true);
+      return {
+        ...result, status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited',
+        unitOutput: { stdout: transcript, stderr: transcript },
+      };
+    };
+    const result = await runVerify(input(), f.seams);
+    expect(result.kind === 'record' && result.record.outcome).toBe('failure');
+    expect(persist).toHaveBeenCalledWith(expect.objectContaining({
+      transcripts: [{ step: 'unit', status: 1, signal: null, stdout: transcript, stderr: transcript }],
+    }));
+    expect(f.logs).toContainEqual({ event: 'unit-transcript-kept', path: '/private/unit-transcript.json' });
+    const artifact = f.files.get(path.join(P.runDir, '.local-verify-failures.json'));
+    expect(JSON.parse(artifact!)).toMatchObject({
+      failures: [],
+      processFailures: [{
+        step: 'unit', status: 1, signal: null, stderr: 'Unhandled Errors: worker unexpectedly exited',
+        unhandled: { count: 5, messages: Array(5).fill('worker error: ' + '\n'.repeat(380)) },
+      }],
+    });
+  });
+
   it('keeps a failed verdict when diagnostic storage fails', async () => {
     const f = fake({ laneStatuses: { unit: ['failed'] } });
     const write = f.seams.fs.writeFile;
@@ -955,6 +1046,110 @@ describe('runVerify — retention of failed worktrees', () => {
     expect(kept).not.toContain(verifyPaths(HOME, heads[0]).runDir);
     expect(f.gitCalls.some((c) => c.args.join(' ') === `worktree remove ${verifyPaths(HOME, heads[0]).runDir}`)).toBe(true);
   });
+});
+
+describe('runVerify — task-update RPC timeout in the complete unit lane', () => {
+  const timeout = '[vitest-worker]: Timeout calling "onTaskUpdate"';
+  const retryFile = 'unit-task-update-retry.json';
+  const artifact = path.join(P.runDir, '.local-verify-failures.json');
+
+  const completedReport = (file: string, statuses: string[]): string => {
+    const failed = statuses.filter(status => status === 'failed').length;
+    return JSON.stringify({
+      ...JSON.parse(vitestReport(file, statuses)),
+      success: failed === 0, numFailedTests: failed, numFailedTestSuites: failed ? 1 : 0, numPendingTestSuites: 0,
+      numPassedTests: statuses.filter(status => status === 'passed').length, numPendingTests: 0, numTodoTests: 0,
+      numTotalTests: statuses.length,
+    });
+  };
+
+  const scenario = (options: {
+    repeat?: boolean; initialMessages?: string[]; initialErrorCount?: number;
+    initialStatuses?: string[]; initialFile?: string; incompleteSummary?: boolean;
+    retryStatuses?: string[]; omitRetryErrors?: boolean;
+  } = {}) => {
+    const f = fake();
+    const exec = f.seams.exec;
+    f.seams.exec = async (command, args, env) => {
+      const result = await exec(command, args, env);
+      const reportPath = args.find(a => a.startsWith('--outputFile='))?.slice('--outputFile='.length);
+      if (!reportPath) return result;
+      const errorPath = env.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE!;
+      if (reportPath.endsWith('/unit.json')) {
+        const messages = options.initialMessages ?? Array(5).fill(timeout);
+        const report = completedReport(options.initialFile ?? TEST_FILES[0], options.initialStatuses ?? ['passed']);
+        f.files.set(reportPath, options.incompleteSummary ? JSON.stringify({ ...JSON.parse(report), numTotalTests: 2 }) : report);
+        f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: options.initialErrorCount ?? messages.length, messages }));
+        return { ...result, status: 1 };
+      }
+      if (reportPath.endsWith('/' + retryFile)) {
+        f.files.set(reportPath, completedReport(TEST_FILES[0], options.retryStatuses ?? ['passed']));
+        if (options.omitRetryErrors) f.files.delete(errorPath);
+        if (options.repeat) {
+          f.files.set(errorPath, JSON.stringify({ v: 1, unhandledErrors: 1, messages: [timeout] }));
+          return { ...result, status: 1 };
+        }
+      }
+      return result;
+    };
+    return f;
+  };
+
+  it('retries once within the original unit deadline and records a clean comparable retry', async () => {
+    const f = scenario();
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    const init = f.execCalls.find(call => call.args.some(a => a.endsWith('/unit.json')))!;
+    const retries = f.execCalls.filter(call => call.args.some(a => a.endsWith('/' + retryFile)));
+    expect(retries).toHaveLength(1);
+    expect(retries[0].deadlineMs).toBeLessThan(init.deadlineMs);
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry', timeouts: 5 }));
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: true }));
+  });
+
+  it('keeps both process receipts when the retry has the same fault', async () => {
+    const f = scenario({ repeat: true });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(JSON.parse(f.files.get(artifact)!)).toMatchObject({
+      failures: [],
+      processFailures: [
+        { step: 'unit', unhandled: { count: 5, messages: Array(5).fill(timeout) } },
+        { step: 'unit-task-update-retry', unhandled: { count: 1, messages: [timeout] } },
+      ],
+    });
+  });
+
+  it('does not replace failed assertions from a full retry with an isolation pass', async () => {
+    const f = scenario({ retryStatuses: ['failed'] });
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(r.kind === 'record' && r.record.lanes.find(lane => lane.name === 'unit')?.failed).toBe(1);
+    expect(f.logs.some(row => row.event === 'isolation-rerun' && row.lane === 'unit')).toBe(false);
+  });
+
+  it.each([
+    { initialMessages: [timeout, 'unexpected worker exit'] },
+    { initialMessages: Array(5).fill(timeout), initialErrorCount: 6 },
+    { initialStatuses: ['failed'] },
+    { initialStatuses: ['pending'] },
+    { incompleteSummary: true },
+    { initialFile: 'tests/unit/other.test.ts' },
+  ])('does not retry incomplete or mixed evidence (%j)', async options => {
+    const f = scenario(options);
+    const r = await runVerify(input(), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+    expect(f.logs.some(row => row.event === 'unit-task-update-retry')).toBe(false);
+  });
+
+  it.each([{ omitRetryErrors: true }, { retryStatuses: ['passed', 'passed'] }])(
+    'does not accept a retry with missing or changed evidence (%j)', async options => {
+      const f = scenario(options);
+      const r = await runVerify(input(), f.seams);
+      expect(r.kind === 'record' && r.record.outcome).toBe('failure');
+      expect(f.logs).toContainEqual(expect.objectContaining({ event: 'unit-task-update-retry-result', accepted: false }));
+    },
+  );
 });
 
 describe('runVerify — repository pinning and the init-skip check', () => {
@@ -1693,6 +1888,12 @@ describe('runVerify — lane shard counts from the run input (monitoring.localVe
     expect(vitestCalls(f)).toHaveLength(4);
     expect(vitestCalls(f).filter((c) => c.args.includes('vitest.integration.config.ts')).every((c) => !c.args.some((a) => a.startsWith('--shard=')))).toBe(true);
   });
+  it('runs five integration processes when explicitly configured', async () => {
+    const f = fake();
+    const r = await runVerify(input({ laneShards: { integration: 5 } }), f.seams);
+    expect(r.kind === 'record' && r.record.outcome).toBe('success');
+    expect(vitestCalls(f).filter((c) => c.args.includes('vitest.integration.config.ts'))).toHaveLength(5);
+  });
   it('out-of-range or non-integer counts fall back to the defaults', async () => {
     const f = fake();
     await runVerify(input({ laneShards: { integration: 9, e2e: 1.5 } }), f.seams);
@@ -1716,6 +1917,47 @@ describe('runVerify — balanced shards: overlapping paths and a hostile history
     expect(r.kind === 'record' && r.record.outcome).toBe('success');
     expect(f.logs.some((l) => l.event === 'durations-ignored')).toBe(true);
     expect(f.shardLists).toHaveLength(0);
+  });
+});
+
+describe('a main verify\'s per-file counts for the baseline results (spec local-verify-borrowed-slices-count.md, F "Baseline results")', () => {
+  const mainInput = (over: Partial<VerifyRunInput> = {}) => input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, ...over });
+  const strip = (r: VerifyRunResult) => { if (r.kind !== 'record') throw new Error(r.kind); const { fileCounts: _fc, ...rest } = r; void _fc; return rest; };
+
+  it('with the option, every clean file gets its four counts and a names-and-outcomes digest; the record and everything else equal a run without it', async () => {
+    const without = await runVerify(mainInput(), fake().seams);
+    const withCounts = await runVerify(mainInput({ fileCounts: true }), fake().seams);
+    expect(without.kind === 'record' && 'fileCounts' in without).toBe(false);
+    if (withCounts.kind !== 'record') throw new Error(withCounts.kind);
+    expect(Object.keys(withCounts.fileCounts!).sort()).toEqual([...TEST_FILES].sort());
+    for (const row of Object.values(withCounts.fileCounts!)) {
+      expect(row.slice(0, 4).every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)).toBe(true);
+      expect(row[4]).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // Identical apart from the added field (the fake clock gives both runs the same times).
+    expect(strip(withCounts)).toEqual(strip(without));
+    expect(withCounts.record.outcome).toBe('success');
+  });
+
+  it('the digest is the lane report\'s own outcome digest of that file', async () => {
+    const r = await runVerify(mainInput({ fileCounts: true }), fake({ laneStatuses: { unit: ['passed', 'skipped', 'todo'] } }).seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    const row = r.fileCounts!['tests/unit/a.test.ts'];
+    expect(row.slice(0, 4)).toEqual([1, 0, 1, 1]);
+    expect(row[4]).toBe(parseVitestJson(vitestReport('tests/unit/a.test.ts', ['passed', 'skipped', 'todo']), P.runDir, { outcomeDigest: true }).files.get('tests/unit/a.test.ts')!.outcomeDigest);
+  });
+
+  it('a file that failed in its lane has no row, even when it passed alone afterwards and the verify is green', async () => {
+    const r = await runVerify(mainInput({ fileCounts: true }), fake({ laneStatuses: { integration: ['passed', 'failed'] } }).seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('success');
+    expect(r.record.flakyRetried?.map((x) => x.file)).toEqual(['tests/integration/b.test.ts']);
+    expect(Object.keys(r.fileCounts!).sort()).toEqual(['tests/e2e/c.test.ts', 'tests/unit/a.test.ts']);
+  });
+
+  it('a verify of a waiting change never reports them, whatever its input says', async () => {
+    const r = await runVerify(input({ fileCounts: true }), fake().seams);
+    expect(r.kind === 'record' && 'fileCounts' in r).toBe(false);
   });
 });
 
@@ -1801,4 +2043,197 @@ it.each(['collection', 'assembly', 'invalid field', 'inconsistent field', 'throw
     if (fault !== 'logging') expect(f.logs.some((e) => e.event === 'first-part-evidence-incomplete')).toBe(true);
     if (fault.includes('field')) expect(result.record.firstPart).toBeUndefined();
   } finally { restore(); }
+});
+
+// ── A borrowed helper in the verify's lane flow (spec local-verify-borrowed-slices-count.md, F) ──
+
+describe('runVerify with a borrowed helper (the lane flow)', () => {
+  const UNIT3: Record<string, string[]> = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/p.test.ts': ['passed'], 'tests/unit/q.test.ts': ['passed'] };
+  const DIG = '7'.repeat(64);
+  const BLOB = '9'.repeat(40);
+  const BORROWED = { port: 4040, token: '1'.repeat(32), baselines: [{ commit: BASE, finishedAt: '2026-11-20T00:00:00.000Z', machineId: 'm_studio', files: { 'tests/unit/p.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string], 'tests/unit/q.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string] } }] };
+  // The baseline's commit and the merge tree hold the same content for p and q (same blob ids).
+  const gitOverride = (args: string[]): GitResult | null => (args[0] === 'ls-tree' && args[1] === '-r' && args[2] !== '--name-only'
+    ? { status: 0, stdout: `100644 blob ${BLOB}\ttests/unit/p.test.ts\n100644 blob ${BLOB}\ttests/unit/q.test.ts\n`, stderr: '', timedOut: false } : null);
+  const lane = { state: 'counting', mayCount: true, proven: true, share: 0.5, uncovered: [] as string[] };
+  const planBody = (assigned: 'counting' | 'compare-only') => ({
+    ok: true, helper: 'm_laptop', mode: 'count', assigned, answered: true, lanes: { unit: { ...lane }, integration: { ...lane, proven: false }, e2e: { ...lane, proven: false } },
+    spotOneIn: 1_000_000, learned: [], throughput: 100, prepMs: 0, workersFree: 4,
+  });
+  const canaryPerFile = BORROWED_CANARY_FILES.map((f) => ({ file: f, tests: 1, ...BORROWED_CANARY[f], ms: 1, digest: DIG, failedTests: [] }));
+
+  /** A fake server proxy; `perFile` answers each non-check slice (null: never answered). The unit lane waits until a counting slice is queued. */
+  function harness(o: { assigned?: 'counting' | 'compare-only'; perFile?: (f: string) => Record<string, unknown> | null; throwing?: boolean } = {}) {
+    const f = fake({ laneFiles: { unit: UNIT3 }, gitOverride });
+    const calls: Array<Record<string, unknown>> = [];
+    const slices: Array<{ id: string; files: string[]; use: string }> = [];
+    let n = 0;
+    let sliceSeen!: () => void;
+    const sliceQueued = new Promise<void>((r) => { sliceSeen = r; });
+    f.seams.borrowedProxy = () => async (b) => {
+      calls.push(b);
+      if (o.throwing) throw new Error('proxy down');
+      if (b.op === 'plan') return planBody(o.assigned ?? 'counting');
+      if (b.op === 'slice') {
+        const id = (++n).toString(16).padStart(32, '0');
+        slices.push({ id, files: b.files as string[], use: b.use as string });
+        if (b.use !== 'check') sliceSeen();
+        return { ok: true, attemptId: id, state: 'queued' };
+      }
+      if (b.op === 'status') {
+        const results = slices.flatMap((s, i) => {
+          if (s.use === 'check') return [{ seq: i + 1, attemptId: s.id, valid: true, state: 'done', treeHash: TREE, slice: { exitCode: 1, unhandledErrors: 1, collected: true }, perFile: canaryPerFile }];
+          const per = s.files.map((x) => o.perFile?.(x) ?? null);
+          if (per.some((x) => x === null)) return [];
+          return [{ seq: i + 1, attemptId: s.id, valid: true, state: 'done', treeHash: TREE, slice: { exitCode: 0, unhandledErrors: 0, collected: true }, perFile: per }];
+        });
+        return { ok: true, tree: { state: 'ready', treeHash: TREE }, results };
+      }
+      return { ok: true };
+    };
+    f.seams.borrowedSleep = () => new Promise<void>((r) => setImmediate(r));
+    const realExec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      // The unit lane's own process runs while the helper works (a real lane takes minutes): it waits for the first counting slice, bounded.
+      if (args.includes('vitest.config.ts') && !args.some((a) => a.includes('-back') || a.includes('-rerun-'))) {
+        await Promise.race([sliceQueued, new Promise<void>((r) => setTimeout(r, 200))]);
+        for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r));
+      }
+      return realExec(command, args, opts);
+    };
+    return { f, calls, slices };
+  }
+  const unitRuns = (f: ReturnType<typeof fake>) => f.execCalls.filter((c) => c.args.includes('vitest.config.ts')).map((c) => c.args);
+  const passOf = (file: string, digest = DIG) => ({ file, tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, ms: 5, digest, failedTests: [] });
+
+  it('a silent or throwing proxy: the record and the commands equal a verify without a helper', async () => {
+    const plain = fake({ laneFiles: { unit: UNIT3 }, gitOverride });
+    const base = await runVerify(input(), plain.seams);
+    for (const throwing of [true, false]) {
+      const h = harness({ throwing });
+      if (!throwing) h.f.seams.borrowedProxy = () => async () => null;
+      const r = await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+      if (r.kind !== 'record' || base.kind !== 'record') throw new Error('records expected');
+      expect(r.record).toEqual(base.record);
+      expect(unitRuns(h.f)).toEqual(unitRuns(plain));
+      expect(r.borrowed).toBeUndefined();
+    }
+  });
+
+  it('counting: an accepted pass is held out of the local process and enters the report; the record names the helper', async () => {
+    const h = harness({ perFile: (f) => passOf(f) });
+    const r = await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('success');
+    const counted = r.borrowed!.lanes.unit!.counted;
+    expect(counted.length).toBeGreaterThan(0);
+    // The held-out file was excluded from the unit process and never run here.
+    const runs = unitRuns(h.f);
+    expect(runs).toHaveLength(1);
+    for (const c of counted) expect(runs[0]).toContain(`--exclude=${c}`);
+    expect(r.record.lanes.find((l) => l.name === 'unit')!.files).toBe(3);
+    expect(r.record.borrowed).toMatchObject({ helper: 'm_laptop', assigned: 'counting', lanes: [{ lane: 'unit', files: counted.length }] });
+    expect(h.slices[0].use).toBe('check');
+  });
+
+  it('counting with a helper that never answers: the shard takes its portion back and runs it in a second process', async () => {
+    const h = harness({ perFile: () => null });
+    const r = await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.record.outcome).toBe('success');
+    const runs = unitRuns(h.f);
+    expect(runs).toHaveLength(2);
+    expect(runs[1].some((a) => a.endsWith('/unit-back.json'))).toBe(true);
+    expect(r.borrowed!.lanes.unit!.counted).toEqual([]);
+    expect(r.borrowed!.lanes.unit!.takenBack).toBeGreaterThan(0);
+    expect(r.record.lanes.find((l) => l.name === 'unit')!.files).toBe(3);
+    expect(h.calls.some((c) => c.op === 'cancel')).toBe(true);
+  });
+
+  it('a pass whose digest differs from the baseline is not a pass: taken back and run here', async () => {
+    const h = harness({ perFile: (f) => passOf(f, '8'.repeat(64)) });
+    const r = await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.borrowed!.lanes.unit!.counted).toEqual([]);
+    expect(unitRuns(h.f)).toHaveLength(2);
+  });
+
+  it('compare-only (the one in ten): every file runs here, and the helper\'s results are compared by digest', async () => {
+    const local = parseVitestJson(vitestReportMany({ 'tests/unit/p.test.ts': ['passed'] }), P.runDir, { outcomeDigest: true }).files.get('tests/unit/p.test.ts')!.outcomeDigest!;
+    const h = harness({ assigned: 'compare-only', perFile: (f) => passOf(f, local) });
+    const r = await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(unitRuns(h.f)).toHaveLength(1);
+    expect(unitRuns(h.f)[0].some((a) => a.startsWith('--exclude='))).toBe(false);
+    expect(r.borrowed!.assigned).toBe('compare-only');
+    expect(r.borrowed!.lanes.unit!.counted).toEqual([]);
+    expect(r.borrowed!.lanes.unit!.agreed.length).toBeGreaterThan(0);
+    expect(r.record.borrowed?.assigned).toBe('compare-only');
+  });
+
+  it('a main verify, and a change that edits the check fixtures, never ask the helper', async () => {
+    const m = harness({ perFile: (f) => passOf(f) });
+    await runVerify(input({ kind: 'main', pr: 0, baseSha: HEAD, isolation: undefined, borrowed: BORROWED }), m.f.seams);
+    expect(m.calls).toEqual([]);
+    const h = harness({ perFile: (f) => passOf(f) });
+    h.f.seams.git = ((orig) => async (args, opts) => (args[0] === 'diff' ? { status: 0, stdout: 'M\ttests/fixtures/borrowed-canary/canary-pass.test.ts\n', stderr: '', timedOut: false } : orig(args, opts)))(h.f.seams.git);
+    await runVerify(input({ borrowed: BORROWED }), h.f.seams);
+    expect(h.calls).toEqual([]);
+  });
+});
+
+describe('runVerify with a borrowed helper: the mass rule is the whole verify\'s', () => {
+  it('a counting lane that ended early gives its passes back when a later lane takes the verify past five disagreements', async () => {
+    const DIG = '7'.repeat(64);
+    const BLOB = '9'.repeat(40);
+    const UNIT3: Record<string, string[]> = { 'tests/unit/a.test.ts': ['passed'], 'tests/unit/p.test.ts': ['passed'], 'tests/unit/q.test.ts': ['passed'] };
+    const INT: Record<string, string[]> = Object.fromEntries(Array.from({ length: 24 }, (_, i) => [`tests/integration/i${i}.test.ts`, ['passed']]));
+    const BORROWED = { port: 4040, token: '1'.repeat(32), baselines: [{ commit: BASE, finishedAt: '2026-11-20T00:00:00.000Z', machineId: 'm_studio', files: { 'tests/unit/p.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string], 'tests/unit/q.test.ts': [1, 0, 0, 0, DIG] as [number, number, number, number, string] } }] };
+    const gitOverride = (args: string[]): GitResult | null => (args[0] === 'ls-tree' && args[1] === '-r' && args[2] !== '--name-only'
+      ? { status: 0, stdout: `100644 blob ${BLOB}\ttests/unit/p.test.ts\n100644 blob ${BLOB}\ttests/unit/q.test.ts\n`, stderr: '', timedOut: false } : null);
+    const f = fake({ laneFiles: { unit: UNIT3, integration: INT }, gitOverride });
+    const lane = { state: 'counting', mayCount: true, proven: true, share: 0.5, uncovered: [] as string[] };
+    const canary = BORROWED_CANARY_FILES.map((x) => ({ file: x, tests: 1, ...BORROWED_CANARY[x], ms: 1, digest: DIG, failedTests: [] }));
+    const slices: Array<{ id: string; files: string[]; use: string; lane: string }> = [];
+    let n = 0;
+    f.seams.borrowedProxy = () => async (b) => {
+      if (b.op === 'plan') return { ok: true, helper: 'm_laptop', mode: 'count', assigned: 'counting', answered: true, lanes: { unit: { ...lane }, integration: { ...lane, mayCount: false, state: 'practice' }, e2e: { ...lane, proven: false } }, spotOneIn: 1_000_000, learned: [], throughput: 100, prepMs: 0, workersFree: 4, workersMax: 4 };
+      if (b.op === 'slice') { const id = (++n).toString(16).padStart(32, '0'); slices.push({ id, files: b.files as string[], use: b.use as string, lane: b.lane as string }); return { ok: true, attemptId: id, state: 'queued' }; }
+      if (b.op === 'status') {
+        return { ok: true, tree: { state: 'ready', treeHash: TREE }, results: slices.map((s, i) => ({
+          seq: i + 1, attemptId: s.id, valid: true, state: 'done', treeHash: TREE,
+          slice: s.use === 'check' ? { exitCode: 1, unhandledErrors: 1, collected: true } : { exitCode: 0, unhandledErrors: 0, collected: true },
+          // Unit: a pass with the baseline's digest. Integration (compare): passes whose digest differs from this machine's.
+          perFile: s.use === 'check' ? canary : s.files.map((x) => ({ file: x, tests: 1, passed: 1, failed: 0, skipped: 0, todo: 0, ms: 5, digest: s.lane === 'unit' ? DIG : '8'.repeat(64), failedTests: [] })),
+        })) };
+      }
+      return { ok: true };
+    };
+    f.seams.borrowedSleep = () => new Promise<void>((r) => setImmediate(r));
+    let counted!: () => void;
+    const unitCounted = new Promise<void>((r) => { counted = r; });
+    const log = f.seams.log;
+    f.seams.log = (e) => { if (e.event === 'borrowed-counted') counted(); log(e); };
+    const realExec = f.seams.exec;
+    f.seams.exec = async (command, args, opts) => {
+      const unit = args.includes('vitest.config.ts');
+      const integration = args.some((a) => a.includes('integration')) && !args.some((a) => a.includes('-rerun-'));
+      // The unit lane waits for its counting slice; the integration lane ends only after the unit lane admitted its passes.
+      if (unit && !args.some((a) => a.includes('-final') || a.includes('-back') || a.includes('-rerun-'))) {
+        for (let i = 0; i < 200 && !slices.some((s) => s.use === 'count'); i++) await new Promise<void>((r) => setTimeout(r, 1));
+        for (let i = 0; i < 20; i++) await new Promise<void>((r) => setImmediate(r));
+      }
+      if (integration) await Promise.race([unitCounted, new Promise<void>((r) => setTimeout(r, 2_000))]);
+      return realExec(command, args, opts);
+    };
+    const r = await runVerify(input({ borrowed: BORROWED }), f.seams);
+    if (r.kind !== 'record') throw new Error(r.kind);
+    expect(r.borrowed!.disagreements).toBeGreaterThan(5);
+    // The unit lane's passes were taken back after every lane ended, and run here in a final pass.
+    expect(f.execCalls.some((c) => c.args.some((a) => a.endsWith('/unit-final.json')))).toBe(true);
+    expect(r.borrowed!.lanes.unit!.counted).toEqual([]);
+    expect(r.borrowed!.lanes.unit!.finalLocalPass).toBe(true);
+    expect(f.logs.some((e) => e.event === 'borrowed-final-local-pass' && e.after === 'all-lanes')).toBe(true);
+    expect(r.record.lanes.find((l) => l.name === 'unit')!.files).toBe(3);
+  });
 });

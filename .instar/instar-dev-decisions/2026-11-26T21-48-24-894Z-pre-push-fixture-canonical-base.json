@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T21:48:24.894Z",
+  "slug": "pre-push-fixture-canonical-base",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/pre-push-fixture-guard.mjs"
+    ],
+    "addedLines": 4,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

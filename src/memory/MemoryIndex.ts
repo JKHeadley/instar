@@ -17,6 +17,7 @@
  *   - Highlight output uses pre-escaped text
  */
 
+import { literalFtsTerms, quoteFtsTerm } from './ftsQueryTerms.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -49,18 +50,6 @@ const DEFAULT_CONFIG: MemorySearchConfig = {
 };
 
 const SCHEMA_VERSION = '1';
-
-/**
- * Strip FTS5 special syntax characters from a query.
- * Prevents query manipulation (AND, OR, NOT, NEAR, *, column filters).
- */
-function sanitizeQuery(query: string): string {
-  return query
-    .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-    .replace(/[*:"^{}().]/g, '')    // Strip FTS5 special chars including period (column separator)
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 /**
  * HTML-escape text for safe output.
@@ -305,7 +294,7 @@ export class MemoryIndex {
   search(query: string, options?: { limit?: number; source?: string }): MemorySearchResult[] {
     if (!this.db) throw new Error('Database not open. Call open() first.');
 
-    const sanitized = sanitizeQuery(query);
+    const sanitized = literalFtsTerms(query).map(quoteFtsTerm).join(' ');
     if (!sanitized) return [];
 
     const limit = options?.limit ?? 10;

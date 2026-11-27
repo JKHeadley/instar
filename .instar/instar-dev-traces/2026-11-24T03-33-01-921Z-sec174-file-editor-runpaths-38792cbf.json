@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "sec174-file-editor-runpaths",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-24T03:33:01.921Z",
+  "artifactPath": "upgrades/side-effects/sec174-file-editor-runpaths.md",
+  "artifactSha256": "766de1e3a8035ef7b6f9d84b7ec218271694734cc36377ae3578e42e0bf3611f",
+  "coveredFiles": [
+    "docs/specs/sec174-file-editor-runpaths.eli16.md",
+    "src/server/fileRoutes.ts",
+    "tests/e2e/file-viewer-e2e.test.ts",
+    "tests/unit/sec174-file-editor-runpaths.test.ts",
+    "tests/unit/sec178-file-editor-backups-fence.test.ts",
+    "upgrades/next/sec174-file-editor-runpaths.md",
+    "upgrades/side-effects/sec174-file-editor-runpaths.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds one never-editable prefix to the file editor fence; no new route, state or loop.",
+  "eli16Path": "docs/specs/sec174-file-editor-runpaths.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec174-file-editor-runpaths.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}

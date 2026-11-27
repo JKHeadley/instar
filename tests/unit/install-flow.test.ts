@@ -375,10 +375,10 @@ describe('door sign-in step', () => {
     now: () => 0,
     ...overrides,
   } as InstallEnv);
-  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting']) => {
+  const run = async (env: InstallEnv, awaiting?: InstallProgress['awaiting'], forApp = false) => {
     const progress = newInstallProgress('do-door-sign-in');
     if (awaiting) progress.awaiting = awaiting;
-    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code' }, progress);
+    return buildInstallHandlers(env)['door-sign-in']!({ door: 'claude-code', forApp }, progress);
   };
 
   it('never signs in over a login it can see or can\'t judge', async () => {
@@ -387,6 +387,17 @@ describe('door sign-in step', () => {
     expect(await run(stub({ proveSignedIn: async () => 'signed-in', startDetached }))).toEqual({ kind: 'done' });
     expect((await run(stub({ proveSignedIn: async () => 'unknown', startDetached }))).kind).toBe('done');
     expect(started).toEqual([]);
+  });
+
+  it('pauses app setup when the selected sign-in cannot be verified', async () => {
+    const startDetached = () => { throw new Error('an unknown sign-in must not be replaced'); };
+    const unknown = stub({ proveSignedIn: async () => 'unknown', startDetached });
+    const signedIn = stub({ proveSignedIn: async () => 'signed-in', startDetached });
+    expect(await run(unknown, undefined, true)).toMatchObject({ kind: 'failed', message: expect.stringContaining("Couldn't verify") });
+    const openLogin = { state: 'do-door-sign-in', instruction: '', loginPid: 111, loginStamp: 'stamp-a' };
+    expect(await run(unknown, openLogin, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
+    expect(await run(signedIn, undefined, true)).toEqual({ kind: 'done' });
+    expect(await run(stub({}), undefined, true)).toMatchObject({ kind: 'awaiting-person', loginPid: 111 });
   });
 
   it('with no browser, sends the person to their terminal and starts nothing', async () => {

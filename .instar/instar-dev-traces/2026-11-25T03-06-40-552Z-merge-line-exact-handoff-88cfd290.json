@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "merge-line-exact-handoff",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-25T03:06:40.552Z",
+  "artifactPath": "upgrades/side-effects/merge-line-exact-handoff.md",
+  "artifactSha256": "80ff7350b418db99e2efe8e593b37c63c0c1b01892cae18bdc0821c3a1e8d95c",
+  "coveredFiles": [
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "tests/unit/green-pr-local-floor.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded read retry preserves existing merge authority and exact lease and head checks.",
+  "eli16Path": "docs/specs/merge-line-exact-handoff.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/merge-line-exact-handoff.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

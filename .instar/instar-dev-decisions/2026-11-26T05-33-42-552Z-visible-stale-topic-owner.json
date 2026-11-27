@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-26T05:33:42.552Z",
+  "slug": "visible-stale-topic-owner",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/QueueDrainLoop.ts",
+      "src/core/SessionRouter.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One record-only observation per ownership epoch after a user message. No notification, scheduling, new retries, or feedback loop."
+  },
+  "verdict": "pass"
+}
