@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "supervisor-grace-ceiling-reanchor",
+  "sessionId": "85b75b50-7b57-4497-9f82-c664d5533ee7",
+  "timestamp": "2026-11-21T13:03:15.583Z",
+  "artifactPath": "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md",
+  "artifactSha256": "0f0e6b2d0a985ab3d931ee299b3fe1d694437db7aa87bf2f8ae2489c55b0b4f9",
+  "coveredFiles": [
+    "site/src/content/docs/features/routing-spend-control-room.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only follow-up to the Tier-1 supervisor grace fix: documents the gemini-payg-reconcile default job so the docs-coverage job floor passes; no runtime surface, a revert fully undoes it",
+  "eli16Path": "docs/specs/supervisor-grace-ceiling-reanchor.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/supervisor-grace-ceiling-reanchor.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

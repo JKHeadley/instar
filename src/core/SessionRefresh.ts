@@ -244,9 +244,12 @@ export type RefreshFailureCode =
   | 'refresh_in_progress'
   // swap-continuity-antithrash §4.5 — one spelling everywhere: the wire code
   // and the ledger reason are BOTH the hyphenated `session-busy`.
-  | 'session-busy';
+  | 'session-busy'
+  | 'refresh_intent_changed';
 
 export interface RefreshOptions {
+  /** Internal consistency veto only; never accepted from request JSON and never skips work/rate gates. */
+  beforeKill?: () => boolean;
   sessionName: string;
   followUpPrompt?: string;
   reason?: string;
@@ -599,6 +602,14 @@ export class SessionRefresh {
             .filter((s): s is string => !!s && s.length > 0)
             .join('\n\n');
         }
+      }
+
+      // The work gate can await. A manual balance selection must still name the same
+      // source and eligible target at the last synchronous boundary before the kill.
+      if (opts.beforeKill) {
+        let current = false;
+        try { current = opts.beforeKill(); } catch { /* @silent-fallback-ok: an unreadable intent refuses refresh */ }
+        if (!current) return { ok: false, code: 'refresh_intent_changed', message: 'The account move changed while it was waiting; no session was stopped.' };
       }
 
       // ── rate guard ───────────────────────────────────────────────────

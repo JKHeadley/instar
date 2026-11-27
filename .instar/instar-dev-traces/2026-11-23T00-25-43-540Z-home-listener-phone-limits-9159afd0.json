@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "home-listener-phone-limits",
+  "sessionId": "5c1395f2-e536-4677-8482-5e92ebac7455",
+  "timestamp": "2026-11-23T00:25:43.540Z",
+  "artifactPath": "upgrades/side-effects/home-listener-phone-limits.md",
+  "artifactSha256": "684c31d8f1c76598eaa2a60bd3819f5a1de7114346f640b408f62f22b512e5aa",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T20-54-56-598Z-home-listener-phone-limits.json",
+    ".instar/instar-dev-traces/2026-11-21T20-53-57-396Z-home-listener-phone-limits-b6c25f22.json",
+    "docs/specs/home-listener-phone-limits.eli16.md",
+    "docs/specs/identity-security-piece3e-same-network-first-phone.md",
+    "src/data/awareness/same-network-first-phone.md",
+    "src/server/phoneSetupRoutes.ts",
+    "src/server/sameNetworkListener.ts",
+    "src/server/sameNetworkRefusals.ts",
+    "tests/e2e/same-network-first-phone-alive.test.ts",
+    "tests/integration/same-network-refusals.test.ts",
+    "tests/unit/same-network-home-limits.test.ts",
+    "tests/unit/same-network-wsl-listener.test.ts",
+    "upgrades/next/home-listener-phone-limits.md",
+    "upgrades/side-effects/home-listener-phone-limits.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Current-main merge repair retains main comment; existing resource-bound and signal-only log behavior unchanged and fully reversible.",
+  "eli16Path": "docs/specs/home-listener-phone-limits.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/home-listener-phone-limits.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  }
+}

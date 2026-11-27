@@ -37,6 +37,12 @@ describe('the three doors', () => {
     // the browser-device chat page read "No conversations yet" on a real agent with hundreds).
     expect(doorHref('conversations', { chats: true })).toBe('#/work/conversations');
     expect(doorHref('conversations', { chats: false })).toBe('#/work/conversations');
+    // The hierarchy switched off (never released here): the door opens the working Chats page instead (2026-11-21).
+    expect(doorHref('conversations', { chats: true, graph: false })).toBe('#/work/chats');
+    expect(doorHref('conversations', { chats: false, graph: false })).toBe('#/work/conversations'); // Chats off too: unchanged
+    expect(doorHref('conversations', { chats: true, graph: null })).toBe('#/work/conversations'); // unknown keeps the hierarchy
+    expect(doorHref('conversations', { chats: true, graph: null, preferChats: true })).toBe('#/work/chats');
+    expect(doorHref('conversations', { chats: false, preferChats: true })).toBe('#/work/conversations');
     expect(doorHref('agent')).toBe('#/agent');
   });
 
@@ -172,7 +178,7 @@ describe('the Needs-you strip', () => {
     expect(m.line).toContain('1 of 2');
     expect(m.line).toContain('1 more');
     expect(m.line).toContain('Could not check accounts.');
-    expect(m.badge).toBe('2+?');
+    expect(m.badge).toBe('2+');
   });
 
   it('stays while loading, and when the read failed or answered in an unreadable shape', () => {
@@ -185,7 +191,7 @@ describe('the Needs-you strip', () => {
     const m = stripModel(answer({ complete: false, couldNotCheck: ['the work board', 'accounts and sign-ins'] }));
     expect(m.show).toBe(true);
     expect(m.incomplete).toBe(true);
-    expect(m.badge).toBe('0+?');
+    expect(m.badge).toBe('0+');
     expect(m.line).toBe('Could not check the work board and accounts and sign-ins.');
   });
 
@@ -194,7 +200,7 @@ describe('the Needs-you strip', () => {
     expect(m.rows.map((r) => r.title)).toEqual(['a', 'b', 'c']);
     expect(m.more).toBe(2);
     expect(m.state).toBe('bad');
-    expect(m.title).toBe('Needs you · 5');
+    expect(m.title).toBe('Needs you');
     expect(m.badge).toBe('5');
   });
 });

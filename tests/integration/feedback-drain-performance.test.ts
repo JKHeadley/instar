@@ -14,7 +14,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(di
 describe('Feedback Factory 150k reference envelope', () => {
   it('processes the bounded 500-row slice under the 90s / 512MiB envelope and exposes lag', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-150k-')); dirs.push(dir);
-    const evidence = await new Promise<{ processed: number; durationMs: number; rssBytes: number; sourceLagBytes: number; projectionLag: number; queued: number; completed: number; wouldCreate: number; completedWithinTicks: number | null; firstClaimedWorkKey: string | null; authoritativeReadBack: boolean; tickResult: string }>((resolve, reject) => {
+    const evidence = await new Promise<{ processed: number; clusteringMs: number; durationMs: number; rssBytes: number; sourceLagBytes: number; projectionLag: number; queued: number; completed: number; wouldCreate: number; completedWithinTicks: number | null; firstClaimedWorkKey: string | null; authoritativeReadBack: boolean; tickResult: string }>((resolve, reject) => {
       const child = spawn(viteNode, [worker, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = ''; let stderr = '';
       child.stdout.on('data', (chunk) => { stdout += String(chunk); });
@@ -26,6 +26,7 @@ describe('Feedback Factory 150k reference envelope', () => {
       });
     });
     expect(evidence.processed).toBe(500);
+    expect(evidence.clusteringMs).toBeLessThan(45_000);
     expect(evidence.durationMs).toBeLessThan(90_000);
     expect(evidence.rssBytes).toBeLessThan(512 * 1024 * 1024);
     expect(evidence.projectionLag).toBeGreaterThanOrEqual(149_500);

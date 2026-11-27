@@ -9,9 +9,10 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { PendingRelayStore } from '../pending-relay-store.js';
-import { legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
+import { isBootBeaconBody, legacyAttributionValid, snapshotLegacyOrigin } from './OriginLegacy.js';
 import { receiptMessageIds, suppressionReason } from './OriginOperationOutcome.js';
 import { readPolicyVerdict } from './OriginPolicyVerdict.js';
+import { ORIGIN_LEASE_REFUSAL_REASONS, ORIGIN_LOCAL_REFUSAL_REASONS } from './OriginEgressCapacity.js';
 import type { OriginLegacySnapshot } from './OriginLegacy.js';
 import { advanceBrowserRecovery, type BrowserRecoveryState, type BrowserRecoveryAction, type BrowserRecoveryDecision } from './OriginBrowserRecovery.js';
 import type {
@@ -93,6 +94,24 @@ function suppressionDetail(detail: Record<string, unknown>): Record<string, unkn
     out[key] = typeof value === 'string' && key !== 'text' && value.length > 256 ? `${value.slice(0, 200)}…[cut]` : value;
   }
   return out;
+}
+export type RetirementReason = 'stale-hold-handed-back' | 'retired-by-operator';
+export type RetireResult = { retired: true; priorLastAttempt: string | null; uncertain: boolean; ageMs: number; topicId: string | null; producerKind: string | null }
+  | { retired: false; refusal: 'unknown-operation' | 'already-retired' | 'not-held' | 'in-flight' | 'uncertain' | 'store-unavailable' };
+export interface RetirementRow { operationId: string; retiredAt: number; reason: RetirementReason; actor: string; note: string | null;
+  supersededBy: string | null; priorState: string; priorHoldReason: string | null; priorLastAttempt: string | null; cause: 'parked-at-startup' | 'queued-unsent' | 'held-lease' | null;
+  ageMs: number; topicId: string | null; reportedAt: number | null; reportAttempts: number; reportOutcome: string | null }
+function retirementRow(row: Record<string, unknown>): RetirementRow {
+  return { operationId: String(row.operation_id), retiredAt: Number(row.retired_at), reason: row.reason as RetirementReason, actor: String(row.actor),
+    note: (row.note as string | null) ?? null, supersededBy: (row.superseded_by as string | null) ?? null, priorState: String(row.prior_state),
+    priorHoldReason: (row.prior_hold_reason as string | null) ?? null, priorLastAttempt: (row.prior_last_attempt as string | null) ?? null,
+    cause: (row.cause as RetirementRow['cause']) ?? null, ageMs: Number(row.age_ms), topicId: (row.topic_id as string | null) ?? null,
+    reportedAt: (row.reported_at as number | null) ?? null, reportAttempts: Number(row.report_attempts ?? 0), reportOutcome: (row.report_outcome as string | null) ?? null };
+}
+/** The earliest authored time a row carries; a supersede chain never resets it. */
+function firstAuthored(op: { first_prepared_at?: number | null; prepared_at: number }, detail: Record<string, unknown>, now: number): number {
+  const values = [op.first_prepared_at, detail.authoredPreparedAt, op.prepared_at].filter((v): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0 && v <= now);
+  return values.length ? Math.min(...values) : now;
 }
 type DbAttempt = { attempt_id: string; child_id: string; materialization_id: string; claim_token: string; owner_boot_id: string; phase: string; outcome: string | null; receipt_json: string | null; created_at: number; resolved_at: number | null };
 
@@ -247,6 +266,18 @@ export class OriginStoreBackend {
       try { this.db.exec('ALTER TABLE telegram_origin_operations ADD COLUMN policy_verdict_json TEXT'); }
       catch (error) { if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error))) throw error; }
     }
+    // held-and-startup-parked-send-release §3 — one audit row per retired held or
+    // startup-parked reply (automatic staleness hand-back or operator retire). Additive:
+    // an older reader never opens it.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS telegram_origin_retirements (
+        operation_id TEXT PRIMARY KEY, retired_at INTEGER NOT NULL, reason TEXT NOT NULL, actor TEXT NOT NULL,
+        note TEXT, superseded_by TEXT, prior_state TEXT NOT NULL, prior_hold_reason TEXT, prior_last_attempt TEXT,
+        cause TEXT, age_ms INTEGER NOT NULL, topic_id TEXT, reported_at INTEGER, report_attempts INTEGER NOT NULL DEFAULT 0,
+        next_report_at INTEGER NOT NULL DEFAULT 0, report_outcome TEXT);
+      CREATE INDEX IF NOT EXISTS telegram_origin_retirements_age ON telegram_origin_retirements(retired_at);
+      CREATE INDEX IF NOT EXISTS telegram_origin_retirements_unreported ON telegram_origin_retirements(next_report_at,retired_at) WHERE reported_at IS NULL;
+    `);
   }
   /** native-conversation-base §3a item 5/8 — a keyed operation event (`<operationId>:late-line`,
    * `<operationId>:session-line`, …). True when this call recorded it; false when it already existed. */
@@ -489,8 +520,8 @@ export class OriginStoreBackend {
   }
   /** Reclassify the existing queue row inside the admission transaction. No
    * second executable copy, reset budget, or stale-snapshot takeover exists. */
-  importLegacy(input: { snapshot: OriginLegacySnapshot; admission: OriginAdmission }): boolean {
-    return this.db.transaction(() => {
+  importLegacy(input: { snapshot: OriginLegacySnapshot; admission: OriginAdmission; staleBefore?: number }): boolean | 'stale-retired' {
+    return this.db.transaction((): boolean | 'stale-retired' => {
       const row = this.queue.findByDeliveryId(input.snapshot.deliveryId);
       if (!row || row.entry_kind !== 'legacy' || !['queued', 'claimed', 'delivered-ambiguous'].includes(row.state)) return false;
       const snapshot = snapshotLegacyOrigin(row);
@@ -502,6 +533,33 @@ export class OriginStoreBackend {
         !legacyAttributionValid(record)) fail('legacy-origin-required');
       this.admitInternal(input.admission, false, snapshot);
       const terminal = !snapshot.replaySafe || snapshot.attempts >= input.admission.maxAttempts;
+      // held-and-startup-parked-send-release §2(a) — a provably unsent row older than the
+      // staleness bound is not queued: it is retired and handed back to its author.
+      if (!terminal && input.staleBefore !== undefined && snapshot.preparedAt < input.staleBefore) {
+        const child = input.admission.children[0];
+        this.db.prepare('UPDATE entries SET attempts=?,next_attempt_at=? WHERE delivery_id=?').run(snapshot.attempts, snapshot.nextAttemptAt, child.deliveryId);
+        this.event(input.admission.operationId, 'operation:imported-legacy');
+        // The cause names what the row proves: the boot beacon answered (server starting), or another
+        // pre-dispatch refusal (401/404, config unreadable) queued it before any send.
+        const cause = row.http_code === 503 && isBootBeaconBody(row.error_body) ? 'parked-at-startup' : 'queued-unsent';
+        const retired = this.retireHeldOperation({ operationId: input.admission.operationId, reason: 'stale-hold-handed-back', actor: 'system:stale-bound',
+          cause, now: Date.now() });
+        if (!retired.retired) {
+          // Never a send and never a retry loop: a refused retirement takes the existing terminal
+          // ending (never attempted again, outcome read as unknown) and the import moves on.
+          this.db.prepare("UPDATE entries SET state='delivered-ambiguous',claimed_by=NULL WHERE delivery_id=?").run(child.deliveryId);
+          this.db.prepare("UPDATE telegram_origin_children SET state='outcome-unknown' WHERE child_id=?").run(child.childId);
+          this.event(child.childId, 'child:outcome-unknown');
+          this.refreshOperation(input.admission.operationId);
+          this.event(`${input.admission.operationId}:legacy-stale-retire-refused`, 'legacy-stale-retire-refused');
+          return true;
+        }
+        // The detail carries the authored text for the author's text read.
+        this.db.prepare('UPDATE telegram_origin_operations SET hold_detail_json=json_set(hold_detail_json,\'$.text\',?,\'$.neverAttempted\',json(\'true\')) WHERE operation_id=?')
+          .run(snapshot.text, input.admission.operationId);
+        return 'stale-retired';
+      }
+      if (terminal && snapshot.attempts > 0 && row.http_code === 503) this.event(`${input.admission.operationId}:legacy-503-unproved`, 'legacy-503-unproved');
       for (const child of input.admission.children) {
         this.db.prepare('UPDATE entries SET attempts=?,next_attempt_at=? WHERE delivery_id=?').run(snapshot.attempts, snapshot.nextAttemptAt, child.deliveryId);
         if (terminal) {
@@ -770,6 +828,7 @@ export class OriginStoreBackend {
       const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id);
       if (active) return false;
       this.admitInternal(input.admission, false);
+      if ((replacementState === 'held' && input.holdReason === 'lease-not-held') || op.hold_reason === 'lease-not-held' || this.wasLeaseHeld(op.operation_id)) this.markLeaseHeld(input.admission.operationId);
       if (replacementState === 'held') {
         this.db.prepare("UPDATE telegram_origin_operations SET state='held',hold_reason=?,hold_detail_json=? WHERE operation_id=?").run(input.holdReason, holdDetailJson, input.admission.operationId);
         this.event(`${input.admission.operationId}:held`, 'operation:held');
@@ -864,7 +923,7 @@ export class OriginStoreBackend {
     if (input.receiptJson !== undefined) json(input.receiptJson, 64 * 1024);
     if ((input.outcome === 'accepted' || input.outcome === 'scheduled') && !input.receiptJson) return { recorded: false, reason: 'receipt-required' };
     if (input.nextAttemptAt !== undefined && input.outcome !== 'known-failed') return { recorded: false, reason: 'invalid-transition' };
-    if (input.localRefusal && (input.outcome !== 'known-failed' || input.reason !== 'credential-capacity-unavailable' || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
+    if (input.localRefusal && (input.outcome !== 'known-failed' || !ORIGIN_LOCAL_REFUSAL_REASONS.includes(input.reason ?? '') || input.receiptJson !== undefined)) return { recorded: false, reason: 'invalid-transition' };
     const now = input.now ?? Date.now();
     return this.db.transaction((): OutcomeWriteResult => {
       const child = this.child(input.childId); if (!child) return { recorded: false, reason: 'stale-fence' };
@@ -888,6 +947,13 @@ export class OriginStoreBackend {
       if (input.localRefusal) {
         this.db.prepare('UPDATE entries SET attempts=MAX(0,attempts-1) WHERE delivery_id=?').run(child.delivery_id);
         this.event(attempt.attempt_id, 'attempt:local-refusal-not-charged');
+        // lease-freshness-lapse-retry — a replay refused at the boundary for the lease never reached the network, so
+        // the review-schedule row written before it (30 s rung) must not hold the reply either: it moves to the same
+        // next attempt, keeping its attempt count. Only an earlier-dated row is moved; a later one is left alone.
+        if (retry && ORIGIN_LEASE_REFUSAL_REASONS.includes(input.reason ?? '')) {
+          this.db.prepare('UPDATE telegram_origin_recovery_schedule SET next_attempt_at=? WHERE operation_id=? AND next_attempt_at>?')
+            .run(input.nextAttemptAt!, child.operation_id, input.nextAttemptAt!);
+        }
       }
       if (!retry) this.event(`${child.child_id}:${input.outcome}`, `child:${input.outcome}`);
       this.refreshOperation(op.operation_id);
@@ -964,6 +1030,10 @@ export class OriginStoreBackend {
       if (input.state === 'expired') return this.expireOperation(input.operationId, input.now ?? Date.now());
       if (['accepted', 'expired', 'outcome-unknown', 'partial'].includes(op.state)) return false;
       if (input.state === 'admitted' && op.state !== 'held') return false;
+      // held-and-startup-parked-send-release §3 — no resurrection: a retired (suppressed) or
+      // superseded row is never held again, so a recovery pass that read it before the
+      // retirement cannot re-hold it with a send marker and then send it.
+      if (input.state === 'held' && (op.state === 'suppressed' || op.state === 'superseded')) return false;
       // 3g item 2 — a reply handed back with an advisory is sent only by its author's replacement.
       if (input.state === 'admitted' && verdictClass(op.policy_verdict_json) === 'advisory') return false;
       const active = this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(input.operationId);
@@ -977,6 +1047,7 @@ export class OriginStoreBackend {
         if (touched) return false;
         this.db.prepare('UPDATE telegram_origin_operations SET policy_verdict_json=? WHERE operation_id=?').run(verdictJson, input.operationId);
       }
+      if (input.state === 'held' && (input.holdReason ?? op.hold_reason) === 'lease-not-held') this.markLeaseHeld(input.operationId);
       if (input.state === 'held') {
         // A re-hold without a named reason keeps the reason already recorded.
         this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=coalesce(?,hold_reason),hold_detail_json=CASE WHEN ? IS NULL THEN hold_detail_json ELSE ? END WHERE operation_id=?')
@@ -1138,6 +1209,158 @@ export class OriginStoreBackend {
       WHERE o.kind='ordinary' AND o.state='held' AND o.hold_reason='lease-not-held' AND CAST(d.topic_id AS TEXT)=?
         AND json_extract(o.hold_detail_json,'$.ownerVerdict') IS NULL AND ${NOT_ADVISORY}`).get(String(topicId)) as { n: number };
     return Number(row?.n ?? 0);
+  }
+  /** held-and-startup-parked-send-release §3 — retire one held or startup-parked reply so it
+   * is never sent: `suppressed` with the reason, its text kept, its queue entries dead-lettered,
+   * and one audit row. Refused (nothing changes) unless the row is plainly in custody: held (or
+   * admitted after a lease hold / a startup import), every child still queued, nothing claimed,
+   * no dispatch left unresolved, and not a forward whose last attempt may have arrived (for either
+   * reason: the holder may still deliver its own copy). */
+  retireHeldOperation(input: { operationId: string; reason: RetirementReason; actor: string;
+    note?: string | null; supersededBy?: string | null; cause?: 'parked-at-startup' | 'queued-unsent' | 'held-lease' | null; now?: number }): RetireResult {
+    id(input.operationId); id(input.actor);
+    if (input.reason !== 'stale-hold-handed-back' && input.reason !== 'retired-by-operator') fail('invalid-retire-reason');
+    if (input.note != null && (typeof input.note !== 'string' || input.note.length > 500)) fail('invalid-retire-note');
+    if (input.supersededBy != null) id(input.supersededBy);
+    const now = input.now ?? Date.now();
+    return this.db.transaction((): RetireResult => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary') return { retired: false, refusal: 'unknown-operation' };
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_retirements WHERE operation_id=?').get(op.operation_id)) return { retired: false, refusal: 'already-retired' };
+      const { producerKind, topicId } = this.recordFacts(op.origin_id);
+      const leaseMarked = !!this.db.prepare('SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric=?').get(`${op.operation_id}:was-lease-held`, 'was-lease-held');
+      const custody = op.state === 'held' || (op.state === 'admitted' && (producerKind === 'imported-legacy' || leaseMarked));
+      if (!custody || op.policy_verdict_json) return { retired: false, refusal: 'not-held' };
+      const children = this.db.prepare('SELECT * FROM telegram_origin_children WHERE operation_id=?').all(op.operation_id) as DbChild[];
+      if (!children.length || children.some(child => child.state !== 'queued')) return { retired: false, refusal: 'in-flight' };
+      if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return { retired: false, refusal: 'in-flight' };
+      if (this.db.prepare(`SELECT 1 FROM telegram_origin_attempts a JOIN telegram_origin_children c ON c.child_id=a.child_id WHERE c.operation_id=?
+        AND a.phase='dispatched' AND (a.outcome IS NULL OR a.outcome IN ('outcome-unknown','accepted'))`).get(op.operation_id)) return { retired: false, refusal: 'in-flight' };
+      const detail = op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {};
+      const priorLastAttempt = typeof detail.lastAttempt === 'string' ? detail.lastAttempt : null;
+      const uncertain = priorLastAttempt === 'outcome-unknown' || priorLastAttempt === 'local-sent' || (!!detail.ownerUnstated && typeof detail.ownerUnstated === 'object');
+      // A forward the holder may still deliver (or may have delivered) is never retired here: retiring
+      // this copy could not stop the holder's, and would hide a later delivery.
+      if (uncertain) return { retired: false, refusal: 'uncertain' };
+      const ageMs = Math.max(0, now - firstAuthored(op, detail, now));
+      // An imported row's cause is what its queue entry proves (beacon 503 → parked at startup).
+      let cause = input.cause ?? null;
+      if (producerKind === 'imported-legacy' && cause !== null && cause !== 'held-lease') {
+        const entry = this.db.prepare('SELECT http_code,error_body FROM entries WHERE delivery_id=?').get(children[0].delivery_id) as { http_code: number | null; error_body: string | null } | undefined;
+        cause = entry && entry.http_code === 503 && isBootBeaconBody(entry.error_body) ? 'parked-at-startup' : 'queued-unsent';
+      }
+      const next = { ...detail, retiredAt: now, retiredBy: input.actor, priorState: op.state, priorHoldReason: op.hold_reason ?? null,
+        priorLastAttempt, ...(cause ? { retireCause: cause } : {}), ...(input.note ? { retireNote: input.note } : {}),
+        ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}) };
+      const nextJson = JSON.stringify(suppressionDetail(next)); json(nextJson, 64 * 1024);
+      this.db.prepare("UPDATE telegram_origin_operations SET state='suppressed',hold_reason=?,hold_detail_json=? WHERE operation_id=?").run(input.reason, nextJson, op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+      this.db.prepare("UPDATE entries SET state='dead-letter',claimed_by=NULL,next_attempt_at=NULL,error_body=? WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'")
+        .run(`retired: ${input.reason}`, op.operation_id);
+      this.insertRetirement({ operationId: op.operation_id, now, reason: input.reason, actor: input.actor, note: input.note ?? null, supersededBy: input.supersededBy ?? null,
+        priorState: op.state, priorHoldReason: op.hold_reason ?? null, priorLastAttempt, cause, ageMs, topicId });
+      return { retired: true, priorLastAttempt, uncertain, ageMs, topicId, producerKind };
+    }).immediate();
+  }
+  /** §4 — the machine that sends to Telegram retired a reply this machine forwarded (its receipt
+   * answered `owner-ended` with a retirement reason, recorded `suppressed-at-holder`). One audit row
+   * here too, so the author on THIS machine is told through the same report pass. Idempotent. */
+  recordHolderRetirement(input: { operationId: string; reason: RetirementReason; holderMachineId: string; detail?: Record<string, unknown> | null; now?: number }): boolean {
+    id(input.operationId); id(input.holderMachineId);
+    if (input.reason !== 'stale-hold-handed-back' && input.reason !== 'retired-by-operator') fail('invalid-retire-reason');
+    const now = input.now ?? Date.now();
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary') return false;
+      if (this.db.prepare('SELECT 1 FROM telegram_origin_retirements WHERE operation_id=?').get(op.operation_id)) return false;
+      const detail = op.hold_detail_json ? JSON.parse(op.hold_detail_json) as Record<string, unknown> : {};
+      // One transaction with the `suppressed-at-holder` ending, so a crash can never leave the
+      // ending without the row that tells the author.
+      if (op.state === 'held' || op.state === 'admitted') {
+        if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return false;
+        // The holder retires only a copy it never dispatched, so its answer proves this reply was not
+        // delivered there: the author's earlier "unknown" attempt is settled by it.
+        const ending = suppressionDetail({ ...detail, ...(input.detail ?? {}), holderReason: input.reason, holderMachineId: input.holderMachineId,
+          priorLastAttempt: 'holder-confirmed-unsent' });
+        const endingJson = JSON.stringify(ending); json(endingJson, 64 * 1024);
+        this.db.prepare("UPDATE telegram_origin_operations SET state='suppressed',hold_reason='suppressed-at-holder',hold_detail_json=? WHERE operation_id=?").run(endingJson, op.operation_id);
+        this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(op.operation_id);
+        this.db.prepare("UPDATE entries SET state='dead-letter',claimed_by=NULL,next_attempt_at=NULL,error_body=? WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'")
+          .run(`retired at holder: ${input.reason}`, op.operation_id);
+        this.event(`${op.operation_id}:suppressed`, 'operation:suppressed');
+      } else if (!(op.state === 'suppressed' && op.hold_reason === 'suppressed-at-holder')) return false;
+      const { topicId } = this.recordFacts(op.origin_id);
+      this.insertRetirement({ operationId: op.operation_id, now, reason: input.reason, actor: `holder:${input.holderMachineId}`, note: null, supersededBy: null,
+        priorState: op.state, priorHoldReason: op.hold_reason ?? null, priorLastAttempt: 'holder-confirmed-unsent',
+        cause: input.reason === 'stale-hold-handed-back' ? 'held-lease' : null, ageMs: Math.max(0, now - firstAuthored(op, detail, now)), topicId });
+      return true;
+    }).immediate();
+  }
+  /** §2 — re-admit a direct lease hold for replay, keeping the durable lease-hold marker. */
+  readmitLeaseHold(input: { operationId: string }): boolean {
+    id(input.operationId);
+    return this.db.transaction(() => {
+      const op = this.operation(input.operationId);
+      if (!op || op.kind !== 'ordinary' || op.state !== 'held' || op.hold_reason !== 'lease-not-held' || verdictClass(op.policy_verdict_json) === 'advisory') return false;
+      if (this.db.prepare("SELECT 1 FROM entries e JOIN telegram_origin_children c ON c.delivery_id=e.delivery_id WHERE c.operation_id=? AND e.state='claimed'").get(op.operation_id)) return false;
+      this.markLeaseHeld(op.operation_id);
+      this.db.prepare("UPDATE telegram_origin_operations SET state='admitted',hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?").run(op.operation_id);
+      this.event(`${op.operation_id}:admitted`, 'operation:admitted');
+      return true;
+    }).immediate();
+  }
+  /** §2 — the durable "this reply was held for lease-not-held" marker (survives re-admission). */
+  markLeaseHeld(operationId: string): void {
+    id(operationId);
+    this.event(`${operationId}:was-lease-held`, 'was-lease-held');
+  }
+  wasLeaseHeld(operationId: string): boolean {
+    id(operationId);
+    return !!this.db.prepare('SELECT 1 FROM telegram_origin_metric_events WHERE event_id=? AND metric=?').get(`${operationId}:was-lease-held`, 'was-lease-held');
+  }
+  private recordFacts(originId: string): { producerKind: string | null; topicId: string | null } {
+    const row = this.db.prepare('SELECT record_json FROM telegram_origins WHERE origin_id=?').get(originId) as { record_json: string | null } | undefined;
+    try {
+      const record = JSON.parse(row?.record_json ?? 'null') as { envelopeJson?: string } | null;
+      const env = JSON.parse(record?.envelopeJson ?? 'null') as { producerKind?: string; destination?: { topicId?: string | number | null } } | null;
+      const topic = env?.destination?.topicId;
+      return { producerKind: env?.producerKind ?? null, topicId: topic === undefined || topic === null ? null : String(topic) };
+    } catch { return { producerKind: null, topicId: null }; }
+  }
+  private insertRetirement(r: { operationId: string; now: number; reason: RetirementReason; actor: string; note: string | null; supersededBy: string | null;
+    priorState: string; priorHoldReason: string | null; priorLastAttempt: string | null; cause: string | null; ageMs: number; topicId: string | null }): void {
+    this.db.prepare(`INSERT INTO telegram_origin_retirements(operation_id,retired_at,reason,actor,note,superseded_by,prior_state,prior_hold_reason,prior_last_attempt,cause,age_ms,topic_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(r.operationId, r.now, r.reason, r.actor, r.note, r.supersededBy, r.priorState, r.priorHoldReason,
+      r.priorLastAttempt, r.cause, r.ageMs, r.topicId);
+    this.event(`${r.operationId}:retired`, `operation:retired:${r.reason}`);
+  }
+  /** §4 — retirements whose author has not been told yet, oldest first, due now. */
+  unreportedRetirements(input: { now?: number; limit?: number } = {}): RetirementRow[] {
+    const now = input.now ?? Date.now(), limit = input.limit ?? 20; integer(limit, 1, 100);
+    return (this.db.prepare('SELECT * FROM telegram_origin_retirements WHERE reported_at IS NULL AND next_report_at<=? ORDER BY retired_at,operation_id LIMIT ?')
+      .all(now, limit) as Array<Record<string, unknown>>).map(retirementRow);
+  }
+  /** §4 — the hand-back reached the author (`session-line`), the attention list (`attention-item`), or
+   * was given up (`given-up`). A failed try (`outcome: null`) backs off: 1 min doubling, at most 1 h. */
+  markRetirementReport(input: { operationId: string; outcome: 'session-line' | 'attention-item' | 'author-elsewhere' | 'given-up' | null; now?: number }): boolean {
+    id(input.operationId);
+    const now = input.now ?? Date.now();
+    if (input.outcome === null) {
+      return this.db.prepare(`UPDATE telegram_origin_retirements SET report_attempts=report_attempts+1,
+        next_report_at=?+min(3600000,60000*(1<<min(report_attempts,6))) WHERE operation_id=? AND reported_at IS NULL`).run(now, input.operationId).changes > 0;
+    }
+    return this.db.prepare('UPDATE telegram_origin_retirements SET reported_at=?,report_outcome=? WHERE operation_id=? AND reported_at IS NULL')
+      .run(now, input.outcome, input.operationId).changes > 0;
+  }
+  getRetirement(operationId: string): RetirementRow | null {
+    id(operationId);
+    const row = this.db.prepare('SELECT * FROM telegram_origin_retirements WHERE operation_id=?').get(operationId) as Record<string, unknown> | undefined;
+    return row ? retirementRow(row) : null;
+  }
+  /** Bounded accumulation: reported audit rows leave with the origin audit horizon; an unreported one stays until it is reported or given up. */
+  purgeRetirements(input: { before: number }): number {
+    integer(input.before, 0, Number.MAX_SAFE_INTEGER);
+    return this.db.prepare('DEL' + 'ETE FROM telegram_origin_retirements WHERE operation_id IN (SELECT operation_id FROM telegram_origin_retirements WHERE retired_at<? AND reported_at IS NOT NULL LIMIT 500)').run(input.before).changes;
   }
   markHoldExpiryReported(input: { operationId: string; now?: number }): boolean {
     id(input.operationId);

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "preferred-lease-tick-deferral",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T00:36:09.561Z",
+  "artifactPath": "upgrades/side-effects/preferred-lease-tick-deferral.md",
+  "artifactSha256": "785a91277cddf8bf02fc4b263d8ea5d37093bd994b150ee6a7952dbc882a540b",
+  "specPath": "docs/specs/multi-machine-lease-self-heal.md",
+  "coveredFiles": [
+    "src/core/MultiMachineCoordinator.ts",
+    "tests/unit/MultiMachineCoordinator-tickSelfHeal.test.ts",
+    "upgrades/next/preferred-lease-tick-deferral.md",
+    "upgrades/side-effects/preferred-lease-tick-deferral.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Restores an existing preferred-holder acquisition guard on the recurring election path.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

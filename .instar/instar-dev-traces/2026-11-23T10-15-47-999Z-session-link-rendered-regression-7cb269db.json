@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "session-link-rendered-regression",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T10:15:47.999Z",
+  "artifactPath": "upgrades/side-effects/session-link-rendered-regression.md",
+  "artifactSha256": "7fd8abb19a62bdd6e4027f69e5d01489ef364b14020b1b61325621193844c8b7",
+  "coveredFiles": [
+    "docs/specs/session-link-rendered-regression.eli16.md",
+    "tests/unit/console-conversation-session.test.ts",
+    "upgrades/next/session-link-rendered-regression.md",
+    "upgrades/side-effects/session-link-rendered-regression.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only repair preserving current main runtime CSS; real rendered invariants replace obsolete exact source spelling.",
+  "eli16Path": "docs/specs/session-link-rendered-regression.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-link-rendered-regression.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "regression-integrity",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

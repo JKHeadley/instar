@@ -21,15 +21,13 @@ import {
   validateRegistry,
   scanLocalAgents,
   buildScenarioContext,
-  readSetupLock,
-  writeSetupLock,
-  deleteSetupLock,
   type LocalAgent,
   type DiscoveredGitHubAgent,
   type SetupDiscoveryContext,
   type SetupLock,
 } from '../../src/commands/discovery.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { loadPrivateDiscoverySetupLock } from '../helpers/privateDiscoverySetupLock.js';
 
 // ── Test Helpers ───────────────────────────────────────────────────
 
@@ -631,24 +629,21 @@ describe('buildScenarioContext', () => {
 
 describe('Setup Lock File', () => {
   let tmpHome: { dir: string; cleanup: () => void };
-  let origHomedir: typeof os.homedir;
+  let lockApi: Awaited<ReturnType<typeof loadPrivateDiscoverySetupLock>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpHome = createTempDir();
-    origHomedir = os.homedir;
-    // Clean up any real setup lock that might interfere (LOCK_PATH is computed at module load)
-    const realLockPath = path.join(origHomedir(), '.instar', 'setup-lock.json');
-    if (fs.existsSync(realLockPath)) SafeFsExecutor.safeUnlinkSync(realLockPath, { operation: 'tests/unit/Discovery.test.ts:642' });
-    (os as any).homedir = () => tmpHome.dir;
+    const originalHomedir = os.homedir;
+    lockApi = await loadPrivateDiscoverySetupLock(tmpHome.dir);
+    expect(os.homedir).toBe(originalHomedir);
   });
 
   afterEach(() => {
-    (os as any).homedir = origHomedir;
     tmpHome.cleanup();
   });
 
   it('readSetupLock returns null when no lock exists', () => {
-    expect(readSetupLock()).toBeNull();
+    expect(lockApi.readSetupLock()).toBeNull();
   });
 
   it('writeSetupLock creates lock file', () => {
@@ -660,9 +655,9 @@ describe('Setup Lock File', () => {
       filesCreated: ['/tmp/test/config.json'],
       reposCreated: [],
     };
-    writeSetupLock(lock);
+    lockApi.writeSetupLock(lock);
 
-    const read = readSetupLock();
+    const read = lockApi.readSetupLock();
     expect(read).not.toBeNull();
     expect(read!.agentName).toBe('test-agent');
     expect(read!.scenario).toBe(3);
@@ -671,7 +666,7 @@ describe('Setup Lock File', () => {
   });
 
   it('deleteSetupLock removes lock file', () => {
-    writeSetupLock({
+    lockApi.writeSetupLock({
       startedAt: new Date().toISOString(),
       agentName: 'temp',
       scenario: null,
@@ -679,21 +674,23 @@ describe('Setup Lock File', () => {
       filesCreated: [],
       reposCreated: [],
     });
-    expect(readSetupLock()).not.toBeNull();
+    expect(lockApi.readSetupLock()).not.toBeNull();
 
-    deleteSetupLock();
-    expect(readSetupLock()).toBeNull();
+    lockApi.deleteSetupLock();
+    expect(lockApi.readSetupLock()).toBeNull();
   });
 
   it('deleteSetupLock is safe when no lock exists', () => {
-    expect(() => deleteSetupLock()).not.toThrow();
+    expect(() => lockApi.deleteSetupLock()).not.toThrow();
   });
 
   it('readSetupLock handles corrupted JSON', () => {
     const lockDir = path.join(tmpHome.dir, '.instar');
     fs.mkdirSync(lockDir, { recursive: true });
-    fs.writeFileSync(path.join(lockDir, 'setup-lock.json'), 'corrupted{{{');
-    expect(readSetupLock()).toBeNull();
+    const lockPath = path.join(lockDir, 'setup-lock.json');
+    fs.writeFileSync(lockPath, 'corrupted{{{');
+    expect(lockApi.readSetupLock()).toBeNull();
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('corrupted{{{');
   });
 
   it('writeSetupLock creates parent directories', () => {
@@ -706,7 +703,23 @@ describe('Setup Lock File', () => {
       filesCreated: [],
       reposCreated: [],
     };
-    expect(() => writeSetupLock(lock)).not.toThrow();
-    expect(readSetupLock()).not.toBeNull();
+    expect(() => lockApi.writeSetupLock(lock)).not.toThrow();
+    expect(lockApi.readSetupLock()).not.toBeNull();
+  });
+  it('keeps separately evaluated private lock APIs independent after restoring the home lookup', async () => {
+    const otherHome = path.join(tmpHome.dir, 'other-home');
+    const originalHomedir = os.homedir;
+    const other = await loadPrivateDiscoverySetupLock(otherHome);
+    expect(os.homedir).toBe(originalHomedir);
+    const first: SetupLock = { startedAt: new Date().toISOString(), agentName: 'first-owned', scenario: 1, phase: 'init', filesCreated: [], reposCreated: [] };
+    const second: SetupLock = { ...first, agentName: 'second-owned', scenario: 2 };
+    lockApi.writeSetupLock(first);
+    other.writeSetupLock(second);
+    expect(JSON.parse(fs.readFileSync(path.join(tmpHome.dir, '.instar', 'setup-lock.json'), 'utf-8'))).toEqual(first);
+    expect(JSON.parse(fs.readFileSync(path.join(otherHome, '.instar', 'setup-lock.json'), 'utf-8'))).toEqual(second);
+    lockApi.deleteSetupLock();
+    expect(lockApi.readSetupLock()).toBeNull();
+    expect(other.readSetupLock()).toEqual(second);
+    expect(fs.existsSync(path.join(otherHome, '.instar', 'setup-lock.json'))).toBe(true);
   });
 });

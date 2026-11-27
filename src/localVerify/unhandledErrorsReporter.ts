@@ -85,6 +85,18 @@ export default class LocalVerifyUnhandledErrorsReporter {
   }
 
   onFinished(_files?: unknown, errors: unknown[] = []): void {
+    // The process's tests are over: write one last progress snapshot outside the throttle, with
+    // nothing running and every started file counted as finished. Without it a completion inside
+    // the 5-second throttle leaves a snapshot that still lists finished files as running, and a
+    // reader that judges progress from these files (a helper's attempt past its review point,
+    // docs/specs/local-verify-peer-works-through-restart.md E) would size its stall window on
+    // them. A process that is killed never gets here, and its snapshot stays as the forensics want it.
+    const progress = process.env.LOCAL_VERIFY_PROGRESS_FILE;
+    if (progress) {
+      for (const file of this.started.keys()) this.finished.add(file);
+      this.started.clear();
+      this.writeProgress(progress, Date.now());
+    }
     const out = process.env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE;
     if (!out) return;
     const body: UnhandledErrorsFile = {
@@ -97,11 +109,28 @@ export default class LocalVerifyUnhandledErrorsReporter {
 }
 
 /** Parse the file the reporter wrote; null when absent or unreadable (unknown ⇒ never re-run). */
-export function readUnhandledErrors(text: string | null): number | null {
+export function readUnhandledErrors(text: string | null, requireEmptyMessagesForZero = false): number | null {
   if (text === null) return null;
   try {
     const o = JSON.parse(text) as Partial<UnhandledErrorsFile>;
+    if (requireEmptyMessagesForZero && o.unhandledErrors === 0
+      && (!Array.isArray(o.messages) || o.messages.length !== 0)) return null;
     return o.v === 1 && Number.isInteger(o.unhandledErrors) && (o.unhandledErrors as number) >= 0 ? (o.unhandledErrors as number) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An exact, complete list of the worker's task-update RPC timeout, or null. */
+export function readTaskUpdateTimeouts(text: string | null): number | null {
+  if (text === null || text.length > 16 * 1024) return null;
+  try {
+    const report = JSON.parse(text) as Partial<UnhandledErrorsFile> | null;
+    if (report?.v !== 1 || !Array.isArray(report.messages) || report.messages.length === 0 || report.messages.length > 5
+        || report.messages.length !== report.unhandledErrors) return null;
+    return report.messages.every(message => message === '[vitest-worker]: Timeout calling "onTaskUpdate"')
+      ? report.messages.length
+      : null;
   } catch {
     return null;
   }

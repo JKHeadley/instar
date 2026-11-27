@@ -220,9 +220,12 @@ export function decideRoute(
     return { action: 'drop', reason: 'agent-marker-wrong-recipient', msg };
   }
 
-  // Sender allowlist + bot-identity match.
+  // Sender allowlist + bot-identity match. SEC-154: fail closed. A message with no sender bot id
+  // used to skip the comparison, so any caller that left it out could speak as any known mentor
+  // and start a mentee session. Every legitimate path supplies one (Telegram derives it, the
+  // same-machine inbox and the signed mesh inbox carry it).
   const known = cfg.knownAgents[msg.from];
-  if (!known || (ctx.senderBotId !== undefined && known.botId !== ctx.senderBotId)) {
+  if (!known || ctx.senderBotId === undefined || ctx.senderBotId === '' || known.botId !== ctx.senderBotId) {
     return { action: 'drop', reason: 'agent-marker-unknown', msg };
   }
 

@@ -22,6 +22,8 @@ import type { WhatsAppAdapter, BusinessApiConfig, BackendCapabilities } from '..
 // ── API constants ──────────────────────────────────────
 
 const META_API_BASE = 'https://graph.facebook.com/v21.0';
+/** SEC-132: every Graph API call gives up after this long, so a stalled connection fails like any network error instead of hanging. */
+const META_API_TIMEOUT_MS = 15_000;
 
 // ── Types ──────────────────────────────────────────────
 
@@ -146,6 +148,7 @@ export class BusinessApiBackend {
       const response = await fetch(
         `${META_API_BASE}/${this.config.phoneNumberId}`,
         {
+          signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
           headers: { Authorization: `Bearer ${this.config.accessToken}` },
         },
       );
@@ -299,6 +302,7 @@ export class BusinessApiBackend {
     const response = await fetch(
       `${META_API_BASE}/${this.config.phoneNumberId}/messages`,
       {
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -330,6 +334,7 @@ export class BusinessApiBackend {
     const response = await fetch(
       `${META_API_BASE}/${this.config.phoneNumberId}/messages`,
       {
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -369,6 +374,7 @@ export class BusinessApiBackend {
     const response = await fetch(
       `${META_API_BASE}/${this.config.phoneNumberId}/messages`,
       {
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -400,6 +406,7 @@ export class BusinessApiBackend {
     await fetch(
       `${META_API_BASE}/${this.config.phoneNumberId}/messages`,
       {
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,
@@ -422,6 +429,7 @@ export class BusinessApiBackend {
     await fetch(
       `${META_API_BASE}/${this.config.phoneNumberId}/messages`,
       {
+        signal: AbortSignal.timeout(META_API_TIMEOUT_MS),
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.config.accessToken}`,

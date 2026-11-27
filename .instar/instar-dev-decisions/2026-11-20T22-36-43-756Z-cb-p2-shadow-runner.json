@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-20T22:36:43.756Z",
+  "slug": "cb-p2-shadow-runner",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 720,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/FoldCoordinator.ts",
+      "src/monitoring/foldCoordinatorBoot.ts",
+      "src/monitoring/foldShadowRunner.ts",
+      "src/monitoring/foldShadowRunnerBoot.ts",
+      "src/monitoring/foldWiringHelpers.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 717,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "runs only on a session turn end after brakes (2 asks/topic/hour, 1-in-3 stops, one fold per machine, never queued), each step wall-clock bounded; no timer, its own handoff Stop is consumed"
+  },
+  "verdict": "pass"
+}

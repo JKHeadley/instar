@@ -1,7 +1,9 @@
+import { SQL_COMMAND_CONTEXT_CHECK } from './sqlCommandContext.js';
 // Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
 //   *Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS*
 //   *Maturation Path — Test Agent → Development Agent → Fleet*
 
+import { migrateConversationSearchGuidance } from '../scaffold/conversationSearchGuidance.js';
 import { APPROVAL_WHERE_REQUIRED_SKILL_TEXT, applySkillSentenceChanges } from './approvalWhereRequiredSkillText.js';
 import { OrgPolicyGateHooks } from './OrgPolicyGateHooks.js';
 import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
@@ -125,6 +127,7 @@ import {
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE,
   REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1,
   INTERACTIVE_LOGIN_EXPIRED_BULLET,
+  INTERACTIVE_LOGIN_EXPIRED_BULLET_V1,
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
@@ -299,6 +302,10 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
     return `${lead}${floor}${tail}`;
   });
 }
+
+// The compact hook collects identity and recovery context before printing.
+// Its local HTTP reads can spend up to 36 seconds in sequence.
+export const COMPACT_SESSION_START_TIMEOUT_SECONDS = 45;
 
 /**
  * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
@@ -733,7 +740,10 @@ export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red
  * Local Verify peer verifiers — the awareness line appended to an existing CLAUDE.md's Local Verify
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+/** docs/specs/local-verify-peer-works-through-restart.md Visibility: the phrase `migrateClaudeMd` rewrites in existing agents. */
+export const LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch).';
+export const LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch).';
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
 /**
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
@@ -751,7 +761,7 @@ export const LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE = '- Local Verify waiting l
  * Local Verify balanced shards — the awareness line appended to an existing CLAUDE.md's Local
  * Verify section (`migrateClaudeMd`, content-sniffed on the config key).
  */
-export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; 1..4 each; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
+export const LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE = '- Local Verify balanced shards: the integration lane runs as 2 processes and the e2e lane as 3, each given files planned from the per-file times of earlier runs on this machine (`<verifyRoot>/file-durations.json`, ignored above 2 MB) so the processes finish together; with too little history the lanes use vitest `--shard`. The history decides only which process runs a file, never whether it runs. Live setting `monitoring.localVerify.laneShards` (e.g. `{"integration": 1, "e2e": 2}` restores the old split; integration 1..5 and e2e 1..4; read at each start). When the user asks "why is each verify faster / why are there more test processes?" → this; if runs get slower or flaky under load, lower the counts.';
 export const LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE = '- Local Verify focused PR preflight: optional `monitoring.localVerify.preflightMode: off|observe|enforce` (default off) runs bounded changed tests after build/lint and before the full suite; `main` never uses it. Observe records a diagnostic and always continues. Enforce can stop an automatically rediscoverable PR on a repeated assertion failure, then schedules a full-suite replay without preflight; only the complete full-suite record can authorize a green merge. A skipped preflight is not a passed check. `GET /local-verify` → `preflight` shows mode and replay obligations. When a PR is red with `preflight-red` or appears to be waiting on a replay, read this status and its exact-head record before describing the result.';
 export const LOCAL_VERIFY_FAILED_FILE_DIAGNOSIS_CLAUDEMD_LINE = '- Local Verify failed-file diagnosis: optional `monitoring.localVerify.failedFileDiagnosis: off|observe|auto` (default off) asks one idle peer to run one to three failed test files on the exact PR merge and base. It is advisory: `GET /local-verify/record?pr=&head=&base=` includes a separate `diagnosis` projection, and `GET /local-verify/diagnosis?pr=&head=&base=` reads it directly. `pr-reproducible`, `machine-or-flake`, `base-or-shared`, and `inconclusive` describe file-level evidence only; no diagnosis changes the red record, merge gate, or main health. When a PR failure has named files and the user asks whether it reproduces elsewhere, read that projection before explaining. A full verify preempts any peer diagnosis.';
 
@@ -1461,7 +1471,9 @@ export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, not
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
 /** The pool line before linked computers (instar-document-viewer §3.6a); replaced on update. */
 export const APP_CONVERSATIONS_POOL_STALE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
-export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+/** The line before member-browser-any-computer added `team-invite`; replaced in place on update. */
+export const APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
+export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, `person-phone` for a member\'s computer their own phone linked, or `team-invite` for a member\'s computer that joined from the owner\'s team invite): how that device was approved.';
 
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
@@ -2321,6 +2333,27 @@ export function rewriteUsageWallRescueAwareness(content: string): { content: str
  * Existence-checked per field and idempotent: an operator value is never
  * overwritten, and re-running adds nothing.
  */
+/** SEC-153: the dispatch address every agent was given at init, an unsigned channel. */
+export const LEGACY_DISPATCH_URLS: ReadonlyArray<string> = ['https://dawn.bot-me.ai/api/instar/dispatches'];
+
+/**
+ * SEC-153: turn off polling of the old, unsigned dispatch address. Exactly that address is removed and
+ * polling is switched off; an operator's own dispatch server is never touched. Loss-free: the local
+ * dispatch record (dispatchFile) is kept, and the old address is noted so it can be put back by hand.
+ * Idempotent: once the address is gone, nothing matches.
+ */
+export function migrateConfigLegacyDispatchUrl(config: Record<string, unknown>): string | null {
+  const d = config.dispatches;
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  const disp = d as Record<string, unknown>;
+  if (typeof disp.dispatchUrl !== 'string' || !LEGACY_DISPATCH_URLS.includes(disp.dispatchUrl)) return null;
+  const was = disp.dispatchUrl;
+  disp.legacyDispatchUrlRemoved = { url: was, wasEnabled: disp.enabled === true, at: new Date().toISOString(), reason: 'SEC-153' };
+  disp.dispatchUrl = '';
+  disp.enabled = false;
+  return was;
+}
+
 export function migrateConfigBoundedNotificationSurface(config: Record<string, unknown>): boolean {
   let changed = false;
 
@@ -2950,6 +2983,31 @@ const STATE_SYNC_DEV_GATED_STORES = [
 ] as const;
 
 /**
+ * Pure half of migrateReaperHourlyCadence: moves exactly the old 24 h default
+ * `monitoring.agentWorktreeReaper.reapIntervalMs: 86400000` to 1 h, once.
+ * Returns 'already' when the run-once marker is present (nothing changed),
+ * 'moved' when the old default was replaced, 'none' otherwise (marker added). The marker is written even when nothing moved, so
+ * a later run never overrides an operator who sets 24 h on purpose.
+ */
+export function migrateConfigReaperHourlyCadence(config: Record<string, unknown>): 'already' | 'moved' | 'none' {
+  const migrations = (Array.isArray(config._instar_migrations) ? config._instar_migrations : []) as string[];
+  const marker = 'reaper-hourly-cadence';
+  if (migrations.some((m) => typeof m === 'string' && m.startsWith(marker))) return 'already';
+  let moved = false;
+  const mon = config.monitoring;
+  if (mon && typeof mon === 'object' && !Array.isArray(mon)) {
+    const r = (mon as Record<string, unknown>).agentWorktreeReaper;
+    if (r && typeof r === 'object' && !Array.isArray(r) && (r as Record<string, unknown>).reapIntervalMs === 86_400_000) {
+      (r as Record<string, unknown>).reapIntervalMs = 3_600_000;
+      moved = true;
+    }
+  }
+  migrations.push(`${marker}-${new Date().toISOString()}`);
+  config._instar_migrations = migrations;
+  return moved ? 'moved' : 'none';
+}
+
+/**
  * The 7 multiMachine.stateSync.* memory stores (preferences, relationships, learnings,
  * knowledge, evolutionActions, userRegistry, topicOperator) were re-gated from
  * DARK_GATE_EXCLUSIONS (off for everyone) to the developmentAgent gate (live-on-dev,
@@ -3337,6 +3395,7 @@ export class PostUpdateMigrator {
     this.migrateLegacyDefaultJobs(result);
     this.autoMigrateLegacyJobsJson(result);
     this.migrateSkillPortHardcoding(result);
+    this.migrateFeedbackSkillSource(result);
     this.migrateSchedulerSkillReportChoice(result);
     this.migrateBuildSkillMethodology(result);
     this.migrateSubscriptionSigninByHand(result);
@@ -3386,6 +3445,7 @@ export class PostUpdateMigrator {
     this.migrateCartographerDevGate(result);
     this.migrateDevGateTeethStrip(result);
     this.migrateBootBeaconFleetGraduation(result);
+    this.migrateReaperHourlyCadence(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
     this.migrateDispatchWithholdsAnswer(result);
@@ -3641,7 +3701,7 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
         alwaysOverwrite: true,
       },
-      {
+      ...templateRoots.map((skillRoot) => ({
         // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
         // wrapper must plumb enabledFrameworks into detection on EXISTING
         // agents too — installBuiltinSkills never overwrites, so this sync
@@ -3650,12 +3710,12 @@ export class PostUpdateMigrator {
         // shipped-content entries: a prior-hash gate over a shipped script
         // classifies ordinary drift as customization and stops refreshing
         // forever (the constitution-mirror lesson).
-        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        label: `spec-converge cross-model-review enabledFrameworks plumbing${skillRoot === '.claude' ? '' : ` (${skillRoot})`}`,
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
-        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
         prior: new Set<string>(),
         alwaysOverwrite: true,
-      },
+      })),
       // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
       // `installBuiltinSkills` writes a skill's files only when the skill is
       // MISSING, so an existing agent's templates freeze at whatever version
@@ -5140,6 +5200,43 @@ export class PostUpdateMigrator {
       result.upgraded.push('boot-beacon-graduation: stripped the stale dark-default `monitoring.bootHealthBeacon.enabled: false` so the boot beacon runs (it is on for every agent now; re-add `enabled: false` to keep it off — it will not be re-stripped)');
     } else {
       result.skipped.push('boot-beacon-graduation: nothing to strip (marker set)');
+    }
+  }
+
+  // ── REAPER HOURLY CADENCE (docs/specs/reaper-removal-out-of-process.md §4) ──
+  // The worktree reaper's pass interval became 1 h. applyDefaults is add-missing-
+  // only, and existing agents persisted the old default `reapIntervalMs: 86400000`,
+  // so they would keep the 24 h cadence forever. Exactly the old default value is
+  // moved, once (run-once marker): any other value is an operator choice and kept,
+  // and a later operator-set 24 h is never touched. dryRun is left alone.
+  private migrateReaperHourlyCadence(result: MigrationResult): void {
+    const configPath = path.join(this.config.stateDir, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      result.skipped.push('reaper-hourly-cadence: config.json not found');
+      return;
+    }
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json read failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const changed = migrateConfigReaperHourlyCadence(config);
+    if (changed === 'already') {
+      result.skipped.push('reaper-hourly-cadence: already migrated');
+      return;
+    }
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (err) {
+      result.errors.push(`reaper-hourly-cadence: config.json write failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (changed === 'moved') {
+      result.upgraded.push('reaper-hourly-cadence: moved monitoring.agentWorktreeReaper.reapIntervalMs from the old 24 h default to 1 h (the pass is off the main thread; removal stays dry-run unless turned on)');
+    } else {
+      result.skipped.push('reaper-hourly-cadence: no old default to move (marker set)');
     }
   }
 
@@ -7031,6 +7128,30 @@ export class PostUpdateMigrator {
       result.upgraded.push('skills/instar-scheduler/SKILL.md (per-job report choice)');
     } catch (err) {
       result.errors.push(`skills/instar-scheduler/SKILL.md report choice migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * agent-work-cards-default §3 "Feedback is not a trigger": `POST /feedback` requires a `source` from Bearer callers when
+   * the board is on. The built-in /feedback skill is existing content (installBuiltinSkills never overwrites), so this
+   * dedicated idempotent step adds `"source": {"kind": "agent"}` to its Quick Submit body once. A customized skill whose
+   * body no longer has the stock description line is left untouched.
+   */
+  private migrateFeedbackSkillSource(result: MigrationResult): void {
+    const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'feedback', 'SKILL.md');
+    if (!fs.existsSync(skillFile)) return;
+    try {
+      const original = fs.readFileSync(skillFile, 'utf8');
+      if (original.includes('"source"')) return;
+      const stock = '"description": "Full context: what happened, what you expected, error messages, steps to reproduce"\n  }\'';
+      if (!original.includes(stock)) return;
+      const updated = original.replace(stock, '"description": "Full context: what happened, what you expected, error messages, steps to reproduce",\n    "source": {"kind": "agent"}\n  }\'');
+      if (updated !== original) {
+        fs.writeFileSync(skillFile, updated);
+        result.upgraded.push('skills/feedback/SKILL.md (POST /feedback body carries source: {kind: agent})');
+      }
+    } catch (err) {
+      result.errors.push(`skills/feedback/SKILL.md source migration: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -9632,7 +9753,9 @@ if [[ "$ACTIVE" != "true" ]]; then`;
 
 const serverUrl = process.env.INSTAR_SERVER_URL || 'http://localhost:4042';
 const authToken = process.env.INSTAR_AUTH_TOKEN || '';
-const instarSid = process.env.INSTAR_SESSION_ID || '';
+// Validated once: an id that fails the pattern is sent in neither the query nor the body (the hook exits).
+const rawSid = process.env.INSTAR_SESSION_ID || '';
+const instarSid = /^[A-Za-z0-9._:-]{1,128}$/.test(rawSid) ? rawSid : '';
 
 if (!authToken || !instarSid) {
   process.exit(0);
@@ -9644,8 +9767,32 @@ process.stdin.on('end', async () => {
   try {
     const { request } = await import('node:http');
     const input = JSON.parse(data);
+    // Bound the forwarded identifying fields here too: an older server stores a payload as received.
+    const str = (v, max) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
+    const id = (v) => (typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v) ? v : undefined);
+    const absPath = (v) => (typeof v === 'string' && v.startsWith('/') && v.length <= 1024 ? v : undefined);
     const payload = JSON.stringify({
-      event: input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // Claude Code names the event in hook_event_name (hook_event is the old
+      // spelling, kept as a fallback). Without it every Stop, SubagentStart,
+      // SubagentStop, TaskCompleted, SessionEnd and PreCompact event arrived as
+      // \"Unknown\" and no consumer of those events ever ran (2026-11-21).
+      event: input.hook_event_name || input.hook_event || (input.tool_name ? 'PostToolUse' : 'Unknown'),
+      // The instar session this hook ran in, so consumers keyed on it (the
+      // practice-fold runner, the subagent tracker) can find the session.
+      instar_session_id: id(instarSid),
+      // The tmux session name, which Compaction Trigger 1 checks against the session id.
+      instar_session: str(process.env.INSTAR_SESSION_NAME, 128),
+      // Short identifying fields the native reporter also forwards (docs/specs/native-hook-events.md
+      // D1); the server bounds them the same way. Message text (last_assistant_message,
+      // task_subject) is deliberately NOT sent from here: an older server stores payloads as
+      // received, so raw text could reach storage during a version mismatch.
+      agent_id: id(input.agent_id),
+      agent_type: str(input.agent_type, 128),
+      agent_transcript_path: absPath(input.agent_transcript_path),
+      task_id: id(input.task_id),
+      reason: str(input.reason, 64),
+      trigger: str(input.trigger, 64),
+
       session_id: input.session_id || '',
       tool_name: input.tool_name || '',
       // green-pr-automerge Layer 2: forward the session cwd so the server can
@@ -10064,8 +10211,9 @@ setTimeout(() => process.exit(0), 2000);
     // The marked feature-notes block is held out while the chain runs (a one-line stand-in keeps
     // its place), so entry text never takes part in the `content.includes(marker)` guards below.
     const heldFeatureNotes = holdRegistryBlock(input);
-    let content = heldFeatureNotes.text;
-    let patched = false;
+    let content = migrateConversationSearchGuidance(heldFeatureNotes.text);
+    let patched = content !== heldFeatureNotes.text;
+    if (patched) result.upgraded.push('CLAUDE.md: replaced legacy memory search pointers with conversation search');
     // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
     // as a scope fact. Inserted after the "Ask Permission" trap when that
     // paragraph is present, else appended to the end of the file.
@@ -10163,6 +10311,14 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Memory privacy recovery');
+    }
+
+    // Registry First: metered spend is a question with a place to look (gemini-payg §10).
+    if (!content.includes('| How much have we spent on Gemini') && content.includes('| What jobs do I have?')) {
+      const row = `| How much have we spent on Gemini / metered models? | \`GET /routing-spend/caps\` (answer in dollars from it; on any machine it reads the spending machine's figures). NEVER from memory |`;
+      content = content.replace(/^(\| What jobs do I have\?.*)$/m, `$1\n${row}`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added metered spend to Registry First');
     }
 
     // Registry First: the browser's state is a question with a place to look (normal-chrome-linux).
@@ -11548,6 +11704,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: app conversations pool line names person-phone');
     }
+    if (content.includes(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_POOL_PERSON_PHONE_LINE, APP_CONVERSATIONS_POOL_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations pool line names team-invite');
+    }
     if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_POOL_LINE)) {
       const lines = content.split('\n');
       const at = lines.findIndex((l) => l.includes('/mobile/chat/app/CONVERSATION_KEY/messages'));
@@ -11630,28 +11791,22 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
-    // Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line.
-    if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !content.includes('/mobile/conversations/search')) {
+    // Mobile app search guidance has its own bullet. The Registry First link does not replace it.
+    const keywordSearchLine = APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port));
+    const fullSearchLine = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+    if (content.includes(keywordSearchLine)) {
+      content = content.replace(keywordSearchLine, fullSearchLine);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
+    } else if (content.includes(APP_CONVERSATIONS_PINS_LINE) && !/^- Search conversations by keyword[^\n]*\/mobile\/conversations\/search/m.test(content)) {
       const lines = content.split('\n');
-      const listPinsAt = lines.findIndex((l) => l === APP_CONVERSATIONS_LIST_PINS_LINE);
-      const at = listPinsAt >= 0 ? listPinsAt : lines.findIndex((l) => l === APP_CONVERSATIONS_PINS_LINE);
+      const listPinsAt = lines.indexOf(APP_CONVERSATIONS_LIST_PINS_LINE);
+      const at = listPinsAt >= 0 ? listPinsAt : lines.indexOf(APP_CONVERSATIONS_PINS_LINE);
       if (at >= 0) {
-        lines.splice(at + 1, 0, APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port)));
+        lines.splice(at + 1, 0, fullSearchLine);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
-      }
-    }
-
-    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
-    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
-      const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
-      if (at >= 0) {
-        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
-        content = lines.join('\n');
-        patched = true;
-        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 
@@ -13897,6 +14052,23 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
     }
+    // local-verify-peer-works-through-restart (Visibility): the peer line in existing agents still says a
+    // record needs "the same … lease epoch". Rewrite that one phrase; content-sniffed on the setting key.
+    if (content.includes(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE) && !content.includes('monitoring.localVerify.peerWorksThroughRestart.enabled')) {
+      content = content.replace(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE, LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Local Verify peer line names the works-through-restart setting');
+    }
+    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.smallPeerTrial')) {
+      content += '\n- Local Verify can give one normal pull request to a calibrated small Mac with one or two unit workers and one worker for each remaining suite. The coordinator and peer must share the measured monitoring.localVerify.smallPeerTrial policy. The peer stops when available memory reaches the floor or telemetry expires. Read its signed attempt receipt for elapsed time, peak memory and the reason it stopped.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added small Mac verification trial awareness');
+    }
+    if (content.includes('calibrated small Mac with two unit workers and one worker for each remaining suite')) {
+      content = content.replace('calibrated small Mac with two unit workers', 'calibrated small Mac with one or two unit workers');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
+    }
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
@@ -13920,6 +14092,13 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify balanced-shards awareness');
+    }
+    const oldLaneShardsAwareness = /^(.*monitoring\.localVerify\.laneShards.*)1\.\.4 each(; read at each start.*)$/gm;
+    const updatedLaneShardsAwareness = content.replace(oldLaneShardsAwareness, '$1integration 1..5 and e2e 1..4$2');
+    if (updatedLaneShardsAwareness !== content) {
+      content = updatedLaneShardsAwareness;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: updated Local Verify integration shard limit');
     }
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.preflightMode')) {
       content += '\n' + LOCAL_VERIFY_PREFLIGHT_CLAUDEMD_LINE + '\n';
@@ -15519,6 +15698,13 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
       content = content.replace(REROUTED_LOGIN_EXPIRED_POOL_SENTENCE_V1, REROUTED_LOGIN_EXPIRED_POOL_SENTENCE);
       patched = true;
       result.upgraded.push('CLAUDE.md: rerouted-job expired-login bullet names the readable-credential rule');
+    }
+    // Spec stale-process-login-expired: the interactive bullet now describes the stored-login check.
+    // Replaced in place (before the key-health block anchors on it); a hand-edited copy is left alone.
+    if (content.includes(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1)) {
+      content = content.replace(INTERACTIVE_LOGIN_EXPIRED_BULLET_V1, INTERACTIVE_LOGIN_EXPIRED_BULLET);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: interactive expired-login bullet describes the stored-login check');
     }
     // CMT-1008: interactive (topic) sessions stuck at an expired login — placed right after the
     // rerouted-job bullet when present, else appended. Idempotent via its marker.
@@ -18397,6 +18583,23 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.errors.push(`secret-get.mjs: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Vault WRITE helper — always overwrite (sibling of secret-get.mjs). The no-echo
+    // transfer target named by docs/specs/gemini-payg-metered-lane.md §4: the value
+    // goes Secret Drop → stdin → vault and is never printed to a session.
+    try {
+      const secretSetContent = this.loadRelayTemplate('secret-set.mjs');
+      if (secretSetContent) {
+        fs.writeFileSync(
+          path.join(instarScriptsDir, 'secret-set.mjs'),
+          secretSetContent,
+          { mode: 0o755 },
+        );
+        result.upgraded.push('scripts/secret-set.mjs (no-echo vault write)');
+      }
+    } catch (err) {
+      result.errors.push(`secret-set.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Machine-load assessment helper — always overwrite (CMT-1703, spec
     // robust-load-assessment-fleet). The go-to method for evaluating machine load
     // (real CPU idle% + time-windowed ResourceLedger + a verdict), so an agent
@@ -18605,13 +18808,24 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       hooks.SessionStart = [
         { matcher: 'startup', hooks: [sessionStartHook] },
         { matcher: 'resume', hooks: [sessionStartHook] },
-        { matcher: 'compact', hooks: [sessionStartHook] },
+        { matcher: 'compact', hooks: [{ ...sessionStartHook, timeout: COMPACT_SESSION_START_TIMEOUT_SECONDS }] },
       ];
       patched = true;
       result.upgraded.push('.claude/settings.json: added SessionStart hooks (startup/resume/compact)');
     } else {
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
+      const groups = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>;
+      for (const group of groups) {
+        if (group.matcher !== 'compact') continue;
+        for (const hook of group.hooks ?? []) {
+          if (hook.command === sessionStartHook.command && hook.timeout === sessionStartHook.timeout) {
+            hook.timeout = COMPACT_SESSION_START_TIMEOUT_SECONDS;
+            patched = true;
+            result.upgraded.push('.claude/settings.json: extended compaction recovery hook timeout');
+          }
+        }
+      }
     }
     {
       // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
@@ -19303,10 +19517,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     // dev-agent gate (live on a development agent, dark on the fleet).
     {
       const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      // agent-work-cards-default §Migration: the request-to-card and notes defaults join the block, each added only when
+      // missing. `requestCards.enabled` is deliberately NOT written (omitted ⇒ on where the board is on).
       const defaults: Record<string, unknown> = {
         softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
-        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200, noteText: 4000 },
         pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+        requestCards: { duplicateHintHours: 24, backfillMaxAgeDays: 14, sweepPerTick: 25, unrecordedWorkMinutes: 10, floorRecentHours: 72 },
+        maxNotesPerCardPerDay: 50, noteCoalesceMinutes: 60, noteDrainPerTick: 25, softOpenBlockers: 10, maxOpenAsksPerCard: 5,
       };
       let added = false;
       for (const [k, v] of Object.entries(defaults)) {
@@ -19465,6 +19683,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // SEC-153: the old dispatch address was an unsigned channel that could run actions and change
+    // configuration. Polling it stops; an operator's own dispatch server is left alone.
+    const legacyDispatch = migrateConfigLegacyDispatchUrl(config as Record<string, unknown>);
+    if (legacyDispatch) {
+      patched = true;
+      result.upgraded.push(`config.json: dispatch polling of the old unsigned address turned off (was ${legacyDispatch}); the dispatch record is kept`);
     }
 
     // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
@@ -21965,6 +22191,7 @@ for pattern in "rm -rf \\." "git push --force" "git push -f" "git reset --hard" 
   fi
 done
 
+${SQL_COMMAND_CONTEXT_CHECK}
 # SQL must look like a statement, not prose that merely names a keyword. Match
 # at input/statement start or immediately after a SQL-bearing quote/separator,
 # and require the following table/database identifier. Ambiguous statement
@@ -21978,6 +22205,10 @@ for sql_spec in \\
   pattern="\${sql_spec%%|*}"
   sql_pattern="\${sql_spec#*|}"
   if echo "\$INPUT" | grep -qE "\$sql_pattern"; then
+    if [ -z "\$SQL_LITERAL_DATA" ]; then
+      if sql_command_is_literal_data; then SQL_LITERAL_DATA=1; else SQL_LITERAL_DATA=0; fi
+    fi
+    if [ "\$SQL_LITERAL_DATA" = "1" ]; then continue; fi
     if [ "\$SAFETY_LEVEL" -eq 1 ]; then
       echo "BLOCKED: Potentially destructive command detected: \$pattern" >&2
       echo "Authorization required: Ask the user whether to proceed with this operation." >&2
@@ -22514,8 +22745,6 @@ if [ "\$PC_OK" = "1" ] && [ "\$PC_MODE" = "suppressed" ]; then
   exit 3
 fi
 
-if [ "\$PC_OK" != "1" ]; then
-# Older server: the two calls the hook always made.
 # Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
 # post-compaction seed hook, so on the first prompt after a detected compaction
 # the server returns the topic's verified standing packet, in its disclosure
@@ -22569,6 +22798,8 @@ if [ -n "\$CB_SEED_SHOWN" ]; then
   exit 0
 fi
 
+if [ "\$PC_OK" != "1" ]; then
+# Older server: the two calls the hook always made.
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -23047,11 +23278,11 @@ fi
 CONFIG_FILE="\$INSTAR_DIR/config.json"
 if [ -f "\$CONFIG_FILE" ]; then
   PORT=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('port', 4040))" 2>/dev/null || echo "4040")
-  HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+  HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
   if [ "\$HEALTH" = "200" ]; then
     echo ""
     echo "Instar server: RUNNING on port \${PORT}"
-    CAPS=\$(curl -s "http://localhost:\${PORT}/capabilities" 2>/dev/null)
+    CAPS=\$(curl -s --max-time 2 "http://localhost:\${PORT}/capabilities" 2>/dev/null)
     if echo "\$CAPS" | grep -q '"featureGuide"' 2>/dev/null; then
       echo ""
       echo "--- YOUR CAPABILITIES ---"
@@ -23098,10 +23329,10 @@ if [ -f "$INSTAR_DIR/config.json" ]; then
     if [ -z "\$AUTH_TOKEN" ]; then
       AUTH_TOKEN=\$(python3 -c "import json; v=json.load(open('$INSTAR_DIR/config.json')).get('authToken',''); print(v if isinstance(v, str) else '')" 2>/dev/null)
     fi
-    HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+    HEALTH=\$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
     if [ "\$HEALTH" = "200" ]; then
       WM_QUERY=\$(python3 -c "import urllib.parse; print(urllib.parse.quote('compaction-recovery context-restoration'))" 2>/dev/null)
-      WORKING_MEM=\$(curl -s -H "Authorization: Bearer \${AUTH_TOKEN}" \
+      WORKING_MEM=\$(curl -s --max-time 2 -H "Authorization: Bearer \${AUTH_TOKEN}" \
         "http://localhost:\${PORT}/context/working-memory?prompt=\${WM_QUERY}&limit=6" 2>/dev/null)
       if [ -n "\$WORKING_MEM" ]; then
         WM_CONTEXT=\$(echo "\$WORKING_MEM" | python3 -c "
@@ -24634,6 +24865,9 @@ var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var TERMINAL = ['committed', 'rolled-back', 'aborted'];
 // Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
 var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// Exact lookup paths (§7.6, §10): a topic's chunk list and one chunk. A pattern,
+// not a prefix, so the topic's other routes (user-corpus, anchor…) stay denied.
+var LOOKUP_PATHS = [/^\/topic\/-?\d{1,15}\/chunks$/, /^\/topic\/-?\d{1,15}\/chunks\/[A-Za-z0-9_.-]{1,128}$/];
 // The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
 // literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
 // backslash or quote (the character classes below exclude them).
@@ -24652,6 +24886,7 @@ function isLookupCommand(cmd, port) {
     var pre = LOOKUP_PREFIXES[i];
     if (p === pre || p.indexOf(pre + '/') === 0) return true;
   }
+  for (var j = 0; j < LOOKUP_PATHS.length; j++) if (LOOKUP_PATHS[j].test(p)) return true;
   return false;
 }
 
@@ -24667,7 +24902,7 @@ function deny(reason) {
 }
 
 if (typeof module !== 'undefined' && module.exports && require.main !== module) {
-  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES, LOOKUP_PATHS: LOOKUP_PATHS };
 } else {
   var iid = process.env.INSTAR_SESSION_ID || '';
   // No Instar session id: outside this hook's reach. Exit before reading stdin.
@@ -25145,9 +25380,17 @@ process.stdin.on('end', async () => {
     // only explicitly unambiguous reads bypass the API; an unknown verb must
     // reach the gate for the authoritative decision.
     const actionTokens = action.split('_').filter(Boolean);
-    const hasMutatingTail = actionTokens.slice(1).some(token =>
-      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(token)
+    // The actual verb may follow connector namespaces, in either __ or _ form.
+    // Whole-token matches are engine-neutral; compound mutations and execution stay governed.
+    // Only the observed GitHub alias has a flattened namespace; unknown direct verbs stay governed.
+    const hasMutatingPart = actionTokens.some(token =>
+      /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(token)
     );
+    const toolSegments = parts.slice(2);
+    const toolTokens = toolSegments[toolSegments.length - 1].split('_').filter(Boolean);
+    const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+    const hasReadVerb = readVerb.test(toolTokens[0] || '')
+      || (toolSegments.length === 1 && toolTokens[0] === 'github' && readVerb.test(toolTokens[1] || ''));
     let mutability = 'modify';
     if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) {
       mutability = 'delete';
@@ -25155,7 +25398,7 @@ process.stdin.on('end', async () => {
       mutability = 'write';
     } else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) {
       mutability = 'modify';
-    } else if (!hasMutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) {
+    } else if (!hasMutatingPart && hasReadVerb) {
       mutability = 'read';
     }
 
@@ -26845,13 +27088,22 @@ if (!reviewEnabled) {
     // green-pr-automerge Layer 2 (MODE-INDEPENDENT — the UnjustifiedStopGate mode
     // ships 'off', so this must act on the hot-path field BEFORE the mode gate,
     // exactly like the stated-continuation guard above). One-shot per session+PR
-    // via a tmp marker so the agent is never trapped. NO runnable merge command.
+    // via a marker under .instar/state/stop-gate-markers so the agent is never trapped. NO runnable merge command.
     if (hot && hot.greenPrBlock && hot.greenPrBlock.pr && !hot.killSwitch && !hot.compactionInFlight) {
       try {
-        const os = await import('node:os');
-        const marker = path.join(os.tmpdir(), 'instar-greenpr-block-' + encodeURIComponent(sessionId) + '-' + hot.greenPrBlock.pr);
-        if (!fs.existsSync(marker)) {
-          try { fs.writeFileSync(marker, String(Date.now())); } catch {}
+        // SEC-131: the one-shot marker lives in the agent's own state dir (never the shared
+        // temp dir, where another local user could pre-plant the name or a symlink), and is
+        // created exclusively ('wx', 0600): an existing file or link counts as already fired
+        // and is never written through.
+        const markerDir = path.join(projectDir, '.instar', 'state', 'stop-gate-markers');
+        const marker = path.join(markerDir, 'greenpr-block-' + encodeURIComponent(sessionId) + '-' + encodeURIComponent(String(hot.greenPrBlock.pr)));
+        let firstTime = false;
+        try {
+          fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 });
+          fs.closeSync(fs.openSync(marker, 'wx', 0o600));
+          firstTime = true;
+        } catch {}
+        if (firstTime) {
           process.stdout.write(JSON.stringify({ decision: 'block', reason: 'STOP-GATE (green-pr): ' + String(hot.greenPrBlock.message) }));
           process.exit(2);
           return;

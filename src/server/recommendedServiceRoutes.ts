@@ -17,7 +17,11 @@ import { EVENT_FRESH_MS, isDuplicateEvent, noteOutage, serviceForProblem, isProb
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
-import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
+import { ConfirmTokenStore, ConfirmTokensFullError } from '../recommended/confirmTokens.js';
+import { ConfirmStats } from '../recommended/confirmStats.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { MANDATE_PIN_DEFAULT_MESSAGE } from './mandatePin.js';
+import type { PublicPinVerdict } from './publicPinHook.js';
 import { recipeFor, type EmailRecipeSurface, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
 import { EMAIL_RECIPIENT_SECRET, normalizeRecipient, readEmailCredential, EMAIL_SECRET } from '../email/emailCore.js';
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
@@ -28,12 +32,26 @@ import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
 
+/** SEC-135: the confirm page's one refusal wording on the public path (every refusing limit). */
+export const PUBLIC_PAUSED_MESSAGE = 'Too many wrong PINs have been tried, so this page is paused for a few minutes. If you are the owner, open it in a browser that still remembers your dashboard sign-in, or on the computer I run on, or try again in a few minutes.';
+/** SEC-135: the refusal on the marker and local paths, which reveal nothing to a stranger. */
+export const OWN_PAUSED_MESSAGE = 'Too many wrong PINs from this browser. Wait a few minutes and try again.';
+
 export interface RecommendedServiceRouteDeps {
   ledger: () => RecommendedServicesLedger | null;
   stateDir: string;
   checkPin: (req: Request, res: Response) => boolean;
   /** The PIN check for the confirm route, which has no bearer token in front of it. */
   checkConfirmPin: (req: Request, res: Response) => boolean;
+  /**
+   * SEC-135: the confirm answer on sign-in's own public limits (ctx.publicPin.verify). Returns null
+   * when the switch is off or the hook is absent, and checkConfirmPin is used exactly as before.
+   */
+  verifyConfirmPin?: (req: Request) => PublicPinVerdict | null;
+  /** SEC-135: a page open from a marked browser or the machine itself, with the page's own header. */
+  ownerOpen?: (req: Request) => boolean;
+  /** SEC-135: the approval-links switch (owner opens, protected tokens, confirmStats). Absent = off. */
+  approvalLinksEnabled?: () => boolean;
   /** The dashboard unlock's rule: this connection may not carry a PIN. */
   pinEntryRefused?: (req: Request) => boolean;
   /** The one verified owner, or null when none can be told. */
@@ -157,6 +175,39 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {}, recordProblem: () => {}, recordAddressOutage: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
+  // SEC-135 Observability: per-machine confirm counters, flushed at most once a minute.
+  const confirmStats = new ConfirmStats({ stateDir: deps.stateDir, now: deps.now,
+    onWriteError: (reason) => { featureEvidence.record('security.approvalLinks', { kind: 'error', reason: `confirm-stats write failed: ${reason}` }); } });
+  const approvalLinksOn = (): boolean => deps.approvalLinksEnabled?.() === true;
+  /**
+   * The confirm answer's PIN check. With SEC-135 on, sign-in's public limits decide through the
+   * shared verifier and this route renders the answer; otherwise piece 1c's check, unchanged.
+   * True when the PIN is right; otherwise the response is already sent.
+   */
+  const confirmPinPasses = (req: Request, res: Response): boolean => {
+    const verdict = deps.verifyConfirmPin?.(req) ?? null;
+    if (!verdict) return deps.checkConfirmPin(req, res);
+    if (verdict.ok) {
+      confirmStats.recordAnswer(verdict.path, verdict.aggregateFull);
+      // Graduation evidence (spec, Rollout): an exempt-path answer completed while the public aggregate was full.
+      // Rare by construction (one per owner answer), so it can never flood the log.
+      if (verdict.aggregateFull && verdict.path !== 'public') {
+        featureEvidence.record('security.approvalLinks', { kind: 'fired', reason: `${verdict.path}-answer-while-aggregate-full`, context: { service: String(req.params.id ?? '') } });
+      }
+      return true;
+    }
+    switch (verdict.reason) {
+      case 'insecure-connection': res.status(403).json({ error: 'insecure-connection' }); return false;
+      case 'unavailable': res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' }); return false;
+      case 'missing': res.status(403).json({ error: MANDATE_PIN_DEFAULT_MESSAGE }); return false;
+      case 'wrong-pin': res.status(403).json({ error: 'Incorrect PIN' }); return false;
+      case 'paused':
+        if (verdict.path === 'public') confirmStats.recordPublicRefused();
+        // One fixed wording for every refusing public limit, so it reveals nothing about which one fired.
+        res.status(429).json({ error: 'pin-paused', message: verdict.path === 'public' ? PUBLIC_PAUSED_MESSAGE : OWN_PAUSED_MESSAGE, retryAfterSeconds: verdict.retryAfterSeconds });
+        return false;
+    }
+  };
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
   // The Cloudflare recipe's own work, kept in the setup state so its switch-off undoes exactly that.
   const cloudflareWork = {
@@ -667,22 +718,31 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report(`Record the ${kind} problem`, err, 'This sighting is not counted; the next one is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
     }
   };
-  // Boot checks (Real-problem events), once per server start, as soon as there is a ledger and an owner to record
-  // against. `secret-lost`: a secret the config refers to is missing. `state-loss-risk`: this start follows a restore
-  // from a local snapshot and no copy exists off this machine. The floor then requires a no (or an unanswered offer).
-  let bootChecksDone = false;
-  const bootChecksOnce = (): void => {
-    if (bootChecksDone || !deps.ledger() || deps.owner() === null) return;
-    bootChecksDone = true;
+  // `secret-lost` (Real-problem events): a boot check, once per server start, as soon as there is a ledger and an
+  // owner to record against. A no on Bitwarden (or an unanswered offer) is what the floor then requires.
+  let secretCheckDone = false;
+  const checkSecretsOnce = (): void => {
+    if (secretCheckDone || !deps.reoffersEnabled?.() || !deps.unresolvedSecrets) return;
+    if (!deps.ledger() || deps.owner() === null) return;
+    secretCheckDone = true;
+    let missing: readonly string[];
+    try {
+      missing = deps.unresolvedSecrets();
+    } catch (err) { // @silent-fallback-ok — reported through report(); the check simply doesn't count this start
+      report('Check for missing secrets at start', err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
+      return;
+    }
+    if (missing.length) handle.recordProblem('secret-lost', 'boot');
+  };
+  // `state-loss-risk` (Real-problem events): once per server start, as soon as there is a ledger and an owner. This
+  // start follows a restore from a local snapshot and no copy exists off this machine. The floor then requires a no
+  // (or an unanswered offer). Its own flag, so the secret check above keeps its own timing.
+  let restoreCheckDone = false;
+  const checkRestoreOnce = (): void => {
+    if (restoreCheckDone || !deps.ledger() || deps.owner() === null) return;
+    restoreCheckDone = true;
     const on = !!deps.reoffersEnabled?.();
     const fail = (what: string, err: unknown): void => report(what, err, 'This start is not checked; the next start is.', 'RecommendedServices.reoffer', 'No re-offer goes out on this path; the choice is unchanged.');
-    if (on && deps.unresolvedSecrets) {
-      try {
-        if (deps.unresolvedSecrets().length) handle.recordProblem('secret-lost', 'boot');
-      } catch (err) { // @silent-fallback-ok — reported through fail(); the check simply doesn't count this start
-        fail('Check for missing secrets at start', err);
-      }
-    }
     // The marker is read and cleared even with the switch off, so turning it on later never digs up an old restore.
     const marker = readRestoreMarker(deps.stateDir);
     if (!marker) return;
@@ -776,7 +836,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
     admitExistingOwner();
-    bootChecksOnce();
+    checkSecretsOnce();
+    checkRestoreOnce();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
     if (ledger) await maybeReoffer(ledger, deps.now?.() ?? Date.now());
@@ -805,7 +866,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(state),
         offered: owner !== null && ledger.offerState(id, owner) === 'offered', inUse: !!state?.inUse };
     });
-    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
+    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating(), ...(approvalLinksOn() ? { confirmStats: confirmStats.report() } : {}) });
   });
 
   /** Asks for nothing and grants nothing: it only stops this session being restarted, so it needs no PIN. */
@@ -885,7 +946,13 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'no-owner' });
       return;
     }
-    if (!tokens.mayMint()) {
+    // SEC-135: an owner open has its own allowance and a protected token; everyone else's open is unchanged.
+    const ownerOpen = approvalLinksOn() && deps.ownerOpen?.(req) === true;
+    if (ownerOpen && !tokens.mayMint({ protected: true })) {
+      res.status(429).json({ error: 'too-many-pages', retryAfterSeconds: tokens.mintRefillSeconds({ protected: true }) });
+      return;
+    }
+    if (!ownerOpen && !tokens.mayMint()) {
       if (!mintLimitReported) {
         mintLimitReported = true;
         DegradationReporter.getInstance().report({
@@ -896,15 +963,23 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
           impact: 'While this lasts, the owner cannot open the page to say yes or no.',
         });
       }
-      res.status(429).json({ error: 'too-many-pages' });
+      res.status(429).json(approvalLinksOn() ? { error: 'too-many-pages', retryAfterSeconds: tokens.mintRefillSeconds() } : { error: 'too-many-pages' });
       return;
     }
     let minted: { token: string; expiresAt: number };
     try {
       // A page opened for a service the owner was offered, and has not answered, answers that offer.
       const origin = ledger.effective(row.id).choice === 'unset' && ledger.offerState(row.id, owner) === 'offered' ? 'first-offer' : 'person-asked';
-      minted = tokens.mint({ service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin, nosAtOpen: ledger.knownNoIds(row.id) });
-    } catch {
+      const binding: import('../recommended/confirmTokens.js').ConfirmBinding = { service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin, nosAtOpen: ledger.knownNoIds(row.id) };
+      minted = approvalLinksOn() ? tokens.mint(binding, { protected: ownerOpen }) : tokens.mint(binding);
+      if (ownerOpen) confirmStats.recordOwnerOpen();
+    } catch (err) {
+      if (err instanceof ConfirmTokensFullError) {
+        // Every live page for this service is an owner page: refuse rather than push one out. Only an
+        // owner open is told why (its page shows the "still active" message); anyone else gets the plain refusal.
+        res.status(429).json(ownerOpen ? { error: 'too-many-pages', allProtected: true } : { error: 'too-many-pages' });
+        return;
+      }
       res.status(503).json({ error: 'recommended-services-unavailable' });
       return;
     }
@@ -913,8 +988,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // The page offers "switch it off" only where this machine's own setup made the service work; a service the
     // person already had is named as theirs. It also says when a yes can't be taken here.
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
-    // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
-    const copies = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []) : undefined;
+    // A recipe that keeps a copy elsewhere says on the page how many secrets it would copy. SEC-129: this answer
+    // is reachable before any sign-in, so it carries only the COUNT; the names come from the PIN-checked
+    // `answer: 'names'` on the POST below. Values never reach a page.
+    const copiesCount = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []).length : undefined;
     // Email asks the owner to type the one address it will ever send to, and later takes the proof email's code here.
     const emailFields = row.id === 'email' ? {
       asksRecipient: true,
@@ -922,7 +999,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       recipientFixed: readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape === 'A' && !!deps.readSecret(EMAIL_RECIPIENT_SECRET),
       awaitingCode: !!deps.email && deps.readSecret(EMAIL_RECIPIENT_SECRET) !== null && !deps.email.proven().proven && readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape !== 'B' && !!deps.readSecret(EMAIL_SECRET),
     } : {};
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...emailFields, ...minted });
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copiesCount !== undefined ? { copiesCount } : {}), ...emailFields, ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -955,8 +1032,24 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(400).json({ error: 'token-refused' });
       return;
     }
-    if (answer !== 'yes' && answer !== 'no') {
+    if (answer !== 'yes' && answer !== 'no' && answer !== 'names') {
       res.status(400).json({ error: 'invalid-answer' });
+      return;
+    }
+    // SEC-129: the names of the secrets a copying service would copy, for an open page with the PIN. It needs
+    // the same live token and PIN as an answer, never spends the token, and changes nothing.
+    if (answer === 'names') {
+      if (!recipeFor(row)?.listsCopies) {
+        res.status(404).json({ error: 'no-copies' });
+        return;
+      }
+      if (!tokens.isLive(token, row.id)) {
+        res.status(409).json({ error: 'token-refused' });
+        return;
+      }
+      if (!confirmPinPasses(req, res)) return;
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ copies: deps.readSecretNames?.() ?? [] });
       return;
     }
     if (!NO_REASONS.includes(reason as NoReason)) {
@@ -982,7 +1075,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'token-refused' });
       return;
     }
-    if (!deps.checkConfirmPin(req, res)) return;
+    if (!confirmPinPasses(req, res)) return;
     const binding = tokens.consume(token, row.id);
     if (!binding) {
       res.status(409).json({ error: 'token-refused' });
@@ -1209,7 +1302,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         deps.telegramSetup.write({ token, chatId });
         // Setup made this channel: the switch-off may disable it.
         updateSetupState(deps.stateDir, row.id, { signedInBySetup: true });
-        deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
+        await deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
       } catch (err) {
         report('Store the Telegram channel', err, 'The channel was not saved.');
         res.status(503).json({ error: 'key-not-saved' });

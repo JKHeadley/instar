@@ -42,6 +42,8 @@ describe('one-tap repair setting through the production AgentServer', () => {
     servers.push(server);
     await server.start();
     const app = server.getApp();
+    const nativeApproval = await request(app).get('/mobile/owner-approvals').set('Authorization', 'Bearer one-tap-token');
+    expect(nativeApproval.status).toBe(404);
 
     // The read: runtime absent here, so 503 — but the body carries this machine's setting.
     const read = await request(app).get('/subscription-relogin').set('Authorization', 'Bearer one-tap-token');
@@ -49,6 +51,11 @@ describe('one-tap repair setting through the production AgentServer', () => {
     expect(read.body.config).toMatchObject({ mode: 'unattended', identities: ['echo@sagemindai.io'], activationPending: false });
     const revision = read.body.config.revision as string;
     expect(revision).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+    const rosterRead = await request(app).get('/subscription-relogin?scope=pool&retryTimeout=1')
+      .set('Authorization', 'Bearer one-tap-token');
+    expect(rosterRead.status).toBe(200);
+    expect(rosterRead.body.pool.expectedMachines).toContainEqual(expect.objectContaining({ machineId: read.body.config.machineId }));
 
     // Fronting route: alive, and refuses without a recent unlock.
     const denied = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
@@ -59,6 +66,11 @@ describe('one-tap repair setting through the production AgentServer', () => {
     const unlock = await request(app).post('/dashboard/unlock').send({ pin: '123456' });
     expect(unlock.status).toBe(200);
     const selfId = read.body.config.machineId as string;
+    const invalid = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
+      .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken)
+      .send({ mode: 'approval', targets: [{ machineId: selfId, expectedRevision: 'unversioned' }] });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.error).toBe('each target needs the expectedRevision it was read at');
     const back = await request(app).post('/subscription-relogin/configure-pool').set('Authorization', 'Bearer one-tap-token')
       .set('X-Instar-Operator-Session', unlock.body.operatorSessionToken)
       .send({ mode: 'approval', targets: [{ machineId: selfId, expectedRevision: revision, identities: ['echo@sagemindai.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });

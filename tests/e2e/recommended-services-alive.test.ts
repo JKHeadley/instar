@@ -144,9 +144,9 @@ describe('recommended services: production wiring', () => {
     const noCopy = await request(app).post('/recommended-services/jev/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noCopy.status).toBe(409);
     expect(noCopy.body.error).toBe('no-copy-for-this-service');
-    // The page names what would be copied, as names, through the real vault and config.
+    // The page counts what would be copied through the real vault and config; the names need the PIN (SEC-129).
     const page = await request(app).get('/recommended-services/bitwarden/confirm');
-    if (page.status === 200) expect(Array.isArray(page.body.copies)).toBe(true);
+    if (page.status === 200) { expect(typeof page.body.copiesCount).toBe('number'); expect(page.body.copies).toBeUndefined(); }
     else expect(page.body.error).toBe('no-owner');
   });
 
@@ -163,7 +163,7 @@ describe('recommended services: production wiring', () => {
     const page = await request(app).get('/recommended-services/github-state-backup/confirm');
     expect([200, 409]).toContain(page.status);
     if (page.status === 409) expect(page.body.error).toBe('no-owner');
-    else expect(page.body.copies).toBeUndefined();
+    else { expect(page.body.copies).toBeUndefined(); expect(page.body.copiesCount).toBeUndefined(); }
   });
 
   it('the voice transcription recipe is available on a fleet agent through the real wiring, and its key route stops at the missing yes', async () => {

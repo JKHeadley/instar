@@ -1,7 +1,7 @@
 /** Default-off production composition. Enabling this surface is a release
  * action after increment-A acceptance; readiness is still checked per read.
  * Storage initialization alone never mounts a public graph route. */
-import {Router} from 'express';
+import {Router, type Request, type Response, type NextFunction} from 'express';
 import {SecretStore} from '../core/SecretStore.js';
 import type {MachineIdentityManager} from '../core/MachineIdentity.js';
 import type {ScopeVerifier} from '../core/ScopeVerifier.js';
@@ -17,10 +17,13 @@ import {createConversationGraphOwnerAdmission} from './ConversationGraphOwnerAdm
 import {ConversationGraphOwnerGrantStore} from './ConversationGraphOwnerGrant.js';
 import type {ConversationGraphOwnerPolicySnapshot} from '../core/ConversationGraphOwnerPolicy.js';
 import {createConversationGraphRouter} from './conversationGraphRoutes.js';
+import {treeProjects} from '../core/workFrontDoorsGraph.js';
 import {createConversationGraphChangeRouter} from './conversationGraphChangeRoutes.js';
 import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} from './conversationGraphHistoryRoutes.js';
 import {createConversationGraphSuggestionRouter} from './conversationGraphSuggestionRoutes.js';
 import {ConversationGraphSuggestionService} from './ConversationGraphSuggestionService.js';
+import {createConversationGroupProjectRouter,groupProjectConfirmPort} from './conversationGroupProjectRoutes.js';
+import type {GroupProjectConfirmHolder,GroupProjectConfirmDeps} from './ConversationGroupProjectDrafts.js';
 import type {IntelligenceProvider} from '../core/types.js';
 import type {ConversationRef} from '../core/conversationGraph.js';
 
@@ -74,6 +77,7 @@ export function createConversationGraphSurface(options:{
  readEnabled?:boolean;correctionsEnabled?:boolean;identity:MachineIdentityManager;
  scope:ScopeVerifier|null;telegramChatId:string;pairing:MobilePairingService|null;
  verifyDashboardOwner(token:string|undefined):boolean;
+ mayPresent?(ref:import('../core/conversationGraph.js').NodeRef):boolean;
  /** Live operator policy; absence preserves the older admitted-only adapter. */
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
  history?:Pick<ConversationGraphHistoryDeps,'selfMachineId'|'localBaseUrl'|'peers'|'authToken'|'agentId'|'peerHostAllowlist'|'recordRopeResult'>;
@@ -83,6 +87,8 @@ export function createConversationGraphSurface(options:{
  /** Work-front-doors stage 2b: open cards' conversations and their projects' conversations (proposed placement). */
  cardPlacements?:()=>Array<{card:ConversationRef;project:ConversationRef}>;
  suggestions?:{intelligence:IntelligenceProvider|null;evidence(ref:ConversationRef):{project:string|null;text:string};projects?:()=>import('./ConversationGraphSuggestionService.js').ProjectSuggestionSource[];decisions?:import('../core/ConversationGraphSuggestionDecisions.js').SuggestionDecisionStore|null};
+ /** "Make this group a project" (conversation-groups-phone §3): the Chief of Staff's bound goals (null = off or unreadable), its bind, and the holder the phone confirm route reads. */
+ groupProjects?:{chiefOfStaffOn():boolean;boundProjects():Map<string,import('./ConversationGroupProjectDrafts.js').BoundProjectContent>|null;bindProject:GroupProjectConfirmDeps['bindProject'];confirmHolder:GroupProjectConfirmHolder};
 }):Router{
  if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
@@ -98,7 +104,9 @@ export function createConversationGraphSurface(options:{
    ?{kind:'conversation',platform:'telegram',chatId:options.telegramChatId,topicId}:null;
  };
  const model=new ConversationGraphReadModel(source,{rootConversation});
- router.use(createConversationGraphRouter({model,resolveViewer}));
+ // The phone tree's Project label reads the same Chief of Staff projects the suggestions offer (work-front-doors §3.1).
+ const suggestedProjects=options.suggestions?.projects;
+ router.use(createConversationGraphRouter({model,resolveViewer,...(suggestedProjects?{projects:()=>treeProjects(suggestedProjects())}:{})}));
  if(options.history)router.use(createConversationGraphHistoryRoutes({...options.history,
   // The same private-serving gate as the owner's read view that showed this conversation (readView), not
   // the 60 s write-readiness proof: history is a read (conversation-graph-suggestions follow-up, 2026-11-17).
@@ -127,8 +135,22 @@ export function createConversationGraphSurface(options:{
    headerVersion:headerId=>{custody.synchronize();return custody.get(headerId);},
    ...(ownerAdmission?{captureOwnerIntent:ownerAdmission.capture,resolveQueuedOwner:ownerAdmission.resolve}:{})});
   router.use(createConversationGraphChangeRouter({changes,resolveViewer}));
-  if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,
+  if(options.suggestions)router.use(createConversationGraphSuggestionRouter({model,resolveViewer,changes,
    service:new ConversationGraphSuggestionService({stateDir:options.stateDir,intelligence:options.suggestions.intelligence,evidence:options.suggestions.evidence,...(options.suggestions.projects?{projects:options.suggestions.projects}:{}),...(options.suggestions.decisions?{decisions:options.suggestions.decisions}:{})})}));
+  if(options.groupProjects){const groupProjects=options.groupProjects,evidence=options.suggestions?.evidence;
+   const projectDeps={model,resolveViewer,telegramChatId:options.telegramChatId,boundProjects:()=>groupProjects.boundProjects(),chiefOfStaffOn:()=>groupProjects.chiefOfStaffOn(),
+    evidence:(ref:ConversationRef)=>evidence?evidence(ref).text:''};
+   router.use(createConversationGroupProjectRouter(projectDeps));
+   // The phone confirm (mobilePermissionsRoutes) runs outside this surface; it reads the group through this port.
+   groupProjects.confirmHolder.off=false;
+   groupProjects.confirmHolder.confirm=groupProjectConfirmPort(projectDeps,input=>groupProjects.bindProject(input));}
+ }else if(options.groupProjects){
+  // Owner changes are off here: the confirm answers a lasting refusal, never "try again".
+  options.groupProjects.confirmHolder.confirm=null;options.groupProjects.confirmHolder.off=true;
  }
+ router.use((error:unknown,_req:Request,res:Response,next:NextFunction)=>{
+  if(error instanceof Error&&error.message==='work-card-visibility-unavailable'){res.status(503).json({code:'work-card-visibility-unavailable'});return;}
+  next(error);
+ });
  return router;
 }

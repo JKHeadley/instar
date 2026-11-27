@@ -7,7 +7,7 @@
  * dist/monitoring/diskStewardMain.js) runs against a throwaway HOME holding a
  * fake npm cache and Xcode DerivedData, and removes only what the rules allow.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +27,8 @@ describe('Disk Steward E2E lifecycle', () => {
   let tmp: string;
   let server: AgentServer;
   let wired: ReturnType<typeof createDiskSteward>;
+  let peerTargets = () => [] as Array<{ machineId: string; url: string; kind: string; allowed: boolean; ropes: Array<{ url: string; kind: string }> }>;
+  const recordRopeResult = vi.fn();
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ds-e2e-'));
@@ -38,7 +40,8 @@ describe('Disk Steward E2E lifecycle', () => {
     wired = createDiskSteward({
       readConfig: () => ({ diskSteward: {}, developmentAgent: false }),
       stateDir, agentHome: tmp, agentName: 'ds-e2e', machineId: 'm_e2e', machineName: () => 'E2E Box',
-      isHolder: () => true, peers: () => [], authToken: AUTH,
+      isHolder: () => true, peers: () => peerTargets(), authToken: AUTH,
+      ...{ recordRopeResult },
       getTopicId: () => state.get<number>('agent-disk-topic') ?? null, setTopicId: (id) => state.set('agent-disk-topic', id),
       canCreateTopic: () => false,
     });
@@ -48,7 +51,7 @@ describe('Disk Steward E2E lifecycle', () => {
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
     };
     server = new AgentServer({ config, sessionManager: createMockSessionManager() as never, state,
-      diskSteward: () => ({ steward: wired.steward, runner: wired.runner, machineId: 'm_e2e', peers: () => [], authToken: AUTH }) });
+      diskSteward: () => ({ steward: wired.steward, runner: wired.runner, machineId: 'm_e2e', peers: () => peerTargets(), authToken: AUTH, ...{ recordRopeResult } }) });
     await server.start();
   });
 
@@ -67,6 +70,29 @@ describe('Disk Steward E2E lifecycle', () => {
     expect(res.body.freeBytes).toBeGreaterThan(0);
     expect(res.body.thresholds.floor).toBeGreaterThan(0);
     expect(res.body.machine.name).toBe('E2E Box');
+  });
+
+  it('the live production wiring reads a peer over an admitted HTTPS connection after LAN fails, in route and scheduled paths', async () => {
+    const lan = 'http://192.168.87.61:4062';
+    const secure = 'https://m5.dawn-tunnel.dev';
+    peerTargets = () => [{ machineId: 'm_m5', url: lan, kind: 'lan', allowed: true, ropes: [{ url: secure, kind: 'cloudflare' }] }];
+    const dial = vi.fn(async (url: string) => {
+      if (url === `${lan}/disk-steward`) throw new TypeError('fetch failed');
+      expect(url).toBe(`${secure}/disk-steward`);
+      return Response.json({ machine: { id: 'm_m5', name: 'M5 Pro' }, measured: true, freeBytes: 261_546_000_384, duePost: null });
+    });
+    recordRopeResult.mockClear(); vi.stubGlobal('fetch', dial);
+    try {
+      await wired.steward.tick();
+      const res = await request(server.getApp()).get('/disk-steward?scope=pool').set({ Authorization: `Bearer ${AUTH}` });
+      expect(res.status).toBe(200);
+      expect(res.body.measured).toBe(true);
+      expect(res.body.peers[0].status).toMatchObject({ measured: true, freeBytes: 261_546_000_384 });
+      expect(dial).toHaveBeenCalledTimes(4);
+      expect(recordRopeResult.mock.calls.map((c) => [c[1], c[2]])).toEqual([
+        ['lan', false], ['cloudflare', true], ['lan', false], ['cloudflare', true],
+      ]);
+    } finally { peerTargets = () => []; vi.unstubAllGlobals(); }
   });
 
   it('test-agent rung: a real prune child removes only the old Xcode-named build folder and the npm cache', () => {
