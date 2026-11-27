@@ -117,7 +117,6 @@ const ARGUED_FALSE_BASELINE = [
   'TopicSummarizer',
   'ContextualEvaluator',
   'RelationshipManager',
-  'StandardsConformanceReviewer',
   'DiscoveryEvaluator',
   'Usher',
   'PreCompactionFlush',

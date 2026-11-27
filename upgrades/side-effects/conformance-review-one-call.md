@@ -65,7 +65,7 @@ Same results contract, one call instead of two. Ship once the Chief of Staff sta
 **Reviewer:** independent reviewer subagent, 2026-11-27
 **Verdict: APPROVE WITH NITS**, no blocking finding. It traced every branch (no provider, unresolved parent, throw, unparseable, normal) against the two-call path on main 2fb06861. Dispositions:
 1. Should-fix, a cut-off reply could turn weak/none into a fail-open fit (standards-conformance.ts, combined parse). Fixed: separate fit call on a missing fit half, fit asked first in the reply, two tests.
-2. Should-fix, `llmBenchCoverage.ts` called the component vocabulary-free. Fixed: contract test entry.
+2. Should-fix, `llmBenchCoverage.ts` called the component vocabulary-free. Fixed: contract test entry, and the name leaves the shrink-only argued-false baseline in `tests/unit/parser-contract-classification-ratchet.test.ts` (caught by the rule 7 whole-file run).
 3. Nit, the drift throw became a quiet degrade. Fixed: prompt built before the call; drift logs and uses two calls.
 4. Nit, 'first' swaps could match the trusted standards text. Fixed: search starts after the list; unit test with a quoting rule.
 5. Nit, parent resolution duplicated. Fixed: shared `resolveParentArticle`.
