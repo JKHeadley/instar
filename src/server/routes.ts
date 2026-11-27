@@ -11451,6 +11451,10 @@ export function createRoutes(ctx: RouteContext): Router {
       cartographer?: { freshnessSweep?: { enabled?: boolean; minSummaryChars?: number; maxSummaryChars?: number; maxLeafBytes?: number } };
     }).cartographer?.freshnessSweep;
     if (!sweepCfg?.enabled) { res.status(503).json({ error: 'Cartographer freshness sweep not enabled' }); return; }
+    if (root.tree.isScaffolding) {
+      res.set('Retry-After', '1').status(503).json({ error: 'Cartographer is refreshing its tree. Try again shortly.' });
+      return;
+    }
 
     // Write-rate bound (per-process): at most 30 inline refreshes / 60s.
     const nowMs = Date.now();

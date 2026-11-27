@@ -2,33 +2,51 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeCliIntelligenceProvider } from '../../src/core/ClaudeCliIntelligenceProvider.js';
 import { configureClaudeChildAuth, setClaudeCallOutcomeListener, writeClaudeKeyToConfig } from '../../src/core/claudeChildAuth.js';
+
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const dirs: string[] = [];
+function tempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+}
 
 const KEY = `sk-ant-oat01-${'k'.repeat(40)}`;
 
 /** A stand-in `claude` that behaves like the real one: fails "Not logged in" unless the key arrived. */
-function fakeClaude(): { bin: string; seen: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-claude-'));
+function fakeClaude(): string {
+  const dir = tempDir('fake-claude-');
   const bin = path.join(dir, 'claude');
-  const seen = path.join(dir, 'seen');
   fs.writeFileSync(bin, `#!/bin/sh
-printf '%s|%s' "\${CLAUDE_CODE_OAUTH_TOKEN:-none}" "$*" > "${seen}"
 if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
   echo '{"is_error":true,"api_error_status":null,"result":"Not logged in · Please run /login"}'; exit 1
 fi
-if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "dead" ]; then :; fi
+[ "$CLAUDE_CODE_OAUTH_TOKEN" = "${KEY}" ] || exit 2
+case "$*" in *"${KEY}"*) exit 3 ;; esac
 echo '{"is_error":false,"result":"yes"}'
 `, { mode: 0o755 });
-  return { bin, seen };
+  return bin;
 }
 
-afterEach(() => { configureClaudeChildAuth(null); setClaudeCallOutcomeListener(null); });
+beforeEach(() => {
+  vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', undefined);
+});
+afterEach(() => {
+  configureClaudeChildAuth(null);
+  setClaudeCallOutcomeListener(null);
+  vi.unstubAllEnvs();
+  for (const dir of dirs.splice(0)) {
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'claude-key-fixture:cleanup' });
+  }
+});
 
 describe('ClaudeCliIntelligenceProvider on a key-only agent', () => {
   it('fails as before with no key, and names the cause as a category', async () => {
-    const { bin } = fakeClaude();
+    const bin = fakeClaude();
     const outcomes: string[] = [];
     setClaudeCallOutcomeListener((o) => outcomes.push(o));
     await expect(new ClaudeCliIntelligenceProvider(bin).evaluate('hi')).rejects.toThrow(/auth: no-auth/);
@@ -36,19 +54,16 @@ describe('ClaudeCliIntelligenceProvider on a key-only agent', () => {
   });
 
   it('succeeds with the key set, and the key is not in argv', async () => {
-    const { bin, seen } = fakeClaude();
+    const bin = fakeClaude();
     configureClaudeChildAuth(() => KEY);
     const outcomes: string[] = [];
     setClaudeCallOutcomeListener((o) => outcomes.push(o));
     await expect(new ClaudeCliIntelligenceProvider(bin).evaluate('hi')).resolves.toBe('yes');
-    const [token, argv] = fs.readFileSync(seen, 'utf-8').split('|');
-    expect(token).toBe(KEY);
-    expect(argv).not.toContain(KEY);
     expect(outcomes).toEqual(['ok']);
   });
 
   it('never logs CLI text: an error carrying the key does not reach the message', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-claude-'));
+    const dir = tempDir('fake-claude-');
     const bin = path.join(dir, 'claude');
     fs.writeFileSync(bin, `#!/bin/sh\necho '{"is_error":true,"api_error_status":401,"result":"bad key ${KEY}"}'; exit 1\n`, { mode: 0o755 });
     configureClaudeChildAuth(() => KEY);
@@ -60,7 +75,7 @@ describe('ClaudeCliIntelligenceProvider on a key-only agent', () => {
 
 describe('writeClaudeKeyToConfig', () => {
   it('writes the documented field, keeps a base URL, and leaves the rest alone', () => {
-    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-')), 'config.json');
+    const file = path.join(tempDir('cfg-'), 'config.json');
     fs.writeFileSync(file, JSON.stringify({ port: 1, sessions: { maxSessions: 2, credentials: { anthropic: { kind: 'oauth-token', value: 'old', baseUrl: 'http://proxy' } } } }));
     writeClaudeKeyToConfig(file, ` ${KEY}\n`);
     const out = JSON.parse(fs.readFileSync(file, 'utf-8'));

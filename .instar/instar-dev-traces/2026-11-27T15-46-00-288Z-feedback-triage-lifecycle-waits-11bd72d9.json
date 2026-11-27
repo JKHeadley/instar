@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "feedback-triage-lifecycle-waits",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T15:46:00.288Z",
+  "artifactPath": "upgrades/side-effects/feedback-triage-lifecycle-waits.md",
+  "artifactSha256": "75355cb923ee04957a63650a4a055152332d62664c7616d111e258c4e9486d6a",
+  "coveredFiles": [
+    "tests/e2e/feedback-triage-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: three fixed 2 s waits on background ticks become 30 s deadline waits with a diagnostic; assertions unchanged.",
+  "eli16Path": "docs/eli16/feedback-triage-lifecycle-waits.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-triage-lifecycle-waits.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

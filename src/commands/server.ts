@@ -11081,6 +11081,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           registry: conversationRegistry,
           requests: new MobileChatRequestStore(config.stateDir),
           holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : true),
+          appBindingLeaseAuthority: () => coordinator.appBindingLeaseAuthority(),
           pool: () => _appPoolHandle,
           ownerName: () => appOwnerName(config),
           confinedInbox: (key) => sessionManager.confinedInboxFor(key),
@@ -34117,17 +34118,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               read: (rk) => ownReg.read(rk),
               gateOpenFor: (key) => appGate.openFor(key),
               drainRunning: appDrainRunning,
-              sessionRunning: (name) => sessionManager.isSessionAlive(name),
+              sessionIdentity: (name) => state.findSessionByTmux(name)?.id ?? null,
+              sessionRunning: (name) => sessionManager.isSessionAliveNonBlocking(name),
               // A close of a conversation this machine no longer serves (§2.1). Not the lease holder, so the
               // runtime-private exception and a reason beginning "topic moved". A KEEP refusal comes back here.
-              closeLostSession: async (key, tmux) => {
+              closeLostSession: async (key, tmux, mayCommit) => {
                 const rec = state.findSessionByTmux(tmux);
                 if (!rec) return { closed: true };
+                if (!mayCommit()) return { closed: false, detail: 'close authority changed or expired' };
                 const res = await terminateWithAuthority(rec.id, `topic moved: this machine no longer serves app conversation ${key}`, { via: 'app-conversation-lost', localPostTransferCloseout: true });
                 return res.terminated ? { closed: true } : { closed: false, detail: res.skipped };
               },
               route: (msg) => _sessionRouter!.route(msg),
-              leaseHeldElsewhere: () => { const h = coordinator.getSyncStatus().leaseHolder; return !!h && h !== meshSelfId; },
+              leaseHeldElsewhere: () => coordinator.appBindingLeaseAuthority().heldElsewhere,
               // The rows only: unlike a Telegram stop, later messages to this conversation are still taken.
               dropHeld: (rk) => { void _inboundQueue?.onOperatorStop(rk); },
               hasHeld: (rk) => { try { return _inboundQueue?.hasQueued(rk) === true; } catch { return false; } }, // @silent-fallback-ok — an unreadable queue reads as nothing held

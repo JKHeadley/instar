@@ -281,7 +281,17 @@ export class SubscriptionReloginStore {
         // "Try repair again" on changed inputs re-offers it (`slowRetry` with `operatorRequested`).
         const readmittable = (prior.state === 'suggested' || prior.state === 'cancelled')
           && !securityFailure;
-        if (!readmittable || prior.inputDigest === input.inputDigest) return priorEp;
+        // A repair cancelled only because its source incident closed (`source-incident-closed`) is
+        // re-admitted when that same incident is open again (spec relogin-reopen-cancelled-incident):
+        // `suggest` is only reached for an open source, and a resolved incident is never reopened,
+        // so this case is exactly a bookkeeping cancel that has since been undone.
+        const lastEvent = prior.state === 'cancelled' ? (this.db.prepare(
+          'SELECT eventClass FROM repair_events WHERE episodeId=? ORDER BY id DESC LIMIT 1').get(prior.id) as { eventClass: string } | undefined) : undefined;
+        // At most once per row, so a cell that keeps dropping out cannot keep restarting helpers.
+        const reopenedBefore = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=?
+          AND eventClass='candidate-readmitted-source-reopened'`).get(prior.id) as { n: number }).n) > 0;
+        const closedBySource = lastEvent?.eventClass === 'source-incident-closed' && !reopenedBefore;
+        if (!readmittable || (prior.inputDigest === input.inputDigest && !closedBySource)) return priorEp;
         // An operator-cancelled repair is never restarted without a tap: re-admitted, it is re-offered,
         // and stays approval-only on later re-admissions until the operator approves it again.
         const operatorCancelPending = Number((this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=?
@@ -296,7 +306,8 @@ export class SubscriptionReloginStore {
           provider=?,loginMethod=?,attemptCount=0,reissueCount=0,approvedAt=NULL,approvalExpiresAt=NULL,startedAt=NULL,
           finishedAt=NULL,nextAttemptAt=NULL,failureClass=NULL,version=version+1,updatedAt=? WHERE id=?`)
           .run(mode, input.inputDigest, profile, framework, provider, loginMethod, at, prior.id);
-        this.event(prior.id, at, prior.state, 'suggested', 'candidate-readmitted-inputs-changed', 0);
+        this.event(prior.id, at, prior.state, 'suggested',
+          closedBySource && prior.inputDigest === input.inputDigest ? 'candidate-readmitted-source-reopened' : 'candidate-readmitted-inputs-changed', 0);
         // Notifications are keyed (episode, kind); clear the prior outcome's rows so this
         // admission's suggestion and outcome are delivered rather than silently deduplicated. A row
         // mid-delivery is left alone so its in-flight completion still finds its claim.
@@ -372,8 +383,8 @@ export class SubscriptionReloginStore {
     const row = this.db.prepare(`SELECT COUNT(*) n FROM repair_events WHERE episodeId=? AND eventClass IN ('operator-only-challenge','phone-tap-requested')
       AND COALESCE(reason,'')<>'agent-no-healthy-seat'
       AND id > COALESCE((SELECT MAX(id) FROM repair_events WHERE episodeId=? AND eventClass IN
-        ('candidate-admitted','candidate-readmitted-inputs-changed','slow-retry-approved','slow-retry-suggested',
-         'operator-retry-readmitted','operator-retry-approved')), 0)`)
+        ('candidate-admitted','candidate-readmitted-inputs-changed','candidate-readmitted-source-reopened',
+         'slow-retry-approved','slow-retry-suggested','operator-retry-readmitted','operator-retry-approved')), 0)`)
       .get(normalizeId(id, 'episode'), normalizeId(id, 'episode')) as { n: number };
     return Number(row.n) > 0;
   }

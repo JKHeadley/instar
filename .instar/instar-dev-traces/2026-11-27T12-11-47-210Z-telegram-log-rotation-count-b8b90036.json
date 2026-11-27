@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "telegram-log-rotation-count",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T12:11:47.210Z",
+  "artifactPath": "upgrades/side-effects/telegram-log-rotation-count.md",
+  "artifactSha256": "7abf7cac6224c46fd585ce64e851bf928a8943aa6da8c3ec2a8a37742f6ab9ed",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T12-10-41-040Z-local-model-conversational-command.json",
+    "docs/specs/telegram-log-rotation-count.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/unit/telegram-log-rotation-count.test.ts",
+    "upgrades/next/telegram-log-rotation-count.md",
+    "upgrades/side-effects/telegram-log-rotation-count.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One private method and three fields in TelegramAdapter; rotation rule unchanged; machine fix for a per-append full read (CoS 2026-11-27)",
+  "eli16Path": "docs/specs/telegram-log-rotation-count.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-log-rotation-count.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
