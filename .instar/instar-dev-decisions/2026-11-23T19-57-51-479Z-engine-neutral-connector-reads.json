@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-23T19:57:51.479Z",
+  "slug": "engine-neutral-connector-reads",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/effect-kinds.ts"
+    ],
+    "addedLines": 25,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Connector namespace preceded the read verb, while the parser assumed the verb started the whole action. Exact introducing PR is unknown. Real-name regressions reproduce the failure; independent review caught and corrected arbitrary unknown-prefix expansion."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

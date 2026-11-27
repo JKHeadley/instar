@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "needs-and-conversations-touch-targets",
+  "sessionId": "fbd2d863-65c0-467c-b7f0-b849917802c2",
+  "timestamp": "2026-11-23T23:35:21.819Z",
+  "artifactPath": "upgrades/side-effects/needs-and-conversations-touch-targets.md",
+  "artifactSha256": "e71ad112cce38e09fee59e648d916c7208f6c6fbb63458547df8cacbaa9d4df5",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "upgrades/next/needs-and-conversations-touch-targets.md",
+    "upgrades/side-effects/needs-and-conversations-touch-targets.eli16.md",
+    "upgrades/side-effects/needs-and-conversations-touch-targets.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible scoped CSS target-size repair; no state, networking or authority change",
+  "eli16Path": "upgrades/side-effects/needs-and-conversations-touch-targets.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-and-conversations-touch-targets.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-26T09:58:06.713Z",
+  "slug": "durable-unit-process-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 110,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/localVerify/orchestrator.ts",
+      "src/localVerify/orchestratorSeams.ts",
+      "src/localVerify/unitProcessOutput.ts"
+    ],
+    "addedLines": 103,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

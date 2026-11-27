@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { getInitDefaults } from '../../src/config/ConfigDefaults.js';
 import { LocalLeaseStore } from '../../src/core/LocalLeaseStore.js';
 
@@ -24,7 +25,19 @@ describe('lease takeover wiring in server.ts', () => {
     // A peer's signed pull reaches the holder through this one route, and has to count there.
     const agentServer = fs.readFileSync(path.join(process.cwd(), 'src/server/AgentServer.ts'), 'utf-8');
     expect(agentServer).toMatch(/onLeasePullRequest: \(\) => \{\s*options\.coordinator\?\.noteLeasePeerPull\(\);\s*return options\.onLeasePullRequest\?\.\(\) \?\? null;/);
-    expect(server).toMatch(/new AgentServer\(\{[^\n]*coordinator: coordinator\.enabled/);
+    const source = ts.createSourceFile('server.ts', server, ts.ScriptTarget.Latest, true);
+    function bindsLiveCoordinator(node: ts.Node): boolean {
+      if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'AgentServer') {
+        const options = node.arguments?.[0];
+        if (!options || !ts.isObjectLiteralExpression(options)) return false;
+        return options.properties.some(property =>
+          ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+          property.name.text === 'coordinator' &&
+          /^coordinator\.enabled\s*\?\s*coordinator\s*:/.test(property.initializer.getText(source)));
+      }
+      return ts.forEachChild(node, child => bindsLiveCoordinator(child) || undefined) === true;
+    }
+    expect(bindsLiveCoordinator(source)).toBe(true);
   });
   it('the coordinator receives survivorMayHold', () => {
     const start = server.indexOf('new LeaseCoordinator({');

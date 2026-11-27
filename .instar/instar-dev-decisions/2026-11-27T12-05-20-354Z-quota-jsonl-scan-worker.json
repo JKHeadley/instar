@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-27T12:05:20.354Z",
+  "slug": "quota-jsonl-scan-worker",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 117,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/QuotaCollector.ts",
+      "src/monitoring/QuotaJsonlScan.worker.ts"
+    ],
+    "addedLines": 75,
+    "deletedLines": 42
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2138
+    ],
+    "notes": "The earlier streaming fix kept transcript decoding and parsing on the serving thread. The Laptop scale exposed the remaining shared-loop cost."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

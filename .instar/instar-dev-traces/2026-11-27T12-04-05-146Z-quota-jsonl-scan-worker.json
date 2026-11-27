@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "quota-jsonl-scan-worker",
+  "sessionId": "ac84cfde-7918-428e-a90b-3a9baacf0561",
+  "timestamp": "2026-11-27T12:04:05.146Z",
+  "artifactPath": "upgrades/side-effects/quota-jsonl-scan-worker.md",
+  "artifactSha256": "daa2dfc4ae63ace92f2a9750d2de5c6cf9b8bd22b70b7ae42a2386dc3b6b5ae0",
+  "coveredFiles": [
+    "src/monitoring/QuotaCollector.ts",
+    "src/monitoring/QuotaJsonlScan.worker.ts",
+    "tests/unit/quota-collector.test.ts",
+    "docs/specs/quota-jsonl-scan-worker.eli16.md",
+    "upgrades/side-effects/quota-jsonl-scan-worker.md",
+    "upgrades/next/quota-jsonl-scan-worker.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reliability correction moves existing local estimates to a worker. Quota meaning and action authority are unchanged.",
+  "eli16Path": "docs/specs/quota-jsonl-scan-worker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quota-jsonl-scan-worker.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2138
+    ],
+    "notes": "The earlier streaming fix kept transcript decoding and parsing on the serving thread. The Laptop scale exposed the remaining shared-loop cost."
+  }
+}

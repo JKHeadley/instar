@@ -1,0 +1,33 @@
+{
+  "ts": "2026-11-23T20:45:59.026Z",
+  "slug": "sql-command-context",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 364,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/sqlCommandContext.ts",
+      "src/data/awareness/sql-command-context.md",
+      "src/templates/hooks/dangerous-command-guard.sh"
+    ],
+    "addedLines": 364,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One existing hook evaluation per tool call may run one bounded context check on an existing SQL-pattern match. No autonomous loop, retry, notification, restart, spawn policy or state repair is introduced."
+  },
+  "verdict": "pass"
+}

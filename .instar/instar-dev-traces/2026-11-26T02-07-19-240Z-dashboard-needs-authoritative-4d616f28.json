@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "dashboard-needs-authoritative",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T02:07:19.240Z",
+  "artifactPath": "upgrades/side-effects/dashboard-needs-authoritative.md",
+  "artifactSha256": "3129ac3d4a0c4c4cd11fa89796407c6793bc2ed93238477d04ff2c57c85d5894",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/home-model.js",
+    "dashboard/console/needs-actions.js",
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/net-state.js",
+    "tests/unit/console-needs-pages.test.ts",
+    "upgrades/side-effects/dashboard-needs-authoritative.eli16.md",
+    "upgrades/side-effects/dashboard-needs-authoritative.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible console presentation over the server projection with existing consent authority.",
+  "eli16Path": "upgrades/side-effects/dashboard-needs-authoritative.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-needs-authoritative.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
