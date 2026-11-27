@@ -13,3 +13,9 @@ Tests: `tests/unit/scripts/docs-coverage.test.ts` adds a mock-repo case with a r
 Rollback: revert the needle change and the helper; the docs entry is harmless alone.
 
 Decision: Design Standards session, as the owner of this detector, 2026-11-27 (Chief of Staff routing via Project Alignment).
+
+## Second-pass review
+
+**Reviewer:** independent second-pass subagent (general-purpose, fresh context, given the diff only), run by Echo on the Mac Mini against merged head bdc085b77, 2026-11-27. Verdict: concur.
+
+Run against the real `src/cli.ts`, the parser finds 135 nested paths with no key collisions, and only six command files map to one. `set-claude-key` correctly gets no spaced spelling, the existing needles are unchanged, and a missing `cli.ts` just means no spaced needles. Tests pass, and `--check` passes (command 61% against a 60% floor). Minor nits, none blocking: chained `.command().command()` calls are not parsed (`telegram-origin enroll-browser`, harmless today because its kebab form already matches). The spaced needle is a substring match, as the existing needles are. Three CLI reference entries (`jobMigrate`, `ledgerCleanup`, `memoryBackfillEvidence`) still use camelCase names for commands that are really nested.
