@@ -135,8 +135,26 @@ type RestartPublication =
 
 /** Compare live obligations and capture the outcome while holding the publication lock. */
 export function publishRestartRequestUnderLock(flagPath: string, raw: string, current: string | null): RestartPublication {
-  const active = current === null ? null : activeRequestOrder(flagPath, current);
-  if (active && keepCurrentRequest(active, requestOrder(raw))) {
+  const now = Date.now();
+  const active = current === null ? null : activeRequestOrder(flagPath, current, now);
+  const incoming = requestOrder(raw);
+  const keepCurrent = active !== null && keepCurrentRequest(active, incoming);
+  const kept = keepCurrent ? active : incoming;
+  const other = keepCurrent ? incoming : active;
+  // An unversioned force applies to the next restart. A versioned force
+  // belongs to its own activation and cannot authorize a different release.
+  if (kept && !kept.bypassHolds && other?.bypassHolds && other.targetVersion === null) {
+    const combined = { ...kept.record, bypassHolds: true };
+    // Force changes the exact request key, so an old verification deferral no
+    // longer extends this record. Keep a live expiry from the force request.
+    if (kept.expiresAt !== null && kept.expiresAt < now &&
+        other.expiresAt !== null && other.expiresAt >= now) {
+      combined.expiresAt = other.record.expiresAt;
+    }
+    replaceRestartRequestFile(flagPath, JSON.stringify(combined, null, 2), current);
+    return { published: true };
+  }
+  if (keepCurrent) {
     return { published: false, targetVersion: active.targetVersion };
   }
   replaceRestartRequestFile(flagPath, raw, current);

@@ -77,6 +77,52 @@ describe('restart request publication order', () => {
     expect(fs.readFileSync(flag, 'utf8')).toBe(forced);
   });
 
+  it.each([false, true])('combines a forced operator request and pending update (operator first: %s)', async (operatorFirst) => {
+    const update = {
+      ...JSON.parse(older), requestedBy: 'auto-updater', reason: 'Activate installed update',
+      targetVersion: '1.4.0', previousVersion: '1.3.0', plannedRestart: true,
+    };
+    const forced = { ...JSON.parse(newer), requestedBy: 'fix-command', plannedRestart: true, bypassHolds: true };
+    const [first, second] = operatorFirst ? [forced, update] : [update, forced];
+    expect(publishRestartRequestFile(flag, JSON.stringify(first))).toBe(true);
+    expect((await publishRestartRequestFileAsync(flag, JSON.stringify(second))).published).toBe(true);
+    expect(JSON.parse(fs.readFileSync(flag, 'utf8'))).toEqual({ ...update, bypassHolds: true });
+  });
+
+  it.each([false, true])('does not transfer version-specific force to a newer update (forced first: %s)', async (forcedFirst) => {
+    const forced = JSON.stringify({ ...JSON.parse(older), targetVersion: '1.4.0', bypassHolds: true });
+    const automatic = JSON.stringify({ ...JSON.parse(newer), targetVersion: '1.5.0' });
+    const [first, second] = forcedFirst ? [forced, automatic] : [automatic, forced];
+    expect(publishRestartRequestFile(flag, first)).toBe(true);
+    expect(await publishRestartRequestFileAsync(flag, second)).toEqual(forcedFirst
+      ? { published: true }
+      : { published: false, targetVersion: '1.5.0' });
+    expect(fs.readFileSync(flag, 'utf8')).toBe(automatic);
+  });
+
+  it('keeps the force request expiry when it promotes a previously deferred update past its original TTL', async () => {
+    const now = Date.now();
+    const update = {
+      requestedAt: new Date(now - 2 * 60 * 60_000).toISOString(),
+      expiresAt: new Date(now - 60 * 60_000).toISOString(),
+      targetVersion: '1.4.0', requestedBy: 'auto-updater', plannedRestart: true,
+    };
+    const forced = {
+      requestedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60 * 60_000).toISOString(),
+      requestedBy: 'fix-command', plannedRestart: true, bypassHolds: true,
+    };
+    publishRestartRequestFile(flag, JSON.stringify(update));
+    fs.writeFileSync(plannedRestartDeferralPath(directory), JSON.stringify({
+      requestKey: plannedRestartRequestKey(update),
+      deferredAt: now - 90 * 60_000,
+    }));
+
+    expect((await publishRestartRequestFileAsync(flag, JSON.stringify(forced))).published).toBe(true);
+    const combined = fs.readFileSync(flag, 'utf8');
+    expect(JSON.parse(combined)).toEqual({ ...update, bypassHolds: true, expiresAt: forced.expiresAt });
+    expect(pendingUpdateRestartTarget(flag, combined, now)).toBe(update.targetVersion);
+  });
+
   it('accepts an ordinary request after a newer update times out', async () => {
     const update = JSON.stringify({ ...JSON.parse(newer), targetVersion: '1.4.0' });
     publishRestartRequestFile(flag, update);

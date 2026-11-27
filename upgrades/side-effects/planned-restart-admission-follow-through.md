@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-Keep the peer lease ceiling and expose the measured requirement when it exceeds that ceiling. Require positive solo evidence before allowing a preferred host without a lease coordinator. Order restart requests under their existing file lock. A live versioned update keeps its activation and force semantics, durable restarts survive role withdrawal, and a timed-out request yields to eligible work. Both consumers keep the active request and log unexpected admission errors.
+Keep the peer lease ceiling and expose the measured requirement when it exceeds that ceiling. Require positive solo evidence before allowing a preferred host without a lease coordinator. Order restart requests under their existing file lock. A live versioned update keeps its activation details. An unversioned operator force transfers its bypass to the selected request in either arrival order. Force tied to a specific update stays with that release. If an exact verification deferral had extended a now-expired update, the combined request takes the force request's live expiry because the old proof does not cover the combined bytes. Durable restarts survive role withdrawal, and a timed-out request yields to eligible work. Both consumers keep the active request and log unexpected admission errors.
 
 ## Decision-point inventory
 
@@ -39,7 +39,7 @@ The publisher checks precedence after both the lease-announcement and file-lock 
 
 ## 6. External surfaces
 
-The operator's restart request can report that an existing request is pending. Logs name both the measured requirement and peer ceiling and retain unexpected consumer errors for diagnosis. The read-only admission response keeps its existing shape. No default or live restart admission setting changes.
+The operator's forced restart can release an update held by Local Verify while preserving the target version. Request ordering, retained role work, restart reconciliation and awaited pair-activation publication are active with lease admission off. Logs name both the measured requirement and peer ceiling and retain unexpected consumer errors for diagnosis. The read-only admission response keeps its existing shape.
 
 ## 6b. Operator-surface quality
 
