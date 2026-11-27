@@ -139,3 +139,38 @@ describe('runPasskeyColdProof (§3.8)', () => {
     expect(JSON.stringify(r)).not.toMatch(/boom|a@example\.com|"pk"/);
   });
 });
+
+describe('runPasskeyColdProof — repair mode (keepSession)', () => {
+  it('signs the profile in WITHOUT clearing it first and LEAVES the Google session, but still removes the key', async () => {
+    const f = fake({ pages: [snap('google-account-identity'), snap('google-passkey-challenge'), snap('unknown')], identity: ['none', 'none', 'match'] });
+    const r = await runPasskeyColdProof({ openBrowser: () => f.browser }, { ...INPUT, keepSession: true });
+    expect(r.outcome).toBe('ready');
+    expect(f.calls).not.toContain('clear');
+    expect(f.calls).not.toContain('navigate:/Logout');
+    expect(r.teardown).toMatchObject({ credentialRemoved: true, signedOut: false });
+    expect(f.calls.indexOf('remove')).toBeGreaterThan(f.calls.indexOf('click:passkey-continue'));
+    expect(f.calls[f.calls.length - 1]).toBe('close');
+  });
+
+  it('a profile already past the sign-in page is left alone: session-present, no key added', async () => {
+    const f = fake({ pages: [snap('unknown')], identity: ['match'] });
+    const r = await runPasskeyColdProof({ openBrowser: () => f.browser }, { ...INPUT, keepSession: true });
+    expect(r).toMatchObject({ outcome: 'unknown', reason: 'session-present' });
+    expect(f.browser.addCredential).not.toHaveBeenCalled();
+    expect(f.calls).not.toContain('navigate:/Logout');
+  });
+
+  it('a different identity in repair mode is still security, and a risk page still stops', async () => {
+    const other = fake({ pages: [snap('google-account-identity'), snap('google-passkey-challenge'), snap('unknown')], identity: ['none', 'none', 'other'] });
+    expect((await runPasskeyColdProof({ openBrowser: () => other.browser }, { ...INPUT, keepSession: true })).outcome).toBe('security');
+    const risk = fake({ pages: [snap('google-account-identity'), snap('google-risk-challenge')] });
+    expect(await runPasskeyColdProof({ openBrowser: () => risk.browser }, { ...INPUT, keepSession: true })).toMatchObject({ riskPage: true });
+  });
+
+  it('only the signed-in landing counts as a session; another page in repair mode is not-signed-out', async () => {
+    const f = fake({ pages: [snap('captcha' as ReloginBrowserSnapshot['pageClass'])] });
+    const r = await runPasskeyColdProof({ openBrowser: () => f.browser }, { ...INPUT, keepSession: true });
+    expect(r.reason).not.toBe('session-present');
+    expect(f.browser.addCredential).not.toHaveBeenCalled();
+  });
+});

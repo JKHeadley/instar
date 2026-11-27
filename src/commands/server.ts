@@ -19032,7 +19032,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const reloginCfg = config.subscriptionPool?.assistedRelogin;
     if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
       try {
-        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
+        const [{ createSubscriptionReloginRuntime, resolveReloginNavigation, resolveAuthenticatorOverPhone, takeFirstBackupCode, buildReloginHelperSessionPorts }, { PlaywrightProfileRegistry }, { SecretStore },
           { secretKeyPaths }, { ClaudePasteBackController }, { createReloginBrowser }, { createReloginLastResort, withLastResort },
           { createOneShotCompletion: createHeadlessOneShotCompletion }] = await Promise.all([
           import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
@@ -19155,11 +19155,113 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ? subscriptionReloginRuntime?.cellVerifiedHealthy(accountId, subscriptionPoolMachineId) ?? false : false),
             }));
         }
+        // Passkey repair admission (spec agent-held-google-passkey §3.4): only when the passkey
+        // feature is on (dev-gated). Every cell then reads its real state from the grant, custody,
+        // Chrome-gate and health stores; without the feature every passkey cell reads `unknown` and
+        // is refused by name. This admits nothing on its own: the sign-in step itself stays off
+        // until `passkeys.repairUsesPasskey` is true (operator decision, Chief of Staff 2026-11-26).
+        let passkeyCellStateDep: ((input: { canonicalEmail: string }) => import('../core/SubscriptionReloginPolicy.js').PasskeyCellAdmissionState) | null = null;
+        let passkeySignInDep: import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginRuntimeDeps['passkeySignIn'] | null = null;
+        if (resolveDevAgentGate((config as { passkeys?: { enabled?: boolean } }).passkeys?.enabled, config)) {
+          const [{ createPasskeyCellStateReader }, { PasskeyChromeGateStore, readChromeMajor, ensurePasskeyChromeGate, runChromeGateSelfTest },
+            { PasskeyGrantStore }, { PasskeyCredentialStore }, { PasskeyHealthStore }, { startPasskeyFixture },
+            { ChromeCdpReloginBrowser, resolveChromeExecutable }, { PasskeyAttemptLedger, activePauseFor }, { PlaywrightSeatLease }] = await Promise.all([
+            import('../core/PasskeyCellStateReader.js'), import('../core/PasskeyChromeGate.js'), import('../core/PasskeyGrantStore.js'),
+            import('../core/PasskeyCredentialStore.js'), import('../core/PasskeyCellHealth.js'), import('../core/PasskeyWebAuthnFixture.js'),
+            import('../core/ChromeCdpReloginBrowser.js'), import('../core/PasskeyPoolState.js'), import('../core/PlaywrightSeatLease.js'),
+          ]);
+          const pkMachineId = (): string => _meshSelfId ?? subscriptionPoolMachineId!;
+          const chromeGate = new PasskeyChromeGateStore({ stateDir: config.stateDir });
+          passkeyCellStateDep = createPasskeyCellStateReader({
+            hasActiveGrant: (email) => new PasskeyGrantStore({ stateDir: config.stateDir, machineId: pkMachineId() }).get(email)?.status === 'active',
+            custodyOf: (email) => new PasskeyCredentialStore({ stateDir: config.stateDir, machineId: pkMachineId(), forceFileKey: config.secrets?.forceFileKey }).custodyOf(email),
+            health: (email) => new PasskeyHealthStore({ stateDir: config.stateDir, machineId: pkMachineId() }).get(email),
+            chromeGate,
+            readChromeMajor: () => readChromeMajor(resolveChromeExecutable()),
+            runChromeGate: async (major) => {
+              // One real browser per host (§4): a busy seat simply defers the self-test to a later pass.
+              const seat = new PlaywrightSeatLease();
+              const holder = `passkey-chrome-gate:${pkMachineId()}`;
+              if (!seat.acquire(holder, 'passkey Chrome self-test').acquired) return;
+              const fixture = await startPasskeyFixture().catch((err) => { seat.release(holder); throw err; });
+              const dirs: string[] = [];
+              try {
+                await ensurePasskeyChromeGate({ store: chromeGate, currentMajor: major, selfTest: () => runChromeGateSelfTest({
+                  holderOrigin: fixture.holderOrigin,
+                  newBrowser: () => {
+                    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pk-chrome-gate-'));
+                    dirs.push(dir);
+                    return new ChromeCdpReloginBrowser({ userDataDir: dir, passkeyMode: true, originPolicy: fixture.policy, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }) as unknown as import('../core/PasskeyChromeGate.js').ChromeGateBrowser;
+                  },
+                }) });
+              } finally {
+                await fixture.close();
+                seat.release(holder);
+                for (const dir of dirs) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'server:passkey-chrome-gate-cleanup' });
+              }
+            },
+            // Restrictive-only. The pool-wide suspension record and the local kill flag are not
+            // published on this build, so nothing suspends here; adding them can only admit less.
+            suspended: () => false,
+            paused: (email) => activePauseFor({ pauses: new PasskeyAttemptLedger({ stateDir: config.stateDir, machineId: pkMachineId() }).activePauses(),
+              canonicalEmail: email, machineId: pkMachineId(), nowMs: Date.now() }) !== null,
+            log: (line) => console.warn(line),
+          });
+          // The Google passkey sign-in STEP of a repair. OFF unless `passkeys.repairUsesPasskey` is
+          // exactly true. It uses a debugging-pipe Chrome on the account's own profile for the Google
+          // step only, which narrows the normal-browser rule; that is the operator's decision
+          // (Chief of Staff ruling 2026-11-26), so it ships off and nothing here turns it on.
+          if ((config as { passkeys?: { repairUsesPasskey?: boolean } }).passkeys?.repairUsesPasskey === true) {
+            const [{ runPasskeyColdProof }] = await Promise.all([import('../core/PasskeyColdProof.js')]);
+            const cellState = passkeyCellStateDep;
+            passkeySignInDep = async ({ canonicalEmail, profileDir }, signal) => {
+              // §3.4: the admission refusals are evaluated again right before `load()`: a repair
+              // approved earlier (or resumed after a restart) may meet a cell that has since moved to
+              // `security`, opened its breaker, been paused by Google, or lost its Chrome gate.
+              const now = cellState({ canonicalEmail });
+              if (now !== 'ready') return { outcome: 'unknown', reason: `cell-${now}`, riskPage: false, throttled: false };
+              if (signal?.aborted) return { outcome: 'unknown', reason: 'cancelled', riskPage: false, throttled: false };
+              const ledger = new PasskeyAttemptLedger({ stateDir: config.stateDir, machineId: pkMachineId() });
+              const loaded = new PasskeyCredentialStore({ stateDir: config.stateDir, machineId: pkMachineId(), forceFileKey: config.secrets?.forceFileKey }).load(canonicalEmail);
+              if (!loaded.ok) return { outcome: 'unknown', reason: `credential-${loaded.reason}`, riskPage: false, throttled: false };
+              // runPasskeyColdProof takes no signal: a cancel is honoured up to here, and after the
+              // step the orchestrator checks the signal before acting on the result.
+              if (signal?.aborted) return { outcome: 'unknown', reason: 'cancelled', riskPage: false, throttled: false };
+              // Written BEFORE Google is reached, so a crash mid-step still counts (the watcher's
+              // "a repair signed in within 24h" rule and the same-account gap read these rows).
+              ledger.recordAttempt({ canonicalEmail, kind: 'repair' });
+              const result = await runPasskeyColdProof({
+                openBrowser: () => new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: false, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }),
+                log: (line) => console.log(line.replace('[passkey-proof]', '[passkey-repair]')),
+              }, { canonicalEmail, record: loaded.record, keepSession: true,
+                signInUrl: 'https://accounts.google.com/v3/signin/identifier', signOutUrl: 'https://accounts.google.com/Logout' });
+              // §2 risk budget / §4 throttle safety: the same pauses a proof writes.
+              if (result.riskPage) ledger.pause({ canonicalEmail, scope: 'account', reason: 'risk', durationMs: 7 * 24 * 60 * 60_000 });
+              if (result.throttled) {
+                ledger.pause({ canonicalEmail, scope: 'account', reason: 'throttled', durationMs: 24 * 60 * 60_000 });
+                ledger.pause({ canonicalEmail: null, scope: 'machine', reason: 'throttled', durationMs: 60 * 60_000 });
+              }
+              // A real repair outcome moves the cell like a proof does (§4: rejected / security from a
+              // repair count); a profile that was already signed in proves nothing about the key.
+              if (result.reason !== 'session-present' && result.outcome !== 'unknown') {
+                try { new PasskeyHealthStore({ stateDir: config.stateDir, machineId: pkMachineId() }).recordOutcome({ canonicalEmail, outcome: result.outcome, origin: 'repair' }); }
+                catch (err) { console.warn(`[passkey-repair] health record not written: ${err instanceof Error ? err.name : 'unknown'}`); }
+              }
+              return { outcome: result.outcome, reason: result.reason, riskPage: result.riskPage, throttled: result.throttled };
+            };
+          }
+        }
         subscriptionReloginRuntime = createSubscriptionReloginRuntime({ stateDir: config.stateDir,
           projectDir: config.projectDir, machineId: subscriptionPoolMachineId,
           mode: reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval'),
           pool: subscriptionPool, ledger: subscriptionLoginLedger, enrollment: enrollmentWizard,
           profiles, quotaPoller, identityOracle: subscriptionIdentityOracle, pasteBack,
+          // Screen state beside a failed drive (audit only). Null until the lock reader exists.
+          screenStateAtFailure: async () => {
+            const { getActiveMachineLockStateReader, screenStateToken } = await import('../core/MachineLockStateReader.js');
+            const reader = getActiveMachineLockStateReader();
+            return reader ? screenStateToken(await reader.read()) : null;
+          },
           // Auth-sensitive sign-ins run in a NORMAL browser (operator rule 2026-09-24): on macOS the
           // repair opens the account's Chrome the ordinary way, with no debugging connection.
           createBrowser: (userDataDir) => createReloginBrowser(userDataDir),
@@ -19193,6 +19295,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // `agent-session` (spec skill-driven-signin-repair) runs on macOS and, set explicitly, on
           // WSL; omitted ⇒ agent-session on a macOS development agent.
           navigation: reloginNavigation,
+          // Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt):
+          // omitted ⇒ shadow on a development agent, off on the fleet.
+          authenticatorOverPhone: resolveAuthenticatorOverPhone(reloginCfg.authenticatorOverPhone, config),
           // A Codex repair can only be proven by a LIVE app-server read (spec skill-driven-signin-repair).
           codexLiveReadAvailable: config.subscriptionPool?.codexLiveQuota !== false,
           helperSession: buildReloginHelperSessionPorts({ sessionManager, maxSessions: config.sessions.maxSessions,
@@ -19238,6 +19343,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
           unattendedPolicy: reloginCfg.unattendedPolicy,
           slowRetry: reloginCfg.slowRetry,
+          ...(passkeyCellStateDep ? { passkeyCellState: passkeyCellStateDep } : {}),
+          ...(passkeySignInDep ? { passkeySignIn: passkeySignInDep } : {}),
           // codex-device-limit-tripwire §2 C / §4: page judgement, stopped-repair report, retry hold.
           ...(codexDeviceLimit ? {
             deviceLimitHold: codexDeviceLimit.deviceLimitHold,

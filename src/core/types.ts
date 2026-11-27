@@ -5381,6 +5381,15 @@ export interface InstarConfig {
        */
       navigation?: 'agent' | 'closed' | 'agent-session';
       /**
+       * Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt): the
+       * agent-session helper may answer a Google page headed "2-Step Verification" with the saved
+       * authenticator code (password+totp accounts with a bound authenticator) instead of stopping
+       * for a phone tap. `'shadow'` = the helper only reads and reports the page heading, then asks
+       * for the tap as before. Omitted ⇒ `'shadow'` on a development agent, off on the fleet.
+       * `false` restores the old prompt exactly; `true` turns the step on.
+       */
+      authenticatorOverPhone?: boolean | 'shadow';
+      /**
        * Slow automatic retry of a FAILED repair while its sign-in incident stays open (spec
        * relogin-unattended-agent-session-and-slow-retry). Absent ⇒ on: first retry 6 h after the
        * failure, later ones 24 h apart, at most 3 per incident. Safety refusals and operator

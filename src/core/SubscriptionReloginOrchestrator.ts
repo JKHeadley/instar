@@ -46,6 +46,13 @@ export interface SubscriptionReloginOrchestratorDeps {
    * `browser-drive-started`.
    */
   driveEventClass?: (episode: SubscriptionReloginEpisode) => string;
+  /**
+   * The screen state when a browser drive did not succeed, as a short token, or null when it
+   * cannot be read or the screen is awake. Chrome stops answering Apple Events while the console
+   * is locked or the display asleep (2026-11-26, Studio and Mini), so a failed repair records the
+   * reading next to its failure. Signal only: it never changes the outcome or the reason.
+   */
+  screenStateAtFailure?: () => Promise<'locked' | 'asleep' | 'lock-flag-set' | null>;
   /** Readiness-checks the pane and never blind-types. The code is memory-only. */
   finishCli: (episode: SubscriptionReloginEpisode, pasteCode: string | undefined, signal: AbortSignal) => Promise<'complete' | 'pending'>;
   verifyIdentity: (episode: SubscriptionReloginEpisode, signal: AbortSignal) => Promise<'match' | 'mismatch' | 'unavailable'>;
@@ -202,8 +209,18 @@ export class SubscriptionReloginOrchestrator {
       });
       let result: BrowserRepairResult;
       try { result = await this.deps.driveBrowser(ep, artifact, signal); }
-      catch (error) { if (signal.aborted || isAbortError(error)) return this.cancelledResult(ep); return this.retry(ep, 'provider-transient'); }
+      catch (error) {
+        if (signal.aborted || isAbortError(error)) return this.cancelledResult(ep);
+        await this.noteScreenState(ep);
+        // The bounded screen read can overlap a cancel; that cancel wins, exactly as before the note.
+        if (signal.aborted) return this.cancelledResult(ep);
+        return this.retry(ep, 'provider-transient');
+      }
       if (signal.aborted) return this.cancelledResult(ep);
+      if (result.outcome !== 'approved') {
+        await this.noteScreenState(ep);
+        if (signal.aborted) return this.cancelledResult(ep);
+      }
       if (result.outcome === 'operator-only') {
         ep = this.deps.store.transition(ep.id, { expectedVersion: ep.version, to: 'waiting-operator-only',
           eventClass: 'operator-only-challenge', failureClass: result.failureClass, reason: result.reason, at: this.isoNow() });
@@ -321,6 +338,19 @@ export class SubscriptionReloginOrchestrator {
   private mustGet(id: string): SubscriptionReloginEpisode {
     const ep = this.deps.store.get(id); if (!ep) throw new Error('relogin-episode-not-found'); return ep;
   }
+  /** Record the screen state beside a failed drive. Bounded (3s) and never throws. */
+  private async noteScreenState(ep: SubscriptionReloginEpisode): Promise<void> {
+    const read = this.deps.screenStateAtFailure; if (!read) return;
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const state = await Promise.race([
+        read(),
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 3_000); timer.unref?.(); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+      if (state) this.deps.store.recordNote(ep.id, ep.version, 'screen-state-at-failure', `browser-screen-${state}`);
+    } catch { /* @silent-fallback-ok — an unreadable screen state records nothing; the failure itself is still recorded */ }
+  }
+
   private cancelledResult(ep: SubscriptionReloginEpisode): SubscriptionReloginTickResult {
     const latest = this.mustGet(ep.id);
     if (latest.state === 'cancelled') return { outcome: 'terminal', episode: latest };

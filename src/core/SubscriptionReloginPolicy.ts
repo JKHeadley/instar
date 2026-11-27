@@ -29,7 +29,7 @@ const SUPPORTED_LOGIN_METHODS = new Set(['session-cookie', 'password', 'password
  */
 export type PasskeyCellAdmissionState =
   | 'ready' | 'security' | 'breaker-open' | 'unverified-stopped' | 'quarantined' | 'rejected'
-  | 'suspended' | 'chrome-unverified' | 'unknown';
+  | 'suspended' | 'chrome-unverified' | 'sign-in-off' | 'unknown';
 
 const PASSKEY_CELL_REFUSALS: Record<Exclude<PasskeyCellAdmissionState, 'ready'>, SubscriptionReloginRefusal> = {
   'security': 'passkey-cell-security',
@@ -39,6 +39,9 @@ const PASSKEY_CELL_REFUSALS: Record<Exclude<PasskeyCellAdmissionState, 'ready'>,
   'rejected': 'passkey-cell-rejected',
   'suspended': 'passkey-suspended',
   'chrome-unverified': 'passkey-chrome-unverified',
+  // The passkey sign-in step is switched off (`passkeys.repairUsesPasskey` not true): never offer
+  // or approve a repair that could only be refused at the drive.
+  'sign-in-off': 'passkey-sign-in-off',
   'unknown': 'passkey-cell-state-unknown',
 };
 
@@ -70,6 +73,7 @@ export type SubscriptionReloginRefusal =
   | 'passkey-cell-unverified-stopped'
   | 'passkey-suspended'
   | 'passkey-chrome-unverified'
+  | 'passkey-sign-in-off'
   | 'passkey-cell-quarantined'
   | 'passkey-cell-rejected'
   | 'passkey-cell-state-unknown';

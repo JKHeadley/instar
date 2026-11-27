@@ -34,12 +34,22 @@ export interface ReloginLastResortPort {
   status(): ReloginLastResortStatus;
 }
 
+/** The outcome of the passkey sign-in step, states only (never an email, a URL or key material). */
+export interface PasskeyRepairSignInResult {
+  outcome: 'ready' | 'failed' | 'unknown' | 'credential-rejected' | 'removed-on-google' | 'security';
+  reason: string;
+  riskPage: boolean;
+  throttled: boolean;
+}
+
 export interface SubscriptionReloginRuntimeDeps {
   stateDir: string; projectDir: string; machineId: string;
   mode: 'observe' | 'approval' | 'unattended';
   pool: SubscriptionPool; ledger: SubscriptionLoginLedger; enrollment: EnrollmentWizard;
   profiles: PlaywrightProfileRegistry; quotaPoller: QuotaPoller; identityOracle: IdentityOracle;
   pasteBack: ClaudePasteBackController;
+  /** The screen state at a failed drive, for the audit trail (see SubscriptionReloginOrchestratorDeps). */
+  screenStateAtFailure?: () => Promise<'locked' | 'asleep' | 'lock-flag-set' | null>;
   createBrowser: (userDataDir: string) => ReloginBrowserPort;
   resolveSecret: (name: string) => Promise<string | null>;
   /** Take one single-use Google backup code out of a vault entry (see AnthropicReloginBrowserDriverDeps). */
@@ -50,6 +60,11 @@ export interface SubscriptionReloginRuntimeDeps {
    * from the page's floor-filtered controls. Resolved by the caller (dev-agent gate); default `closed`.
    */
   navigation?: 'closed' | 'agent' | 'agent-session';
+  /**
+   * Authenticator over a phone prompt (spec relogin-authenticator-over-phone-prompt), already
+   * resolved by `resolveAuthenticatorOverPhone`. Absent ⇒ off: the helper prompt is unchanged.
+   */
+  authenticatorOverPhone?: AuthenticatorOverPhoneMode;
   /**
    * The agent-session helper's ports (spec skill-driven-signin-repair). Required when
    * `navigation` is `agent-session`; ignored otherwise.
@@ -112,11 +127,21 @@ export interface SubscriptionReloginRuntimeDeps {
   };
   /**
    * The (account × machine) passkey cell's state for a `google-passkey` account (spec
-   * agent-held-google-passkey §3.4). NOT wired on this build: absent ⇒ every cell reads
-   * `unknown` ⇒ the policy refuses `passkey-cell-state-unknown`, so no passkey repair is ever
-   * admitted until the store + health layer that computes it lands.
+   * agent-held-google-passkey §3.4), computed by `passkeyRepairAdmissionState` over the grant,
+   * custody, Chrome gate and health stores. Absent (passkeys off) ⇒ every cell reads `unknown`
+   * ⇒ the policy refuses `passkey-cell-state-unknown`. `canonicalEmail` is the account row's
+   * identity, lower-cased; the stores are keyed by it.
    */
-  passkeyCellState?: (input: { accountId: string; machineId: string; entryKey: string }) => PasskeyCellAdmissionState;
+  passkeyCellState?: (input: { accountId: string; machineId: string; entryKey: string; canonicalEmail: string }) => PasskeyCellAdmissionState;
+  /**
+   * The Google passkey sign-in STEP of a `google-passkey` repair (spec agent-held-google-passkey §3.4,
+   * in the two-step shape the Chief of Staff ruled on 2026-11-26): sign the account's own dedicated
+   * profile in to Google with the agent's passkey and leave that session, so the provider sign-in that
+   * follows runs in the NORMAL browser exactly as today. Wired ONLY when `passkeys.repairUsesPasskey`
+   * is true; absent ⇒ every passkey repair refuses by name (`passkey-refused`, reason
+   * `passkey-sign-in-off`). Turning it on for a real account is the operator's decision.
+   */
+  passkeySignIn?: (input: { accountId: string; canonicalEmail: string; profileDir: string }, signal?: AbortSignal) => Promise<PasskeyRepairSignInResult>;
   now?: () => number;
 }
 
@@ -276,6 +301,10 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       store.enqueuePhoneTap(episodeId);
       void serviceRef?.flushNotifications();
     },
+    noteAuthenticator: (episodeId, label) => { store.recordAuthenticatorEvent(episodeId, label); },
+    authenticatorLatch: (driveId) => store.authenticatorSupervision(driveId).state,
+    noteAuthenticatorUse: (episodeId, driveId) => { store.recordAuthenticatorUse(episodeId, driveId); },
+    authenticatorCodesGranted: (episodeId) => store.authenticatorCodesGranted(episodeId),
     onDeviceLimitReported: (episodeId) => {
       const accountId = store.get(episodeId)?.accountId;
       if (accountId) deps.onDeviceLimitStopped?.(accountId);
@@ -296,6 +325,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
     deps.lastResort?.available() === true && typeof deps.navigate === 'function';
   const orchestrator = new SubscriptionReloginOrchestrator({
     store,
+    screenStateAtFailure: deps.screenStateAtFailure,
     driveEventClass: (episode) => lastResortDrives.has(episode.id) ? 'last-resort-drive-started'
       : helper ? 'agent-session-drive-started' : agentNavigation ? 'agent-drive-started' : 'browser-drive-started',
     preAttempt: helper ? async (episode, signal) => {
@@ -356,16 +386,46 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       const login = pending(acct.id); if (!login) throw new Error('login-artifact-unavailable');
       const { detail, browserAccount } = profileContext(acct);
       if (!detail?.userDataDir || !browserAccount) return { outcome: 'refused', failureClass: 'wrong-identity' };
-      // A `google-passkey` account is NEVER driven through the password/session flow. The
-      // passkey executor (credential load into the browser + the passkey page classes, spec
-      // §3.5–§3.8) is not on this build, so the drive boundary refuses by name; admission
-      // already refuses unless the cell is `ready`, which nothing can produce here.
-      if (browserAccount.loginMethod === 'google-passkey') return { outcome: 'refused', failureClass: 'passkey-refused' };
       if (acct.provider !== 'anthropic' && acct.provider !== 'openai')
         return { outcome: 'refused', failureClass: 'provider-rejected' };
+      // A `google-passkey` account is NEVER driven through the password flow and never falls through
+      // to another method. Its Google sign-in is the passkey step (in the passkey-capable browser, on
+      // the account's own profile, which then closes); the provider sign-in after it is the ordinary
+      // session drive below, in the normal browser, with no secret at all.
+      let driveAccount: PlaywrightAccount = browserAccount;
+      if (browserAccount.loginMethod === 'google-passkey') {
+        if (!deps.passkeySignIn) return { outcome: 'refused', failureClass: 'passkey-refused', reason: 'passkey-sign-in-off' };
+        // The passkey step signs in `userDataDir`; a Windows helper drives a different profile copy,
+        // so the session would not carry over. Refused by name until that path is built.
+        if (windowsHelper && detail.windowsUserDataDir) return { outcome: 'refused', failureClass: 'passkey-refused', reason: 'passkey-windows-profile-unsupported' };
+        const canonicalEmail = browserAccount.identity.trim().toLowerCase();
+        // Defensive: profileContext already picks only a profile whose identity matches the account email.
+        if (normalize(canonicalEmail) !== normalize(acct.email)) return { outcome: 'refused', failureClass: 'wrong-identity' };
+        // One real browser per host (§4): the passkey step always holds the host-wide seat. On the helper
+        // path it acquires as the helper's own holder (a renewal when the pre-attempt already holds it,
+        // a fresh take when it does not: the helper released it, or a resumed drive skipped the
+        // pre-attempt). It keeps the seat only when it goes on to `helper.drive`, whose release ends it;
+        // on every other exit (an early refusal, a throw, or the last-resort drive, which takes the seat
+        // under its own holder) it gives the seat back. Release is owner-checked, so a second release by
+        // the helper is a no-op.
+        const pkHolder = helper ? SubscriptionReloginHelper.holderId(episode.id) : `passkey-repair:${episode.id}`;
+        const keepSeat = !!helper && !lastResortDrives.has(episode.id);
+        if (!seatLease.acquire(pkHolder, 'passkey repair sign-in').acquired) return { outcome: 'transient', failureClass: 'seat-busy', reason: 'seat-busy' };
+        let signedIn: PasskeyRepairSignInResult;
+        let goesOn = false;
+        try {
+          signedIn = await deps.passkeySignIn({ accountId: acct.id, canonicalEmail, profileDir: detail.userDataDir }, signal);
+          goesOn = !signedIn.riskPage && (signedIn.outcome === 'ready' || (signedIn.outcome === 'unknown' && signedIn.reason === 'session-present'));
+        } finally { if (!keepSeat || !goesOn) seatLease.release(pkHolder); }
+        if (signedIn.riskPage) return { outcome: 'operator-only', failureClass: 'captcha', reason: 'google-risk-page' };
+        if (signedIn.outcome === 'security') return { outcome: 'refused', failureClass: 'wrong-identity', reason: 'passkey-identity-mismatch' };
+        if (!goesOn)
+          return { outcome: 'refused', failureClass: 'passkey-refused', reason: signedIn.throttled ? 'passkey-throttled' : `passkey-${signedIn.outcome}` };
+        driveAccount = { ...browserAccount, loginMethod: 'session-cookie', vaultBindings: {} };
+      }
       // Resumed attempts can reach the drive without running admission again.
       const unattended = episode.mode === 'unattended';
-      const { backupCode, ...otherSecretRefs } = browserAccount.vaultBindings ?? {};
+      const { backupCode, ...otherSecretRefs } = driveAccount.vaultBindings ?? {};
       const secretRefs = unattended ? otherSecretRefs : { ...otherSecretRefs, backupCode };
       if (helper && unattended && backupCode) {
         return { outcome: 'operator-only', failureClass: 'agent-hard-line', reason: 'unattended-backup-code-forbidden' };
@@ -374,6 +434,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
         const result = await helper.drive({ episode, artifact, verificationUrl: login.verificationUrl, expectedEmail: acct.email,
           provider: acct.provider, profileDir: (windowsHelper ? detail.windowsUserDataDir : undefined) ?? detail.userDataDir,
           vaultBindingNames: Object.values(secretRefs).filter((name): name is string => typeof name === 'string'),
+          authenticatorMode: helperAuthenticatorMode(deps.authenticatorOverPhone, browserAccount.loginMethod, secretRefs),
         }, signal);
         // A drive resumed past the pre-attempt check (a restart after `cli-starting`) reaches the
         // helper with no seat; with the last resort available it falls through here too, instead
@@ -393,7 +454,7 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
       try {
         const driven = await driver.drive({ artifact, verificationUrl: login.verificationUrl, provider: acct.provider,
           expectedIdentity: acct.email,
-          loginMethod: autonomousLoginMethod(browserAccount), secretRefs, unattended,
+          loginMethod: autonomousLoginMethod(driveAccount), secretRefs, unattended,
           allowedScopes: resolveAllowedScopes(deps.allowedScopes, login.verificationUrl) }, signal);
         if (driven.outcome === 'refused' && driven.failureClass === 'device-limit') deps.onDeviceLimitStopped?.(acct.id);
         return driven;
@@ -452,9 +513,18 @@ export function createSubscriptionReloginRuntime(deps: SubscriptionReloginRuntim
 
   const passkeyCellFor = (acct: SubscriptionAccount, browserAccount: PlaywrightAccount | null): PasskeyCellAdmissionState | null => {
     if (browserAccount?.loginMethod !== 'google-passkey') return null;
+    if (!deps.passkeySignIn) return 'sign-in-off';
     const entryKey = browserAccount.vaultBindings?.passkey;
     if (!entryKey) return 'unknown';
-    return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey }) ?? 'unknown';
+    const canonicalEmail = browserAccount.identity.trim().toLowerCase();
+    if (!canonicalEmail.includes('@')) return 'unknown';
+    try {
+      return deps.passkeyCellState?.({ accountId: acct.id, machineId: deps.machineId, entryKey, canonicalEmail }) ?? 'unknown';
+    } catch {
+      // @silent-fallback-ok — an unreadable passkey store refuses the passkey path by name
+      // (`passkey-cell-state-unknown`); it never admits and never falls through to another method.
+      return 'unknown';
+    }
   };
   const admissionFor = async (acct: SubscriptionAccount, sourceEpisode: SubscriptionLoginEpisode,
     current?: Pick<SubscriptionReloginEpisode, 'id' | 'loginCreatedAt' | 'startedAt' | 'finishedAt'>) => {
@@ -638,6 +708,7 @@ export function subscriptionReloginRouteContext(runtime: SubscriptionReloginRunt
     retry: (episodeId: string) => runtime.service.retry(episodeId),
     ...(runtime.helper ? {
       helperSubmit: (episodeId: string, token: string, body: unknown) => runtime.helper!.submit(episodeId, token, body),
+      helperDriving: () => runtime.helper!.isAnyDriving(),
     } : {}),
     // Registry First: the last-resort model's live state (never the key), or available:false.
     lastResortStatus: (): ReloginLastResortStatus | { available: false } =>
@@ -682,6 +753,35 @@ function autonomousLoginMethod(account: PlaywrightAccount): 'session-cookie' | '
     || account.loginMethod === 'google-passkey')
     return account.loginMethod;
   throw new Error('login-method-not-autonomous');
+}
+
+/**
+ * Whether the sign-in helper may answer Google's 2-Step Verification phone prompt with the
+ * authenticator code (spec relogin-authenticator-over-phone-prompt): only for a password+totp
+ * account whose authenticator vault entry is bound. Exported for tests.
+ */
+export function helperHasAuthenticator(loginMethod: string | undefined, secretRefs: { totp?: unknown }): boolean {
+  return loginMethod === 'password+totp' && typeof secretRefs.totp === 'string' && secretRefs.totp.length > 0;
+}
+
+export type AuthenticatorOverPhoneMode = 'on' | 'shadow' | 'off';
+
+/**
+ * Resolve `assistedRelogin.authenticatorOverPhone`: an explicit value wins (`true` → on,
+ * `'shadow'` → shadow, `false` → off); omitted ⇒ shadow on a development agent, off on the fleet.
+ * Exported for tests.
+ */
+export function resolveAuthenticatorOverPhone(value: boolean | 'shadow' | undefined, config: { developmentAgent?: boolean } | undefined): AuthenticatorOverPhoneMode {
+  if (value === true) return 'on';
+  if (value === 'shadow') return 'shadow';
+  if (value === false) return 'off';
+  return resolveDevAgentGate(undefined, config) ? 'shadow' : 'off';
+}
+
+/** The resolved mode, applied only to an account that qualifies. Exported for tests. */
+export function helperAuthenticatorMode(mode: AuthenticatorOverPhoneMode | undefined, loginMethod: string | undefined, secretRefs: { totp?: unknown }): AuthenticatorOverPhoneMode {
+  if (!mode || mode === 'off' || !helperHasAuthenticator(loginMethod, secretRefs)) return 'off';
+  return mode;
 }
 
 /** Take the first 8-digit Google backup code out of a vault entry and write the rest back. Never logs a value. */

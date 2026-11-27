@@ -1,5 +1,5 @@
 {
-  "note": "The defect-class registry (docs/specs/class-closure-gate.md → 'The class registry'). Seeded with the four measured classes from the INSTAR-Bench v2 defect-class review (docs/audits/ib2-defect-class-review-2026-07-02.md). PROTECTED PATH: class SEMANTICS live here; routine fixes never edit this file (instanceCount is DERIVED by the gate lint from committed decision-audit declarations, deduped by PR — the stored field below is a CACHE). A seed enters escalatedAt='seeded-closed' with evidenceCountAtLastAck === instanceCount so ONLY historical backfill is suppressed; a post-seed declaration that grows a seeded class past that baseline fires the deterministic re-raise at lint time.",
+  "note": "The defect-class registry (docs/specs/class-closure-gate.md \u2192 'The class registry'). Seeded with the four measured classes from the INSTAR-Bench v2 defect-class review (docs/audits/ib2-defect-class-review-2026-07-02.md). PROTECTED PATH: class SEMANTICS live here; routine fixes never edit this file (instanceCount is DERIVED by the gate lint from committed decision-audit declarations, deduped by PR \u2014 the stored field below is a CACHE). A seed enters escalatedAt='seeded-closed' with evidenceCountAtLastAck === instanceCount so ONLY historical backfill is suppressed; a post-seed declaration that grows a seeded class past that baseline fires the deterministic re-raise at lint time.",
   "version": 1,
   "classes": [
     {
@@ -29,7 +29,7 @@
     },
     {
       "id": "injection-credulity",
-      "description": "An agent-authored prompt treats untrusted input (transcript excerpts, tool output, document or message bodies) as authoritative instruction — it lacks an authority clause separating the trusted instruction surface from quoted untrusted data, so injected content can steer the decision.",
+      "description": "An agent-authored prompt treats untrusted input (transcript excerpts, tool output, document or message bodies) as authoritative instruction \u2014 it lacks an authority clause separating the trusted instruction surface from quoted untrusted data, so injected content can steer the decision.",
       "includes": [
         "a prompt interpolating untrusted content without a sentinel/delimiter/authority clause",
         "an untrusted interpolation slot that is not enumerated in the callsite's manifest",
@@ -54,7 +54,7 @@
     },
     {
       "id": "claim-vs-evidence",
-      "description": "An agent-authored judge or gate credits a bare assertion as if it were evidence — the prompt accepts 'I did X' / 'this is done' without requiring a verifiable artifact, so an unproven claim passes the same bar as proof.",
+      "description": "An agent-authored judge or gate credits a bare assertion as if it were evidence \u2014 the prompt accepts 'I did X' / 'this is done' without requiring a verifiable artifact, so an unproven claim passes the same bar as proof.",
       "includes": [
         "a judge prompt with no evidence bar for a claim of completion",
         "a scoring rubric where a bare claim still lands at or above the acceptance floor",
@@ -79,7 +79,7 @@
     },
     {
       "id": "durable-output-secrets",
-      "description": "An agent-authored component writes secrets, credentials, PII, or raw sensitive content into a durable output (a committed file, a log line, a persisted record, a shared transcript) without scrubbing — the sensitive material survives on disk or crosses a boundary.",
+      "description": "An agent-authored component writes secrets, credentials, PII, or raw sensitive content into a durable output (a committed file, a log line, a persisted record, a shared transcript) without scrubbing \u2014 the sensitive material survives on disk or crosses a boundary.",
       "includes": [
         "a callsite whose output is durable and derives from untrusted/sensitive inputs without a scrub",
         "a path, token, or credential leaking into a committed artifact or a persisted log",
@@ -104,7 +104,7 @@
     },
     {
       "id": "unbounded-self-action",
-      "description": "A self-triggered controller — a loop, monitor tick, sentinel, reaper, scheduler, or recovery path — fires a cost-or-disruption-bearing action (restart, swap, respawn, spawn, notify, retry, re-drive, re-pin, kill/reap) with no chokepoint-enforced ceiling that makes it CONVERGE under sustained pressure, so under a condition that never clears on its own the action count is unbounded (a flood) or the action feeds the pressure that re-triggers it (a spiral).",
+      "description": "A self-triggered controller \u2014 a loop, monitor tick, sentinel, reaper, scheduler, or recovery path \u2014 fires a cost-or-disruption-bearing action (restart, swap, respawn, spawn, notify, retry, re-drive, re-pin, kill/reap) with no chokepoint-enforced ceiling that makes it CONVERGE under sustained pressure, so under a condition that never clears on its own the action count is unbounded (a flood) or the action feeds the pressure that re-triggers it (a spiral).",
       "includes": [
         "a monitor/tick/sweep whose corrective action, under sustained worst-case pressure, does not settle to a small bound",
         "a self-triggered action whose effect re-enters its own trigger input (positive feedback: swap-thrash, live-tail spiral, ack-echo)",
@@ -114,7 +114,7 @@
       "excludes": [
         "a one-shot action fired in DIRECT response to a distinct user action (not self-triggered)",
         "a declared Eternal Sentinel meeting the P19 four conditions (constant per-attempt cost + a rate floor that prevents accumulation)",
-        "instantaneous concurrency/mass (that is the Bounded Blast Radius class — the spawn cap); this class is about steady-state FREQUENCY under feedback",
+        "instantaneous concurrency/mass (that is the Bounded Blast Radius class \u2014 the spawn cap); this class is about steady-state FREQUENCY under feedback",
         "a repeating behavior already proven to converge by a registered self-action controller test"
       ],
       "canonicalExamples": [
@@ -156,7 +156,7 @@
       "escalatedAt": null,
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
-      "nearestExistingClass": "prompt-parser-contract-drift — both concern classifier contracts, but this class is about unmatched runtime input inheriting privileged-safe authority rather than rendered prompt output drifting from its parser schema"
+      "nearestExistingClass": "prompt-parser-contract-drift \u2014 both concern classifier contracts, but this class is about unmatched runtime input inheriting privileged-safe authority rather than rendered prompt output drifting from its parser schema"
     },
     {
       "id": "brittle-keyword-authority",
@@ -184,7 +184,7 @@
       "escalatedAt": null,
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
-      "nearestExistingClass": "unknown-classification-fail-open — both concern classifier authority, but this class over-classifies known vocabulary in the wrong context while the neighbor permissively defaults unknown input"
+      "nearestExistingClass": "unknown-classification-fail-open \u2014 both concern classifier authority, but this class over-classifies known vocabulary in the wrong context while the neighbor permissively defaults unknown input"
     },
     {
       "id": "generated-artifact-path-contract-drift",
@@ -210,7 +210,7 @@
       "escalatedAt": null,
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
-      "nearestExistingClass": "prompt-parser-contract-drift — both are producer/consumer contract drift in agent-authored text, but this class concerns generated filesystem reachability rather than an LLM prompt's output schema"
+      "nearestExistingClass": "prompt-parser-contract-drift \u2014 both are producer/consumer contract drift in agent-authored text, but this class concerns generated filesystem reachability rather than an LLM prompt's output schema"
     },
     {
       "id": "aggregate-masks-subgroup-regression",
@@ -236,7 +236,7 @@
       "escalatedAt": null,
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
-      "nearestExistingClass": "unknown-classification-fail-open — both can let an unsafe state pass, but this class hides a known subgroup regression through aggregation rather than permissively classifying unknown input"
+      "nearestExistingClass": "unknown-classification-fail-open \u2014 both can let an unsafe state pass, but this class hides a known subgroup regression through aggregation rather than permissively classifying unknown input"
     },
     {
       "id": "instrument-semantic-darkness",
@@ -263,7 +263,31 @@
       "escalatedAt": null,
       "evidenceCountAtLastAck": 0,
       "proposalId": null,
-      "nearestExistingClass": "aggregate-masks-subgroup-regression — both are denominator failures, but that class hides a regressing subgroup inside a healthy aggregate while this class prevents a relevant state or repairable observation from influencing any verdict at all"
+      "nearestExistingClass": "aggregate-masks-subgroup-regression \u2014 both are denominator failures, but that class hides a regressing subgroup inside a healthy aggregate while this class prevents a relevant state or repairable observation from influencing any verdict at all"
+    },
+    {
+      "id": "over-broad-stop-rule",
+      "description": "An agent-authored prompt or rule stops for a person on a whole category of situations when the risk it guards lives in only part of that category, so a safe, intended path always stops and the owner gets a needless ask.",
+      "includes": [
+        "a sign-in helper prompt that treats every phone prompt as a provider risk check, although Google's ordinary 2-Step Verification step offers the saved authenticator under Try another way",
+        "a hard line written around a surface wording (a phrase on the page) rather than the risk it guards, so a benign page with the same wording is stopped"
+      ],
+      "excludes": [
+        "a stop rule that is broad on purpose because the safe and unsafe cases cannot be told apart from the available evidence, and says so",
+        "a stop that is correct but reached by the wrong component (that is a routing defect, not scope)"
+      ],
+      "canonicalExamples": [
+        "2026-11-26: the agent-session sign-in helper stopped at Google's Check your phone prompt on account B (Mama PC) and account A (Laptop) although both had an authenticator secret saved"
+      ],
+      "status": "unconfirmed",
+      "severity": "normal",
+      "closureStandard": null,
+      "closureStandardEnforcement": null,
+      "instanceCount": 0,
+      "escalatedAt": null,
+      "evidenceCountAtLastAck": 0,
+      "proposalId": null,
+      "nearestExistingClass": "brittle-keyword-authority \u2014 both stop on surface wording, but that class gives a keyword detector authority over intent, while this class is a correctly placed stop whose scope is wider than its risk"
     }
   ]
 }

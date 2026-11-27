@@ -129,8 +129,18 @@ export function attentionConditionKeyOf(item: Pick<AttentionLifecycleItem, 'id' 
 }
 
 // Category/source/title shapes that mean "a human must judge this": the
-// security category, an exposed or leaked credential, a rotate-this-secret ask.
-const SECURITY_RE = /security|credential-exposure|credential-leak|\bleak(?:ed|s)?\b|\bexposed\b|rotate\b.*\b(?:token|key|secret|password)/i;
+// security category, an exposed or leaked credential, a rotate-this-secret ask
+// (the secret word may sit inside a name like `github_token`, so no word
+// boundary before it), or a grant to revoke or held on someone else's account.
+// OAuth alone is ordinary sign-in and quota traffic and is NOT security: only a
+// revoke ask about a grant (either word order), or an authorization for someone
+// else, is. With no word boundary before the secret word, "rotate ... keychain"
+// also matches; that errs toward keeping an item, which is the safe side.
+// A provider's routine expired-token error (invalid_grant: Token has been expired or revoked) is
+// sign-in traffic, not a revoke ask: those words are blanked before the security match, so the
+// rest of the text is still judged.
+const ROUTINE_REVOKE_RE = /invalid_grant|expired or revoked/gi;
+const SECURITY_RE = /security|credential-exposure|credential-leak|\bleak(?:ed|s)?\b|\bexpos(?:ed|ure)\b|rotate\b.*(?:token|key|secret|password)|\brevo(?:k(?:e|ed|es|ing)|cation)\b.*\b(?:oauth|grant|authori[sz]ation|consent|app access)\b|\b(?:oauth|grant|authori[sz]ation|consent|app access)\b.*\brevo(?:k(?:e|ed|es|ing)|cation)\b|authori[sz]ation for someone else/i;
 const OPERATOR_ASKED_RE = /decision|approval|review/i;
 
 /**
@@ -143,7 +153,7 @@ const OPERATOR_ASKED_RE = /decision|approval|review/i;
 export function classifyAttentionLifecycle(item: AttentionLifecycleItem): AttentionLifecycleClass {
   if (item.sticky === true) return 'security';
   const cat = `${item.category ?? ''} ${item.sourceContext ?? ''} ${item.title ?? ''}`;
-  if (SECURITY_RE.test(cat)) return 'security';
+  if (SECURITY_RE.test(cat.replace(ROUTINE_REVOKE_RE, ' '))) return 'security';
   const priority = (['URGENT', 'HIGH', 'NORMAL', 'LOW'].includes(item.priority) ? item.priority : 'NORMAL') as HubItemLike['priority'];
   const hub = admitItemToHub({ id: item.id, priority, sourceContext: item.sourceContext, needsUser: item.needsUser }, 'signal');
   if (hub.admit || OPERATOR_ASKED_RE.test(item.category ?? '')) return 'operator-asked';

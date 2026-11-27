@@ -136,8 +136,8 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "ab24f08d352b983068fb8869b9ffa45eb3db0109461e3a12041739dc8bc2fb06",
-      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
+      "sha256": "b93149e8e70fd3751c842ff6e2da9238c1b1a65485b65067efed8095255653ce",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto. chrome-apple-event-screen-state (2026-11-27): an Apple Events failure now prints the macOS error code and meaning, plus a console-locked note when the lock flag is set; wording only, the exit status and every refusal are unchanged."
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
