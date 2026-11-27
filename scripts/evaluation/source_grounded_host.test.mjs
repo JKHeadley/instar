@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, checkCodexStream, CODEX_ALLOWED_ITEMS, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -118,7 +118,10 @@ test('judge evidence quotes resolve against sources and answer records', () => {
   ]);
 });
 
-test('prompts: the answerer never sees the rubric; the judge never sees the arm', () => {
+// The judge prompt carries no arm label or trial id. The arm can still be
+// inferred from what an answer cites (the reduced record, many messages, or
+// none); that limit is disclosed in the notes and the totals document.
+test('prompts: the answerer never sees the rubric; the judge gets no arm label', () => {
   const pack = loadPack(syntheticPack());
   const plan = buildPlan(pack, { reduced: 'REDUCED-SUMMARY', repeats: 2, judges, seed: 'fixed' });
   const records = sourceRecords(pack, 'REDUCED-SUMMARY');
@@ -186,6 +189,34 @@ test('a probe timeout is retried once with the judge-turn limit; other failures 
   assert.equal(probeWithRetry(() => { calls++; return { state: 'failed', error: 'tool-activity' }; }, root).length, 1); assert.equal(calls, 1);
 });
 
+test('the Codex stream check allows only model messages and reasoning', () => {
+  const line = o => JSON.stringify(o);
+  const ok = [line({ type: 'thread.started' }), line({ type: 'item.completed', item: { type: 'reasoning', text: 'r' } }),
+    line({ type: 'item.completed', item: { type: 'agent_message', text: '{}' } }),
+    line({ type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } })].join('\n');
+  assert.deepEqual(checkCodexStream(ok), { usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 2 } });
+  assert.deepEqual(CODEX_ALLOWED_ITEMS, ['agent_message', 'reasoning']);
+  for (const kind of ['command_execution', 'file_change', 'mcp_tool_call', 'web_search', 'some_new_tool']) {
+    const bad = [line({ type: 'item.started', item: { type: kind } }), line({ type: 'turn.completed', usage: {} })].join('\n');
+    assert.throws(() => checkCodexStream(bad), /tool-activity/);
+  }
+  assert.throws(() => checkCodexStream(line({ type: 'item.completed', item: { type: 'agent_message' } })), /incomplete-stream/);
+  assert.throws(() => checkCodexStream([line({ type: 'turn.failed' })].join('\n')), /model-call-failed/);
+  assert.throws(() => checkCodexStream('not json'), /unparseable-stream/);
+  assert.ok(codexArgs('m', '/s', '/s.last').includes('--json'));
+});
+
+test('a judge evidence record id that is missing or not a string is an invalid span, not a crash', () => {
+  const records = [{ id: 'm10', text: 'ship on Friday' }];
+  const answerRaw = JSON.stringify({ answer: 'It ships Friday', claims: [], limitations: [] });
+  for (const recordId of [undefined, 7, null]) {
+    const raw = JSON.stringify({ version: 1, submissionId: 's', limitations: [], unlistedMaterialClaims: [],
+      criteria: [{ criterionId: 'decision', verdict: 'pass', reason: 'r', answerClaimIds: [],
+        evidence: [{ collection: 'answer', recordId, quote: 'ships' }] }] });
+    assert.doesNotThrow(() => resolveJudge(raw, records, answerRaw));
+  }
+});
+
 test('the Codex judge uses the same tool-free profile as instar itself', () => {
   const source = readFileSync(new URL('../../src/core/codexToolFreeProfile.ts', import.meta.url), 'utf8');
   const list = name => [...source.split(`export const ${name} = [`)[1].split('] as const')[0].matchAll(/'([^']+)'/g)].map(m => m[1]);
@@ -239,4 +270,11 @@ test('totals reduce real trial evidence into per-arm counts with no private text
   const text = JSON.stringify(totals);
   for (const secret of ['café', 'Friday', 'rotate', 'Summary']) assert.ok(!text.includes(secret));
   assert.ok(records.length === 3);
+  for (const arm of ARMS) assert.equal(totals.arms[arm].notJudged, 0);
+  // A valid answer still missing a judge ledger is counted, not silently dropped.
+  const full = plan.trials.find(x => x.arm === 'full');
+  writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json.bak`), readFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`)));
+  writeFileSync(join(runDir, `judges/${full.trialId}.slot-1.json`), '');
+  run.has = rel => { try { return readFileSync(join(runDir, rel), 'utf8').length > 0; } catch { return false; } };
+  assert.equal(totalRun(run, pack).arms.full.notJudged, 1);
 });

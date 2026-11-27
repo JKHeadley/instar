@@ -21,6 +21,9 @@ const MAX_RAW = 1024 * 1024;
 const sha = value => createHash('sha256').update(value).digest('hex');
 const fail = code => { throw new Error(code); };
 const need = (ok, code) => { if (!ok) fail(code); };
+// Only the host's own dash codes travel on; any other error text (a parser's
+// message can quote model output) becomes one fixed code.
+const knownCode = e => (/^[a-z0-9-]+$/.test(e?.message ?? '') ? e.message : 'unparseable-stream');
 
 // The same tool-free profile as src/core/codexToolFreeProfile.ts. A unit test
 // compares the two lists, so a change there cannot silently skip this host.
@@ -143,7 +146,8 @@ const JUDGE_RULES = [
   '"quote":"<exact words copied from that record>"}]}],',
   '"unlistedMaterialClaims":[{"recordId":"<answer record id>","quote":"<exact words>","reason":"<why it matters>"}],',
   '"limitations":["<anything that limited your judgment>"]}',
-  'Every non-avoid criterion needs at least one evidence quote copied character for character.',
+  'Criteria "decision" and "convey-N" need at least one evidence quote copied character for character;',
+  '"no-wrong-decision" and "avoid-N" need none.',
 ].join('\n');
 
 export function judgePrompt(trial, records, rubricBytes, answerRaw) {
@@ -196,7 +200,8 @@ export function resolveAnswer(raw, records) {
   return JSON.stringify({ ...value, claims });
 }
 
-function answerRecordText(answer, id) {
+function answerRecordText(answer, rawId) {
+  const id = String(rawId ?? '');
   if (id === 'answer') return answer.answer;
   const lim = /^limitations\/(0|[1-9][0-9]*)$/.exec(id);
   if (lim) return answer.limitations?.[Number(lim[1])];
@@ -236,7 +241,7 @@ export function codexArgs(model, scratch, lastMessagePath) {
   return ['exec', ...CODEX_TOOL_FREE_DISABLED_FEATURES.flatMap(f => ['--disable', f]),
     ...CODEX_TOOL_FREE_CONFIG.flatMap(c => ['-c', c]), '--model', model, '--sandbox', 'read-only',
     '--cd', scratch, '-c', 'project_doc_max_bytes=0', '--skip-git-repo-check', '--ephemeral',
-    '--output-last-message', lastMessagePath, '-'];
+    '--json', '--output-last-message', lastMessagePath, '-'];
 }
 
 function childEnv(extra) {
@@ -269,6 +274,27 @@ export function checkClaudeStream(raw) {
   return { text: result.result, model: start.model ?? null, usage };
 }
 
+// The Codex event stream (codex exec --json) must show one completed turn
+// whose items are only the model's own messages and reasoning. Any other item
+// (a command, a file change, an MCP call, a web search) is tool activity.
+// This is a fixed list of allowed kinds, so a new tool kind is refused.
+export const CODEX_ALLOWED_ITEMS = ['agent_message', 'reasoning'];
+export function checkCodexStream(raw) {
+  let events;
+  try { events = raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l)); } catch { fail('unparseable-stream'); }
+  for (const e of events) {
+    if (e.type === 'turn.failed' || e.type === 'error') fail('model-call-failed');
+    if (e.item !== undefined) need(CODEX_ALLOWED_ITEMS.includes(e.item?.type), 'tool-activity');
+  }
+  const done = events.filter(e => e.type === 'turn.completed');
+  need(done.length === 1, 'incomplete-stream');
+  const usage = {};
+  for (const k of ['input_tokens', 'cached_input_tokens', 'output_tokens']) {
+    if (Number.isSafeInteger(done[0].usage?.[k]) && done[0].usage[k] >= 0) usage[k] = done[0].usage[k];
+  }
+  return { usage };
+}
+
 // Each turn runs in a fresh, empty folder under the run's scratch root. The
 // folders are kept, not deleted: they show that nothing was written, and the
 // Codex judge's last message stays beside them as evidence.
@@ -281,21 +307,25 @@ function runClaude(route, prompt, timeoutMs, scratchRoot) {
   const scratch = scratchFolder(scratchRoot, 'claude-');
   const r = spawnSync(route.cli, claudeArgs(route.model), { input: prompt, cwd: scratch, timeout: timeoutMs,
     maxBuffer: MAX_RAW, env: childEnv({ CLAUDE_CONFIG_DIR: route.configHome }), stdio: ['pipe', 'pipe', 'ignore'] });
+  if (r.error?.code === 'ENOBUFS') return { state: 'failed', error: 'output-too-large' };
   if (r.error?.code === 'ETIMEDOUT' || r.signal) return { state: 'timeout' };
   if (r.error) return { state: 'failed', error: 'spawn-failed' };
   if (readdirSync(scratch).length !== 0) return { state: 'failed', error: 'tool-activity' };
-  try { return { state: 'ok', ...checkClaudeStream(r.stdout.toString('utf8')) }; } catch (e) { return { state: 'failed', error: e.message }; }
+  try { return { state: 'ok', ...checkClaudeStream(r.stdout.toString('utf8')) }; } catch (e) { return { state: 'failed', error: knownCode(e) }; }
 }
 
 function runCodex(route, prompt, timeoutMs, scratchRoot) {
   const scratch = scratchFolder(scratchRoot, 'codex-');
   const last = `${scratch}.last-message.txt`;
   const r = spawnSync(route.cli, codexArgs(route.model, scratch, last), { input: prompt, cwd: scratch, timeout: timeoutMs,
-    maxBuffer: MAX_RAW, env: childEnv(route.codexHome ? { CODEX_HOME: route.codexHome } : {}), stdio: ['pipe', 'ignore', 'ignore'] });
+    maxBuffer: MAX_RAW, env: childEnv(route.codexHome ? { CODEX_HOME: route.codexHome } : {}), stdio: ['pipe', 'pipe', 'ignore'] });
+  if (r.error?.code === 'ENOBUFS') return { state: 'failed', error: 'output-too-large' };
   if (r.error?.code === 'ETIMEDOUT' || r.signal) return { state: 'timeout' };
   if (r.error || r.status !== 0 || !existsSync(last)) return { state: 'failed', error: 'model-call-failed' };
   if (readdirSync(scratch).length !== 0) return { state: 'failed', error: 'tool-activity' };
-  return { state: 'ok', text: readFileSync(last, 'utf8'), model: route.model, usage: {} };
+  let stream;
+  try { stream = checkCodexStream(r.stdout.toString('utf8')); } catch (e) { return { state: 'failed', error: knownCode(e) }; }
+  return { state: 'ok', text: readFileSync(last, 'utf8'), model: route.model, usage: stream.usage };
 }
 
 // The confinement probe tests capability, not wording. A tool-free model may
@@ -412,6 +442,11 @@ export function answerOne(run, pack, trialId, route, timeoutMs = 180000) {
   if (run.has(`answers/${trialId}.json`)) return run.read(`answers/${trialId}.json`);
   const ctx = trialContext(run, pack, trialId);
   const turn = runClaude(route, answerPrompt(ctx.trial, ctx.records, ctx.question.question), timeoutMs, run.path('scratch'));
+  // A route failure (lost login, unconfined start, tool activity) is not an
+  // answer: halt the step and save nothing, so a rerun retries this trial. A
+  // timeout is not saved either; the step moves on and a rerun retries it.
+  need(turn.state !== 'failed', `answer-route-failed-${turn.error}`);
+  if (turn.state === 'timeout') return { trialId, state: 'timeout', parseOutcome: { status: 'timeout-not-saved' } };
   const record = { trialId, planHash: ctx.planHash, state: turn.state, error: turn.error ?? null,
     model: turn.model ?? null, usage: turn.usage ?? {}, completedOrdinal: run.tick(), modelText: turn.text ?? null,
     answerRaw: null, parseOutcome: { status: 'no-answer' } };
@@ -435,6 +470,7 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
   const file = `judges/${trialId}.slot-${slotIndex}.json`;
   if (run.has(file)) return run.read(file);
   const ctx = trialContext(run, pack, trialId);
+  need(run.has(`answers/${trialId}.json`), 'answer-missing');
   const answer = run.read(`answers/${trialId}.json`);
   const slot = ctx.trial.judgeSlots[slotIndex];
   const ledger = { slotId: slot.id, family: slot.family, attempts: [], observations: [] };
@@ -447,7 +483,9 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
     const turn = runJudgeRoute(route, judgePrompt(ctx.trial, ctx.records, ctx.rubricBytes, answer.answerRaw), timeoutMs, run.path('scratch'));
     const base = { trialId, arm: ctx.trial.arm, repeat: ctx.trial.repeat, slotId: slot.id, family: slot.family,
       attemptId, ordinal, planHash: ctx.planHash, answerHash: sha(answer.answerRaw), completedOrdinal: run.tick(), usage: turn.usage ?? {} };
-    if (turn.state !== 'ok') { ledger.attempts.push({ ...base, state: turn.state, error: turn.error ?? null }); if (turn.state === 'timeout') continue; break; }
+    // A route failure is not a judgment: halt and save nothing, so a rerun retries this slot.
+    need(turn.state !== 'failed', `judge-route-failed-${slot.family}-${turn.error}`);
+    if (turn.state !== 'ok') { ledger.attempts.push({ ...base, state: turn.state, error: turn.error ?? null }); continue; }
     let raw;
     try { raw = resolveJudge(stripFence(turn.text), ctx.records, answer.answerRaw); } catch { raw = null; }
     const report = raw === null ? null : validateCapture(captureFor(ctx, answer.answerRaw, raw));
@@ -466,7 +504,7 @@ export function judgeOne(run, pack, trialId, slotIndex, route, timeoutMs = 24000
 function armSummary() {
   return { trials: 0, answered: 0, structurallyValid: 0, parseOutcomes: {}, judgedComplete: 0,
     criteria: { pass: 0, fail: 0, disputed: 0, incomplete: 0 }, allCriteriaPass: 0, criticalFailureTrials: 0,
-    criticalSignals: 0, independence: {}, outputTokens: 0, byRepeat: {} };
+    criticalSignals: 0, independence: {}, notJudged: 0, outputTokens: 0, byRepeat: {} };
 }
 
 export function totalRun(run, pack) {
@@ -506,7 +544,9 @@ export function totalRun(run, pack) {
       } else {
         s.independence[result.state] = (s.independence[result.state] ?? 0) + 1;
       }
-    } else if (outcome !== 'valid') {
+    } else if (outcome === 'valid') {
+      s.notJudged += 1; // a valid answer still waiting for one or both judges
+    } else {
       // An invalid or missing answer fails every criterion it cannot show.
       s.criteria.fail += ctx.trial.criteria.length;
     }
@@ -561,9 +601,11 @@ export function main(argv) {
   const run = new RunDir(opts.run);
   const pack = loadPack(opts.pack ?? fail('pack-dir-required'));
   const limit = opts.limit ? Number(opts.limit) : Infinity;
+  need(limit === Infinity || (Number.isSafeInteger(limit) && limit > 0), 'bad-limit');
   if (command === 'reduce') {
     need(opts.out && !existsSync(opts.out), 'reduce-out-required-and-new');
     const reduceRoute = { family: 'anthropic', model: opts.model, cli: resolve(opts.claude), configHome: resolve(opts['config-home']) };
+    requireConfined(run, reduceRoute);
     const turn = runClaude(reduceRoute, reducePrompt(pack), 300000, run.path('scratch'));
     need(turn.state === 'ok' && turn.text.trim().length > 0, 'reduce-failed');
     writeFileSync(opts.out, turn.text.trim(), { mode: 0o600, flag: 'wx' });
