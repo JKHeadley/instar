@@ -313,12 +313,20 @@ export class NotificationSelectivityGate {
     }, 600000);
     timer.unref(); this.summaries.set(key, { count: 1, category: verdict.category, label, timer });
   }
+  /** Ledger lines waiting for the next write; a burst becomes one append instead of one per row. */
+  private ledgerPending: string[] = [];
   private ledger(row: unknown): void {
+    this.ledgerPending.push(JSON.stringify(row) + '\n');
+    // A write is already queued and has not taken its batch yet: it will carry this row too.
+    if (this.ledgerPending.length > 1) return;
     this.ledgerWrites = this.ledgerWrites.then(async () => {
+      const lines = this.ledgerPending.splice(0);
+      if (lines.length === 0) return;
       const file = path.join(this.root, 'logs', 'notification-selectivity.jsonl');
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      // Rotation is checked per batch, so a file can exceed the cap by at most one batch.
       if (this.ledgerBytes >= 2 * 1024 * 1024) { await fs.promises.rename(file, file + '.previous'); this.ledgerBytes = 0; }
-      const line = JSON.stringify(row) + '\n'; await fs.promises.appendFile(file, line); this.ledgerBytes += Buffer.byteLength(line);
+      const chunk = lines.join(''); await fs.promises.appendFile(file, chunk); this.ledgerBytes += Buffer.byteLength(chunk);
     }).catch(error => { this.metrics.ledgerHealthy = false; console.warn('[selectivity] decision ledger unavailable:', error instanceof Error ? error.message : String(error)); });
   }
   withEnvelope<T>(envelope: OutboundEnvelope | undefined, fn: () => T): T {

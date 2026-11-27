@@ -137,6 +137,24 @@ describe('Quiet by Default delivery', () => {
     expect(gate.store.list({ limit: 200 }).reduce((sum, row) => sum + row.count, 0)).toBe(1000);
     expect(adapter.getTopicHistory(42, 20)).toHaveLength(0);
   });
+  it('a burst of ledger rows becomes one append, in order, so closing never waits on a per-row write chain', async () => {
+    // A 1000-send burst used to queue 1000 mkdir+append steps that close() had to drain one by one
+    // (6-11 s on a loaded machine, past the 10 s hook budget). Rows queued together now share one write.
+    const { root, gate } = setup();
+    const append = vi.spyOn(fs.promises, 'appendFile');
+    for (let i = 0; i < 1000; i++) (gate as any).ledger({ seq: i });
+    await (gate as any).ledgerWrites;
+    const ledgerCalls = append.mock.calls.filter(([file]) => String(file).endsWith('notification-selectivity.jsonl'));
+    expect(ledgerCalls).toHaveLength(1);
+    const rows = fs.readFileSync(path.join(root, 'logs', 'notification-selectivity.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => typeof row.seq === 'number').map(row => row.seq)).toEqual(Array.from({ length: 1000 }, (_, i) => i));
+    // A row arriving after the batch was taken still lands, in a second write.
+    (gate as any).ledger({ seq: 1000 });
+    await (gate as any).ledgerWrites;
+    expect(append.mock.calls.filter(([file]) => String(file).endsWith('notification-selectivity.jsonl'))).toHaveLength(2);
+    expect(fs.readFileSync(path.join(root, 'logs', 'notification-selectivity.jsonl'), 'utf8')).toContain('"seq":1000');
+    append.mockRestore();
+  });
   it('does not accept a forged reply envelope', async () => {
     const { gate } = setup();
     expect((await gate.route(42, 'automation', { origin: 'verified-reply', category: 'uncategorized', sourceContext: 'fake' })).receipt?.recorded).toBe(true);
