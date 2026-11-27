@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "slug": "pre-push-test-discovery-deadline",
+  "sessionId": "1f52ddfa-542b-4f86-9d54-e7d5d9f38c43",
+  "timestamp": "2026-11-26T19:55:54.572Z",
+  "artifactPath": "upgrades/side-effects/pre-push-test-discovery-deadline.md",
+  "artifactSha256": "23135720f8d67837119d5df574ba11f8c7b93a263cf1a863e45c8bf2d6d13cb4",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-26T19-55-10-083Z-worktree-runtime-readiness.json",
+    "docs/specs/pre-push-discovery-deadline.eli16.md",
+    "scripts/pre-push-smoke.mjs",
+    "upgrades/next/pre-push-test-discovery-deadline.md",
+    "upgrades/side-effects/pre-push-test-discovery-deadline.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Only the bounded local discovery deadline changes; failed discovery and shared verification retain their authority.",
+  "eli16Path": "docs/specs/pre-push-discovery-deadline.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pre-push-test-discovery-deadline.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
