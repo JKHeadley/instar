@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "conformance-review-one-call",
+  "sessionId": "76df10c0-439a-4240-ac01-dde0775670f5",
+  "timestamp": "2026-11-27T14:20:25.988Z",
+  "artifactPath": "upgrades/side-effects/conformance-review-one-call.md",
+  "artifactSha256": "e202e279f445fff137c14930a51a08ff581bf700549342107af03ceec2678917",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T14-16-18-054Z-conformance-review-one-call.json",
+    "src/core/reviewers/standards-conformance.ts",
+    "src/data/llmBenchCoverage.ts",
+    "src/server/specReviewRoutes.ts",
+    "tests/e2e/standards-conformance-gate-lifecycle.test.ts",
+    "tests/integration/standards-conformance-gate.test.ts",
+    "tests/unit/parser-contract-classification-ratchet.test.ts",
+    "tests/unit/standards-conformance-gate.test.ts",
+    "upgrades/eli16/conformance-review-one-call.md",
+    "upgrades/side-effects/conformance-review-one-call.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One reviewer module and its two callers; same results contract as the two-call path, separate fit call kept as the fallback; no route, config, state or migration change. Independent second pass done; Chief of Staff standing review requested because the check feeds spec approvals.",
+  "eli16Path": "upgrades/eli16/conformance-review-one-call.md",
+  "sideEffectsPath": "upgrades/side-effects/conformance-review-one-call.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
