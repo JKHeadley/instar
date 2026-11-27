@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "smoke-verify-exit-code",
+  "sessionId": "114fa942-5017-437a-9e77-57e894b4f2b9",
+  "timestamp": "2026-11-27T16:33:54.724Z",
+  "artifactPath": "upgrades/side-effects/smoke-verify-exit-code.md",
+  "artifactSha256": "592123e0141e22b8dea98120288ead003d24e877847f4aeb87d56c1ac69b4bc8",
+  "coveredFiles": [
+    ".husky/pre-push",
+    "scripts/pre-push-smoke.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Message and exit-code accuracy on an existing block; every input is blocked or allowed exactly as before and a revert fully undoes it.",
+  "eli16Path": "upgrades/side-effects/smoke-verify-exit-code.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/smoke-verify-exit-code.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

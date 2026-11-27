@@ -31,6 +31,12 @@ function printSkip(reason) {
   console.log('   The PR test matrix still runs the full suite before merge.');
 }
 
+const VERIFY_EXIT_CODE = 3;
+/** Keep exit 3 reserved for VERIFY: a real failure that happens to exit 3 reports as 1. */
+function failureExit(code) {
+  return code === VERIFY_EXIT_CODE ? 1 : code;
+}
+
 function printIndeterminateFailure(reason) {
   console.warn(`LOCAL SMOKE REQUIRES VERIFICATION — affected set indeterminate; tests run: 0. ${reason}.`);
   console.warn('   PRE_PUSH_SMOKE_RESULT=VERIFY reason=affected-set-indeterminate tests_run=0');
@@ -85,12 +91,14 @@ function exitOnUnusableListing(listed) {
     process.stdout.write(list.stdout ?? '');
     process.stderr.write(list.stderr ?? '');
     printIndeterminateFailure(listDisposition.reason);
-    process.exit(1);
+    // Distinct exit code so .husky/pre-push can say "not verified" instead of
+    // "Tests failed" over a run that executed zero tests.
+    process.exit(VERIFY_EXIT_CODE);
   }
   if (listDisposition.action === 'fail') {
     process.stdout.write(list.stdout ?? '');
     process.stderr.write(list.stderr ?? '');
-    process.exit(listDisposition.exitCode);
+    process.exit(failureExit(listDisposition.exitCode));
   }
   if (listed.selectionError || !listed.selected) {
     process.stdout.write(list.stdout ?? '');
@@ -205,4 +213,4 @@ if (selection.action === 'no-tests') {
   process.exit(0);
 }
 
-process.exit(runAffectedSmoke(base.ref));
+process.exit(failureExit(runAffectedSmoke(base.ref)));
