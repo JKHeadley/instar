@@ -1,11 +1,18 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
-<!-- internal-only -->
 
 ## What Changed
 
 Instar's existing state registry check now inventories the current writers and planned canonical owners for job definitions and project lifecycle. It verifies that each enrolled kind and scope declares one planned owner and that derived project digests use a registered materializer. It detects additional direct writes to protected stores when the destination can be resolved in the source file.
+
+## What to Tell Your User
+
+The repository checks who can write job definitions and project records. You can keep using Jobs and Projects as before.
+
+## Summary of New Capabilities
+
+The state registry declares current writers, planned owners and permitted projections for job and project records. Its check recognizes direct writes through the standard atomic writer when it can resolve the target in the source file.
 
 ## Evidence
 
