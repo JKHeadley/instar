@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "work-board-approval-provenance",
+  "sessionId": "b3d2cf8a-9b5d-468b-a50b-70ebf11e9e5c",
+  "timestamp": "2026-11-25T12:55:19.301Z",
+  "artifactPath": "upgrades/side-effects/work-board-approval-provenance.md",
+  "artifactSha256": "e1f648b9182b6b810beb8ef795c3dba29393bc67bdf474b0631de33cd4b08e00",
+  "specPath": "docs/specs/work-board-asks.md",
+  "coveredFiles": [
+    "dashboard/console/work-model.js",
+    "dashboard/console/work.js",
+    "src/core/WorkCardStore.ts",
+    "src/core/workBoardViews.ts",
+    "tests/unit/console-work-model.test.ts",
+    "tests/unit/internal-work-owner-surfaces.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

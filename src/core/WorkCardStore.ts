@@ -688,6 +688,8 @@ export interface CardFold {
   needLockedToRequest: boolean;
   /** Approval rests on the owner's own request (§1): valid while inward, agent-carried and not withdrawn. */
   requestApproved: boolean;
+  /** Creation carried verified owner approval, even if later withdrawn. */
+  requestApprovedAtCreation: boolean;
   /** `recordedAsHash ≠ requestTextHash`: the agent recorded the request in its own words (a label, not a judgment). */
   recordedInAgentWords: boolean;
   /** An agent `edited` touched `title` or `doneWhen` after creation (§1 "changed since asked"). */
@@ -748,7 +750,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
     evidence: [], claims: [], taps: [], reopens: [], holds: [], archives: [], closeout: null, redacted: null,
     approvalRequired: true, approvalValid: false, approvedBy: null, withdrawn: false, currentClaim: null, needsConfirm: false, done: false, doneByAgentOwnEvidence: false,
     unknown: [], newestRecordAt: 0, newestAgentRecordAt: 0, newestAgentRecordId: null, newestHlc: null, lastMaterialChangeFields: [], lastMaterialIdx: -1, workable: false, policy: 'every-agent-card',
-    refs: [], requester: null, requestTextHash: null, recordedAsHash: null, pickupHold: null, pickupHeld: false, needLockedToRequest: false, requestApproved: false,
+    refs: [], requester: null, requestTextHash: null, recordedAsHash: null, pickupHold: null, pickupHeld: false, needLockedToRequest: false, requestApproved: false, requestApprovedAtCreation: false,
     recordedInAgentWords: false, changedSinceAsked: false, agentWork: false, notes: [], quietRepickups: [], holdLifted: null,
   };
   const validate = workCardRecordStoreSchema.validate;
@@ -802,6 +804,7 @@ export function foldCard(cardId: string, records: FoldRecord[], policies: FoldRe
         if (v.pickupHold) f.pickupHold = v.pickupHold as PickupHold;
         // The owner's yes is anchored to the row's whole text: `need` is then immutable (§1).
         f.needLockedToRequest = !!(f.requester?.isOwner && f.requestTextHash);
+        f.requestApprovedAtCreation = f.needLockedToRequest && f.carrier === 'agent' && !f.outward;
         const w = byIsPerson(by) ? 'person' : 'agent';
         for (const k of MATERIAL_FIELDS) f.lastWriter[k] = w;
         f.carrierTrail.push({ carrier: f.carrier, by, at });

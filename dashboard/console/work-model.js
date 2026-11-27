@@ -148,9 +148,25 @@ export function principalWords(p) {
 /** `by` from cardJson: { kind: 'person', name, proof } or { kind: 'agent' | 'session' }. */
 export function byWords(by) {
   if (!isObj(by)) return 'someone unknown';
-  if (by.kind === 'person') return `${by.name || 'a person'}${by.proof ? `, proved by ${by.proof === 'phone' ? 'their phone' : 'the console PIN'}` : ''}`;
+  if (by.kind === 'person') {
+    const proof = { phone: 'their phone', 'console PIN': 'the console PIN', 'their own request': 'their own request' }[by.proof];
+    return `${by.name || 'a person'}${typeof proof === 'string' ? `, proved by ${proof}` : ''}`;
+  }
   if (by.kind === 'session') return 'the agent (in the card’s conversation)';
   return 'the agent';
+}
+
+export function approvalWords(card) {
+  if (card.approved && card.approvedBy?.source === 'requester-message') {
+    return `Approved by ${card.approvedBy.by?.name || 'the owner'}’s original request`;
+  }
+  if (card.approved) return card.approvedBy?.by ? `Approved by ${byWords(card.approvedBy.by)}` : 'Approved';
+  if (card.withdrawn) return 'Approval withdrawn';
+  if (card.approvalRequired) return 'Needs your approval';
+  if (card.policy === 'outward-only' && card.outward === false && card.carrier === 'agent') {
+    return 'No approval required under the board’s internal-work policy';
+  }
+  return 'No approval required';
 }
 
 const TAP_WORDS = {

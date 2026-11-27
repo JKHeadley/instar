@@ -151,6 +151,9 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
     closeout: c.closeout ? { as: c.closeout.as, note: c.closeout.note, by: byJson(c.closeout.by, name), at: c.closeout.at, tapId: c.closeout.tapId, title: c.closeout.title } : null,
     conversation: conversationRef(c.conversationKey),
     carrierTrail: c.carrierTrail.map((t) => ({ carrier: principalJson(t.carrier, name), by: byJson(t.by, name), at: t.at })),
+    requestedApproval: c.requestApprovedAtCreation && c.requester ? {
+      at: c.createdAt, by: byJson({ kind: 'person', personKey: c.requester.personKey, proof: 'message' }, name),
+    } : null,
     taps: c.taps.map((t) => ({ id: t.id, action: t.action, at: t.at, by: byJson(t.by, name) })),
     unreadable: c.unknown.length ? c.unknown : null,
     workable: c.workable,
