@@ -4,6 +4,8 @@
 
 The dashboard and signed app clients can resolve a link to a specific App message. The link opens that message and older context directly. A message that the reader cannot access has the same response as a message missing from the serving copy.
 
+This pull request also carries a documentation-only scope decision for the future quoted-reply design: loss of quote metadata through older App codecs is a disclosed compatibility limit, and known unavailable quotes show "Quoted message unavailable". No quoted-reply behavior ships here. The decision and its independent review are recorded in `docs/specs/reports/quoted-replies-bounded-decision-20261123.md`.
+
 ## What to Tell Your User
 
 When this is enabled, use Copy Message Link from a message’s options. Anyone opening the link needs their own access to that conversation and message.
