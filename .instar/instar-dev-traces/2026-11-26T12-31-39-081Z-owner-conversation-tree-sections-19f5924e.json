@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T12:31:39.081Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "9f7b825f0726984a3fde17db7eb8296ed506ee4e54e064b46ab5040aa53a1352",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/ownerTreeProjectMembership.ts",
+    "tests/unit/owner-tree-project-membership.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Distinguish covered Telegram roots from unresolved App ancestry",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

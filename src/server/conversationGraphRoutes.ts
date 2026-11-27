@@ -5,7 +5,7 @@
  *   GET /conversation-graph/nodes/:ref?cursor=         (:ref = base64url canonical JSON NodeRef)
  *   GET /mobile/conversation-graph/roots …              (same bodies; device-signed)
  *   GET /mobile/conversation-graph/nodes/:ref …
- *   GET /mobile/conversation-graph/tree?cursor=          (phone only: root efforts with children nested)
+ *   GET /{mobile/}conversation-graph/tree?cursor=        (owner: root efforts with children nested)
  *
  * Owner-only in v1. The caller supplies `resolveViewer`, which turns an authenticated request into
  * the owner's GraphViewer (dashboard owner proof, or a device signature resolved to the owner) or
@@ -99,24 +99,22 @@ export function createConversationGraphRouter(deps: ConversationGraphRouteDeps):
       if (cursor === INVALID_QUERY) return void res.status(409).json({ code: 'cursor-stale', reason: 'cursor-invalid' });
       authorizedSend(req, res, surface, viewer, deps.model.destinations(viewer, ref, { q, cursor }));
     });
-  }
 
-  // The phone's tree (work-front-doors stage 2; hierarchy v3 §7.4): the same owner-only viewer and read model as
-  // roots and nodes, one request instead of one per effort. The dashboard keeps composing roots and nodes itself.
-  router.get('/mobile/conversation-graph/tree', (req: Request, res: Response) => {
-    const viewer = deps.resolveViewer(req, 'mobile');
-    if (!viewer) return void res.status(403).json({ code: 'hierarchy-owner-only' });
-    const cursor = param(req.query.cursor, 2048);
-    if (cursor === INVALID_QUERY) return void res.status(409).json({ code: 'cursor-stale', reason: 'cursor-invalid' });
-    let projects: TreeProject[] | null = null;
-    if (deps.projects) {
-      try { const rows = deps.projects(); projects = Array.isArray(rows) ? rows : null; } catch {
-        // @silent-fallback-ok — unreadable projects are reported in the body as projects:'unknown'; nothing is labelled.
-        projects = null;
+    router.get(`${prefix}/tree`, (req: Request, res: Response) => {
+      const viewer = deps.resolveViewer(req, surface);
+      if (!viewer) return void res.status(403).json({ code: 'hierarchy-owner-only' });
+      const cursor = param(req.query.cursor, 2048);
+      if (cursor === INVALID_QUERY) return void res.status(409).json({ code: 'cursor-stale', reason: 'cursor-invalid' });
+      let projects: TreeProject[] | null = null;
+      if (deps.projects) {
+        try { const rows = deps.projects(); projects = Array.isArray(rows) ? rows : null; } catch {
+          // @silent-fallback-ok — unreadable projects are reported in the body as projects:'unknown'; nothing is labelled.
+          projects = null;
+        }
       }
-    }
-    authorizedSend(req, res, 'mobile', viewer, deps.model.tree(viewer, { cursor, projects }));
-  });
+      authorizedSend(req, res, surface, viewer, deps.model.tree(viewer, { cursor, projects }));
+    });
+  }
 
   return router;
 }

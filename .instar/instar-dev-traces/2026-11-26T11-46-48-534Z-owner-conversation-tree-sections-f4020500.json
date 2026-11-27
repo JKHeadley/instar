@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T11:46:48.534Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "742a3d3b005251321c8bb25ae53b17c5bef4fef0f1d5f71963075757b99ad0d2",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/conversationGraphRead.ts",
+    "src/core/ownerTreeProjectMembership.ts",
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphReadSource.ts",
+    "src/server/ConversationGraphSurface.ts",
+    "tests/e2e/conversation-graph-tree-alive.test.ts",
+    "tests/unit/owner-tree-project-membership.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Connect shared sections to production verified project placement conservatively",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

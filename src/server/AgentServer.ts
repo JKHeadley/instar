@@ -10,6 +10,7 @@ import { INSTAR_MACHINE_HEADER } from '../core/BootClaimHold.js';
 import { projectTitlesByTopic, topicDisplayName } from './conversationFallbackTitle.js';
 import { orgDecisionJournal } from '../core/OrgActionCheck.js';
 import { bootReadiness } from './BootReadiness.js';
+import { ownerTreeProjectMembership } from '../core/ownerTreeProjectMembership.js';
 import { cardPlacementsFromBoard, projectSuggestionSources } from '../core/workFrontDoorsGraph.js';
 import { createPairingOutcomeNotice } from './pairingOutcomeNotice.js';
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
@@ -8665,6 +8666,8 @@ export class AgentServer {
     // work-front-doors stage 2b (spec §3.2): each open card's conversation and its project's conversation, so a
     // project's page shows the card as proposed until the card-record graph authority exists. Read-only.
     const graphTelegramChatId=():string=>String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'');
+    const graphProjectMembership = (refs: readonly import('../core/conversationGraph.js').ConversationRef[]) =>
+      ownerTreeProjectMembership(refs, options.chiefOfStaffLoop?.creationPlacementSnapshot() ?? null);
     const graphMayPresent=(ref:import('../core/conversationGraph.js').NodeRef)=>{
       if(ref.kind!=='conversation'||ref.platform!=='app')return true;
       if(options.workBoard){const board=options.workBoard();if(!board){if(!workBoardEnabled(options.config))return true;throw new Error('work-card-visibility-unavailable');}return !board.hiddenConversationKeys().has(ref.conversationKey);}
@@ -8695,7 +8698,7 @@ export class AgentServer {
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,treeProjectMembership:graphProjectMembership,mayPresent:graphMayPresent,
         telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
         pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
@@ -8706,7 +8709,7 @@ export class AgentServer {
       graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
-        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,mayPresent:graphMayPresent,
+        chiefOfStaffTopicId:graphChiefOfStaffTopicId,suggestions:graphSuggestions,groupProjects:graphGroupProjects,cardPlacements:graphCardPlacements,treeProjectMembership:graphProjectMembership,mayPresent:graphMayPresent,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
         verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},

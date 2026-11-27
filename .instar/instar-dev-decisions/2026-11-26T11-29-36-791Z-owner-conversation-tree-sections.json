@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T11:29:36.791Z",
+  "slug": "owner-conversation-tree-sections",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/conversation-tree-native-acceptance.mjs"
+    ],
+    "addedLines": 17,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

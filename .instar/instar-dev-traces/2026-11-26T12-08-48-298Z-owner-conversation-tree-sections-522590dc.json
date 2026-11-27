@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T12:08:48.298Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "61690edd95408fe6a56ccf334be7b66d4cb8ead43ab494e238f2f24503631291",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "src/core/conversationGraphRead.ts",
+    "src/core/ownerTreeProjectMembership.ts",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "tests/unit/owner-tree-project-membership.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Preserve verified within-project ancestry in tree sections",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

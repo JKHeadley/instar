@@ -37,6 +37,8 @@ export interface GraphReadSource {
   /** The flat conversation inventory: exact list id and machine. */
   conversations(): ConversationSource[];
   unavailableConversations?(): ConversationRef[];
+  /** Exact project assignment for each visible conversation, including affirmative nulls. */
+  treeProjectMembership?(refs: readonly ConversationRef[]): ReadonlyMap<string, TreeProjectMembership> | null;
   /** Effort titles (EffortHeaderStore); null when absent or forgotten. */
   effortTitle(effort: EffortRef): string | null;
   headerMetadata?(effort: EffortRef): {version:number;forgotten:boolean}|null;
@@ -67,6 +69,8 @@ export const TREE_NODE_BUDGET = 400;
  * A tracked project the tree may label an effort with: its conversation, the project's title and the
  * conversation key the Work page and `GET /mobile/work/projects` use for it.
  */
+export type TreeProjectMembership = string | null | { projectConversationKey: string; parentNodeKey: string };
+
 export interface TreeProject { ref: ConversationRef; title: string; conversationKey: string }
 
 /** One node of the phone tree: the projection item, flattened for a phone, with its children nested. */
@@ -86,6 +90,9 @@ export interface TreeNode {
   frontDoor?: ConversationRef;
   /** Efforts only, when the projects could be read and this effort holds a tracked project's conversation. */
   project?: { title: string; conversationKey: string };
+  /** Visible conversations below this project node, excluding its own conversation. */
+  descendantConversationCount?: number;
+  projectConversationKey?: string;
   children?: TreeNode[];
   /** False when the children shown are not all of them (depth, per-node or response limit): open the node for the rest. */
   childrenComplete?: boolean;
@@ -331,8 +338,90 @@ export class ConversationGraphReadModel {
     // The Chief of Staff conversation heads the tree, as it heads the Overview (first page only).
     const rootRef = (q.cursor ?? '') === '' ? this.rootRef() : null;
     const rootItem = rootRef ? projection.item(rootRef) : null;
+    const groups = items.filter((item) => item.kind === 'effort');
+    const projects: TreeNode[] = [];
+    const ungrouped: TreeNode[] = [];
+    const refs = projection.list('all', null).filter((ref) => ref.kind === 'conversation');
+    const membership = this.source.treeProjectMembership?.(refs);
+    let placementComplete = false;
+    if (membership && q.projects && !q.cursor && !page.nextCursor && partialReasons.length === 0) {
+      const projectRows = new Map<string, TreeNode>();
+      const wholeBranch = (row: TreeNode): boolean => row.childrenComplete !== false && row.proposedComplete !== false
+        && (row.children?.every(wholeBranch) ?? true);
+      placementComplete = groups.every(wholeBranch) && refs.length <= TREE_NODE_BUDGET
+        && graph.conflicts.length === 0 && refs.every((ref) => membership.has(nodeKey(ref)));
+      for (const project of q.projects) {
+        const item = projection.item(project.ref);
+        if (!item || budget <= 0 || projectRows.has(project.conversationKey)) { placementComplete = false; continue; }
+        const row = flat(item);
+        row.project = { title: project.title, conversationKey: project.conversationKey };
+        row.projectConversationKey = project.conversationKey;
+        row.children = [];
+        row.childrenComplete = true;
+        projects.push(row);
+        projectRows.set(project.conversationKey, row);
+      }
+      const childrenByParent = new Map<string, TreeNode[]>();
+      for (const ref of refs) {
+        if (rootRef && nodeKey(ref) === nodeKey(rootRef)) continue;
+        const item = projection.item(ref);
+        const assignment = membership.get(nodeKey(ref));
+        const key = typeof assignment === 'object' && assignment !== null ? assignment.projectConversationKey : assignment;
+        const grouped = graph.parentOf.get(nodeKey(ref));
+        if (!item || item.state === 'unavailable' || key === undefined || (key && grouped)) {
+          placementComplete = false;
+          continue;
+        }
+        if (key) {
+          const project = projectRows.get(key);
+          if (!project || !project.children) { placementComplete = false; continue; }
+          if (nodeKey(project.ref) !== nodeKey(ref)) {
+            if (budget <= 0) { placementComplete = false; continue; }
+            const parent = typeof assignment === 'object' && assignment !== null ? assignment.parentNodeKey : nodeKey(project.ref);
+            const children = childrenByParent.get(parent) ?? [];
+            children.push({ ...flat(item), projectConversationKey: key });
+            childrenByParent.set(parent, children);
+          }
+        } else if (!grouped) {
+          if (budget <= 0) { placementComplete = false; continue; }
+          ungrouped.push(flat(item));
+        }
+      }
+      const attach = (row: TreeNode, depth: number, ancestors: Set<string>) => {
+        const key = nodeKey(row.ref);
+        const children = childrenByParent.get(key);
+        if (!children) return;
+        childrenByParent.delete(key);
+        row.visibleChildCount = children.length;
+        row.children = [];
+        row.childrenComplete = depth < TREE_MAX_DEPTH && children.length <= TREE_CHILD_LIMIT;
+        if (!row.childrenComplete) placementComplete = false;
+        if (depth >= TREE_MAX_DEPTH) return;
+        const path = new Set([...ancestors, key]);
+        for (const child of children.slice(0, TREE_CHILD_LIMIT)) {
+          if (path.has(nodeKey(child.ref)) || child.projectConversationKey !== row.projectConversationKey) {
+            placementComplete = false;
+            row.childrenComplete = false;
+            continue;
+          }
+          row.children.push(child);
+          attach(child, depth + 1, path);
+        }
+      };
+      for (const project of projects) attach(project, 1, new Set());
+      if (childrenByParent.size) placementComplete = false;
+      if (placementComplete) {
+        const count = (row: TreeNode): number => (row.kind === 'conversation' ? 1 : 0)
+          + (row.children?.reduce((total, child) => total + count(child), 0) ?? 0);
+        for (const project of projects) {
+          project.descendantConversationCount = count(project) - 1;
+        }
+      }
+
+    }
     return { status: 200, body: { ...this.envelope(revision, partialReasons), ...(rootItem ? { root: flat(rootItem) } : {}),
       items, nextCursor: page.nextCursor, projects: q.projects ? 'known' : 'unknown',
+      sections: { projects, groups, ungrouped: placementComplete ? ungrouped : [] }, placementComplete,
       limits: { depth: TREE_MAX_DEPTH, childrenPerNode: TREE_CHILD_LIMIT, nodes: TREE_NODE_BUDGET } } };
   }
 

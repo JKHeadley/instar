@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-26T12:12:10.642Z",
+  "slug": "owner-conversation-tree-sections",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/conversationGraphRead.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

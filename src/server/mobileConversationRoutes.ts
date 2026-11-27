@@ -72,7 +72,7 @@ import { isMessagePosition, isReaderKey, CATCH_UP_PAGE, accessRefOf, canonicalCo
 import { isConversationListPinsEnabled, MAX_LIST_PINS_PER_READER, type ConversationListPinStore, type PinnedRef } from '../core/ConversationListPins.js';
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { mediaOffBody } from './mobileMediaOff.js';
-import { AppCreationHierarchyProjection, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
+import { AppCreationHierarchyProjection, confirmedProjectFor, type AppHierarchyFields, type CreationHierarchySource, type CreationHierarchyScope } from './appCreationHierarchy.js';
 import { normalizeCreationParentRef, type AppCreationContext } from '../core/AppCreationContext.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
@@ -101,6 +101,7 @@ export interface ConversationListRow {
   readUpTo?: { atMs: number; id: string } | null;
   /** Chief of Staff tree (docs/specs/chief-of-staff-topic.md §1.4): the parent conversation key; owner-role callers only. Older apps ignore it. */
   parentConversationKey?: string | null;
+  projectConversationKey?: string;
   creationSource?: AppHierarchyFields['creationSource'];
   hierarchyState?: AppHierarchyFields['hierarchyState'];
 }
@@ -745,11 +746,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const rowKey = (r: ConversationListRow): string => (r.platform === 'app' ? `app:${String(r.id)}` : `${r.platform}:${String(r.id)}`);
     const scope = ownerMetadata(req) ? creationScope(req) : null;
     const withTree = (rows: ConversationListRow[]): ConversationListRow[] => rows.map((r) => {
-      if (r.platform === 'app') {
-        const { parentConversationKey: _parent, creationSource: _source, hierarchyState: _state, ...ordinary } = r;
-        return scope && creationProjection ? { ...ordinary, ...creationProjection.fields(String(r.id), scope) } : ordinary;
+      const { projectConversationKey: _project, ...base } = r;
+      let row: ConversationListRow = base;
+      if (base.platform === 'app') {
+        const { parentConversationKey: _parent, creationSource: _source, hierarchyState: _state, ...ordinary } = base;
+        row = scope && creationProjection ? { ...ordinary, ...creationProjection.fields(String(base.id), scope) } : ordinary;
+      } else if (cosView?.parents.has(rowKey(base))) {
+        row = { ...base, parentConversationKey: cosView.parents.get(rowKey(base)) ?? null };
       }
-      return cosView?.parents.has(rowKey(r)) ? { ...r, parentConversationKey: cosView.parents.get(rowKey(r)) ?? null } : r;
+      const project = scope && confirmedProjectFor(rowKey(row), scope,
+        row.platform === 'app' ? row.parentConversationKey : undefined);
+      return project ? { ...row, projectConversationKey: project } : row;
     });
     const pinnedOut = (rows: ConversationListRow[]): Record<string, unknown> => {
       if (!cosView || !cosView.pinnedKey || cursor !== null) return {};

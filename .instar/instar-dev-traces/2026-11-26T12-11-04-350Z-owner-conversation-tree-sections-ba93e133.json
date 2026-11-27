@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T12:11:04.350Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "532c533f691da4d732a08af9ac4a23f1d1d8a52d6469a67f433df9bc5d4cf6ea",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/core/conversationGraphRead.ts",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Report exact visible project descendant counts on complete tree reads",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -280,3 +280,36 @@ Changing any approval policy other than through Justin's A/B decision; syncing t
 > **CMT-1803** — "Review and schedule stage 3 after stage 2 ships; owner Echo"
 
 Stage 2 rides on CMT-1802 (named in section 7).
+
+### Shared owner tree sections
+
+The shared owner tree adds `sections.projects`, `sections.groups`,
+`sections.ungrouped` and `placementComplete`. Existing tree fields remain
+available to older clients. Projects use their confirmed conversation keys
+as stable identities, including projects without saved groups. Saved groups
+use their existing graph references. Both preserve confirmed parent links
+and the existing child counts, continuation, and completeness fields. The
+Chief of Staff remains the first visible chat.
+
+Use verified project bindings and ancestry and the certified group graph.
+A project chat appears once in its project branch. A nested group or
+project retains its explicit parent rather than being moved to a root
+section. Confirmed card links locate the conversation under its project.
+Apply current viewer scope and internal chat visibility before exposing a
+row, branch count, or card link. The source must distinguish absence of
+placement from absence of evidence. Ungrouped includes a visible chat
+only if both placement sources affirmatively cover it and neither assigns
+it a parent. A missing project page, unavailable visibility, conflicting
+parent, or incomplete graph cannot supply a negative placement decision.
+
+`placementComplete` is affirmative only when the response has complete
+project, graph, visibility and inventory evidence for the in-scope snapshot.
+Pagination and branch truncation retain their existing explicit indicators.
+When placement is incomplete, clients keep their existing display and
+must not infer Ungrouped from missing fields.
+
+Verify one signed-owner fixture with a confirmed project without a saved
+group, a nested saved group, a pinned generated project descendant, a
+hidden internal chat, an ordinary ungrouped chat, and an exact linked card.
+Check incomplete sources separately and compare the same fields through
+signed mobile and dashboard owner admission.

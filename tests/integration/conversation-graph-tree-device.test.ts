@@ -76,9 +76,16 @@ describe('the phone tree through real device request authority',()=>{
   const off=await e.signed(owner);expect(off.status).toBe(503);expect(off.body.code).toBe('conversation-graph-off');expect(e.reads()).toBe(0);
   e.pairing.devices.revoke(owner.id);expect((await e.signed(owner)).status).toBe(401);
  });
- it('is a phone route only: the dashboard owner proof does not open it',async()=>{
+ it('serves the same tree to an authenticated dashboard owner and refuses bearer only',async()=>{
   const e=await boot();
   const r=await request(e.app).get('/conversation-graph/tree').set('Authorization','Bearer test-bearer').set('X-Instar-AgentId','echo').set('X-Instar-Operator-Session','test-owner-proof');
-  expect(r.status).toBe(404);
+  expect(r.status).toBe(200);
+  expect(r.headers['cache-control']).toBe('no-store');
+  const mobile = await e.signed(e.phone());
+  expect(r.body.items).toEqual(mobile.body.items);
+  expect(r.body.projects).toBe(mobile.body.projects);
+  const denied = await request(e.app).get('/conversation-graph/tree')
+    .set('Authorization','Bearer test-bearer').set('X-Instar-AgentId','echo');
+  expect(denied.status).toBe(403);
  });
 });

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-26T12:09:27.459Z",
+  "slug": "owner-conversation-tree-sections",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 64,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/conversation-tree-native-acceptance.mjs",
+      "src/core/conversationGraphRead.ts",
+      "src/core/ownerTreeProjectMembership.ts"
+    ],
+    "addedLines": 46,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "owner-conversation-tree-sections",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T11:03:27.170Z",
+  "artifactPath": "upgrades/side-effects/owner-conversation-tree-sections.md",
+  "artifactSha256": "9bf5d12163f707c1a10f277320dcb5e24f59185bd2b35d9a10b072512946abd3",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "scripts/conversation-tree-native-acceptance.mjs",
+    "tests/e2e/conversation-tree-native-acceptance.test.ts",
+    "upgrades/side-effects/owner-conversation-tree-sections.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Seed disposable owner pin for combined sections acceptance",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

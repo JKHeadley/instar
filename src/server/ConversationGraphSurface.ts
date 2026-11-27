@@ -77,6 +77,7 @@ export function createConversationGraphSurface(options:{
  readEnabled?:boolean;correctionsEnabled?:boolean;identity:MachineIdentityManager;
  scope:ScopeVerifier|null;telegramChatId:string;pairing:MobilePairingService|null;
  verifyDashboardOwner(token:string|undefined):boolean;
+ treeProjectMembership?:import('../core/conversationGraphRead.js').GraphReadSource['treeProjectMembership'];
  mayPresent?(ref:import('../core/conversationGraph.js').NodeRef):boolean;
  /** Live operator policy; absence preserves the older admitted-only adapter. */
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
@@ -97,7 +98,7 @@ export function createConversationGraphSurface(options:{
  const custody=new ConversationGraphHeaderCustody(options.stateDir,runtime);
  const corrections=options.correctionsEnabled===true&&options.scope!==null;
  const localIntents=corrections&&typeof options.dashboardPolicy==='function';
- const source=new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:corrections,erasureEnabled:corrections,localIntentsEnabled:localIntents,...(options.cardPlacements?{cardPlacements:options.cardPlacements}:{})});
+ const source=new ConversationGraphRuntimeReadSource(runtime,custody,{correctionsEnabled:corrections,erasureEnabled:corrections,localIntentsEnabled:localIntents,treeProjectMembership:options.treeProjectMembership,...(options.cardPlacements?{cardPlacements:options.cardPlacements}:{})});
  const rootConversation=():ConversationRef|null=>{
   const topicId=options.chiefOfStaffTopicId?.()??null;
   return topicId!==null&&Number.isSafeInteger(topicId)&&topicId>1&&options.telegramChatId

@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "shared-owner-conversation-tree",
+  "sessionId": "633bd330-201e-4dc8-8fd9-72b89116167e",
+  "timestamp": "2026-11-26T09:47:18.307Z",
+  "artifactPath": "upgrades/side-effects/shared-owner-conversation-tree.md",
+  "artifactSha256": "dc4cf5058b80c1e63c31eab7238e53a844b34d0b478e95da1df4fb842de77dcf",
+  "specPath": "docs/specs/work-front-doors.md",
+  "coveredFiles": [
+    "src/server/conversationGraphRoutes.ts",
+    "tests/integration/conversation-graph-tree-device.test.ts",
+    "upgrades/side-effects/shared-owner-conversation-tree.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Share the existing owner tree using existing dashboard admission",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
