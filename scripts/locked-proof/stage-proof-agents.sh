@@ -62,8 +62,10 @@ case "$MODE" in
     cp "$TGZ" "$STAGED"; chmod 0644 "$STAGED"
     as_user mkdir -p "$PREFIX"
     as_user npm install --prefix "$PREFIX" --no-audit --no-fund "$STAGED"
-    as_user "$INSTAR" init --standalone locked-proof --port 4098 --keep
-    as_user "$INSTAR" init --standalone locked-proof-b --port 4097 --keep
+    # Re-staging a new build over existing agents: init refuses (exit 1) an agent that already has a config,
+    # so only create the missing ones. configure below updates both either way.
+    as_user test -f "$A/.instar/config.json" || as_user "$INSTAR" init --standalone locked-proof --port 4098 --keep
+    as_user test -f "$B/.instar/config.json" || as_user "$INSTAR" init --standalone locked-proof-b --port 4097 --keep
     configure "$A" --port 4098 --tunnel
     configure "$B" --port 4097
     as_user cp "$HERE/reset-attempts.py" "$HOME_DIR/.instar/reset-attempts.py"

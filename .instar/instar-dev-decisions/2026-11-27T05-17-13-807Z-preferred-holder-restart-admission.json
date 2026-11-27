@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-27T05:17:13.807Z",
+  "slug": "preferred-holder-restart-admission",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "relatedPrs": [
+      3942
+    ],
+    "notes": "The new POST admission route only reads lease evidence but omitted the explicit write-domain declaration required for new POST routes."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

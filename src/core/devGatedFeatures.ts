@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'bootSlowCallbacks',
+    configPath: 'monitoring.bootSlowCallbacks',
+    description: 'Boot slow-callback attributor (fb-756ec068-89d): for 120 s after boot, logs any callback that holds the event loop over 1 s with the code that scheduled it; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Observation only: an async_hooks hook that times callbacks and writes at most 20 log lines, then disables itself; an internal error disables the hook, never the callback. No gate, notice, state file or outward action. false turns it off.',
+  },
+  {
     name: 'noDataLossRepos',
     configPath: 'noDataLoss.repos.enabled',
     description: 'The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md increment 1): every repository this agent works in on each machine, its remotes, single-copy work and age, at GET /repos[?scope=pool]; a repository with no remote, or unpushed work past the grace window, is a Needs-you row; omitted => live on a development agent, dark on the fleet.',
@@ -618,6 +624,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'U4.2 stale-owner release (docs/specs/u4-2-stale-owner-release.md) — the CMT-1786 auto-failover: the serving-lease holder force-claims a provably-dead owner\'s topics behind the §2.2 evidence bar (death + all-transport disproof + quorum + claimant self-proof + side-effect recency), with the replicated topic-claim-annotation carrying budgets/suspensions/refusals across lease movement.',
     justification:
       'Ships dryRun:true (the dry-run canary): on a dev agent the evidence pass, probes, decision trace (logs/stale-owner-release.jsonl) and GET /pool/stale-owner-release all run LIVE, but the engine logs would-claims and NEVER lands a force-claim CAS while dryRun holds — zero authority moves; graduation past dry-run is gated on the spec §5 quantified soak (≥5 operator-corroborated would-claims, zero wrong) PLUS the emission-fence + observer-staleness prerequisites. Additionally subordinate to multiMachine.sessionPool being live AND ≥2 registered machines (strict no-op otherwise). Probes are read-only authenticated handshakes to the operator\'s OWN machines — no external egress, no spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
+  },
+  {
+    name: 'stopGateReplayInput',
+    configPath: 'monitoring.stopGateReplayInput.enabled',
+    description: 'CMT-2204: the UnjustifiedStopGate keeps the credential-scrubbed stop reason + recent turns it judged (and its trusted evidence) under the provenance row\'s machine-local _contentFull, with a content-free prompt sha and a scrubChanged flag, so its decisions can be replayed against a cheaper model.',
+    justification: 'Observability only: no prompt text, model, timeout, parsing or continue/allow/escalate verdict changes. The capture is scrubbed for credential shapes before storage, lives only in the machine-local contextFull (stripped from contextRedacted, never served by GET /judgment-provenance, excluded from the cross-machine allowlist) under the existing 14-day retention and the census 300-row/day budget. Rows the 64 KB clamp truncates, or whose rebuilt sha differs, are not replay-eligible. Off on the fleet, where rows stay byte-identical.',
   },
   {
     name: 'selfDeferralGuard',

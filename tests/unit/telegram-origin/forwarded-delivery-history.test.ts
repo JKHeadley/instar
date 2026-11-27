@@ -1,7 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { forwardedDeliveryHistoryTopic, forwardedDeliveryRow } from '../../../src/messaging/telegram-origin/ForwardedDeliveryHistory.js';
+import { forwardedDeliveryHistoryTopic, forwardedDeliveryRow, originMessageHistoryText } from '../../../src/messaging/telegram-origin/ForwardedDeliveryHistory.js';
 import type { OriginPreparedBotOperation } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
+import { lateRecoveredReplyNotice } from '../../../src/messaging/telegram-origin/SessionDeliveryNotice.js';
+
+describe('authored history text shared by direct and forwarded recovery', () => {
+  it('preserves exact Markdown and literal HTML-shaped code without decoding it', () => {
+    const text = '**Approve** *read*. Keep `<i>literal code</i>` and &amp; unchanged.';
+    expect(originMessageHistoryText({ policy: { text }, body: JSON.stringify({ text: '<b>wire</b>' }) })).toBe(text);
+    expect(originMessageHistoryText({ policy: { text: '' }, body: JSON.stringify({ text: 'wire' }) })).toBe('');
+  });
+  it('retains the existing wire-only fallback without guessing lost authored bytes', () => {
+    expect(originMessageHistoryText({ body: JSON.stringify({ text: 'plain legacy body' }) })).toBe('plain legacy body');
+    for (const body of [undefined, 'null', '{broken', '{}']) expect(originMessageHistoryText({ body })).toBeNull();
+  });
+  it('preserves the late line at its stored marking age, without adding it twice to wire fallback', () => {
+    const firstPreparedAt = 1_000, lateMarkedAt = firstPreparedAt + 7 * 60_000;
+    const line = lateRecoveredReplyNotice(firstPreparedAt, lateMarkedAt)!;
+    const text = '**The earlier reply.**';
+    expect(originMessageHistoryText({ policy: { text } }, { firstPreparedAt, lateMarkedAt })).toBe(`${line}\n\n${text}`);
+    const wire = `${line}\n\nThe earlier reply.`;
+    expect(originMessageHistoryText({ body: JSON.stringify({ text: wire }) }, { firstPreparedAt, lateMarkedAt })).toBe(wire);
+    expect(originMessageHistoryText({ policy: { text } }, { firstPreparedAt, lateMarkedAt: null })).toBe(text);
+  });
+  it('does not double an old sealed late line or strip a matching line from actual authored prose', () => {
+    const firstPreparedAt = 1_000, lateMarkedAt = firstPreparedAt + 7 * 60_000;
+    const line = lateRecoveredReplyNotice(firstPreparedAt, lateMarkedAt)!;
+    const text = `${line}\n\nThe earlier answer.`;
+    const timing = { firstPreparedAt, lateMarkedAt, footer: 'Echo' };
+    expect(originMessageHistoryText({ policy: { text },
+      body: JSON.stringify({ text: `${text}\n\nEcho`, parse_mode: 'HTML' }) }, timing)).toBe(text);
+    expect(originMessageHistoryText({ policy: { text },
+      body: JSON.stringify({ text: `${line}\n\n${text}\n\nEcho`, parse_mode: 'HTML' }) }, timing)).toBe(`${line}\n\n${text}`);
+  });
+});
 
 function operation(input: { method?: string; policyText?: string; bodyText?: string; topicId?: string | null; chatId?: string | null; producerKind?: string } = {}): OriginPreparedBotOperation {
   const request: Record<string, unknown> = { method: input.method ?? 'sendMessage',

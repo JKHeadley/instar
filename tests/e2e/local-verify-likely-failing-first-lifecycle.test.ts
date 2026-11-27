@@ -159,6 +159,51 @@ describe('first parts lifecycle (production wiring)', () => {
     svc.shutdown();
   });
 
+  it('reads the named retry setting live and refuses recovery if stored quarantine is unreadable', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const svc = buildLocalVerifyService({
+      config: { enabled: true }, expectedGhLogin: 'EchoOfDawn', repo: 'JKHeadley/instar',
+      repoPath: home, stateDir, agentHome: home, machineId: 'm_e2e', mainEntry: DIST_ENTRY,
+    }).service!;
+    let enabled = false;
+    wireLocalVerifySwitches(svc, { get: <T,>(key: string, fallback: T): T =>
+      key === 'monitoring.localVerify.namedFlakeRetry' ? enabled as T : fallback,
+    });
+    const { runs } = fakeRuns(svc, { 3: sha('a'), 4: sha('c'), 5: sha('d') }, 9600);
+    await svc.boot();
+    const app = serve(ctx(stateDir, svc));
+    try {
+      expect((await request(app).get('/local-verify')).status).toBe(200);
+      const history = path.join(stateDir, 'state', 'local-verify', 'flaky-history.json');
+      for (const [index, expected] of [
+        undefined,
+        { quarantined: [{ file: F1, test: 'suite flaky case' }] },
+        { quarantined: [], unavailable: true },
+      ].entries()) {
+        if (index === 1) {
+          enabled = true;
+          const at = new Date().toISOString();
+          fs.writeFileSync(history, JSON.stringify({ v: 1, files: {}, named: [
+            { file: F1, test: 'suite flaky case', owner: 'Scaling the Test Line', seen: [at], quarantinedAt: at },
+          ] }));
+        }
+        if (index === 2) fs.writeFileSync(history, '{');
+        expect((await svc.request(index + 3, { explicit: true })).ok).toBe(true);
+        await until(() => runs.length > index);
+        const run = runs[index];
+        expect(run.input.namedFlakeRetry).toEqual(expected);
+        fs.writeFileSync(run.resultPath, JSON.stringify({
+          kind: 'record', record: failedRecordFor(run.input, [F1]), reasons: [], overlaps: [], keptWorktree: null,
+        }));
+        run.end({ status: 0, signal: null });
+        await svc.whenIdle();
+      }
+      expect(fs.readFileSync(history, 'utf-8')).toBe('{');
+    } finally {
+      svc.shutdown();
+    }
+  });
+
   it('a config without a setter still wires the reader; a cost limit reports the unavailable writer', async () => {
     const { home, stateDir } = sourceCheckout();
     const svc = buildLocalVerifyService({

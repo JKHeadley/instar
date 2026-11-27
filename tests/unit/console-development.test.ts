@@ -29,6 +29,16 @@ const proposal = (over: Record<string, unknown> = {}) => ({
   summary: 'Let GPT-6 Luna (via Codex) decide which of up to 50 incoming reports a batch become work items, spending at most $5 a day.',
   pausedBecause: null, ...over,
 });
+const consumerProposal = {
+  state: 'pending',
+  localAction: true,
+  proposalSetHash: 'a'.repeat(64),
+  approvedBatchBound: 2,
+  items: [
+    { workId: 'work-1', title: 'Keep messages in view', priority: 'high', reportCount: 3 },
+    { workId: 'work-2', title: 'Show the active device', priority: 'normal', reportCount: 1 },
+  ],
+};
 const watcher = (over: Record<string, unknown> = {}) => ({
   lastTickAt: minsAgo(3), lastSuccessfulListAt: minsAgo(3), breaker: { open: false }, invariantOk: true, gate: { rollback: [], emergencyPause: [], poolArmed: true, mergeAllowed: true },
   snapshot: { at: minsAgo(3), entries: [{ pr: 2391, headRefName: 'echo/x', headRefOid: 'abc', kind: 'code-owner-review' }, { pr: 2380, headRefName: 'echo/y', headRefOid: 'def', kind: 'mergeable' }] },
@@ -237,6 +247,26 @@ describe('Feedback', () => {
     expect(authorityStatusLine('triage', { status: 'none' })).toContain('No triage model is approved yet');
     for (const line of [authorityStatusLine('readiness', paused), authorityStatusLine('readiness', revoked), authorityStatusLine('readiness', active)]) expect(line).not.toMatch(/version/i);
   });
+  it('counts only an exact pending promotion as one owner approval', () => {
+    const feedback = (data: unknown) => buildFeedback(feedbackOk({ queue: ok({ items: [] }), consumerPromotion: ok(data) }), NOW);
+    const pending = feedback(consumerProposal);
+    expect(pending.todos.map((todo) => todo.kind)).toEqual(['consumer-promotion']);
+    expect(pending.tiles.find((tile) => tile.key === 'needs')?.n).toBe(1);
+    expect(pending.headline).toBe('Feedback needs your approval to create work items.');
+    expect(pending.line).toContain('1 thing needs you');
+    const previous = feedback({ ...consumerProposal, promotionRecord: { requiresReapproval: true } });
+    expect(previous.todos[0].detail).toContain('previous approval needs to be renewed');
+    for (const state of ['already-live', 'configured-simulation', 'no-work', 'non-owner', 'restore', 'unavailable']) {
+      expect(feedback({ state }).todos).toEqual([]);
+    }
+    const proxied = feedback({ ...consumerProposal, localAction: false, servedBy: 'studio' });
+    expect(proxied.todos).toEqual([]);
+    expect(proxied.notes).toContain('Feedback promotion is available from the machine that runs feedback processing.');
+    const malformed = feedback({ ...consumerProposal, approvedBatchBound: 3 });
+    expect(malformed.todos).toEqual([]);
+    expect(malformed.state).toBe('cant-tell');
+    expect(feedback({ ...consumerProposal, localAction: undefined }).state).toBe('cant-tell');
+  });
   it('the fix worker’s one-time OK and a held secret-shaped fix are plan to-dos with their attempt id', () => {
     const f = buildFeedback(feedbackOk({ execute: ok({ reason: 'approver-not-independent', live: 0, openPrs: 0, attempts: [{ attemptId: 'at-1', state: 'held', reason: 'needs-review-secret-shape', secretFiles: ['.env.example'] }] }) }), NOW);
     expect(f.todos.map((t) => [t.kind, t.action])).toEqual([['plan', 'accept-approver-dependence'], ['plan', 'publish-secret-shape'], ['link', undefined]]);
@@ -420,7 +450,15 @@ describe('development page in a DOM', () => {
       '/feedback-factory/drain/status': { body: feedbackOk().drain.data }, '/throughput/series?days=14': { status: 503, body: { error: 'github-auth-unavailable' } }, ...over,
     };
     g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
-      if (opts && opts.method === 'POST') { posted.push({ url, body: JSON.parse(opts.body || '{}') }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; }
+      if (opts && opts.method === 'POST') {
+        const body = JSON.parse(opts.body || '{}');
+        posted.push({ url, body });
+        if (url === '/feedback-factory/consumer/promote') {
+          table['/feedback-factory/consumer/promotion/proposal'] = { body: { state: 'already-live' } };
+          return { ok: true, status: 200, json: async () => ({ promoted: true, approvedBatchBound: body.approvedBatchBound }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
       const hit = table[url];
       if (!hit) return { ok: false, status: 404, json: async () => ({ error: 'no such route in the test' }) };
       const status = hit.status || 200;
@@ -435,6 +473,39 @@ describe('development page in a DOM', () => {
   const expanded = (doc: Document, id: string) => doc.querySelector(`#sec-${id} .list-head`)!.getAttribute('aria-expanded');
   const stoppedGate = { gate: { rollback: ['L1', 'L2'], emergencyPause: [], poolArmed: true, mergeAllowed: false } };
 
+  it.each(['lead', 'more'])('reviews every item and sends one PIN-bound exact promotion from %s', async (placement) => {
+    const isLead = placement === 'lead';
+    const { doc, posted } = await bootPage('#/work/development?s=feedback', {
+      '/feedback-factory/readiness-authorities/proposal': { body: isLead ? proposal({ status: 'active', approveAction: null }) : proposal() },
+      '/feedback-factory/consumer/promotion/proposal': { body: consumerProposal },
+    });
+    const button = (label: string, scope: ParentNode = doc) =>
+      [...scope.querySelectorAll('button')].find((element) => element.textContent === label)!;
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain(isLead ? '1 thing needs you' : '2 things need you');
+    if (!isLead) button('1 more thing needs you ›').click();
+    button('Promote').click();
+    const review = doc.querySelector('.sheet')!;
+    expect(review.textContent).toContain('starts with this batch');
+    expect(review.textContent).toContain('up to 2 work items per run');
+    expect(review.textContent).toContain('until you revoke the approval and approve a new batch');
+    expect(review.textContent).toContain('Keep messages in view');
+    expect(review.textContent).toContain('normal priority · 1 report · work-2');
+    expect(posted).toHaveLength(0);
+    button('Confirm with PIN', review).click();
+    await settle();
+    const pin = doc.querySelector('.sheet .pin-input') as HTMLInputElement;
+    pin.value = '246810';
+    pin.form!.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      url: '/feedback-factory/consumer/promote',
+      body: { pin: '246810', approvedBatchBound: 2, evidenceHash: consumerProposal.proposalSetHash, operatorDecisionId: expect.stringMatching(/^console-consumer-promotion:/) },
+    });
+    expect(doc.querySelector('.pin-input')).toBeNull();
+    expect(doc.querySelector('.sheet .action-status')!.textContent).toContain('Feedback processing is approved.');
+    expect(doc.querySelector('#sec-feedback .fold-line')!.textContent).toContain(isLead ? 'nothing needs you' : '1 thing needs you');
+  });
   it('stopped: the card leads the page, above a Feedback approval, and both buttons take the same PIN path to the same route', async () => {
     const { doc, posted } = await bootPage('#/work/development', { '/green-pr-automerge': { body: watcher(stoppedGate) } });
     const page = doc.querySelector('.dev-page')!;

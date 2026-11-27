@@ -112,6 +112,7 @@ import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
 import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
+import { withOriginBotAuthoredText } from '../messaging/telegram-origin/OriginBotEgress.js';
 import { inboundTopicId, normalizeInboundThread, toWireParams } from '../messaging/telegramTopicSpace.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
@@ -272,6 +273,25 @@ export class TelegramLifeline {
       projectName: this.projectConfig.projectName,
       port: this.projectConfig.port,
       stateDir: this.projectConfig.stateDir,
+      plannedLeaseAdmission: this.projectConfig.multiMachine?.takeoverReadyPool?.plannedRestartLeaseContinuity?.admissionEnabled === true
+        ? async request => {
+          const secret = this.ingressSecret.get();
+          const token = this.projectConfig.authToken;
+          if (!secret || !token) return 'wait';
+          try {
+            const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/planned-restart-lease-admission`, {
+              method: 'POST', redirect: 'error', signal: AbortSignal.timeout(1000),
+              headers: { Authorization: `Bearer ${token}`, [LIFELINE_SECRET_HEADER]: secret, 'X-Instar-AgentId': this.projectConfig.projectName, 'Content-Type': 'application/json' },
+              body: JSON.stringify(request),
+            });
+            if (!response.ok) return 'wait';
+            const reply = await response.json() as { admission?: unknown; requestedBy?: unknown; requestedAt?: unknown };
+            return reply.requestedBy === request.requestedBy && reply.requestedAt === request.requestedAt &&
+              (reply.admission === 'ready' || reply.admission === 'not-applicable') ? reply.admission : 'wait';
+          } catch {
+            return 'wait'; // Unavailable evidence never admits a planned shutdown.
+          }
+        } : undefined,
       // Amplifier #2 (spec §A.5): the supervisor defers a restart while an in-flight
       // sync-op marker is set. The supervisor is config-less, so the developmentAgent
       // dark-gate is resolved HERE (TelegramLifeline has projectConfig) and passed as a
@@ -3482,12 +3502,12 @@ export class TelegramLifeline {
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     // Origin review/storage/capacity must finish before this request's clock starts.
-    const response = await telegramFetch(url, {
+    const response = await withOriginBotAuthoredText(this.config.token, params.text, () => telegramFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sendParams.outgoingParams),
       networkTimeoutMs: timeoutMs,
-    });
+    }));
 
     if (!response.ok) {
       // Handle 429 Too Many Requests — respect Telegram's retry_after

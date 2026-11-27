@@ -76,6 +76,7 @@ async function machine(id: string, opts: { tamper?: { on: boolean } } = {}) {
   const svc: AppConversationService = new AppConversationService({
     stateDir: dir, machineId: () => id, registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
     dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
   });
   cleanups.push(() => svc.stop());
