@@ -11,6 +11,61 @@
 import { configPatchRaises } from '../core/TrustRaiseGuard.js';
 import type { AutonomyProfileLevel } from '../core/types.js';
 
+/**
+ * SEC-151: settings under API-patchable blocks that decide where the agent is reachable or connects,
+ * what a peer-started session may do, or which framework runs. Each is the operator's to set in the
+ * config file; neither PATCH /config nor a bearer single-path write may change them. Same authority
+ * class as the session binary fence (OPERATOR_ONLY_SESSION_KEYS) and the dispatch origin fence.
+ */
+export const OPERATOR_ONLY_CONFIG_PATHS: ReadonlyArray<string> = [
+  // The public address: a named tunnel's token and config choose whose Cloudflare account and which
+  // hostname the agent answers on; relay providers expose it through third-party relays.
+  'tunnel.token', 'tunnel.configFile', 'tunnel.hostname', 'tunnel.relayProviders',
+  // Where agent-to-agent traffic goes, and what a peer-started session may touch.
+  'threadline.relayUrl', 'threadline.listener.relayUrl',
+  'threadline.listener.pipeMode.allowedTools', 'threadline.listener.pipeMode.allowedPaths',
+  'threadline.listener.pipeMode.minIqsBand', 'threadline.listener.pipeMode.model',
+  // Whom the agent trusts on the agent network: switching these off sends plaintext to pinned peers,
+  // accepts downgraded plaintext, or lets unknown and first-contact peers in. Read live.
+  'threadline.encryptToPinned', 'threadline.refuseDowngrade', 'threadline.relayUnknownSenderTrust',
+  'threadline.localRouteTrust', 'threadline.firstContactPolicy', 'threadline.warmSessionA2A.trustFloor',
+  // Which framework (and so which provider and account) runs sessions and each component.
+  'sessions.framework', 'sessions.componentFrameworks', 'sessions.enabledFrameworks',
+  'sessions.frameworkDefaultModels', 'sessions.natureRouting',
+  // Where feedback is sent, and which file the agent rewrites with it.
+  'feedback.webhookUrl', 'feedback.feedbackFile',
+];
+
+/**
+ * The fenced paths a PATCH /config body would change. That route merges one level deep, so a body
+ * naming a second-level key replaces that whole subtree: it touches every fenced path beneath it.
+ */
+export function operatorOnlyPathsInPatch(patch: unknown): string[] {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return [];
+  const body = patch as Record<string, unknown>;
+  return OPERATOR_ONLY_CONFIG_PATHS.filter((p) => {
+    const [top, second] = p.split('.');
+    const block = body[top];
+    if (block === undefined) return false;
+    // A non-object top-level value replaces the whole block.
+    if (!block || typeof block !== 'object' || Array.isArray(block)) return true;
+    return Object.prototype.hasOwnProperty.call(block, second);
+  });
+}
+
+/** The fenced path a single-path write at `dotPath` would change (it, an ancestor, or a descendant), or null. */
+export function operatorOnlyPathForWrite(dotPath: string): string | null {
+  const parts = dotPath.split('.');
+  for (const p of OPERATOR_ONLY_CONFIG_PATHS) {
+    const f = p.split('.');
+    const n = Math.min(f.length, parts.length);
+    if (f.slice(0, n).every((seg, i) => seg === parts[i])) return p;
+  }
+  return null;
+}
+/** SEC-153: `dispatches` keys that choose where remote instructions come from and who may sign them. Config file only. */
+export const DISPATCH_ORIGIN_KEYS: ReadonlyArray<string> = ['dispatchUrl', 'dispatchFile', 'trustedKeys'];
+
 export const RESERVED_CONFIG_PATH_SEGMENTS: ReadonlySet<string> = new Set(['__proto__', 'prototype', 'constructor']);
 
 /** Turn `a.b.c` = v into `{ a: { b: { c: v } } }` (the patch PATCH /config would receive). */
@@ -56,9 +111,18 @@ export function bearerConfigWriteRefusal(
   if (top === 'sessions') {
     const keys = second !== undefined ? [second] : (value && typeof value === 'object' ? Object.keys(value as object) : []);
     if (keys.some((k) => opts.operatorOnlySessionKeys.includes(k))) {
-      return 'the settings that choose which program a session runs can only be set on the machine';
+      return 'the settings that choose which program a session runs, where Claude sessions connect and which account pays can only be set on the machine';
     }
   }
+  if (top === 'dispatches') {
+    const keys = second !== undefined ? [second] : (value && typeof value === 'object' ? Object.keys(value as object) : []);
+    if (keys.some((k) => DISPATCH_ORIGIN_KEYS.includes(k))) {
+      return 'where dispatches come from and which keys may sign them can only be set on the machine';
+    }
+  }
+  const fenced = operatorOnlyPathForWrite(dotPath)
+    ?? (parts.length === 1 ? operatorOnlyPathsInPatch({ [top]: value })[0] ?? null : null);
+  if (fenced) return `${fenced} decides where the agent is reachable or connects, what a peer-started session may do, or which framework runs, so it can only be set on the machine`;
   if (top === 'notifications' && (second === 'selectivity' || (second === undefined && value && typeof value === 'object' && 'selectivity' in (value as object)))) {
     return 'notification selectivity has its own confirmed surface';
   }

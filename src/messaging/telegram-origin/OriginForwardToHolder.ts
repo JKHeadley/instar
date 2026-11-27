@@ -23,7 +23,8 @@ import { classifyOperationOutcome, failureCause, suppressionReason } from './Ori
 import type { FailureCause, SuppressionReason } from './OriginOperationOutcome.js';
 import type { OriginSendPolicyInput } from './OriginSendPolicy.js';
 import type { TelegramOriginRecord } from './types.js';
-import { LATE_REPLY_THRESHOLD_MS, lateRecoveredReplyNotice } from './SessionDeliveryNotice.js';
+import { LATE_REPLY_THRESHOLD_MS, isStaleRelease, lateRecoveredReplyNotice } from './SessionDeliveryNotice.js';
+export { STALE_HELD_RELEASE_MS } from './SessionDeliveryNotice.js';
 import { readPolicyVerdict } from './OriginPolicyVerdict.js';
 import type { PolicyVerdict } from './OriginPolicyVerdict.js';
 import { AdvisoryAnswerClosedError } from './types.js';
@@ -663,8 +664,15 @@ export interface ForwardRecoveryDeps {
   audit?: (row: Record<string, unknown>) => void;
   now: () => number;
   ladder?: { delaysMs: readonly number[] };
+  /** held-and-startup-parked-send-release §2(c) — a held forward older than `afterMs` (from its
+   * first authored time) is never sent or replaced automatically: it is retired and handed back.
+   * `retire` answers the store's result; only `retired: true` ends the row. */
+  staleBound?: { afterMs: number; retire: (operationId: string) => Promise<{ retired: boolean; refusal?: string }> };
+  /** §3 — the holder retired its copy (`owner-ended` with a retirement reason): end this row as
+   * `suppressed-at-holder` AND record the retirement for the author, in one store transaction. */
+  onHolderRetired?: (operationId: string, reason: 'stale-hold-handed-back' | 'retired-by-operator', machineId: string, detail: HeldForwardDetail) => Promise<boolean>;
 }
-export type ForwardRecoveryOutcome = 'resolved' | 'sent' | 'settled' | 'retained' | 'skipped';
+export type ForwardRecoveryOutcome = 'resolved' | 'sent' | 'settled' | 'retained' | 'skipped' | 'retired';
 
 function attemptKind(result: Extract<HolderSubmitResult, { ok: false }>): ForwardLastAttempt {
   return result.outcome === 'outcome-unknown' ? 'outcome-unknown' : result.reason === 'origin-peer-unreachable' ? 'unreachable' : 'refused';
@@ -746,6 +754,11 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     result.policyVerdict?.class === 'advisory' ? recordAdvisory(machineId, result.policyVerdict, target)
       : recordVerdict(machineId, 'refused', result.policyVerdict?.rule ?? null, target);
   const recordEnded = async (machineId: string, reason: SuppressionReason): Promise<ForwardRecoveryOutcome> => {
+    if (detail && deps.onHolderRetired && (reason === 'stale-hold-handed-back' || reason === 'retired-by-operator')) {
+      if (!await deps.onHolderRetired(operationId, reason, machineId, detail)) { await retain({}); audit({ outcome: 'retained-ended-store-refused', machineId }); return 'retained'; }
+      audit({ outcome: 'suppressed-at-holder', machineId, holderReason: reason });
+      return 'retired';
+    }
     if (!detail || !deps.endAtHolder || !await deps.endAtHolder(operationId, reason, machineId, detail)) { await retain({}); audit({ outcome: 'retained-ended-store-refused', machineId }); return 'retained'; }
     audit({ outcome: 'suppressed-at-holder', machineId, holderReason: reason });
     return 'settled';
@@ -757,6 +770,9 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     try { await deps.onOwnerUnstatedSettled?.({ ...row, holdDetail: { ...(detail ?? {}), ownerUnstated } }); } catch { /* the scan and the forward-expiry pass carry it */ }
     return 'retained';
   };
+  // held-and-startup-parked-send-release §2(c) — the age check before anything that can send.
+  const stale = (): boolean => !!deps.staleBound && isStaleRelease({ firstPreparedAt: row.firstPreparedAt ?? null, preparedAt: row.preparedAt, holdDetail: row.holdDetail ?? null },
+    deps.now(), deps.staleBound.afterMs);
   // standby-durable-forward-without-token §1–2: on a token-less machine `live` is the
   // holder's capabilities answer read once in this pass (set below, before any
   // successor on the ordinary route is prepared).
@@ -917,6 +933,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       // A second reasonless ending (this row is already the one replacement), or a
       // newer owner's row from before reasons: settled, unresolved, nothing sent.
       if (!answer.olderOwner || detail.unstatedReplacementOf) return settleUnstated(holder, detail.unstatedReplacementOf ? 2 : 1);
+      // §2(c) — a stale reply is never replaced and re-sent: it settles as unstated ("may or may not have arrived").
+      if (stale()) { audit({ outcome: 'stale-no-replacement', machineId: holder }); return settleUnstated(holder, 1); }
       // Against an older owner the reply is replaced ONCE, with fresh sealed times
       // (the old owner's timestamp rule then sees a fresh reply) and the original's
       // deadline and content-check key. The old id is never re-submitted.
@@ -933,6 +951,14 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     await retain({ lastAttempt: 'refused' });
     audit({ outcome: 'outcome-unknown-cleared', machineId: detail.machineId });
     return 'retained';
+  }
+  // §2(c) — past the staleness bound nothing below may send or replace it: retire and hand back.
+  // A `local-sent` row (the user may already have it) keeps riding to its deadline instead.
+  if (detail?.lastAttempt !== 'local-sent' && stale()) {
+    let result: { retired: boolean; refusal?: string };
+    try { result = await deps.staleBound!.retire(operationId); } catch { result = { retired: false, refusal: 'store-unavailable' }; }
+    if (result.retired) { audit({ outcome: 'retired-stale' }); return 'retired'; }
+    audit({ outcome: `retire-refused:${result.refusal ?? 'unknown'}` }); return 'retained';
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }

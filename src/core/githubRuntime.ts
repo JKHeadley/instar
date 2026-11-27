@@ -252,6 +252,67 @@ export interface FetchGitHubGraphqlOptions {
   variables?: Record<string, unknown>;
   fetchImpl?: typeof globalThis.fetch;
   timeoutMs?: number;
+  maxResponseBytes?: number;
+}
+
+export class GitHubGraphqlResponseError extends Error {
+  constructor(
+    message: string,
+    readonly kind: 'authorization' | 'throttled' | 'other',
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'GitHubGraphqlResponseError';
+  }
+}
+
+function githubRetryAfterMs(response: Response): number | undefined {
+  const retryAfter = response.headers.get('retry-after');
+  return retryAfter && /^\d{1,9}$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined;
+}
+
+function githubRateLimitWait(response: Response): number | undefined {
+  const retryAfter = githubRetryAfterMs(response);
+  if (retryAfter !== undefined) return retryAfter;
+  const reset = response.headers.get('x-ratelimit-reset');
+  if (response.headers.get('x-ratelimit-remaining') === '0' && reset && /^\d{1,12}$/.test(reset)) {
+    return Math.max(0, Number(reset) * 1000 - Date.now());
+  }
+  return undefined;
+}
+
+function isGitHubThrottledResponse(response: Response): boolean {
+  return response.status === 429 || githubRetryAfterMs(response) !== undefined
+    || response.headers.get('x-ratelimit-remaining') === '0';
+}
+
+function isGitHubThrottleError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const row = error as { type?: unknown; extensions?: { type?: unknown; code?: unknown } };
+  const code = row.type ?? row.extensions?.type ?? row.extensions?.code;
+  return typeof code === 'string' && /^(RATE_LIMITED|RATE_LIMIT_EXCEEDED|SECONDARY_RATE_LIMIT|ABUSE_DETECTED)$/.test(code);
+}
+
+async function readBoundedGraphqlJson(response: Response, maxBytes: number): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('github-graphql-invalid-response');
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        void reader.cancel().catch(() => { /* @silent-fallback-ok: overflow is reported by the error below */ });
+        throw new Error('github-graphql-response-too-large');
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /** Direct GitHub GraphQL call with a bounded, non-secret error surface. */
@@ -269,11 +330,25 @@ export async function fetchGitHubGraphql<T>(options: FetchGitHubGraphqlOptions):
     body: JSON.stringify({ query: options.query, variables: options.variables ?? {} }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
   });
-  if (!response.ok) throw new Error(`github-graphql-http-${response.status}`);
-  const payload = await response.json() as { data?: T; errors?: unknown[] };
-  if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-    throw new Error(`github-graphql-errors-${payload.errors.length}`);
+  if (!response.ok) {
+    const message = `github-graphql-http-${response.status}`;
+    if (response.status === 429 || response.status === 403 && isGitHubThrottledResponse(response)) {
+      throw new GitHubGraphqlResponseError(message, 'throttled', githubRateLimitWait(response));
+    }
+    const authorization = response.status === 401 || response.status === 403 || response.status === 404;
+    throw new GitHubGraphqlResponseError(message, authorization ? 'authorization' : 'other');
   }
-  if (payload.data == null) throw new Error('github-graphql-invalid-response');
+  const payload = (await (options.maxResponseBytes === undefined
+    ? response.json()
+    : readBoundedGraphqlJson(response, options.maxResponseBytes))) as { data?: T; errors?: unknown[] } | null;
+  if (Array.isArray(payload?.errors) && payload.errors.length > 0) {
+    const throttled = payload.errors.every(isGitHubThrottleError);
+    throw new GitHubGraphqlResponseError(
+      `github-graphql-errors-${payload.errors.length}`,
+      throttled ? 'throttled' : 'authorization',
+      throttled || isGitHubThrottledResponse(response) ? githubRateLimitWait(response) ?? 60_000 : undefined,
+    );
+  }
+  if (payload?.data == null) throw new Error('github-graphql-invalid-response');
   return payload.data;
 }

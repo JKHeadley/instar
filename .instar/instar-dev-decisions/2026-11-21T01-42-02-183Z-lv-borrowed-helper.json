@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-21T01:42:02.183Z",
+  "slug": "lv-borrowed-helper",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 470,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/local-verify-borrowed-helpers.md",
+      "src/data/feature-ladders.json",
+      "src/localVerify/BorrowedRunMachine.ts",
+      "src/localVerify/borrowedAsking.ts",
+      "src/localVerify/borrowedDryRun.ts",
+      "src/localVerify/borrowedPractice.ts",
+      "src/localVerify/borrowedRunSeams.ts",
+      "src/localVerify/borrowedState.ts",
+      "src/localVerify/localVerifyRoutes.ts",
+      "src/localVerify/localVerifyWiring.ts",
+      "src/localVerify/mainFileCounts.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 451,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "stage 6 adds the dry-run task and models every borrowed self-action in the registry: asking a silent helper (at most 80 asks over 14 days at a verify every 30 minutes), dry-run resends (each file at most 5 sends, 20 slices waiting at once, a 24-hour cap, one start per boot after a 10-minute gap) and helper notices (each event told once); the convergence ratchet drives all three."
+    }
+  },
+  "verdict": "pass"
+}

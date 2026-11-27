@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "stale-process-login-expired",
+  "sessionId": "b0436502-0e2a-4654-bdef-791ce93619d0",
+  "timestamp": "2026-11-21T04:59:16.833Z",
+  "artifactPath": "upgrades/side-effects/stale-process-login-expired.md",
+  "artifactSha256": "58a33bcf5dcd0d06c162bba595807d64beb77a43d979e8ca4d673ee22a3079f2",
+  "specPath": "docs/specs/stale-process-login-expired.md",
+  "coveredFiles": [
+    "tests/e2e/interactive-login-expired-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the converged Tier-2 change: the existing wiring test now pins the new probe waits.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

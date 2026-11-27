@@ -54,7 +54,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'hasOperationEvent', 'listAdvisoryRows']);
+const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'hasOperationEvent', 'listAdvisoryRows', 'wasLeaseHeld', 'unreportedRetirements', 'getRetirement']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -307,7 +307,17 @@ export class OriginStore {
   reserveDiagnostic(input: { originId: string; reason: string }): Promise<boolean> { return this.call('reserveDiagnostic', input); }
   completeDiagnostic(input: { originId: string; diagnosis?: string }): Promise<boolean> { return this.call('completeDiagnostic', input); }
   legacyCandidates(): Promise<import('./OriginLegacy.js').OriginLegacySnapshot[]> { return this.call('legacyCandidates'); }
-  importLegacy(input: { snapshot: import('./OriginLegacy.js').OriginLegacySnapshot; admission: OriginAdmission }): Promise<boolean> { return this.call('importLegacy', input); }
+  importLegacy(input: { snapshot: import('./OriginLegacy.js').OriginLegacySnapshot; admission: OriginAdmission; staleBefore?: number }): Promise<boolean | 'stale-retired'> { return this.call('importLegacy', input); }
+  /** held-and-startup-parked-send-release §3–4 — retirement of held / startup-parked replies. */
+  retireHeldOperation(input: Parameters<import('./OriginStoreBackend.js').OriginStoreBackend['retireHeldOperation']>[0]): Promise<import('./OriginStoreBackend.js').RetireResult> { return this.call('retireHeldOperation', input); }
+  recordHolderRetirement(input: Parameters<import('./OriginStoreBackend.js').OriginStoreBackend['recordHolderRetirement']>[0]): Promise<boolean> { return this.call('recordHolderRetirement', input); }
+  readmitLeaseHold(input: { operationId: string }): Promise<boolean> { return this.call('readmitLeaseHold', input); }
+  markLeaseHeld(operationId: string): Promise<void> { return this.call('markLeaseHeld', operationId); }
+  wasLeaseHeld(operationId: string): Promise<boolean> { return this.call('wasLeaseHeld', operationId); }
+  unreportedRetirements(input: { now?: number; limit?: number } = {}): Promise<import('./OriginStoreBackend.js').RetirementRow[]> { return this.call('unreportedRetirements', input); }
+  markRetirementReport(input: Parameters<import('./OriginStoreBackend.js').OriginStoreBackend['markRetirementReport']>[0]): Promise<boolean> { return this.call('markRetirementReport', input); }
+  getRetirement(operationId: string): Promise<import('./OriginStoreBackend.js').RetirementRow | null> { return this.call('getRetirement', operationId); }
+  purgeRetirements(input: { before: number }): Promise<number> { return this.call('purgeRetirements', input); }
   getOrigin(originId: string): Promise<OriginAuditRecord | null> { return this.call('getOrigin', originId); }
   getOperation(operationId: string): Promise<OriginAuditRecord | null> { return this.call('getOperation', operationId); }
   recoverableAdmissions(input: { limit?: number; now?: number } = {}): Promise<OriginAdmission[]> { return this.call('recoverableAdmissions', input); }

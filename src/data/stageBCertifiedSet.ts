@@ -96,6 +96,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
     {
+      "file": "src/messaging/inboundCredentialMask.ts",
+      "reason": "SEC-164 inbound key mask: pure text helpers over the excluded outbound credential guard (no I/O, no state, no delivery decision); it only replaces a live key with a fixed marker and never holds or drops a message, outside the Stage-B canaried delivery path, certified by tests/unit/sec164-inbound-mask.test.ts."
+    },
+    {
       "file": "src/messaging/outbound-credential-guard.ts",
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
@@ -220,6 +224,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Codex CLI version and flag probes, reached through the excluded CodexCliIntelligenceProvider since 2026-11-17 (it picks gpt-6-sol / gpt-6-astra on a CLI below 0.166.0). Model selection only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
     },
     {
+      "file": "src/core/codexToolFreeProfile.ts",
+      "reason": "The tool-free argv for Codex calls holding outside text (SEC-175), reached through the excluded CodexCliIntelligenceProvider since 2026-11-22. Launch flags only; no inbound-delivery or lifecycle logic, outside the Stage-B canaried path."
+    },
+    {
       "file": "src/core/InFlightSyncOpMarker.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },
@@ -238,6 +246,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/JudgmentProvenanceLog.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
+    },
+    {
+      "file": "src/core/llmErrorClass.ts",
+      "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
       "file": "src/core/LlmCircuitBreaker.ts",
@@ -358,6 +370,10 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/core/agent-reach.ts",
       "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
+      "file": "src/core/sibling-holdings.ts",
+      "reason": "Memory-only cache of what the agent's other machines hold, feeding the tone gate's OTHER MACHINES context through agent-reach (injected fetch and roster, no delivery logic, no I/O of its own); reached through the excluded MessagingToneGate, outside the Stage-B canaried delivery path, certified by tests/unit/sibling-machine-reach.test.ts"
     },
     {
       "file": "src/core/internal-id-leak.ts",
@@ -538,6 +554,58 @@ export const STAGE_B_CERTIFIED_SET = {
     {
       "file": "src/messaging/shared/channelIdentity.ts",
       "reason": "Pure human-facing display-name validation used by storage diagnostic labels. It changes no Stage-B protocol state, receipt validation, dispatch or recovery decisions."
+    },
+    {
+      "file": "src/core/routineCodexPlacement.ts",
+      "reason": "Optional finite account selection for new routine Sol helpers and outbound source reviews, reached through the shared config type and excluded MessagingToneGate. It does not implement Stage-B inbound composer admission, delivery observation, receipt storage or recovery acknowledgment; covered separately by routine placement HTTP and real-child lifecycle tests."
+    },
+    {
+      "file": "src/core/windowAwareChoice.ts",
+      "reason": "Pure quota-window validity and account-ranking functions reached through routine helper placement and the shared config type. They govern where new work runs, not Stage-B inbound composer admission, delivery observation or recovery acknowledgment; covered separately by window-aware choice and routine Codex placement tests."
+    },
+    {
+      "file": "src/core/SubscriptionPool.ts",
+      "reason": "Account roster, local credential-home eligibility and quota state reached through the routine-placement config dependency. This is the new-work account and metadata path, not the Stage-B inbound-delivery implementation; pool and placement behavior have separate tests."
+    },
+    {
+      "file": "src/core/SubscriptionPoolAuthority.ts",
+      "reason": "Bounded account-pool snapshot validation and persistence, reached through SubscriptionPool on the excluded routine-placement/config path. It does not implement the inbound message store, composer observer or recovery acknowledgment certified by Stage-B."
+    },
+    {
+      "file": "src/core/CredentialLocationGate.ts",
+      "reason": "Current account-to-login-slot lookup reached through the excluded account-pool metadata path. It supplies a new-work credential home, not Stage-B inbound delivery admission, observation or receipt state; credential placement is tested separately."
+    },
+    {
+      "file": "src/core/CredentialLocationLedger.ts",
+      "reason": "Credential-location custody state reached through the excluded account pool and its slot gate. Its subject is which local login home serves an account, not the Stage-B composer, inbound delivery ledger or recovery acknowledgment."
+    },
+    {
+      "file": "src/core/InUseAccountResolver.ts",
+      "reason": "Read-only account identity and dashboard in-use reporting reached through the excluded SubscriptionPool path. It does not select or deliver inbound Codex messages and is outside the Stage-B canaried delivery subject."
+    },
+    {
+      "file": "src/core/SubscriptionAccountMetaReplicatedStore.ts",
+      "reason": "Redacted subscription account metadata schema and replication helpers reached through the excluded account pool. It transports account metadata rather than conversations or Codex inbound delivery receipts; outside the Stage-B canaried subject."
+    },
+    {
+      "file": "src/core/ReplicatedRecordEnvelope.ts",
+      "reason": "Generic envelope validation and identity helpers reached through excluded subscription-account metadata replication. This new closure edge is account metadata, not Stage-B inbound delivery storage or acknowledgment; no certified delivery source imports changed."
+    },
+    {
+      "file": "src/core/UnionReader.ts",
+      "reason": "Pure replicated-record union and witness comparison reached through excluded subscription-account metadata. It folds account metadata on this dependency path, not Stage-B composer deliveries or recovery receipts."
+    },
+    {
+      "file": "src/core/HybridLogicalClock.ts",
+      "reason": "Generic hybrid-clock primitive reached through excluded account-metadata replication and union reading. No Stage-B certified delivery module changed or gained a direct clock dependency; this path is outside the canary subject."
+    },
+    {
+      "file": "src/core/stableJson.ts",
+      "reason": "Pure stable JSON representation helper reached through the excluded subscription-account metadata and authority path. It is not the Stage-B signed-artifact canonicalizer or inbound delivery implementation."
+    },
+    {
+      "file": "src/core/subscriptionEnums.ts",
+      "reason": "Subscription provider, framework and account-status enum definitions reached through the excluded account pool. Constants and type vocabulary only; no Stage-B composer, observation, receipt or recovery logic."
     }
   ],
   "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",
@@ -551,9 +619,9 @@ export const STAGE_B_CERTIFIED_SET = {
     "src/core/SessionRecoveryConsumer.ts": "6a00ca4993d188f1c95eaa7d156795804f00f7e10e600ea12fa2e8cd40423268",
     "src/core/StageBStartupReadiness.ts": "92275608368d44abc98802f9a445acc6419fd57bddb8c2e4935f32961d401183"
   },
-  "boundAt": "2026-11-08",
+  "boundAt": "2026-11-23",
   "boundBy": "echo (fresh exact-candidate certification, topic 59199, 2026-09-04)",
-  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged. On 2026-11-17, codexCapabilities (Codex CLI model probe, newly reached through the excluded Codex provider) was classified as an exclusion; certified hashes and signed evidence remain unchanged."
+  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged. On 2026-11-17, codexCapabilities (Codex CLI model probe, newly reached through the excluded Codex provider) was classified as an exclusion; certified hashes and signed evidence remain unchanged. On 2026-11-23, the routine Sol quota/account/config dependency closure (13 modules, reached through erased shared-type imports) was explicitly classified outside the Stage-B inbound-delivery subject under Chief directive 5ed1e0b9. The seven certified hashes, fingerprint and signed artifact remain unchanged; no fresh canary result is claimed."
 } as const;
 
 export type StageBCertifiedSet = typeof STAGE_B_CERTIFIED_SET;

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "sec171-playbook-hmac-stdin",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T16:30:35.704Z",
+  "artifactPath": "upgrades/side-effects/sec171-playbook-hmac-stdin.md",
+  "artifactSha256": "cc2931452132bbfcaa26ddce49908b066870919fd88171d52023e45df2930714",
+  "coveredFiles": [
+    "docs/specs/sec171-playbook-hmac-stdin.eli16.md",
+    "playbook-scripts/playbook-hmac.py",
+    "tests/unit/sec171-playbook-hmac-stdin.test.ts",
+    "upgrades/next/sec171-playbook-hmac-stdin.md",
+    "upgrades/side-effects/sec171-playbook-hmac-stdin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-171: playbook-hmac.py stores its key via security -i stdin with the SEC-155 line guard; same stored bytes and failure behavior; one function; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec171-playbook-hmac-stdin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec171-playbook-hmac-stdin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "the same single keychain write per call; no retry, schedule or loop"
+  }
+}

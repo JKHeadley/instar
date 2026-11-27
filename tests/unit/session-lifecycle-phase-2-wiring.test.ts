@@ -84,7 +84,7 @@ describe('Phase 2 — per-killer routing contracts', () => {
     it('60-min age gate is NECESSARY but NOT SUFFICIENT — defers when the process has active children', () => {
       // The work-check (pgrep -P → non-empty) must veto the reap before any kill.
       expect(orphanSource).toContain('processHasActiveChildren(orphan.pid)');
-      expect(orphanSource).toMatch(/pgrep\s+-P\s+\$\{pid\}/);
+      expect(orphanSource).toContain("readCommand('pgrep', ['-P', String(pid)])");
       // And the deferred path logs a Kept-not-Killed action so it surfaces.
       expect(orphanSource).toContain('Kept orphan PID');
       expect(orphanSource).toContain('work check vetoed reap');

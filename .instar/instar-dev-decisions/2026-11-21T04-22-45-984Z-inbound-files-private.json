@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-21T04:22:45.984Z",
+  "slug": "inbound-files-private",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 106,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/core/memorySessionPolicy.ts",
+      "src/messaging/shared/telegramInboundFiles.ts"
+    ],
+    "addedLines": 63,
+    "deletedLines": 43
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

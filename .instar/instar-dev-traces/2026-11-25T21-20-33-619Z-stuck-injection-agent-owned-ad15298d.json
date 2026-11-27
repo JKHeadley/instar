@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "stuck-injection-agent-owned",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T21:20:33.619Z",
+  "artifactPath": "upgrades/side-effects/stuck-injection-agent-owned.md",
+  "artifactSha256": "b41689e9a969bde4ff90a8f99c72418d429d9d0afaa59f480fb11c78866ca6a9",
+  "coveredFiles": [
+    "src/monitoring/healthIssues.ts",
+    "tests/e2e/needs-read-alive.test.ts",
+    "tests/integration/mobile-health-issues.test.ts",
+    "tests/unit/mobile-health-issues.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One classification field changes the existing Needs You projection. A revert restores presentation without any state repair.",
+  "eli16Path": "upgrades/eli16/stuck-injection-agent-owned.md",
+  "sideEffectsPath": "upgrades/side-effects/stuck-injection-agent-owned.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

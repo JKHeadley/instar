@@ -51,6 +51,17 @@ export function registerOriginBot(token: string, accountId: string, service: Tel
 export function originBotEgressStatus(): { active: boolean; registeredOwners: number } {
   return { active, registeredOwners: owners.size };
 }
+/** Retain an adapter's pre-format text for its protected send input. Use exactly
+ * the registered producer fallback the egress door would use; never replace a
+ * route's existing policy or claim an author from the message text. */
+export function withOriginBotAuthoredText<T>(token: string | null | undefined, text: unknown, send: () => T): T {
+  if (typeof token !== 'string' || token.length === 0 || typeof text !== 'string') return send();
+  const owner = owners.get(createHash('sha256').update(token).digest('hex'));
+  if (!owner) return send();
+  const capture = () => owner.service.runWithSendPolicyFallback(text, send);
+  return owner.service.hasProducerContext() ? capture()
+    : owner.service.runAsUnboundAutomation(owner.producerId, capture);
+}
 /** Called after the original payload visibility check, before the only network boundary. */
 export async function dispatchOriginBotEgress(input: {
   method: string; url: string; init: RequestInit; params: Record<string, unknown>; noticeCapability?: object;
@@ -98,11 +109,19 @@ export async function dispatchOriginBotEgress(input: {
       // Retain dispatch intent and the capacity debit, but prove a local refusal
       // so it need not spend the separate transport-attempt budget.
       try {
-        const grant = await authority.reserve(request.accountId);
-        if (!grant || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
-        if (!await authority.consume(grant) || Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable();
-      } catch {
-        const refusal = new OriginCapacityUnavailable();
+        // lease-freshness-lapse-retry — the cause travels with the refusal of the very evaluation that
+        // refused; an authority that cannot explain (the IPC client) keeps the unexplained refusal.
+        const decision = authority.reserveExplained
+          ? await authority.reserveExplained(request.accountId)
+          : { grant: await authority.reserve(request.accountId), refusal: null };
+        if (!decision.grant) throw new OriginCapacityUnavailable(decision.refusal);
+        const grant = decision.grant;
+        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
+        if (!await authority.consume(grant)) throw new OriginCapacityUnavailable({ cause: 'consume-refused', leaseFreshness: null });
+        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
+      } catch (error) {
+        // The thrown refusal IS the request-bound proof, so its cause reaches the send site.
+        const refusal = error instanceof OriginCapacityUnavailable ? error : new OriginCapacityUnavailable();
         localRefusals.set(refusal, request);
         throw refusal;
       }

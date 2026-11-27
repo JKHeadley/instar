@@ -33,12 +33,28 @@ import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { admittedAtComputer, type ApprovedVia, type DeviceRecord } from '../core/MobileDeviceKeys.js';
 import { NO_NOTE, decisionPath, decisionLine } from '../documents/originCheck.js';
 import { peersUpdating, decisionAnswer } from './documentRoutes.js';
 import { decisionMessageRequestId } from '../documents/decisions.js';
 import { REQUEST_ID_PATTERN } from '../core/MobileChatRequests.js';
 
 /** The CSP every document page response carries (§3.6). */
+/**
+ * Identity A4: devices that are never document devices. A phone paired on the home address works only
+ * on that listener, which serves no document page; a phone let in at the computer has no approval power
+ * until piece 3b, and a document decision is one. Read by the production device lookup (AgentServer
+ * `documentPageDeps().device`), for a local record and for a replicated ledger activation row.
+ */
+export function notADocumentDevice(d: Pick<DeviceRecord, 'addressKind' | 'admission' | 'approvedVia'>): boolean {
+  return d.addressKind === 'same-network' || admittedAtComputer(d);
+}
+
+/** The same rule from a replicated activation row: its `approvedVia`, and a home host (`<name>.local:<port>`, the only hosts that end that way). */
+export function notADocumentDeviceRow(row: { approvedVia?: string | null; host?: string | null }): boolean {
+  return admittedAtComputer({ approvedVia: (row.approvedVia ?? undefined) as ApprovedVia | undefined }) || /\.local:\d+$/i.test(String(row.host ?? ''));
+}
+
 export const DOC_PAGE_CSP = [
   "default-src 'none'", "script-src 'self'", "style-src 'self'", "img-src 'self' data:", "connect-src 'self'",
   "form-action 'none'", "frame-ancestors 'none'", "base-uri 'none'", "require-trusted-types-for 'script'",
@@ -55,6 +71,13 @@ export interface DocPageDeps extends DocumentRouteDeps {
   device: (deviceId: string) => { person: ResolvedPerson | null; client: 'phone' | 'browser'; publicKey: string | null; approvedVia: string | null; scope?: 'documents' | 'documents-read' | null } | null;
   /** Is this Host one of this machine's own names? */
   isOwnHost: (host: string) => boolean;
+  /**
+   * A device's signed page request just verified (member-browser-any-computer §3.5): its home renews a
+   * joined computer that is being used. Never throws into the route; signal only.
+   */
+  deviceUsed?: (deviceId: string) => void;
+  /** The joined computer's current end, for the page's menu line (§3.1 step 8); null for anything else. */
+  computerEndsAt?: (deviceId: string) => string | null;
   /** This machine's stable origin for document links, or null (no named tunnel). */
   stableOrigin: () => string | null;
   /** Where the page's static files live (dashboard/docs). */
@@ -210,6 +233,10 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!isUuid(req.params.id)) { next(); return; }
     if (off(res)) return;
     pageHeaders(res);
+    // no-transform: the tunnel's CDN must not rewrite the page. Cloudflare's automatic Web Analytics
+    // otherwise injects a third-party beacon script into this HTML; the CSP blocks it, but the page
+    // then logs a CSP violation on every open and is no longer the bytes instar served.
+    res.setHeader('Cache-Control', 'no-store, no-transform');
     res.type('html').send(PAGE_SHELL);
   });
 
@@ -223,7 +250,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const svc = deps.service();
     if (!svc || !r || !isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId: string } }).instarPrincipal?.deviceId;
-    if (!deviceId) { res.status(404).json({ error: 'unknown-document' }); return; }
+    // A device the page would never accept (identity A4: a home-address or at-computer phone) gets no code.
+    if (!deviceId || !deps.device(deviceId)) { res.status(404).json({ error: 'unknown-document' }); return; }
     try { svc.read(id, withReader(r, id)); } catch (err) { fail(res, err); return; } // @silent-fallback-ok — not a fallback: the refusal is answered (404 for anything the reader may not see)
     const origin = deps.stableOrigin() ?? loopbackOrigin(req);
     if (!origin) { res.status(409).json({ error: 'documents-need-a-named-tunnel', detail: 'Documents need a permanent address for your agent. Turn on a named tunnel in Settings.' }); return; }
@@ -245,7 +273,9 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (off(res)) return null;
     res.setHeader('Cache-Control', 'no-store');
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
-    if (!deviceId) { res.status(403).json({ error: 'owner-phone-required' }); return null; }
+    // Identity A4: a device the signed write would refuse (a home-address or at-computer phone; the
+    // production lookup answers null for both) gets no challenge, so none is spent on a write that fails.
+    if (!deviceId || !deps.device(deviceId)) { res.status(403).json({ error: 'owner-phone-required' }); return null; }
     if (!arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) { res.status(403).json({ error: 'secure-transport-required' }); return null; }
     const g = deps.ownerPresence?.(req, deviceId) ?? null;
     if (!g) { res.status(403).json({ error: 'owner-phone-required', detail: 'Only your own phone, with Face ID, can move a document.' }); return null; }
@@ -408,7 +438,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal?.deviceId;
     const r = resolveCaller(req, res, deps);
     const b = (req.body ?? {}) as { rowKey?: unknown; requestId?: unknown; text?: unknown };
-    if (!svc || !r || !deviceId || !isUuid(id) || r.principal.kind !== 'owner-device') { res.status(404).json({ error: 'unknown-document' }); return; }
+    if (!svc || !r || !deviceId || !deps.device(deviceId) || !isUuid(id) || r.principal.kind !== 'owner-device') { res.status(404).json({ error: 'unknown-document' }); return; }
     if (typeof b.rowKey !== 'string' || typeof b.requestId !== 'string' || typeof b.text !== 'string' || !REQUEST_ID_PATTERN.test(b.requestId)) { res.status(400).json({ error: 'bad-request' }); return; }
     // The receipt belongs to this decision: its derived request id, or (a later Send again) a message
     // that links this document, for the decision that is current now.
@@ -453,7 +483,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!v.ok) { res.status(401).json({ error: 'doc-session-expired' }); return; }
     if (!sessionAllowed(v.deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
     mintCookie(res, v.deviceId, id, !!loopbackOrigin(req));
-    res.json({ ok: true });
+    const endsAt = deps.computerEndsAt?.(v.deviceId) ?? null;
+    res.json({ ok: true, ...(endsAt ? { computerEndsAt: endsAt } : {}) });
   });
 
   /** Verify a docpage-signed request from its headers; resolves the device's key itself. */
@@ -467,6 +498,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const host = String(req.headers.host ?? '').toLowerCase();
     const d = deps.device(deviceId);
     if (!d || !d.publicKey) return { ok: false, reason: 'unknown-device' };
+    // Identity A4: a phone paired on the same-network address signs only on that listener, which serves no document page.
+    if ((d as { addressKind?: string }).addressKind === 'same-network') return { ok: false, reason: 'unknown-device' };
     let payload: unknown;
     try { payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')); } catch { return { ok: false, reason: 'bad-payload' }; }
     // The agent's own machine (localhost) counts as an own host only for a request that really
@@ -479,6 +512,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const ownHost = (h: string): boolean => local ? h === host : (deps.isOwnHost(h) || (loopbackOk && h === host));
     const v = verifyDocpage({ deviceId, host, docId, op, requestId, timeMs, payload, sigB64url: sig }, d.publicKey, ownHost, seen);
     if (!v.ok) return { ok: false, reason: v.reason };
+    try { deps.deviceUsed?.(deviceId); } catch { /* @silent-fallback-ok — a renew is best-effort; the request itself already verified */ }
     return {
       ok: true, deviceId, op: v.op, payload: v.payload,
       signedOrigin: { keyHash: deviceKeyHashOf(d.publicKey), deviceId, domain: 'instar-docpage-v1', payloadB64, host, timeMs, sig, requestId },

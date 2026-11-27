@@ -99,8 +99,9 @@ describe('Phase 3 — per-killer routing contracts', () => {
       // (rename event) AND name != currentName.
       // (Shared by the poller and the lifeline forward via captureTopicName; behaviour is
       // covered in tests/unit/topic-names-through-lifeline.test.ts.)
-      expect(telegramSource).toMatch(/isRename\s*=\s*isEditEvent\s*&&\s*currentName\s*!==\s*name/);
-      expect(telegramSource).toMatch(/captureTopicName\(numericTopicId,\s*detectedName,\s*!!msg\.forum_topic_edited\?\.name\)/);
+      // `held` is the name kept after topic-name replication (a newer replicated rename can win).
+      expect(telegramSource).toMatch(/isRename\s*=\s*isEditEvent\s*&&\s*currentName\s*!==\s*held/);
+      expect(telegramSource).toMatch(/captureTopicName\(numericTopicId,\s*detectedName,\s*!!msg\.forum_topic_edited\?\.name,/);
       expect(telegramSource).toMatch(/if\s*\(isRename\s*&&\s*this\.topicRenamedHandler\)/);
     });
 

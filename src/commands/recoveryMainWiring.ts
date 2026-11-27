@@ -76,9 +76,41 @@ function readReleaseRoot(): string | null {
   }
 }
 
-function readHostSshKey(): string {
-  try { return fs.readFileSync('/etc/ssh/ssh_host_ed25519_key.pub', 'utf8'); } catch {
-    DegradationReporter.getInstance().report({ feature: 'ServerDownRecovery.hostSshKey', primary: 'Pinned local host sshd key', fallback: 'Recovery setup remains incomplete', reason: 'Host SSH public key cannot be read', impact: 'The direct recovery route cannot be enrolled or counted as ready.' });
+/**
+ * Whether this machine can offer the direct SSH recovery route at all:
+ * - `available`: the host's ed25519 sshd key was read;
+ * - `not-applicable`: there is no host key file, i.e. no SSH server is set up on
+ *   this machine (a fresh WSL or app-created agent). Nothing is broken and
+ *   nothing here can be repaired, so it is not a degradation;
+ * - `unreadable`: the key exists but could not be read. That is a real fault
+ *   and is reported as a degradation;
+ * - `unknown`: not checked yet in this process.
+ */
+export type RecoveryDirectSshRoute = 'available' | 'not-applicable' | 'unreadable' | 'unknown';
+let directSshRoute: RecoveryDirectSshRoute = 'unknown';
+
+/** The last host-key check's verdict, for status surfaces (the recovery guard entry). */
+export function recoveryDirectSshRoute(): RecoveryDirectSshRoute { return directSshRoute; }
+
+export const HOST_SSH_KEY_PATH = '/etc/ssh/ssh_host_ed25519_key.pub';
+
+/** Reads the pinned sshd host key. Exported for tests; `keyPath` defaults to the system path. */
+export function readHostSshKey(keyPath: string = HOST_SSH_KEY_PATH): string {
+  try {
+    const key = fs.readFileSync(keyPath, 'utf8');
+    directSshRoute = 'available';
+    return key;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      // @silent-fallback-ok — no SSH server on this machine: the direct route
+      // does not apply here, which is a fact about the machine, not a fault.
+      directSshRoute = 'not-applicable';
+      console.log('[recovery] no SSH server host key on this machine; the direct SSH recovery route is not applicable here');
+      return '';
+    }
+    directSshRoute = 'unreadable';
+    DegradationReporter.getInstance().report({ feature: 'ServerDownRecovery.hostSshKey', primary: 'Pinned local host sshd key', fallback: 'Recovery setup remains incomplete', reason: `Host SSH public key cannot be read${code ? ` (${code})` : ''}`, impact: 'The direct recovery route cannot be enrolled or counted as ready.' });
     return '';
   }
 }

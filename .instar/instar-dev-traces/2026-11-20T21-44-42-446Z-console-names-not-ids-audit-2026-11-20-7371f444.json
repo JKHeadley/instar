@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "console-names-not-ids-audit-2026-11-20",
+  "sessionId": "7425a2df-18e9-4cee-a96e-d5b574e65668",
+  "timestamp": "2026-11-20T21:44:42.446Z",
+  "artifactPath": "upgrades/side-effects/console-names-not-ids-audit-2026-11-20.md",
+  "artifactSha256": "859bd49e565bb04510a62677398350d5c93584cf90b274f356b29d0580ef0ba6",
+  "coveredFiles": [
+    "src/messaging/TelegramAdapter.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Moves the new name-learning method next to captureTopicName (no behavior change) so the poll-structure source test reads poll's own catch.",
+  "eli16Path": "docs/specs/console-names-not-ids-audit-2026-11-20.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-names-not-ids-audit-2026-11-20.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

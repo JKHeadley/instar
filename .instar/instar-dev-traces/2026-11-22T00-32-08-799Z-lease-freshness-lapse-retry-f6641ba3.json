@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "lease-freshness-lapse-retry",
+  "sessionId": "001b460b-0345-40f9-bcd6-0c4ff28bec91",
+  "timestamp": "2026-11-22T00:32:08.799Z",
+  "artifactPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "artifactSha256": "0b1d415a55f3edf3f7cbc83ad640912bf76bfb821936a71475eaaa0f5bd87429",
+  "coveredFiles": [
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/LeaseCoordinator.test.ts",
+    "upgrades/side-effects/lease-freshness-lapse-retry.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Compatibility repair for the existing reviewed N71 change against main: preserve nullable renewal evidence and the current ownership fence. Other staged files arrive unchanged from the ordinary main merge.",
+  "eli16Path": "docs/specs/lease-freshness-lapse-retry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-freshness-lapse-retry.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

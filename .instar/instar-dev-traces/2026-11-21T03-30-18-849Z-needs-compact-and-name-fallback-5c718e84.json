@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "needs-compact-and-name-fallback",
+  "sessionId": "7425a2df-18e9-4cee-a96e-d5b574e65668",
+  "timestamp": "2026-11-21T03:30:18.849Z",
+  "artifactPath": "upgrades/side-effects/needs-compact-and-name-fallback.md",
+  "artifactSha256": "851882e84a8a6039bd113d0c84f0b20ad9cab066d1b32403a139527f8647a9f4",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/needs-strip.js",
+    "dashboard/console/topic-names.js",
+    "docs/specs/needs-compact-and-name-fallback.eli16.md",
+    "src/server/AgentServer.ts",
+    "src/server/conversationFallbackTitle.ts",
+    "src/server/routes.ts",
+    "tests/integration/telegram-issue-topics-route.test.ts",
+    "tests/unit/console-front-doors.test.ts",
+    "tests/unit/console-needs-pages.test.ts",
+    "tests/unit/console-work-slice2.test.ts",
+    "tests/unit/conversation-fallback-title.test.ts",
+    "upgrades/next/needs-compact-and-name-fallback.md",
+    "upgrades/side-effects/needs-compact-and-name-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display only: Needs-you strip layout and a read-time name fallback that is never stored; revert fully undoes it.",
+  "eli16Path": "docs/specs/needs-compact-and-name-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/needs-compact-and-name-fallback.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

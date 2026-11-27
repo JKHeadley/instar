@@ -1,0 +1,13 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Accounts opens to usage and quota. The full sign-in repair list and automatic repair settings have their own view, accessible from Accounts. Existing links to a sign-in request or repair setting still reach the appropriate section.
+
+## What to Tell Your User
+
+Open Accounts to see quota and reset times. Choose Sign-in repair to see which machines need attention or change how automatic sign-in repair works.
+
+## Summary of New Capabilities
+
+Accounts has a separate Sign-in repair view.

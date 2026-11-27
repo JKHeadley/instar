@@ -21,6 +21,7 @@
       .host { font-size: 20px; font-weight: 600; color: #2dd4bf; word-break: break-all; margin: 8px 0 20px; }
       .qr { background: #fff; border-radius: 12px; padding: 12px; display: inline-block; }
       .qr img { display: block; width: 220px; height: 220px; }
+      a.button-link { display: inline-block; margin-top: 8px; background: transparent; color: #2dd4bf; border: 1px solid #2dd4bf; border-radius: 10px; font-weight: 600; font-size: 16px; padding: 10px 18px; text-decoration: none; }
       button { margin-top: 20px; background: #2dd4bf; color: #0a0e17; border: 0; border-radius: 10px; font-weight: 600; font-size: 16px; padding: 12px 20px; }
       p.small { color: #94a3b8; font-size: 14px; }
       [hidden] { display: none !important; }
@@ -37,6 +38,16 @@
         <button id="copy" type="button">Copy link</button>
         <p class="small" id="copied" hidden>Copied. In the Instar app, tap + and choose “Paste pairing link”.</p>
         <p class="small">This link works once and expires after a few minutes. Only add agents you run.</p>
+        <div id="computer" hidden>
+          <p class="small">No Instar app? You can read and comment on documents in this browser.</p>
+          <a id="use-computer" class="button-link">Use this computer instead</a>
+          <p class="small" id="computer-host"></p>
+        </div>
+      </div>
+      <div id="home" hidden>
+        <h1>Scan this code in the Instar app</h1>
+        <p class="small">Install or open Instar, then scan the code on your computer.</p>
+        <p class="small">This code only works inside the Instar app, on the same Wi-Fi as your computer.</p>
       </div>
       <div id="bad" hidden>
         <h1>This link is not valid</h1>
@@ -47,7 +58,7 @@
       import QRCode from 'qrcode';
 
       // Link format v1 (frozen): https://instar.sh/pair#v=1&o=<urlencoded https origin>&c=<22-char code>
-      function parse(hash: string): { origin: URL } | null {
+      function parse(hash: string): { origin: URL; code: string; computer: boolean } | null {
         const q = new Map<string, string>();
         for (const kv of hash.replace(/^#/, '').split('&')) {
           const i = kv.indexOf('=');
@@ -60,16 +71,30 @@
         let origin: URL;
         try { origin = new URL(q.get('o') ?? ''); } catch { return null; }
         if (origin.protocol !== 'https:' || !origin.hostname) return null;
-        return { origin };
+        // `j=1` (member-browser-any-computer §3.1): this agent lets a team member use a computer instead.
+        // An unknown key is ignored; `j` changes only what this page offers, never what the link can do.
+        return { origin, code: q.get('c') as string, computer: q.get('j') === '1' };
       }
 
-      const parsed = parse(location.hash);
       const show = (id: string) => { const el = document.getElementById(id); if (el) el.hidden = false; };
-      if (!parsed) {
+      // Link format v2 (identity A4): a same-network code, made only on the agent's own computer. This
+      // page reads nothing from it and shows nothing of it; only the Instar app can use it.
+      const v2 = /^#v=2(&|$)/.test(location.hash);
+      if (v2) history.replaceState(null, '', location.pathname);
+      const parsed = v2 ? null : parse(location.hash);
+      if (v2) {
+        show('home');
+      } else if (!parsed) {
         show('bad');
       } else {
         const link = location.href;
         (document.getElementById('host') as HTMLElement).textContent = parsed.origin.host;
+        if (parsed.computer) {
+          // The code stays in the fragment: a plain navigation to the link's own origin, no request from here.
+          (document.getElementById('use-computer') as HTMLAnchorElement).href = `${parsed.origin.origin}/docs/_join#v=1&c=${parsed.code}`;
+          (document.getElementById('computer-host') as HTMLElement).textContent = `This opens ${parsed.origin.host}`;
+          show('computer');
+        }
         QRCode.toDataURL(link, { errorCorrectionLevel: 'M', margin: 0, width: 440 })
           .then((url: string) => { (document.getElementById('qr') as HTMLImageElement).src = url; })
           .catch(() => { /* the copy button still works */ });

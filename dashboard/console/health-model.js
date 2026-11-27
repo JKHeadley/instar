@@ -97,10 +97,13 @@ export function machineWords(issue) {
 }
 
 /** Needs-you rows: exclude only explicitly declared waits. Older servers stay conservative. */
-export function healthNeedRows(res) {
+export function healthNeedRows(res, { includeAgentWork = false } = {}) {
   const d = readableIssues(res);
   if (!d) return null;
-  return d.issues.filter((i) => i && i.impact === 'user-affecting' && i.requiresUserAction !== false).map((i) => ({ key: i.id, title: i.title, detail: [machineWords(i), i.detail].filter(Boolean).join(' · '), href: issueHref(i) }));
+  return d.issues.filter(i => i && i.impact === 'user-affecting' && (includeAgentWork || i.requiresUserAction !== false)).map(i => ({
+    key: i.id, title: i.title, detail: [machineWords(i), i.detail].filter(Boolean).join(' · '), href: issueHref(i),
+    ...(i.requiresUserAction === false ? { ownerAction: false } : {}),
+  }));
 }
 
 /** "3 times", or nothing for one. */

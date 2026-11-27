@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "reaper-registry-copy-hash",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-19T22:11:33.453Z",
+  "artifactPath": "upgrades/side-effects/reaper-registry-copy-hash.md",
+  "artifactSha256": "fd7cb27d67bb9798d0b52f9a94f35a9b373f75c7d2cbb68a0e2a5eeeaa541ca5",
+  "coveredFiles": [
+    "src/monitoring/agentWorktreeGit.ts",
+    "tests/unit/agent-worktree-reaper-generated-files.test.ts",
+    "upgrades/next/reaper-registry-copy-hash.md",
+    "upgrades/side-effects/reaper-registry-copy-hash.eli16.md",
+    "upgrades/side-effects/reaper-registry-copy-hash.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "one-function proof fix (in-process blob id instead of a guard-refused git call); rule unchanged; reaper dry-run on Studio; revert restores old behaviour",
+  "eli16Path": "upgrades/side-effects/reaper-registry-copy-hash.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/reaper-registry-copy-hash.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
