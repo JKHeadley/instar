@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "phone-chat-composer-fit",
+  "sessionId": "fbd2d863-65c0-467c-b7f0-b849917802c2",
+  "timestamp": "2026-11-23T19:49:36.074Z",
+  "artifactPath": "upgrades/side-effects/phone-chat-composer-fit.md",
+  "artifactSha256": "a4268d8cea32e80b52a91b2ff2d4e8482ebc5886b3997d45779678b6e8f5c1d5",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "docs/specs/phone-chat-composer-fit.eli16.md",
+    "upgrades/next/phone-chat-composer-fit.md",
+    "upgrades/side-effects/phone-chat-composer-fit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible CSS-only repair of existing open phone chat composer placement, with measured production-asset baseline and candidate geometry; no API JS approval storage or messaging authority change.",
+  "eli16Path": "docs/specs/phone-chat-composer-fit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/phone-chat-composer-fit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

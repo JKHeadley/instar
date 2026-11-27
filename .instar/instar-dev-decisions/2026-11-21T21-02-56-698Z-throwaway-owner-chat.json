@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-21T21:02:56.698Z",
+  "slug": "throwaway-owner-chat",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 715,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/machine.ts",
+      "src/core/types.ts",
+      "src/data/awareness/throwaway-owner-chat.md",
+      "src/data/state-coherence-registry.json",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/ownerChatTap.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/throwawayOwnerChat.ts",
+      "src/server/throwawayOwnerChatRoutes.ts"
+    ],
+    "addedLines": 689,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

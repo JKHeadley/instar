@@ -14,6 +14,8 @@ import { makeDiskStewardSender } from '../DiskStewardPoster.js';
 import { DEFAULT_THRESHOLDS, type DiskStewardThresholdConfig } from './levels.js';
 import { DegradationReporter } from '../DegradationReporter.js';
 import { featureEvidence } from '../FeatureEvidenceLog.js';
+import type { RopeResultRecorder } from '../../server/poolPeerFetch.js';
+import { readPeerDiskStatus, type DiskStewardPeer } from './peerRead.js';
 
 export const DISK_TOPIC_NAME = 'Disk space (all machines)';
 export const DISK_TOPIC_STATE_KEY = 'agent-disk-topic';
@@ -35,7 +37,8 @@ export interface DiskStewardWiringInput {
   machineName: () => string;
   isHolder: () => boolean;
   /** Other active machines with a credential-admissible URL. */
-  peers: () => Array<{ machineId: string; url: string | null; allowed: boolean }>;
+  peers: () => DiskStewardPeer[];
+  recordRopeResult?: RopeResultRecorder | null;
   authToken: string | undefined;
   /** State get/set for the system-topic key (holder writes it; standbys adopt it). */
   getTopicId: () => number | null;
@@ -44,6 +47,8 @@ export interface DiskStewardWiringInput {
   findTopicIdByName?: (name: string) => number | undefined;
   findOrCreateTopic?: (name: string) => Promise<number>;
   sendToTopic?: (topicId: number, text: string) => Promise<unknown>;
+  /** The owner explicitly quieted disk notices in notification selectivity (the post then says so). */
+  ownerQuietedDisk?: () => boolean;
 }
 
 function num(v: unknown, d: number): number { return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : d; }
@@ -83,26 +88,31 @@ export function createDiskSteward(input: DiskStewardWiringInput): { steward: Dis
   };
 
   const send: (post: DuePost) => Promise<SendOutcome> = input.sendToTopic
-    ? makeDiskStewardSender({ resolveTopicId, sendToTopic: input.sendToTopic, log: audit })
+    ? makeDiskStewardSender({ resolveTopicId, sendToTopic: input.sendToTopic, log: audit, ownerQuieted: input.ownerQuietedDisk })
     : async () => 'posted'; // no Telegram: the route and the degradation report are the surfaces (§3.5)
 
   const headers = (): Record<string, string> => ({ 'Content-Type': 'application/json', ...(input.authToken ? { Authorization: `Bearer ${input.authToken}` } : {}) });
-  const peers = async (): Promise<PeerHandle[]> => input.peers().filter((p) => p.url && p.allowed).map((p) => ({
-    machineId: p.machineId,
-    status: async () => {
-      try {
-        const res = await fetch(`${p.url!.replace(/\/$/, '')}/disk-steward`, { headers: headers(), signal: AbortSignal.timeout(5_000) });
-        if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` };
-        return { ok: true as const, body: (await res.json()) as DiskStewardStatus };
-      } catch (e) { return { ok: false as const, error: e instanceof Error ? e.message : String(e) }; }
-    },
-    ack: async (postId, outcome) => {
-      try {
-        const res = await fetch(`${p.url!.replace(/\/$/, '')}/disk-steward/posted`, { method: 'POST', headers: headers(), body: JSON.stringify({ postId, outcome }), signal: AbortSignal.timeout(5_000) });
-        return res.ok;
-      } catch { return false; } // @silent-fallback-ok — the peer keeps its due post and the holder retries next tick
-    },
-  }));
+  const peers = async (): Promise<PeerHandle[]> => input.peers().filter((p) => p.url && p.allowed).map((p) => {
+    let ackUrl = p.url!;
+    return {
+      machineId: p.machineId,
+      status: async () => {
+        try {
+          const { response: res, readUrl } = await readPeerDiskStatus(input.recordRopeResult ?? undefined, { ...p, url: p.url! }, input.authToken);
+          if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` };
+          const body = (await res.json()) as DiskStewardStatus;
+          ackUrl = readUrl;
+          return { ok: true as const, body };
+        } catch (e) { return { ok: false as const, error: e instanceof Error ? e.message : String(e) }; }
+      },
+      ack: async (postId, outcome) => {
+        try {
+          const res = await fetch(`${ackUrl.replace(/\/+$/, '')}/disk-steward/posted`, { method: 'POST', redirect: 'manual', headers: headers(), body: JSON.stringify({ postId, outcome }), signal: AbortSignal.timeout(5_000) });
+          return res.ok;
+        } catch { return false; } // @silent-fallback-ok — the peer keeps its due post and the holder retries next tick
+      },
+    };
+  });
 
   const steward = new DiskSteward({
     machineId: input.machineId,

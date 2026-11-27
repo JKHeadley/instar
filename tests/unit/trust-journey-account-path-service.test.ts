@@ -248,4 +248,3 @@ describe('SEC-141: chat cards and request records cannot show one change and app
     expect(applied.map((a) => a.change)).toEqual([change]);
   });
 });
-

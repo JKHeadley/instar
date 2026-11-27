@@ -16,10 +16,15 @@ function helperChangeReason(change: DesktopHelperPermissionChange, servingMissin
   // A tie keeps the kept copy serving, so granting it only what is missing
   // overall would leave it short and need a second trip. Ask for all of it.
   const missing = change.keptMissing || servingMissing;
-  const why = change.kind === 'source-changed'
-    ? `Instar's Mac desktop helper changed in update ${change.version}, and macOS ties ${missing} to the exact program, so the old permission no longer applies.`
-    : `Instar now keeps one permanent copy of its Mac desktop helper, so later updates that leave the helper unchanged cannot remove its permission. macOS needs to allow that copy once.`;
-  return `${why} This will not fix itself. Someone at this Mac needs to allow it again: ${PERMISSION_STEP} → ${missing}. `
+  // A first grant is also what a freshly installed or rebuilt Mac sees, where
+  // nothing was ever allowed: no "again", no update story, true either way.
+  if (change.kind === 'first-grant') {
+    return `macOS has not yet allowed Instar's Mac desktop helper on this Mac (the one copy Instar keeps, so later updates cannot remove its permission). `
+      + `This will not fix itself. Someone at this Mac needs to allow it once: ${PERMISSION_STEP} → ${missing}. `
+      + `If instar-desktop-host is listed, turn it on (or off and on). If it is not listed or that does not work, remove it with the minus button and add ${change.helperPath} with the plus button. Then tap Retry.`;
+  }
+  return `Instar's Mac desktop helper changed in update ${change.version}, and macOS ties ${missing} to the exact program, so the old permission no longer applies. `
+    + `This will not fix itself. Someone at this Mac needs to allow it again: ${PERMISSION_STEP} → ${missing}. `
     + `Turn instar-desktop-host off and on. If it is not listed or that does not work, remove it with the minus button and add ${change.helperPath} with the plus button. Then tap Retry.`;
 }
 

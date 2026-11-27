@@ -196,6 +196,14 @@ describe('lint-state-registry — observe-mode authority contracts', () => {
     expect(result.stderr).toContain('undeclared target writer for "job-manifests"');
   });
 
+  it('refuses an undeclared atomic writer to the jobs ledger', () => {
+    writeFile(path.join(sandbox, 'alternate.ts'),
+      "SafeFsExecutor.atomicWriteFileSync(path.join(stateDir, 'jobs.json'), data);");
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared legacy writer');
+  });
+
   it('refuses another writer to the project digest projection', () => {
     writeFile(path.join(sandbox, 'alternate.ts'), [
       "const target = path.join(stateDir, 'projects-digest.cache');",

@@ -162,6 +162,24 @@
   },
   "entries": [
     {
+      "category": "security-review-preflight-packets",
+      "description": "Private, bounded, machine-local full declared-input snapshots for evidence-only security-review diagnostics. They certify neither model consumption nor semantic review; source ledger is never modified.",
+      "scope": "machine-local",
+      "freshness": "session-boundary",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/security/private/review-packets/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "bounded",
+        "maxEntries": 16,
+        "note": "Keep at most16 complete owned UUID packets (up to8MiB source bytes per packet); remove only oldest owned derived packets. Unknown/partial artifacts are never consumed; enumeration over128 entries refuses capture. These are never the sole record of a finding."
+      }
+    },
+    {
       "category": "attribution-ledger",
       "description": "Append-only history of claims credited to a person: wording, verdict, source ref and lineage. Rotated into kept gzip archives, never deleted. One writer per machine; a trace merges every machine's rows on read.",
       "scope": "machine-local",
@@ -2389,6 +2407,144 @@
       }
     },
     {
+      "category": "local-verify-borrowed-helpers",
+      "description": "The practice record of borrowed helpers (docs/specs/local-verify-borrowed-slices-count.md, F 'The practice record'), on the helper's pairing run machine. It DECIDES WHETHER A HELPER'S PASSES COUNT: per helper and lane, the four evidence items (coverage against the files eligible at the dry run, spread over verifies, failing-direction comparisons with the check slice's history, the wrong-pass window), the state (practice, counting, suspended, lapsed with its reason), the sandbox image and runner version the evidence belongs to, the practice period's start, and the recorded decision to count with the evidence it was taken on. Per helper also: how often it is asked (unanswered requests, when its silence began), the spot re-run rate, a recorded dry-run request, and the main-verify observer's last 50 run summaries. Beside the helpers: this machine's helper events with ids, and the ids a coordinator has already sent a notice for. A pass counts only where this file holds a decision for the helper, the lane and the current practice period; a lost or unreadable file, a file of the first design (version 1) or a lane that does not read strictly means practice from the start, by intent, so it is not backed up. Unified by placement: one file, on the pairing run machine, and every decision that reads or changes it is taken there; the coordinator reads the events through the peer status it already polls. Machine-local by the approved Local Verify capacity spec's ratified run-machine dispatch exception (commit 6a8c3a2c26afeb3df573d5a9ae9e93ce775b3f17).",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/borrowed-helpers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 61000,
+        "note": "One helper per run machine, three lanes. Per lane at most 20,000 uncovered file paths (they only shrink after the dry run), 200 failing-direction comparisons, 500 wrong-pass positions, 20 check results, 20 answers and 50 lapses; per helper 50 run summaries; 200 events and 400 told ids. Rewritten in place. Absent or unreadable state is practice from the start."
+      }
+    },
+    {
+      "category": "local-verify-main-file-counts",
+      "description": "Baseline results for borrowed helpers (docs/specs/local-verify-borrowed-slices-count.md, F 'Baseline results' and 'Build decisions'): for the coordinator's last three green main verifies (plus at most two older ones a dry run has pinned), each test file's passed, failed, skipped and to-do counts and the digest of its test names and outcomes. The pass definition and the dry run read it: a helper's pass needs the same digest as the baseline. It lives in the server's state folder, outside every run tree; its hash is written to the Local Verify audit log on every write and checked on every read, and a mismatch, a missing audited hash or a malformed file means no baseline (nothing counts). Unified by placement: the coordinator writes it and sends it to a peer that has a helper when it changes (POST /local-verify/peer-baseline); a peer stores the coordinator's copy under its own audit row and never writes its own. Written only while a helper is configured on this machine or on a peer. Rebuildable from the next green main verify, so not backed up.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/main-file-counts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 100000,
+        "note": "At most 5 baselines (the last three green main verifies and two pinned for a dry run), each at most 20,000 file rows (about 5,500 today, under 1 MB per baseline); rewritten in place, read only up to 16 MB."
+      }
+    },
+    {
+      "category": "local-verify-helper-learned",
+      "description": "A borrowed helper's learned exclude list (docs/specs/local-verify-borrowed-slices-count.md, D), kept ON the helper machine: files it is no longer sent, each with the rule that put it there (the helper failed it where the run machine passed, in two comparisons in a row; a same-tree digest difference with both sides passing; a confirmed wrong pass), the merge tree and verifies of those comparisons, the helper's runner version and the file's content hash at its last trial, plus first helper failures waiting for a second and the helper's verify count for trials. Its run machine reports comparisons through the signed POST /local-verify/helper-learned (keyed by tree hash) and reads the list from GET /local-verify/helper-status. Unified by placement: one list per helper, so no replication; the run machine's audit rows stay the source of truth if the helper is reinstalled. It only keeps files off this helper; it is never a verdict input.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-learned.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 22050,
+        "note": "At most 20,000 entries (the duration records' file bound; no lane has more files), at most 2,000 waiting first failures and the last 50 verify ids; rewritten in place and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-compared",
+      "description": "The files a borrowed helper has been compared on, per lane (docs/specs/local-verify-borrowed-slices-count.md, D 'A file this helper has never been compared on'), kept ON the helper machine beside its learned list: for the helper's current sandbox image and runner version, the test files of each lane that have had an agreeing comparison with its run machine. A file not in it is new to the helper and is run by both sides, compare-only. Written only from agreeing observations of the signed learned request; the status answer reports a count and a digest per lane, and the full list of one lane on request. Unified by placement: one record per helper, read by its run machine through GET /local-verify/helper-status. A change of image or runner version starts it over; absent or unreadable means nothing has been compared.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-compared.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 60000,
+        "note": "At most 20,000 file paths per lane (the duration records' file bound), three lanes; rewritten in place, started over on a new image or runner version, and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-dry-run",
+      "description": "A borrowed helper's own dry-run record (docs/specs/local-verify-borrowed-slices-count.md, C item 3), kept ON the helper machine, outside the sandbox: per lane, the sandbox image's digest, the sandbox settings' hash, the merged commit, the date its dry run finished and the share of the lane's helper time that passed there (the 'lane proven' figure), plus the files answered so far by a dry run still in progress, each with its time and whether it passed. The helper reads it before any waiting change and refuses (dry-run-not-done) without a record of that lane on its current image. Unified by placement: one record per helper, read by its run machine through GET /local-verify/helper-status; the helper never takes it on a run machine's word. Absent or unreadable means no dry run is done.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-dry-run.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 60003,
+        "note": "At most 3 lane records and 3 in-progress file lists, each list bounded by the 20,000-file duration cap; rewritten in place and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-packages",
+      "description": "A borrowed helper's index of installed-package sets (docs/specs/local-verify-borrowed-slices-count.md, C 'Packages are installed only from merged code'), kept ON the helper machine, outside the sandbox: per install-inputs hash, the merged commit the packages were installed from (after the helper's own merged check), the digest of the manifest of file hashes the sandbox wrote when it locked them, and when they were installed and last used. The packages themselves are on the sandbox's package volume; before each use their manifest is recomputed and compared with this record, and a difference discards the set. Machine-local: it describes this machine's sandbox. Absent or unreadable means nothing is cached.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-packages.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 3,
+        "note": "At most 3 package sets (the least recently used is dropped, with its files); rewritten atomically and removed by instar helper uninstall."
+      }
+    },
+    {
+      "category": "local-verify-helper-seen-attempts",
+      "description": "A borrowed helper's single-use request ids (docs/specs/local-verify-borrowed-unit-slices.md, C 'Replay'): every signed helper request's attemptId with the time it was seen, persisted so a replayed request is refused across helper restarts. Machine-local: it guards this helper's own routes.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-seen-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "time-window",
+        "access": "whole-sync",
+        "maxResults": 20000,
+        "maxAgeMs": 600000,
+        "note": "Ids older than 10 minutes are pruned on every read and write (requests live at most 60 s plus 30 s clock tolerance); at most 20,000 kept; rewritten atomically."
+      }
+    },
+    {
+      "category": "local-verify-helper-control",
+      "description": "A borrowed helper's owner pause switch (docs/specs/local-verify-borrowed-unit-slices.md, B 'Pause control'), written by instar helper pause|resume and the dashboard toggle, read by the helper at every request and governor sample. Machine-local: it is this machine owner's control.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/helper-control.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One small file overwritten atomically; removed by instar helper uninstall."
+      }
+    },
+    {
       "category": "queue-pace-ledger",
       "description": "Queue pace hourly ledger (docs/specs/queue-pace.md): one row per queue per fixed hour (arrivals, completions, other exits, open count, coverage flags, cursorAfter, ids digest) plus notice audit rows. Machine-local: each machine measures its own queues; GET /queue-pace?scope=pool merges peers live.",
       "scope": "machine-local",
@@ -2737,6 +2893,40 @@
         "class": "fixed-cardinality",
         "maxRecords": 1,
         "note": "One replace-in-place file, capped per service, with expired tokens pruned on write."
+      }
+    },
+    {
+      "category": "recommended-service-confirm-stats",
+      "description": "SEC-135: per-machine counters for the recommended-service confirm page (answers by path, refused public answers, owner opens, exempt-path answers while the public aggregate was full, with times). Machine-local, proxied-on-read: each machine reports its own in GET /recommended-services and the graduation review sums every machine's.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/recommended-service-tokens/confirm-stats.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file of cumulative counters, written at most once a minute; its timed event list keeps the newest 200."
+      }
+    },
+    {
+      "category": "pin-attempts",
+      "description": "Durable PIN guess counters (identity-security piece 1c): the public aggregate, per-source, local and per-approval-link budgets. Machine-local by design: each machine bounds the guesses it accepts itself, and piece 1c section 4 declares the per-machine posture.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/pin-attempts.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 4096,
+        "note": "PinAttemptStore keeps at most 4096 rows (PIN_ATTEMPT_MAX_ROWS); expired rows are pruned on every write and the oldest unlocked rows go first above the cap."
       }
     },
     {
@@ -3169,6 +3359,42 @@
         "maxBytes": 5242880,
         "keepSegments": 1,
         "note": "action-checks.jsonl rotates at 5 MB into one kept segment (.1); message-notes.jsonl rotates at 1 MB into one kept segment and is emptied at each session start; pending checks expire after 30 minutes; the cache drops entries older than ten minutes."
+      }
+    },
+    {
+      "category": "throwaway-owner-chat",
+      "description": "The stand-in owner chat of a throwaway test agent (docs/specs/throwaway-owner-chat.md): the log of owner-chat messages, taps and commands, and its state file (first build, adopted owner-record genesis, shut-off record). Exists only on a single-machine throwaway in a temporary folder with no owner; never replicated, synced or backed up, and its presence refuses machine pairing for the life of the home.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/throwaway-owner-chat.jsonl",
+        "state/throwaway-owner-chat.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "size-bounded",
+        "note": "Append-only log under a 16 MiB byte budget that refuses new entries rather than evicting; the whole home is deleted with the throwaway."
+      }
+    },
+    {
+      "category": "owned-repo-registry",
+      "description": "The owned-repository registry (docs/specs/no-data-loss-on-machine-death.md §1, increment 1): every repository this agent works in on this machine, with its remotes, single-copy work and age, plus the scan's resume cursor, the candidate queue from session evidence and the births recorded by SafeGitExecutor. One file per machine. Its replicated half is the `owned-repo` WS2 kind; this file is the machine's own index of its own disk. machine-local-justification: hardware-bound-resource — the scan cursor and candidate queue index one disk's paths.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "last-writer-wins",
+      "transport": "none",
+      "paths": [
+        "state/owned-repos/*",
+        "logs/no-data-loss.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "B",
+        "access": "whole-file",
+        "maxBytes": 16777216,
+        "note": "Bounded by caps in OwnedRepoRegistry: 2000 repositories, 500 births, 500 queued candidates, a 50,000-item scan queue and 20,000 known paths; a removed repository's tombstone is dropped after 90 days. The audit log logs/no-data-loss.jsonl (metadata only) rotates at 16 MB with 4 kept segments."
       }
     }
   ]

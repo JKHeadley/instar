@@ -8,7 +8,7 @@ const SCOPES = new Set(['agent', 'machine', 'tenant']);
 const MODULE = /^(?:[\w-]+\/)*[\w.-]+\.[cm]?[jt]sx?$/;
 const SINK_ARGUMENT = new Map([
   ['writeFile', 0], ['writeFileSync', 0], ['appendFile', 0], ['appendFileSync', 0],
-  ['createWriteStream', 0], ['openDatabase', 0], ['Database', 0],
+  ['atomicWriteFileSync', 0], ['createWriteStream', 0], ['openDatabase', 0], ['Database', 0],
   ['DatabaseSync', 0], ['BetterSqlite3', 0], ['unlink', 0], ['unlinkSync', 0],
   ['rm', 0], ['rmSync', 0], ['safeUnlinkSync', 0], ['safeRmSync', 0],
   ['rename', 1], ['renameSync', 1], ['copyFile', 1], ['copyFileSync', 1],
@@ -224,7 +224,7 @@ function ownsLocation(location, candidate) {
 
 // Same-file static resolution only. Runtime and interprocedural writes remain census/review work.
 export function findAuthorityWrites(content, relativeFile, stores) {
-  if (!stores.length || !/writeFile|appendFile|createWriteStream|Database|rename|copyFile|unlink|safeRm|\brm\b|rmSync/.test(content)) return [];
+  if (!stores.length || !/writeFile|atomicWriteFileSync|appendFile|createWriteStream|Database|rename|copyFile|unlink|safeRm|\brm\b|rmSync/.test(content)) return [];
   const source = ts.createSourceFile(relativeFile, content, ts.ScriptTarget.Latest, true);
   const bindings = new Map();
   const register = (node, name, value) => {
