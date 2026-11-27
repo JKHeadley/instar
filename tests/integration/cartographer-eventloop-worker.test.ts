@@ -234,7 +234,9 @@ describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worke
     const priorPath = process.env.PATH;
     process.env.PATH = `${bin}:${priorPath ?? ''}`;
     try {
-      const r = await engineFor(t, { detectTimeoutMs: 1000 }).runPass();
+      // Let the real worker and fake Git process start even when all verifier lanes
+      // are busy. The sixty-second child is still bounded and must be reaped.
+      const r = await engineFor(t, { detectTimeoutMs: 10_000 }).runPass();
       expect(r.refused).toBe(true);
       expect(r.refusalReason).toBe('detect-timeout');
       expect(fs.existsSync(pidFile)).toBe(true);

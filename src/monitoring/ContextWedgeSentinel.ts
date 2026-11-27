@@ -75,7 +75,7 @@ export interface ContextWedgeState {
 
 export interface ContextWedgeSentinelDeps {
   /** Peek at the session's most recent tmux output (may be empty). */
-  getRecentOutput: (sessionName: string) => string;
+  getRecentOutput: (sessionName: string) => string | null | Promise<string | null>;
   /**
    * Attempt recovery of a confirmed wedge. The wiring decides policy
    * (detect-only / dry-run / live respawn) and reports back via the outcome.
@@ -243,19 +243,48 @@ export class ContextWedgeSentinel extends EventEmitter {
     this.shutdown();
   }
 
+  private tickInFlight = false;
+  private scanGeneration = 0;
+
   /** One scan pass over every tracked session. */
   tick(): void {
+    if (this.tickInFlight || !this.cfg.enabled) return;
     this.lastTickAt = Date.now();
-    if (!this.cfg.enabled) return;
+    const generation = this.scanGeneration;
     const names = this.deps.listSessionNames?.() ?? [];
-    for (const name of names) this.scanSession(name);
+    for (const [index, name] of names.entries()) {
+      const result = this.scanSession(name);
+      if (!result) continue;
+      this.tickInFlight = true;
+      void (async () => {
+        await result;
+        for (const remaining of names.slice(index + 1)) {
+          if (this.scanGeneration !== generation) break;
+          await this.scanSession(remaining);
+        }
+      })().catch((error: unknown) => {
+        console.warn('[ContextWedgeSentinel] Capture pass failed:', error);
+      }).finally(() => { this.tickInFlight = false; });
+      return;
+    }
   }
 
   /** Scan one session for the wedge signature. */
-  scanSession(sessionName: string): void {
+  scanSession(sessionName: string): void | Promise<void> {
     if (!this.cfg.enabled) return;
     if (this.states.has(sessionName)) return; // already handling
     const output = this.deps.getRecentOutput(sessionName);
+    if (output === null) return;
+    if (typeof output !== 'string') {
+      const generation = this.scanGeneration;
+      return output.then((frame) => {
+        if (frame !== null && this.scanGeneration === generation) this.scanFrame(sessionName, frame);
+      });
+    }
+    this.scanFrame(sessionName, output);
+  }
+
+  private scanFrame(sessionName: string, output: string): void {
     // Require the signature to be the live TAIL, not merely present somewhere in
     // the scrollback — the discriminator against a session discussing the bug.
     const kind = classifyWedgeTail(output);
@@ -300,6 +329,7 @@ export class ContextWedgeSentinel extends EventEmitter {
   }
 
   shutdown(): void {
+    this.scanGeneration++;
     for (const t of this.timers.values()) this.clearTimer(t);
     this.timers.clear();
     this.states.clear();
@@ -307,10 +337,21 @@ export class ContextWedgeSentinel extends EventEmitter {
 
   // ── Confirm + recover ────────────────────────────────────────────────
 
-  private async confirm(sessionName: string): Promise<void> {
+  private async confirm(sessionName: string, attempt = 0): Promise<void> {
     const state = this.states.get(sessionName);
     if (!state) return;
-    const output = this.deps.getRecentOutput(sessionName);
+    const captured = this.deps.getRecentOutput(sessionName);
+    const output = typeof captured === 'string' || captured === null ? captured : await captured.catch(() => null);
+    if (this.states.get(sessionName) !== state) return;
+    if (output === null) {
+      if (attempt === 0) {
+        const handle = this.setTimer(() => void this.confirm(sessionName, 1), this.cfg.confirmWindowMs);
+        this.timers.set(sessionName, handle);
+      } else {
+        this.clear(sessionName);
+      }
+      return;
+    }
 
     // Confirmation gate: the signature must STILL be the tail. If it scrolled
     // out (the session progressed past the error), this was not a wedge — a

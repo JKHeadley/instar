@@ -82,7 +82,7 @@ import { spawnSmallPeerSupervisor } from './smallPeerSupervisor.js';
 import { acknowledgeTrial, bindTrial, finalizeInterruptedTrials, finishDelivery, importTrialPacket, localTrialReceipt, pendingTrialBindings, pendingTrialPackets, receivedTrial, type TrialAck, type TrialPacket, validTrialReceipt } from './smallPeerReceipts.js';
 import { trialDirectory, type TrialReceipt } from './smallPeerWatchdog.js';
 import { reconcileTrialScopes } from './trialExecutionScope.js';
-import { SAMPLE_DEADLINE_MS, readSmallPeerMemory, smallPeerMemoryAllows, parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
+import { SAMPLE_DEADLINE_MS, readSmallPeerMemory, smallPeerMemoryAllows, smallPeerStartHasHeadroom, parseSmallPeerTrialPolicy, type SmallPeerTrialPolicy } from './smallPeerMemory.js';
 import { FIRST_PART_LIMITS, boundLikelyFailingWire, parseFirstPartSetting, type FirstPartGroup, type FirstPartInput, type FirstPartSetting, type FirstPartSummary, type LikelyFailingWire } from './firstPart.js';
 import { LikelyFailingStore, type LikelyFailingInfo } from './likelyFailingList.js';
 import { FirstPartGroups } from './firstPartTrial.js';
@@ -127,6 +127,16 @@ export const PEER_SKIP_AUDIT_MS = 10 * 60_000;
 
 /** Repeat-flake escalation (one tracked item per file, re-raised when the flake keeps recurring). */
 export const FLAKY_REPEAT = Object.freeze({ count: 3, windowMs: 7 * 24 * 60 * 60_000, keep: 20 });
+const NAMED_FLAKE_OWNER = 'Scaling the Test Line';
+const NAMED_FLAKE_HISTORY_LIMIT = 500;
+
+interface NamedFlakeHistory {
+  file: string;
+  test: string;
+  seen: string[];
+  quarantinedAt: string | null;
+  owner: string;
+}
 
 /**
  * The flaky history. Per file: `seen`, the times an isolation re-run passed it (PR and `main`
@@ -140,6 +150,8 @@ interface FlakyHistory {
   v: 1;
   files: Record<string, { seen: string[]; escalatedAt: string | null; mainSeen?: FlakyOnMainTest[]; mainSeenCut?: string }>;
   greenMain: { headSha: string; finishedAt: string; notClean: string[]; origin?: 'local' } | null;
+  named?: NamedFlakeHistory[];
+  unreadable?: true;
 }
 
 /**
@@ -1024,6 +1036,7 @@ export class LocalVerifyService {
   private failFastEnabled: (() => boolean) | null = null;
   /** `monitoring.localVerify.importRelatedRerun`, read live when a run starts or is dispatched. Absent ⇒ off. */
   private importRelatedRerunEnabled: (() => boolean) | null = null;
+  private namedFlakeRetryEnabled: (() => boolean) | null = null;
   private runLogsSweptAt = 0;
   /** `monitoring.localVerify.likelyFailingFirst`, read live at the start of each verify this machine runs. Absent ⇒ off. */
   private likelyFailingFirstSetting: (() => unknown) | null = null;
@@ -1171,7 +1184,7 @@ export class LocalVerifyService {
   }
 
   isDiagnosisCapacityBusy(): boolean {
-    return !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
+    return this.trialAdmissionPending || !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
   }
 
   // ---- paths ----
@@ -1231,6 +1244,26 @@ export class LocalVerifyService {
 
   /** Late-bind the live `monitoring.localVerify.importRelatedRerun` switch (spec local-verify-import-related-rerun.md). */
   setImportRelatedRerunEnabled(fn: (() => boolean) | null): void { this.importRelatedRerunEnabled = fn; }
+
+  setNamedFlakeRetryEnabled(fn: () => boolean): void { this.namedFlakeRetryEnabled = fn; }
+
+  private namedFlakeRetryInput(): VerifyRunInput['namedFlakeRetry'] {
+    try {
+      if (this.namedFlakeRetryEnabled?.() !== true) return undefined;
+    } catch {
+      return undefined; // @silent-fallback-ok: an unreadable opt-in reads as off
+    }
+    const now = this.now();
+    const history = this.readFlakyHistory();
+    if (history.unreadable) {
+      this.audit({ event: 'named-flake-retry-history-unreadable' });
+      return { quarantined: [], unavailable: true };
+    }
+    const quarantined = (history.named ?? [])
+      .filter((row) => row.quarantinedAt !== null && now - Date.parse(row.quarantinedAt) < FLAKY_REPEAT.windowMs)
+      .map(({ file, test }) => ({ file, test }));
+    return { quarantined };
+  }
 
   private importRelatedRerunOn(): boolean {
     try { return this.importRelatedRerunEnabled ? this.importRelatedRerunEnabled() === true : false; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (the rule before this one)
@@ -2611,9 +2644,7 @@ export class LocalVerifyService {
       if (this.trialAdmissionPending || this.trialRecoveryPending) return refuse('peer-busy');
       this.trialAdmissionPending = true;
       try {
-        const sample = await readSmallPeerMemory();
-        const now = performance.now();
-        if (!smallPeerMemoryAllows(sample, trial.floorBytes, now)) {
+        if (!await smallPeerStartHasHeadroom(trial)) {
           this.trialHealthySince = null;
           return refuse('peer-busy');
         }
@@ -2621,7 +2652,7 @@ export class LocalVerifyService {
         if (busy() || this.notePause() || this.stopped || !this.peerRoleOn() || !this.trialPolicyCurrent(trial)
           || lease.holds || lease.holder !== req.coordinatorMachineId || lease.epoch !== req.leaseEpoch
           || this.peerState.tombstones[req.attemptId] !== undefined || this.verifierChangedOnDisk()) return refuse('peer-busy');
-        if (this.trialRecoveryPending) return refuse('peer-busy');
+        if (this.trialRecoveryPending || this.failedFileDiagnosisPeer?.busy()) return refuse('peer-busy');
       } finally { this.trialAdmissionPending = false; }
     }
     const entry: QueueEntry = {
@@ -2972,7 +3003,7 @@ export class LocalVerifyService {
       return rest.reasons.length > 0 || rest.failures.length > 0 ? { ...x, run: rest } : without;
     });
     this.peerState.results = [...older, { attemptId: id, record, ...(mainRun ? { run: mainRun } : {}), ...(cur.requestDigest ? { requestDigest: cur.requestDigest } : {}) }].slice(-PEER_RESULTS_KEPT);
-    this.persistPeerState();
+    if (this.persistPeerState()) this.noteNamedFlakes(record);
     this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
     // Why it went red, in THIS machine's audit log. The coordinator imports only the record, so
     // until now a peer failure named no file on either machine: "unit 65,816 passed / 0 failed,
@@ -4554,6 +4585,7 @@ export class LocalVerifyService {
       protectedList: this.cfg.protectedList, extraHarnessGlobs: this.cfg.extraHarnessGlobs, baseEnv: this.cfg.baseEnv,
       // PR verifies: an isolation re-run needs this machine's last green main record.
       ...(entry.kind === 'main' ? {} : { isolation: this.childIsolation(entry) }),
+      namedFlakeRetry: this.namedFlakeRetryInput(),
       // PR verifies: stop the other lanes once one lane has a failure its re-run did not clear.
       ...(entry.kind !== 'main' && this.failFastOn() ? { failFast: true } : {}),
       ...(entry.kind !== 'main' ? { preflightMode: replay || entry.preflightBypassRetry ? 'off' as const : this.preflightMode() } : {}),
@@ -6193,7 +6225,38 @@ export class LocalVerifyService {
       this.flakySignalled.add(key);
       this.signal(key, base);
     }
-    if (opts.signal !== false) this.writeFlakyHistory(hist);
+    if (opts.signal !== false) {
+      this.writeFlakyHistory(hist);
+      this.noteNamedFlakes(record);
+    }
+  }
+
+  /** Only this machine's own completed named reruns can inform its quarantine. */
+  private noteNamedFlakes(record: LocalVerifyRecord): void {
+    const observed = record.flakyRetried?.filter((retry) => retry.namedRetry === true) ?? [];
+    if (record.machineId !== this.cfg.machineId || observed.length === 0) return;
+    this.audit({ event: 'named-flake-retry-result', pr: record.pr, headSha: record.headSha, recovered: record.outcome === 'success' });
+    const history = this.readFlakyHistory();
+    if (history.unreadable) return;
+    const now = this.now();
+    const rows = new Map((history.named ?? []).map((row) => [`${row.file}\0${row.test}`, row]));
+    for (const retry of observed) {
+      for (const test of retry.failedTests ?? []) {
+        const key = `${retry.file}\0${test}`;
+        const row = rows.get(key) ?? { file: retry.file, test, owner: NAMED_FLAKE_OWNER, seen: [], quarantinedAt: null };
+        row.seen = [...new Set([...row.seen, record.finishedAt])]
+          .filter((at) => now - Date.parse(at) <= FLAKY_REPEAT.windowMs).slice(-FLAKY_REPEAT.keep);
+        const disposition = decideFlakyEscalation({ seen: row.seen, escalatedAt: row.quarantinedAt }, now);
+        if (disposition.escalate) {
+          row.quarantinedAt = new Date(now).toISOString();
+          this.audit({ event: 'named-flake-quarantined', file: row.file, test, owner: row.owner, count: disposition.count, headSha: record.headSha });
+        }
+        rows.delete(key);
+        rows.set(key, row);
+      }
+    }
+    history.named = [...rows.values()].slice(-NAMED_FLAKE_HISTORY_LIMIT);
+    this.writeFlakyHistory(history);
   }
 
   /**
@@ -6298,16 +6361,27 @@ export class LocalVerifyService {
   private readFlakyHistory(): FlakyHistory {
     try {
       const o = JSON.parse(fs.readFileSync(this.flakyHistoryPath, 'utf-8')) as Partial<FlakyHistory>;
-      if (o && o.v === 1 && o.files && typeof o.files === 'object') return { v: 1, files: o.files, greenMain: o.greenMain ?? null };
-    } catch { /* @silent-fallback-ok: no history yet */ }
-    return { v: 1, files: {}, greenMain: null };
+      if (o && o.v === 1 && o.files && typeof o.files === 'object') {
+        if (o.named !== undefined && (!Array.isArray(o.named) || !o.named.every((row) => row
+          && typeof row.file === 'string' && typeof row.test === 'string' && typeof row.owner === 'string'
+          && Array.isArray(row.seen) && row.seen.every((at) => typeof at === 'string' && Number.isFinite(Date.parse(at)))
+          && (row.quarantinedAt === null || (typeof row.quarantinedAt === 'string' && Number.isFinite(Date.parse(row.quarantinedAt))))))) {
+          return { v: 1, files: o.files, greenMain: o.greenMain ?? null, unreadable: true };
+        }
+        return { v: 1, files: o.files, greenMain: o.greenMain ?? null, ...(o.named ? { named: o.named } : {}) };
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { v: 1, files: {}, greenMain: null };
+    }
+    return { v: 1, files: {}, greenMain: null, unreadable: true };
   }
 
   private writeFlakyHistory(h: FlakyHistory): void {
+    if (h.unreadable) return;
     try {
       // Bounded: newest 500 files.
       const entries = Object.entries(h.files).sort(([, a], [, b]) => ((a.seen.at(-1) ?? '') < (b.seen.at(-1) ?? '') ? 1 : -1)).slice(0, 500);
-      const out: FlakyHistory = { v: 1, files: Object.fromEntries(entries), greenMain: h.greenMain };
+      const out: FlakyHistory = { v: 1, files: Object.fromEntries(entries), greenMain: h.greenMain, ...(h.named ? { named: h.named } : {}) };
       fs.mkdirSync(this.lvStateDir, { recursive: true });
       const tmp = this.flakyHistoryPath + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(out)); /* state-registry: local-verify-flaky */

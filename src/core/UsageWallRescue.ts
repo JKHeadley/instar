@@ -40,10 +40,12 @@ import {
   type SpawnPlacementContext,
   type WindowAwareDeps,
 } from './windowAwarePlacement.js';
+import { selectRoutineCodexAccount, type RoutineCodexPlacementConfig, type RoutineCodexPlacementContext, type RoutineCodexPlacement } from './routineCodexPlacement.js';
 import { FRESH_READING_MS, compareCodexWeeklyReset } from './windowAwareChoice.js';
 
 /** The part of `config.subscriptionPool` this module reads (read LIVE). */
 export interface WallRescueConfigView {
+  routineCodexPlacement?: RoutineCodexPlacementConfig;
   wallRescue?: { enabled?: boolean };
   autoSwapOnRateLimit?: boolean;
   pinSessionsToPool?: boolean;
@@ -737,10 +739,23 @@ export class UsageWallRescue {
    * "Walled" is the SAME predicate the rescue uses (`isKnownWalled`): a reading
    * at or above 100% in either window counts until that window's resetsAt.
    */
-  codexSpawnAccount(): { configHome: string; accountId: string } | { refused: string } | null {
+  routineCodexPlacement(context?: RoutineCodexPlacementContext): RoutineCodexPlacement {
     const cfg = this.deps.readConfig();
-    if (!wallRescueSwitchOn(cfg)) return null;
+    const decision = selectRoutineCodexAccount(this.deps.listAccounts(), cfg?.routineCodexPlacement, context,
+      { nowMs: this.now(), softThresholdPct: this.soft(cfg) });
+    if (decision.kind === 'selected' && (!wallRescueSwitchOn(cfg) || cfg?.pinSessionsToPool === false)) {
+      return { kind: 'refused', reason: 'routine-codex-placement: existing placement switches prohibit account pinning' };
+    }
+    return decision;
+  }
+
+  codexSpawnAccount(context?: RoutineCodexPlacementContext): { configHome: string; accountId: string; validUntil?: number } | { refused: string } | null {
+    const cfg = this.deps.readConfig();
     const accounts = this.deps.listAccounts();
+    const routine = this.routineCodexPlacement(context);
+    if (routine.kind === 'refused') return { refused: routine.reason };
+    if (routine.kind === 'selected') return { accountId: routine.accountId, configHome: routine.configHome, validUntil: routine.validUntil };
+    if (!wallRescueSwitchOn(cfg)) return null;
     const usable = usableAccounts(accounts, 'codex-cli');
     if (usable.length === 0) return null;
     const nowMs = this.now();
