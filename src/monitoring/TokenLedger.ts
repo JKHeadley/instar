@@ -16,6 +16,7 @@ import Database from 'better-sqlite3';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import type { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import fs from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Worker } from 'node:worker_threads';
@@ -47,12 +48,16 @@ function computeHeadHash(filePath: string, size: number): string {
   try {
     fd = fs.openSync(filePath, 'r');
     fs.readSync(fd, buf, 0, len, 0);
-    return crypto.createHash('sha256').update(buf.slice(0, len)).digest('hex').slice(0, 16);
+    return fingerprintHead(buf);
   } catch {
     return 'unreadable';
   } finally {
     if (fd != null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only fd; nothing to recover */ }
   }
+}
+
+function fingerprintHead(bytes: Buffer): string {
+  return crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 }
 
 const TOOL_HASH_SALT_KEY = 'tool-input-hash-salt';
@@ -557,6 +562,7 @@ export class TokenLedger {
   private retentionMaxAgeMs: number;
   private yieldEveryNFiles: number;
   private asyncYieldFn: () => Promise<void>;
+  private claudeScanInFlight: Promise<ScanAllResult> | null = null;
   private codexScanTimeoutMs: number;
   /** Background attribution-backfill timer (async strategy); cleared on close(). */
   private attributionBackfillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1036,14 +1042,45 @@ export class TokenLedger {
     }
     if (!stat.isFile()) return { inserted: 0, skipped: 0 };
 
+    return this.ingestFileSnapshot(filePath, stat, computeHeadHash(filePath, stat.size));
+  }
+
+  /** Scheduled scans fingerprint the same descriptor they use to ingest a changed file. */
+  private async ingestFileAsync(filePath: string, ageCutoff: number): Promise<IngestFileResult | null> {
+    let handle: FileHandle;
+    try {
+      handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    } catch {
+      return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
+    }
+    try {
+      let stat: fs.Stats;
+      let headHash = 'empty';
+      try {
+        stat = await handle.stat();
+        if (this.closed || (ageCutoff > 0 && stat.mtimeMs < ageCutoff)) return null;
+        if (!stat.isFile()) return { inserted: 0, skipped: 0 };
+        const head = Buffer.alloc(Math.min(stat.size, 256));
+        if (head.length > 0) {
+          const { bytesRead } = await handle.read(head, 0, head.length, 0);
+          // The file changed during the read. Retain the previous checkpoint.
+          if (bytesRead !== head.length) return { inserted: 0, skipped: 0 };
+          headHash = fingerprintHead(head);
+        }
+      } catch {
+        return ageCutoff > 0 ? null : { inserted: 0, skipped: 0 };
+      }
+      if (this.closed) return null;
+      return this.ingestFileSnapshot(filePath, stat, headHash, handle.fd);
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  private ingestFileSnapshot(filePath: string, stat: fs.Stats, headHash: string, borrowedFd?: number): IngestFileResult {
     const prev = this.stmts.getOffset.get(filePath) as
       | { offset: number; inode: number | null; size: number | null; head_hash: string | null }
       | undefined;
-
-    // Compute a small content fingerprint (first 256 bytes) to detect rotation
-    // even when the OS reuses the same inode number on unlink+recreate (Linux).
-    const headHash = computeHeadHash(filePath, stat.size);
-
     let startOffset = 0;
     const sameFile = prev
       && prev.inode === stat.ino
@@ -1077,7 +1114,7 @@ export class TokenLedger {
     let bytesRead = 0;
     let consumedLine = false;
     let pos = startOffset;
-    const fd = fs.openSync(filePath, 'r');
+    const fd = borrowedFd ?? fs.openSync(filePath, 'r');
     try {
       const chunkSize = 64 * 1024;
       const buf = Buffer.alloc(chunkSize);
@@ -1132,7 +1169,7 @@ export class TokenLedger {
       }
       void txn;
     } finally {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
+      if (borrowedFd === undefined) try { fs.closeSync(fd); } catch { /* ignore */ }
     }
 
     return { inserted, skipped, bytesRead, complete: pos >= stat.size };
@@ -1148,6 +1185,7 @@ export class TokenLedger {
    * responsive on agents with large JSONL histories.
    */
   scanAll(): ScanAllResult {
+    if (this.claudeScanInFlight) return { filesScanned: 0, inserted: 0 };
     return this.scanInternal({ yieldFn: null });
   }
 
@@ -1157,9 +1195,14 @@ export class TokenLedger {
    * the event loop and stall HTTP / health-check traffic.
    */
   async scanAllAsync(): Promise<ScanAllResult> {
-    return this.scanInternal({
-      yieldFn: this.asyncYieldFn,
-    });
+    if (this.claudeScanInFlight) return this.claudeScanInFlight;
+    const scan = this.scanInternal({ yieldFn: this.asyncYieldFn });
+    this.claudeScanInFlight = scan;
+    try {
+      return await scan;
+    } finally {
+      this.claudeScanInFlight = null;
+    }
   }
 
   /**
@@ -1245,7 +1288,7 @@ export class TokenLedger {
     });
   }
 
-  private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult;
+  private scanInternal(opts: { yieldFn: null }): ScanAllResult;
   private scanInternal(opts: { yieldFn: () => Promise<void> }): Promise<ScanAllResult>;
   private scanInternal(opts: { yieldFn: (() => Promise<void>) | null }): ScanAllResult | Promise<ScanAllResult> {
     const projectDirs = this.listProjectDirs();
@@ -1315,8 +1358,12 @@ export class TokenLedger {
       while (this.scanCursor.fileIdx < files.length && filesScanned < this.maxFilesPerScan && bytes < this.maxBytesPerScan) {
         if (this.closed) return { filesScanned, inserted };
         const fp = files[this.scanCursor.fileIdx];
-        if (!this.shouldScanFile(fp, ageCutoff)) { this.scanCursor.fileIdx++; continue; }
-        const r = this.ingestFile(fp);
+        const r = await this.ingestFileAsync(fp, ageCutoff);
+        if (r === null) {
+          if (this.closed) return { filesScanned, inserted };
+          this.scanCursor.fileIdx++;
+          continue;
+        }
         // A file cut by the per-call cap keeps the cursor: the next call resumes it.
         if (r.complete !== false) this.scanCursor.fileIdx++;
         filesScanned++;

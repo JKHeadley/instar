@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-27T15:34:21.575Z",
+  "slug": "token-ledger-async-head-read",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/TokenLedger.ts matches token handling"
+  ],
+  "belowFloor": true,
+  "files": 1,
+  "loc": 75,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/TokenLedger.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 14
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The scheduled legacy Claude scan called the synchronous fingerprint helper before checking each offset. The Laptop live CPU profile directly sampled that path for 1.518 seconds."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
