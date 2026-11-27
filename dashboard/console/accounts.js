@@ -148,8 +148,9 @@ export async function renderAccounts(main, ctx) {
     const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': machineGroup ? `a:${encodeURIComponent(machineGroup)}:${a.id}` : `a:${a.id}` },
       el('span', { class: 'acct-name' }, document.createTextNode(a.name), el('span', { class: 'acct-kind', text: frameworkName(a.framework) }), a.inUse && !machineGroup ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
       el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
-      wins,
+      wins ?? el('span', { class: 'acct-bar', 'aria-hidden': 'true' }),
       !wins ? el('span', { class: 'acct-line', text: a.line }) : null,
+      !wins && a.lastCheckAge ? el('span', { class: 'acct-line', text: `Last checked ${a.lastCheckAge}` }) : null,
       a.stale ? el('span', { class: 'acct-line', text: `Some usage data is from ${a.readingAge}` }) : null,
       repairNote ? el('span', { class: 'acct-line', text: repairNote }) : null);
     row.addEventListener('click', () => openAccount(a, currentVisit(), page.needs));
