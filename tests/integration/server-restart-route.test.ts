@@ -7,6 +7,7 @@
  * hand-wrote state/restart-requested.json with no requester; the restart showed as
  * "requested by undefined". The route refuses a nameless request.
  */
+import { markRestartAdmissionTimeout } from '../../src/core/plannedRestartAdmissionTimeout.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -14,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type express from 'express';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { ensureLifelineIngressSecret, LIFELINE_SECRET_HEADER } from '../../src/core/LifelineIngressSecret.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
@@ -45,6 +47,7 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     } as unknown as InstarConfig;
     server = new AgentServer({
       config,
+      plannedRestartLeaseAdmission: request => request.requestedBy === 'fixture' ? 'ready' : 'wait',
       sessionManager: { listRunningSessions: () => [], getSession: () => null, getCachedRunningSessions: () => ({ count: 0, sessions: [] }) } as never,
       state: new StateManager(stateDir),
     });
@@ -57,6 +60,19 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
   });
 
   const post = (body: unknown) => request(app).post('/server/restart').set('Authorization', `Bearer ${TOKEN}`).send(body as object);
+
+  it('requires bearer and local Lifeline proof for read-only restart admission', async () => {
+    const secret = ensureLifelineIngressSecret(stateDir);
+    const body = { requestedBy: 'fixture', requestedAt: new Date().toISOString() };
+    const endpoint = '/internal/planned-restart-lease-admission';
+    expect((await request(app).post(endpoint).set(LIFELINE_SECRET_HEADER, secret).send(body)).status).toBe(401);
+    expect((await request(app).post(endpoint).set('Authorization', `Bearer ${TOKEN}`).send(body)).status).toBe(403);
+    const accepted = await request(app).post(endpoint).set('Authorization', `Bearer ${TOKEN}`)
+      .set(LIFELINE_SECRET_HEADER, secret).send(body);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body).toEqual({ ...body, admission: 'ready' });
+    expect(fs.existsSync(flagPath())).toBe(false);
+  });
 
   it('requires the bearer token', async () => {
     const res = await request(app).post('/server/restart').send({ requestedBy: 'x', reason: 'y' });
@@ -90,6 +106,21 @@ describe('POST /server/restart + /health bootReadiness (integration)', () => {
     expect(res.status).toBe(202);
     expect(res.body.alreadyPending).toEqual({ kind: 'update', targetVersion: '9.9.9' });
     expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'auto-updater', targetVersion: '9.9.9' });
+    SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
+  });
+
+  it('accepts a fresh restart after the previous update timed out awaiting lease confirmation', async () => {
+    const requestedAt = new Date(Date.now() - 16 * 60_000).toISOString();
+    const raw = JSON.stringify({
+      requestedAt, requestedBy: 'auto-updater', targetVersion: '9.9.9',
+      plannedRestart: true, expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    fs.writeFileSync(flagPath(), raw);
+    expect(markRestartAdmissionTimeout(flagPath(), raw, requestedAt)).toBe(true);
+    const res = await post({ requestedBy: 'tester', reason: 'retry the restart' });
+    expect(res.status).toBe(202);
+    expect(res.body.alreadyPending).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(flagPath(), 'utf8'))).toMatchObject({ requestedBy: 'tester' });
     SafeFsExecutor.safeUnlinkSync(flagPath(), { operation: 'tests/integration/server-restart-route.test.ts' });
   });
 
