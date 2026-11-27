@@ -62,3 +62,24 @@ The parser fixture covers the third peer, overflow, duplicates, self, and malfor
 The coordinator reads `monitoring.localVerify.queueCap` live. It accepts integers from 10 through 30 and defaults to 10. Lowering the limit slows new admissions while the existing queue drains. Entries already admitted stay eligible for restoration after a restart.
 
 Drain the queue to the old admission limit before reverting to a binary with the fixed restore limit. The independent queue-cap review checked admission, restore, and the existing overflow paths.
+
+The invalid-cap audit entry records the setting name and the supported bounds
+once per invalid episode. It omits the raw configuration value and leaves
+admission at the usual default. The awareness registry distributes the
+capacity note to new and existing agents. The legacy peer sentence is
+corrected in place so older instructions do not retain an obsolete limit.
+
+## Independent review
+
+The Chief of Staff's standing reviewer concurred on draft #3987 at
+`d06812c1528e4ac423730d28984bc0de1c6f1781` and requested boundary and
+live overflow coverage, explicit audit evidence and registry awareness.
+That receipt is scoped to the reviewed head. The revised head requires a
+fresh independent trace covering LocalVerifyService.ts, localVerifyWiring.ts
+and peer.ts before it becomes merge eligible.
+
+The independent queue capacity reviewer concurred with the revised follow-up.
+The review verified that the dispatch fixture now gives the service all four
+entries, the audit re-arms after the setting returns to its default, and the
+migration preserves operator text. The peer capacity reviewer independently
+concurred on the underlying peer limit change and its reservation safeguards.

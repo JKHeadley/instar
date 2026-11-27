@@ -362,12 +362,14 @@ function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: bool
 // ── coordinator ────────────────────────────────────────────────────────
 
 describe('coordinator — dispatch', () => {
-  it('reserves distinct runs on three configured peers while the coordinator slot is occupied', async () => {
-    const c = coordinator({ peerIds: ['peer1', 'peer2', 'peer3'] });
+  it('reserves distinct runs on three peers and leaves a fourth configured peer unused', async () => {
+    const c = coordinator({ peerIds: ['peer1', 'peer2', 'peer3', 'peer4'] });
+    c.views[4] = view({ headRefOid: sha('f') });
     c.setForeignHolders([9001]);
     await c.svc.request(1);
     await c.svc.request(2);
     await c.svc.request(3);
+    expect(await c.svc.request(4)).toMatchObject({ ok: true });
     await c.runTimers();
     expect(c.spawned).toHaveLength(0);
     expect(c.peer.runs().map((r) => r.pr)).toEqual([1, 2, 3]);

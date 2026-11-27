@@ -678,7 +678,7 @@ export function wireLocalVerifySwitches(
   svc.setPreflightMode(() => liveConfig.get<unknown>('monitoring.localVerify.preflightMode', 'off'));
   // Off unless set: an import-related failed file is refused its re-run, as before (docs/specs/local-verify-import-related-rerun.md).
   svc.setImportRelatedRerunEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.importRelatedRerun', false) === true);
-  svc.setQueueCap?.(() => liveConfig.get<unknown>('monitoring.localVerify.queueCap', null));
+  svc.setQueueCap?.(() => liveConfig.get<unknown>('monitoring.localVerify.queueCap', undefined));
   svc.setNamedFlakeRetryEnabled?.(() => liveConfig.get<boolean>('monitoring.localVerify.namedFlakeRetry', false) === true);
   // Off unless set: no hold or front route answers and stored choices are not applied (docs/specs/local-verify-queue-controls.md).
   svc.setQueueControlsEnabled(() => liveConfig.get<boolean>('monitoring.localVerify.queueControls', false) === true);

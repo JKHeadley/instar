@@ -1039,6 +1039,7 @@ export class LocalVerifyService {
   /** `monitoring.localVerify.importRelatedRerun`, read live when a run starts or is dispatched. Absent ⇒ off. */
   private importRelatedRerunEnabled: (() => boolean) | null = null;
   private queueCapSetting: (() => unknown) | null = null;
+  private warnedInvalidQueueCap = false;
   private namedFlakeRetryEnabled: (() => boolean) | null = null;
   private runLogsSweptAt = 0;
   /** `monitoring.localVerify.likelyFailingFirst`, read live at the start of each verify this machine runs. Absent ⇒ off. */
@@ -1252,9 +1253,20 @@ export class LocalVerifyService {
 
   private queueCap(): number {
     const value = this.queueCapSetting?.();
-    return typeof value === 'number' && Number.isInteger(value)
-      && value >= LOCAL_VERIFY_LIMITS.queueCap && value <= MAX_QUEUE_CAP
-      ? value : LOCAL_VERIFY_LIMITS.queueCap;
+    const valid = typeof value === 'number' && Number.isInteger(value)
+      && value >= LOCAL_VERIFY_LIMITS.queueCap && value <= MAX_QUEUE_CAP;
+    if (value === undefined || valid) {
+      this.warnedInvalidQueueCap = false;
+    } else if (!this.warnedInvalidQueueCap) {
+      this.warnedInvalidQueueCap = true;
+      this.audit({
+        event: 'invalid-queue-cap',
+        setting: 'monitoring.localVerify.queueCap',
+        fallback: LOCAL_VERIFY_LIMITS.queueCap,
+        maximum: MAX_QUEUE_CAP,
+      });
+    }
+    return valid ? value : LOCAL_VERIFY_LIMITS.queueCap;
   }
 
   setNamedFlakeRetryEnabled(fn: () => boolean): void { this.namedFlakeRetryEnabled = fn; }

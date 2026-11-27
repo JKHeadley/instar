@@ -748,7 +748,7 @@ export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: 
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
  */
-export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue is full (10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
+export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue reaches its configured cap (default 10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
 
 /**
  * Local Verify fail-fast — the awareness line appended to an existing CLAUDE.md's Local Verify
@@ -14082,16 +14082,21 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
     }
-    if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.queueCap')) {
-      content += '\n- Local Verify admission depth uses `monitoring.localVerify.queueCap`. It reads integers from 10 through 30 live and defaults to 10. Lowering the limit lets admitted work drain.\n';
-      patched = true;
-      result.upgraded.push('CLAUDE.md: documented the Local Verify admission limit');
-    }
+
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+    }
+    const updatedOverflowCapacity = content.replace(
+      /^(- Local Verify throughput overflow:[^\n]*?)when the queue is full \(10\), up to 5 extra entries/gm,
+      '$1when the queue reaches its configured cap (default 10), up to 5 extra entries',
+    );
+    if (updatedOverflowCapacity !== content) {
+      content = updatedOverflowCapacity;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified the default Local Verify admission limit');
     }
     // local-verify fail-fast: a PR verify stops its other lanes once one lane has a real failure.
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.failFast')) {

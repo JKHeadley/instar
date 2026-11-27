@@ -120,6 +120,43 @@ function views(...prs: number[]): Record<number, PrView> {
 }
 
 describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
+  it.each([31, 9, 0, -1, 10.5, '30'])('falls back and audits invalid cap %j once', async (cap) => {
+    const s = setup({ views: views(50, 60) });
+    s.svc.setQueueCap(() => cap);
+    await fill(s);
+    for (const pr of [50, 60]) {
+      expect(await s.svc.request(pr)).toMatchObject({ ok: false, code: 'queue-full' });
+    }
+    expect(s.audit().filter(({ event }) => event === 'invalid-queue-cap')).toEqual([
+      expect.objectContaining({ fallback: CAP, maximum: 30 }),
+    ]);
+  });
+
+  it('audits again after an invalid setting returns to its default', async () => {
+    const s = setup({ views: views(50, 60, 70) });
+    let cap: number | undefined = 31;
+    s.svc.setQueueCap(() => cap);
+    await fill(s);
+    expect(await s.svc.request(50)).toMatchObject({ ok: false, code: 'queue-full' });
+    cap = undefined;
+    expect(await s.svc.request(60)).toMatchObject({ ok: false, code: 'queue-full' });
+    cap = 31;
+    expect(await s.svc.request(70)).toMatchObject({ ok: false, code: 'queue-full' });
+    expect(s.audit().filter(({ event }) => event === 'invalid-queue-cap')).toHaveLength(2);
+  });
+
+  it('admits up to the configured maximum of thirty', async () => {
+    const extra = Array.from({ length: 21 }, (_, index) => 50 + index);
+    const s = setup({ views: views(...extra) });
+    s.svc.setQueueCap(() => 30);
+    await fill(s);
+    for (const pr of extra.slice(0, 20)) {
+      expect(await s.svc.request(pr)).toMatchObject({ ok: true, status: 'queued' });
+    }
+    expect(s.prQueue()).toHaveLength(30);
+    expect(await s.svc.request(70)).toMatchObject({ ok: false, code: 'queue-full' });
+  });
+
   it('reads an increased cap live and drains excess admissions after the cap is lowered', async () => {
     const prViews = views(50, 60, 70);
     const s = setup({ views: prViews });
