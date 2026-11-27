@@ -14255,7 +14255,12 @@ export function createRoutes(ctx: RouteContext): Router {
       const eligible = pending.filter(p => {
         try { return crossTopicEligibilityFor(Number(gate.key), p.target).ok
           && profileProposalPlacement(ctx.sessionOwnershipRegistry, ctx.meshSelfId, gate.key, p.target, !!ctx.coordinator?.enabled) !== null; }
-        catch { return false; }
+        catch (err) {
+          // @silent-fallback-ok: fails CLOSED. A proposal whose eligibility cannot be checked
+          // is left out of the clarification list (never offered); the reason is logged.
+          console.warn(`[topic-profile] could not check a pending change for clarification: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        }
       });
       const text = eligible.length === pending.length && eligible.length
         ? `Which change do you mean?\n${eligible.map(p => `${p.core.split('\n')[0]} Request ${p.id}.`).join('\n')}`
@@ -14368,6 +14373,9 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({ ok: true, requestId: attempt.request.id, targetTopicId: gate.key, echo: attempt.text,
         reminder: !attempt.created, superseded: false, ...(confirmIn !== null ? { confirmIn } : {}) });
     } catch (err) {
+      // @silent-fallback-ok: not silent. The attempt is completed without a result, the
+      // confirm slot is disarmed, and the caller gets a 502 naming the delivery failure.
+      console.warn(`[topic-profile] change question delivery failed: ${err instanceof Error ? err.message : String(err)}`);
       proposals.complete(String(echoTopic), attempt.request.id, attempt.attemptId, null);
       ctx.topicProfile.confirmSlots.disarm(String(echoTopic));
       res.status(502).json({ ok: false, error: `Question delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });

@@ -17,5 +17,10 @@ export function profileProposalPlacement(
       return { key, epoch: r.ownershipEpoch, owner: r.ownerMachineId, status: r.status };
     });
     return JSON.stringify(records);
-  } catch { return null; /* Unknown placement cannot authorize a proposal. */ }
+  } catch (err) {
+    // @silent-fallback-ok: fails CLOSED. Null means "placement unknown", which cannot
+    // authorize a proposal; the reason is logged rather than hidden.
+    console.warn(`[topic-profile] proposal placement unreadable, refusing: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }

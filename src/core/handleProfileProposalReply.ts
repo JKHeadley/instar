@@ -41,8 +41,10 @@ export async function handleAndAcknowledgeProfileProposalReply(
   try {
     await acknowledge(outcome.result.reply);
     return { ...outcome, acknowledgment: 'delivered' };
-  } catch {
-    // A delivery failure must not reject/replace the already committed result.
+  } catch (err) {
+    // @silent-fallback-ok: the result is already committed; a failed acknowledgment is
+    // reported to the caller as `acknowledgment: 'failed'` and logged, never swallowed.
+    console.warn(`[topic-profile] proposal reply acknowledgment failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ...outcome, acknowledgment: 'failed' };
   }
 }

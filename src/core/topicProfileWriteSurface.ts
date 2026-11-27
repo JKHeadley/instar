@@ -373,7 +373,13 @@ export class TopicProfileWriteSurface {
 
     if (req.confirmation && !req.confirmation.eligible()) {
       const reply = 'The settings were saved. I did not start or restart the conversation because I could no longer verify permission to do that.';
-      if (!req.discloseInReply) await this.deps.disclose(topicKey, reply).catch(() => {});
+      if (!req.discloseInReply) {
+        await this.deps.disclose(topicKey, reply).catch((err: unknown) => {
+          // @silent-fallback-ok: the settings are already saved and the reply is also returned
+          // to the caller; a failed disclosure is logged and changes no outcome.
+          console.warn(`[topic-profile] could not disclose the not-restarted notice: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
       return { ok: true, reply, appliedLive: liveFields, shadowed: shadowFields };
     }
 
