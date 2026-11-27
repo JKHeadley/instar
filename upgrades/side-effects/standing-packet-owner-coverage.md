@@ -37,3 +37,7 @@ The recovery hook continues to ask the local authenticated server to verify the 
 The recovery and pilot specifications name the existing layer maturation record. The pilot retains its separate approval for displaying a specific source in a specific conversation. The tests use local fixture data and an ephemeral loopback authority. Production storage and replication follow the existing layer path. Rolling back these recovery-owned verification changes requires no stored-state repair. The attached registry changes have their own side-effects review and owner.
 
 Independent review concurred with the recovery repair. The review checked route classification, the exact authenticated request in the generated-hook fixture, authority refusal, and both references to the shipped layer evidence. The registry source is the canonical repair at 9b16d1babcb357433c060e4b2812d8d652c18f0e.
+
+## Capability classification audit
+
+The merge commit combined the tested changes but did not generate a fresh decision record for the capability index. The separate audited commit clarifies that the internal endpoint is read-only and returns only a freshness verdict. It preserves the same route, authentication, packet comparison, fallback and project settings.
