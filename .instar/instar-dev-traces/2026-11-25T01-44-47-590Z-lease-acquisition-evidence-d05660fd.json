@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lease-acquisition-evidence",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T01:44:47.590Z",
+  "artifactPath": "upgrades/side-effects/lease-acquisition-evidence.md",
+  "artifactSha256": "07dde29345f756cebfaab32ae2a9df231536c916cd3d035738ba8bb809a35128",
+  "coveredFiles": [
+    "docs/specs/lease-acquisition-evidence.eli16.md",
+    "src/core/LeaseCoordinator.ts",
+    "tests/unit/LeaseCoordinator-bootClaimSafety.test.ts",
+    "upgrades/next/lease-acquisition-evidence.md",
+    "upgrades/side-effects/lease-acquisition-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds one bounded evidence record after ordinary claim acceptance without changing election authority.",
+  "eli16Path": "docs/specs/lease-acquisition-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-acquisition-evidence.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

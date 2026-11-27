@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-25T02:17:22.946Z",
+  "slug": "post-restart-renewal-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 50,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MultiMachineCoordinator.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

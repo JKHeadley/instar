@@ -348,6 +348,7 @@ export class LeaseCoordinator {
   private cappedRequest: { requestedAt: string | null; requestedBy: string } | null = null;
   /** planned-restart-keeps-lead §2 — the window lease found at construction, awaiting its verdict. */
   private bootReclaim: BootReclaim | null = null;
+  private postRestartRenewals: { epoch: number; reclaimedAtMono: number; remaining: number } | null = null;
   private reclaimWaiters: Array<(v: ReclaimVerdict) => void> = [];
   /** Peers logged once as alive-and-unknown (every route refused on this machine's side). */
   private reclaimUnknownLogged = new Set<string>();
@@ -1588,6 +1589,22 @@ export class LeaseCoordinator {
         ) {
           this.peerTakeoverAuthorizedEpoch = candidate.epoch;
         }
+        const prior = view.lease;
+        const priorObservedAt = prior ? this.freshObservedMonoMs.get(prior.holder) : undefined;
+        featureEvidence.record('multiMachine.leaseAcquisitionEvidence', {
+          kind: 'fired',
+          reason: 'lease acquisition accepted',
+          context: {
+            epoch: candidate.epoch,
+            previousEpoch: view.epoch,
+            previousHolder: prior?.holder ?? null,
+            previousExpiresAt: prior?.expiresAt ?? null,
+            previousReleased: prior?.released ?? false,
+            previousNonce: prior?.nonce ?? null,
+            previousObservationAgeMs: priorObservedAt === undefined ? null : Math.max(0, this.monotonicNow() - priorObservedAt),
+            decision: decision.reason,
+          },
+        });
         await this.broadcast(candidate);
         this.markRenewOk();
         this.emitEpoch(candidate.epoch);
@@ -1803,6 +1820,7 @@ export class LeaseCoordinator {
       new Date(this.now() + (pendingWindow ?? this.fl.ttlMs)).toISOString(),
       this.nextNonce(),
     );
+    const attempt = pendingWindow === null ? this.tracePostRestartRenewal(view.lease, renewed) : null;
     if (pendingWindow !== null) { this.persistPending(renewed, false); if (this.episode) this.noteFirstExtension(this.episode, view.epoch); }
 
     // Medium-agnostic renewal requirement: the renewal must be CONFIRMED over a
@@ -1823,6 +1841,14 @@ export class LeaseCoordinator {
       if (this.episode !== episodeAtSign) return this.holdsLease();
     } else {
       confirmed = this.d.store.refresh(renewed);
+    }
+
+    if (attempt !== null) {
+      featureEvidence.record('multiMachine.postRestartRenewal', {
+        kind: confirmed ? 'fired' : 'held',
+        reason: confirmed ? 'ordinary renewal confirmed' : 'ordinary renewal unconfirmed',
+        context: { epoch: renewed.epoch, nonce: renewed.nonce, attempt },
+      });
     }
 
     if (confirmed) {
@@ -2510,11 +2536,50 @@ export class LeaseCoordinator {
     return false;
   }
 
+  notePostRestartRenewalSkipped(lease: LeaseRecord): void {
+    const trace = this.postRestartRenewals;
+    if (!trace || trace.epoch !== lease.epoch || trace.remaining === 0) return;
+    this.postRestartRenewals = null;
+    featureEvidence.record('multiMachine.postRestartRenewal', {
+      kind: 'held',
+      reason: 'ordinary renewal skipped after lease lapse',
+      context: {
+        epoch: lease.epoch, nonce: lease.nonce, expiresAt: lease.expiresAt,
+        sinceReclaimMs: Math.max(0, this.monotonicNow() - trace.reclaimedAtMono),
+      },
+    });
+  }
+
+  private tracePostRestartRenewal(previous: LeaseRecord, proposed: LeaseRecord): number | null {
+    const trace = this.postRestartRenewals;
+    if (!trace || trace.epoch !== proposed.epoch || trace.remaining === 0) return null;
+    const attempt = 4 - trace.remaining;
+    trace.remaining -= 1;
+    featureEvidence.record('multiMachine.postRestartRenewal', {
+      kind: 'fired',
+      reason: 'ordinary renewal started',
+      context: {
+        epoch: proposed.epoch, nonce: proposed.nonce, attempt,
+        sinceReclaimMs: Math.max(0, this.monotonicNow() - trace.reclaimedAtMono),
+        previousExpiresAt: previous.expiresAt, proposedExpiresAt: proposed.expiresAt,
+      },
+    });
+    return attempt;
+  }
+
   /** §2 steps 4, 6 and 7 — measure, record, clean up, and settle the waiters. */
   private finishReclaim(verdict: 'confirmed' | 'superseded' | 'survivor-hold' | 'lapsed', basis: 'peer-confirmed' | 'survivor-hold' | 'none', renewed: LeaseRecord | null, peers?: { known: string[]; answered: string[] }): void {
     const r = this.bootReclaim;
     if (!r || r.verdict !== null) return;
     r.verdict = verdict;
+    if (verdict === 'confirmed' && renewed) {
+      this.postRestartRenewals = { epoch: renewed.epoch, reclaimedAtMono: this.monotonicNow(), remaining: 3 };
+      featureEvidence.record('multiMachine.postRestartRenewal', {
+        kind: 'fired',
+        reason: 'planned reclaim confirmed',
+        context: { epoch: renewed.epoch, nonce: renewed.nonce, expiresAt: renewed.expiresAt, ttlMs: this.fl.ttlMs },
+      });
+    }
     const meta = r.file?.meta ?? null;
     const consumption = this.d.findConsumption && meta ? this.d.findConsumption({ requestedAt: meta.requestedAt, sinceMs: Date.parse(meta.episodeOpenedAt) || 0 }).record : null;
     const consumptionAtMs = consumption ? Date.parse(consumption.at) : null;

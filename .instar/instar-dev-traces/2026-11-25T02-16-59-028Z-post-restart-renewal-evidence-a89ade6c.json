@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "post-restart-renewal-evidence",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-25T02:16:59.028Z",
+  "artifactPath": "upgrades/side-effects/post-restart-renewal-evidence.md",
+  "artifactSha256": "7c58b0d94f4472787feecfdc6ea518311daf44c67bdf559afbab66a8873c6ad0",
+  "coveredFiles": [
+    "docs/specs/post-restart-renewal-evidence.eli16.md",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "tests/integration/planned-restart-lease-continuity.test.ts",
+    "upgrades/next/post-restart-renewal-evidence.md",
+    "upgrades/side-effects/post-restart-renewal-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Adds bounded diagnostic events without changing lease or restart decisions.",
+  "eli16Path": "docs/specs/post-restart-renewal-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/post-restart-renewal-evidence.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
