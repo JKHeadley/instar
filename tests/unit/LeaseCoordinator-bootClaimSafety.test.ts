@@ -6,7 +6,8 @@
  *  - a non-preferred machine never claims while the preferred answers, claims only after
  *    three silent probes spanning ≥45 s, and the switch off keeps today's behaviour.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { featureEvidence } from '../../src/monitoring/FeatureEvidenceLog.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -112,6 +113,24 @@ describe('boot claim safety — rule 1: own lapsed lease asks first', () => {
     expect(r.tunnel.pulls).toBe(0);
     expect(r.lc.currentEpoch()).toBe(42);
   });
+  it('records the previous lease used by a successful epoch claim', async () => {
+    const r = rig({ self: 'laptop', peers: ['studio'], ownLease: wall => fl('studio').signLease(23815, new Date(wall - 2 * TTL).toISOString(), new Date(wall - TTL).toISOString(), 3), safety: null });
+    const record = vi.spyOn(featureEvidence, 'record').mockReturnValue(null);
+    try {
+      expect(await r.lc.acquireIfEligible()).toBe(true);
+      expect(record).toHaveBeenCalledWith('multiMachine.leaseAcquisitionEvidence', expect.objectContaining({
+        reason: 'lease acquisition accepted',
+        context: expect.objectContaining({
+          epoch: 23816, previousEpoch: 23815, previousHolder: 'studio',
+          previousExpiresAt: new Date(r.clock.wall - TTL).toISOString(),
+          previousNonce: 3, previousObservationAgeMs: null,
+        }),
+      }));
+    } finally {
+      record.mockRestore();
+    }
+  });
+
   it('the live holder seen through the ask is adopted, never contested', async () => {
     const r = rig({ self: 'laptop', peers: ['studio'], ownLease: ownLapsed(41) });
     r.tunnel.answers.studio = 'signed';
