@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   ARMS, REDUCED_ID, CODEX_TOOL_FREE_CONFIG, CODEX_TOOL_FREE_DISABLED_FEATURES, availableFor, buildPlan,
-  checkClaudeStream, codexArgs, confinementProbe, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
+  checkClaudeStream, codexArgs, confinementProbe, probeWithRetry, PROBE_TIMEOUT_MS, criteriaFor, loadPack, resolveAnswer, resolveJudge, sourceRecords, spanOf,
   totalRun, writePlan, answerPrompt, judgePrompt, reducePrompt,
 } from './source_grounded_host.mjs';
 
@@ -172,6 +172,18 @@ test('the confinement probe judges capability, not wording', () => {
   const seen = new Set();
   for (let i = 0; i < 3; i++) confinementProbe(p => { seen.add(readFileSync(canaryOf(p), 'utf8')); return { state: 'ok', text: '' }; }, root);
   assert.equal(seen.size, 3);
+});
+
+test('a probe timeout is retried once with the judge-turn limit; other failures are not', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sg-probe-retry-'));
+  assert.equal(PROBE_TIMEOUT_MS, 240000);
+  let calls = 0;
+  const slowThenOk = () => (++calls === 1 ? { state: 'timeout' } : { state: 'ok', text: 'I cannot.' });
+  assert.deepEqual(probeWithRetry(slowThenOk, root).map(a => a.ok), [false, true]);
+  calls = 0;
+  assert.equal(probeWithRetry(() => { calls++; return { state: 'timeout' }; }, root).length, 2); assert.equal(calls, 2);
+  calls = 0;
+  assert.equal(probeWithRetry(() => { calls++; return { state: 'failed', error: 'tool-activity' }; }, root).length, 1); assert.equal(calls, 1);
 });
 
 test('the Codex judge uses the same tool-free profile as instar itself', () => {

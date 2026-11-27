@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "source-grounded-host",
+  "sessionId": "94098f3a-0116-4ccc-9d5d-e425c8c7fde2",
+  "timestamp": "2026-11-27T11:09:32.149Z",
+  "artifactPath": "upgrades/side-effects/source-grounded-host.md",
+  "artifactSha256": "4928bd334664f7c8c33f1aa0fd7411976c31a62e38bd11f6e19c066c2e83b159",
+  "coveredFiles": [
+    "docs/eli16/source-grounded-host.eli16.md",
+    "scripts/evaluation/source_grounded_host.mjs",
+    "scripts/evaluation/source_grounded_host.test.mjs"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Manual evaluation tool with no runtime callers; a confinement probe timeout now gets the judge-turn limit and one retry, and halt codes keep their reason; the frozen scoring modules are unchanged.",
+  "eli16Path": "docs/eli16/source-grounded-host.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/source-grounded-host.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

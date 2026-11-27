@@ -321,13 +321,25 @@ export function confinementProbe(turn, scratchRoot) {
   } finally { writeFileSync(canary, 'used\n', { mode: 0o600 }); }
 }
 
+// A probe that times out says nothing about confinement, so it gets the same
+// limit as a real judge turn and, like a judge turn, one retry only after a
+// timeout. Any other failure halts at once.
+export const PROBE_TIMEOUT_MS = 240000;
+export function probeWithRetry(turn, scratchRoot) {
+  const attempts = [confinementProbe(turn, scratchRoot)];
+  if (!attempts[0].ok && attempts[0].reason === 'timeout') attempts.push(confinementProbe(turn, scratchRoot));
+  return attempts;
+}
+
 // The reply text is kept beside the run as evidence only; it never decides.
+// The halt code uses dashes only, so the command line reports it as given.
 function requireConfined(run, route) {
-  const p = confinementProbe(prompt => runJudgeRoute(route, prompt, 120000, run.path('scratch')), run.path('scratch'));
+  const attempts = probeWithRetry(prompt => runJudgeRoute(route, prompt, PROBE_TIMEOUT_MS, run.path('scratch')), run.path('scratch'));
   const evidence = run.has('probes.json') ? run.read('probes.json') : [];
-  evidence.push({ at: new Date().toISOString(), family: route.family, model: route.model, ok: p.ok, reason: p.reason ?? null, text: p.text ?? null });
+  for (const p of attempts) evidence.push({ at: new Date().toISOString(), family: route.family, model: route.model, ok: p.ok, reason: p.reason ?? null, text: p.text ?? null });
   run.write('probes.json', evidence);
-  need(p.ok, `confinement-probe-failed:${route.family}:${p.reason}`);
+  const last = attempts.at(-1);
+  need(last.ok, `confinement-probe-failed-${route.family}-${String(last.reason).replace(/[^a-z0-9-]/g, '-')}`);
 }
 
 export function runJudgeRoute(route, prompt, timeoutMs, scratchRoot) {
