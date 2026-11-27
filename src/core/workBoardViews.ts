@@ -120,7 +120,8 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const phoneOnly = extra?.phoneOnly === true;
   const appStopped = phoneOnly && svc.isStoppedAppCard(c.cardId);
   const startedAt = svc.startedAt(c.cardId);
-  const base = { agentInternal: isAgentInternalCard(c), conversationAvailable: extra?.conversationAvailable ?? !isAgentInternalCard(c), id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
+  const agentInternal = isAgentInternalCard(c);
+  const base = { agentInternal, ...(agentInternal ? { ownerAction: false } : {}), conversationAvailable: extra?.conversationAvailable ?? !agentInternal, id: c.cardId, conversationKey: c.conversationKey, status: v.status, lane, turn: turnFor(lane), started: startedAt !== null, startedAt, needLine: needLine(v, { phoneOnly, appStopped }), newestAt: new Date(c.newestRecordAt).toISOString(), ...(appStopped ? { appStopped: true } : {}) };
   if (c.redacted) {
     return { ...base, title: `Removed by ${byName(c.redacted.by, name)}`, removed: { by: byJson(c.redacted.by, name), at: c.redacted.at, note: 'The text is hidden from every read. Its bytes stay in the journal until compaction, and a backup taken earlier still holds it.' } };
   }

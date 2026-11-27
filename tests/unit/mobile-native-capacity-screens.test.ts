@@ -79,6 +79,22 @@ describe('accounts', () => {
     expect(r.accounts[0].stale).toBe(false);
   });
 
+  it('provides opaque grouping keys across accounts and leaves unknown machine identities unset', () => {
+    const result = summarizeAccounts(pool([
+      row({ machineId: 'self', machineNickname: 'Local display name' }),
+      row({ id: 'acct-b', machineNickname: 'Renamed local machine' }),
+      row({ id: 'acct-c', machineId: 'm_peer', machineNickname: 'Local display name', remote: true }),
+      row({ id: 'acct-d', machineId: undefined, remote: true }),
+    ]), { now: NOW });
+    const [first, second, peer, unknown] = result.accounts.map(a => a.machines[0]);
+    expect(first.machineKey).toMatch(/^[0-9a-f]{16}$/);
+    expect(second.machineKey).toBe(first.machineKey);
+    expect(peer.machineKey).not.toBe(first.machineKey);
+    expect(unknown.machineKey).toBeNull();
+    expect(result.accounts.every(a => a.machines[0].present === true)).toBe(true);
+    expect(JSON.stringify(result.accounts)).not.toContain('m_peer');
+  });
+
   it('stale on both sides of 60 minutes; tone at 74/75/89/90', () => {
     const one = (pct: number, minutesAgo: number) => summarizeAccounts(pool([row({ lastQuota: { fiveHour: { utilizationPct: pct, resetsAt: at(10) }, measuredAt: at(-minutesAgo) } })]), { now: NOW }).accounts[0];
     expect(one(10, 59).stale).toBe(false);
@@ -107,7 +123,7 @@ describe('accounts', () => {
     expect(topWindow(a.windows)?.label).toBe('weekly');
     expect(topWindow([])).toBeNull();
     // The pool-wide "nearly out" notice ignores the reset limit too.
-    const notices = accountNotices([{ key: 'k', name: 'Work Max', kind: 'Claude', signIn: 'signed-in', windows: a.windows, machines: [{ name: 'Studio', isSelf: true, state: 'ok', label: 'signed in' }] }], { localUnreadable: false, partial: false });
+    const notices = accountNotices([{ key: 'k', name: 'Work Max', kind: 'Claude', signIn: 'signed-in', windows: a.windows, machines: [{ name: 'Studio', isSelf: true, state: 'ok', label: 'signed in', machineKey: null, present: true }] }], { localUnreadable: false, partial: false });
     expect(notices).toEqual([]);
   });
 
@@ -143,7 +159,7 @@ describe('accounts', () => {
       row({ status: 'needs-reauth' }),
       row({ machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, status: 'needs-reauth' }),
     ]), { now: NOW, localRepairs: [{ accountId: 'acct-a', state: 'running' }, { accountId: 'other', state: 'running' }] });
-    expect(r.accounts[0].machines).toEqual([
+    expect(r.accounts[0].machines).toMatchObject([
       { name: 'Studio', isSelf: true, state: 'working', label: 'signing in now' },
       { name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in' },
     ]);
@@ -159,7 +175,7 @@ describe('accounts', () => {
       row({ machineId: 'm_peer', machineNickname: 'Mac Mini', remote: true, status: 'needs-reauth' }),
     ]);
     const running = summarizeAccounts(two(), { now: NOW, repairs: [{ accountId: 'acct-a', machineId: 'm_peer', state: 'browser-driving', updatedAt: at(-1) }] });
-    expect(running.accounts[0].machines).toEqual([
+    expect(running.accounts[0].machines).toMatchObject([
       { name: 'Studio', isSelf: true, state: 'attn', label: 'needs sign-in' },
       { name: 'Mac Mini', isSelf: false, state: 'working', label: 'signing in now' },
     ]);

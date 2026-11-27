@@ -580,13 +580,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
    * Flipping the kill-switch therefore re-opens this pre-existing
    * prompt-disclosure channel in addition to going token-blind.
    */
-  private evaluatePlain(
+  private async evaluatePlain(
     prompt: string,
     options: IntelligenceOptions | undefined,
     model: string,
     account: CodexCallAccount | null,
   ): Promise<string> {
     const scratchDir = resolveIntelligenceScratchDir();
+    if (options?.signal?.aborted || (options?.launchGuard && !(await options.launchGuard()))) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
 
     return new Promise((resolve, reject) => {
       const args = [
@@ -616,7 +617,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           : { subscriptionOnly: options?.requiredRoute !== undefined },
       );
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) {
         reject(new Error('CodexCliIntelligenceProvider: launch guard refused'));
         return;
       }
@@ -720,7 +721,9 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
         '-',
       ];
 
-      if (options?.signal?.aborted || (options?.launchGuard && !options.launchGuard())) {
+      if (options?.signal?.aborted) throw new Error('CodexCliIntelligenceProvider: launch guard refused');
+      const launchAllowed = !options?.launchGuard || await options.launchGuard();
+      if (options?.signal?.aborted || !launchAllowed) {
         throw new Error('CodexCliIntelligenceProvider: launch guard refused');
       }
       const result = await spawnCodexExecJson(this.codexPath, args, {

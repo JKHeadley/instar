@@ -69,6 +69,7 @@ export function resolveMarginMs(i: MarginInputs): number {
 export interface WindowInputs extends MarginInputs {
   ttlMs: number;
   /** Measured boots, oldest first; non-finite values are discarded; each is clamped on read. */
+  admissionMinimumMs?: number | null;
   bootSamplesMs: readonly number[];
   /** `plannedRestartLeaseContinuity.windowMs`, replacing the base when set. */
   windowMsOverride?: number | null;
@@ -106,7 +107,7 @@ export function resolveWindowMs(i: WindowInputs): WindowVerdict {
   const baseMs = override !== null && override > 0
     ? override
     : measured ? Math.max(...samples) + marginMs : 3 * i.ttlMs + marginMs;
-  const floorMs = i.ttlMs + marginMs;
+  const floorMs = Math.max(i.ttlMs + marginMs, i.admissionMinimumMs ?? 0);
   const ownN = typeof i.ownNonRenewalMissedObservations === 'number' && i.ownNonRenewalMissedObservations >= 1
     ? Math.floor(i.ownNonRenewalMissedObservations) : ASSUMED_PEER_NON_RENEWAL_OBSERVATIONS;
   const broadcast = i.broadcastDeadlineMs ?? 8_000;

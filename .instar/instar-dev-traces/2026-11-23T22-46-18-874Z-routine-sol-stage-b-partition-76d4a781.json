@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "slug": "routine-sol-stage-b-partition",
+  "sessionId": "f414bf47-4211-4e9c-8eda-ff49e33893ff",
+  "timestamp": "2026-11-23T22:46:18.874Z",
+  "artifactPath": "upgrades/side-effects/routine-sol-stage-b-partition.md",
+  "artifactSha256": "bf8998b4c0ebc4d31823b172d412193347375109038b247ec42551581ba08735",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/eli16/routine-sol-stage-b-partition.md",
+    "upgrades/next/routine-sol-stage-b-partition.md",
+    "upgrades/side-effects/routine-sol-stage-b-partition.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Explicit data-only classification of erased account/config dependency imports under the existing approved code-binding spec. All certified membership, source hashes, fingerprint and signed artifact stay unchanged; no verifier rule or runtime behavior is relaxed.",
+  "eli16Path": "upgrades/eli16/routine-sol-stage-b-partition.md",
+  "sideEffectsPath": "upgrades/side-effects/routine-sol-stage-b-partition.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "passed",
+        "verified": false
+      },
+      {
+        "name": "systematic-debugging",
+        "outcome": "passed",
+        "verified": false
+      }
+    ]
+  }
+}
