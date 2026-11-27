@@ -28,6 +28,7 @@ import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { resetLocalTranscriberState } from '../../src/core/LocalVoiceTranscriber.js';
 import { resetVoiceTranscriptionState } from '../../src/core/VoiceTranscription.js';
+import { useHermeticMediaDisk } from '../helpers/hermeticMediaDisk.js';
 
 const HOST = 'echo-voice-e2e.example.dev';
 const REAL_SPEECH_STDOUT = path.resolve(__dirname, '../fixtures/voice/whisper-cli-1.9.5-speech.stdout');
@@ -105,6 +106,7 @@ async function boot() {
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
   const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel });
   servers.push(server);
+  useHermeticMediaDisk(server); // the host's free space must not decide the result
   return { server, dir, spawned };
 }
 
