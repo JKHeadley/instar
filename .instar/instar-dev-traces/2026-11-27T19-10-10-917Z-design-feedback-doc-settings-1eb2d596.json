@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "design-feedback-doc-settings",
+  "sessionId": "c94c9812-a254-4f67-9dcd-a5428f184db1",
+  "timestamp": "2026-11-27T19:10:10.917Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-doc-settings.md",
+  "artifactSha256": "831d9d380fed6bcb4458deef5dd4c84cda077a516717eb932803d9eb6d3bdcb6",
+  "coveredFiles": [
+    "docs/DESIGN-STANDARD.md",
+    "docs/design-feedback/DF-0007-document-settings-block-as-heading.md",
+    "upgrades/next/design-feedback-doc-settings.md",
+    "upgrades/side-effects/design-feedback-doc-settings.eli16.md",
+    "upgrades/side-effects/design-feedback-doc-settings.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation only: design feedback DF-0007 and earned rule DS-WORDS-7 with its summary row and changelog line; no runtime code changes.",
+  "eli16Path": "upgrades/side-effects/design-feedback-doc-settings.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/design-feedback-doc-settings.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
