@@ -3361,6 +3361,7 @@ export function createRoutes(ctx: RouteContext): Router {
     };
     for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
   }
+  // @write-domain:none — reads current lease evidence and returns an admission verdict.
   router.post('/internal/planned-restart-lease-admission', (req, res) => {
     const address = req.socket.remoteAddress;
     const local = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
