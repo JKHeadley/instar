@@ -1272,6 +1272,13 @@ export class MultiMachineCoordinator extends EventEmitter {
     return this.leaseCoordinator?.holdsLease() ?? this._role === 'awake';
   }
 
+  /** App reconciliation uses lease authority without collecting health diagnostics. */
+  appBindingLeaseAuthority(): { holdsLease: boolean; heldElsewhere: boolean } {
+    if (!this._enabled) return { holdsLease: true, heldElsewhere: false };
+    return this.leaseCoordinator?.appBindingLeaseAuthority()
+      ?? { holdsLease: this._role === 'awake', heldElsewhere: false };
+  }
+
   /**
    * lease-freshness-lapse-retry — how long since this machine last CONFIRMED a lease
    * renewal, and the lease lifetime, so a send refused at the network boundary can say
