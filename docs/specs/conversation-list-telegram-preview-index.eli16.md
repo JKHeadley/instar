@@ -1,0 +1,5 @@
+# Conversation list previews without scanning the Telegram log, in plain words
+
+The conversation list in the app and the dashboard shows, for each Telegram conversation, when it last had a message and a short preview of that message. To find it, the agent used to look up that conversation's history, and for any conversation it did not already have in memory that meant reading through the entire Telegram log file, which is about 30 MB on the Laptop. The Laptop has more than 500 old named conversations, so opening the list could mean reading that whole file hundreds of times in a row while the agent could do nothing else. That froze the Laptop for tens of seconds.
+
+Now the agent reads the log once, in the background and in small pieces so it keeps answering other requests meanwhile, and remembers the newest message of every conversation. The list only looks at that memory. For about a second after the agent starts, before that reading finishes, an old conversation may show no last message; then it fills in.
