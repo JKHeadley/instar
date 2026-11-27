@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-28T02:37:37.876Z",
+  "slug": "desktop-display-sleep-not-a-lock",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 141,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/DesktopAccessAudit.ts",
+      "src/core/DesktopHost.ts",
+      "src/core/DirectDesktopAccess.ts",
+      "src/core/MacDesktopHost.ts",
+      "src/core/MacDisplayWake.ts"
+    ],
+    "addedLines": 135,
+    "deletedLines": 6
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Admission trusted the helper session flag, which display sleep sets on some Macs with no password in force (Studio, 2026-11-27)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "at most one display wake per operator admission attempt, after the lockout and 10 s rate limit; up to 6 rereads over 3 s; no background loop or self-trigger"
+  },
+  "verdict": "pass"
+}

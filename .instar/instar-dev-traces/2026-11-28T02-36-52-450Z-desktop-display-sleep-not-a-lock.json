@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "desktop-display-sleep-not-a-lock",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T02:36:52.450Z",
+  "artifactPath": "upgrades/side-effects/desktop-display-sleep-not-a-lock.md",
+  "artifactSha256": "f6e548a1035fe5ba3025bab2eb9a1cf0e05265525d252c4a9aef204cab729239",
+  "coveredFiles": [
+    "src/core/DesktopAccessAudit.ts",
+    "src/core/DesktopHost.ts",
+    "src/core/DirectDesktopAccess.ts",
+    "src/core/MacDesktopHost.ts",
+    "src/core/MacDisplayWake.ts",
+    "tests/unit/DirectDesktopAccess.displayWake.test.ts",
+    "tests/unit/MacDisplayWake.test.ts",
+    "upgrades/next/desktop-display-sleep-not-a-lock.md",
+    "upgrades/side-effects/desktop-display-sleep-not-a-lock.md",
+    "docs/specs/desktop-display-sleep-not-a-lock.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A bounded bug fix inside existing Remote Desktop admission: one optional host method and one fail-closed check. Every refused case stays refused except an asleep, unlocked Mac display; no new route, config, capability surface or helper change. Below the risk floor (new exported class), reasoning in the side-effects Tier section.",
+  "eli16Path": "docs/specs/desktop-display-sleep-not-a-lock.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-display-sleep-not-a-lock.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Admission trusted the helper session flag, which display sleep sets on some Macs with no password in force (Studio, 2026-11-27)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "at most one display wake per operator admission attempt, after the lockout and 10 s rate limit; up to 6 rereads over 3 s; no background loop or self-trigger"
+  }
+}

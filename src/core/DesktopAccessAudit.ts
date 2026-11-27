@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface DesktopAuditEvent {
-  kind: 'start' | 'stop' | 'leave-unlocked' | 'secret-refused';
+  kind: 'start' | 'stop' | 'leave-unlocked' | 'secret-refused' | 'display-wake';
   grantId: string;
   machineId: string;
   operatorUid: string;
@@ -13,7 +13,8 @@ export interface DesktopAuditEvent {
   inputBucket?: 'none' | '1-9' | '10-99' | '100+';
   /** leave-unlocked only: true when the tap beat the relock guard. */
   acknowledged?: boolean;
-  /** secret-refused only: the refusal word (never the password or its length). */
+  /** secret-refused: the refusal word (never the password or its length).
+   * display-wake: woke-ready, woke-not-ready, console-locked or unknown. */
   reason?: string;
 }
 
