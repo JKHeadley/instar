@@ -1,3 +1,4 @@
+import { pendingUpdateRestartTarget, readRestartRequestFile } from '../core/restartRequestFile.js';
 import { previewOwnerBindingBatch } from '../core/ChiefOfStaffBindingBatch.js';
 import { ManualQuotaBalance } from '../core/ManualQuotaBalance.js';
 import { promotionMismatchReason, unavailableConsumerPromotionProposal } from '../feedback-factory/drain/consumerPromotionProposal.js';
@@ -414,7 +415,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
+import { lifelineSecretMatches, LIFELINE_SECRET_HEADER, sharedLifelineIngressSecretHolder, readLifelineIngressSecret, LIFELINE_INGRESS_CALLER_HEADER, LIFELINE_INGRESS_CALLER_SERVER_SELF } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -1312,6 +1313,8 @@ export function parseTrustChange(raw: unknown): import('../core/trustJourney/Tru
 }
 
 export interface RouteContext {
+  plannedRestartLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) => 'ready' | 'wait' | 'not-applicable';
+
   ownerNeedsCandidate?: import('./needsRoutes.js').NeedsDeps['ownerCardCandidate'];
   ownerNeedsWithdrawalJournalFor?: import('./needsRoutes.js').NeedsDeps['withdrawalJournalFor'];
   /** Actual signed post-spawn capture; absent until graph storage is configured. */
@@ -3358,6 +3361,26 @@ export function createRoutes(ctx: RouteContext): Router {
     };
     for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
   }
+  // @write-domain:none — reads current lease evidence and returns an admission verdict.
+  router.post('/internal/planned-restart-lease-admission', (req, res) => {
+    const address = req.socket.remoteAddress;
+    const local = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+    if (!local || !lifelineSecretMatches(req.headers[LIFELINE_SECRET_HEADER],
+      sharedLifelineIngressSecretHolder(ctx.config.stateDir).get())) {
+      res.sendStatus(403);
+      return;
+    }
+    const { requestedBy, requestedAt } = req.body ?? {};
+    if (typeof requestedBy !== 'string' || !requestedBy || requestedBy.length > 200 ||
+        typeof requestedAt !== 'string' || requestedAt.length > 40 || !Number.isFinite(Date.parse(requestedAt))) {
+      res.sendStatus(400);
+      return;
+    }
+    res.set('Cache-Control', 'no-store').json({
+      admission: ctx.plannedRestartLeaseAdmission?.({ requestedBy, requestedAt }) ?? 'wait',
+      requestedBy, requestedAt,
+    });
+  });
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOwnedRepoRoutes(router, () => ctx.ownedRepos?.() ?? null);
@@ -7126,17 +7149,33 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     // A pending UPDATE restart (one naming a targetVersion) already restarts the server, and
     // overwriting it would drop the version and its restart-loop detection. Leave it in place.
-    try {
-      const pending = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { targetVersion?: unknown; expiresAt?: unknown };
-      const live = typeof pending.expiresAt !== 'string' || Date.parse(pending.expiresAt) > Date.now();
-      if (live && typeof pending.targetVersion === 'string' && pending.targetVersion) {
-        res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion: pending.targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
-        return;
+    const pendingUpdate = (): string | null => {
+      const flag = path.join(ctx.config.stateDir, 'state', 'restart-requested.json');
+      try {
+        return pendingUpdateRestartTarget(flag, readRestartRequestFile(flag));
+      } catch (error) {
+        // @silent-fallback-ok: warn here; the writer rechecks the request under the lock.
+        console.warn('[planned restart] Could not read the pending update request:', error);
+        return null;
       }
-    } catch { /* @silent-fallback-ok — no pending request (or unreadable): write ours */ }
+    };
+    const reportPendingUpdate = (targetVersion: string) => {
+      res.status(202).json({ requested: true, requestedBy, reason, alreadyPending: { kind: 'update', targetVersion }, next: 'An update restart is already pending; it restarts the server and applies your change too.' });
+    };
+    const existingUpdate = pendingUpdate();
+    if (existingUpdate) {
+      reportPendingUpdate(existingUpdate);
+      return;
+    }
     const ok = await ctx.requestSupervisedRestart(reason, requestedBy);
     if (ok !== true) {
       res.status(503).json({ error: 'restart-request-not-written', detail: 'the restart request could not be written; nothing will restart' });
+      return;
+    }
+    // A publisher may install an update while the lease announcement is pending.
+    const overlappingUpdate = pendingUpdate();
+    if (overlappingUpdate) {
+      reportPendingUpdate(overlappingUpdate);
       return;
     }
     res.status(202).json({
