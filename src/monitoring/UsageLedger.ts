@@ -537,7 +537,12 @@ class TranscriptReader {
       worker.once('message', onMessage);
       worker.once('error', onError);
       worker.once('exit', onExit);
-      try { worker.postMessage(request); } catch (error) { invalidate(error as Error); }
+      try {
+        worker.postMessage(request);
+      } catch (error) {
+        // @silent-fallback-ok: invalidation rejects this read with the original error after worker cleanup.
+        invalidate(error as Error);
+      }
     });
   }
 
