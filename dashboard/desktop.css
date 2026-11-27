@@ -52,3 +52,6 @@ body.desktop-live #localCursor{display:block}
 #leaveUnlockedButton{position:absolute;z-index:8;right:max(.5rem,env(safe-area-inset-right));bottom:4rem;padding:.55rem .8rem}
 #lockedCard{margin-top:.8rem}
 #lockedCard[hidden]{display:none}
+/* Speed reading: below the top bar, never takes touches meant for the desktop.
+   The locked-screen password box sits above it, so it is covered while locked. */
+.speed-readout{position:absolute;z-index:5;top:calc(max(.35rem,env(safe-area-inset-top)) + 2.9rem);left:50%;transform:translateX(-50%);max-width:calc(100% - 2rem);margin:0;padding:.3rem .6rem;border-radius:.4rem;background:#020617cc;color:#e2e8f0;font-size:.75rem;text-align:center;pointer-events:none}

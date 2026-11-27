@@ -31,6 +31,7 @@
   </section>
   <section id="control" hidden>
     <div class="desktop-bar"><strong id="machineName"></strong><span id="liveStatus" role="status"></span><button id="stopButton" class="danger">Stop</button></div>
+    <p id="speedReadout" class="speed-readout" aria-live="polite" hidden></p>
     <div id="surface" aria-label="Remote desktop touch surface">
       <div id="viewTransform">
         <img id="screen" alt="Live desktop of the selected machine" draggable="false">
@@ -55,6 +56,7 @@
       <button id="modeButton" type="button" aria-pressed="true" hidden>Trackpad · swipe to move</button>
       <button id="dragButton" type="button" aria-pressed="false">Drag</button>
       <button id="rightButton" type="button">Right click</button>
+      <button id="speedButton" type="button" aria-pressed="false">Speed</button>
       <button data-remote-key="Meta" data-modifier="true" type="button" aria-pressed="false">⌘</button>
       <button data-remote-key="Control" data-modifier="true" type="button" aria-pressed="false">Ctrl</button>
       <button data-remote-key="Alt" data-modifier="true" type="button" aria-pressed="false">⌥</button>
