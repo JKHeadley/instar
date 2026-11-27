@@ -48,4 +48,14 @@ describe('message log rotation check counts lines without rereading the log', ()
     // Only the three appended lines' bytes are read, which fit in one chunk.
     expect(chunks).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps exactly 100,000 lines and rotates at 100,001, including a final line without its newline', () => {
+    setup(100_000, 300); // about 29 MB: at the limit, not over it
+    rotate();
+    expect(lines()).toBe(100_000);
+    // One more line written without its trailing newline: 100,000 newlines but 100,001 lines.
+    fs.appendFileSync(logPath, JSON.stringify({ topicId: 5, messageId: 2e6, text: 'last', fromUser: true, timestamp: 't' }));
+    rotate();
+    expect(lines()).toBe(75_000);
+  });
 });

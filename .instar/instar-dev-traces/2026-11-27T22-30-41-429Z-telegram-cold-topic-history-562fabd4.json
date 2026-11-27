@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "telegram-cold-topic-history",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T22:30:41.429Z",
+  "artifactPath": "upgrades/side-effects/telegram-cold-topic-history.md",
+  "artifactSha256": "8cef4f3e28691dfa6f9414037df58ccc8fabdc1f3006a1560e48b7be4d17f7eb",
+  "coveredFiles": [
+    "docs/specs/telegram-cold-topic-history.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/shared/LogLineCounter.ts",
+    "src/messaging/shared/MessageLogger.ts",
+    "tests/unit/TelegramAdapter-topicTailCache.test.ts",
+    "tests/unit/log-line-counter.test.ts",
+    "tests/unit/telegram-cold-topic-history.test.ts",
+    "tests/unit/telegram-log-rotation-count.test.ts",
+    "upgrades/next/telegram-cold-topic-history.md",
+    "upgrades/side-effects/telegram-cold-topic-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-path and log-rotation internals of the Telegram adapter and shared logger: a chunked backward scan, a larger bounded cache, bounded retention on unregister and a shared line counter; no new authority, state format or migration, and a revert restores the old behaviour.",
+  "eli16Path": "docs/specs/telegram-cold-topic-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-cold-topic-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

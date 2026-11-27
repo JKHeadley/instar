@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
+import { LogLineCounter } from './LogLineCounter.js';
 import type { MessageProvenance } from './MessageProvenance.js';
 
 export interface LogEntry {
@@ -77,6 +78,8 @@ export class MessageLogger {
   private maxLines: number;
   private keepLines: number;
   private rotationSizeThreshold: number;
+  /** Rotation check without rereading the log per append (LogLineCounter). */
+  private lineCounter: LogLineCounter;
   private onMessageLogged: OnMessageLoggedCallback | null = null;
 
   constructor(config: MessageLoggerConfig) {
@@ -84,6 +87,7 @@ export class MessageLogger {
     this.maxLines = config.maxLines ?? 100_000;
     this.keepLines = config.keepLines ?? 75_000;
     this.rotationSizeThreshold = config.rotationSizeThreshold ?? 20 * 1024 * 1024;
+    this.lineCounter = new LogLineCounter(this.logPath);
 
     // Ensure directory exists
     const dir = path.dirname(this.logPath);
@@ -226,7 +230,12 @@ export class MessageLogger {
       const stat = fs.statSync(this.logPath);
       if (stat.size < this.rotationSizeThreshold) return;
 
-      const content = fs.readFileSync(this.logPath, 'utf-8');
+      // A newline count below the limit cannot hide more than `maxLines` non-empty lines (N newlines
+      // are at most N + 1 lines), so only then is the whole log read, exactly as before.
+      if (this.lineCounter.newlines(stat) < this.maxLines) return;
+
+      const raw = fs.readFileSync(this.logPath);
+      const content = raw.toString('utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > this.maxLines) {
         const kept = lines.slice(-this.keepLines);
@@ -239,9 +248,16 @@ export class MessageLogger {
           throw rotateErr;
         }
         console.log(`[message-logger] Rotated log: ${lines.length} -> ${kept.length} lines`);
+        const rotated = fs.statSync(this.logPath);
+        this.lineCounter.adopt(kept.length, rotated.size, rotated.ino);
+      } else {
+        // Blank lines made the newline count overstate: keep the exact count, so later appends
+        // again read only their own bytes.
+        this.lineCounter.adopt(lines.length, raw.length, stat.ino);
       }
     } catch {
-      // Log rotation is non-critical
+      // @silent-fallback-ok — log rotation is non-critical; the count is rebuilt on the next check
+      this.lineCounter.reset();
     }
   }
 }

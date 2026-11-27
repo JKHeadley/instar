@@ -136,12 +136,12 @@ describe('TelegramAdapter topic tail cache + content version', () => {
       expect(fresh.getTopicHistory(21, 10).map((e) => e.text)).toEqual(['shared-writer']);
     });
 
-    it('caps the cached tail at 500 entries (the production caller ceiling)', () => {
-      for (let i = 1; i <= 510; i++) logMsg(adapter, 3, `m${i}`, i);
-      const h = adapter.getTopicHistory(3, 500);
-      expect(h).toHaveLength(500);
+    it('caps the cached tail at 1,000 entries (the production caller ceiling)', () => {
+      for (let i = 1; i <= 1_010; i++) logMsg(adapter, 3, `m${i}`, i);
+      const h = adapter.getTopicHistory(3, 1_000);
+      expect(h).toHaveLength(1_000);
       expect(h[0].text).toBe('m11'); // oldest 10 evicted
-      expect(h[499].text).toBe('m510');
+      expect(h[999].text).toBe('m1010');
     });
 
     it('CORRECTNESS: cache-served history equals a fresh file scan (handoff-hash parity)', () => {
