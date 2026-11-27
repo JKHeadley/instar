@@ -32372,7 +32372,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // returned (it could echo page text or the value itself). The caller gets a fixed result
         // and a fixed category. The driver's messages are discarded, not logged: only the host,
         // category and exit code are logged on failure.
-        const timedOut = !!err && ((err as { killed?: boolean }).killed === true || (err as { signal?: unknown }).signal != null);
+        // Node also kills the child (and sets killed) when output passes maxBuffer; that is a driver
+        // failure, not a timeout.
+        const overflowed = !!err && (err as { code?: unknown }).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        const timedOut = !!err && !overflowed && ((err as { killed?: boolean }).killed === true || (err as { signal?: unknown }).signal != null);
         const category: 'typed' | 'timeout' | 'driver-failed' = typed ? 'typed' : timedOut ? 'timeout' : 'driver-failed';
         if (!typed) console.warn(`[secret-drop] browser type for ${host} ended as ${category} (exit ${exitCode}); driver output withheld from the response`);
         void stdout; void stderr;
