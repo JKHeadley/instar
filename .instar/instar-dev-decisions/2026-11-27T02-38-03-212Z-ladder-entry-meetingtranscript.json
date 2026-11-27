@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T02:38:03.212Z",
+  "slug": "ladder-entry-meetingTranscript",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
