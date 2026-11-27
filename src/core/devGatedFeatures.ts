@@ -620,6 +620,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
       'Ships dryRun:true (the dry-run canary): on a dev agent the evidence pass, probes, decision trace (logs/stale-owner-release.jsonl) and GET /pool/stale-owner-release all run LIVE, but the engine logs would-claims and NEVER lands a force-claim CAS while dryRun holds — zero authority moves; graduation past dry-run is gated on the spec §5 quantified soak (≥5 operator-corroborated would-claims, zero wrong) PLUS the emission-fence + observer-staleness prerequisites. Additionally subordinate to multiMachine.sessionPool being live AND ≥2 registered machines (strict no-op otherwise). Probes are read-only authenticated handshakes to the operator\'s OWN machines — no external egress, no spend, no destructive action while the canary holds. Same dogfooding posture as topicProfiles / credentialRepointing.',
   },
   {
+    name: 'stopGateReplayInput',
+    configPath: 'monitoring.stopGateReplayInput.enabled',
+    description: 'CMT-2204: the UnjustifiedStopGate keeps the credential-scrubbed stop reason + recent turns it judged (and its trusted evidence) under the provenance row\'s machine-local _contentFull, with a content-free prompt sha and a scrubChanged flag, so its decisions can be replayed against a cheaper model.',
+    justification: 'Observability only: no prompt text, model, timeout, parsing or continue/allow/escalate verdict changes. The capture is scrubbed for credential shapes before storage, lives only in the machine-local contextFull (stripped from contextRedacted, never served by GET /judgment-provenance, excluded from the cross-machine allowlist) under the existing 14-day retention and the census 300-row/day budget. Rows the 64 KB clamp truncates, or whose rebuilt sha differs, are not replay-eligible. Off on the fleet, where rows stay byte-identical.',
+  },
+  {
     name: 'selfDeferralGuard',
     configPath: 'monitoring.selfDeferralGuard.enabled',
     description:

@@ -64,7 +64,16 @@ export async function renderIdeas(main, api) {
   for (const band of BANDS) {
     const ideas = ideasInBand(s.ideas, band.id);
     if (!ideas.length) continue;
-    parts.push(el('h2', { class: 'eyebrow section-label', text: `${band.label} (${ideas.length})` }), el('p', { class: 'need-sub', text: band.note }), ...ideas.map((i) => ideaCard(i, refresh)));
+    const title = `${band.label} (${ideas.length})`;
+    const cards = ideas.map((i) => ideaCard(i, refresh));
+    if (band.id === 'unranked') {
+      parts.push(el('details', { class: 'ideas-unranked', ontoggle: (event) => {
+        const group = event.currentTarget;
+        group.toggleAttribute('data-interaction-open', group.open);
+      } }, el('summary', { text: title }), el('p', { class: 'need-sub', text: band.note }), cards));
+    } else {
+      parts.push(el('h2', { class: 'eyebrow section-label', text: title }), el('p', { class: 'need-sub', text: band.note }), cards);
+    }
   }
   parts.push(el('h2', { class: 'eyebrow section-label', text: 'Projects we review' }));
   for (const w of s.watchlist) {

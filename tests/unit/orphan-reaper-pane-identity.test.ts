@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFile } from 'node:child_process';
 
 type Scripted = { stdout: string };
 const script = {
@@ -24,22 +25,32 @@ const script = {
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>();
-  return {
-    ...real,
-    spawnSync: vi.fn((cmd: string, args: string[]): Scripted => {
-      if (cmd === 'ps' && args.includes('lstart=')) {
-        const next = script.lstart.length > 1 ? script.lstart.shift()! : (script.lstart[0] ?? '');
-        return { stdout: next };
-      }
-      const line = cmd === '/bin/sh' ? args[1] : `${cmd} ${args.join(' ')}`;
-      if (line.startsWith('ps -u ')) return { stdout: '222 500 100000 02:00:00 claude -p build the thing\n' };
-      if (line.includes('list-panes -a')) return { stdout: script.panes };
-      if (line.startsWith('ps -o ppid=')) return { stdout: '1\n' };
-      if (line.startsWith('ps -o command=')) return { stdout: '/usr/sbin/somed\n' };
-      if (line.startsWith('pgrep')) return { stdout: '' };
-      return { stdout: '' };
+  const run = vi.fn((cmd: string, args: string[]): Scripted => {
+    if (cmd === 'ps' && args.includes('lstart=')) {
+      const next = script.lstart.length > 1 ? script.lstart.shift()! : (script.lstart[0] ?? '');
+      return { stdout: next };
+    }
+    const line = cmd === '/bin/sh' ? args[1] : `${cmd} ${args.join(' ')}`;
+    if (line.startsWith('ps -u ')) return { stdout: '222 500 100000 02:00:00 claude -p build the thing\n' };
+    if (line.includes('list-panes -a')) return { stdout: script.panes };
+    if (line.startsWith('ps -o ppid=')) return { stdout: '1\n' };
+    if (line.startsWith('ps -o command=')) return { stdout: '/usr/sbin/somed\n' };
+    if (line.startsWith('pgrep')) return { stdout: '' };
+    return { stdout: '' };
+  });
+  const execFile = vi.fn((cmd: string, args: string[], _options: unknown,
+    callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    callback(null, run(cmd, args).stdout, '');
+  });
+  Object.defineProperty(execFile, Symbol.for('nodejs.util.promisify.custom'), {
+    value: (cmd: string, args: string[], options: unknown) => new Promise((resolve, reject) => {
+      execFile(cmd, args, options, (error, stdout, stderr) => {
+        if (error) reject(error);
+        else resolve({ stdout, stderr });
+      });
     }),
-  };
+  });
+  return { ...real, spawnSync: run, execFile };
 });
 
 const { OrphanProcessReaper } = await import('../../src/monitoring/OrphanProcessReaper.js');
@@ -52,9 +63,9 @@ const START = 'Wed Sep 30 05:00:00 2026';
 function reaper(owns = true) {
   const sm = {
     listKnownTmuxSessions: () => new Set([OWNED]),
-    listRunningSessions: () => [],
+    listRecordedRunningSessions: vi.fn<() => Array<{ tmuxSession: string }>>(() => []),
     // The session under the name genuinely carries this agent's INSTAR_SESSION_ID.
-    ownsLiveTmuxSession: vi.fn(() => owns),
+    ownsLiveTmuxSessionAsync: vi.fn(async () => owns),
   };
   const r = new OrphanProcessReaper(
     { projectName: 'proj', sessions: { tmuxPath: 'tmux' } } as unknown as InstarConfig,
@@ -66,6 +77,7 @@ function reaper(owns = true) {
 
 let kill: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  vi.mocked(execFile).mockClear();
   vi.useFakeTimers({ toFake: ['setTimeout'] });
   kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
   script.panes = '';
@@ -85,7 +97,7 @@ describe('OrphanProcessReaper — retained dead pane', () => {
     expect(report.orphans).toEqual([]);
     expect(report.external.map((p) => p.pid)).toEqual([222]);
     expect(report.external[0].tmuxSession).toBeNull();
-    vi.advanceTimersByTime(6000);
+    await vi.advanceTimersByTimeAsync(6000);
     expect(kill).not.toHaveBeenCalled();
   });
 
@@ -105,8 +117,8 @@ describe('OrphanProcessReaper — retained dead pane', () => {
     expect(report.orphans[0].procStart).toBe(Date.parse(START));
     expect(kill).toHaveBeenCalledWith(222, 'SIGTERM');
     // Ownership re-checked right before the terminal tmux cleanup.
-    expect(sm.ownsLiveTmuxSession).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(5000);
+    expect(sm.ownsLiveTmuxSessionAsync).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(kill).toHaveBeenCalledWith(222, 'SIGKILL');
   });
 });
@@ -118,8 +130,8 @@ describe('OrphanProcessReaper — identity carried from ownership to the kill', 
     script.lstart = [START, 'Wed Sep 30 06:00:00 2026'];
     const { r } = reaper();
     const report = await r.scan();
-    expect(report.actionsPerformed.join('\n')).toMatch(/Skipped orphan PID 222/);
-    vi.advanceTimersByTime(6000);
+    expect(report.actionsPerformed.join('\n')).toMatch(/Kept orphan PID 222/);
+    await vi.advanceTimersByTimeAsync(6000);
     expect(kill).not.toHaveBeenCalled();
   });
 
@@ -129,7 +141,7 @@ describe('OrphanProcessReaper — identity carried from ownership to the kill', 
     const { r } = reaper();
     const report = await r.scan();
     expect(report.orphans[0].procStart).toBeNull();
-    vi.advanceTimersByTime(6000);
+    await vi.advanceTimersByTimeAsync(6000);
     expect(kill).not.toHaveBeenCalled();
   });
 
@@ -140,4 +152,52 @@ describe('OrphanProcessReaper — identity carried from ownership to the kill', 
     expect(r.killExternalProcess(222).success).toBe(true);
     expect(kill).toHaveBeenCalledWith(222, 'SIGTERM');
   });
+});
+
+
+it('keeps a process whose session becomes tracked while the final ownership check is in flight', async () => {
+  script.panes = `${OWNED}||222||0\n`;
+  const { r, sm } = reaper();
+  sm.ownsLiveTmuxSessionAsync.mockResolvedValueOnce(true).mockImplementationOnce(async () => {
+    sm.listRecordedRunningSessions.mockReturnValue([{ tmuxSession: OWNED }]);
+    return true;
+  });
+  await r.scan();
+  expect(kill).not.toHaveBeenCalled();
+});
+
+it('stopping a scan while it waits for ownership prevents it from signalling', async () => {
+  script.panes = `${OWNED}||222||0\n`;
+  const { r, sm } = reaper();
+  sm.ownsLiveTmuxSessionAsync.mockResolvedValueOnce(true).mockImplementationOnce(async () => {
+    r.stop();
+    return true;
+  });
+  await r.scan();
+  expect(kill).not.toHaveBeenCalled();
+  expect(r.getLastReport()).toBeNull();
+});
+
+
+it('does not escalate if the session becomes tracked during the signal grace period', async () => {
+  script.panes = `${OWNED}||222||0\n`;
+  const { r, sm } = reaper();
+  await r.scan();
+  expect(kill).toHaveBeenCalledWith(222, 'SIGTERM');
+  sm.listRecordedRunningSessions.mockReturnValue([{ tmuxSession: OWNED }]);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(kill).not.toHaveBeenCalledWith(222, 'SIGKILL');
+});
+
+
+it('does not tear down tmux when tracking resumes during the pane cleanup check', async () => {
+  script.panes = `${OWNED}||222||0\n`;
+  const { r, sm } = reaper();
+  sm.ownsLiveTmuxSessionAsync.mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockImplementationOnce(async () => {
+    sm.listRecordedRunningSessions.mockReturnValue([{ tmuxSession: OWNED }]);
+    return true;
+  });
+  await r.scan();
+  expect(kill).toHaveBeenCalledWith(222, 'SIGTERM');
+  expect(vi.mocked(execFile).mock.calls.some(([, args]) => Array.isArray(args) && args[0] === 'kill-session')).toBe(false);
 });

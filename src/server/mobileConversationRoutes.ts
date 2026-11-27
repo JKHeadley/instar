@@ -1041,7 +1041,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // machine may accept this operation, even when another machine takes the serving lease.
     const ownsReplyCustody = () => {
       const machineId = deps.machineId();
-      return machineId !== 'local' && s.store.getCreationRecord(key)?.machineId === machineId;
+      if (machineId === 'local') return false;
+      const creator = s.store.getCreationRecord(key)?.machineId;
+      if (!creator) return false;
+      // A conversation this machine created under its earlier id (the hostname, before records used
+      // the machine identity id) is still this machine's; 'local' is never a custody id.
+      return creator === machineId || (creator !== 'local' && (s.deps.legacyMachineIds?.() ?? []).includes(creator));
     };
     if (quoted && !ownsReplyCustody()) {
       res.status(503).json({ error: 'reply-custody-unavailable' }); return;
@@ -1074,13 +1079,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const conv = s.liveConversation(key);
     if (!conv) { res.status(404).json({ error: 'unknown-conversation' }); return; }
 
+    // A pruned old request must never become a NEW stop against a later session.
+    // Retained results were answered above; fresh exact stops still bypass feature/rate gates.
+    if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
+
     // Step 2a — an exact emergency stop skips the feature setting and the rate limit.
     const exactStop = isExactStopMessage(text);
     if (!exactStop) {
       // Step 3 — preflight (its one effect: scanInbound may decline a leaked pending pairing).
       if (!isMobileChatEnabled(deps.config)) { res.status(503).json({ error: 'Chat from the app is turned off on this agent.' }); return; }
       if (!rateOk(deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
-      if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
       deps.pairing.scanInbound(text);
     }
     // SEC-164 §3.5: after the device signature is checked, live keys are masked before the authority

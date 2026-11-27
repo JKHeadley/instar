@@ -10,7 +10,7 @@ Both reads are default-off. They perform indexed local reads with a bounded chun
 
 ## Rollback and verification
 
-Set `mobilePairing.native.messageLinks.enabled` to false. An earlier server lacks both the versioned entry and the exact context endpoint. Ordinary history and legacy pin navigation still use their established paths. Focused store, browser, signed HTTP and production wiring tests are the evidence for this build. The denied fixture uses the router's ACL seam, and the missing fixture represents a target absent from the serving copy. Real Chrome compatibility, peak scan timing and full verification remain required before activation.
+Set `mobilePairing.native.messageLinks.enabled` to false. An earlier server lacks both the versioned entry and the exact context endpoint. Ordinary history and legacy pin navigation still use their established paths. Focused store, browser, signed HTTP and production wiring tests are the evidence for this build. The denied fixture uses the router's ACL seam, and the missing fixture represents a target absent from the serving copy. Real Chrome compatibility, peak scan timing and full verification remain required before activation. This pull request's release note also carries the documentation-only quoted-reply scope note, folded in on 2026-11-27 because an internal-only fragment may not ship beside runtime changes. That note ships no behavior and rolls back with the fragment.
 
 ## Review
 

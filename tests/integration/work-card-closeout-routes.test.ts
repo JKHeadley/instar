@@ -180,7 +180,7 @@ describe('closing from the console, and the agent\'s lessons', () => {
 
 describe('the card read: whose turn, started, and its conversation', () => {
   it('names the turn, untouched state and the existing conversation routes', async () => {
-    const c = setup(); const card = agentCard(c.svc);
+    const c = setup(); const card = agentCard(c.svc, { outward: true });
     const r = await request(c.app).get(`/work-board/cards/${card.id}`).set(bearer());
     expect(r.status).toBe(200);
     expect(r.body.card).toMatchObject({ turn: 'you', started: false, startedAt: null,

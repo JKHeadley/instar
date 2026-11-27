@@ -54,6 +54,12 @@ export interface AppConversationServiceDeps {
   credentialScrubEnabled?: () => boolean;
   stateDir: string;
   machineId: () => string;
+  /**
+   * Earlier ids this same machine wrote App records under (a machine without a mesh id used its
+   * hostname before it used its machine identity id). Read only to recognise conversations this
+   * machine created under the old id; never used to write a record.
+   */
+  legacyMachineIds?: () => readonly string[];
   /** This machine's verified name, so refusals and notices name it (never "this machine" or an id). */
   machineName?: () => string | null;
   registry: ConversationRegistry;

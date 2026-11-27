@@ -48,6 +48,7 @@ export interface DrainMessage {
   senderEnvelope: SenderEnvelope | null;
   topicMetadata: unknown;
   enqueueSeq: number;
+  enqueuedAt?: string;
   /**
    * Files by attachment id (native-conversation-base §3c). Null for a row written before the column
    * existed, or by older code: its payload still carries the path-free sentence (or an old tag).
@@ -981,6 +982,7 @@ export class QueueDrainLoop {
       senderEnvelope,
       topicMetadata,
       enqueueSeq: row.enqueue_seq,
+      enqueuedAt: row.enqueued_at,
       // An unreadable media cell never poisons the row: the payload carries the path-free sentence.
       media: ((): InboundMediaLocal[] | null => {
         if (!row.media) return null;

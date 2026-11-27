@@ -116,6 +116,36 @@ console.log('JOB_RESULT ok checked');
 `;
 
 describe('script runner execution', () => {
+  it('runs the throughput report only while the script runner is enabled', async () => {
+    project = createTempProject();
+    const slug = 'testing-throughput-report-script';
+    const source = new URL('../../../src/scaffold/templates/jobs/instar/scripts/testing-throughput-report-script.mjs', import.meta.url);
+    const script = fs.readFileSync(source, 'utf8');
+    addScriptJob(project.stateDir, slug, script);
+    lockState.value = trustedLockFor([{ slug, script }]);
+    const reportDir = path.join(project.stateDir, 'reports', 'throughput-improvement');
+    const journalDir = path.join(project.stateDir, 'state', 'local-verify');
+    fs.mkdirSync(reportDir, { recursive: true });
+    fs.mkdirSync(journalDir, { recursive: true });
+    const baseline = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(path.join(reportDir, 'acceleration-baseline-20261124.json'), JSON.stringify({ asOf: baseline }));
+    fs.writeFileSync(path.join(journalDir, 'journal.jsonl'), '');
+    const { s, sm, setCfg } = mkScheduler(project, { jobs: { scriptRunners: { enabled: false } } });
+    scheduler = s;
+    s.start();
+    expect(await s.triggerJob(slug, 'test')).toBe('skipped');
+    expect(sm._spawnCount).toBe(0);
+    expect(lastRun(s, slug)).toBeUndefined();
+
+    setCfg({ jobs: { scriptRunners: { enabled: true } } });
+    expect(await s.triggerJob(slug, 'test')).toBe('triggered');
+    await waitFor(() => Boolean(lastRun(s, slug) && lastRun(s, slug).result !== 'pending'));
+    const run = lastRun(s, slug);
+    expect(run).toMatchObject({ result: 'success', runner: 'script', tokens: 0 });
+    expect(fs.readFileSync(path.join(reportDir, `${run.runId}.txt`), 'utf8')).toContain('Testing throughput report');
+    expect(sm._spawnCount).toBe(0);
+  });
+
   it('does not open the supervision journal on a read-only standby', () => {
     project = createTempProject();
     addScriptJob(project.stateDir, 'probe', "console.log('JOB_RESULT ok done');");

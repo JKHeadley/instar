@@ -181,6 +181,16 @@ describe('validateRecord — flakyRetried name fields', () => {
   const HASH = 'ab'.repeat(32);
   const entry = (over: Record<string, unknown> = {}) => ({ file: 'tests/unit/a.test.ts', lane: 'unit', firstMessage: 't: boom', ...over });
   const withEntry = (e: Record<string, unknown>) => validateRecord(rec({ flakyRetried: [e as never] }));
+
+  it('caps named recovery across all files in a signed record', () => {
+    const named = (file: string, failedTests: string[]) => entry({
+      file, namedRetry: true, failedTests, failedTestsTotal: failedTests.length,
+      soloPassedByName: failedTests, testSetHash: HASH,
+    });
+    const first = named('tests/unit/first.test.ts', ['a', 'b']);
+    expect(validateRecord(rec({ flakyRetried: [first, named('tests/unit/second.test.ts', ['c'])] as never })).ok).toBe(true);
+    expect(validateRecord(rec({ flakyRetried: [first, named('tests/unit/second.test.ts', ['c', 'd'])] as never })).ok).toBe(false);
+  });
   const ev = (test: string) => ({ test, mainAt: '2026-11-16T10:00:00.000Z', mainLine: 'Error: x', prLine: 'Error: x', mainRunLog: 'a'.repeat(32) + '.log' });
   const clear = (over: Record<string, unknown> = {}) => entry({
     importRelated: true, failedTests: ['s one', 's two'], failedTestsTotal: 2, soloPassedByName: ['s one', 's two'], testSetHash: HASH,

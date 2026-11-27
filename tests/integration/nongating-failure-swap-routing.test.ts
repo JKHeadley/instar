@@ -9,7 +9,8 @@
  *     site (computed default + nonGatingFailureSwap enabled) SWAPS when the primary invocation
  *     fails, instead of hard-erroring — and with { enabled:false } it keeps today's behavior.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createTempProject, type TempProject } from '../helpers/setup.js';
 import express from 'express';
 import request from 'supertest';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
@@ -30,9 +31,16 @@ function invocationFailProvider(msg = 'codex exec failed'): IntelligenceProvider
   return { async evaluate() { throw new Error(msg); } };
 }
 
+const projects: TempProject[] = [];
+afterEach(() => {
+  for (const project of projects.splice(0)) project.cleanup();
+});
+
 function ctxWith(intelligence: IntelligenceProvider | null): RouteContext {
+  const project = createTempProject();
+  projects.push(project);
   return {
-    config: { projectName: 'test', projectDir: '/tmp', stateDir: '/tmp/.instar', port: 0, sessions: {} as any, scheduler: {} as any } as any,
+    config: { projectName: 'test', projectDir: project.dir, stateDir: project.stateDir, port: 0, sessions: {} as any, scheduler: {} as any } as any,
     sessionManager: { listRunningSessions: () => [] } as any,
     state: { getJobState: () => null, getSession: () => null } as any,
     scheduler: null, telegram: null, relationships: null, feedback: null, dispatches: null,
