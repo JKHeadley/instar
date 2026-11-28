@@ -45,6 +45,7 @@
  * discover the gap.
  */
 import { Agent } from 'undici';
+import { observeTelegramSend } from './TelegramSendTiming.js';
 import { dispatchOriginBotEgress } from './telegram-origin/OriginBotEgress.js';
 import { OriginTransportCancelledBeforeNetwork, OriginTransportUnsent, provedUnsentCode } from './telegram-origin/OriginTransportCancellation.js';
 import { OriginCapacityUnavailable } from './telegram-origin/OriginEgressCapacity.js';
@@ -530,12 +531,19 @@ export async function telegramFetch(
     // The proof is about invocation, not whether an arbitrary transport error
     // says "aborted". No await separates this check from the native fetch call.
     if (originManaged && networkInit.signal?.aborted) throw new OriginTransportCancelledBeforeNetwork();
-    if (networkTimeoutMs !== undefined) {
-      const deadline = AbortSignal.timeout(networkTimeoutMs);
-      networkInit = { ...networkInit, signal: networkInit.signal
-        ? AbortSignal.any([networkInit.signal, deadline]) : deadline };
+    const dispatch = (): Promise<Response> => {
+      if (networkTimeoutMs !== undefined) {
+        const deadline = AbortSignal.timeout(networkTimeoutMs);
+        networkInit = { ...networkInit, signal: networkInit.signal
+          ? AbortSignal.any([networkInit.signal, deadline]) : deadline };
+      }
+      return fetchWithTelegramDispatcher(networkUrl, networkInit);
+    };
+    try {
+      return method === 'sendMessage'
+        ? await observeTelegramSend(dispatch, networkTimeoutMs)
+        : await dispatch();
     }
-    try { return await fetchWithTelegramDispatcher(networkUrl, networkInit); }
     catch (error) {
       // A caller can reuse an earlier known-unsent error as abort(reason).
       // Once fetch was invoked even that same object is no longer proof.

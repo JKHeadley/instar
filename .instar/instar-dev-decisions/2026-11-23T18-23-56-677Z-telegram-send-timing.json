@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-23T18:23:56.677Z",
+  "slug": "telegram-send-timing",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/awareness/telegram-send-timing.md",
+      "src/messaging/TelegramSendTiming.ts",
+      "src/messaging/telegram-egress.ts"
+    ],
+    "addedLines": 94,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Diagnostics are driven once by each existing sendMessage invocation, not a self-triggered controller. Native event-loop sampling has no actuation, permits at most sixteen concurrent probes and is disabled on completion. This adds no retry, notify, restart, spawn, kill or queue mutation; existing transport deadlines and delivery policies are unchanged."
+  },
+  "verdict": "pass"
+}
