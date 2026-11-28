@@ -74,7 +74,7 @@ The rule's never-started gap now has a named owner and a recurring, visible sign
 
 ## Second-pass review (if required)
 
-Reviewer: independent read-only subagent for Pipeline Strategy. Round 1 DISSENTed (.instar/state/handoffs/reviews/second-pass/echo-pipeline-strategy-audit-never-started.md), with four blocking findings, all fixed:
+**Reviewer:** independent read-only subagent for Pipeline Strategy. Round 1 DISSENTed (.instar/state/handoffs/reviews/second-pass/echo-pipeline-strategy-audit-never-started.md), with four blocking findings, all fixed:
 - **(1)** The script's main guard skipped a symlinked path (/var on macOS) or a path with a space, so the daily reader never ran. The guard now compares real paths, and a test covers it.
 - **(2)** The lint was missing from `tests/unit/lint-chain-completeness.test.ts`; it is now added.
 - **(3)** The header claimed the registry already cites the lint. It is reworded: the registry text that closes the countdown ships in the single registry PR for the 21 Dec cliff, per the Chief of Staff's 27 November split ruling.
@@ -95,4 +95,4 @@ Also fixed: seed dates now follow the spec's rule; the false day-one claim is co
 
 ## Review binding (2026-11-28)
 
-The independent reader's concurrences (echo-pipeline-strategy-audit-never-started.md) cover this change. This section and a fresh trace were written after the final merge of main d42c7aa6db into 6a66a3343f, so the trace covers every path the PR changes as it now stands.
+The independent reader's concurrences (echo-pipeline-strategy-audit-never-started.md) cover this change. This section and a fresh trace were written after the final merge of main d42c7aa6db into c88c35012a, so the trace covers every path the PR changes as it now stands.
