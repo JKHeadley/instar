@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "sec162-guard-off-raise",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-23T15:45:35.818Z",
+  "artifactPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "artifactSha256": "409f27311945b0a6bdd58f5728cec586c097b28f9ea12d03b20bc5040e303d46",
+  "coveredFiles": [
+    "docs/specs/sec162-guard-off-raise.eli16.md",
+    "src/commands/server.ts",
+    "src/core/TrustRaiseGuard.ts",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyRuntime.ts",
+    "src/data/awareness/guard-off-needs-approval.md",
+    "src/server/routes.ts",
+    "tests/integration/trust-account-path-routes.test.ts",
+    "tests/integration/trust-raise-refusal-routes.test.ts",
+    "tests/unit/sec162-guard-off-raise.test.ts",
+    "upgrades/next/sec162-guard-off-raise.md",
+    "upgrades/side-effects/sec162-guard-off-raise.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-162 whole PR after merging main: a guard switch-off through the settings API needs the owner's approval, opened only on the lease holder; independent reviewer concurred.",
+  "eli16Path": "docs/specs/sec162-guard-off-raise.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec162-guard-off-raise.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  }
+}
