@@ -94,6 +94,60 @@ for (const rel of [...cited].sort()) {
   missing.push(rel);
 }
 
+// ── The widened population (STD-SUBCOUNTDOWN-backreference-completion, second half) ──────────
+// The rule says ALL infrastructure names its standard; the registry-cited set above is only the
+// part the registry already knows about. The widened population is the decision infrastructure
+// Instar ships: every file whose name says it guards or decides (a Guard, Gate, Sentinel, ...),
+// every `scripts/lint-*` check, and every hook source. It is chosen by NAME, mechanically. Stated
+// rather than implied: a file that guards something without being named like a guard is outside it.
+// Its pre-existing gaps live in their own shrink-only baseline. An absent baseline counts as EMPTY,
+// so deleting the file cannot switch the check off.
+const INFRA_BASELINE = path.join(ROOT, 'docs/standards-backreference-infrastructure-baseline.json');
+const INFRA_NAME = /(Guard|Gate|Sentinel|Watchdog|Ratchet|Breaker|Reaper|Limiter|Governor|Authority|Verifier|Arbiter|Fence|Detector)/i;
+function isInfrastructurePath(rel) {
+  if (!/^(src|scripts)\//.test(rel)) return false;
+  if (rel.includes('/templates/') || rel.endsWith('.d.ts') || /(^|\/)__tests__\//.test(rel)) return false;
+  if (!/\.(ts|mjs|cjs|js)$/.test(rel)) return false;
+  const base = rel.split('/').pop();
+  if (rel.startsWith('scripts/') && base.startsWith('lint-')) return true;
+  if (/\/hooks\//.test(rel) || /Hook/.test(base)) return true;
+  return INFRA_NAME.test(base);
+}
+function walk(dir, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+    const rel = `${dir}/${e.name}`;
+    if (e.isDirectory()) walk(rel, out); else if (isInfrastructurePath(rel)) out.push(rel);
+  }
+  return out;
+}
+const infraMissing = [];
+let infraOk = 0;
+const infraPopulation = [...walk('src'), ...walk('scripts')].filter((rel) => !cited.has(rel)).sort();
+for (const rel of infraPopulation) {
+  let body;
+  try { body = fs.readFileSync(path.join(ROOT, rel), 'utf8'); } catch { continue; }
+  const head = body.slice(0, 4000);
+  const namesArticle = titles.some((t) => (t.length > 12
+    ? head.includes(t) || head.includes(t.split(' — ')[0])
+    : head.includes(`*${t}*`)));
+  if (namesArticle) infraOk++; else infraMissing.push(rel);
+}
+if (process.argv.includes('--write-infrastructure-baseline')) {
+  if (fs.existsSync(INFRA_BASELINE)) {
+    console.error('lint-standard-code-backreference: refusing --write-infrastructure-baseline — the baseline exists and may only shrink. Remove entries by adding back-references.');
+    process.exit(1);
+  }
+  fs.writeFileSync(INFRA_BASELINE, `${JSON.stringify({ $comment: 'Shrink-only: infrastructure files (named as guards/gates/sentinels/lints/hooks) that predate the widened back-reference check. A file leaves this list by naming its standard in its header; nothing may be added. See scripts/lint-standard-code-backreference.mjs.', grandfatheredInfrastructure: infraMissing }, null, 2)}\n`);
+  console.log(`lint-standard-code-backreference: wrote ${infraMissing.length} infrastructure baseline entries.`);
+  process.exit(0);
+}
+let infraBaseline;
+try { infraBaseline = JSON.parse(fs.readFileSync(INFRA_BASELINE, 'utf8')); } catch { infraBaseline = { grandfatheredInfrastructure: [] }; }
+const infraGrandfathered = new Set(infraBaseline.grandfatheredInfrastructure || []);
+
 let baseline;
 try { baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8')); } catch { baseline = null; }
 if (!baseline) {
@@ -126,6 +180,22 @@ for (const rel of grandfathered) {
   }
 }
 
+for (const rel of infraMissing) {
+  if (!infraGrandfathered.has(rel)) {
+    errors.push(
+      `${rel} is decision infrastructure (its name marks it as a guard, gate, sentinel, lint or hook) but ` +
+        `names NO standard back. Add a header comment naming the standard(s) that govern it — ` +
+        `"Governed by: <exact article title>" — within its first 4,000 characters.`,
+    );
+  }
+}
+const infraPresent = new Set(infraPopulation);
+for (const rel of infraGrandfathered) {
+  if (infraPresent.has(rel) && !infraMissing.includes(rel)) {
+    errors.push(`${rel} is in the infrastructure baseline but now names a standard — remove it from docs/standards-backreference-infrastructure-baseline.json. The baseline may only shrink.`);
+  }
+}
+
 if (errors.length) {
   console.error('lint-standard-code-backreference: FAILED');
   errors.forEach((e) => console.error('  ✗', e));
@@ -133,5 +203,6 @@ if (errors.length) {
 }
 console.log(
   `lint-standard-code-backreference: clean — ${cited.size} cited file(s), ${ok} naming a standard back, ` +
-    `${missing.length} grandfathered (shrink-only)${gone.length ? `, ${gone.length} cited-but-absent (the dangling-ref floor owns those)` : ''}.`,
+    `${missing.length} grandfathered (shrink-only)${gone.length ? `, ${gone.length} cited-but-absent (the dangling-ref floor owns those)` : ''}; ` +
+    `${infraPopulation.length} further infrastructure file(s), ${infraOk} naming a standard back, ${infraMissing.length} grandfathered (shrink-only).`,
 );

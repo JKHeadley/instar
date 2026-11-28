@@ -180,10 +180,13 @@ describe('each need once in Needs you', () => {
   const planRow = { key: 'need:plan:plan:INI-7', main: 'Plan INI-7 waits for your OK', sub: 'its own words', action: { kind: 'href', href: '#/work/plans?s=needsYou' } };
 
   it('a Chief of Staff row becomes its wait card: one row, the card\'s words, opens the card, the chat one tap away', () => {
-    const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a1', ['cos:waiting:telegram:135786'])])]);
+    const rows = linkCoveredRows([cosRow, ...asNeedRows([cardRow('wc_00000000000000a1', ['cos:waiting:telegram:135786'], 'with-person', {
+      needLine: 'Yours to do', brief: { ask: 'Choose which workspace to keep.' },
+    })])]);
     expect(rows).toHaveLength(1);
     expect(rows[0].key).toBe(cosRow.key);
     expect(rows[0].main).toBe('Agent words');
+    expect(rows[0].sub).toBe('Choose which workspace to keep.');
     expect(rows[0].action).toEqual({ kind: 'href', href: '#/work/board?card=wc_00000000000000a1' });
     expect(rows[0].card).toEqual({ id: 'wc_00000000000000a1', href: '#/work/board?card=wc_00000000000000a1', label: IS_CARD_LABEL });
     expect(rows[0].alsoOpens).toEqual({ href: cosRow.action.href, label: ALSO_OPENS_LABEL });

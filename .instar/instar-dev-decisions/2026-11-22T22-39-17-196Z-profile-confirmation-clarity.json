@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-22T22:39:17.196Z",
+  "slug": "profile-confirmation-clarity",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/handleProfileProposalReply.ts",
+      "src/data/awareness/profile-change-questions.md"
+    ],
+    "addedLines": 8,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "User-driven registered reminder operation; no self-triggered loop."
+  },
+  "verdict": "pass"
+}

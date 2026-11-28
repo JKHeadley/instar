@@ -2019,6 +2019,9 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Bytes read per backward step of `readTailTolerant`. */
+export const TAIL_READ_CHUNK_BYTES = 64 * 1024;
+
 /**
  * Standalone tolerant reverse-tail reader — shared by the writer's `readTail`
  * and (later) the read API's direct-file path. Reads at most `byteCeiling`
@@ -2031,6 +2034,12 @@ export function readTailTolerant(
   limit: number,
   byteCeiling: number,
 ): TolerantReadResult {
+  // Reads the same window as before (the last min(size, byteCeiling) bytes) and returns exactly
+  // the same entries, corrupt count and truncation flag, but walks it backwards in
+  // TAIL_READ_CHUNK_BYTES steps and stops once `limit` entries are found. The old body read and
+  // split the whole window (up to 4 MiB) synchronously even when only the newest few hundred
+  // lines were wanted; under OwnershipApplier.tick that blocked a server thread for 11.6 s on a
+  // loaded Laptop (2026-11-27). Cost is now O(limit) as the reader's contract says.
   const result: TolerantReadResult = { entries: [], skippedCorrupt: 0, truncated: false };
   if (!io.existsSync(filePath)) return result;
 
@@ -2044,16 +2053,67 @@ export function readTailTolerant(
 
   const readBytes = Math.min(size, byteCeiling);
   if (readBytes < size) result.truncated = true;
-  const start = size - readBytes;
+  const windowStart = size - readBytes;
 
-  let buf: Buffer;
+  const take = (line: Buffer): void => {
+    if (line.length === 0) return;
+    const text = line.toString('utf-8');
+    if (!text) return;
+    try {
+      const obj = JSON.parse(text) as JournalEntry;
+      if (typeof obj.seq === 'number' && typeof obj.kind === 'string') result.entries.push(obj);
+      else result.skippedCorrupt++;
+    } catch {
+      // @silent-fallback-ok: not silent. A corrupt line is counted in skippedCorrupt and returned to
+      // the caller, exactly as the previous whole-window body did.
+      result.skippedCorrupt++;
+    }
+  };
+
   let fd: number | null = null;
   try {
     fd = io.openSync(filePath, 'r');
-    buf = Buffer.alloc(readBytes);
-    io.readSync(fd, buf, 0, readBytes, start);
+    let pos = size;                 // bytes [pos, size) have been read
+    // Bytes [pos, first newline after pos), not yet a whole line, kept as chunks (oldest first) so a
+    // line longer than a chunk is joined once, when its start is found, not re-copied per chunk.
+    let headParts: Buffer[] = [];
+    let sawNewline = false;
+    while (pos > windowStart && result.entries.length < limit) {
+      const chunkStart = Math.max(windowStart, pos - TAIL_READ_CHUNK_BYTES);
+      const chunk = Buffer.alloc(pos - chunkStart);
+      io.readSync(fd, chunk, 0, chunk.length, chunkStart);
+      pos = chunkStart;
+      // `head` holds no newline, so only the new chunk can contain one. A chunk with no newline
+      // (part of a line longer than a chunk) is prepended without rescanning `head`, so a long
+      // line costs one pass, not one rescan per chunk.
+      const lastNlInChunk = chunk.lastIndexOf(0x0a);
+      if (lastNlInChunk < 0) {
+        headParts.unshift(chunk);
+        continue;
+      }
+      const buf = headParts.length ? Buffer.concat([chunk, ...headParts]) : chunk;
+      // Every line after the first newline in buf is whole; take them newest-first.
+      let lineEnd = buf.length;
+      let nl = lastNlInChunk;
+      while (nl >= 0 && result.entries.length < limit) {
+        sawNewline = true;
+        take(buf.subarray(nl + 1, lineEnd));
+        lineEnd = nl;
+        nl = lineEnd > 0 ? buf.lastIndexOf(0x0a, lineEnd - 1) : -1;
+      }
+      headParts = lineEnd > 0 ? [buf.subarray(0, lineEnd)] : [];
+      if (result.entries.length >= limit) break;
+    }
+    const head = headParts.length === 1 ? headParts[0] : Buffer.concat(headParts);
+    if (result.entries.length < limit && pos === windowStart && head.length > 0) {
+      // The window's first line. From file start it is whole. From mid-file it is a partial
+      // record and is dropped, unless the window held no newline at all (the old body then
+      // parsed the whole window as one line; kept for identical results).
+      if (windowStart === 0 || !sawNewline) take(head);
+    }
+    if (windowStart > 0) result.truncated = true;
   } catch {
-    return result;
+    return { entries: [], skippedCorrupt: 0, truncated: result.truncated };
   } finally {
     if (fd !== null) {
       try {
@@ -2061,30 +2121,6 @@ export function readTailTolerant(
       } catch {
         /* best-effort */
       }
-    }
-  }
-
-  let text = buf.toString('utf-8');
-  // If we started mid-file, the first (partial) line is not a whole record.
-  if (start > 0) {
-    const nl = text.indexOf('\n');
-    if (nl >= 0) text = text.slice(nl + 1);
-    result.truncated = true;
-  }
-
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0 && result.entries.length < limit; i--) {
-    const ln = lines[i];
-    if (!ln) continue;
-    try {
-      const obj = JSON.parse(ln) as JournalEntry;
-      if (typeof obj.seq === 'number' && typeof obj.kind === 'string') {
-        result.entries.push(obj);
-      } else {
-        result.skippedCorrupt++;
-      }
-    } catch {
-      result.skippedCorrupt++;
     }
   }
   return result;

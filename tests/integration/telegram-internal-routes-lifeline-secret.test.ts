@@ -40,7 +40,7 @@ const SERVER_VERSION = '1.3.500';
 const OPERATOR_ID = 777001;
 
 interface Effects {
-  topicMessages: Array<{ fromUserId: unknown; text: string; userId?: unknown; firstName?: unknown; username?: unknown; senderUnverified?: unknown }>;
+  topicMessages: Array<{ fromUserId: unknown; text: string; userId?: unknown; firstName?: unknown; username?: unknown; senderUnverified?: unknown; replyToMessageId?: unknown }>;
   inboundLog: Array<{ telegramUserId?: unknown; fromUser?: unknown }>;
   a2aHook: Array<{ senderIsBot?: unknown; senderBotId?: unknown }>;
   inboundLogged: number;
@@ -68,7 +68,7 @@ function makeContext(stateDir: string, effects: Effects, extra: Record<string, u
       onTopicMessage: (m: { content: string; userId?: unknown; metadata?: Record<string, unknown> }) => {
         effects.topicMessages.push({
           fromUserId: m.metadata?.telegramUserId, text: m.content, userId: m.userId,
-          firstName: m.metadata?.firstName, username: m.metadata?.username, senderUnverified: m.metadata?.senderUnverified,
+          firstName: m.metadata?.firstName, username: m.metadata?.username, senderUnverified: m.metadata?.senderUnverified, replyToMessageId: m.metadata?.replyToMessageId,
         });
       },
       logInboundMessage: (row: { telegramUserId?: unknown; fromUser?: unknown }) => { effects.inboundLogged++; effects.inboundLog.push(row); },
@@ -136,6 +136,21 @@ describe('internal Telegram routes — lifeline ingress secret', () => {
     if (opts.secret) r = r.set(LIFELINE_SECRET_HEADER, opts.secret);
     return r.send({ callbackQueryId: opts.id ?? 'cbq-1', data: 'approve:abc', fromUserId: OPERATOR_ID, messageId: 55, chatId: -100 });
   };
+
+  it('carries a native reply ID only from the verified lifeline, never from a bearer-only assertion', async () => {
+    const app = boot();
+    const post = (verified: boolean, messageId: number, replyToMessageId: unknown) => {
+      let req = request(app).post('/internal/telegram-forward').set('Authorization', `Bearer ${AUTH_TOKEN}`);
+      if (verified) req = req.set(LIFELINE_SECRET_HEADER, secret());
+      return req.send({ topicId: 4242, text: 'yes', fromUserId: OPERATOR_ID, messageId, replyToMessageId, lifelineVersion: SERVER_VERSION });
+    };
+    expect((await post(true, 9010, 9000)).status).toBe(200);
+    expect(effects.topicMessages.at(-1)?.replyToMessageId).toBe(9000);
+    expect((await post(false, 9011, 9000)).status).toBe(200);
+    expect(effects.topicMessages.at(-1)?.replyToMessageId).toBeUndefined();
+    expect((await post(true, 9012, '9000')).status).toBe(200);
+    expect(effects.topicMessages.at(-1)?.replyToMessageId).toBeUndefined();
+  });
 
   describe('observe (fleet default)', () => {
     it('accepts a forward with no secret, routes it, and counts a would-refuse', async () => {
