@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "ladder-entry-meetingTranscript",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T02:36:55.750Z",
+  "artifactPath": "upgrades/side-effects/ladder-entry-meetingTranscript.md",
+  "artifactSha256": "b768a760ad038195bb470dc28bdf16b6447bf188f1dec7dd8504f3d75a37b828",
+  "coveredFiles": [
+    "src/data/feature-ladders.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One data line in the ladder registry for a spec that names it; no code.",
+  "eli16Path": "docs/specs/ladder-entry-meetingTranscript.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ladder-entry-meetingTranscript.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
