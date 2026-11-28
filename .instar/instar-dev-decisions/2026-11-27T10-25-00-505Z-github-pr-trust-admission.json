@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-27T10:25:00.505Z",
+  "slug": "github-pr-trust-admission",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AdaptiveTrust.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/trustJourney/TrustJourneyRuntime.ts",
+      "src/core/trustJourney/admission.ts",
+      "src/data/awareness/app-first-owner-approvals.md",
+      "src/data/effect-kinds.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
