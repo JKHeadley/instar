@@ -751,5 +751,6 @@ The earlier documents stay in force for the details they hold (for example the d
 |---|---|---|
 | 2026-11-21 | First version: 65 rules in 10 sections, standard screenshot sizes, and the growth process. | Owner request, 2026-11-21 |
 | 2026-11-21 | Added DS-LAYOUT-3, DS-DATA-1, DS-DATA-2, DS-DATA-3, DS-DATA-6, DS-DATA-7, DS-DATA-8, DS-TYPE-3, DS-COLOUR-3, DS-COLOUR-4, DS-COLOUR-7, DS-PARITY-1 to DS-PARITY-5 and DS-DELIGHT-1. Sharpened DS-DATA-4, DS-DATA-5, DS-DATA-9, DS-WORDS-4 and DS-DELIGHT-6. | DF-0001 |
-
-| 2026-11-22 | Added the fixed main conversation rule DS-LAYOUT-12, native context actions rule DS-ACTION-8 and generated-work provenance rule DS-LAYOUT-13. Implementation and release evidence remain open in their records. | DF-0002, DF-0003, DF-0004 |
+| 2026-11-22 | Added the fixed main conversation rule DS-LAYOUT-12. Implementation and release evidence remain open in its record. | DF-0002 |
+| 2026-11-22 | Added the native context actions rule DS-ACTION-8. Implementation and release evidence remain open in its record. | DF-0003 |
+| 2026-11-22 | Added the generated-work provenance rule DS-LAYOUT-13. Implementation and release evidence remain open in its record. | DF-0004 |

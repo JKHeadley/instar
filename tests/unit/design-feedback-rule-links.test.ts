@@ -72,4 +72,8 @@ describe('feedback entry structure and reciprocal rule links', () => {
   expect(r.entries[0].sourcePresent).toBe(true); expect(JSON.stringify(r)).not.toContain(secret);
  });
 
+ it('does not accept a malformed diagnosis identifier by matching its issued prefix', () => {
+  expect(inspect([entry(markdown.replace('**DS-DATA-2**', '**DS-DATA-2-typo**'))]).errors).toContainEqual(expect.objectContaining({ code: 'entry-problem-rule-id-invalid', problem: 1 }));
+ });
+
 });

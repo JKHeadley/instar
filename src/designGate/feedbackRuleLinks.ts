@@ -3,19 +3,28 @@ import { parseDesignStandard } from './standardParser.js';
 import { Lexer, type Token, type Tokens } from 'marked';
 export interface FeedbackEntryDocument { path: string; markdown: string }
 export interface FeedbackLinkError { code: string; path?: string; entryId?: string; ruleId?: string; problem?: number }
-const RULE = /\bDS-[A-Z][A-Z0-9]*-\d+\b/g;
-const ruleIds = (text: string) => [...new Set(text.match(RULE) ?? [])];
+/** Literal symbolic IDs only: never turn a typo or numeric suffix into another issued ID. */
+export function readFeedbackRuleIds(text: string): { ids: string[]; invalid: boolean } {
+  const ids = new Set<string>(); let invalid = false;
+  for (const raw of text.match(/\bDS-[A-Z][A-Z0-9]*-[A-Za-z0-9_.-]+(?![@A-Za-z0-9_.-])/g) ?? []) {
+    const id = raw.replace(/\.+$/, ''); // ordinary sentence punctuation is not part of the symbol
+    if (/^DS-[A-Z][A-Z0-9]*-\d+$/.test(id)) ids.add(id);
+    else invalid = true;
+  }
+  return { ids: [...ids], invalid };
+}
+
 function section(text: string, title: RegExp): string | null {
   const lines = text.split('\n'), start = lines.findIndex(line => title.test(line));
   if (start < 0) return null;
   const rest = lines.slice(start + 1), end = rest.findIndex(line => /^##\s/.test(line));
   return rest.slice(0, end < 0 ? rest.length : end).join('\n');
 }
-function inlineText(tokens: readonly Token[]): string {
+export function feedbackInlineText(tokens: readonly Token[]): string {
   return tokens.map(token => {
     if (token.type === 'html' || token.type === 'code' || token.type === 'image') return '';
     const nested = (token as { tokens?: Token[] }).tokens;
-    if (nested) return inlineText(nested);
+    if (nested) return feedbackInlineText(nested);
     if (token.type === 'br') return ' ';
     return (token as { text?: string }).text ?? '';
   }).join('');
@@ -26,11 +35,11 @@ function structureText(tokens: readonly Token[]): string {
       case 'code': case 'html': case 'def': return '';
       case 'heading': {
         const heading = token as Tokens.Heading;
-        return '#'.repeat(heading.depth) + ' ' + inlineText(heading.tokens) + '\n';
+        return '#'.repeat(heading.depth) + ' ' + feedbackInlineText(heading.tokens) + '\n';
       }
       case 'table': {
         const table = token as Tokens.Table;
-        return [table.header, ...table.rows].map(row => '| ' + row.map(cell => inlineText(cell.tokens).replace(/\|/g, '\\|')).join(' | ') + ' |\n').join('');
+        return [table.header, ...table.rows].map(row => '| ' + row.map(cell => feedbackInlineText(cell.tokens).replace(/\|/g, '\\|')).join(' | ') + ' |\n').join('');
       }
       case 'list': {
         const list = token as Tokens.List;
@@ -43,8 +52,8 @@ function structureText(tokens: readonly Token[]): string {
         }).join('');
       }
       case 'blockquote': return structureText((token as Tokens.Blockquote).tokens).split('\n').map(line => '> ' + line).join('\n') + '\n';
-      case 'paragraph': return inlineText((token as Tokens.Paragraph).tokens) + '\n';
-      case 'text': return inlineText([token]) + '\n';
+      case 'paragraph': return feedbackInlineText((token as Tokens.Paragraph).tokens) + '\n';
+      case 'text': return feedbackInlineText([token]) + '\n';
       case 'space': case 'hr': return '\n';
       default: return '';
     }
@@ -98,7 +107,9 @@ export function inspectFeedbackRuleLinks(input: { standard: string; entries: rea
       for (let i = 0; i < starts.length; i++) {
         const problem = Number(starts[i][1]);
         if (!Number.isSafeInteger(problem) || problem < 1 || problems.has(problem)) errors.push({ code: 'entry-problem-number-invalid', ...at, problem });
-        const ids = ruleIds(diagnosis.slice(starts[i].index!, starts[i + 1]?.index ?? diagnosis.length));
+        const references = readFeedbackRuleIds(diagnosis.slice(starts[i].index!, starts[i + 1]?.index ?? diagnosis.length));
+        const ids = references.ids;
+        if (references.invalid) errors.push({ code: 'entry-problem-rule-id-invalid', ...at, problem });
         problems.set(problem, ids);
         if (!ids.length) errors.push({ code: 'entry-problem-rule-missing', ...at, problem });
         for (const ruleId of ids) if (!rules.has(ruleId)) errors.push({ code: 'entry-problem-rule-unknown', ...at, problem, ruleId });
