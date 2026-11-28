@@ -69,6 +69,8 @@ const REQUIRED_LINTS = [
   'lint-dispatch-withholds-answer.mjs',
   'lint-bounded-judgment-input.mjs',
   'lint-documented-only-countdown.mjs',
+  // audit-never-started: the required-audits register's shape and snooze check.
+  'lint-required-audits.mjs',
   // Not named "lint-*": it is a generator whose --check mode IS the guard. Listed
   // here anyway, because the property this ratchet protects is "a registry guard
   // is in the chain", and a guard that escapes the ratchet on a naming technicality

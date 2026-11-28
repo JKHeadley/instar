@@ -1,0 +1,93 @@
+name: Required Audits Cadence
+
+# Weekly, nonblocking. Reads docs/audits/required-audits.json against the converged reports in
+# docs/audits/ (scripts/lint-required-audits.mjs) and keeps one marker-owned issue open while any
+# required audit has never started or is overdue, closing it when none is. Elapsed age is a
+# resurfacing signal, never a blocking proxy; the commit-time check fails only on the register's
+# shape. Spec: docs/specs/audit-never-started.md (closes STD-SUBCOUNTDOWN-audit-never-started).
+
+on:
+  schedule:
+    - cron: '37 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: required-audits-cadence
+  cancel-in-progress: false
+
+jobs:
+  required-audits:
+    name: Check required audits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Read the register
+        # fetch-depth 0 above gives the check origin/main, which it reads main's copy of the register
+        # from. On a scheduled run HEAD is main itself, so the snooze comparison is trivially clean; the
+        # comparison does its real work at commit and PR time. A malformed register exits 1 here, which
+        # fails this job, and the steps below leave the issue untouched in that case.
+        run: node scripts/lint-required-audits.mjs --json > required-audits.json
+      - name: Publish cadence summary
+        if: always()
+        run: |
+          node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync("required-audits.json","utf8"));const bad=(r.problems||[]).length;const lapsed=r.rows.filter(x=>x.state==="never-started"||x.state==="overdue");fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,`## Required audits\n\n${bad?`The register is malformed (${bad} problem(s)); no audit state was read.`:lapsed.length?`${lapsed.length} required audit(s) lapsed. See the marker-owned issue.`:"No required audit has lapsed."}\n`);'
+      - name: Maintain nonblocking lapsed-audit issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report;
+            try { report = JSON.parse(fs.readFileSync('required-audits.json', 'utf8')); } catch { core.setFailed('the check wrote no JSON'); return; }
+            // A malformed register reads no states: never close (or rewrite) the issue on that basis.
+            if ((report.problems || []).length) { core.warning('required-audits register is malformed; issue left untouched'); return; }
+            const lapsed = report.rows.filter(r => r.state === 'never-started' || r.state === 'overdue');
+            const title = '[Audits] A required audit has lapsed';
+            const marker = '<!-- required-audits-cadence:v1 -->';
+            const safe = v => String(v)
+              .replace(/@/g, '@\u200b')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/[\\`*_{}[\]()#+\-.!|]/g, '\\$&')
+              .replace(/[\r\n]+/g, ' ')
+              .slice(0, 200);
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              per_page: 100,
+            });
+            const existing = issues.find(issue =>
+              !issue.pull_request &&
+              issue.user?.login === 'github-actions[bot]' &&
+              issue.title === title &&
+              issue.body?.startsWith(`${marker}\n`)
+            );
+            if (lapsed.length > 0) {
+              const body = [
+                marker,
+                'The weekly nonblocking check found required audits that have lapsed:',
+                '',
+                ...lapsed.map(r => `- ${safe(r.id)}: ${safe(r.state)} (owner ${safe(r.owner)}; last converged ${safe(r.lastConverged ?? 'never')})`),
+                '',
+                'Run each to convergence (the report is stamped by scripts/write-audit-convergence.mjs), or re-date its row with a recorded dueReason.',
+                `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join('\n');
+              if (existing) {
+                await github.rest.issues.update({ ...context.repo, issue_number: existing.number, state: 'open', body });
+              } else {
+                await github.rest.issues.create({ ...context.repo, title, body });
+              }
+            } else if (existing) {
+              await github.rest.issues.update({ ...context.repo, issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+            }

@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "required-audits-register",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T11:29:41.751Z",
+  "artifactPath": "upgrades/side-effects/required-audits-register.md",
+  "artifactSha256": "f2a6f4bf92a17ee3292483ea0bbc91b9e8676ae939065529d4d58ebdaa33a00a",
+  "coveredFiles": [
+    ".github/workflows/required-audits-cadence.yml",
+    "docs/audits/required-audits.json",
+    "docs/specs/audit-never-started.eli16.md",
+    "docs/specs/audit-never-started.md",
+    "package.json",
+    "scripts/lint-required-audits.mjs",
+    "tests/unit/lint-chain-completeness.test.ts",
+    "tests/unit/lint-required-audits.test.ts",
+    "upgrades/next/required-audits-register.md",
+    "upgrades/side-effects/required-audits-register.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A register, a format-and-snooze lint, a nonblocking weekly workflow and its docs; no runtime change; a revert undoes it; second pass required because the lint can fail commits; the independent reader concurred on round 3 (echo-pipeline-strategy-audit-never-started.md), and the only later change is the two safe-git-allow marker lines the destructive-op lint requires",
+  "eli16Path": "docs/specs/audit-never-started.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/required-audits-register.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

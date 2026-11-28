@@ -1,0 +1,14 @@
+{
+  "about": "Audits that must recur on a clock (Iterative Audit to Convergence; spec docs/specs/audit-never-started.md). Family audits are not rows: they re-run when their area text changes (scripts/standards-coverage.mjs). Checked by scripts/lint-required-audits.mjs. firstDueBy = one cadence after the audit's last report (stamped or not), else about one month after this register first merges.",
+  "status": "PROPOSED seed list, pending the Chief of Staff's confirmation on 2026-11-30",
+  "contentTriggered": "standards-coverage area and family audits",
+  "audits": [
+    { "id": "security-auth-credential-identity", "reports": ["conversation-graph-delegation-security", "conversation-graph-replication-security"], "scope": "Security review of the auth, credential and identity surfaces (last: the two conversation-graph security reports of 2026-11-05).", "owner": "echo-identity-and-security-levels", "cadenceDays": 90, "firstDueBy": "2027-02-03" },
+    { "id": "keyword-intent-classification-audit", "scope": "Keyword-intent classification audit (Intelligence Infers, Keywords Only Guard); last report 2026-07-03, unstamped.", "owner": "echo-engine-feature-optimization", "cadenceDays": 90, "firstDueBy": "2026-10-01" },
+    { "id": "truncated-judgment-input", "scope": "Bounded judgment-input review: re-check the detector's blind spots while the baseline sits at zero; last converged 2026-08-22.", "owner": "echo-pipeline-strategy", "cadenceDays": 90, "firstDueBy": "2026-11-20" },
+    { "id": "llm-decision-accountability", "scope": "LLM decision accountability; last converged 2026-07-12.", "owner": "echo-instar-benchmark", "cadenceDays": 30, "firstDueBy": "2026-08-11" },
+    { "id": "local-ci-test-parity", "scope": "Local and CI test parity; last report 2026-08-15, unstamped.", "owner": "echo-scaling-the-test-line", "cadenceDays": 30, "firstDueBy": "2026-09-14" },
+    { "id": "unlanded-work-census", "scope": "Unlanded-work census; last report 2026-08-15, unstamped.", "owner": "echo-machine-stewardship", "cadenceDays": 30, "firstDueBy": "2026-09-14" },
+    { "id": "substrate-membership-sweep", "scope": "Substrate membership sweep (new articles are caught by lint-substrate-admission-declared). Its first report, of 2026-11-27, lands with the Substrate admission change; this date assumes that report.", "owner": "echo-pipeline-strategy", "cadenceDays": 365, "firstDueBy": "2027-11-27" }
+  ]
+}
