@@ -28,6 +28,7 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
+import { isBelowFence } from '../core/meshVerbFenceClass.js';
 import type { Server as HttpServer, IncomingMessage } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
@@ -426,6 +427,11 @@ export class WebSocketManager {
   /** Relay an input/key frame to the serving machine; the answer for its id
    *  goes back to this client alone. Not sent → `peer-stream-lost` with the id. */
   private relayWrite(client: ClientState, machineId: string, session: string, frame: Record<string, unknown>, id: string | undefined): void {
+    // identity-security piece 2d §2b: no remote input to a session on a machine below the minimum build. Viewing stays allowed.
+    if (isBelowFence(machineId)) {
+      this.send(client.ws, { type: 'error', code: 'below-minimum-build', session, ...(id ? { clientInputId: id } : {}), message: 'That computer runs an older version of Instar, so typing into its sessions is paused until it is updated.' });
+      return;
+    }
     const pendingKey = id ? `${machineId}::${session}::${id}` : null;
     if (pendingKey) {
       // A repeat of an id still waiting (a retry before the first answer) waits for its own answer too.

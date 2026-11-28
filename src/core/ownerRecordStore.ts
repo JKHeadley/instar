@@ -49,6 +49,9 @@ export interface PeerView {
   honouredPeerMarker: boolean;
   /** Piece 2c §1: enrolled, a fence value is set, but neither it nor a last verified fence is usable. */
   fenceUnusable?: boolean;
+  /** Piece 2d §1: registered machines below the fence, and machines alive but unconfirmed for 24 hours. */
+  machinesBelow?: string[];
+  machinesUnconfirmed?: string[];
 }
 
 interface Marker { agentId: string; machineId: string | null; genesis: string; at: string }
@@ -217,6 +220,10 @@ export class OwnerRecordStore {
     const enrolled = marker.kind === 'ok' || peers.honouredPeerMarker || !!st?.everEnrolled;
     if (enrolled) {
       if (peers.fenceUnusable) return { act: 'hold', enrolment: 'enrolled', reason: 'fence-unusable', state: st };
+      // Piece 2d §1: one agent-wide decision. While any machine is below the fence, or alive but unconfirmed,
+      // Sensitive and Serious actions are held everywhere; viewing continues.
+      if ((peers.machinesBelow?.length ?? 0) > 0) return { act: 'hold', enrolment: 'enrolled', reason: 'machine-below-fence', state: st };
+      if ((peers.machinesUnconfirmed?.length ?? 0) > 0) return { act: 'hold', enrolment: 'enrolled', reason: 'machine-unconfirmed', state: st };
       if (st && st.everEnrolled && st.status === 'ok') return { act: 'record', enrolment: 'enrolled', reason: 'ok', state: st };
       return { act: 'hold', enrolment: 'enrolled', reason: st ? `record-${st.status}` : 'record-missing', state: st };
     }
