@@ -1,0 +1,11 @@
+# Shorter recovery installation test files
+
+The recovery installation tests check that an agent can install an independent recovery service, preserve the operator’s SSH access, update its executable safely, and undo an installation without leaving recovery authority open. These checks use real temporary files, signed identities, copied Node interpreters, native SQLite storage, and the production runtime slot builder. Those are valuable parts of the proof and remain in place.
+
+The existing file contains seventeen test cases. Keeping them in one file means a verifier process must finish the entire group before it can move on. This change places eight cases in the existing file and nine in a second file. Every test body remains unchanged, including the three identity-check rows that belong to one table. The usual integration configuration discovers both files automatically.
+
+Each file retains its own setup and mocked operating-system boundary. Every case still receives a fresh temporary directory, runtime build, enrollment, and service state. The files do not share a prepared recovery slot or run cases concurrently inside a worker. The small duplication of setup is intentional: sharing hoisted mock state through a new helper would introduce a different isolation change into this experiment.
+
+This is a test organization change, not a product feature. It does not change recovery behavior, admission limits, worker counts, or timeouts. Two shorter files may let the existing verifier distribute work more evenly. Focused timings describe the files on the measured machine; they cannot establish the duration of a full verification run. Reverting the change restores the original file layout without a migration.
+
+There is an additional first-run risk: the verifier does not yet know how long the new filename takes. Its existing selection policy may treat that file as a short test and run it before the parallel lanes begin. A saved offline projection confirms this selection happens with cold history and stops when measured durations are available for both files. The experiment does not edit that history or policy, and cannot claim a faster full gate from focused timings alone.
