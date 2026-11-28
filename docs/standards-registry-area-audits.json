@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-19T03:22:00.000Z",
-      "auditRef": "docs/audits/safeguard-benefit-and-standalone-docs-families-2026-11-18.json",
-      "auditSha256": "6cf106db2d14c069d9f7931f98c1105ac33a23dfc0a3dc07ea6b4eb1a01b5e0c",
-      "areaSha256": "52533019f8162a188875bc18bccfbb5252bc573b224711ecb067048609409506",
+      "lastAuditedAt": "2026-11-28T00:45:00.000Z",
+      "auditRef": "docs/audits/backreference-infrastructure-population-building-2026-11-27.json",
+      "auditSha256": "3753029c62ebc5aeb52abaf06fe254ce2d48a59735d9de2016d5ce7c0427b334",
+      "areaSha256": "b1a2aa07825fab51c46454ae40547a8882d6192b9229dc124e46633236b76d57",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

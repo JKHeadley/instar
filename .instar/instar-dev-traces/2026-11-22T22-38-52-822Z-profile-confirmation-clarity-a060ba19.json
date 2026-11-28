@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-clarity",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:38:52.822Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-clarity.md",
+  "artifactSha256": "63de99e48f4874855a4b147ac28503fb4bb85132f82527c9d2b5a7094d1e67d1",
+  "specPath": "docs/specs/profile-confirmation-clarity.md",
+  "coveredFiles": [
+    "docs/specs/profile-confirmation-clarity.eli16.md",
+    "docs/specs/profile-confirmation-clarity.md",
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "src/commands/server.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "src/data/awareness/profile-change-questions.md",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "upgrades/side-effects/profile-confirmation-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Use registered reminder operation so its actual receipt remains answerable; same-topic and cross-topic corrections independently reviewed. Parent-principle fit corrected; live merge hold retained.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "User-driven registered reminder operation; no self-triggered loop."
+  }
+}

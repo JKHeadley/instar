@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { newApprovalCode, acceptanceStatement, isAcceptanceReply, parseApproveCommand, receiptApproves, renderRequestCard, DISCLOSURE,
   deviceApprovalDisclosure, SET_UP_APPROVALS_TEXT, UNKNOWN_OUTCOME_TEXT,
   type AdapterKind, type Receipt, type RequestRecord } from './accountPath.js';
+import { trustGrantProofSubject } from '../../data/effect-kinds.js';
 import { issueOperatorProofFromConsumedReceipt, proposalHashOf, type OperatorProof } from '../TrustRaiseGuard.js';
 import type { DeviceAcceptanceRecord, TrustChange, TrustJourneyStore } from './TrustJourneyStore.js';
 
@@ -108,7 +109,7 @@ export interface AccountPathDeps {
 /** The exact value a proof names for a change: the same shape the trust owners hash. */
 export function proofSubject(change: TrustChange): unknown {
   switch (change.kind) {
-    case 'trust-grant': return { kind: 'trust-grant', service: change.service, operation: change.operation, level: change.level };
+    case 'trust-grant': return trustGrantProofSubject(change.service, change.operation, change.level);
     case 'autonomy-profile': return { kind: 'autonomy-profile', from: change.from, to: change.to };
     case 'trust-recovery': return { kind: 'trust-recovery', incidentId: change.incidentId };
     default: return change;

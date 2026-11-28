@@ -6989,6 +6989,9 @@ export class TelegramAdapter implements MessagingAdapter {
         username: msg.from.username,
         firstName: msg.from.first_name,
         messageThreadId: numericTopicId,
+        // Native platform receipt only; quoted text never establishes a reply target.
+        ...(Number.isSafeInteger(msg.reply_to_message?.message_id) && Number(msg.reply_to_message?.message_id) > 0
+          ? { replyToMessageId: msg.reply_to_message!.message_id } : {}),
         // A new poller sends `media` on every message (empty here), so a receiver can tell it from an old one.
         media: [],
         // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
