@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "gemini-reviewer-trust-and-tier",
+  "sessionId": "8d64a48d-01f4-49c1-9210-3e2c46e90626",
+  "timestamp": "2026-11-07T13:29:25.966Z",
+  "artifactPath": "upgrades/side-effects/gemini-reviewer-trust-and-tier.md",
+  "artifactSha256": "a499dc4b239a12cce47f63a743b06eca7c0875e0c701f46544bb03620748cbcb",
+  "coveredFiles": [
+    "upgrades/next/gemini-reviewer-trust-and-tier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note wording only: remove inline code from the user-facing section.",
+  "eli16Path": "upgrades/side-effects/gemini-reviewer-trust-and-tier.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/gemini-reviewer-trust-and-tier.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

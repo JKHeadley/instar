@@ -117,6 +117,11 @@ export interface BuildIntelligenceProviderOptions {
    */
   resolveExecJson?: () => boolean;
   /**
+   * gemini-cli only: pass `--skip-trust` on this provider's one-shots (see
+   * GeminiCliIntelligenceProviderOptions.skipTrust). Absent ⇒ today's argv.
+   */
+  geminiSkipTrust?: boolean;
+  /**
    * codex-cli only: which pool account an internal call runs under (null ⇒ the
    * ambient login). Wired by the server to pick the Codex account with the most
    * room, so one walled login no longer takes every background check down with it.
@@ -214,6 +219,7 @@ export function buildIntelligenceProvider(
           geminiPath: path,
           ...(options.workingDirectory ? { workingDirectory: options.workingDirectory } : {}),
           ...(options.quotaStateFile ? { capacityPolicy: { quotaStateFile: options.quotaStateFile } } : {}),
+          ...(options.geminiSkipTrust ? { skipTrust: true } : {}),
         }),
         options.breaker,
       );
