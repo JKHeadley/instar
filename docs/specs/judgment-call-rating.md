@@ -236,8 +236,8 @@ is `unmatched`, counted, and not rated.
 
 Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
 
-1. **Stage 1, tier and machinery** — `declaredTier`, `suggestedTier`, `riskFloor`,
-   `riskFloorReasons`, `perFileLines`, and **that call's own diff**: rebuilt from each path's
+1. **Stage 1, tier and machinery** — `riskFloor`, `riskFloorReasons`, `perFileLines`, the tier
+   definitions from the instar-dev skill, and **that call's own diff**: rebuilt from each path's
    `baseBlob` and `stagedBlob` in the record, read from the PR's head ref (`refs/pull/<N>/head`,
    fetched read-only from the public repository, at most one fetch per PR, because squash merges
    drop the intermediate blobs from main). A blob **resolves** only if it is reachable from that
@@ -247,7 +247,10 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
    as this call's; unresolvable counts are reported in the totals.
    Legacy calls have no blob ids and use their scope's diff in the landed PR only when no other call
    in the PR touches the same paths; otherwise stage 1 is `insufficient-evidence`. Bounded at
-   60,000 characters with the cut disclosed. The diff excludes
+   60,000 characters (about 15,000 tokens: far inside either judge's context, and chosen to keep
+   each call's prompt near 20,000 tokens so the weekly cost estimate below holds) with the cut
+   disclosed; a cut diff makes the
+   stage 1 answers `insufficient-evidence`, never a verdict on part of a change. The diff excludes
    `.instar/instar-dev-traces/`, `.instar/instar-dev-decisions/`, `upgrades/side-effects/` and
    `docs/specs/`. **No tier reasoning and no artifact text.** Every rated call gets the same view,
    so the calibration groups below see the same evidence.
@@ -262,11 +265,11 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
 
 | Label | Stage | Question | Codes |
 |---|---|---|---|
-| consequential or reversible | 1 | Is the declared tier right for this scope and these risk signals? | `right`, `too-low`, `too-high`, `insufficient-evidence` |
-| machinery warranted | 1 | Is the process the declared tier prescribes proportionate to this change? (The work actually done is not visible in stage 1 and is not asked here.) | `proportionate`, `over`, `under`, `insufficient-evidence` |
+| consequential or reversible | 1 | Which tier does this change warrant? The judge answers **without seeing the declared or the gate's suggested tier**; the grader then compares mechanically: same as declared → `right`, higher → `too-low`, lower → `too-high`. | judge: `1`, `2`, `3`, `insufficient-evidence` |
+| machinery warranted | 2 | Shown the declared tier only now, after the stage 1 answer is recorded: is the process that tier prescribes proportionate to this change? (The work actually done is not asked here.) | `proportionate`, `over`, `under`, `insufficient-evidence` |
 | work serves a standard | 2 | Does the cited spec or artifact name the standard the change serves, and does the change match it? | `serves`, `unclear`, `none-cited`, `insufficient-evidence` |
 | review genuinely considered | 2 | Do the artifact's answers engage this change's real risks, rather than template text? | `engaged`, `boilerplate`, `missing`, `insufficient-evidence` |
-| audit-shaped sweep | 2 | If the change is a sweep, did a second pass or convergence run? | `verified` (decided from the record, not by the judges: a convergence tag and a convergence report both present at gate time), `attested-only` (the author's second-pass claim alone), `no`, `not-a-sweep`, `insufficient-evidence` |
+| audit-shaped sweep | 2 | If the change is a sweep, did a second pass or convergence run? | `convergence-recorded` (decided from the record, not by the judges: a convergence tag and a convergence report both present at gate time — evidence that the review was recorded, not proof of its quality), `attested-only` (the author's second-pass claim alone), `no`, `not-a-sweep`, `insufficient-evidence` |
 | context sufficiency | 2 | From what the record shows the author had (the scope, the spec, the artifact), was something the call needed missing? | `none-missing`, `spec-missing`, `risk-not-surfaced`, `unknown` |
 
 Each judge also reports what **its own** view lacked (`none`, `scrubbed`, `truncated`), so the
@@ -285,7 +288,8 @@ Each question on each sampled call ends in exactly one disposition:
   unresolvable blob, a scrubbed or truncated input, a checked/staged or landed mismatch); the two
   sources are counted separately inside this disposition;
 - `incomplete`: a family was unavailable or failed the code this run (retried later);
-- `gave-up`: still incomplete after two retries;
+- `gave-up`: still incomplete after two retries, with the cause of each failed attempt (family
+  unavailable, code not echoed, unparseable) kept in the ledger, so a run of one cause is visible;
 - `excluded`: `injection-suspect`, `traceDiffers`, or `judgment.error`.
 
 Dispositions sum to the sampled calls for every question. A **rate** is the count of an agreed code
@@ -324,7 +328,8 @@ calibration from the ledgers of the totals documents covering it, with no run fo
 ### Sampling and cost
 
 Per run, from calls since the cursor: every `belowFloor` call (about 49 records a week today;
-capped at 60, overflow carried in the manifest), carried-over and retry ids, a seeded 40 of the
+capped at 60 — about 20% above the observed weekly rate, so a normal week is taken whole and a
+burst is spread over the next runs rather than dropped; overflow carried in the manifest), carried-over and retry ids, a seeded 40 of the
 rest (about ±15 points on a rate at 95%: enough to see a class of problem, not to rank authors),
 and, for each cohort reaching its 30-day mark, any of its calls not yet rated (the `cohort-catch-up`
 group, capped at 40). The seed and sizes are written into the run
@@ -462,7 +467,7 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 
 12. Evidence eligibility: a fixture where the hook checked bytes A while B was staged and B landed is
     `checked-differs-from-staged`; a spec-only edit after the gate run is caught by `spec.stagedHash`;
-    a convergence report added in a second commit of the PR does not make the first call `verified`;
+    a convergence report added in a second commit of the PR does not make the first call `convergence-recorded`;
     a refused attempt that only deleted a file is `not-landed`; an unfetchable PR history is
     `history-unavailable`.
 13. Each question's dispositions sum to the sampled calls, and every published rate shows its
