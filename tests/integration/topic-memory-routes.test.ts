@@ -336,6 +336,10 @@ describe('TopicMemory API routes', () => {
       expect(res.body.rebuilt).toBe(true);
       expect(res.body.messagesImported).toBe(5);
       expect(res.body.stats.totalMessages).toBe(5);
+      // PROP-1289: rows the store absorbed without keeping are counted, and the
+      // count reaches the only API consumer of the import stats. A counter the
+      // route does not carry is a counter nobody can read.
+      expect(res.body.parseErrors).toMatchObject({ notLanded: 0 });
     });
   });
 });
