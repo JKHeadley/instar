@@ -14269,11 +14269,73 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
     });
 
+    // ── Boot session census (restart-lock-continuity part A) ──
+    // Taken BEFORE the purge below rewrites the records of sessions that died with
+    // the previous boot. Once per OS boot; a server restart in the same boot keeps
+    // the first census. Lists, marks open work, and notifies once; never revives
+    // (revival is phase 2, CMT-1940). Runs whether or not machine maintenance is on.
+    try {
+      const { BootSessionCensus, readBootAt, setActiveBootSessionCensus } = await import('../core/BootSessionCensus.js');
+      const census = new BootSessionCensus({ stateDir: config.stateDir, bootAt: readBootAt() });
+      setActiveBootSessionCensus(census);
+      const captured = census.capture(state.listSessions());
+      console.log(`[boot-census] ${captured.written ? 'written' : 'not written'}: ${captured.reason}`);
+      const pruned = census.prune();
+      if (pruned.backlog) {
+        DegradationReporter.getInstance().report({
+          feature: `boot-census.unreviewed-backlog:${config.projectName}`,
+          primary: 'Boot census files are reviewed by the daily stewardship pass and then removed after 30 days',
+          fallback: 'All unreviewed census files are kept; nothing is dropped',
+          reason: `${pruned.unreviewed} unreviewed boot census files (limit 200)`,
+          impact: 'The list of sessions ended by restarts is growing unread',
+        });
+      }
+    } catch (err) {
+      console.warn(`[boot-census] census unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Fast startup purge — remove session records for dead tmux sessions BEFORE
     // monitoring starts. Prevents the death spiral where stale sessions overwhelm
     // the health endpoint (synchronous tmux has-session calls) and cause the
     // lifeline to restart the server in a tight loop.
     await sessionManager.purgeDeadSessions();
+
+    // Boot census notice (restart-lock-continuity A.5): 15 minutes after start, one
+    // report per boot when ended sessions with open work have not come back.
+    {
+      const bootCensusServerStartedAt = Date.now();
+      const bootCensusTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const { getActiveBootSessionCensus, bootCensusDeps, buildOpenWorkNotice } = await import('../core/BootSessionCensus.js');
+            const census = getActiveBootSessionCensus();
+            const file = census?.current();
+            if (!census || !file || file.noticeSentAt) return;
+            const livCfg = config.monitoring?.autonomousLivenessReconciler ?? {};
+            const deps = bootCensusDeps({
+              state, sessionManager, commitmentTracker,
+              ownMachineId: _meshSelfId ?? undefined,
+              activeAutonomousTopics: () => new Set(activeAutonomousJobs(config.stateDir).filter((j) => j.active && j.topic).map((j) => String(j.topic))),
+              reconcilerEnabled: resolveDevAgentGate(livCfg.enabled, config) && livCfg.dryRun === false,
+              serverStartedAt: bootCensusServerStartedAt,
+            });
+            const notice = buildOpenWorkNotice(census.classify(file, deps));
+            if (!notice) return;
+            if (!census.markNoticeSent()) return;
+            DegradationReporter.getInstance().report({
+              feature: `boot-census.open-work-ended:${config.projectName}:${file.bootAt}`,
+              primary: 'Sessions with open work continue after a restart',
+              fallback: 'They resume when their topic gets its next message',
+              reason: notice,
+              impact: 'Work that was in progress when the machine restarted is waiting',
+            });
+          } catch (err) {
+            console.warn(`[boot-census] notice check failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
+      }, 15 * 60 * 1000);
+      bootCensusTimer.unref?.();
+    }
 
     // ── A2A inbound message-id ledger (docs/specs/a2a-inbound-id-ledger.md) ──
     // Opened HERE, at the inbound-queue sweep's boot site and BEFORE
@@ -27914,6 +27976,56 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(pc.dim(`  local-verify enabled in config but inert (${built.reason})`));
         }
       }
+      // Lock watch (restart-lock-continuity C.1): runs whether or not machine
+      // maintenance is enabled. The lock reader is created here, outside the
+      // maintenance gate (it spawns nothing until read); the gate reuses it.
+      try {
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        const { readEnrolment, defaultDoNotMaintainPath } = await import('../monitoring/machineMaintenance/enrolmentReadiness.js');
+        const { LockWatch, setActiveLockWatch } = await import('../monitoring/LockWatch.js');
+        const { readBootAt } = await import('../core/BootSessionCensus.js');
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
+        const lvSvc = localVerifyService;
+        const enrolledSelfCare = (): boolean => { const e = readEnrolment(); return !!e && (e.mode === 'unattended' || e.mode === 'proving'); };
+        if (lvSvc || enrolledSelfCare()) {
+          const lockWatch = new LockWatch({
+            hostDir: path.join(os.homedir(), '.instar', 'host-maintenance'),
+            read: async () => {
+              const reader = getActiveMachineLockStateReader();
+              return reader ? (await reader.read()).lockState : 'unknown';
+            },
+            scope: () => {
+              if (fs.existsSync(defaultDoNotMaintainPath())) return { watched: false, interruptsWork: false, lockOnly: true };
+              const selfCare = enrolledSelfCare();
+              const peerOnly = !!lvSvc && lvSvc.isPeerOnly();
+              let interruptsWork = false;
+              if (lvSvc && !peerOnly) {
+                // Work waiting now; LockWatch also remembers work seen at any reading in the episode.
+              try { const snap = lvSvc.snapshot(); interruptsWork = snap.queue.length > 0 || snap.inFlight !== null; } catch { interruptsWork = false; }
+              }
+              return { watched: selfCare || !!lvSvc, interruptsWork, lockOnly: selfCare || peerOnly };
+            },
+            report: (r) => {
+              DegradationReporter.getInstance().report({
+                feature: r.feature,
+                primary: 'This machine is unlocked so it can run tests and maintain itself',
+                fallback: 'Work that needs the screen waits until someone unlocks it',
+                reason: `${coordinator.identity?.name ?? os.hostname()} has been locked since ${new Date(r.firstLockedAt).toLocaleString()}`,
+                impact: 'Tests on this machine can fail while its screen is locked. Unlock it at its console.',
+              });
+            },
+            machineId: lvMachineId,
+            agentName: config.projectName,
+            bootAt: readBootAt(),
+            holdMs: Math.min(60 * 60 * 1000, Math.max(60 * 1000, Number(liveConfig.get<number>('machineMaintenance.lockReportAfterMs', 10 * 60 * 1000)) || 10 * 60 * 1000)),
+            log: (line) => console.log(line),
+          });
+          setActiveLockWatch(lockWatch);
+          lockWatch.start();
+        }
+      } catch (err) {
+        console.warn(`[lock-watch] not started: ${err instanceof Error ? err.message : String(err)}`);
+      }
       // The status reconcile loop (§3). Built on any instar source checkout with the
       // agent's GitHub login: the Actions-floor mirror must stay on whenever GitHub
       // requires the check, independent of monitoring.localVerify.enabled (with the
@@ -28860,8 +28972,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         }
 
         // Honest lock reading (Part A): a read of the session, never the flag alone.
-        const { MachineLockStateReader, setActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
-        setActiveMachineLockStateReader(new MachineLockStateReader());
+        const { MachineLockStateReader, setActiveMachineLockStateReader, getActiveMachineLockStateReader } = await import('../core/MachineLockStateReader.js');
+        // Usually already created at startup for the lock watch (restart-lock-continuity C.1); reuse it.
+        if (!getActiveMachineLockStateReader()) setActiveMachineLockStateReader(new MachineLockStateReader());
 
         // Browser care (Part B), watch-only: the sweep records what it WOULD close and has
         // no way to close anything. Only the macOS normal-Chrome helpers keep a ledger.
