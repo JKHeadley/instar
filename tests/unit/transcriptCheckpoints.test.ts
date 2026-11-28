@@ -30,8 +30,14 @@ const ROWS = [
 ];
 
 /** A source on one machine and a copy store on another, joined by an emit that lands each chunk. */
-function pair(opts: { emitFails?: () => boolean; deliverThenThrow?: () => boolean; bytesPerDay?: number } = {}) {
-  const srcDir = tmp(), dstDir = tmp();
+function pair(opts: { emitFails?: () => boolean; deliverThenThrow?: () => boolean; bytesPerDay?: number } = {}, root?: string) {
+  const newDir = (name: string) => {
+    if (!root) return tmp();
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+  const srcDir = newDir('source'), dstDir = newDir('replica');
   const file = path.join(srcDir, 'session.jsonl');
   const emitted: CheckpointChunkData[] = [];
   const copies = new TranscriptCopyStore(dstDir);
@@ -85,8 +91,10 @@ describe('the token split across two reads', () => {
     // Every split position from just before the token's row to just after it.
     const rowStart = Buffer.byteLength(ROWS[0]);
     const rowEnd = rowStart + Buffer.byteLength(ROWS[1]);
+    const root = tmp();
     for (let p = rowStart - 2; p <= rowEnd + 2; p++) {
-      const t = pair();
+      // Isolate each split, then remove the whole fixture in one cleanup.
+      const t = pair({}, path.join(root, String(p)));
       fs.writeFileSync(t.file, full.subarray(0, p));
       await t.make().tick([t.session()]);
       fs.appendFileSync(t.file, full.subarray(p));

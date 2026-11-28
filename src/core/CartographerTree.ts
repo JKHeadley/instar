@@ -152,6 +152,13 @@ const DEFAULT_LEAF_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs'];
 const DEFAULT_EXCLUDE_SUBSTRINGS = ['.test.', '.spec.', '.d.ts'];
 const GIT_OP = 'cartographer-tree';
 
+interface ChunkedScaffoldOptions {
+  chunkNodes: number;
+  onYield: () => Promise<void>;
+  shouldAbort?: () => boolean;
+  maxChunkMs?: number;
+}
+
 export class CartographerTree {
   private readonly projectDir: string;
   private readonly cartoDir: string;
@@ -160,6 +167,7 @@ export class CartographerTree {
   private readonly maxDepth: number;
   private readonly leafExtensions: string[];
   private readonly excludeSubstrings: string[];
+  private pendingScaffold: Promise<{ nodeCount: number }> | null = null;
 
   constructor(config: CartographerConfig) {
     this.projectDir = config.projectDir;
@@ -332,12 +340,20 @@ export class CartographerTree {
    * the partial state is discarded by NOT writing the index (atomic; a half-built
    * index is never read — routes serve indexState:'not-built' until a full run).
    */
-  async scaffoldChunked(opts: {
-    chunkNodes: number;
-    onYield: () => Promise<void>;
-    shouldAbort?: () => boolean;
-    maxChunkMs?: number;
-  }): Promise<{ nodeCount: number }> {
+  scaffoldChunked(opts: ChunkedScaffoldOptions): Promise<{ nodeCount: number }> {
+    if (!this.pendingScaffold) {
+      this.pendingScaffold = this.runChunkedScaffold(opts).finally(() => {
+        this.pendingScaffold = null;
+      });
+    }
+    return this.pendingScaffold;
+  }
+
+  get isScaffolding(): boolean {
+    return this.pendingScaffold !== null;
+  }
+
+  private async runChunkedScaffold(opts: ChunkedScaffoldOptions): Promise<{ nodeCount: number }> {
     this.ensureDirs();
     const chunk = Math.max(1, opts.chunkNodes);
     const maxChunkMs = Math.max(1, opts.maxChunkMs ?? 50);
@@ -395,7 +411,13 @@ export class CartographerTree {
     const nodes = new Map<string, CartographerNode>();
     const keep = new Set<string>();
     for (const [p, kind] of kindByPath) {
-      const existing = this.readNodeFile(p);
+      const nodePath = this.nodeFilePath(p);
+      let existing: CartographerNode | null = null;
+      try {
+        existing = JSON.parse(await fs.promises.readFile(nodePath, 'utf8')) as CartographerNode;
+      } catch {
+        // @silent-fallback-ok — a missing or corrupt node is rebuilt, as in readNodeFile.
+      }
       const node: CartographerNode = {
         path: p, kind, summary: existing?.summary ?? '',
         summaryUpdatedAt: existing?.summaryUpdatedAt ?? null,
@@ -409,7 +431,19 @@ export class CartographerTree {
       };
       nodes.set(p, node);
       keep.add(`${this.slug(p)}.json`);
-      this.atomicWrite(this.nodeFilePath(p), JSON.stringify(node, null, 2));
+      // Keep node publication atomic while the filesystem request runs off the server thread.
+      const tmp = `${nodePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+      try {
+        await fs.promises.writeFile(tmp, JSON.stringify(node, null, 2));
+        await fs.promises.rename(tmp, nodePath);
+      } catch (error) {
+        try {
+          await SafeFsExecutor.safeUnlink(tmp, { operation: 'cartographer-remove-incomplete-node' });
+        } catch {
+          // @silent-fallback-ok — the write may have failed before creating the temporary file.
+        }
+        throw error;
+      }
       await tick();
     }
     // Prune node files for paths that disappeared.

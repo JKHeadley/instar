@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "watchdog-git-prepush-wait",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T13:40:24.140Z",
+  "artifactPath": "upgrades/side-effects/watchdog-git-prepush-wait.md",
+  "artifactSha256": "f374ece65ce35d4da6eb7d9b32b2c96356c00611e66b6213f7bb1d739989ca6b",
+  "specPath": "docs/specs/watchdog-test-runner-floor.md",
+  "coveredFiles": [
+    "docs/specs/watchdog-test-runner-floor.eli16.md",
+    "docs/specs/watchdog-test-runner-floor.md",
+    "src/monitoring/SessionWatchdog.ts",
+    "tests/e2e/watchdog-test-runner-progress-alive.test.ts",
+    "tests/integration/session-watchdog-safe-wait.test.ts",
+    "upgrades/next/watchdog-git-prepush-wait.md",
+    "upgrades/side-effects/watchdog-git-prepush-wait.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Extends bounded watchdog wait attribution at an existing signal decision.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

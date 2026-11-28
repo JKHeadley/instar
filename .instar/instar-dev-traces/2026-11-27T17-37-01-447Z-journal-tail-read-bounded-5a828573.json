@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "journal-tail-read-bounded",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T17:37:01.447Z",
+  "artifactPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "artifactSha256": "2bba51757bf242ac31a1c4d37c0ac8944f39f3fc35f2d791fcdcd457c48d30e1",
+  "coveredFiles": [
+    "src/core/CoherenceJournal.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only: an in-place @silent-fallback-ok reason on the per-line parse catch so the fallback ratchet stays at 493.",
+  "eli16Path": "docs/eli16/journal-tail-read-bounded.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { mountNeedsStrip, needGroups, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { homeNeedsModel, mountNeedsStrip, needGroups, stripModel, STRIP_REFRESH_MS } from '../../dashboard/console/needs-strip.js';
+import { readHeaders } from '../../dashboard/console/needs-actions.js';
 
 const next = 'next+?=/';
 const first = 'first/';
@@ -30,6 +31,20 @@ describe('grouping Needs-you requests', () => {
   });
 });
 
+describe('Needs-you transport contract', () => {
+  it('sends the in-place contract on every Needs page without changing other reads', () => {
+    expect(readHeaders('/needs', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/needs?cursor=next', 'owner-token')).toEqual({
+      Authorization: 'Bearer owner-token',
+      'X-Instar-Needs-Contract': 'in-place-v1',
+    });
+    expect(readHeaders('/health', 'owner-token')).toEqual({ Authorization: 'Bearer owner-token' });
+  });
+});
+
 describe('paging the Needs-you strip', () => {
   let dom: JSDOM, host: HTMLElement, stop: () => void;
   beforeEach(() => {
@@ -49,6 +64,54 @@ describe('paging the Needs-you strip', () => {
     control!.click();
     await Promise.resolve();
   }
+  it('shows an explicit link from each legacy row to its own request', async () => {
+    const href = cardHref(1);
+    await mount(async () => ({ ok: true, data: { schemaVersion: 1, count: 2, complete: true, items: [
+      { title: 'Project decision', why: 'Choose which workspace to keep.', action: { kind: 'href', href }, card: { href } },
+      { title: 'Sign-in request', why: 'Complete the sign-in on Studio.', action: { kind: 'href', href: '#/capacity/accounts?s=needs' } },
+    ] } }));
+    const links = [...host.querySelectorAll('a.needs-row')];
+    expect(links.map(link => [link.getAttribute('href'), link.querySelector('.needs-row-action')?.textContent])).toEqual([
+      [href, 'Open card'], ['#/capacity/accounts?s=needs', 'Open details'],
+    ]);
+    expect(links[0].querySelector('.needs-why')?.textContent).toBe('Choose which workspace to keep.');
+    expect(links[0].querySelector('a')).toBeNull();
+  });
+
+  it('uses the server count while showing only supported strict actions', async () => {
+    const response = { ok: true, data: { schemaVersion: 2, count: 4, complete: false, divertedCount: 2,
+      couldNotCheck: ['one source'], items: [
+        { title: 'Physical step', action: { kind: 'instructions', steps: ['First', 'Second'] } },
+        { title: 'Nonlocal step', localAction: false, action: { kind: 'instructions', steps: ['Do not display'] } },
+        { title: 'Unavailable credential', localAction: true, action: { kind: 'credential', requestId: 'opaque' } },
+        { title: 'Old referral', action: { kind: 'href', href: '#/work' } },
+      ] } };
+    await mount(vi.fn().mockResolvedValue(response));
+    expect(homeNeedsModel(stripModel(response))).toMatchObject({ count: 4, state: 'partial', authoritative: true });
+    expect([...host.querySelectorAll('ol li')].map((item) => item.textContent)).toEqual(['First', 'Second']);
+    expect(host.querySelector('a, .needs-consent')).toBeNull();
+    expect(host.textContent).not.toMatch(/Old referral|Unavailable credential|Nonlocal step/);
+    expect(host.textContent).toContain('Could not check one source.');
+    expect(host.textContent).toContain('2 items were left out because they had no verified owner action.');
+    expect(host.textContent).toContain('Some requests cannot be completed on this device.');
+  });
+
+  it('passes the exact reference to the signed adapter and refreshes a stale request', async () => {
+    const current = { ok: true, data: { schemaVersion: 2, count: 1, complete: true,
+      items: [{ title: 'Approval', action: { kind: 'approval', requestId: 'exact-request' } }] } };
+    const get = vi.fn().mockResolvedValueOnce(current).mockResolvedValueOnce({ ok: true,
+      data: { schemaVersion: 2, count: 0, complete: true, items: [] } });
+    const approval = vi.fn().mockResolvedValue('stale');
+    stop = mountNeedsStrip(host, { get, open: true, signedAdapters: { approval } });
+    await Promise.resolve();
+    await press('Review approval');
+    await Promise.resolve();
+    expect(approval).toHaveBeenCalledWith('exact-request', expect.anything());
+    expect(get.mock.calls).toEqual([['/needs'], ['/needs']]);
+    expect(host.textContent).toContain('This request has changed.');
+    expect(host.querySelector('.needs-consent')).toBeNull();
+  });
+
   it('opens action 105, page by page, and reads previous pages without retaining their rows', async () => {
     const get = vi.fn(async path => page(path.endsWith(encodeURIComponent(next)) ? 100 : 0));
     await mount(get);

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "trust-summary-derived",
+  "sessionId": "4f93898c-7d72-4a33-b581-3e0933a84bf4",
+  "timestamp": "2026-11-21T07:56:46.606Z",
+  "artifactPath": "upgrades/side-effects/trust-summary-derived.md",
+  "artifactSha256": "6837ec7cc3048b4e7e1b73461426ff9b5c955086dc510c0516457a2d50087a05",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-21T07-56-38-068Z-trust-summary-derived.json",
+    "docs/specs/trust-summary-derived.eli16.md",
+    "src/core/trustJourney/AccountPathService.ts",
+    "src/core/trustJourney/TrustJourneyStore.ts",
+    "src/server/routes.ts",
+    "tests/unit/trust-journey-account-path-service.test.ts",
+    "tests/unit/trust-journey-device-approval.test.ts",
+    "upgrades/next/trust-summary-derived.md",
+    "upgrades/side-effects/trust-summary-derived.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Whole-PR trace: approval text derived from the change; request contents fixed once written",
+  "eli16Path": "docs/specs/trust-summary-derived.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/trust-summary-derived.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

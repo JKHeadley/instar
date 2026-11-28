@@ -4,7 +4,7 @@
  * `claude` that replays the REAL captured CLI output. Replays the 2026-11-20 Mac Studio timeline.
  */
 // safe-fs-allow: test file — SafeFsExecutor used for tmpdir cleanup.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,8 @@ import { QuotaPoller } from '../../src/core/QuotaPoller.js';
 import { InteractiveLoginExpiredRecovery } from '../../src/core/InteractiveLoginExpiredRecovery.js';
 import { buildFreshProbeScheduler, loadFreshProbeState } from '../../src/core/freshLoginProbeWiring.js';
 import { runFreshLoginProbe } from '../../src/core/freshLoginProbe.js';
+
+import { configureHostSpawnSemaphore, getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
 
 const FIX = path.join(__dirname, '..', 'fixtures', 'fresh-login-probe');
 const usageOk = async () => ({ ok: true, status: 200, json: async () => ({ five_hour: { utilization: 5, resets_at: '2099-01-01T00:00:00Z' } }) });
@@ -25,12 +27,20 @@ describe('stale-process login expired (integration)', () => {
   let bin = '';
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-int-'));
+    // The real probe uses the host semaphore, not stateDir. Keep stand-in CLI
+    // admissions independent of live agents and other verification workers.
+    vi.spyOn(os, 'homedir').mockReturnValue(dir);
+    _resetHostSpawnSemaphoreForTest();
     home = path.join(dir, 'login');
     fs.mkdirSync(home);
     pool = new SubscriptionPool({ stateDir: dir });
     pool.addFixture({ id: 'sa', nickname: 'sa', email: 'sa@example.test', provider: 'anthropic', framework: 'claude-code', configHome: home });
   });
-  afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'stale-process integration cleanup' }));
+  afterEach(() => {
+    _resetHostSpawnSemaphoreForTest();
+    vi.restoreAllMocks();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'stale-process integration cleanup' });
+  });
 
   function standIn(fixture: string) {
     bin = path.join(dir, 'claude');
@@ -39,6 +49,7 @@ describe('stale-process login expired (integration)', () => {
   }
 
   function build(fixture: string) {
+    expect(getHostSpawnSemaphore().status().holdersPath).toBe(path.join(dir, '.instar', 'host-spawn-holders.json'));
     standIn(fixture);
     const poller = new QuotaPoller({ pool, tokenResolver: () => 'sk-ant-oat-stored', fetchImpl: usageOk, refresher: async () => { throw new Error('no refresh'); } });
     const sched = buildFreshProbeScheduler({
@@ -99,4 +110,23 @@ describe('stale-process login expired (integration)', () => {
     expect(r.outcome).toBe('refreshed-in-place');
     expect(loadFreshProbeState(dir).sa.spawns).toHaveLength(1); // one shared spawn
   });
+
+  it('a genuinely saturated fixture cap sheds the probe and keeps the conservative swap path', async () => {
+    configureHostSpawnSemaphore({ maxConcurrent: 1, acquireMs: 0 });
+    const cap = getHostSpawnSemaphore();
+    expect(cap.acquire('other-fixture-work')).toBe(true);
+    try {
+      const { recovery, refreshed, swapped } = build('ok.stream.jsonl');
+      const r = await recovery.handle({ ...signal, configHome: home });
+      expect(r.outcome).toBe('swapped');
+      expect(pool.get('sa')!.status).toBe('needs-reauth');
+      expect(refreshed).toEqual([]);
+      expect(swapped).toEqual(['echo-topic-1']);
+      // The cap refused admission before the child and durable reservation.
+      expect(loadFreshProbeState(dir).sa?.spawns ?? []).toEqual([]);
+    } finally {
+      cap.release('other-fixture-work');
+    }
+  });
+
 });

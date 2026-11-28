@@ -5,11 +5,11 @@
 // Accepting a guard's risk takes the PIN in the request body (adapter c / 'body').
 
 import {
-  buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
+  buildTrustRequests, buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
   walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, applyText, refusalText, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
 } from './allowed-model.js';
 import { buildServices } from './services-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession, firstPaint, arrivalScroll } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const featureErrors = new Map(); // feature id → the server's last refusal, shown beside the row
@@ -42,8 +42,8 @@ const errWords = (r) => {
 export async function renderAllowed(main, ctx) {
   const { get, post } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [auto, hist, elev, guardsRes, featRes, servicesRes, poolRes] = await Promise.all([
-    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/recommended-services'), get('/pool'),
+  const [auto, hist, elev, guardsRes, featRes, servicesRes, poolRes, trustRes] = await Promise.all([
+    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/recommended-services'), get('/pool'), get('/trust/requests'),
   ]);
   const services = buildServices(servicesRes);
   const profile = buildProfile(auto);
@@ -51,12 +51,14 @@ export async function renderAllowed(main, ctx) {
   const suggestions = buildSuggestions(elev);
   const guards = buildGuards(guardsRes, { pool: poolRes });
   const features = buildFeatures(featRes);
+  const trust = buildTrustRequests(trustRes);
   const refresh = () => renderAllowed(main, ctx);
 
   const eyebrow = `Settings · What I’m allowed to do${guards.ok && guards.multi && guards.selfName ? ` · ${guards.selfName}` : ''}`;
   setKids(main, el('div', { class: 'allowed-page' },
     // warning-path: pageHead
     pageHead({ eyebrow, headline: profile.ok ? profile.sentence : 'What I’m allowed to do', sub: profile.ok ? null : profile.reason, tone: guards.ok && guards.counts.look ? 'attn' : profile.ok ? 'ok' : 'muted', facts: facts({ profile, guards, features, suggestions }) }),
+    approvalBlock(trust),
     el('div', { class: 'page-sections' },
       profileBlock(profile, post, refresh),
       guardsBlock(guards, refresh),
@@ -68,10 +70,39 @@ export async function renderAllowed(main, ctx) {
     ),
     el('p', { class: 'foot-note' }, el('a', { href: legacyHref('features'), text: 'Open features in the legacy dashboard' }))));
 
-  const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
-  if (want) {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  const want = query.get('s');
+  if (want === 'approvals' && query.has('request')) {
+    const id = query.get('request');
+    const approvals = main.querySelector('#sec-approvals');
+    const request = Array.from(approvals.querySelectorAll('[data-approval-request]'))
+      .find(card => card.dataset.approvalRequest === id);
+    arrivalScroll(request || approvals);
+  } else if (want) {
     arrivalScroll(main.querySelector(`#sec-${want}`));
   }
+}
+
+// ── Exact changes waiting for the person ──────────────────────────────────
+function approvalBlock(model) {
+  const wrap = el('section', { class: 'list-section', id: 'sec-approvals' },
+    el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Changes to approve' })));
+  if (!model.ok) { wrap.append(cantTell(model.reason)); return wrap; }
+  if (!model.rows.length) { wrap.append(note('There are no open approval requests.')); return wrap; }
+  markNeed(wrap, 'trust-requests');
+  for (const r of model.rows) {
+    const show = () => sheet({ title: r.main },
+      ...r.summary.map((text) => el('p', { class: 'confirm-text', text })),
+      el('p', { class: 'confirm-text', text: r.sub }),
+      el('p', { class: 'confirm-text', text: 'On iPhone, open this agent’s Permissions screen, then Changes to approve. On Mac, open Changes to approve in the agent window.' }),
+      note('Review and confirm in the app or the exact private chat card. This console page does not approve the request.'));
+    wrap.append(el('div', { class: 'need-card', 'data-approval-request': r.requestId },
+      el('p', { class: 'need-title', text: r.main }),
+      el('p', { class: 'need-sub', text: r.sub }),
+      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'How to approve', onclick: show }),
+      ...r.summary.map((text) => el('p', { class: 'need-sub approval-summary', text }))));
+  }
+  return wrap;
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────

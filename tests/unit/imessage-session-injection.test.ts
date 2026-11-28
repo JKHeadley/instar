@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { writePrivateInboundFile } from '../../src/messaging/shared/telegramInboundFiles.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -82,13 +83,10 @@ describe('Feature: iMessage injection into tmux sessions', () => {
 
       expect(taggedText.length).toBeGreaterThan(500);
 
-      // Simulate writing to temp file (same logic as injectIMessageMessage)
-      const imsgTmpDir = path.join(tmpDir, 'instar-imessage');
-      fs.mkdirSync(imsgTmpDir, { recursive: true });
+      // Same helper injectIMessageMessage uses (SEC-138: project-local, owner-only).
       const senderSlug = sender.replace(/[^a-zA-Z0-9]/g, '').slice(-8);
-      const filename = `msg-${senderSlug}-${Date.now()}.txt`;
-      const filepath = path.join(imsgTmpDir, filename);
-      fs.writeFileSync(filepath, taggedText);
+      const filepath = writePrivateInboundFile(tmpDir, `im-${senderSlug}`, taggedText);
+      expect(filepath.startsWith(path.join(tmpDir, '.instar', 'telegram-inbound'))).toBe(true);
 
       expect(fs.existsSync(filepath)).toBe(true);
       expect(fs.readFileSync(filepath, 'utf-8')).toBe(taggedText);

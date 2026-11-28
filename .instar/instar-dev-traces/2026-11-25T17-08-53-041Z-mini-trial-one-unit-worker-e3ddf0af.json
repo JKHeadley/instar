@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "mini-trial-one-unit-worker",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-25T17:08:53.041Z",
+  "artifactPath": "upgrades/side-effects/mini-trial-one-unit-worker.md",
+  "artifactSha256": "456e2117c850fbba2b158950c82f48a2c0c06f3a380308beee5bfaf96dd17451",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-main-on-peers.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "src/scaffold/templates.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible expansion of the existing verified worker-count profile, with the same signed limits and admission checks.",
+  "eli16Path": "docs/specs/mini-trial-one-unit-worker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/mini-trial-one-unit-worker.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

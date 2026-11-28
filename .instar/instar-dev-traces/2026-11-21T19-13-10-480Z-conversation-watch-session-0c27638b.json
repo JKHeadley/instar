@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "conversation-watch-session",
+  "sessionId": "009b59b2-3ca0-45e7-8dc4-2a12b327c22f",
+  "timestamp": "2026-11-21T19:13:10.480Z",
+  "artifactPath": "upgrades/side-effects/conversation-watch-session.md",
+  "artifactSha256": "17fe81f382aeef4ee7677ef0384203ffe55dac72527eec86de6de8e50eab2de8",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "tests/unit/console-conversation-session.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One CSS rule centering link buttons; display only",
+  "eli16Path": "docs/specs/conversation-watch-session.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-watch-session.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

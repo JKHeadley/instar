@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "journal-tail-read-bounded",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T17:21:15.919Z",
+  "artifactPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "artifactSha256": "9e8d98b92a0bf4574c69778fd6c2ada7b139c5577542a260c7358cbcb4a4baa5",
+  "coveredFiles": [
+    "src/core/CoherenceJournal.ts",
+    "tests/unit/coherence-journal-tail-equivalence.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review follow-up: a long line is joined once, more equivalence cases, honest savings note; results still identical.",
+  "eli16Path": "docs/eli16/journal-tail-read-bounded.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/journal-tail-read-bounded.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

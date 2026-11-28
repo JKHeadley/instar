@@ -8,7 +8,7 @@
  *  2. The production builder (buildFreshProbeScheduler) with the real runner and a stand-in CLI
  *     replaying real captured output persists a reservation and lets the poller release a hold.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { QuotaPoller } from '../../src/core/QuotaPoller.js';
 import { buildFreshProbeScheduler, loadFreshProbeState } from '../../src/core/freshLoginProbeWiring.js';
 import { runFreshLoginProbe } from '../../src/core/freshLoginProbe.js';
+
+import { getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SERVER = fs.readFileSync(path.join(ROOT, 'src', 'commands', 'server.ts'), 'utf8');
@@ -45,10 +47,19 @@ describe('stale-process login expired — wired in server.ts', () => {
 
 describe('stale-process login expired — production builder with the real runner', () => {
   let dir = '';
-  afterEach(() => { if (dir) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'stale-process e2e cleanup' }); });
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-e2e-'));
+    vi.spyOn(os, 'homedir').mockReturnValue(dir);
+    _resetHostSpawnSemaphoreForTest();
+  });
+  afterEach(() => {
+    _resetHostSpawnSemaphoreForTest();
+    vi.restoreAllMocks();
+    if (dir) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'stale-process e2e cleanup' });
+  });
 
   it('a pane hold is released by a real probe answering ok, and the spawn is persisted', async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stale-e2e-'));
+    expect(getHostSpawnSemaphore().status().holdersPath).toBe(path.join(dir, '.instar', 'host-spawn-holders.json'));
     const home = path.join(dir, 'login'); fs.mkdirSync(home);
     const bin = path.join(dir, 'claude');
     fs.writeFileSync(bin, `#!/bin/sh\ncat "${path.join(ROOT, 'tests', 'fixtures', 'fresh-login-probe', 'ok.stream.jsonl')}"\n`);

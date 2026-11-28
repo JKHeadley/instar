@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "hermetic-media-disk-floor-tests",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-27T15:18:33.756Z",
+  "artifactPath": "upgrades/side-effects/hermetic-media-disk-floor-tests.md",
+  "artifactSha256": "b742d3ab4e63253e866190525ee0d0e212a241ff24de031f9a2213b85331331e",
+  "coveredFiles": [
+    "docs/specs/hermetic-media-disk-floor-tests.eli16.md",
+    "tests/e2e/app-media-cross-machine-alive.test.ts",
+    "tests/e2e/local-voice-transcription-lifecycle.test.ts",
+    "tests/e2e/mobile-native-media-alive.test.ts",
+    "tests/e2e/web-chat-durable-outbox-alive.test.ts",
+    "tests/helpers/hermeticMediaDisk.ts",
+    "upgrades/next/hermetic-media-disk-floor-tests.md",
+    "upgrades/side-effects/hermetic-media-disk-floor-tests.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Tests only: a fixture helper and its calls; production floor unchanged; machine fix (CoS 2026-11-27)",
+  "eli16Path": "docs/specs/hermetic-media-disk-floor-tests.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/hermetic-media-disk-floor-tests.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

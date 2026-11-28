@@ -28,6 +28,9 @@
  *
  * Dark: `multiMachine.stateSync.sessionTranscripts.enabled` (default false). Spec dates: CMT-047.
  */
+import { maskJsonLine, maskJsonlBuffer } from './credentialLineMask.js';
+import type { CredentialScrubMode } from './outputCredentialScrub.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -133,6 +136,45 @@ export function redactRow(row: Buffer, secrets: ReadonlyArray<string | null | un
     out = scrub(body).replace(/[\r\n]/g, ' '); // @silent-fallback-ok — a row that is not JSON is redacted as text
   }
   return Buffer.from(`${out}\n`, 'utf8');
+}
+
+/** The copy scrub's mode; an unreadable or missing switch is off. */
+function readScrubMode(reader?: () => CredentialScrubMode): CredentialScrubMode {
+  if (!reader) return 'off';
+  try { return reader(); } catch { return 'off'; } // @silent-fallback-ok — an unreadable switch is off, as before
+}
+
+/**
+ * Count what the copy scrub found, as kinds and counts only, never a value (the ladder's evidence).
+ * One row per side and outcome per ten minutes, carrying how many it stands for.
+ */
+function recordCopyScrub(side: 'source' | 'receipt', mode: CredentialScrubMode, masked: number, unmeasured: number, unscannable: number, kinds: string[]): void {
+  if (masked === 0 && unmeasured === 0 && unscannable === 0) return;
+  try {
+    featureEvidence.recordAtMostEvery('credentialScrub', `copy|${side}|${mode}`, 10 * 60_000, {
+      kind: mode === 'on' && masked > 0 ? 'fired' : 'held',
+      reason: mode === 'on' ? `copy ${side}: masked` : `copy ${side}: would mask (dry run)`,
+      context: { path: 'transcript-copy', side, mode, masked, unmeasured, unscannable, kinds: kinds.join(',') },
+    });
+  } catch { /* @silent-fallback-ok — evidence is a count; it must never block a copy */ }
+}
+
+/** One source row through the same-length mask (dry run counts only). Never throws. */
+function scrubCopyRow(row: Buffer, mode: CredentialScrubMode, side: 'source' | 'receipt'): Buffer {
+  try {
+    const r = maskJsonLine(row, { apply: mode === 'on' });
+    recordCopyScrub(side, mode, r.masked, r.unmeasured, r.unscannable ? 1 : 0, r.kinds);
+    return r.line;
+  } catch { return row; } // @silent-fallback-ok — a failed scrub keeps the row; the sweeper is the backstop
+}
+
+/** An assembled chunk through the same-length mask; its length never changes. Never throws. */
+function scrubCopyBody(body: Buffer, mode: CredentialScrubMode): Buffer {
+  try {
+    const r = maskJsonlBuffer(body, { apply: mode === 'on' });
+    recordCopyScrub('receipt', mode, r.masked, r.unmeasured, r.unscannable, r.kinds);
+    return r.buf.length === body.length ? r.buf : body;
+  } catch { return body; } // @silent-fallback-ok — a failed scrub keeps the chunk; the sweeper is the backstop
 }
 
 /** The marker that stands in for a row larger than one checkpoint. */
@@ -274,6 +316,8 @@ export interface CheckpointSourceDeps {
   chunksPerTick?: number;
   now?: () => Date;
   onEvidence?: (kind: 'fired' | 'held' | 'error', reason: string, context: Record<string, string | number | boolean | null>) => void;
+  /** SEC-164 §3.4: the copy scrub's mode, read live. Absent ⇒ off. */
+  credentialScrubMode?: () => CredentialScrubMode;
 }
 
 export type SourceOutcome = 'idle' | 'copied' | 'pending' | 'budget' | 'error';
@@ -434,6 +478,9 @@ export class TranscriptCheckpointSource {
         withheld = 1;
       } else {
         const secrets = this.deps.secrets();
+        // SEC-164 §3.4: live keys are masked inside each row before the chunk's offsets and hash.
+        const mode = readScrubMode(this.deps.credentialScrubMode);
+        if (mode !== 'off') rows = rows.map((r) => scrubCopyRow(r, mode, 'source'));
         rows = rows.map((r) => redactRow(r, secrets));
       }
       if (!(await this.commit(st, s, rows, off + consumed, false, withheld))) return 'pending';
@@ -516,9 +563,12 @@ export class TranscriptCopyStore {
     this.index.set(m.session, list);
   }
 
-  constructor(stateDir: string, opts: { now?: () => Date } = {}) {
+  private readonly credentialScrubMode?: () => CredentialScrubMode;
+
+  constructor(stateDir: string, opts: { now?: () => Date; credentialScrubMode?: () => CredentialScrubMode } = {}) {
     this.root = path.join(stateDir, 'state', 'transcript-checkpoints', 'copies');
     this.now = opts.now ?? (() => new Date());
+    this.credentialScrubMode = opts.credentialScrubMode;
   }
 
   private sessionDir(origin: string, sessionId: string): string { return path.join(this.root, safeDir(origin), sid24(sessionId)); }
@@ -612,7 +662,10 @@ export class TranscriptCopyStore {
         if (parts.length !== parsed.total) continue;
         const body = Buffer.concat(parts);
         if (body.length !== parsed.bytes || sha(body) !== parsed.sha256 || parsed.fromOffset !== m.throughOffset) { failed = true; continue; }
-        done = { meta: parsed, body, files: [...files.values()] };
+        // SEC-164 §3.4: after the length, hash and offset check, the same-length mask runs before the
+        // copy is written. A copy from an older build that did not mask at its source is cleaned here.
+        const mode = readScrubMode(this.credentialScrubMode);
+        done = { meta: parsed, body: mode === 'off' ? body : scrubCopyBody(body, mode), files: [...files.values()] };
         break;
       }
       if (!done) {
@@ -748,6 +801,8 @@ export interface TranscriptCopiesWiringDeps {
   stateDir: string;
   machineId: string;
   secrets: () => ReadonlyArray<string | null | undefined>;
+  /** SEC-164 §3.4: the copy scrub's mode, read live. Absent ⇒ off. */
+  credentialScrubMode?: () => CredentialScrubMode;
   bytesPerDay?: number;
   emit: CheckpointSourceDeps['emit'];
   onEvidence?: CheckpointSourceDeps['onEvidence'];
@@ -761,9 +816,10 @@ export interface TranscriptCopiesWiringDeps {
 /** The source, the copy store and the four seams server.ts hands on: tick, final, ingest, catch-up. */
 export function wireTranscriptCopies(deps: TranscriptCopiesWiringDeps) {
   const now = deps.now ?? (() => new Date());
-  const store = new TranscriptCopyStore(deps.stateDir, { now });
+  const store = new TranscriptCopyStore(deps.stateDir, { now, credentialScrubMode: deps.credentialScrubMode });
   const source = new TranscriptCheckpointSource({
     stateDir: deps.stateDir, machineId: deps.machineId, secrets: deps.secrets, bytesPerDay: deps.bytesPerDay,
+    credentialScrubMode: deps.credentialScrubMode,
     emit: deps.emit, onEvidence: deps.onEvidence, now,
   });
   let lastPrune = 0;

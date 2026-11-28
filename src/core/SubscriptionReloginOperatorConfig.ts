@@ -1,3 +1,5 @@
+import { publishRestartRequestFile } from './restartRequestFile.js';
+import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
 import crypto from 'node:crypto';
 import { announceRestartRequested } from './restartRequestSignal.js';
 import fs from 'node:fs';
@@ -147,6 +149,30 @@ export function subscriptionReloginConfigureDigest(config: SubscriptionReloginOp
   return sha256(canonicalJson({ config, expectedRevision }));
 }
 
+/** Build the exact pool target values shared by dashboard and native approvals. */
+export function subscriptionReloginPoolTargetConfig(
+  target: Readonly<Record<string, unknown>>,
+  mode: SubscriptionReloginOperatorInput['mode'] | undefined,
+) {
+  return {
+    enabled: true, mode, dryRun: false,
+    unattendedPolicy: {
+      identities: Array.isArray(target.identities) ? target.identities : [],
+      minimumSuccessfulRepairs: target.minimumSuccessfulRepairs,
+      minimumEvidenceDays: target.minimumEvidenceDays,
+    },
+  };
+}
+
+export function prepareSubscriptionReloginPoolTarget(
+  target: Readonly<Record<string, unknown>>,
+  mode: SubscriptionReloginOperatorInput['mode'] | undefined,
+  expectedRevision: string,
+): { config: SubscriptionReloginOperatorInput; configDigest: string } | null {
+  const parsed = validateSubscriptionReloginOperatorInput(subscriptionReloginPoolTargetConfig(target, mode));
+  return parsed.ok ? { config: parsed.value, configDigest: subscriptionReloginConfigureDigest(parsed.value, expectedRevision) } : null;
+}
+
 // ── Apply ───────────────────────────────────────────────────────────────────────────────────
 
 export interface SubscriptionReloginConfigProvenance {
@@ -171,9 +197,10 @@ export function writeSubscriptionReloginRestartRequest(stateDir: string, now: Da
   fs.mkdirSync(dir, { recursive: true });
   const flagPath = path.join(dir, 'restart-requested.json');
   try {
-    const existing = JSON.parse(fs.readFileSync(flagPath, 'utf8')) as { targetVersion?: unknown; expiresAt?: string };
+    const raw = fs.readFileSync(flagPath, 'utf8');
+    const existing = JSON.parse(raw) as { targetVersion?: unknown; expiresAt?: string };
     const live = !existing.expiresAt || Date.parse(existing.expiresAt) > now.getTime();
-    if (live && typeof existing.targetVersion === 'string' && existing.targetVersion) return true;
+    if (live && !restartAdmissionTimedOut(flagPath, raw) && typeof existing.targetVersion === 'string' && existing.targetVersion) return true;
   } catch { /* @silent-fallback-ok — no pending request (or unreadable): write ours below */ }
   const countFile = path.join(dir, 'restart-version-count.json');
   try {
@@ -183,14 +210,14 @@ export function writeSubscriptionReloginRestartRequest(stateDir: string, now: Da
   // planned-restart-keeps-lead §1 step 1: announce first (the holder's window renewal is signed and
   // persisted synchronously), then publish at once.
   void announceRestartRequested({ requestedBy: SUBSCRIPTION_RELOGIN_RESTART_REQUESTED_BY, reason: 'sign-in repair setting changed at the operator\'s request', requestedAt: now.toISOString() });
-  SafeFsExecutor.atomicWriteJsonSync(flagPath, {
+  publishRestartRequestFile(flagPath, JSON.stringify({
     requestedAt: now.toISOString(),
     requestedBy: SUBSCRIPTION_RELOGIN_RESTART_REQUESTED_BY,
     reason: 'sign-in repair setting changed at the operator\'s request',
     plannedRestart: true,
     expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
     pid,
-  }, { operation: 'subscription-relogin config restart request', mode: 0o600 });
+  }, null, 2));
   return true;
 }
 

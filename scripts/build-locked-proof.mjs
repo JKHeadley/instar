@@ -95,6 +95,9 @@ function main() {
   if (rewrittenRetention) fs.writeFileSync(path.join(scratch, RETENTION_FILE), rewrittenRetention);
   const pkg = JSON.parse(fs.readFileSync(path.join(scratch, 'package.json'), 'utf8'));
   pkg.version = version;
+  // npm 10 still runs `prepare` (husky) on `npm pack` even with --ignore-scripts, after the node_modules link is
+  // gone, so the pack fails. An installed tarball never needs the repo's git-hook setup: drop it from the copy.
+  if (pkg.scripts) delete pkg.scripts.prepare;
   fs.writeFileSync(path.join(scratch, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'));
 

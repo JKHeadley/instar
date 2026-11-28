@@ -1,6 +1,7 @@
 /** What one machine does for guided Remote Desktop setup: report itself, turn
  * the feature on, and put macOS's own permission surfaces in front of a person.
  * Nothing here grants access. Reached locally, or by a peer over machine auth. */
+import { restartAdmissionTimedOut } from './plannedRestartAdmissionTimeout.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -207,7 +208,10 @@ export class DesktopSetupTarget {
 
   private restartPending(): boolean {
     try {
-      const flag = JSON.parse(fs.readFileSync(path.join(this.d.stateDir, 'state', 'restart-requested.json'), 'utf8')) as { expiresAt?: unknown };
+      const flagPath = path.join(this.d.stateDir, 'state', 'restart-requested.json');
+      const raw = fs.readFileSync(flagPath, 'utf8');
+      if (restartAdmissionTimedOut(flagPath, raw)) return false;
+      const flag = JSON.parse(raw) as { expiresAt?: unknown };
       return typeof flag.expiresAt === 'string' && Date.parse(flag.expiresAt) > this.now();
     } catch { return false; /* @silent-fallback-ok — no readable request means none is waiting. */ }
   }

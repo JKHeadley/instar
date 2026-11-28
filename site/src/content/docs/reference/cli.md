@@ -68,6 +68,7 @@ instar whatsapp                 # WhatsApp adapter management (QR pairing, statu
 
 ```bash
 instar dev:claim-check <paths...>   # Before a build: open and recent PRs touching these paths
+instar design:inspect --repo PATH --base BASE_COMMIT --head HEAD_COMMIT   # Compare design rules and screen registration between two commits (read-only, no merge authority)
 ```
 
 ## Users
