@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { NeverSilentStore } from '../../src/monitoring/neverSilent/NeverSilentStore.js';
-import { NeverSilentWatcher, askCallbackData, type NeverSilentConfig, type NeverSilentDeps, type NoticeUndelivered, type SessionFacts } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
+import { NeverSilentWatcher, askCallbackData, type NeverSilentConfig, type NeverSilentDeps, type NeverSilentNeed, type NoticeUndelivered, type SessionFacts, needId } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
 import { neverSilentEvidenceKind } from '../../src/monitoring/neverSilent/neverSilentWiring.js';
 import type { ConversationSilenceJudge, SilenceVerdict } from '../../src/monitoring/neverSilent/ConversationSilenceJudge.js';
 
@@ -340,6 +340,104 @@ describe('NeverSilentWatcher', () => {
     t += 20_000;
     await h.w.tick();
     expect(statusTries().map((e) => e.attempt)).toEqual([1, 2]);
+  });
+
+  describe('a notice that keeps failing goes on the Needs-you list (CMT-2078 step 3)', () => {
+    function needHarness(send: NeverSilentDeps['sendNotice'], raise?: NeverSilentDeps['raiseNeed']) {
+      const raised: NeverSilentNeed[] = [];
+      const cleared: string[] = [];
+      const events: Array<Record<string, unknown>> = [];
+      const h = harness({
+        sendNotice: send,
+        raiseNeed: raise ?? (async (n) => { raised.push(n); return true; }),
+        clearNeed: (id) => { cleared.push(id); },
+        log: (e) => events.push(e),
+      }, { judge: false });
+      h.w.onInbound('telegram', '7', '101', 'hello');
+      t += 61_000;
+      return { h, raised, cleared, events };
+    }
+    const sweeps = async (h: { w: NeverSilentWatcher }, n: number) => { for (let i = 0; i < n; i++) { await h.w.tick(); t += 30_000; } };
+
+    it('raises one item on the third failed try, and not again', async () => {
+      const { h, raised, events } = needHarness(async () => ({ undelivered: 'no-adapter' as const }));
+      await sweeps(h, 3); // tries at 0 and 30 s
+      expect(raised).toHaveLength(0);
+      await sweeps(h, 1); // try 3 at 90 s
+      expect(raised).toHaveLength(1);
+      await sweeps(h, 15); // tries 4 and 5 at 210 and 450 s raise nothing more
+      expect(raised).toHaveLength(1);
+      expect(raised[0]).toMatchObject({ id: needId(h.store.openIncident('telegram', '7')!.id, 'waiting'), platform: 'telegram', conversationKey: '7', kind: 'waiting', tries: 3, reason: 'no-adapter' });
+      expect(events.filter((e) => e.event === 'need-raised')).toHaveLength(1);
+      expect(JSON.stringify(raised)).not.toContain('hello');
+    });
+
+    it('closes the item once a notice gets through', async () => {
+      let fail = true;
+      const { h, raised, cleared } = needHarness(async () => (fail ? null : '9'));
+      await sweeps(h, 4);
+      expect(raised).toHaveLength(1);
+      fail = false;
+      await sweeps(h, 5);
+      expect(cleared).toEqual([raised[0].id]);
+    });
+
+    it('closes the item on the next sweep once the message is answered', async () => {
+      const { h, raised, cleared, events } = needHarness(async () => null);
+      await sweeps(h, 4);
+      expect(raised).toHaveLength(1);
+      h.w.onReply('telegram', '7');
+      await sweeps(h, 1);
+      expect(cleared).toEqual([raised[0].id]);
+      expect(events.find((e) => e.event === 'need-cleared')?.why).toBe('closed');
+    });
+
+    it('a notice held quiet on purpose never raises an item', async () => {
+      const { h, raised } = needHarness(async () => ({ undelivered: 'held-quiet' as const }));
+      await sweeps(h, 20);
+      expect(raised).toHaveLength(0);
+    });
+
+    it('a failed raise is logged and tried again on the next failed try', async () => {
+      let calls = 0;
+      const { h, events } = needHarness(async () => null, async () => { calls++; if (calls === 1) throw new Error('store down'); return true; });
+      await sweeps(h, 12); // ticks to 330 s: tries at 0, 30, 90 (raise throws) and 210 s (raise stored)
+      expect(events.filter((e) => e.event === 'need-failed')).toHaveLength(1);
+      expect(events.filter((e) => e.event === 'need-raised')).toHaveLength(1);
+      expect(calls).toBe(2);
+    });
+
+    it('with no fallback wired, says so in the log instead of raising', async () => {
+      const events: Array<Record<string, unknown>> = [];
+      const h = harness({ sendNotice: async () => null, log: (e) => events.push(e) }, { judge: false });
+      h.w.onInbound('telegram', '7', '101', 'hello');
+      t += 61_000;
+      await sweeps(h, 20); // tries 3, 4 and 5 all have no fallback
+      expect(events.filter((e) => e.event === 'need-unavailable')).toHaveLength(1);
+    });
+
+    it('a status notice that keeps failing raises its own item', async () => {
+      const raised: NeverSilentNeed[] = [];
+      const h = harness({ sendNotice: async () => null, raiseNeed: async (n) => { raised.push(n); return true; } }, { actions: false });
+      h.w.onInbound('telegram', '7', '101', 'hello');
+      t += 61_000;
+      await sweeps(h, 4);
+      expect(raised.map((n) => n.kind)).toContain('status');
+    });
+
+    it('a close that fails is logged, not thrown into the sweep', async () => {
+      let fail = true;
+      const events: Array<Record<string, unknown>> = [];
+      const h = harness({ sendNotice: async () => (fail ? null : '9'), raiseNeed: async () => true,
+        clearNeed: async () => { throw new Error('gone'); }, log: (e) => events.push(e) }, { judge: false });
+      h.w.onInbound('telegram', '7', '101', 'hello');
+      t += 61_000;
+      await sweeps(h, 4);
+      fail = false;
+      await sweeps(h, 5);
+      await new Promise((r) => setImmediate(r));
+      expect(events.some((e) => e.event === 'need-clear-failed')).toBe(true);
+    });
   });
 
   it('evidence counts a held or numberless notice as neither an error nor a send', () => {

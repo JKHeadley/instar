@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NeverSilentStore, type ConversationPlatform } from './NeverSilentStore.js';
-import { NOTICE_HELD_REASONS, NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type NoticeUndelivered, type SessionFacts } from './NeverSilentWatcher.js';
+import { NOTICE_HELD_REASONS, NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type NeverSilentDeps, type NeverSilentNeed, type NoticeUndelivered, type SessionFacts } from './NeverSilentWatcher.js';
 import { ConversationSilenceJudge, type RefereeRoute } from './ConversationSilenceJudge.js';
 import { ENGINE_LOGIN_READERS } from '../../providers/adapters/engineSessionHooks.js';
 import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
@@ -63,6 +63,9 @@ export interface NeverSilentWiringInput {
   sendSlackNotice: (channelId: string, text: string) => Promise<string | null | NoticeUndelivered>;
   /** Shared feature-evidence log (the maturation ladder reads it). */
   evidence?: (kind: 'fired' | 'error', reason: string, context: Record<string, unknown>) => void;
+  /** Needs-you fallback for a notice that keeps failing (CMT-2078 step 3); absent = none on this agent. */
+  raiseNeed?: NeverSilentDeps['raiseNeed'];
+  clearNeed?: NeverSilentDeps['clearNeed'];
   now?: () => number;
 }
 
@@ -94,6 +97,35 @@ export function neverSilentEvidenceKind(event: Record<string, unknown>): 'fired'
   if (typeof event.reason === 'string' && NOTICE_HELD_REASONS.has(event.reason)) return null;
   if (typeof event.attempt === 'number') return event.firstFailure === true ? 'error' : null;
   return 'error';
+}
+
+/** Plain words for a bounded undelivered reason, for the person's Needs-you list. */
+const NEED_REASON_WORDS: Record<string, string> = {
+  'no-adapter': 'the agent had no connection to that chat service',
+  'no-receipt': 'the chat service gave no answer',
+  'unknown-reason': 'the send did not go through',
+  'held-quiet': 'it was held as a quiet notification',
+  'no-message-id': 'the chat service did not confirm it',
+};
+
+/**
+ * The attention item for a never-silent notice that keeps failing (CMT-2078 step 3). The
+ * conversation goes in the title and the detail, because the Needs-you list shows only those two
+ * and groups rows by title, so each waiting conversation is its own row. Never message text.
+ * `source: 'agent'` is what admits it to the list (dashboard/console/home-model.js needsOperator).
+ */
+export function neverSilentNeedItem(need: NeverSilentNeed): {
+  id: string; category: string; priority: 'HIGH'; source: 'agent'; sourceContext: string; title: string; summary: string; description: string;
+} {
+  // A Slack channel keeps its id so two waiting channels stay two rows (the list groups by title).
+  const where = need.platform === 'telegram' ? `topic ${need.conversationKey}` : `Slack conversation ${need.conversationKey.slice(0, 40)}`;
+  const reasonWords = NEED_REASON_WORDS[need.reason] ?? (need.reason.startsWith('threw:') ? 'the send failed with an error' : 'the send did not go through');
+  return {
+    id: need.id, category: 'never-silent', priority: 'HIGH', source: 'agent', sourceContext: 'never-silent-notice',
+    title: `A message in ${where} is waiting, and the agent could not say so there`,
+    summary: `Someone is waiting for a reply in ${where}. The agent tried ${need.tries} times to post a short "still working on it" notice there and could not, so they may think they were ignored.`,
+    description: `Someone is waiting for a reply in ${where}. The agent tried ${need.tries} times to tell them it is still working on it, and ${reasonWords}. Open that conversation to answer. This item closes by itself once a notice gets through or the message is answered.`,
+  };
 }
 
 export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiring {
@@ -219,6 +251,8 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
       }
       return input.sendSlackNotice(key, text);
     },
+    raiseNeed: input.raiseNeed,
+    clearNeed: input.clearNeed,
     repairStarted: input.repairStarted,
     // Moving back needs PROOF the login works (a passing sign-in check), never "not known to be broken":
     // during the Inspec incident the dead account read active/unavailable the whole time.

@@ -218,7 +218,7 @@ import { AgentServer } from '../server/AgentServer.js';
 import { BootHealthBeacon } from '../server/BootHealthBeacon.js';
 import { resolveBootClaimSafety, resolvePlannedRestartLeaseContinuity, UNSIGNED_WINDOW_CEILING_MS } from '../core/BootClaimHold.js';
 import { instarMachineMarker } from '../core/HttpLeaseTransport.js';
-import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji } from '../messaging/TelegramAdapter.js';
+import { TelegramAdapter, TOPIC_STYLE, selectTopicEmoji, type AttentionObservation } from '../messaging/TelegramAdapter.js';
 import { getTelegramInboundDir, writePrivateInboundFile, ensurePrivateDir } from '../messaging/shared/telegramInboundFiles.js';
 import { buildColdStartFallbackReply } from '../messaging/ColdStartFallbackReply.js';
 import { sendRespawnCollisionNotice } from '../messaging/ColdStartFallbackReply.js';
@@ -20982,7 +20982,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           noticeAfterMs: num(raw.noticeAfterSeconds, 120) * 1000,
         };
       };
-      const { buildNeverSilent } = await import('../monitoring/neverSilent/neverSilentWiring.js');
+      const { buildNeverSilent, neverSilentNeedItem } = await import('../monitoring/neverSilent/neverSilentWiring.js');
       const { setNeverSilentInstance } = await import('../server/neverSilentRoutes.js');
       const { sendNeverSilentTelegramNotice } = await import('../messaging/telegram-origin/OriginDeterministicSend.js');
       const { SecretStore: NsSecretStore } = await import('../core/SecretStore.js');
@@ -21083,6 +21083,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           const ts = await _slackAdapter.sendToChannel(key, text);
           return ts || { undelivered: 'no-message-id' };
         },
+        // CMT-2078 step 3: a notice that keeps failing becomes one Needs-you item. Record only, so it
+        // does not depend on the chat service that is failing to take the notice; GET /needs reads it.
+        raiseNeed: nsTelegram ? async (need) => {
+          const item: AttentionObservation = neverSilentNeedItem(need);
+          await nsTelegram.createAttentionItem(item, { recordOnly: true });
+          return true;
+        } : undefined,
+        clearNeed: nsTelegram ? async (id) => {
+          const closed = await nsTelegram.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' });
+          if (!closed) throw new Error('attention item not found');
+        } : undefined,
         evidence: (kind, reason, context) => {
           const flat: Record<string, string | number | boolean | null> = {};
           for (const [k, v] of Object.entries(context)) {
@@ -21092,6 +21103,14 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
       });
       setNeverSilentInstance({ store: neverSilent.store, enabled: () => nsCfg().enabled });
+      // CMT-2078 step 3: a Needs-you item the watcher raised before a restart (or dropped from its
+      // bounded memory) is closed by the attention lifecycle pass once its incident is over.
+      nsTelegram?.registerAttentionConditionResolver('never-silent-need', (item) => {
+        const m = /^never-silent:(nsi-[0-9a-f]+):(waiting|status)$/.exec(item.id);
+        if (!m) return 'unknown';
+        const inc = neverSilent.store.getIncident(m[1]);
+        return !inc || inc.closedAt ? 'cleared' : 'active';
+      });
       // lease-freshness-lapse-retry — count this machine's replies held at the send boundary for the lease. The
       // origin runtime boots before never-silent exists, so the recorder is assigned late (as readDetectorHealth is).
       // The conversation key follows the delivery notice: the topic for the main chat, the offset topic for the

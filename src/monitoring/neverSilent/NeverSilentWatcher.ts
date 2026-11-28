@@ -87,8 +87,29 @@ export interface NeverSilentDeps {
   sendNotice: (platform: ConversationPlatform, key: string, text: string, button?: { text: string; data: string }) => Promise<string | null | NoticeUndelivered>;
   repairStarted: (accountId: string | null) => boolean;
   accountHealthy: (accountId: string) => boolean;
+  /**
+   * The fallback when a notice keeps failing (CMT-2078 step 3): put one item on the person's
+   * Needs-you list that says a message is waiting and the agent could not tell them in the chat.
+   * Resolves true only once the item is stored. Absent = no fallback on this agent.
+   */
+  raiseNeed?: (need: NeverSilentNeed) => Promise<boolean>;
+  /** Close a raised item once a notice gets through or the wait is over. Best-effort. */
+  clearNeed?: (id: string) => Promise<void> | void;
   log?: (event: Record<string, unknown>) => void;
   now?: () => number;
+}
+
+/** One Needs-you item for a conversation whose never-silent notice keeps failing. */
+export interface NeverSilentNeed {
+  /** Stable per incident and notice kind, so a repeat updates the same item. */
+  id: string;
+  platform: ConversationPlatform;
+  conversationKey: string;
+  kind: 'waiting' | 'status';
+  /** Failed tries in this streak so far. */
+  tries: number;
+  /** The bounded reason of the latest failure (never message text). */
+  reason: string;
 }
 
 const ASK_PREFIX = 'ns:m:';
@@ -105,10 +126,17 @@ export const JUDGE_BACKOFF_MAX_MS = 10 * 60_000;
 export const NOTICE_RETRY_BASE_MS = 30_000;
 export const NOTICE_RETRY_MAX_MS = 15 * 60_000;
 const NOTICE_RETRY_MAX_ENTRIES = 500;
+/** After this many failed tries in a streak with a real failure, the person gets a Needs-you item. */
+export const NOTICE_NEED_AFTER_FAILURES = 3;
 /** Undelivered on purpose or without proof of failure: backed off, but not counted as an error. */
 export const NOTICE_HELD_REASONS: ReadonlySet<string> = new Set(['held-quiet', 'no-message-id']);
 /** A new silence this soon after a move back asks instead of moving again (the repair did not hold). */
 export const RESTORE_FLAP_WINDOW_MS = 6 * 60 * 60_000;
+
+/** The Needs-you item id for one incident's notice kind. */
+export function needId(incidentId: string, kind: 'waiting' | 'status'): string {
+  return `never-silent:${incidentId}:${kind}`;
+}
 
 export class NeverSilentWatcher {
   private readonly inflight = new Set<string>();
@@ -125,7 +153,9 @@ export class NeverSilentWatcher {
    * retried after a doubling wait instead of on every sweep, and only its first real failure counts as
    * an error. In memory: a restart retries once at the next sweep, which is the old behaviour.
    */
-  private readonly noticeRetry = new Map<string, { failures: number; nextAt: number; errorCounted: boolean }>();
+  private readonly noticeRetry = new Map<string, { failures: number; nextAt: number; errorCounted: boolean; unavailableLogged?: true }>();
+  /** Needs-you items this watcher raised and has not closed yet: item id → incident id. */
+  private readonly raisedNeeds = new Map<string, string>();
   private readonly now: () => number;
   constructor(private readonly d: NeverSilentDeps) {
     this.now = d.now ?? (() => Date.now());
@@ -173,6 +203,7 @@ export class NeverSilentWatcher {
       finally { this.inflight.delete(k); }
     }
     try { await this.restoreMoved(); } catch (err) { this.log({ event: 'restore-failed', error: String(err) }); }
+    this.clearFinishedNeeds();
   }
 
   private async handleConversation(platform: ConversationPlatform, key: string, cfg: NeverSilentConfig): Promise<void> {
@@ -366,8 +397,8 @@ export class NeverSilentWatcher {
     if (this.retryWaiting(incident.id, 'waiting')) return;
     const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null, ...(waitingReason ? { waitingReason } : {}) });
     const sent = await this.deliverNotice(platform, key, text);
-    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting', reason: sent.reason, ...this.noticeFailed(incident.id, 'waiting', sent.reason) }); return; }
-    this.noticeRetry.delete(`${incident.id}|waiting`);
+    if ('reason' in sent) { await this.noticeUndelivered(platform, key, incident, 'waiting', sent.reason); return; }
+    this.noticeDelivered(incident.id, 'waiting');
     const id = sent.id;
     this.d.store.markCovered(uncovered.map((o) => o.id), 'waiting');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'waiting', class: cls, covered: uncovered.length });
@@ -400,8 +431,8 @@ export class NeverSilentWatcher {
       target: s.target, repairStarted: this.safe(() => this.d.repairStarted(fresh.accountId), false), askReason: s.askReason,
     });
     const sent = await this.deliverNotice(platform, key, text, button);
-    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision, reason: sent.reason, ...this.noticeFailed(incident.id, 'status', sent.reason) }); return; }
-    this.noticeRetry.delete(`${incident.id}|status`);
+    if ('reason' in sent) { await this.noticeUndelivered(platform, key, incident, 'status', sent.reason, revision); return; }
+    this.noticeDelivered(incident.id, 'status');
     const id = sent.id;
     this.d.store.markCovered(open.map((o) => o.id), 'status');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'status', revision, covered: open.length, ask: !!button });
@@ -475,6 +506,53 @@ export class NeverSilentWatcher {
   private safe<T>(fn: () => T, fallback: T): T {
     try { return fn(); } catch { return fallback; /* @silent-fallback-ok — a failed lookup takes the conservative value; telling still happens */ }
   }
+  /**
+   * Log a failed waiting or status notice, back it off, and once it keeps failing raise one
+   * Needs-you item for the person (CMT-2078 step 3). Never throws.
+   */
+  private async noticeUndelivered(platform: ConversationPlatform, key: string, incident: Incident, kind: 'waiting' | 'status', reason: string, revision?: string): Promise<void> {
+    const failed = this.noticeFailed(incident.id, kind, reason);
+    this.log({ event: 'notice-undelivered', incident: incident.id, kind, ...(revision ? { revision } : {}), reason, ...failed });
+    const id = needId(incident.id, kind);
+    const realFailure = this.noticeRetry.get(`${incident.id}|${kind}`)?.errorCounted === true;
+    if (!realFailure || failed.attempt < NOTICE_NEED_AFTER_FAILURES || this.raisedNeeds.has(id)) return;
+    if (!this.d.raiseNeed) {
+      // Once per failure streak, not on every later try.
+      const entry = this.noticeRetry.get(`${incident.id}|${kind}`);
+      if (entry && !entry.unavailableLogged) { entry.unavailableLogged = true; this.log({ event: 'need-unavailable', incident: incident.id, kind }); }
+      return;
+    }
+    let stored = false;
+    try { stored = await this.d.raiseNeed({ id, platform, conversationKey: key, kind, tries: failed.attempt, reason }); }
+    catch { stored = false; /* @silent-fallback-ok — logged as need-failed below; the next failed try raises it again */ }
+    if (stored) {
+      this.raisedNeeds.set(id, incident.id);
+      while (this.raisedNeeds.size > NOTICE_RETRY_MAX_ENTRIES) this.raisedNeeds.delete(this.raisedNeeds.keys().next().value as string);
+    }
+    this.log({ event: stored ? 'need-raised' : 'need-failed', incident: incident.id, kind, tries: failed.attempt });
+  }
+  /** A notice got through: reset its wait and close its Needs-you item if one was raised. */
+  private noticeDelivered(incidentId: string, kind: 'waiting' | 'status'): void {
+    this.noticeRetry.delete(`${incidentId}|${kind}`);
+    this.clearRaisedNeed(needId(incidentId, kind), 'delivered');
+  }
+  /** Close raised items whose incident is over (answered or closed) — run once per sweep. */
+  private clearFinishedNeeds(): void {
+    for (const [id, incidentId] of [...this.raisedNeeds]) {
+      const inc = this.safe(() => this.d.store.getIncident(incidentId), null);
+      if (!inc || inc.closedAt) this.clearRaisedNeed(id, 'closed');
+    }
+  }
+  private clearRaisedNeed(id: string, why: 'delivered' | 'closed'): void {
+    const incidentId = this.raisedNeeds.get(id);
+    if (incidentId === undefined) return;
+    this.raisedNeeds.delete(id);
+    const failed = () => this.log({ event: 'need-clear-failed', incident: incidentId, why });
+    // The attention lifecycle pass also closes it once the incident is over (the server's resolver).
+    try { void Promise.resolve(this.d.clearNeed?.(id)).catch(failed); }
+    catch { failed(); }
+    this.log({ event: 'need-cleared', incident: incidentId, why });
+  }
   /** True while a failed notice of this kind is still inside its retry wait. */
   private retryWaiting(incidentId: string, kind: 'waiting' | 'status'): boolean {
     const r = this.noticeRetry.get(`${incidentId}|${kind}`);
@@ -494,7 +572,7 @@ export class NeverSilentWatcher {
     const firstFailure = real && !prev?.errorCounted;
     this.noticeRetry.delete(k);
     const wait = Math.min(NOTICE_RETRY_BASE_MS * 2 ** Math.min(failures - 1, 10), NOTICE_RETRY_MAX_MS);
-    this.noticeRetry.set(k, { failures, nextAt: this.now() + wait, errorCounted: !!prev?.errorCounted || real });
+    this.noticeRetry.set(k, { failures, nextAt: this.now() + wait, errorCounted: !!prev?.errorCounted || real, ...(prev?.unavailableLogged ? { unavailableLogged: true as const } : {}) });
     // Bounded: the oldest failure goes first (delete-then-set keeps the Map ordered by last failure).
     while (this.noticeRetry.size > NOTICE_RETRY_MAX_ENTRIES) this.noticeRetry.delete(this.noticeRetry.keys().next().value as string);
     return firstFailure ? { attempt: failures, firstFailure: true } : { attempt: failures };

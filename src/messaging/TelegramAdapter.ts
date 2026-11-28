@@ -428,6 +428,12 @@ export interface AttentionItem {
    */
   lane?: 'agent-health';
   /**
+   * Raised by the agent itself about something the person should see. The Needs-you list admits
+   * an item with this mark (dashboard/console/home-model.js needsOperator). Set by the agent
+   * server's own notices and the never-silent fallback (CMT-2078).
+   */
+  source?: 'agent';
+  /**
    * Stable per-entity key for Agent-Health-lane suppression dedup (e.g. a session
    * id). Decoupled from `id` (which may carry a per-episode suffix) so the same
    * entity re-escalating within the dedup window is suppressed rather than

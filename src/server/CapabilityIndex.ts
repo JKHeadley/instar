@@ -342,7 +342,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'neverSilent',
     prefixes: ['/never-silent'],
-    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message (and, under sendHolds, each reply this machine held at the send boundary for the lease, with its delivery time), the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess.',
+    description: 'Never-silent conversations (docs/specs/never-silent-conversation.md) — every inbound conversation message ends in a reply or a plain Instar notice. GET /never-silent/incidents (?open=1) lists each waiting message (and, under sendHolds, each reply this machine held at the send boundary for the lease, with its delivery time), the judged reason (from a judge on a different engine than the stuck one), the action and every notice sent; the waiting text itself is never served. Dev-gated (monitoring.neverSilent.enabled); 503 when off. When asked "why did that conversation go quiet?" → read this, don\'t guess. When a notice keeps failing (three tries in a row), the person also gets one Needs-you item titled "A message in <conversation> is waiting, and the agent could not say so there"; it closes by itself once a notice gets through or the message is answered.',
     build: () => ({
       configured: true,
       endpoints: ['GET /never-silent/incidents'],

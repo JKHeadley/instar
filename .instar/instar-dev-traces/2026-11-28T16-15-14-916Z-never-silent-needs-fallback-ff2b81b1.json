@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "never-silent-needs-fallback",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T16:15:14.916Z",
+  "artifactPath": "upgrades/side-effects/never-silent-needs-fallback.md",
+  "artifactSha256": "31a705bc6138d89c930e3ebb97f793a1dd4cb8be64532f962a556d29e4484595",
+  "coveredFiles": [
+    "docs/specs/never-silent-needs-fallback.eli16.md",
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+    "src/monitoring/neverSilent/neverSilentWiring.ts",
+    "src/server/CapabilityIndex.ts",
+    "tests/unit/neverSilent-needs-attention.test.ts",
+    "tests/unit/neverSilent-watcher.test.ts",
+    "upgrades/next/never-silent-needs-fallback.md",
+    "upgrades/side-effects/never-silent-needs-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Never-silent fallback raises one record-only attention item for the owner; signal only, no new route, authority or config.",
+  "eli16Path": "docs/specs/never-silent-needs-fallback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/never-silent-needs-fallback.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded notice: one attention item per incident and kind per failure streak, raised only from step-2 backed-off failed tries (30 s doubling to 15 min); no loop of its own"
+  }
+}

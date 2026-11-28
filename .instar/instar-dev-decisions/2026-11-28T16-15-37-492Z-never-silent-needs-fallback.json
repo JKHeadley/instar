@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-28T16:15:37.492Z",
+  "slug": "never-silent-needs-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 157,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+      "src/monitoring/neverSilent/neverSilentWiring.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 147,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "bounded notice: one attention item per incident and kind per failure streak, raised only from step-2 backed-off failed tries (30 s doubling to 15 min); no loop of its own"
+  },
+  "verdict": "pass"
+}
