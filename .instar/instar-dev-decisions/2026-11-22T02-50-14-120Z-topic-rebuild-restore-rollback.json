@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-22T02:50:14.120Z",
+  "slug": "topic-rebuild-restore-rollback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 90,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/memory/TopicMemory.ts"
+    ],
+    "addedLines": 88,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
