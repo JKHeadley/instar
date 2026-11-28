@@ -29,6 +29,8 @@ The repository invariants accept the current tree and reject a temporary root Ma
 
 ## Second-pass review
 
+**Reviewer:** Independent Codex reviewer queue_cap_review (release-fix follow-up).
+
 The reviewer concurred against main 482a94b9 after checking the hosted and local publish paths, fragment assembly, and the existing upgrade-root names. The marker is unignored. Publishing removes only Markdown fragments and stages the marker with the upgrade directory. The reviewer confirmed the root lint is scoped to misplaced files and cannot detect a fragment edit that Git folds into an existing versioned guide. The review used static inspection and git diff --check.
 
 The follow-up reviewer found two post-release and assembly fixtures that needed the newly required marker. They now represent the tracked layout. The test file also covers a missing marker and a stray root note.
