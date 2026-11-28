@@ -1,8 +1,9 @@
 import net from 'node:net';
+import { CAPACITY_CAUSES } from './OriginCapacityEvidence.js';
 import { chmodSync, lstatSync } from 'node:fs';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import type { TelegramOriginOutageNotifier, OutageNoticeState } from './TelegramOriginOutageNotifier.js';
-import type { OriginCapacityAuthority, OriginCapacityGrant } from './OriginEgressCapacity.js';
+import type { OriginCapacityAuthority, OriginCapacityGrant, OriginCapacityRefusal, OriginCapacityRefusalCause } from './OriginEgressCapacity.js';
 
 /** Same-OS-principal IPC. The filesystem-protected local socket exposes fixed
  * notice triggers/readback and bounded credential capacity grants. It never
@@ -40,11 +41,13 @@ export async function listenOriginNotices(socketPath: string, notifier: Telegram
         const input = JSON.parse(buffer);
         if (capacity && input?.op === 'capacity-reserve' && Object.keys(input).sort().join(',') === 'accountId,op' &&
           typeof input.accountId === 'string' && input.accountId.length <= 128) {
-          socket.end(JSON.stringify({ grant: await capacity.reserve(input.accountId) }) + '\n'); return;
+          const decision = capacity.reserveExplained ? await capacity.reserveExplained(input.accountId) : { grant: await capacity.reserve(input.accountId) };
+          socket.end(JSON.stringify({ ...decision, ownerDecidedAtMs: Date.now() }) + '\n'); return;
         }
         if (capacity && input?.op === 'capacity-consume' && Object.keys(input).sort().join(',') === 'grant,op' &&
           validCapacityGrant(input.grant)) {
-          socket.end(JSON.stringify({ consumed: await capacity.consume(input.grant) }) + '\n'); return;
+          const decision = capacity.consumeExplained ? await capacity.consumeExplained(input.grant) : { consumed: await capacity.consume(input.grant) };
+          socket.end(JSON.stringify({ ...decision, ownerDecidedAtMs: Date.now() }) + '\n'); return;
         }
         if (!input || Object.keys(input).sort().join(',') !== 'destinationId,op' ||
           !['request', 'status'].includes(input.op) || !authorizedIds().includes(input.destinationId)) {
@@ -77,24 +80,77 @@ function validCapacityGrant(value: unknown): value is OriginCapacityGrant {
 }
 /** Nonwaiting reservations share the fixed owner's socket and bounded request
  * budget; no body, token or origin claim crosses this interface. */
+function parsedRefusal(value: unknown, stage: 'reserve' | 'consume'): OriginCapacityRefusal | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as OriginCapacityRefusal;
+  const liveness = ['owner-closed', 'owner-not-ready', 'lease-not-held', 'account-unknown', 'owner-check-failed'];
+  const allowed = stage === 'reserve' ? [...liveness, 'rate-window-full']
+    : [...liveness, 'grant-expired', 'wrong-owner', 'unknown-grant', 'already-consumed', 'grant-mismatch', 'consume-refused'];
+  if (Object.keys(v).sort().join(',') !== 'cause,leaseFreshness' || !CAPACITY_CAUSES.includes(v.cause) || !allowed.includes(v.cause)) return null;
+  const f = v.leaseFreshness;
+  if (f !== null) {
+    if (!f || typeof f !== 'object' || Object.keys(f).sort().join(',') !== 'msSinceConfirmedRenewal,ttlMs,verdict' ||
+      !['holding', 'suspended', 'not-current-holder', 'renewal-lapsed', 'superseded'].includes(f.verdict) ||
+      !Number.isSafeInteger(f.ttlMs) || f.ttlMs < 0 ||
+      !(f.msSinceConfirmedRenewal === null || Number.isFinite(f.msSinceConfirmedRenewal) && f.msSinceConfirmedRenewal >= 0)) return null;
+  }
+  if (v.cause === 'lease-not-held' && f?.verdict === 'holding') return null;
+  if (v.cause !== 'lease-not-held' && f !== null) return null;
+  return { cause: v.cause, leaseFreshness: f === null ? null : { ...f } };
+}
+class CapacityIpcError extends Error { constructor(readonly cause: OriginCapacityRefusalCause) { super(cause); } }
 export function originCapacityClient(socketPath: string): OriginCapacityAuthority {
   const call = (input: object): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
-    const socket = net.createConnection(socketPath); let buffer = '';
-    const timer = setTimeout(() => { socket.destroy(); reject(new Error('origin-capacity: IPC timeout')); }, 1000);
-    socket.once('error', () => { clearTimeout(timer); reject(new Error('origin-capacity: IPC unavailable')); });
+    const socket = net.createConnection(socketPath); let buffer = '', settled = false;
+    const finish = (value?: Record<string, unknown>, cause?: OriginCapacityRefusalCause) => {
+      if (settled) return; settled = true; clearTimeout(timer); socket.destroy();
+      if (cause) reject(new CapacityIpcError(cause)); else resolve(value!);
+    };
+    const timer = setTimeout(() => finish(undefined, 'ipc-timeout'), 1000);
+    socket.once('error', () => finish(undefined, 'ipc-unavailable'));
+    socket.once('close', () => { if (!settled) finish(undefined, 'ipc-unavailable'); });
     socket.once('connect', () => socket.write(JSON.stringify(input) + '\n'));
-    socket.on('data', bytes => { buffer += bytes.toString('utf8'); if (Buffer.byteLength(buffer) > 1024) socket.destroy(new Error('response too large')); });
-    socket.once('end', () => { clearTimeout(timer); socket.destroy(); try { resolve(JSON.parse(buffer)); } catch { reject(new Error('invalid response')); } });
+    socket.on('data', bytes => { buffer += bytes.toString('utf8'); if (Buffer.byteLength(buffer) > 1024) finish(undefined, 'ipc-protocol'); });
+    socket.once('end', () => { try {
+      const value: unknown = JSON.parse(buffer);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return finish(undefined, 'ipc-protocol');
+      finish(value as Record<string, unknown>);
+    } catch { finish(undefined, 'ipc-protocol'); } });
   });
-  return {
-    reserve: async accountId => {
-      try { const result = await call({ op: 'capacity-reserve', accountId });
-        return validCapacityGrant(result.grant) && result.grant.accountId === accountId ? result.grant : null;
-      } catch { return null; }
-    },
-    consume: async grant => { try { return (await call({ op: 'capacity-consume', grant })).consumed === true; } catch { return false; } },
+  const no = (cause: OriginCapacityRefusalCause): OriginCapacityRefusal => ({ cause, leaseFreshness: null });
+  // Diagnostic metadata never changes the underlying grant or consume verdict.
+  const ownerTime = (r: Record<string, unknown>) =>
+    typeof r.ownerDecidedAtMs === 'number' && Number.isSafeInteger(r.ownerDecidedAtMs) && r.ownerDecidedAtMs >= 0
+      ? { ownerDecidedAtMs: r.ownerDecidedAtMs } : {};
+  const quality = (r: Record<string, unknown>, positive: boolean, stage: 'reserve' | 'consume') => {
+    if (!Object.hasOwn(r, 'refusal')) return { refusal: positive ? null : no('legacy-unexplained'), explanation: 'legacy-unexplained' as const };
+    if (positive) return { refusal: null, explanation: r.refusal === null ? 'complete' as const : 'invalid' as const };
+    const refusal = parsedRefusal(r.refusal, stage);
+    return { refusal: refusal ?? no('legacy-unexplained'), explanation: refusal ? 'complete' as const : 'invalid' as const };
   };
+  const client: OriginCapacityAuthority = {
+    diagnosticTransport: 'ipc',
+    reserve: async accountId => (await client.reserveExplained!(accountId)).grant,
+    consume: async grant => (await client.consumeExplained!(grant)).consumed,
+    reserveExplained: async accountId => {
+      try {
+        const r = await call({ op: 'capacity-reserve', accountId });
+        if (r.grant !== null && (!validCapacityGrant(r.grant) || r.grant.accountId !== accountId)) throw new CapacityIpcError('ipc-protocol');
+        if (r.grant === null) return { grant: null, ...ownerTime(r), ...quality(r, false, 'reserve') } as import('./OriginEgressCapacity.js').OriginCapacityDecision;
+        return { grant: r.grant as OriginCapacityGrant, ...ownerTime(r), refusal: null, explanation: quality(r, true, 'reserve').explanation };
+      } catch (e) { return { grant: null, refusal: no(e instanceof CapacityIpcError ? e.cause : 'ipc-unavailable') }; }
+    },
+    consumeExplained: async grant => {
+      try {
+        const r = await call({ op: 'capacity-consume', grant });
+        if (typeof r.consumed !== 'boolean') throw new CapacityIpcError('ipc-protocol');
+        return { consumed: r.consumed, ...ownerTime(r), ...quality(r, r.consumed, 'consume') };
+      } catch (e) { return { consumed: false, refusal: no(e instanceof CapacityIpcError ? e.cause : 'ipc-unavailable') }; }
+    },
+  };
+  return client;
 }
+
 export async function callOriginNotice(socketPath: string, destinationId: string,
   op: 'request' | 'status'): Promise<OutageNoticeState> {
   if (destinationId.length > 256) throw new Error('origin-notice: invalid destination');

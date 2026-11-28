@@ -1,3 +1,4 @@
+import { sanitizeCapacityEvidence } from './OriginCapacityEvidence.js';
 /** Async owner of a long-lived worker. Never falls back to synchronous DB work.
  * A timed-out mutation may have committed: callers must read the same outbox
  * after recovery, never acquire execution authority from an evidence mirror.
@@ -357,7 +358,9 @@ export class OriginStore {
   markDispatched(input: ClaimFence & { now?: number }): Promise<boolean> { return this.call('markDispatched', input); }
   releaseUndispatchedClaim(input: ClaimFence & { now?: number; detail?: 'content-reservation-held' }): Promise<boolean> { return this.call('releaseUndispatchedClaim', input); }
   renewClaim(input: ClaimFence & { leaseMs: number; now?: number }): Promise<boolean> { return this.call('renewClaim', input); }
-  recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult> { return this.call('recordOutcome', input); }
+  recordOutcome(input: OutcomeInput): Promise<OutcomeWriteResult> {
+    return this.call('recordOutcome', input.capacityEvidence === undefined ? input : { ...input, capacityEvidence: sanitizeCapacityEvidence(input.capacityEvidence) });
+  }
   reapAbandoned(now?: number): Promise<number> { return this.call('reapAbandoned', now); }
   addMaterialization(input: DerivedMaterializationInput): Promise<boolean> { return this.call('addMaterialization', input); }
   recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;

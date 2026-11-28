@@ -57,7 +57,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
   });
   it.each(['claim', 'markDispatched'] as const)('excludes delayed durable %s response from the short grant lifetime', async method => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consumeExplained');
     if (method === 'claim') {
       const original = h.runtime.store.claim.bind(h.runtime.store);
       vi.spyOn(h.runtime.store, 'claim').mockImplementation(async input => {
@@ -81,7 +81,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('does not acquire capacity when durable dispatch marking refuses', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consumeExplained');
     vi.spyOn(h.runtime.store, 'markDispatched').mockResolvedValue(false);
     await expect(h.send()).rejects.toMatchObject({ reason: 'stale-dispatch-fence' });
     expect(reserve).not.toHaveBeenCalled(); expect(consume).not.toHaveBeenCalled();
@@ -91,7 +91,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
   it('retains local refusal audit without charging a transport attempt', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
     const reserve = vi.spyOn(capacity, 'reserveExplained').mockResolvedValue({ grant: null, refusal: { cause: 'rate-window-full', leaseFreshness: null } });
-    const consume = vi.spyOn(capacity, 'consume');
+    const consume = vi.spyOn(capacity, 'consumeExplained');
     await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
     expect(reserve).toHaveBeenCalledTimes(1); expect(consume).not.toHaveBeenCalled();
     expect(h.network).not.toHaveBeenCalled();
@@ -128,9 +128,9 @@ describe('ordinary capacity acquired at the network boundary', () => {
   it.each(['refused', 'expired-response'] as const)('keeps %s consumption uncharged without renewing the capacity grant', async mode => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
     const reserve = vi.spyOn(capacity, 'reserveExplained');
-    const original = capacity.consume.bind(capacity);
-    const consume = vi.spyOn(capacity, 'consume').mockImplementation(async grant => {
-      if (mode === 'refused') return false;
+    const original = capacity.consumeExplained!.bind(capacity);
+    const consume = vi.spyOn(capacity, 'consumeExplained').mockImplementation(async grant => {
+      if (mode === 'refused') return { consumed: false, refusal: { cause: 'consume-refused', leaseFreshness: null } };
       const consumed = await original(grant); await delay(300); return consumed;
     });
     await expect(h.send()).rejects.toMatchObject({ reason: 'credential-capacity-unavailable' });
@@ -142,6 +142,9 @@ describe('ordinary capacity acquired at the network boundary', () => {
       reason: 'credential-capacity-unavailable' });
     expect(row.children[0].state).toBe('queued');
     expect(row.children[0].attempts).toBe(0);
+    expect(row.attempts[0].capacityEvidence).toMatchObject(mode === 'expired-response'
+      ? { stage: 'pre-network', cause: 'grant-expired', ownerVerdict: 'consumed' }
+      : { stage: 'consume', cause: 'consume-refused', ownerVerdict: 'refused' });
   });
 
   it('does not refund an error of the same class thrown by the network callback', async () => {
@@ -165,7 +168,7 @@ describe('ordinary capacity acquired at the network boundary', () => {
 
   it('latches before reserve so concurrent and repeated closure calls cannot acquire another grant', async () => {
     const h = await harness(), capacity = h.runtime.service.options.capacity!;
-    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consume');
+    const reserve = vi.spyOn(capacity, 'reserveExplained'), consume = vi.spyOn(capacity, 'consumeExplained');
     type Prepared = Awaited<ReturnType<NonNullable<OriginBotTransport['prepare']>>>;
     let prepared: Prepared | undefined;
     const execute = h.runtime.service.executePreparedBot.bind(h.runtime.service);

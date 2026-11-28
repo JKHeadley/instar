@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "slug": "telegram-capacity-attribution",
+  "sessionId": "dd749eae-9567-435e-9e95-a9679df8aaea",
+  "timestamp": "2026-11-23T05:40:18.567Z",
+  "artifactPath": "upgrades/side-effects/telegram-capacity-attribution.md",
+  "artifactSha256": "b78f3c0c2f6ec34095ecc44d3956c356c3ad6d47976814cb7f020ba1c804fb99",
+  "specPath": "docs/specs/telegram-capacity-attribution.md",
+  "coveredFiles": [
+    "docs/specs/reports/telegram-capacity-attribution-convergence.md",
+    "docs/specs/telegram-capacity-attribution.eli16.md",
+    "docs/specs/telegram-capacity-attribution.md",
+    "src/data/awareness/telegram-capacity-attribution.md",
+    "src/messaging/telegram-origin/OriginBotEgress.ts",
+    "src/messaging/telegram-origin/OriginCapacityEvidence.ts",
+    "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+    "src/messaging/telegram-origin/OriginNoticeIpc.ts",
+    "src/messaging/telegram-origin/OriginStore.ts",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/StoreTypes.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/e2e/telegram-origin-late-capacity-lifecycle.test.ts",
+    "tests/e2e/telegram-origin-notice-policy.test.ts",
+    "tests/integration/telegram-origin-capacity-ipc.test.ts",
+    "tests/integration/telegram-origin-late-capacity.test.ts",
+    "tests/unit/telegram-origin/capacity-evidence-store.test.ts",
+    "tests/unit/telegram-origin/capacity-evidence.test.ts",
+    "tests/unit/telegram-origin/egress-capacity.test.ts",
+    "tests/unit/telegram-origin/late-capacity.test.ts",
+    "tests/unit/telegram-origin/transport-deadlines.test.ts",
+    "upgrades/next/telegram-capacity-attribution.md",
+    "upgrades/side-effects/telegram-capacity-attribution.md",
+    "docs/specs/carriers/telegram-capacity-attribution.json"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Diagnostics-only change crosses existing credential IPC and durable outbox boundaries; preserve all send and retry authority and retain rollback-safe evidence.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Per-attempt diagnostics run only inside the existing bounded send and recovery lifecycle. No new self-triggered controller, retry schedule or sender is introduced."
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The existing IPC boolean interface and generic stored reason discarded refusal attribution. This change repairs that observability gap; the historical capacity-refusal cause itself remains unproven."
+  }
+}

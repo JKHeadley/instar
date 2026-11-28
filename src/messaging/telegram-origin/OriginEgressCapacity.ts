@@ -26,11 +26,15 @@ export interface LeaseFreshness { msSinceConfirmedRenewal: number | null; ttlMs:
  * causes are the egress's own: the permit ran out, or `consume()` re-checked liveness and said no. */
 export type OriginCapacityRefusalCause =
   | 'owner-closed' | 'owner-not-ready' | 'lease-not-held' | 'account-unknown' | 'owner-check-failed' | 'rate-window-full'
-  | 'grant-expired' | 'consume-refused';
+  | 'grant-expired' | 'consume-refused' | 'wrong-owner' | 'unknown-grant' | 'already-consumed' | 'grant-mismatch'
+  | 'legacy-unexplained' | 'ipc-timeout' | 'ipc-unavailable' | 'ipc-protocol';
 export interface OriginCapacityRefusal { cause: OriginCapacityRefusalCause; leaseFreshness: LeaseFreshness | null }
-export type OriginCapacityDecision = { grant: OriginCapacityGrant; refusal: null } | { grant: null; refusal: OriginCapacityRefusal };
+export type OriginCapacityDecision = ({ grant: OriginCapacityGrant; refusal: null } | { grant: null; refusal: OriginCapacityRefusal }) & { ownerDecidedAtMs?: number; explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
 
+export type OriginConsumeDecision = { ownerDecidedAtMs?: number; observedOwnerVerdict?: 'consumed'; consumed: boolean; refusal: OriginCapacityRefusal | null; explanation?: 'complete' | 'legacy-unexplained' | 'invalid' };
 export interface OriginCapacityAuthority {
+  readonly diagnosticTransport?: 'ipc';
+  consumeExplained?(grant: OriginCapacityGrant): Promise<OriginConsumeDecision>;
   reserve(accountId: string): Promise<OriginCapacityGrant | null>;
   /** The same decision as `reserve()`, with the cause captured in the evaluation that refused. Optional: an
    * IPC client cannot explain, and its caller falls back to `reserve()` (an unexplained refusal). */
@@ -91,11 +95,18 @@ export class OriginEgressCapacity implements OriginCapacityAuthority {
     const grant = { ownerBootId: this.options.ownerBootId, accountId, nonce: randomUUID(), expiresAt: now + ORIGIN_CAPACITY_TTL_MS };
     entries.push({ at: now, grant, consumed: false }); return { grant: { ...grant }, refusal: null };
   }
-  async consume(grant: OriginCapacityGrant): Promise<boolean> {
-    if (!this.#live(grant.accountId) || grant.ownerBootId !== this.options.ownerBootId || grant.expiresAt <= this.#now()) return false;
+  async consume(grant: OriginCapacityGrant): Promise<boolean> { return (await this.consumeExplained(grant)).consumed; }
+  async consumeExplained(grant: OriginCapacityGrant): Promise<OriginConsumeDecision> {
+    const no = (cause: OriginCapacityRefusalCause): OriginConsumeDecision => ({ consumed: false, refusal: { cause, leaseFreshness: null } });
+    const live = this.#liveCause(grant.accountId);
+    if (live) return { consumed: false, refusal: live };
+    if (grant.ownerBootId !== this.options.ownerBootId) return no('wrong-owner');
+    if (grant.expiresAt <= this.#now()) return no('grant-expired');
     const entry = this.#debits.get(grant.accountId)?.find(entry => entry.grant.nonce === grant.nonce);
-    if (!entry || entry.consumed || entry.grant.expiresAt !== grant.expiresAt) return false;
-    entry.consumed = true; return true;
+    if (!entry) return no('unknown-grant');
+    if (entry.consumed) return no('already-consumed');
+    if (entry.grant.expiresAt !== grant.expiresAt) return no('grant-mismatch');
+    entry.consumed = true; return { consumed: true, refusal: null };
   }
   close(): void { this.#closed = true; this.#debits.clear(); }
 }

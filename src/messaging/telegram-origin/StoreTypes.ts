@@ -1,3 +1,4 @@
+import type { StoredCapacityEvidence } from './OriginCapacityEvidence.js';
 /** Storage wire contract. Only the origin service may supply verified envelopes/plans.
  * No transport credentials, signing keys or session preparation tokens cross this port.
  */
@@ -94,6 +95,7 @@ export type ClaimResult = { status: 'claimed'; child: ClaimedChild } | {
   status: 'unavailable'; reason: 'missing' | 'not-ready' | 'stale-materialization' | 'expired' | 'attempt-budget' | 'signature-expired';
 };
 export interface OutcomeInput extends ClaimFence {
+  capacityEvidence?: StoredCapacityEvidence;
   outcome: ChildOutcome;
   /** Receipt validator supplies the full platform namespace, never merely prose. */
   receiptJson?: string;
@@ -151,7 +153,7 @@ export interface OriginAuditRecord {
     /** native-conversation-forwarded-advisory item 2 — the outbound check's verdict (`policy_verdict_json`), never cleared. */
     policyVerdict?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
-  attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; reason?: string | null; nextAttemptAt?: number | null }>;
+  attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; capacityEvidence?: StoredCapacityEvidence; capacityEvidenceStatus?: 'collected' | 'unavailable' | 'legacy-or-not-reached'; reason?: string | null; nextAttemptAt?: number | null }>;
 }
 export interface OriginListQuery {
   cursor?: string;

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "telegram-capacity-attribution",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T10:12:11.840Z",
+  "artifactPath": "upgrades/side-effects/telegram-capacity-attribution.md",
+  "artifactSha256": "8b1663f873a16a4f58498c8764d1814e3638eb64d9e57d5d3ee0ca35769a50bc",
+  "specPath": "docs/specs/telegram-capacity-attribution.md",
+  "coveredFiles": [
+    "docs/specs/telegram-capacity-attribution.eli16.md",
+    "src/messaging/telegram-origin/OriginBotEgress.ts",
+    "src/messaging/telegram-origin/OriginCapacityEvidence.ts",
+    "src/messaging/telegram-origin/OriginEgressCapacity.ts",
+    "src/messaging/telegram-origin/OriginNoticeIpc.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/telegram-origin-capacity-ipc.test.ts",
+    "tests/integration/telegram-origin-late-capacity.test.ts",
+    "upgrades/next/telegram-capacity-attribution.md",
+    "upgrades/side-effects/telegram-capacity-attribution.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Instrumentation at the existing capacity owner and local close fence.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

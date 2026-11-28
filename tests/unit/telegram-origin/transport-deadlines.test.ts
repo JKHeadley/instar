@@ -85,8 +85,8 @@ describe('Telegram network deadlines after origin preparation', () => {
     h.review.mockImplementation(async () => { expect(timeout).not.toHaveBeenCalled(); return { ok: true }; });
     const claim = h.runtime.store.claim.bind(h.runtime.store);
     vi.spyOn(h.runtime.store, 'claim').mockImplementation(async input => { expect(timeout).not.toHaveBeenCalled(); return claim(input); });
-    const consume = h.runtime.service.options.capacity!.consume.bind(h.runtime.service.options.capacity!);
-    vi.spyOn(h.runtime.service.options.capacity!, 'consume').mockImplementation(async grant => { expect(timeout).not.toHaveBeenCalled(); return consume(grant); });
+    const consume = h.runtime.service.options.capacity!.consumeExplained!.bind(h.runtime.service.options.capacity!);
+    vi.spyOn(h.runtime.service.options.capacity!, 'consumeExplained').mockImplementation(async grant => { expect(timeout).not.toHaveBeenCalled(); return consume(grant); });
     expect((await h.send({ networkTimeoutMs: 15_000 })).ok).toBe(true);
     expect(timeout).toHaveBeenCalledOnce(); expect(timeout).toHaveBeenCalledWith(15_000);
     expect(h.review).toHaveBeenCalledOnce();

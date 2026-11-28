@@ -9,6 +9,7 @@ import { assertOutgoingPayloadVisible, BODY_CARRYING_TELEGRAM_METHODS } from '..
 import { consumeReservedOriginNotice } from './TelegramOriginOutageNotifier.js';
 import { botDestination } from './OriginBotPlanner.js';
 import { captureOriginAttachments, renderOriginMultipart } from './OriginMultipart.js';
+import { newCapacityEvidence, sanitizeCapacityEvidence } from './OriginCapacityEvidence.js';
 import { OriginCapacityUnavailable } from './OriginEgressCapacity.js';
 import type { OriginBotTransport } from './TelegramOriginService.js';
 
@@ -99,34 +100,63 @@ export async function dispatchOriginBotEgress(input: {
     const authority = owner.service.options.capacity;
     if (!authority) throw new OriginCapacityUnavailable();
     let available = true;
+    const evidence = newCapacityEvidence(authority.diagnosticTransport ?? (authority.reserveExplained ? 'direct' : 'legacy'));
     const valid = () => available;
-    return { valid, cancel: () => { available = false; }, send: async () => {
+    const note = (cause: import('./OriginEgressCapacity.js').OriginCapacityRefusalCause, explanation: 'complete' | 'legacy-unexplained' | 'invalid' = 'complete') => {
+      evidence.cause = cause; evidence.explanation = explanation;
+      evidence.ownerVerdict = cause.startsWith('ipc-') ? 'unknown' : 'refused';
+    };
+    const clock = (start: number, end: number, elapsed: number) => { if (Math.abs((end - start) - elapsed) > 1) evidence.clockUncertain = true; };
+    return { valid, cancel: () => { available = false; }, capacityEvidence: () => Object.freeze(sanitizeCapacityEvidence(evidence)), send: async () => {
       if (!valid()) { available = false; throw new OriginCapacityUnavailable(); }
-      // Latch before any await: even concurrent invocations get only one grant.
       available = false;
-      // Durable claim/dispatch and policy checks have finished. Their latency
-      // must not consume this short-lived permission to start network work.
-      // Retain dispatch intent and the capacity debit, but prove a local refusal
-      // so it need not spend the separate transport-attempt budget.
       try {
-        // lease-freshness-lapse-retry — the cause travels with the refusal of the very evaluation that
-        // refused; an authority that cannot explain (the IPC client) keeps the unexplained refusal.
+        evidence.reserveStartedAtMs = Date.now(); const reserveMono = performance.now();
         const decision = authority.reserveExplained
           ? await authority.reserveExplained(request.accountId)
-          : { grant: await authority.reserve(request.accountId), refusal: null };
-        if (!decision.grant) throw new OriginCapacityUnavailable(decision.refusal);
+          : { grant: await authority.reserve(request.accountId), refusal: null, explanation: 'legacy-unexplained' as const };
+        if ('ownerDecidedAtMs' in decision && typeof decision.ownerDecidedAtMs === 'number') evidence.reserveOwnerDecidedAtMs = decision.ownerDecidedAtMs;
+        evidence.reserveEndedAtMs = Date.now(); evidence.reserveDurationMs = performance.now() - reserveMono;
+        clock(evidence.reserveStartedAtMs, evidence.reserveEndedAtMs, evidence.reserveDurationMs);
+        evidence.explanation = decision.explanation ?? 'complete';
+        if (!decision.grant) {
+          note(decision.refusal?.cause ?? 'legacy-unexplained', decision.explanation ?? (decision.refusal ? 'complete' : 'legacy-unexplained'));
+          // IPC used to return null without a refusal. New attribution must not change its retry classification.
+          throw new OriginCapacityUnavailable(authority.diagnosticTransport === 'ipc' ? null : decision.refusal);
+        }
         const grant = decision.grant;
-        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
-        if (!await authority.consume(grant)) throw new OriginCapacityUnavailable({ cause: 'consume-refused', leaseFreshness: null });
-        if (Date.now() >= grant.expiresAt) throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null });
+        evidence.ownerVerdict = 'granted'; evidence.grantExpiresAtMs = grant.expiresAt;
+        evidence.remainingAtReserveMs = grant.expiresAt - evidence.reserveEndedAtMs;
+        evidence.stage = 'pre-network'; evidence.checkedAtMs = Date.now();
+        if (evidence.checkedAtMs >= grant.expiresAt) { evidence.cause = 'grant-expired'; throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null }); }
+        evidence.stage = 'consume'; evidence.consumeStartedAtMs = Date.now(); const consumeMono = performance.now();
+        clock(evidence.reserveEndedAtMs, evidence.consumeStartedAtMs, consumeMono - reserveMono - evidence.reserveDurationMs);
+        evidence.remainingAtConsumeMs = grant.expiresAt - evidence.consumeStartedAtMs;
+        const consumed = authority.consumeExplained ? await authority.consumeExplained(grant)
+          : { consumed: await authority.consume(grant), refusal: null, explanation: 'legacy-unexplained' as const };
+        if ('ownerDecidedAtMs' in consumed && typeof consumed.ownerDecidedAtMs === 'number') evidence.consumeOwnerDecidedAtMs = consumed.ownerDecidedAtMs;
+        evidence.consumeEndedAtMs = Date.now(); evidence.consumeDurationMs = performance.now() - consumeMono;
+        clock(evidence.consumeStartedAtMs, evidence.consumeEndedAtMs, evidence.consumeDurationMs);
+        evidence.explanation = consumed.explanation ?? 'complete';
+        if (!consumed.consumed) {
+          note(consumed.refusal?.cause ?? 'legacy-unexplained', consumed.explanation ?? (consumed.refusal ? 'complete' : 'legacy-unexplained'));
+          if (consumed.observedOwnerVerdict === 'consumed') {
+            evidence.ownerVerdict = 'consumed'; evidence.stage = 'pre-network'; evidence.explanation = 'invalid';
+          }
+          // consume() was a boolean; preserve its original generic scheduler reason even for an explained lease refusal.
+          throw new OriginCapacityUnavailable({ cause: 'consume-refused', leaseFreshness: null });
+        }
+        evidence.ownerVerdict = 'consumed'; evidence.stage = 'pre-network'; evidence.checkedAtMs = Date.now();
+        if (evidence.checkedAtMs >= grant.expiresAt) { evidence.cause = 'grant-expired'; throw new OriginCapacityUnavailable({ cause: 'grant-expired', leaseFreshness: null }); }
+        evidence.stage = 'network-start'; evidence.cause = null;
       } catch (error) {
-        // The thrown refusal IS the request-bound proof, so its cause reaches the send site.
         const refusal = error instanceof OriginCapacityUnavailable ? error : new OriginCapacityUnavailable();
         localRefusals.set(refusal, request);
         throw refusal;
       }
       return send();
     } };
+
   };
   if (input.preparedOperation) {
     if (input.noticeCapability) throw new TelegramOriginHoldError('conflicting-egress-capabilities');
