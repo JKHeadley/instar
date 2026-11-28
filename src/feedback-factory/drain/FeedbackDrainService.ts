@@ -14,7 +14,7 @@ import type { VerifiedTriageAccount } from '../triage/FeedbackTriageAccountSelec
 export type ReadinessAccountServing =
   | { state: 'served'; accountId: string; pinned: boolean; verified: boolean; usedPercent: number; at: number }
   | { state: 'shared'; reason: string; observedAccountId: string | null; at: number }
-  | { state: 'refused'; reason: string; pinned: boolean; at: number };
+  | { state: 'refused'; reason: string; pinned: boolean; at: number; cause?: string; attempts?: number };
 
 export interface ReadinessAccountStatus {
   mode: ReadinessAccountMode;
@@ -511,10 +511,11 @@ export class FeedbackDrainService {
           this.opts.store.recordCollectingEvaluation(row.clusterId, { reason: 'readiness-account-refused', nextReviewAt: now + 15 * 60 * 1000 });
         }
         this.opts.store.recordReadinessDiagnosis(out.runId, 'call-failed', {
-          check: 'readiness-account-refused', message: admission.reason,
+          check: 'readiness-account-refused', message: admission.cause ? `${admission.reason} (${admission.cause}, ${admission.attempts ?? 1} attempt(s))` : admission.reason,
           candidateIds: pending.slice(0, 20).map((row) => row.clusterId.slice(0, 120)), candidateCount: pending.length,
         });
-        this.lastReadinessAccount = { state: 'refused', reason: admission.reason, pinned: admission.pinned, at: this.now() };
+        this.lastReadinessAccount = { state: 'refused', reason: admission.reason, pinned: admission.pinned, at: this.now(),
+          ...(admission.cause ? { cause: admission.cause, attempts: admission.attempts } : {}) };
         out.reason = 'readiness-account-refused';
         transientFailure = true;
         break;
@@ -553,7 +554,15 @@ export class FeedbackDrainService {
         }
       };
       let decisions: ReadinessDecision[];
-      const callBudgetMs = Math.min(this.readinessStageBudgetMs, remaining);
+      // Re-read after admission: a pinned account check may have used part of the tick, and the
+      // call must never run past the tick deadline (readiness-pinned-read-budget).
+      const remainingAfterAdmission = Math.min(remaining, deadline - this.now());
+      if (remainingAfterAdmission <= 0) {
+        if (succeededCalls > 0) out.note = READINESS_TIME_EXHAUSTED;
+        else if (!transientFailure) out.reason ??= 'readiness-wall-clock-exhausted';
+        break;
+      }
+      const callBudgetMs = Math.min(this.readinessStageBudgetMs, remainingAfterAdmission);
       try {
         const account = served;
         const admitter = this.opts.readinessAccount;

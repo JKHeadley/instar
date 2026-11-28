@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-28T13:22:48.986Z",
+  "slug": "readiness-pinned-read-budget",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 105,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainService.ts",
+      "src/feedback-factory/drain/readinessAccountAdmission.ts",
+      "src/feedback-factory/triage/FeedbackTriageAccountSelector.ts"
+    ],
+    "addedLines": 85,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

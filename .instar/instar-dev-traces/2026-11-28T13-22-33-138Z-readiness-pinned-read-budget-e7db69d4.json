@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "readiness-pinned-read-budget",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-28T13:22:33.138Z",
+  "artifactPath": "upgrades/side-effects/readiness-pinned-read-budget.md",
+  "artifactSha256": "af6b7b050ce26de37bc3381f0424fc3556354c5ba00247477b00ad7ddfb74078",
+  "coveredFiles": [
+    "src/feedback-factory/drain/FeedbackDrainService.ts",
+    "src/feedback-factory/drain/readinessAccountAdmission.ts",
+    "src/feedback-factory/triage/FeedbackTriageAccountSelector.ts",
+    "tests/unit/feedback-factory/readiness-account-admission.test.ts",
+    "upgrades/next/readiness-pinned-read-budget.md",
+    "upgrades/side-effects/readiness-pinned-read-budget.eli16.md",
+    "upgrades/side-effects/readiness-pinned-read-budget.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Gives the pinned readiness quota check the unpinned 30 s budget with one bounded retry and records the failure cause; a revert fully undoes it, no state or migration",
+  "eli16Path": "upgrades/side-effects/readiness-pinned-read-budget.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/readiness-pinned-read-budget.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

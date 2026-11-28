@@ -30,7 +30,40 @@ export type TriageAccountSelection =
  */
 export type PinnedAccountSelection =
   | { state: 'eligible'; account: VerifiedTriageAccount }
-  | { state: 'missing' | 'unverified' | 'saturated' | 'unreadable' };
+  | { state: 'missing' | 'unverified' | 'saturated' }
+  | { state: 'unreadable'; cause: LiveReadFailureCause; attempts: number };
+
+/**
+ * Why a live quota read gave no usable percentage. Kept distinct so a refusal says what happened
+ * (2026-11-28: two `pinned-account-quota-unreadable` refusals on codex-amrch were most likely
+ * read timeouts, but the reason could not tell a timeout from bad data).
+ */
+export type LiveReadFailureCause =
+  | 'timeout' | 'reader-error' | 'no-snapshot' | 'deadline'
+  | 'wrong-source' | 'windows-unavailable' | 'rate-limit-reached' | 'stale-capture' | 'no-windows' | 'invalid-window';
+
+/** The pinned path's total budget: the same 30 s the unpinned selection gets. */
+export const PINNED_READ_BUDGET_MS = 30_000;
+/** Each live read's own cap (unchanged) and the slack kept before the caller's deadline. */
+export const LIVE_READ_TIMEOUT_MS = 4_200;
+const DEADLINE_SLACK_MS = 700;
+/** At most one retry, and only for a failure that may be transient. */
+const PINNED_MAX_ATTEMPTS = 2;
+const RETRYABLE_CAUSES: ReadonlySet<LiveReadFailureCause> = new Set(['timeout', 'reader-error', 'no-snapshot']);
+
+/** The failure class of a snapshot that gives no usable percentage, or null when it is usable. */
+export function liveTriageReadFailure(snapshot: CodexUsageSnapshot | null, now = Date.now()): LiveReadFailureCause | null {
+  if (!snapshot) return 'no-snapshot';
+  if (snapshot.source !== 'codex-app-server') return 'wrong-source';
+  if (snapshot.windowsUnavailable) return 'windows-unavailable';
+  if (snapshot.rateLimitReachedType) return 'rate-limit-reached';
+  const acquired = snapshot.capturedAt ? Date.parse(snapshot.capturedAt) : NaN;
+  if (!Number.isFinite(acquired) || now - acquired > 60_000 || acquired - now > 60_000) return 'stale-capture';
+  const windows = [snapshot.primary, snapshot.secondary].filter((w): w is NonNullable<typeof w> => w != null);
+  if (windows.length === 0) return 'no-windows';
+  if (windows.some((w) => !Number.isFinite(w.usedPercent) || w.usedPercent < 0 || w.usedPercent > 100)) return 'invalid-window';
+  return null;
+}
 
 export type LiveTriageQuotaReader = (opts: {
   codexHome: string; subscriptionOnly: true; timeoutMs: number; signal: AbortSignal;
@@ -174,23 +207,44 @@ export class FeedbackTriageAccountSelector {
    * Exactly the named pool account, or a named refusal. Never another account: a caller that
    * pins an account must not be served by a neighbour when the pinned one is unavailable.
    */
-  async selectPinned(accountId: string, deadlineAt = this.now() + 5_000): Promise<PinnedAccountSelection> {
+  async selectPinned(accountId: string, deadlineAt = this.now() + PINNED_READ_BUDGET_MS): Promise<PinnedAccountSelection> {
     const account = this.pool.list().find((entry) => entry.id === accountId);
     if (!account) return { state: 'missing' };
     const before = verifiedIdentity(account);
     if (!before) return { state: 'unverified' };
-    const remaining = Math.min(5_000, deadlineAt - this.now());
-    if (remaining <= 700) return { state: 'unreadable' };
-    const controller = new AbortController();
-    const snapshot = await this.reader({ codexHome: path.resolve(account.configHome), subscriptionOnly: true,
-      timeoutMs: Math.min(4_200, remaining - 700), signal: controller.signal }).catch(() => null);
-    const after = verifiedIdentity(account);
-    if (!after || after.version !== before.version || after.loginAccountId !== before.loginAccountId) return { state: 'unverified' };
-    const usedPercent = liveTriageUsedPercent(snapshot, this.now());
-    if (usedPercent === null) return { state: 'unreadable' };
+    // The same budget the unpinned selection gets (it was capped at 5 s here), bounded by the
+    // caller's deadline, with at most one retry of a possibly transient read failure.
+    const budgetEnd = Math.min(deadlineAt, this.now() + PINNED_READ_BUDGET_MS);
+    let snapshot: CodexUsageSnapshot | null = null;
+    let usedPercent: number | null = null;
+    let cause: LiveReadFailureCause = 'deadline';
+    let attempts = 0;
+    while (attempts < PINNED_MAX_ATTEMPTS) {
+      const remaining = budgetEnd - this.now();
+      if (remaining <= DEADLINE_SLACK_MS) { if (attempts === 0) cause = 'deadline'; break; }
+      attempts++;
+      const timeoutMs = Math.min(LIVE_READ_TIMEOUT_MS, remaining - DEADLINE_SLACK_MS);
+      const controller = new AbortController();
+      const startedAt = this.now();
+      let threw = false;
+      snapshot = await this.reader({ codexHome: path.resolve(account.configHome), subscriptionOnly: true,
+        timeoutMs, signal: controller.signal }).catch(() => { threw = true; return null; });
+      const elapsed = this.now() - startedAt;
+      const after = verifiedIdentity(account);
+      if (!after || after.version !== before.version || after.loginAccountId !== before.loginAccountId) return { state: 'unverified' };
+      usedPercent = liveTriageUsedPercent(snapshot, this.now());
+      if (usedPercent !== null) break;
+      cause = snapshot === null
+        ? (elapsed >= timeoutMs - 50 ? 'timeout' : threw ? 'reader-error' : 'no-snapshot')
+        : (liveTriageReadFailure(snapshot, this.now()) ?? 'no-snapshot');
+      if (!RETRYABLE_CAUSES.has(cause)) break;
+    }
+    if (usedPercent === null) return { state: 'unreadable', cause, attempts };
     if (usedPercent >= 75) return { state: 'saturated' };
+    // Every attempt re-checked that the identity still equals `before`, so `before` is the identity
+    // the successful read ran under.
     const selected: VerifiedTriageAccount = { accountId: account.id, configHome: path.resolve(account.configHome),
-      credentialVersion: after.version, loginAccountId: after.loginAccountId, limitFamily: 'codex',
+      credentialVersion: before.version, loginAccountId: before.loginAccountId, limitFamily: 'codex',
       usedPercent, acquiredAt: Date.parse(snapshot!.capturedAt!) };
     return revalidateTriageAccount(this.pool, selected, this.now()) ? { state: 'eligible', account: selected } : { state: 'unverified' };
   }
