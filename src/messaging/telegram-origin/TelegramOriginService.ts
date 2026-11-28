@@ -973,6 +973,9 @@ export class TelegramOriginService {
           const saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
             ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
           const error = new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
+          // Telegram's own description is the only record of WHY a send was refused; without it a run of
+          // telegram-400 refusals in one topic (2026-11-27, topic 2) could not be diagnosed from any log.
+          console.warn(`[telegram-origin] Telegram refused ${operation.record.operationId} (${request.method}, status ${response.status}): ${describeTelegramRefusal(parsed?.description)}; request ${describeRequestShape(request.body)}`);
           if (saved.recorded) recordTelegramEditRejection(error, response.status, parsed, {
             method: request.method, accountId: request.accountId, params: JSON.parse(request.body),
           });
@@ -1093,4 +1096,58 @@ export function describeTransportFailure(error: unknown): string {
   const code = fetchFailureCode(error);
   const category = transportFailureCategory(error);
   return code && PLAIN_CODE.test(code) ? `${category} code=${code}` : category;
+}
+
+/**
+ * Telegram's refusal description for the log: Telegram's own API wording (for example
+ * "Bad Request: message thread not found"), bounded to 160 characters, single line, with
+ * anything shaped like a bot token redacted. Not a string from our request.
+ */
+export function describeTelegramRefusal(description: unknown): string {
+  if (typeof description !== 'string' || !description.trim()) return 'no description';
+  return description.replace(/bot\d+:[A-Za-z0-9_-]+/g, 'bot<redacted>').replace(/\d{6,}:[A-Za-z0-9_-]{20,}/g, '<redacted>')
+    .replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160);
+}
+
+const SHAPE_TEXT_KEYS = new Set(['text', 'caption']);
+const SHAPE_ENTITY_KEYS = new Set(['entities', 'caption_entities']);
+// String values printed as written: ids, modes and switches only. Every other string shows its length.
+const SHAPE_STRING_VALUE_KEYS = new Set(['chat_id', 'from_chat_id', 'message_thread_id', 'direct_messages_topic_id', 'message_id',
+  'message_ids', 'inline_message_id', 'parse_mode', 'business_connection_id', 'message_effect_id']);
+// Objects whose number and true/false fields are ids and switches, never text: shown one level deep.
+const SHAPE_SCALAR_OBJECT_KEYS = new Set(['reply_parameters', 'link_preview_options']);
+/**
+ * The refused request's shape for the log: every parameter name (cleaned), with text, caption and
+ * any string outside a small key allowlist (ids, modes) replaced by its length, entities as
+ * type@offset+length, numbers and booleans as their value, reply and link-preview settings one
+ * level deep, and any other object or array named only by its type. Never message text.
+ */
+export function describeRequestShape(body: unknown): string {
+  let params: Record<string, unknown>;
+  try { params = typeof body === 'string' ? JSON.parse(body) as Record<string, unknown> : {}; }
+  catch { return 'unparseable'; } // @silent-fallback-ok: the log names an unparseable body instead of failing the refusal path
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return 'unparseable';
+  const parts = Object.keys(params).sort().map((rawKey) => {
+    const value = params[rawKey];
+    const key = rawKey.replace(/[^a-z_]/g, '').slice(0, 32) || '<key>';
+    if (SHAPE_TEXT_KEYS.has(key)) return `${key}=<${typeof value === 'string' ? value.length : typeof value}>`;
+    if (SHAPE_ENTITY_KEYS.has(key) && Array.isArray(value)) {
+      return `${key}=[${value.slice(0, 20).map((e) => {
+        if (!e || typeof e !== 'object') return '<invalid>';
+        const entity = e as { type?: unknown; offset?: unknown; length?: unknown };
+        return `${String(entity.type).replace(/[^a-z_]/g, '').slice(0, 24)}@${Number(entity.offset)}+${Number(entity.length)}`;
+      }).join(',')}${value.length > 20 ? ',...' : ''}]`;
+    }
+    if (SHAPE_SCALAR_OBJECT_KEYS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+      const inner = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k.replace(/[^a-z_]/g, '').slice(0, 32)}=${typeof v === 'number' || typeof v === 'boolean' ? v : `<${typeof v}>`}`);
+      return `${key}={${inner.join(',')}}`;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') return `${key}=${value}`;
+    if (typeof value === 'string') {
+      return SHAPE_STRING_VALUE_KEYS.has(rawKey) && /^[A-Za-z0-9_@:.-]{1,40}$/.test(value) ? `${key}=${value}` : `${key}=<string:${value.length}>`;
+    }
+    return `${key}=<${Array.isArray(value) ? 'array' : typeof value}>`;
+  });
+  return parts.join(' ').slice(0, 600);
 }

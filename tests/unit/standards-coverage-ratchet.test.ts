@@ -436,16 +436,25 @@ describe('standards-coverage ratchet script', () => {
       '        id: area-audit-base',
       '        env:',
       "          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+      '          EVENT_NAME: ${{ github.event_name }}',
       '        run: |',
-      '          git cat-file -e "$BASE_SHA^{commit}"',
-      '          if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then',
-      '            git show "$BASE_SHA:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"',
+      '          BASE="$BASE_SHA"',
+      '          if { [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "pull_request_review" ]; } && git rev-parse -q --verify "HEAD^2" >/dev/null; then',
+      '            PARENT=$(git rev-parse "HEAD^1")',
+      '            if git merge-base --is-ancestor "$BASE_SHA" "$PARENT" && git merge-base --is-ancestor "$PARENT" origin/main; then',
+      '              BASE="$PARENT"',
+      '            fi',
+      '          fi',
+      '          echo "base=$BASE" >> "$GITHUB_OUTPUT"',
+      '          git cat-file -e "$BASE^{commit}"',
+      '          if git cat-file -e "$BASE:docs/standards-registry-area-audits.json"; then',
+      '            git show "$BASE:docs/standards-registry-area-audits.json" > "$RUNNER_TEMP/standards-area-audits-base.json"',
       '            echo "required=1" >> "$GITHUB_OUTPUT"',
       '          else',
       '            echo "required=0" >> "$GITHUB_OUTPUT"',
       '          fi',
-      '          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
-      '          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
+      '          git show "$BASE:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
+      '          git show "$BASE:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
       ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       '        env:',
@@ -453,7 +462,7 @@ describe('standards-coverage ratchet script', () => {
       '          STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}',
       '          STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md',
       '          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: ${{ runner.temp }}/standards-direction-approver-base.pem',
-      "          STANDARDS_DIRECTION_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+      '          STANDARDS_DIRECTION_BASE_REVISION: ${{ steps.area-audit-base.outputs.base }}',
       '          STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json',
     ].join('\n'));
     fs.rmSync(path.join(repo, 'docs', 'standards-registry-area-audits.json'));
@@ -1284,7 +1293,8 @@ describe('standards-coverage ratchet script', () => {
     // 2026-11-15: 98 -> 99. Operator approval [source: telegram 141385/143443 2026-11-15, "approve"]: *Security Fixes Keep the Experience Whole*, a child of *The User Experience Is the Product* (security program).
     // 2026-11-15: 99 -> 100. Operator approval [source: telegram 142440/4516843644856181 2026-11-16]: *Trust Is Earned by Work and Granted Only by the Person*, the counterpart of 2.0 Rule 104 and the purpose's role and suggestions rules.
     // 2026-11-18: 100 -> 102. Operator approval [source: telegram 145097/145451 2026-11-18, "Yes, to all"]: *A Safeguard Must Leave a Benefit* (Building) and *Documents Stand on Their Own* (Interaction), both judgment-bound root articles.
-    expect(report.total).toBe(102);
+    // 2026-11-19: 102 -> 103. Operator approval [source: telegram 134088/145506 2026-11-19, "yes"]: *Delight the User*, a child of *Operator-Surface Quality* (CMT-1998).
+    expect(report.total).toBe(103);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
