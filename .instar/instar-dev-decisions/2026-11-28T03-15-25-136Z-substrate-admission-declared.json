@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-28T03:15:25.136Z",
+  "slug": "substrate-admission-declared",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-substrate-admission-declared.mjs"
+    ],
+    "addedLines": 98,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

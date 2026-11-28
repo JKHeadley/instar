@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "substrate-admission-declared",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T03:09:11.536Z",
+  "artifactPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "artifactSha256": "4c43572519edc6004d90131275d0d1fb362f5182caf18072c36e33f23f212d53",
+  "coveredFiles": [
+    "docs/audits/substrate-membership-sweep-2026-11-27.md",
+    "docs/specs/substrate-admission-declared.eli16.md",
+    "docs/substrate-admission-baseline.json",
+    "package.json",
+    "scripts/lint-substrate-admission-declared.mjs",
+    "tests/unit/lint-substrate-admission-declared.test.ts",
+    "upgrades/next/substrate-admission-declared.md",
+    "upgrades/side-effects/substrate-admission-declared.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A declaration lint over one registry section with a shrink-only baseline, plus the recorded membership sweep and its release note; no runtime change; a revert undoes it; second pass required because it can fail commits, and the reader concurred before this trace",
+  "eli16Path": "docs/specs/substrate-admission-declared.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,33 @@
+{
+  "readBySweep": "docs/audits/substrate-membership-sweep-2026-11-27.md",
+  "note": "The 27 articles the 2026-11-27 membership sweep judged against the three admission tests. Shrink-only: an article that gains an Admission line, or leaves the family, must leave this list.",
+  "articlesWithoutAdmissionLine": [
+    "The Body and the Mind",
+    "Structure Decides Alone Only on an Exact Match",
+    "Documentation IS Being",
+    "Deferral = Deletion",
+    "Archiving May Never Mean Deleting",
+    "Close the Loop",
+    "Observation Needs Structure",
+    "Intelligence Infers, Keywords Only Guard",
+    "Recall Over Our Own Material Is by Meaning, Not by Word-Match",
+    "Intelligent Prompts \u2014 An LLM Gate Must Not String-Match",
+    "Quantitative Claims Must Bind a Subject",
+    "The Operator Channel Is Sacred \u2014 Critical-Path Gates Fail Toward Delivery",
+    "The Agent Is Always Reachable \u2014 A Guaranteed Reachability Floor",
+    "Name the Gravity Wells",
+    "Architectural Agency in the Gap",
+    "Sovereignty \u2014 \"I own what is mine\"",
+    "The Right to Stand Ground",
+    "A Wall Is a Hypothesis",
+    "Never a False Blocker",
+    "The Stop Reason Is the Work",
+    "Self-Unblock Before Escalating",
+    "Distrust Temporary Success \u2014 A Recurrence Is a Root Cause",
+    "Remove What Demands Attention. Do Not Supply More Attention.",
+    "Verify the State, Not Its Symbol",
+    "A Dispatch Supplies the Question and Withholds the Answer",
+    "Know Your Principal \u2014 An Unverified Identity Is a Guess",
+    "Session Input Is a Principal"
+  ]
+}
