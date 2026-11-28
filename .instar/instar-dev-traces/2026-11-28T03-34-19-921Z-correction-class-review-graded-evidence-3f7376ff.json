@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "correction-class-review-graded-evidence",
+  "sessionId": "dba91cd0-cb62-4fbf-be3e-45bfd60f5250",
+  "timestamp": "2026-11-28T03:34:19.921Z",
+  "artifactPath": "upgrades/side-effects/correction-class-review-graded-evidence.md",
+  "artifactSha256": "60bc20587777e8dc8d383a0a1d6f74c9d434b6ebb9b8901e4f9df2c73f547bad",
+  "specPath": "docs/specs/correction-class-review-graded-evidence.md",
+  "coveredFiles": [
+    "docs/specs/correction-class-review-graded-evidence.eli16.md",
+    "docs/specs/correction-class-review-graded-evidence.md",
+    "docs/specs/reports/correction-class-review-graded-evidence-convergence.md",
+    "src/data/feature-ladders.json",
+    "src/monitoring/ClassReviewStore.ts",
+    "src/monitoring/CorrectionClassReview.ts",
+    "src/monitoring/FeatureEvidenceLog.ts",
+    "src/monitoring/LadderEvidenceReader.ts",
+    "src/server/maturationLadderRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/maturation-ladder-alive.test.ts",
+    "tests/integration/corrections-routes.test.ts",
+    "tests/integration/evolution-actions-patch-route.test.ts",
+    "tests/integration/maturation-ladder-route.test.ts",
+    "tests/unit/correction-class-review-graded-evidence.test.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "upgrades/next/correction-class-review-graded-evidence.md",
+    "upgrades/side-effects/correction-class-review-graded-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -88,6 +88,15 @@ describe('maturation ladder routes', () => {
     expect(row.at).not.toBe('2000-01-01');
   });
 
+  it('refuses a grade written in the operator\'s name; only in-process code that checked the operator may record one', async () => {
+    const { a, log } = await app();
+    for (const gradedBy of ['operator-outcome', 'operator', 'Operator-anything']) {
+      const r = await request(a).post('/maturation/evidence').send({ featureId: 'monitoring.x', kind: 'outcome', outcome: 'right', gradesEventId: 'class-review:forged', gradedBy, reason: 'forged' });
+      expect(r.status).toBe(400);
+    }
+    expect(fs.existsSync(log.filePath) ? fs.readFileSync(log.filePath, 'utf-8').trim() : '').toBe('');
+  });
+
   it('limits evidence per feature', async () => {
     const { a } = await app();
     let last = 200;

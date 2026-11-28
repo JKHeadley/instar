@@ -250,6 +250,39 @@ describe('/corrections routes (integration)', () => {
     await vi.waitFor(() => expect(verifier.readAudit()).toEqual([expect.objectContaining({ flagged: true })]));
   });
 
+  it('a PIN-gated decision on a proposal writes its grade to the evidence log; a refused PIN writes none', async () => {
+    const { FeatureEvidenceLog, setFeatureEvidenceLog } = await import('../../src/monitoring/FeatureEvidenceLog.js');
+    const evidence = new FeatureEvidenceLog({ projectDir: stateDir, machine: 't', instarVersion: 'test' });
+    setFeatureEvidenceLog(evidence);
+    try {
+      ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
+      const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 't' });
+      const rec = ledger.record({ kind: 'infra-gap', learning: 'y', scrubbedSummary: 'y', deterministicWeight: 3 })!;
+      store.ensureShell({ dedupeKey: rec.dedupeKey, correctionId: rec.id, origin: 'operator-attributed' });
+      store.fill(rec.dedupeKey, { standardReview: { verdict: 'needs-upgrade', standardRef: 'S', isPolicyRelaxation: false },
+        processReview: { verdict: 'process-gap', proposedDelta: 'p' }, rationale: 'r', confidence: 'high' });
+      const ctx = ctxFor(stateDir, ledger);
+      (ctx.config as any).dashboardPin = '123456'; ctx.classReviewStore = store;
+      const app = appWith(ctx);
+      const rows = () => fs.existsSync(evidence.filePath)
+        ? fs.readFileSync(evidence.filePath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.kind === 'outcome')
+        : [];
+      expect((await request(app).patch(`/class-reviews/${rec.dedupeKey}/outcome`).set(auth())
+        .send({ arm: 'standard', outcome: 'ratified', pin: '000000' })).status).toBe(403);
+      expect(rows()).toHaveLength(0);
+      expect((await request(app).patch(`/class-reviews/${rec.dedupeKey}/outcome`).set(auth())
+        .send({ arm: 'standard', outcome: 'ratified', pin: '123456' })).status).toBe(200);
+      expect((await request(app).patch(`/class-reviews/${rec.dedupeKey}/outcome`).set(auth())
+        .send({ arm: 'process', outcome: 'rejected', pin: '123456' })).status).toBe(200);
+      expect(rows().map((r) => [r.featureId, r.outcome, r.gradedBy])).toEqual([
+        ['monitoring.correctionClassReview', 'right', 'operator-outcome'],
+        ['monitoring.correctionClassReview', 'wrong', 'operator-outcome'],
+      ]);
+    } finally {
+      setFeatureEvidenceLog(null);
+    }
+  });
+
   it('pool completion audit proxies allowed peers and strips content and unknown fields', async () => {
     ledger = new CorrectionLedger({ dbPath: ':memory:', machineId: 't' });
     const ctx = ctxFor(stateDir, ledger);
