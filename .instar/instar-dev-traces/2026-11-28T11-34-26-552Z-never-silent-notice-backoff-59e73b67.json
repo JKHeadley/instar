@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "never-silent-notice-backoff",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T11:34:26.552Z",
+  "artifactPath": "upgrades/side-effects/never-silent-notice-backoff.md",
+  "artifactSha256": "f61600c3ace17f4f28e44f53227ef143bd79b7051418efd97a28454c9e437ed8",
+  "coveredFiles": [
+    "docs/specs/never-silent-notice-backoff.eli16.md",
+    "src/monitoring/neverSilent/NeverSilentWatcher.ts",
+    "src/monitoring/neverSilent/neverSilentWiring.ts",
+    "tests/unit/neverSilent-watcher.test.ts",
+    "upgrades/next/never-silent-notice-backoff.md",
+    "upgrades/side-effects/never-silent-notice-backoff.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Watcher-internal retry timing and evidence counting for never-silent notices; no new route, authority, config or user-facing text.",
+  "eli16Path": "docs/specs/never-silent-notice-backoff.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/never-silent-notice-backoff.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

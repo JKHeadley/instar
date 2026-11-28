@@ -101,6 +101,12 @@ export function parseAskCallback(data: string): string | null {
 /** First judge call is free; later ones wait 60 s, doubling, up to 10 minutes (spend bound, No Unbounded Loops). */
 export const JUDGE_BACKOFF_BASE_MS = 60_000;
 export const JUDGE_BACKOFF_MAX_MS = 10 * 60_000;
+/** A failed notice waits 30 s, then 60 s, doubling to 15 minutes, before the next try (CMT-2078). */
+export const NOTICE_RETRY_BASE_MS = 30_000;
+export const NOTICE_RETRY_MAX_MS = 15 * 60_000;
+const NOTICE_RETRY_MAX_ENTRIES = 500;
+/** Undelivered on purpose or without proof of failure: backed off, but not counted as an error. */
+export const NOTICE_HELD_REASONS: ReadonlySet<string> = new Set(['held-quiet', 'no-message-id']);
 /** A new silence this soon after a move back asks instead of moving again (the repair did not hold). */
 export const RESTORE_FLAP_WINDOW_MS = 6 * 60 * 60_000;
 
@@ -114,6 +120,12 @@ export class NeverSilentWatcher {
     this.locks.set(k, next.catch(() => undefined));
     return next;
   }
+  /**
+   * Failed-notice retry state per incident and notice kind (CMT-2078 step 2). A failed notice is
+   * retried after a doubling wait instead of on every sweep, and only its first real failure counts as
+   * an error. In memory: a restart retries once at the next sweep, which is the old behaviour.
+   */
+  private readonly noticeRetry = new Map<string, { failures: number; nextAt: number; errorCounted: boolean }>();
   private readonly now: () => number;
   constructor(private readonly d: NeverSilentDeps) {
     this.now = d.now ?? (() => Date.now());
@@ -351,9 +363,11 @@ export class NeverSilentWatcher {
   private async sendWaitingIfUncovered(platform: ConversationPlatform, key: string, incident: Incident, open: Obligation[], cls: SilenceClass, waitingReason?: 'restarting-sign-in'): Promise<void> {
     const uncovered = open.filter((o) => !o.coveredBy.includes('waiting') && !o.standbySeenAt);
     if (!uncovered.length) return;
+    if (this.retryWaiting(incident.id, 'waiting')) return;
     const text = renderNotice({ kind: 'waiting', count: uncovered.length, silenceClass: cls, framework: incident.framework, action: null, outcome: null, ...(waitingReason ? { waitingReason } : {}) });
     const sent = await this.deliverNotice(platform, key, text);
-    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting', reason: sent.reason }); return; }
+    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'waiting', reason: sent.reason, ...this.noticeFailed(incident.id, 'waiting', sent.reason) }); return; }
+    this.noticeRetry.delete(`${incident.id}|waiting`);
     const id = sent.id;
     this.d.store.markCovered(uncovered.map((o) => o.id), 'waiting');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'waiting', class: cls, covered: uncovered.length });
@@ -367,6 +381,7 @@ export class NeverSilentWatcher {
     const alreadySent = fresh.notices.some((n) => n.kind === 'status' && n.revision === revision);
     const uncovered = open.filter((o) => !o.coveredBy.includes('status'));
     if (alreadySent && !uncovered.length) return;
+    if (this.retryWaiting(incident.id, 'status')) return;
     const count = alreadySent ? uncovered.length : open.length;
     let button: { text: string; data: string } | undefined;
     if (s.action === 'ask-fallback' && s.target) {
@@ -385,7 +400,8 @@ export class NeverSilentWatcher {
       target: s.target, repairStarted: this.safe(() => this.d.repairStarted(fresh.accountId), false), askReason: s.askReason,
     });
     const sent = await this.deliverNotice(platform, key, text, button);
-    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision, reason: sent.reason }); return; }
+    if ('reason' in sent) { this.log({ event: 'notice-undelivered', incident: incident.id, kind: 'status', revision, reason: sent.reason, ...this.noticeFailed(incident.id, 'status', sent.reason) }); return; }
+    this.noticeRetry.delete(`${incident.id}|status`);
     const id = sent.id;
     this.d.store.markCovered(open.map((o) => o.id), 'status');
     this.log({ event: 'notice-sent', incident: incident.id, kind: 'status', revision, covered: open.length, ask: !!button });
@@ -458,6 +474,30 @@ export class NeverSilentWatcher {
 
   private safe<T>(fn: () => T, fallback: T): T {
     try { return fn(); } catch { return fallback; /* @silent-fallback-ok — a failed lookup takes the conservative value; telling still happens */ }
+  }
+  /** True while a failed notice of this kind is still inside its retry wait. */
+  private retryWaiting(incidentId: string, kind: 'waiting' | 'status'): boolean {
+    const r = this.noticeRetry.get(`${incidentId}|${kind}`);
+    return !!r && this.now() < r.nextAt;
+  }
+  /**
+   * Record a failed notice. Returns its try number in this failure streak (1 = the first) and
+   * marks the first real failure of the streak, the one the evidence counts as an error. A notice
+   * the gate held quiet or that came back with no message id is backed off too, but is not that
+   * failure, so a streak that starts held and then really fails is still counted once.
+   */
+  private noticeFailed(incidentId: string, kind: 'waiting' | 'status', reason: string): { attempt: number; firstFailure?: true } {
+    const k = `${incidentId}|${kind}`;
+    const prev = this.noticeRetry.get(k);
+    const failures = (prev?.failures ?? 0) + 1;
+    const real = !NOTICE_HELD_REASONS.has(reason);
+    const firstFailure = real && !prev?.errorCounted;
+    this.noticeRetry.delete(k);
+    const wait = Math.min(NOTICE_RETRY_BASE_MS * 2 ** Math.min(failures - 1, 10), NOTICE_RETRY_MAX_MS);
+    this.noticeRetry.set(k, { failures, nextAt: this.now() + wait, errorCounted: !!prev?.errorCounted || real });
+    // Bounded: the oldest failure goes first (delete-then-set keeps the Map ordered by last failure).
+    while (this.noticeRetry.size > NOTICE_RETRY_MAX_ENTRIES) this.noticeRetry.delete(this.noticeRetry.keys().next().value as string);
+    return firstFailure ? { attempt: failures, firstFailure: true } : { attempt: failures };
   }
   /** Send one notice and name why it did not go out, as a bounded label (CMT-2078). Never throws. */
   private async deliverNotice(platform: ConversationPlatform, key: string, text: string, button?: { text: string; data: string }): Promise<{ id: string } | { reason: string }> {

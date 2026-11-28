@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { NeverSilentStore } from '../../src/monitoring/neverSilent/NeverSilentStore.js';
 import { NeverSilentWatcher, askCallbackData, type NeverSilentConfig, type NeverSilentDeps, type NoticeUndelivered, type SessionFacts } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
+import { neverSilentEvidenceKind } from '../../src/monitoring/neverSilent/neverSilentWiring.js';
 import type { ConversationSilenceJudge, SilenceVerdict } from '../../src/monitoring/neverSilent/ConversationSilenceJudge.js';
 
 let t = 1_000_000;
@@ -259,7 +260,99 @@ describe('NeverSilentWatcher', () => {
     expect(sent).toHaveLength(0);
     fail = false;
     await h.w.tick();
+    expect(sent).toHaveLength(0); // still inside the first 30 s retry wait
+    t += 30_000;
+    await h.w.tick();
     expect(sent).toHaveLength(1);
+  });
+
+  it('a failing notice is retried after a doubling wait, not on every sweep (CMT-2078)', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: async () => ({ undelivered: 'no-adapter' as const }), log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    for (let i = 0; i <= 20; i++) { await h.w.tick(); t += 30_000; } // ten minutes of 30 s sweeps
+    const tries = events.filter((e) => e.event === 'notice-undelivered');
+    // Tries at 0, 30, 90, 210 and 450 s: five, where the old loop made twenty-one.
+    expect(tries.map((e) => e.attempt)).toEqual([1, 2, 3, 4, 5]);
+    expect(tries.filter((e) => neverSilentEvidenceKind(e) === 'error')).toHaveLength(1);
+  });
+
+  it('the wait never grows past 15 minutes', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: async () => null, log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    for (let i = 0; i < 400; i++) { await h.w.tick(); t += 30_000; } // 200 minutes
+    const at = events.filter((e) => e.event === 'notice-undelivered').map((e) => Date.parse(String(e.at)));
+    const gaps = at.slice(1).map((v, i) => v - at[i]);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(15 * 60_000);
+    expect(gaps.at(-1)).toBe(15 * 60_000);
+  });
+
+  it('a delivered notice resets the count, so a later failure is a first failure again', async () => {
+    let fail = true;
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: async () => (fail ? null : '1'), log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    await h.w.tick();
+    fail = false;
+    t += 30_000;
+    await h.w.tick();
+    expect(events.some((e) => e.event === 'notice-sent')).toBe(true);
+    fail = true;
+    h.w.onInbound('telegram', '7', '102', 'still there?');
+    t += 61_000;
+    await h.w.tick();
+    const tries = events.filter((e) => e.event === 'notice-undelivered');
+    expect(tries.map((e) => e.attempt)).toEqual([1, 1]);
+  });
+
+  it('a streak that starts held and then really fails is still counted as one error', async () => {
+    let n = 0;
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: async () => (++n === 1 ? { undelivered: 'held-quiet' as const } : { undelivered: 'no-adapter' as const }), log: (e) => events.push(e) }, { judge: false });
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    for (let i = 0; i < 4; i++) { await h.w.tick(); t += 30_000; }
+    const tries = events.filter((e) => e.event === 'notice-undelivered');
+    expect(tries.map((e) => [e.reason, e.attempt])).toEqual([['held-quiet', 1], ['no-adapter', 2], ['no-adapter', 3]]);
+    expect(tries.map((e) => neverSilentEvidenceKind(e))).toEqual([null, 'error', null]);
+  });
+
+  it('a failing status notice backs off too, and a skipped try writes no ask state', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const h = harness({ sendNotice: async () => null, log: (e) => events.push(e) });
+    h.setPinned(true); // pinned: the status notice carries the one-tap ask
+    h.w.onInbound('telegram', '7', '101', 'hello');
+    t += 61_000;
+    await h.w.tick();
+    const statusTries = () => events.filter((e) => e.event === 'notice-undelivered' && e.kind === 'status');
+    expect(statusTries()).toHaveLength(1);
+    const incident = h.store.openIncident('telegram', '7')!;
+    const askBefore = JSON.stringify(h.store.getIncident(incident.id)?.ask);
+    expect(h.store.getIncident(incident.id)?.ask?.state).toBe('open');
+    t += 10_000;
+    await h.w.tick(); // inside the 30 s wait
+    expect(statusTries()).toHaveLength(1);
+    expect(JSON.stringify(h.store.getIncident(incident.id)?.ask)).toBe(askBefore);
+    t += 20_000;
+    await h.w.tick();
+    expect(statusTries().map((e) => e.attempt)).toEqual([1, 2]);
+  });
+
+  it('evidence counts a held or numberless notice as neither an error nor a send', () => {
+    expect(neverSilentEvidenceKind({ event: 'notice-sent' })).toBe('fired');
+    expect(neverSilentEvidenceKind({ event: 'fallback-applied' })).toBe('fired');
+    expect(neverSilentEvidenceKind({ event: 'sweep-failed' })).toBe('error');
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'no-adapter', attempt: 1, firstFailure: true })).toBe('error');
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'threw:TypeError' })).toBe('error'); // move-failed, no try number
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'no-adapter', attempt: 2 })).toBeNull();
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'held-quiet', attempt: 1 })).toBeNull();
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'no-message-id', attempt: 1 })).toBeNull();
+    expect(neverSilentEvidenceKind({ event: 'notice-undelivered', reason: 'held-quiet' })).toBeNull();
+    expect(neverSilentEvidenceKind({ event: 'pool-observed' })).toBeNull();
   });
 
   it.each([

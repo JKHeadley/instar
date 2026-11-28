@@ -1,0 +1,5 @@
+# Spacing out a "still working on it" notice that keeps failing (ELI16)
+
+When you message the agent and it goes quiet too long, a watcher posts a short "still working on it" notice. If that notice could not get through, the watcher used to try again every half minute, forever, and wrote down every failed try as a separate error. So one bad hour on one conversation looked like dozens of failures, and the feature looked far more broken than it was.
+
+Now a notice that fails waits a bit before the next try: half a minute, then a minute, then two, doubling until it waits fifteen minutes between tries. As soon as one notice gets through, the wait starts over. The error count now counts one failure per waiting conversation and kind of notice, not one per try, and a notice that the quiet-notification rules held back on purpose, or one that came back without a message number, is not called an error at all. Every try is still written in the log with its number, so the old way of counting can still be read side by side with the new one.

@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NeverSilentStore, type ConversationPlatform } from './NeverSilentStore.js';
-import { NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type NoticeUndelivered, type SessionFacts } from './NeverSilentWatcher.js';
+import { NOTICE_HELD_REASONS, NeverSilentWatcher, parseAskCallback, type NeverSilentConfig, type NoticeUndelivered, type SessionFacts } from './NeverSilentWatcher.js';
 import { ConversationSilenceJudge, type RefereeRoute } from './ConversationSilenceJudge.js';
 import { ENGINE_LOGIN_READERS } from '../../providers/adapters/engineSessionHooks.js';
 import type { IntelligenceFramework } from '../../core/intelligenceProviderFactory.js';
@@ -78,6 +78,23 @@ export interface NeverSilentWiring {
 
 const isHealthy = (a: PoolAccountLike, loginCheck: string | null): boolean =>
   a.status === 'active' && loginCheck !== 'signed-out';
+
+/**
+ * How a watcher event counts for the feature's evidence (its error rate). CMT-2078: a failed waiting
+ * or status notice counts as one error per failure streak of an incident and notice kind (the row
+ * the watcher marks `firstFailure`), and a notice the gate held quiet or that came back with no
+ * message id is neither an error nor a send. Every try is still written to the never-silent log, so
+ * the per-try count stays readable beside this one. A row without a try number (the one-off
+ * move-failed notice) counts as an error unless it was held.
+ */
+export function neverSilentEvidenceKind(event: Record<string, unknown>): 'fired' | 'error' | null {
+  if (event.event === 'notice-sent' || event.event === 'fallback-applied') return 'fired';
+  if (event.event === 'handle-failed' || event.event === 'sweep-failed') return 'error';
+  if (event.event !== 'notice-undelivered') return null;
+  if (typeof event.reason === 'string' && NOTICE_HELD_REASONS.has(event.reason)) return null;
+  if (typeof event.attempt === 'number') return event.firstFailure === true ? 'error' : null;
+  return 'error';
+}
 
 export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiring {
   const now = input.now ?? (() => Date.now());
@@ -211,8 +228,7 @@ export function buildNeverSilent(input: NeverSilentWiringInput): NeverSilentWiri
     },
     log: (event) => {
       try {
-        const kind = event.event === 'notice-sent' || event.event === 'fallback-applied' ? 'fired'
-          : event.event === 'handle-failed' || event.event === 'notice-undelivered' || event.event === 'sweep-failed' ? 'error' : null;
+        const kind = neverSilentEvidenceKind(event);
         if (kind) input.evidence?.(kind, String(event.event), { ...event });
       } catch { /* @silent-fallback-ok — evidence is a measurement, never a gate */ }
       try {
