@@ -8,6 +8,7 @@
  * true` + the evidence counts — earned, not minted.
  */
 
+import { writeReviewedRelatedWork } from '../fixtures/related-work.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -84,7 +85,7 @@ function writeFixture(openQuestionsSection: string): { spec: string; report: str
     ].join('\n'),
   );
   const report = path.join(tmpDir, 'report.md');
-  fs.writeFileSync(report, '# report');
+  writeReviewedRelatedWork(spec, report);
   return { spec, report };
 }
 

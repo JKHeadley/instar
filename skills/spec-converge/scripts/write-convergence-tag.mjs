@@ -48,6 +48,7 @@
  */
 
 import fs from 'node:fs';
+import { readRelatedWorkDigest, reviewDigest, validateRelatedWork } from './related-work-preflight.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
@@ -273,7 +274,13 @@ if (!fs.existsSync(reportPath)) {
   process.exit(1);
 }
 
-const content = fs.readFileSync(specPath, 'utf-8');
+const content = fs.readFileSync(specPath, 'utf-8').replace(/\r\n/g, '\n');
+const relatedWorkError = validateRelatedWork(content);
+const digest = reviewDigest(content);
+if (relatedWorkError || readRelatedWorkDigest(fs.readFileSync(reportPath, 'utf8')) !== digest) {
+  console.error(relatedWorkError || 'The report needs the related-work-review-sha256 of the reviewed spec body.');
+  process.exit(1);
+}
 
 // ─── ELI16 overview check ────────────────────────────────────────────────
 // Convergence cannot be stamped onto a spec without a plain-English overview.
@@ -399,6 +406,7 @@ const [, fmBody, rest] = match;
 // Strip any existing managed lines (review-* chain + cross-model-review chain +
 // the single-run-completable chain) so re-runs are idempotent — the field is
 // rewritten, never duplicated.
+const approvalCurrent = readRelatedWorkDigest(fmBody) === digest;
 const preservedLines = fmBody
   .split('\n')
   .filter(
@@ -407,6 +415,8 @@ const preservedLines = fmBody
       !/^\s*review-iterations\s*:/.test(l) &&
       !/^\s*review-completed-at\s*:/.test(l) &&
       !/^\s*review-report\s*:/.test(l) &&
+      !/^related-work-review-sha256[ \t]*:/.test(l) &&
+      (approvalCurrent || !/^approved(?:-by|-date)?[ \t]*:/.test(l)) &&
       !/^\s*cross-model-review\s*:/.test(l) &&
       !/^\s*cross-model-review-reason\s*:/.test(l) &&
       !/^\s*single-run-completable\s*:/.test(l) &&
@@ -434,6 +444,7 @@ const newFmLines = [
   `review-iterations: ${iterations}`,
   `review-completed-at: "${ts}"`,
   `review-report: "${reportRel}"`,
+  `related-work-review-sha256: ${digest}`,
 ];
 
 // Cross-model review posture (Step B). Disclosure-only; additive.

@@ -12,6 +12,7 @@
  * exactly one section" pair is what shows it refuses for ITS OWN reason rather than
  * because some earlier gate happened to fire.
  */
+import { writeReviewedRelatedWork } from '../fixtures/related-work.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,7 +38,7 @@ function makeSpec(maturation: string) {
     spec,
     `---\ntitle: probe\nslug: probe\neli16-overview: ${eli16}\n---\n# Probe\n\n## Decision points touched\n*(none)*\n${maturation}`,
   );
-  fs.writeFileSync(report, '# report\n');
+  writeReviewedRelatedWork(spec, report);
   fs.writeFileSync(eli16, 'x'.repeat(900));
   return { spec, report };
 }

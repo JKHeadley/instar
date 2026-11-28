@@ -3470,6 +3470,7 @@ export class PostUpdateMigrator {
     this.migrateStallGateInstallProvenance(result);
     this.migrateFeatureMaturationGate(result);
     this.migrateSpecExperienceReview(result);
+    this.migrateSpecExperienceReview(result, true);
     this.migrateRetireStaleReleaseReadinessEvalFailureAttention(result);
     // LAST: every step above that patches CLAUDE.md has run, so the legacy
     // file is complete before it is split (docs/specs/claude-md-reference-layout.md).
@@ -3479,13 +3480,15 @@ export class PostUpdateMigrator {
   }
 
   /** Deliver the promised experience-fit lens without replacing surrounding skill prose. */
-  private migrateSpecExperienceReview(result: MigrationResult): void {
-    const marker = '<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->';
+  private migrateSpecExperienceReview(result: MigrationResult, relatedWork = false): void {
+    const marker = relatedWork ? '<!-- INSTAR:SPEC_RELATED_WORK -->' : '<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->';
+    const endMarker = marker.replace('INSTAR:', '/INSTAR:');
     let block: string;
     try {
       const bundled = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'spec-converge', 'SKILL.md'), 'utf8');
-      const blocks = bundled.match(/<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->[\s\S]*?<!-- \/INSTAR:SPEC_EXPERIENCE_REVIEW -->/g);
-      if (blocks?.length !== 1 || !blocks[0].includes('templates/reviewer-lessons-aware.md') || !blocks[0].includes('needless repeat asks')) {
+      const blocks = bundled.match(new RegExp(`${marker}[\\s\\S]*?${endMarker}`, 'g'));
+      const requiredText = relatedWork ? 'related-work-review-sha256' : 'needless repeat asks';
+      if (blocks?.length !== 1 || !blocks[0].includes(requiredText)) {
         result.errors.push('spec-converge experience review: bundled lens is missing or incomplete');
         return;
       }
@@ -3542,7 +3545,7 @@ export class PostUpdateMigrator {
     }
     for (const skillRoot of ['.instar', '.claude', '.agents']) {
       const file = path.join(this.config.projectDir, skillRoot, 'skills', 'spec-converge', 'SKILL.md');
-      const label = `spec-converge experience review (${skillRoot})`;
+      const label = `spec-converge ${relatedWork ? 'related work' : 'experience review'} (${skillRoot})`;
       try {
         if (!fs.existsSync(file)) continue; // the fresh-install path ships the bundled lens
         if (fs.lstatSync(file).isSymbolicLink() || !fs.realpathSync(file).startsWith(`${root}${path.sep}`)) {
@@ -3556,10 +3559,17 @@ export class PostUpdateMigrator {
           if (skillRoot === '.instar') return;
           continue;
         }
+        const experienceStart = current.split('<!-- INSTAR:SPEC_EXPERIENCE_REVIEW -->').length - 1;
+        const experienceEnd = current.split('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->').length - 1;
+        if (relatedWork && (experienceStart !== experienceEnd || experienceStart > 1)) {
+          result.skipped.push(`${label}: existing experience lens is incomplete — left untouched`);
+          if (skillRoot === '.instar') return;
+          continue;
+        }
         const markers = current.split(marker).length - 1;
         let next = current;
         if (!(markers === 1 && current.includes(block))) {
-          if (markers > 0 || current.includes('<!-- /INSTAR:SPEC_EXPERIENCE_REVIEW -->')) {
+          if (markers > 0 || current.includes(endMarker)) {
             result.skipped.push(`${label}: existing lens differs or is incomplete — left untouched`);
             if (skillRoot === '.instar') return;
             continue;
@@ -3659,6 +3669,21 @@ export class PostUpdateMigrator {
         // Shipped content: an empty prior list would read a changed gate as customized forever.
         alwaysOverwrite: true,
       },
+      ...templateRoots.filter((skillRoot) => skillRoot !== '.claude').flatMap((skillRoot) =>
+        ['scripts/eli16-overview-check.mjs', 'scripts/feature-maturation-plan-gate.mjs', 'src/core/FeatureMaturationPlanGate.mjs'].map((relative) => ({
+          label: `spec-converge writer dependency ${relative} (${skillRoot})`,
+          bundled: path.join(bundledRoot, relative),
+          target: path.join(root, skillRoot, relative),
+          prior: new Set<string>(),
+          alwaysOverwrite: true,
+        }))),
+      ...[...new Set(['.claude', ...templateRoots])].map((skillRoot) => ({
+        label: `spec-converge related-work preflight (${skillRoot})`,
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'related-work-preflight.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'related-work-preflight.mjs'),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      })),
       {
         // Round-11 (integration): this entry kept a prior-hash gate while every
         // sibling moved to alwaysOverwrite, so on a live agent home the
@@ -3675,6 +3700,13 @@ export class PostUpdateMigrator {
         prior: priorWriterHashes,
         alwaysOverwrite: true,
       },
+      ...templateRoots.filter((skillRoot) => skillRoot !== '.claude').map((skillRoot) => ({
+        label: `spec-converge tag writer (${skillRoot})`,
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        target: path.join(root, skillRoot, 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      })),
       {
         // Round-11 (integration): BOTH phase-5 scripts statically import
         // `../../../scripts/eli16-overview-check.mjs`, which from the installed
@@ -3813,6 +3845,13 @@ export class PostUpdateMigrator {
         if (skip) { result.skipped.push(`${file.label}: ${skip}`); continue; }
         const target = path.resolve(file.target);
         if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new Error('target escapes project root');
+        let parent = path.dirname(target);
+        while (!fs.existsSync(parent) && parent !== root) parent = path.dirname(parent);
+        const resolvedRoot = fs.realpathSync(root);
+        const resolvedParent = fs.realpathSync(parent);
+        if (resolvedParent !== resolvedRoot && !resolvedParent.startsWith(`${resolvedRoot}${path.sep}`)) {
+          throw new Error('target parent escapes project root');
+        }
         const bundled = fs.readFileSync(file.bundled);
         const bundledHash = digest(bundled);
         if (!fs.existsSync(target)) {

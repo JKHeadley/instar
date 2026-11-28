@@ -61,6 +61,10 @@ The skill adds `review-convergence`, `review-iterations`, `review-completed-at`,
 
 ### Phase 1 — Initial review round
 
+<!-- INSTAR:SPEC_RELATED_WORK -->
+Collect related work from open projects and specs, open and recently merged PRs, and the project registry. Reuse `instar dev:claim-check` with paths and keywords, then check native projects and the registry. Record scope, source evidence, limitations and a reuse, extend or set-aside reason for each plausible match. Use `scripts/related-work-preflight.mjs --evidence evidence.json` to generate the section and `--spec path.md` to validate it and print the review digest. Keep private details in an authorized evidence record. Reviewers challenge missed overlap and the reported decisions. Carry the digest of the body reviewed into the report as its `related-work-review-sha256` line. The stamp writer refuses invalid evidence and a digest mismatch.
+<!-- /INSTAR:SPEC_RELATED_WORK -->
+
 **Standards-Conformance Gate auto-invocation (MANDATORY, every round).** Before
 spawning the reviewers, the agent calls the constitution inspector against the spec
 and feeds its report into the round as a reviewer input:

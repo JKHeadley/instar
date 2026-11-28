@@ -188,3 +188,8 @@ If you're uncertain whether something is a real backtrack vs. a justified tradeo
 If you find zero findings, your report says "Lessons-aware review: no contradictions or missing engagements found. Spec respects all applicable principles + lessons." (Don't pad with affirmations of every passed check.)
 
 **Classify every finding (required).** Label each finding `DESIGN` (changes what would be built or how it behaves, or the spec is factually wrong about the system) or `PRECISION` (wording, naming, caveats, examples, or a long-tail edge case whose cost is out of proportion to its likelihood). Only DESIGN findings send the spec back for another round; PRECISION findings are listed as left behind. If your lens does not apply to this change, say so in one line and raise nothing.
+
+
+## Related work
+
+Check open projects and designs, open and recently merged pull requests, and the project registry. Challenge search scope and a plausible missed match by meaning. Verify whether the author's reuse, extend or set-aside decisions follow from evidence. Treat unavailable evidence as a limitation. Only an authorized reviewer may examine restricted source material. Report whether an overlap should change the spec's scope.

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "spec-related-work-preflight",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-24T22:47:17.227Z",
+  "artifactPath": "upgrades/side-effects/spec-related-work-preflight.md",
+  "artifactSha256": "2a26615d6e8e97c622d9f027d8ab02d761b60fc652e7c94b3a4c6b3d00c16e28",
+  "specPath": "docs/specs/spec-related-work-preflight.md",
+  "coveredFiles": [
+    "skills/spec-converge/scripts/related-work-preflight.mjs"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The reviewed spec defines the implementation gate. This correction handles list fences without changing evidence policy.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
