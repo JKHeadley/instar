@@ -270,7 +270,8 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
 2. **Stage 2, the rest** — built only after the stage 1 answers are recorded: the whole stage 1
    view, `declaredTier`, `riskFloor` and `riskFloorReasons`, the tier reasoning, the artifact
    text, the spec frontmatter (including `review-convergence`) and its body as staged at gate time
-   (read by `spec.stagedHash`, bounded at 30,000 characters with the cut disclosed; a cut or
+   (read by `spec.stagedHash`, bounded at 80,000 characters — the 95th percentile of the 1,024
+   specs on main is 76,008, the median 15,245 — with the cut disclosed; a cut or
    unavailable body makes the standard question `insufficient-evidence`), the convergence report captured at
    gate time (`spec.convergenceReport`, never one added later in the PR), `secondPassStatus` labelled as the author's attestation, and
    the `headings` result. When the call's diff is missing or cut, stage 2 says so, and the review
@@ -327,7 +328,9 @@ the same four-week window are compared once that window is 30 days old, so every
 had the same time to be reverted or blamed. Within a cohort, a call is outcome-implicated when,
 within those 30 days, a revert of its PR landed on main or a record's `causalAutopsy` (`origin:
 prior-pr`, `relatedPrs`) named its PR (59 such records today, naming 39 PRs). Each call is counted
-once per cohort comparison. The report compares implicated calls with the rest of the cohort,
+once per cohort comparison. A revert or a blame is an event on a **whole PR**, not on one call, so
+the subject of the comparison is stated as "calls in implicated PRs versus calls in other PRs", the
+totals give PR counts beside call counts, and no individual call is ever reported as the cause. The report compares implicated calls with the rest of the cohort,
 within the same `belowFloor` stratum: the rates of `too-low`, `under` and `boilerplate`, with every
 disposition count (agreed, disagreed, insufficient-evidence, incomplete, gave-up, excluded) shown. The judges rate every
 call with the same view and never see the outcome; a call's own diff may contain unrelated reverts
