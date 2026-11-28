@@ -69,3 +69,7 @@ Review record: `.instar/state/handoffs/reviews/substrate-admission-review.md` (a
 ## Release note fix (2026-11-27, about 20:35 PT)
 
 CI assembles the release notes from main plus this branch. Main's upgrades/next/ was empty after a release, so this fragment was checked alone, and it failed the repository invariant "missing ## Summary of New Capabilities section" (seen on #4038). Fix: internal-only marker added: the change is a lint, a baseline and an audit document, and stages nothing under src/, so the assembler fills the two user-facing sections. Checked alone with the repository's own assembleNextMd and validateGuideContent: the old version fails and the new one passes.
+
+## Review binding (2026-11-28)
+
+The independent reader's concurrences (the independent reader's concurrence in the side-effects artifact, and the release-note delta (echo-pipeline-strategy-release-note-fix-1127.md)) cover this change. This section and a fresh trace were written after the final merge of main d42c7aa6db into d574818671, so the trace covers every path the PR changes as it now stands.

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "substrate-admission-declared",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T11:27:41.810Z",
+  "artifactPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "artifactSha256": "c37731cc536147aa722391a267d68c128c19790c7d551e4bbbdfdac8642957fc",
+  "coveredFiles": [
+    "docs/audits/substrate-membership-sweep-2026-11-27.md",
+    "docs/specs/substrate-admission-declared.eli16.md",
+    "docs/substrate-admission-baseline.json",
+    "package.json",
+    "scripts/lint-substrate-admission-declared.mjs",
+    "tests/unit/lint-substrate-admission-declared.test.ts",
+    "upgrades/next/substrate-admission-declared.md",
+    "upgrades/side-effects/substrate-admission-declared.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review-binding trace after the final merge of main: same reviewed change, a revert undoes it; the independent reader concurred (the independent reader's concurrence in the side-effects artifact, and the release-note delta (echo-pipeline-strategy-release-note-fix-1127.md))",
+  "eli16Path": "docs/specs/substrate-admission-declared.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/substrate-admission-declared.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
