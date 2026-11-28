@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-28T02:35:21.046Z",
+  "slug": "conformance-check-reads-whole",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 668,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/spec-converge/SKILL.md",
+      "src/commands/spec.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/reviewers/standards-conformance.ts",
+      "src/core/specConstitutionCheckLedger.ts",
+      "src/data/awareness/spec-approval-constitution-check.md",
+      "src/server/specReviewRoutes.ts"
+    ],
+    "addedLines": 594,
+    "deletedLines": 74
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "conformance-check-reads-whole",
+  "sessionId": "dba91cd0-cb62-4fbf-be3e-45bfd60f5250",
+  "timestamp": "2026-11-28T02:25:31.576Z",
+  "artifactPath": "upgrades/side-effects/conformance-check-reads-whole.md",
+  "artifactSha256": "d0f285263d9a95580cf25a02b3f498aa5237093fefa68e549db3b42119b4b947",
+  "specPath": "docs/specs/conformance-check-reads-whole.md",
+  "coveredFiles": [
+    "docs/specs/conformance-check-reads-whole.eli16.md",
+    "docs/specs/conformance-check-reads-whole.md",
+    "docs/specs/reports/conformance-check-reads-whole-convergence.md",
+    "skills/spec-converge/SKILL.md",
+    "src/commands/spec.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/reviewers/standards-conformance.ts",
+    "src/core/specConstitutionCheckLedger.ts",
+    "src/data/awareness/spec-approval-constitution-check.md",
+    "src/server/specReviewRoutes.ts",
+    "tests/integration/standards-conformance-gate.test.ts",
+    "tests/unit/spec-approval-constitution-check.test.ts",
+    "tests/unit/spec-conformance-cli.test.ts",
+    "tests/unit/spec-converge-not-checked-migration.test.ts",
+    "tests/unit/standards-conformance-gate.test.ts",
+    "tests/unit/standards-conformance-stdin-payload.test.ts",
+    "upgrades/next/conformance-check-reads-whole.md",
+    "upgrades/side-effects/conformance-check-reads-whole.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

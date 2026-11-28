@@ -13,7 +13,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { resolveStandardsRegistryFromPath } from '../../src/core/standardsRegistryPath.js';
 import express from 'express';
 import request from 'supertest';
-import { createSpecReviewRoutes } from '../../src/server/specReviewRoutes.js';
+import { createSpecReviewRoutes, CONFORMANCE_ROUTE_BUDGET_MS, fitTimeLeft } from '../../src/server/specReviewRoutes.js';
+import { SPEC_REVIEW_TIMEOUT_MS } from '../../src/server/middleware.js';
+import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
 const REGISTRY_PATH = path.join(process.cwd(), 'docs/STANDARDS-REGISTRY.md');
@@ -74,11 +76,86 @@ describe('POST /spec/conformance-check', () => {
     expect(res.status).toBe(200);
     expect(res.body.report.degraded).toBe(true);
     expect(res.body.report.findings).toEqual([]);
+    // Loud at the top level: an unchecked spec is never readable as a clean one.
+    expect(res.body.checked).toBe(false);
+    expect(res.body.notChecked).toMatch(/^not checked: /);
+  });
+
+  it('a check that could not run is recorded as not checked and is not ceremony evidence', async () => {
+    const tooLong: IntelligenceProvider = { async evaluate() { throw new Error('Prompt is too long'); } };
+    const res = await request(app({ intelligence: tooLong }))
+      .post('/spec/conformance-check')
+      .send({ markdown: '---\nslug: big-spec\n---\n# Big spec\nbody' });
+    expect(res.status).toBe(200);
+    expect(res.body.checked).toBe(false);
+    expect(res.body.report.degradeReason).toBe('too-long');
+    expect(res.body.notChecked).toMatch(/too long for the model to judge whole/);
+    const ledger = JSON.parse(fs.readFileSync(path.join(tempDir, 'spec-constitution-checks.json'), 'utf-8'));
+    expect(ledger[0].slug).toBe('big-spec');
+    expect(ledger[0].degraded).toBe(true);
+    expect(ledger[0].degradeReason).toBe('too-long');
+    expect(new AutonomousRunStore(tempDir).conformanceInvocationsInWindow('big-spec', '1970-01-01T00:00:00Z', '2999-01-01T00:00:00Z')).toBe(0);
+  });
+
+  it('a real check is recorded as ceremony evidence and marked checked', async () => {
+    const res = await request(app({ intelligence: flagNoManualWork }))
+      .post('/spec/conformance-check')
+      .send({ markdown: '---\nslug: small-spec\n---\n# Small\nThe user must remember to sync.' });
+    expect(res.status).toBe(200);
+    expect(res.body.checked).toBe(true);
+    expect(res.body.notChecked).toBeUndefined();
+    expect(new AutonomousRunStore(tempDir).conformanceInvocationsInWindow('small-spec', '1970-01-01T00:00:00Z', '2999-01-01T00:00:00Z')).toBe(1);
   });
 
   it('400 when neither markdown nor specPath is given', async () => {
     const res = await request(app()).post('/spec/conformance-check').send({});
     expect(res.status).toBe(400);
+  });
+
+  it('the fit judgment gets only the time left in the route budget, and still runs after a too-long review', async () => {
+    expect(CONFORMANCE_ROUTE_BUDGET_MS).toBe(SPEC_REVIEW_TIMEOUT_MS);
+    // A request that spent 5 s reading and 140 s in review leaves 25 s for fit; 160 s in, under 20 s, so fit is not started.
+    expect(fitTimeLeft(0, 145_000)).toBe(25_000);
+    expect(fitTimeLeft(0, 160_000)).toBeLessThan(20_000);
+    const seen: Array<number | undefined> = [];
+    const timed: IntelligenceProvider = { async evaluate(_p, o) { seen.push(o?.timeoutMs); return seen.length === 1 ? '[]' : '{"verdict":"fit","reason":"ok"}'; } };
+    const res = await request(app({ intelligence: timed })).post('/spec/conformance-check')
+      .send({ markdown: '---\nparent-principle: "No Manual Work"\n---\n# Spec\nok' });
+    expect(res.status).toBe(200);
+    expect(seen.length).toBe(2);
+    expect(seen[1]!).toBeLessThanOrEqual(150_000);
+    let calls = 0;
+    const tooLong: IntelligenceProvider = { async evaluate() { calls++; if (calls === 1) throw new Error('Prompt is too long'); return '{"verdict":"fit","reason":"ok"}'; } };
+    const r2 = await request(app({ intelligence: tooLong })).post('/spec/conformance-check')
+      .send({ markdown: '---\nparent-principle: "No Manual Work"\n---\n# Spec\nok' });
+    expect(calls).toBe(2);
+    expect(r2.body.checked).toBe(false);
+    expect(r2.body.fitChecked).toBe(true);
+    const rec = JSON.parse(fs.readFileSync(path.join(tempDir, 'spec-constitution-checks.json'), 'utf-8'))[0];
+    expect(rec.fitVerdict).toBe('fit');
+    expect(rec.degraded).toBe(true);
+  });
+
+  it('413, not checked, when a specPath file is over the body ceiling (never read in part)', async () => {
+    const big = path.join(tempDir, 'huge-spec.md');
+    fs.writeFileSync(big, '# Spec\n');
+    fs.truncateSync(big, 12 * 1024 * 1024 + 1); // sparse: cheap on disk
+    let called = 0;
+    const counting: IntelligenceProvider = { async evaluate() { called++; return '[]'; } };
+    const a = express();
+    a.use(express.json({ limit: '2mb' }));
+    a.use(createSpecReviewRoutes({
+      intelligence: counting,
+      registryResolution: resolveStandardsRegistryFromPath(REGISTRY_PATH),
+      specsDir: tempDir,
+      stateDir: tempDir,
+    }));
+    const res = await request(a).post('/spec/conformance-check').send({ specPath: 'huge-spec.md' });
+    expect(res.status).toBe(413);
+    expect(res.body.checked).toBe(false);
+    expect(res.body.error).toMatch(/too large to judge/);
+    expect(res.body.notChecked).toMatch(/not checked/);
+    expect(called).toBe(0);
   });
 
   it('400 when specPath escapes specsDir (traversal guard)', async () => {

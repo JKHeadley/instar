@@ -82,6 +82,9 @@ describe('E2E: standards-conformance gate lifecycle', () => {
     expect(res.status).toBe(200);
     expect(res.body.registryCanary.ok).toBe(true);
     expect(res.body.report.degraded).toBe(false);
+    // A completed check says so at the top level; an unchecked one would say checked: false.
+    expect(res.body.checked).toBe(true);
+    expect(res.body.notChecked).toBeUndefined();
     const flagged = res.body.report.findings.map((f: { standard: string }) => f.standard).join(' ');
     expect(flagged).toMatch(/No Manual Work/);
   });
@@ -115,5 +118,6 @@ describe('E2E: standards-conformance gate lifecycle', () => {
     expect(res.body.report.fit).toBeTruthy();
     expect(res.body.report.fit.verdict).toBe('fit');
     expect(res.body.report.fit.parentResolved).toBe(true);
+    expect(res.body.fitChecked).toBe(true);
   });
 });

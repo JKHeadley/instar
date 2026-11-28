@@ -65,13 +65,60 @@ describe('runSpecConformance (CLI)', () => {
     expect(logs.join('\n')).toMatch(/No possible standard-violations/);
   });
 
-  it('surfaces a degraded report as advisory, not authoritative', async () => {
+  it('surfaces a degraded report as NOT CHECKED, with its reason, and exits 2', async () => {
     stubFetch({
-      report: { findings: [], standardsChecked: 21, degraded: true, degradeReason: 'no-intelligence' },
+      report: { findings: [], standardsChecked: 21, degraded: true, degradeReason: 'no-intelligence', notCheckedReason: 'not checked: no model provider is configured for the check on this machine' },
       registryCanary: { ok: true, articleCount: 22, failures: [] },
     });
-    await runSpecConformance({ specPath: specFile, dir: tempDir });
-    expect(logs.join('\n')).toMatch(/degraded.*no-intelligence/);
+    const prior = process.exitCode;
+    try {
+      await runSpecConformance({ specPath: specFile, dir: tempDir });
+      expect(logs.join('\n')).toMatch(/NOT CHECKED: no model provider/);
+      expect(logs.join('\n')).not.toMatch(/No possible standard-violations/);
+      expect(process.exitCode).toBe(2);
+    } finally { process.exitCode = prior; }
+  });
+
+  it('--json also exits 2 on a degraded report', async () => {
+    stubFetch({
+      report: { findings: [], standardsChecked: 21, degraded: true, degradeReason: 'too-long' },
+      registryCanary: { ok: true, articleCount: 22, failures: [] },
+    });
+    const prior = process.exitCode;
+    try {
+      await runSpecConformance({ specPath: specFile, dir: tempDir, json: true });
+      expect(process.exitCode).toBe(2);
+    } finally { process.exitCode = prior; }
+  });
+
+  it('a fit judgment that did not run prints NOT CHECKED (fit) and exits 2', async () => {
+    stubFetch({
+      report: { findings: [], standardsChecked: 21, degraded: false, fit: { verdict: 'not-checked', reason: 'not checked: the model call failed or timed out', degraded: true } },
+      registryCanary: { ok: true, articleCount: 22, failures: [] },
+    });
+    const prior = process.exitCode;
+    try {
+      await runSpecConformance({ specPath: specFile, dir: tempDir });
+      expect(logs.join('\n')).toContain('NOT CHECKED (fit)');
+      expect(process.exitCode).toBe(2);
+    } finally { process.exitCode = prior; }
+  });
+
+  it('a client timeout or a 408 is NOT CHECKED with exit 2, never "server not running"', async () => {
+    const errs: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errs.push(a.join(' ')); });
+    const prior = process.exitCode;
+    try {
+      vi.stubGlobal('fetch', async () => { const e = new Error('timed out'); e.name = 'TimeoutError'; throw e; });
+      await runSpecConformance({ specPath: specFile, dir: tempDir });
+      expect(errs.join('\n')).toContain('NOT CHECKED');
+      expect(errs.join('\n')).not.toMatch(/Is the server running/);
+      expect(process.exitCode).toBe(2);
+      process.exitCode = prior;
+      stubFetch({}, false, 408);
+      await runSpecConformance({ specPath: specFile, dir: tempDir });
+      expect(process.exitCode).toBe(2);
+    } finally { process.exitCode = prior; }
   });
 
   it('--json emits the raw response', async () => {
