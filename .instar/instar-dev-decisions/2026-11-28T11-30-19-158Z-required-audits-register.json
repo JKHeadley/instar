@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-28T11:30:19.158Z",
+  "slug": "required-audits-register",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 227,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-required-audits.mjs"
+    ],
+    "addedLines": 227,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
