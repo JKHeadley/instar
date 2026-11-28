@@ -1,4 +1,6 @@
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
+import { inspectFeedbackHistory } from './feedbackHistory.js';
+import type { FeedbackEntryDocument } from './feedbackRuleLinks.js';
 import { performance } from 'node:perf_hooks';
 import { inspectDesignPolicy, type DesignPolicySnapshot } from './policyInspection.js';
 import { pathsNeedingSourceText } from './surfaceClassifier.js';
@@ -16,7 +18,7 @@ class InspectionUnavailable extends Error {
 }
 
 /** Reads only immutable Git objects. Never loads code or configuration from either target tree. */
-export async function inspectDesignGitTrees(input: { repo: string; base: string; head: string }) {
+export async function inspectDesignGitTrees(input: { repo: string; base: string; head: string; feedback?: boolean }) {
   const deadline = performance.now() + 30_000;
   let totalRead = 0;
   const env = { GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
@@ -92,9 +94,36 @@ export async function inspectDesignGitTrees(input: { repo: string; base: string;
       sourceText[file] = before === null && after === null ? null : `${before ?? ''}\n${after ?? ''}`;
     }
     if (performance.now() >= deadline) throw new InspectionUnavailable('read-deadline');
+    const collectFeedback = async (commit: string): Promise<FeedbackEntryDocument[]> => {
+      const listing = await git(['ls-tree', '-r', '-z', commit, '--', 'docs/design-feedback/'], MAX_DIFF);
+      if (listing && !listing.endsWith('\0')) throw new InspectionUnavailable('feedback-tree-incomplete');
+      const records = listing ? listing.slice(0, -1).split('\0') : [];
+      if (records.length > MAX_PATHS) throw new InspectionUnavailable('feedback-capacity');
+      const entries: FeedbackEntryDocument[] = [];
+      for (const record of records) {
+        const match = /^(100644|100755) blob ([a-f0-9]{40,64})\t([^\0]+)$/.exec(record);
+        if (!match) throw new InspectionUnavailable('non-regular-feedback-entry');
+        const file = match[3];
+        if (!file.startsWith('docs/design-feedback/') || file.includes('\\') || /[\x00-\x1f\x7f]/.test(file)
+          || file.split('/').some(part => !part || part === '.' || part === '..')) throw new InspectionUnavailable('noncanonical-git-path');
+        const isEntry = /^docs\/design-feedback\/DF-\d{4,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(file);
+        entries.push({ path: file, markdown: isEntry ? await git(['cat-file', 'blob', match[2]]) : '' });
+      }
+      return entries;
+    };
+    const feedback = input.feedback ? inspectFeedbackHistory({
+      base: { standard: base.standard, entries: await collectFeedback(baseCommit) },
+      head: { standard: head.standard, entries: await collectFeedback(headCommit) },
+    }) : undefined;
+    if (performance.now() >= deadline) throw new InspectionUnavailable('read-deadline');
     const report = inspectDesignPolicy({ base, head, changedPaths, sourceText });
     if (performance.now() >= deadline) throw new InspectionUnavailable('read-deadline');
-    return { ...report, baseCommit, headCommit, changedPaths };
+    if (!feedback) return { ...report, baseCommit, headCommit, changedPaths };
+    return { ...report, baseCommit, headCommit, changedPaths, feedback,
+      evaluated: [...report.evaluated, 'feedback-entry-structure-and-rule-links', 'feedback-changelog-and-history'],
+      status: feedback.errors.length && report.status !== 'invalid-policy' ? 'findings' as const : report.status,
+      findings: [...report.findings, ...feedback.errors.map(error => ({ ...error, side: error.side ?? 'diff', code: `feedback:${error.code}` }))],
+    };
   } catch (error) {
     return { schemaVersion: 1 as const, scope: 'manual-design-policy' as const, mergeAuthority: false as const,
       status: 'unavailable' as const, code: error instanceof InspectionUnavailable ? error.code : 'inspection-failed', baseCommit, headCommit };

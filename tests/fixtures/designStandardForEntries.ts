@@ -27,3 +27,10 @@ export function designStandardForEntries(standard: string, keep: readonly string
   });
   return out;
 }
+
+/** The rule-id lock trimmed to the ids still present in a trimmed standard, so no kept test sees a removed rule. */
+export function designRuleLockForStandard(lockJson: string, standard: string): string {
+  const lock = JSON.parse(lockJson) as { version: number; ids: string[] };
+  const present = new Set(parseDesignStandard(standard).rules.map(rule => rule.id));
+  return JSON.stringify({ ...lock, ids: lock.ids.filter(id => present.has(id)) }, null, 2) + '\n';
+}

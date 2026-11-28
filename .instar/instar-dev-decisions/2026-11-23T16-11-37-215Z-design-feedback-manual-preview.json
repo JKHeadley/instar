@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-23T16:11:37.215Z",
+  "slug": "design-feedback-manual-preview",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 40,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/cli.ts",
+      "src/commands/designPolicy.ts",
+      "src/data/awareness/manual-design-policy-inspection.md",
+      "src/designGate/feedbackHistory.ts",
+      "src/designGate/gitInspection.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit manual invocation owns finite Git children under an existing deadline; no timer, self-trigger or retry controller is introduced."
+  },
+  "verdict": "pass"
+}

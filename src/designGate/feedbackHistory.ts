@@ -3,7 +3,7 @@ import { Lexer, type Tokens } from 'marked';
 import { readFeedbackRuleIds, feedbackInlineText, inspectFeedbackRuleLinks, type FeedbackEntryDocument, type FeedbackLinkError } from './feedbackRuleLinks.js';
 import { parseDesignStandard } from './standardParser.js';
 interface Snapshot { standard: string; entries: readonly FeedbackEntryDocument[] }
-interface HistoryError extends FeedbackLinkError { side?: 'base' | 'head' }
+export interface HistoryError extends FeedbackLinkError { side?: 'base' | 'head' }
 export function inspectFeedbackHistory(input: { base: Snapshot; head: Snapshot }) {
   const errors: HistoryError[] = [];
   const base = inspectFeedbackRuleLinks(input.base), head = inspectFeedbackRuleLinks(input.head);

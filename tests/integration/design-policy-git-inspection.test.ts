@@ -114,4 +114,37 @@ describe('manual inspector reads immutable real Git trees', () => {
   if ('classification' in r) { expect(r.changedPaths).toContain(name); expect(r.classification.unregistered).toContain(name); }
  });
 
+ it('optionally reads complete feedback structure/history from both committed trees', async () => {
+  const f = fixture(); const file = 'docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md';
+  const base = f.commit({ [file]: fs.readFileSync(file, 'utf8') });
+  const r = await inspectDesignGitTrees({ repo: f.root, base, head: base, feedback: true });
+  expect(r.status).toBe('structurally-valid');
+  expect(r).toHaveProperty('feedback.sourceVerification', false);
+  expect(r).toHaveProperty('feedback.publicationPrivacyReview', false);
+  expect(r).toHaveProperty('feedback.errors', []);
+ });
+ it('does not let deletion of a committed feedback entry disappear in the optional preview', async () => {
+  const f = fixture(); const file = 'docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md';
+  const base = f.commit({ [file]: fs.readFileSync(file, 'utf8') });
+  f.git('rm', '--', file); f.git('commit', '-qm', 'Synthetic removed entry');
+  const r = await inspectDesignGitTrees({ repo: f.root, base, head: 'HEAD', feedback: true });
+  expect(r.status).toBe('findings');
+  if ('findings' in r) expect(r.findings).toContainEqual(expect.objectContaining({ code: 'feedback:entry-history-removed', entryId: 'DF-0001' }));
+ });
+ it('reports a non-entry public file without reading its potentially private binary bytes', async () => {
+  const f = fixture(); const file = 'docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md';
+  const base = f.commit({ [file]: fs.readFileSync(file, 'utf8') });
+  const head = f.commit({ 'docs/design-feedback/private-capture.png': 'PRIVATE-PIXEL-CONTENT-MUST-NOT-BE-IN-REPORT' });
+  const r = await inspectDesignGitTrees({ repo: f.root, base, head, feedback: true });
+  expect(r.status).toBe('findings'); expect(JSON.stringify(r)).not.toContain('PRIVATE-PIXEL-CONTENT-MUST-NOT-BE-IN-REPORT');
+  if ('findings' in r) expect(r.findings).toContainEqual(expect.objectContaining({ code: 'feedback:entry-path-invalid' }));
+ });
+ it('never follows a feedback entry symlink while collecting the committed corpus', async () => {
+  const f = fixture(); fs.symlinkSync('/etc/passwd', path.join(f.root, 'linked-entry'));
+  f.git('add', '--', 'linked-entry'); f.git('commit', '-qm', 'Synthetic feedback link');
+  const oid = f.git('rev-parse', 'HEAD:linked-entry');
+  const head = f.commitObjects([{ path: Buffer.from('docs/design-feedback/DF-0001-linked.md'), mode: '120000', oid }]);
+  expect(await inspectDesignGitTrees({ repo: f.root, base: f.base, head, feedback: true })).toMatchObject({ status: 'unavailable', code: 'non-regular-feedback-entry' });
+ });
+
 });
