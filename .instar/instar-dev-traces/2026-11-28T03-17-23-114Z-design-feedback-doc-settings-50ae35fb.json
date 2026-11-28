@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "design-feedback-doc-settings",
+  "sessionId": "e7d3ee73-b4ae-43b6-9d89-bbc229ef91ad",
+  "timestamp": "2026-11-28T03:17:23.114Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-doc-settings.md",
+  "artifactSha256": "91f1e2a5ace604827a356a7ee357be54a9a72d492d46c2cbf9eb7a4c20e79096",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "docs/DESIGN-STANDARD.md",
+    "docs/design-feedback/DF-0007-document-settings-block-as-heading.md",
+    "upgrades/next/design-feedback-doc-settings.md",
+    "upgrades/side-effects/design-feedback-doc-settings.eli16.md",
+    "upgrades/side-effects/design-feedback-doc-settings.md",
+    "upgrades/side-effects/design-feedback-doc-settings.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging the updated parent; second pass concurred; whole files green on the stack head.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
