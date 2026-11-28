@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-23T15:31:48.043Z",
+  "slug": "husky-agent-home-config",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      ".husky/pre-commit"
+    ],
+    "addedLines": 9,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
