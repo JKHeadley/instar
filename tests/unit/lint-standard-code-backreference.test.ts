@@ -125,6 +125,17 @@ describe('lint-standard-code-backreference — widened infrastructure population
   function withInfra(root: string, entries: string[]): void {
     fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: entries }));
   }
+  // The real script carries the reviewed ceiling for the real baseline. A fixture with its own small
+  // baseline runs a COPY of the lint whose ceiling is set to the fixture's size — no environment
+  // override exists, because one would be a way to switch the ceiling off.
+  function runWithCeiling(root: string, ceiling: number, args: string[] = []): { code: number; out: string } {
+    const src = fs.readFileSync(LINT, 'utf8');
+    expect(src).toMatch(/const INFRA_BASELINE_CEILING = \d+;/);
+    const copy = path.join(root, 'lint-copy.mjs');
+    fs.writeFileSync(copy, src.replace(/const INFRA_BASELINE_CEILING = \d+;/, `const INFRA_BASELINE_CEILING = ${ceiling};`));
+    const r = spawnSync(process.execPath, [copy, ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+    return { code: r.status ?? -1, out: `${r.stdout}\n${r.stderr}` };
+  }
 
   it('fails a new guard-named file that names no standard, though the registry never cites it', () => {
     const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGuard.ts': 'export {};\n' } });
@@ -150,9 +161,9 @@ describe('lint-standard-code-backreference — widened infrastructure population
   it('a baselined infrastructure file passes, and must leave the baseline once it names a standard', () => {
     const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGate.ts': 'export {};\n' } });
     withInfra(root, ['src/core/WidgetGate.ts']);
-    expect(run(root).code).toBe(0);
+    expect(runWithCeiling(root, 1).code).toBe(0);
     fs.writeFileSync(path.join(root, 'src/core/WidgetGate.ts'), `// Governed by: *${LONG}*\nexport {};\n`);
-    const r = run(root);
+    const r = runWithCeiling(root, 1);
     expect(r.code).toBe(1);
     expect(r.out).toContain('src/core/WidgetGate.ts is in the infrastructure baseline but now names a standard');
   });
@@ -178,9 +189,56 @@ describe('lint-standard-code-backreference — widened infrastructure population
     const write = () => spawnSync(process.execPath, [LINT, '--write-infrastructure-baseline'], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
     expect(write().status).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(root, INFRA), 'utf8')).grandfatheredInfrastructure).toEqual(['src/core/WidgetWatchdog.ts']);
-    expect(run(root).code).toBe(0);
+    expect(runWithCeiling(root, 1).code).toBe(0);
     const again = write();
     expect(again.status).toBe(1);
     expect(`${again.stdout}${again.stderr}`).toContain('refusing --write-infrastructure-baseline');
+  });
+
+  it('refuses a hand-added baseline entry: the ceiling in the reviewed lint must equal the baseline size', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/OldGate.ts': 'export {};\n', 'src/core/NewGate.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/OldGate.ts', 'src/core/NewGate.ts']);
+    const over = runWithCeiling(root, 1);
+    expect(over.code).toBe(1);
+    expect(over.out).toContain('above the ceiling of 1');
+    const under = runWithCeiling(root, 3);
+    expect(under.code).toBe(1);
+    expect(under.out).toContain('Lower INFRA_BASELINE_CEILING');
+    expect(runWithCeiling(root, 2).code).toBe(0);
+  });
+
+  it('a corrupt or malformed baseline is a named failure, never a silent empty or pass', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGuard.ts': `// Governed by: *${LONG}*\nexport {};\n` } });
+    fs.writeFileSync(path.join(root, INFRA), '{ not json');
+    const bad = runWithCeiling(root, 0);
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain('baseline.json is unreadable');
+    fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: 'src/core/WidgetGuard.ts' }));
+    const malformed = runWithCeiling(root, 0);
+    expect(malformed.code).toBe(1);
+    expect(malformed.out).toContain('baseline.json is malformed');
+  });
+
+  it('flags a stale baseline entry for a file that was deleted or is no longer infrastructure', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/Widget.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/GoneGuard.ts']);
+    const r = runWithCeiling(root, 1);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('src/core/GoneGuard.ts is in the infrastructure baseline but is no longer infrastructure here');
+  });
+
+  it('matches guard words as whole words of the file name, not as substrings', () => {
+    const root = fixture({
+      articles: [{ title: LONG, cites: [] }],
+      files: {
+        'src/core/DesktopDelegatedSessionStore.ts': 'export {};\n', 'src/core/navigateTo.ts': 'export {};\n',
+        'src/core/aggregateStats.ts': 'export {};\n', 'src/core/SendGateway.ts': 'export {};\n',
+        'src/core/FencedLease.ts': 'export {};\n', 'src/core/leaseGatedSpawn.ts': 'export {};\n', 'src/core/rate-limiter.ts': 'export {};\n',
+      },
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    for (const hit of ['FencedLease.ts', 'leaseGatedSpawn.ts', 'rate-limiter.ts']) expect(r.out).toContain(`src/core/${hit} is decision infrastructure`);
+    for (const miss of ['DesktopDelegatedSessionStore.ts', 'navigateTo.ts', 'aggregateStats.ts', 'SendGateway.ts']) expect(r.out).not.toContain(`src/core/${miss}`);
   });
 });

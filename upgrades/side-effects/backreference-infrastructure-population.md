@@ -74,3 +74,13 @@ Revert the commit. The baseline file goes with it, and the registry text returns
   - an absent baseline counts as empty;
   - the baseline is written once and a rewrite is refused.
 - On the real tree at main 096f6e88, with the registry edit, the lint reports: "70 cited file(s), 70 naming a standard back, 0 grandfathered; 289 further infrastructure file(s), 21 naming a standard back, 268 grandfathered", and the countdown lint is clean.
+
+## Follow-up after the independent review of PR 4024 (2026-11-27 16:39)
+
+The reader concurred and named three gaps, all fixed in a follow-up commit on the same branch line:
+
+1. **Shrink-only in both directions.** `INFRA_BASELINE_CEILING` (265) lives in the lint's own source. The baseline's size must EQUAL it: above it means a hand-added entry; below it means the ceiling must come down so the freed places cannot be refilled. A delete-and-rewrite of the baseline now fails on the ceiling. A stale entry (a file deleted, renamed, or no longer named like a guard) fails by name.
+2. **Corrupt baseline.** Present but unreadable or malformed now fails by name. Absent still counts as empty, the strictest state.
+3. **Whole-word names.** Guard words match only as whole words of the file name (CamelCase or -/_/. separated), including the forms guarded, guardian, gated, gating and fenced. This drops three false hits: DesktopDelegatedSessionStore (inside "Delegated"), SendGateway and A2AGateway (network gateways). It keeps FencedLease, FencedOutbox, devGatedFeatures, leaseGatedSpawn and MentorAutonomousGuardian. The population is 286, with 265 baselined.
+
+Tests now cover all of these: 20 of 20, with 4 new cases (a hand-added entry over the ceiling and the ceiling left too high; a corrupt and a malformed baseline; a stale entry; whole-word matching both ways). Tests that need a baseline run a copy of the lint with its ceiling set to the fixture's size. There is no environment override, because one would switch the ceiling off.

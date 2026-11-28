@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-28T00:42:34.402Z",
+  "slug": "backreference-infrastructure-population",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 48,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-standard-code-backreference.mjs"
+    ],
+    "addedLines": 42,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

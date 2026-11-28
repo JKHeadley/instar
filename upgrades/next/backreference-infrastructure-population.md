@@ -16,4 +16,4 @@ None at runtime.
 
 ## Evidence
 
-Six new tests in tests/unit/lint-standard-code-backreference.test.ts, 16 of 16 passing. On the real tree, the check covers 289 more files: 21 already compliant and 268 baselined.
+Ten new tests in tests/unit/lint-standard-code-backreference.test.ts, 20 of 20 passing. On the real tree, the check covers 286 more files: 21 already compliant and 265 baselined, with the baseline size fixed by a ceiling in the lint.
