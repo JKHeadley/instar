@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "telegram-confirmation-expired",
+  "sessionId": "dd2f336e-e8f7-40b3-97e3-09d19139bfa6",
+  "timestamp": "2026-11-24T15:56:52.093Z",
+  "artifactPath": "upgrades/side-effects/telegram-confirmation-expired.md",
+  "artifactSha256": "eed1aa51ab212e482a14b79dece93501f4fed86cee1f390aa6c01b323ee42178",
+  "specPath": "docs/specs/telegram-confirmation-expired.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T15-56-33-612Z-telegram-confirmation-expired.json",
+    "docs/specs/telegram-confirmation-expired.eli16.md",
+    "docs/specs/telegram-confirmation-expired.md",
+    "src/messaging/telegram-origin/OriginMesh.ts",
+    "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+    "src/messaging/telegram-origin/OriginOwnerRead.ts",
+    "tests/unit/telegram-origin/origin-owner-read.test.ts",
+    "upgrades/side-effects/telegram-confirmation-expired.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The delivery outcome endpoint gains a terminal confirmation status and the signed peer response gains an optional flag.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

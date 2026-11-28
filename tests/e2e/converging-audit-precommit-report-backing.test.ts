@@ -39,6 +39,8 @@ const COPY_FILES = [
   'scripts/lib/instar-dev-trace.mjs',
   'scripts/lib/markdown-code-identifier.mjs',
   'scripts/lib/operator-surface.mjs',
+  // Delight the User (operator-surface.mjs and the precommit both import it).
+  'scripts/lib/delight-the-user.mjs',
   'scripts/lib/self-action-detect.mjs',
   'scripts/lib/open-pr-overlap.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
