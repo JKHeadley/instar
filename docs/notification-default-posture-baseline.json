@@ -1,0 +1,61 @@
+{
+  "_readme": "Reviewed baseline for tests/unit/notification-silent-by-default-ratchet.test.ts (STD-SUBCOUNTDOWN-silent-by-default-emitters, CMT-1901). It lists what reaches a person by default WHILE the Quiet by Default gate is enforcing (with the gate off or in dry run, every category is delivered): every loud category, every registered sender into one, and every inline loud envelope literal per file. New senders ship silent: an addition here needs a reason in _why and review in the same change; an entry that stops being true must be removed.",
+  "loudCategories": {
+    "attention-item": "significant-classes",
+    "update-announcement": "release-audience-promotion",
+    "presence-standby": "protected-delivery",
+    "cold-start-fallback": "protected-delivery",
+    "message-loss-notice": "protected-delivery",
+    "command-response": "protected-delivery",
+    "disk-steward": "default-push",
+    "never-silent-notice": "protected-delivery",
+    "pairing-outcome": "protected-delivery",
+    "owner-decision": "protected-delivery",
+    "promise-notice": "protected-delivery"
+  },
+  "loudEmitters": {
+    "src/monitoring/DiskStewardPoster.ts": "disk-steward",
+    "src/server/routes.ts#promise-notice": "promise-notice",
+    "src/server/routes.ts#profile-confirmation": "owner-decision",
+    "producer:presence-proxy": "presence-standby",
+    "producer:auto-updater": "update-announcement",
+    "producer:post-update": "update-announcement",
+    "producer:never-silent": "never-silent-notice"
+  },
+  "_why": {
+    "attention-item": "Only an attention item carrying a significant class (security incident, data loss, agent cannot operate) pushes; plain items stay quiet.",
+    "update-announcement": "Only a release the audience rules promote pushes; the owner can quiet it.",
+    "presence-standby": "Conversation serving: answers a waiting message from the person.",
+    "cold-start-fallback": "Conversation serving: says a conversation is unavailable to the person who wrote.",
+    "message-loss-notice": "Conversation serving: tells the person a message of theirs was lost.",
+    "command-response": "Conversation serving: the answer to the person's own command.",
+    "disk-steward": "A disk floor warning must reach a person (no-data-loss-on-machine-death D13); the owner can quiet it.",
+    "never-silent-notice": "The one outcome besides a reply when a person's message goes unanswered (never-silent spec section 2).",
+    "pairing-outcome": "Answers the operator's own pairing request in its topic.",
+    "owner-decision": "A decision only the owner can make, budgeted per topic.",
+    "promise-notice": "The agent's own promise to the person, budgeted per topic.",
+    "src/monitoring/DiskStewardPoster.ts": "The disk floor warning; must reach a person (D13), the owner can quiet it.",
+    "src/server/routes.ts#promise-notice": "The commitment check-in or late-promise line in the person's own conversation, capped per topic.",
+    "src/server/routes.ts#profile-confirmation": "Confirming an engine change the owner asked for; needs the owner's answer.",
+    "producer:presence-proxy": "The standby line answering a person who is waiting for a reply.",
+    "producer:auto-updater": "Update notes; only a release the audience rules promote pushes.",
+    "producer:post-update": "Post-update notes; only a promoted release pushes.",
+    "producer:never-silent": "The notice that a person's message is still waiting (never-silent floor).",
+    "src/commands/server.ts": "Server composition: lost-message and standby notices answering a person's own message (4 literals).",
+    "src/lifeline/TelegramLifeline.ts": "The lifeline telling a person their message could not be delivered (1 literal).",
+    "src/messaging/NotificationSelectivityGate.ts": "The gate itself: store-failure data-loss attention item, its significant classes, and command responses (6 literals).",
+    "src/messaging/TelegramAdapter.ts": "sendOfferList owner-decision envelope and command responses to the person's own command (2 literals).",
+    "src/messaging/telegram-origin/TelegramOriginService.ts": "The promoted release announcement through the origin service (2 literals).",
+    "src/monitoring/SessionMonitor.ts": "The parameter type of the lost-message and standby notice to a person whose session died; the send itself passes { category } through a variable (1 literal, a type annotation).",
+    "src/server/routes.ts": "Route composition: update announcements, command responses, standby and pairing-outcome replies (6 literals)."
+  },
+  "literalSites": {
+    "src/server/routes.ts": 6,
+    "src/lifeline/TelegramLifeline.ts": 1,
+    "src/commands/server.ts": 4,
+    "src/monitoring/SessionMonitor.ts": 1,
+    "src/messaging/NotificationSelectivityGate.ts": 6,
+    "src/messaging/TelegramAdapter.ts": 2,
+    "src/messaging/telegram-origin/TelegramOriginService.ts": 2
+  }
+}

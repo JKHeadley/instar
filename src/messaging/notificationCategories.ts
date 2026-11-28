@@ -79,20 +79,21 @@ export const PRODUCER_NOTIFICATION_CATEGORIES: Readonly<Record<string, Notificat
 export function categoryForProducer(producerId: string | undefined, jobSlug?: string): NotificationCategoryId {
   return producerId && PRODUCER_NOTIFICATION_CATEGORIES[producerId] || (jobSlug ? 'job-status' : 'uncategorized');
 }
+/** Attention source families and their categories (read by the silent-by-default ratchet test). */
+export const ATTENTION_FAMILY_CATEGORIES: Readonly<Record<string, NotificationCategoryId>> = {
+  'resume-queue': 'resume-queue-notice',
+  'promise-beacon-escalation': 'commitment-deadletter',
+  'outbound-advisory': 'advisory-escalation',
+  'outbound-advisory-escalation': 'advisory-escalation',
+  'machine-coherence': 'mesh-alert',
+  'machine-coherence-guard': 'mesh-alert',
+  'rope-recovery-probe': 'mesh-alert',
+  'rope-health': 'mesh-alert',
+};
 /** Composite attention producer retains its structured source family. */
 export function categoryForAttention(source: string | undefined, lane?: string): NotificationCategoryId {
   if (lane === 'agent-health') return 'agent-health';
-  const families: Readonly<Record<string, NotificationCategoryId>> = {
-    'resume-queue': 'resume-queue-notice',
-    'promise-beacon-escalation': 'commitment-deadletter',
-    'outbound-advisory': 'advisory-escalation',
-    'outbound-advisory-escalation': 'advisory-escalation',
-    'machine-coherence': 'mesh-alert',
-    'machine-coherence-guard': 'mesh-alert',
-    'rope-recovery-probe': 'mesh-alert',
-    'rope-health': 'mesh-alert',
-  };
-  return source && families[source] || 'attention-item';
+  return source && ATTENTION_FAMILY_CATEGORIES[source] || 'attention-item';
 }
 
 /** Existing PA-5 authority: only a real upgrade-notify job and promoted release guide. */
