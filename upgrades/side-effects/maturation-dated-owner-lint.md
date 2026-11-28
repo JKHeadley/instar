@@ -68,3 +68,7 @@ Revert the PR. The fields are optional, so older code reads the seeded file unch
 - All were fixed. The reader re-checked the data (261 entries unchanged apart from the three fields, 231 seeded) and passed 64 of 64 tests.
 - Remaining notes, stated here rather than hidden: the overdue reader is agent-local, so the repository neither versions nor tests it; and a failed summary send can repeat an owner's message on re-run.
 Review record: `.instar/state/handoffs/reviews/maturation-dated-owner-review.md` (agent-local).
+
+## Release note fix (2026-11-27, about 20:35 PT)
+
+CI assembles the release notes from main plus this branch. Main's upgrades/next/ was empty after a release, so this fragment was checked alone, and it failed the repository invariant "missing ## Summary of New Capabilities section" (seen on #4038). Fix: a "Summary of New Capabilities" section added. This change touches src/ (the ladder parser), so it cannot use the internal-only marker. Checked alone with the repository's own assembleNextMd and validateGuideContent: the old version fails and the new one passes.
