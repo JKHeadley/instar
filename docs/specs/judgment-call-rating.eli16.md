@@ -35,8 +35,8 @@ different companies.
    retry of the very same commit, checked against the files that actually merged, and each judged
    only on its own part of the change. A change that was later amended or rebased cannot be tied to
    its own diff, so its risk level is not graded.
-3. The two-judge grader built for the tone gate gets a second mode that grades these calls with six
-   questions: one per rule, plus whether the author was missing context the call needed. The judges first propose a risk level themselves, from what the change
+3. The two-judge grader built for the tone gate gets a second mode that grades these calls with seven
+   questions: one per rule (two for the standard: is one cited, and does the change match it), plus whether the author was missing context the call needed. The judges first propose a risk level themselves, from what the change
    actually touched, without seeing the level the agent declared, the check's suggestion or the
    agent's reasons; the grader then compares, so good writing cannot
    rescue a wrong call. They are never shown what happened to the change later.

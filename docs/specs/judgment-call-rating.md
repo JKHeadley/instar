@@ -2,12 +2,23 @@
 title: Judgment-call rating — log each judgment-bound call with its context where it is made, and rate it
 slug: judgment-call-rating
 tier: 2
-status: verification rounds in progress (CoS ruling (a)); not stamped converged
+status: converged (Chief of Staff stop rule, 2026-11-27 22:11 PT: cycle 1 had no blocking finding)
 author: echo (topic 33368, M5)
 countdown: STD-SUBCOUNTDOWN-judgment-call-rating (2026-12-21)
 spec-due: 2026-12-07
 build-due: 2026-12-16
 eli16-overview: docs/specs/judgment-call-rating.eli16.md
+review-convergence: "2026-11-28T06:21:46.769Z"
+review-iterations: 10
+review-completed-at: "2026-11-28T06:21:46.769Z"
+review-report: "docs/specs/reports/judgment-call-rating-convergence.md"
+cross-model-review: "codex-cli:gpt-6.2-astra"
+single-run-completable: true
+frontloaded-decisions: 8
+cheap-to-change-tags: 2
+contested-then-cleared: 0
+approved: true
+approved-by: "echo, after reading docs/specs/reports/judgment-call-rating-convergence.md; the agent approves its own converged spec (it amends neither the constitution nor a CODEOWNERS path); convergence under the Chief of Staff stop rule of 2026-11-27 22:11 PT"
 ---
 
 # Judgment-call rating
@@ -201,11 +212,16 @@ applied **in this order** and each decided from recorded evidence rather than in
   the same `headCommit` — the same commit was attempted again (the usual cause is a check that runs
   after the gate in `.husky/pre-commit`, such as `check-rule3-coverage`, refusing the first
   attempt). Two successive real commits have different `headCommit` values and both stay calls.
+- **Duplicate landing.** When one carrying commit carries several records with the same
+  `headCommit`, path set and transitions (a refused attempt that rode a retry made under a rewritten
+  trace's new slug), only the latest is a call; the rest are `superseded`.
 - **Record format first.** A record with `judgment.error` is `excluded` before any matching. A
   legacy record (no `judgment` block) goes to the legacy path below. Only records with a `judgment`
   block go through the landing check.
 - **Landing.** A call's **carrying commit** is the PR commit that introduced its record file. The
-  record lands when that commit's **complete set of in-scope paths equals the record's** and, at
+  record lands when that commit's **complete set of in-scope paths** — computed with the scope
+  module as it stood in the carrying commit's parent tree, or, for commits older than that module,
+  the record's own path set — **equals the record's** and, at
   every one of them, it makes the transition the record describes (`baseBlob` → `stagedBlob`, a
   deletion counting as a transition to absent); a carrying commit that also changes other in-scope
   paths is a mismatch, so a refused attempt cannot be credited with a larger landed change. If the carrying
@@ -229,11 +245,13 @@ grader so they agree. The CI presence check has its own copy (`isInScopeFile`) t
 hook's user-facing-surface branch; this spec names that drift and does not change the CI check, and
 the coverage report uses the hook's rule, today's version, for every PR it reports.
 
-For each call, the grader reads the artifact and spec from the PR's landed tree. A document counts
+For each call, the grader reads the artifact and spec **at the call's carrying commit** (from the
+PR's head ref), not from the PR's final tree, so a later commit that edits the same artifact never
+disqualifies or replaces an earlier call's evidence. A document counts
 as the call's evidence only when the hook checked the same content it staged: `hash` is taken with
-`git hash-object --path=<path>`, which applies the repository's line-ending normalization, so a
+`git hash-object --stdin --path=<path>`, which applies the repository's line-ending normalization, so a
 CRLF checkout of an LF blob hashes equal while a real unstaged edit does not (`hash` equals
-`stagedHash`; otherwise `checked-differs-from-staged`) **and** the landed git object id equals
+`stagedHash`; otherwise `checked-differs-from-staged`) **and** the git object id at the carrying commit equals
 `stagedHash` (git objects, so a checkout's line-ending conversion never reads as a difference): a differing artifact makes the review questions `insufficient-evidence`; a
 differing spec makes the standard question `insufficient-evidence`.
 
@@ -271,8 +289,10 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
    view, `declaredTier`, `riskFloor` and `riskFloorReasons`, the tier reasoning, the artifact
    text, the spec frontmatter (including `review-convergence`) and its body as staged at gate time
    (read by `spec.stagedHash`, bounded at 80,000 characters — the 95th percentile of the 1,024
-   specs on main is 76,008, the median 15,245 — with the cut disclosed; a cut or
-   unavailable body makes the standard question `insufficient-evidence`), the convergence report captured at
+   specs at b457f0469 is 76,008 bytes, the median 15,245 — with the cut disclosed; a cut body, or a
+   declared spec whose blob does not resolve from the PR's head ref, makes the citation question
+   `insufficient-evidence`, while a call with no declared spec, as on Tier 1, answers from the
+   artifact and may be `none-cited`), the convergence report captured at
    gate time (`spec.convergenceReport`, never one added later in the PR), `secondPassStatus` labelled as the author's attestation, and
    the `headings` result. When the call's diff is missing or cut, stage 2 says so, and the review
    question ("engage this change's real risks") is `insufficient-evidence` too; the grader-forced
@@ -286,7 +306,8 @@ Fenced as data with a fresh per-call code (the SEC-097 nonce lesson):
 |---|---|---|---|
 | consequential or reversible | 1 | Which tier does this change warrant? The judge answers **without seeing the declared or the gate's suggested tier**; the grader then compares mechanically: same as declared → `right`, higher → `too-low`, lower → `too-high`. | judge: `1`, `2`, `3`, `insufficient-evidence` |
 | machinery warranted | 2 | Shown the declared tier only now, after the stage 1 answer is recorded: is the process that tier prescribes proportionate to this change? (The work actually done is not asked here.) | `proportionate`, `over`, `under`, `insufficient-evidence` |
-| work serves a standard | 2 | Does the cited spec or artifact name the standard the change serves, and does the change match it? | `serves`, `unclear`, `none-cited`, `insufficient-evidence` |
+| work serves a standard (citation) | 2 | Does the cited spec or artifact name the standard the change serves? | `cited`, `unclear`, `none-cited`, `insufficient-evidence` |
+| work serves a standard (alignment) | 2 | Does the change itself match the cited standard? Diff-dependent: forced `insufficient-evidence` whenever the call's diff is missing or cut. | `matches`, `diverges`, `insufficient-evidence` |
 | review genuinely considered | 2 | Do the artifact's answers engage this change's real risks, rather than template text? | `engaged`, `boilerplate`, `missing`, `insufficient-evidence` |
 | audit-shaped sweep | 2 | If the change is a sweep, did a second pass or convergence run? | `convergence-recorded` (decided from the record, not by the judges: a convergence tag and a convergence report both present at gate time — evidence that the review was recorded, not proof of its quality), `attested-only` (the author's second-pass claim alone), `no`, `not-a-sweep`, `insufficient-evidence` |
 | context sufficiency | 2 | From what the record shows the author had (the scope, the spec, the artifact), was something the call needed missing? | `none-missing`, `spec-missing`, `risk-not-surfaced`, `unknown` |
@@ -313,6 +334,10 @@ Each question on each sampled call ends in exactly one disposition:
 - `gave-up`: still incomplete after two retries, with the cause of each failed attempt (family
   unavailable, code not echoed, unparseable) kept in the ledger, so a run of one cause is visible;
 - `excluded`: `injection-suspect`, `traceDiffers`, or `judgment.error`.
+
+A disposition forced before any judge is asked (`insufficient-evidence` from a cut or unresolvable
+input, `excluded`) is final for that question and is never overwritten by an outage; only questions
+that still need a judge's answer become `incomplete` and are retried.
 
 Dispositions sum to the sampled calls for every question. A **rate** is the count of an agreed code
 divided by `agreed + disagreed` for that question and group, and is always published with both
@@ -347,7 +372,8 @@ after the countdown date. The countdown is not closed on calibration; it is clos
 Calibration needs each earlier call's answers, so each totals document also carries a **per-call
 ledger**, codes only: call id (record path), PR, landing date, sampling group, `belowFloor`, each question's
 disposition and agreed code, and the grader version. Ledger entries are keyed by (call, question,
-grader version): a retry adds an entry only for the questions still unresolved, a resolved answer is
+grader version), and a cohort comparison reads a **single grader version** — the latest that rated
+the whole cohort — printed in the totals; a retry adds an entry only for the questions still unresolved, a resolved answer is
 carried forward unchanged, and rebuilding takes, per key, the latest entry — so a call has exactly
 one disposition per question however many runs touched it. A later run on any machine computes a
 cohort's calibration from the ledgers of the totals documents covering it, with no run folder
@@ -361,8 +387,13 @@ burst is spread over the next runs rather than dropped; overflow carried in the 
 rest (about ±15 points on a rate at 95%: enough to see a class of problem, not to rank authors),
 and, for each cohort reaching its 30-day mark, any of its calls not yet rated (the `cohort-catch-up`
 group, capped at 40). The seed and sizes are written into the run
-plan before any record is read. Estimated cost: about 120 calls × 2 judges × 2 stages, 3–5M tokens
-a week with diffs, on the judge routes pinned in the run plan, as in Milestone 1. Each judge call's
+plan before any record is read. Estimated cost, per stage from measured sizes: stage 1 is the call's
+diff (up to 15,000 tokens, typically far less) plus fixed instructions; stage 2 adds the artifact
+(median about 2,000 tokens), the spec body when one is declared (median about 4,000 tokens; Tier 1
+has none; at most about 20,000) and the reasoning. About 120 calls × 2 judges × 2 stages is 480
+prompts; at a typical 8,000–15,000 tokens each that is about 4–7M tokens a week, with a ceiling
+near 15M if every call hit every bound. The 60,000-character diff bound keeps stage 1 under about
+20,000 tokens; stage 2 can reach about 40,000 on the largest specs, inside both judges' context, on the judge routes pinned in the run plan, as in Milestone 1. Each judge call's
 route, served model, latency and outcome are recorded in the run folder and summarized in the
 totals (the grader calls models through their CLIs, not through the server's funnel; named so it is
 not implicit).
@@ -386,12 +417,15 @@ the run stops without publishing and says why in its run log. Only when the conv
 document at all does it start from the countdown start (the commit this spec lands in). One line
 goes to the benchmark topic only when a group's rate moves outside its last evaluable interval.
 
-**One writer at a time.** The grading job runs only from the Studio's scheduler, whose job lease
-already prevents two instances of one job running at once. As a second guard, a run records the id
-of the predecessor totals document it started from, and immediately before publishing re-reads the
-conversation's documents: if a newer published totals document exists, it does not publish and
-says so in its run log. Each totals document carries an idempotency key (predecessor id + run id),
-so a publication retried after an ambiguous failure is found, not duplicated.
+**One writer at a time.** The grading job is pinned to the Studio by its `machines` field, and the
+scheduler refuses to start a second run of a slug that is already running on that machine
+(`JobScheduler` live-run guard). No lease across machines is authoritative today
+(`JOB_LEASE_POOL_AUTHORITY_READY = false`), so this is not claimed. As a second guard, each totals
+document records its predecessor's id, which is also its idempotency key, and a run re-reads the
+conversation before publishing and skips if a newer published totals document exists. If two runs
+still both publish a successor of the same predecessor (a check-then-act race), readers settle the
+fork deterministically: the earliest-created successor is taken, the other is ignored and counted,
+and the ignored run's retry ids are merged into the next run's plan.
 
 Findings are signal only: never written into the instar-dev skill, a prompt or an author's context
 automatically; any process change they suggest goes through the normal spec path.
@@ -418,7 +452,7 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 | Grader's tier comparison | invariant; basis: enumerable-domain; evidence: an agreed proposed tier is equal to, above or below the declared tier | `right`, `too-low`, `too-high` |
 | An answer pair that differs | invariant; basis: enumerable-domain; evidence: two valid codes are equal or not | `disagreed`; counts in the rate denominator, never a finding |
 | A call's own diff cannot be rebuilt | invariant; basis: enumerable-domain; evidence: each blob resolves or not | diff-dependent answers (stage 1 and proportionality) `insufficient-evidence` |
-| Record with no declared tier | invariant; basis: enumerable-domain; evidence: `declaredTier` is null or not | compared against Tier 2, the gate's own default, and labelled so |
+| Record with no declared tier | invariant; basis: enumerable-domain; evidence: `declaredTier` is null or not | compared against Tier 2, the gate's own default (`decideRequirementSet`); stage 2 shows "none declared; the gate applied Tier 2"; an effective `belowFloor` (Tier 2 against `riskFloor`) is derived for sampling and strata and labelled derived |
 | Landed artifact or spec differs from the record | invariant; basis: enumerable-domain; evidence: two hashes are equal or not | dependent questions `insufficient-evidence` |
 | Checked bytes differ from staged bytes | invariant; basis: enumerable-domain; evidence: `hash` equals `stagedHash` or not | `checked-differs-from-staged`; dependent questions `insufficient-evidence` |
 | PR history cannot be fetched | invariant; basis: enumerable-domain; evidence: the head ref fetch succeeds or not | `history-unavailable`, counted, not rated |
@@ -498,8 +532,10 @@ for a re-date, so the countdown is never closed on records nobody has rated.
    `declaredTier`, `suggestedTier` or `riskFloor`;
    the stage 2 prompt is built only after the stage 1 answer is stored; no judge input contains later history; a planted injection call is excluded; a planted
    fake token never reaches a judge.
-10. With one family off, every call is `incomplete`, rates publish as `unavailable`, ids carry over,
-    and the next run retries them and compares against the last evaluable interval.
+10. With one family off, every question that needs a judge is `incomplete`, while forced
+    dispositions (a truncated diff's `insufficient-evidence`) keep their value; rates publish as
+    `unavailable`, ids carry over, and the next run retries only the unresolved questions and
+    compares against the last evaluable interval.
 11. Run as the real scheduled job: the totals document lands in the benchmark conversation; a second
     run on another machine finds it and continues from its manifest, and computes a cohort's
     calibration from the ledgers after the first run folder is deleted; a 409 on document creation
@@ -517,9 +553,15 @@ for a re-date, so the countdown is never closed on records nobody has rated.
     once; a partial retry rebuilds to one disposition per question; a CRLF checkout of an LF artifact is eligible while a real unstaged edit is
     `checked-differs-from-staged`; an unfetchable PR history is
     `history-unavailable`.
-13. Each question's dispositions sum to the sampled calls, and every published rate shows its
+13. Two workers paused after their final read and released together publish two successors; the next
+    run takes exactly one (the earliest) and merges the other's retry ids; two successive calls that
+    edit the same artifact are each judged on their own version; a scope rule widened after a
+    commit does not mismatch that commit; a different-slug identical retry yields one call; a
+    null-tier record under a floor of 3 is in the derived `belowFloor` stratum; a mixed-version
+    cohort is compared on one version; a Tier 1 call with no spec answers `none-cited`.
+14. Each question's dispositions sum to the sampled calls, and every published rate shows its
     numerator and its `agreed + disagreed` denominator.
-14. Two weekly tone-gate runs at the same main sha, with new tone decisions between them, rate the new
+15. Two weekly tone-gate runs at the same main sha, with new tone decisions between them, rate the new
     rows once each, including after a publication failure and retry; a tone-gate run over a period with a logged decision that has no replay input counts it as not
     replayable, with its reason, and the published denominators add up to the provenance rows.
 
@@ -528,6 +570,15 @@ for a re-date, so the countdown is never closed on records nobody has rated.
 Revert the hook change: it restores the old best-effort write. Records already written keep their
 additive `judgment` block (hashes, counts and the short tier reasoning, public once committed).
 Disable the Studio job to stop grading.
+
+## Maturation plan
+
+- **test-agent-live:** Not a runtime feature of an agent. The hook change is proven by the fixture-repository tests in Acceptance 1–7 run through the real husky hook; the grader by Acceptance 8–15 on a fixture repository and the documents service of a throwaway agent.
+- **dev-agent-live:** On Echo: every instar-dev commit after the merge writes the new block (checked on the first ten records), then the first real grading run on the Studio publishes totals in the benchmark conversation; Part B joins when PRs 4026 and 3993 have merged.
+- **fleet:** None. The hook runs only in the Instar repository and the grading job runs only for Echo's own Instar development; no fleet agent receives either.
+- **graduation criterion:** Two consecutive weekly runs publish with coverage, dispositions summing to the sampled calls, and no `judgment.error` above 1% of records; then the countdown-closing registry PR is proposed for Justin's approval.
+- **dark-window:** None; the record change is additive and the grading job reports only to the benchmark conversation.
+- **ladder:** not applicable: instar-dev commit tooling and an Echo-only scheduled job, with no fleet runtime surface to mature.
 
 ## Open questions
 
