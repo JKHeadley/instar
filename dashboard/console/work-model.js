@@ -556,7 +556,11 @@ export function workBoardNeedRows(wb) {
 
 /** Source is already viewer-filtered by the board read. Never infer it from placement. */
 export function cardSourceLink(card) {
-  if (!card || card.removed || !card.source) return null;
+  if (!card || card.removed) return null;
+  if (!card.source) {
+    const project = chiefOfStaffCard(card) ? parseConversationRef(card.projectKey) : null;
+    return project ? { href: hashFor(project), label: 'Open the project conversation' } : null;
+  }
   const ref = parseConversationRef(card.source.conversationKey);
   const target = messageTarget(card.source.messageId);
   if (!ref) return { href: null, label: 'The original message cannot be opened here.' };

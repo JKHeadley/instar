@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "work-card-plain-language",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-24T19:57:45.653Z",
+  "artifactPath": "upgrades/side-effects/work-card-plain-language.md",
+  "artifactSha256": "b58291ad2c85eb8ad3f39315f053d274d6652cad214f69b96d80ae5d3c73211c",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WorkBoardRequestGate.ts",
+    "src/core/WorkBoardService.ts",
+    "src/core/WorkCardPlainLanguage.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/e2e/work-board-alive.test.ts",
+    "tests/integration/agent-work-cards-routes.test.ts",
+    "tests/integration/work-board-routes.test.ts",
+    "tests/unit/work-card-plain-language.test.ts",
+    "upgrades/next/work-card-plain-language.md",
+    "upgrades/side-effects/work-card-plain-language.eli16.md",
+    "upgrades/side-effects/work-card-plain-language.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible authoring validation, existing authorization and signed material preserved",
+  "eli16Path": "upgrades/side-effects/work-card-plain-language.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/work-card-plain-language.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

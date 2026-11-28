@@ -126,6 +126,12 @@ describe('Work Board E2E (feature is alive)', () => {
       const bare = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Pick a venue', need: 'Choose one of three venues for the retreat.', doneWhen: [{ id: 'd1', text: 'Venue booked' }], outward: true });
       expect(bare.status).toBe(400);
       expect(bare.body.error).toBe('recommendation-required');
+      const jargon = await request(app).post('/work-board/cards').set(auth()).send({
+        title: 'Tidy the venue list', need: 'Continue from the worktree.',
+        doneWhen: [{ id: 'd1', text: 'You can see the updated list.', certify: 'agent-may-certify' }],
+      });
+      expect(jargon.status).toBe(422);
+      expect(jargon.body).toMatchObject({ error: 'card-text-needs-rewrite', field: 'need' });
       const inward = await request(app).post('/work-board/cards').set(auth()).send({ title: 'Tidy the venue list', need: 'Internal clean-up.', doneWhen: [{ id: 'd1', text: 'List tidy', certify: 'agent-may-certify' }], outward: false });
       expect(inward.status, JSON.stringify(inward.body)).toBe(201);
       expect(inward.body.card.status).toBe('not-started');

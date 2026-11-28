@@ -243,6 +243,23 @@ describe('console PIN taps and the agent', () => {
     expect(ok.body.card.taps.at(-1).by.proof).toBe('console PIN');
   });
 
+  it('refuses unclear owner copy, accepts a rewritten create, and preserves a card after a refused edit', async () => {
+    const c = setup();
+    const create = () => request(c.app).post('/work-board/cards').set(bearer());
+    const refused = await create().send({ ...CARD, need: 'Chief of Staff handoff f79e7768' });
+    expect(refused.status).toBe(422);
+    expect(refused.body).toMatchObject({ error: 'card-text-needs-rewrite', field: 'need' });
+    const made = await create().send({ ...CARD, need: 'Choose the place that is easiest for everyone to reach.' });
+    expect(made.status).toBe(201);
+    const path = `/work-board/cards/${made.body.cardId}`;
+    const edit = (text: string) => request(c.app).post(path + '/records').set(bearer())
+      .send({ kind: 'edited', fields: { doneWhen: [{ id: 'd1', text }] } });
+    expect((await edit('Wait until requestApproved is set.')).body)
+      .toMatchObject({ error: 'card-text-needs-rewrite', field: 'doneWhen[0].text' });
+    expect((await request(c.app).get(path).set(bearer())).body.card.doneWhen[0].text).toBe('Booked');
+    expect((await edit('The venue sends a booking confirmation.')).status).toBe(200);
+  });
+
   it('a card written from the console with the PIN is person-written and needs no approval; without it, it is the agent\'s', async () => {
     const c = setup();
     const person = await request(c.app).post('/work-board/cards').set(bearer()).send({ ...CARD, pin: PIN });

@@ -17,6 +17,7 @@
  */
 
 import type { WorkBoardService, WorkBoardSettings, Refusal } from './WorkBoardService.js';
+import { workCardPlainLanguageIssue } from './WorkCardPlainLanguage.js';
 import { TERMINAL_CARD_REASONS } from './WorkBoardService.js';
 import {
   requestCardId, commitmentRefId, requestTextHashOf, cutAtWord, GENERAL_PROJECT_KEY, SCHEMA_MAX, MAX_REFS,
@@ -235,6 +236,39 @@ export class WorkBoardRequestGate {
     return { ok: true, conversationKey: key, projectKey: op.projectKey };
   }
 
+  private cardCopy(c: Pick<GateCommitmentRow, 'userRequest' | 'agentResponse' | 'milestones' | 'outward' | 'recommendation' | 'whyYou'>, original?: string) {
+    const L = this.d.svc.limits();
+    const milestones = c.milestones?.length ? c.milestones : [`Done: ${c.agentResponse}`];
+    return {
+      title: cutAtWord(c.userRequest, L.title),
+      need: original ?? cutAtWord(c.userRequest, L.need),
+      doneWhen: milestones.slice(0, 256).map((text, i) => ({
+        id: `m${i + 1}`, text: cutAtWord(String(text), L.doneItemText), certify: 'agent-may-certify',
+      })),
+      ...(c.outward ? {
+        recommendation: cutAtWord(c.recommendation?.trim() ? c.recommendation : c.agentResponse, L.recommendation),
+        whyYou: c.whyYou?.trim() ? cutAtWord(c.whyYou, L.recommendation) : 'This request sends outside your team or spends money, so it waits for you.',
+      } : {}),
+    };
+  }
+
+  /** Refuse a fixable draft before recording it, so the caller can retry without another commitment. */
+  copyIssue(
+    conversationKey: string,
+    fields: Parameters<WorkBoardRequestGate['cardCopy']>[0],
+    verdict: SourceVerdict | null,
+  ): ReturnType<typeof workCardPlainLanguageIssue> {
+    if (!this.d.settings().requestCards.enabled || !this.d.operatorConversation(conversationKey).ok) return null;
+    const original = verdict?.sourceVerified ? verdict.requestText : undefined;
+    const issue = workCardPlainLanguageIssue(this.cardCopy(fields, original), {
+      preserveOriginalRequest: verdict?.sourceVerified === true && verdict.requesterIsOwner,
+    });
+    if (!issue) return null;
+    const field = issue.field === 'title' || issue.field === 'need' ?
+      'userRequest' : issue.field.startsWith('doneWhen') ? (fields.milestones?.length ? 'milestones' : 'agentResponse') : issue.field;
+    return { ...issue, field };
+  }
+
   /**
    * Write (or link) the card for one commitment. `backfill` marks the first-run cards (uncounted, held as backfill).
    * Idempotent: a second call for the same commitment links instead of creating.
@@ -267,10 +301,8 @@ export class WorkBoardRequestGate {
     const L = this.d.settings().limits;
     const verified = c.sourceVerified === true && typeof c.requestText === 'string' && typeof c.requestTextHash === 'string' && typeof c.requesterPersonKey === 'string';
     const fields: Record<string, unknown> = {
-      title: cutAtWord(c.userRequest, L.title),
-      // A sender-verified request is never cut: its whole text is the need (an approval anchored to less than what was asked would be wrong).
-      need: verified ? (c.requestText as string) : cutAtWord(c.userRequest, L.need),
-      doneWhen: (Array.isArray(c.milestones) && c.milestones.length ? c.milestones : [`Done: ${c.agentResponse}`]).slice(0, 256).map((t, i) => ({ id: `m${i + 1}`, text: cutAtWord(String(t), L.doneItemText), certify: 'agent-may-certify' })),
+      // The approval remains attached to the complete sender-verified request.
+      ...this.cardCopy(c, verified ? c.requestText : undefined),
       carrier: 'agent',
       outward: c.outward === true,
       projectKey: el.projectKey ?? GENERAL_PROJECT_KEY,
@@ -278,11 +310,6 @@ export class WorkBoardRequestGate {
       refs: [{ kind: 'commitment', id: refId }, ...(parent ? [{ kind: 'parent-card' as const, id: parent }] : [])] satisfies CardRef[],
       pickupHold: (opts.backfill ? { kind: 'backfill' } : { kind: 'recording-session', conversationKey: el.conversationKey }) satisfies PickupHold,
     };
-    if (c.outward === true) {
-      // An outward request is an ordinary ask (§3 "What it writes"): both fields, from the body or fixed text.
-      fields.recommendation = typeof c.recommendation === 'string' && c.recommendation.trim() ? cutAtWord(c.recommendation, L.recommendation) : cutAtWord(c.agentResponse, L.recommendation);
-      fields.whyYou = typeof c.whyYou === 'string' && c.whyYou.trim() ? cutAtWord(c.whyYou, L.recommendation) : 'This request sends outside your team or spends money, so it waits for you.';
-    }
     if (verified) {
       fields.requester = { personKey: c.requesterPersonKey, isOwner: c.requesterIsOwner === true };
       fields.requestTextHash = c.requestTextHash;

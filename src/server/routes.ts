@@ -41130,6 +41130,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const sourceMessageId: string | undefined = typeof bodySourceMessageId === 'string' ? bodySourceMessageId : undefined;
     const requestGate = ctx.workBoard?.()?.gate ?? null;
     const sourceVerdict = requestGate && sourceConversationKey && (source === 'agent' || source === 'manual' || source === undefined) ? requestGate.verifySource(sourceConversationKey, sourceMessageId ?? null) : null;
+    if (requestGate && sourceConversationKey && (source === undefined || source === 'agent' || source === 'manual')
+      && typeof userRequest === 'string' && typeof agentResponse === 'string') {
+      const issue = requestGate.copyIssue(sourceConversationKey, { userRequest, agentResponse, milestones, outward, recommendation, whyYou }, sourceVerdict);
+      if (issue) {
+        res.status(422).json({ error: 'card-text-needs-rewrite', ...issue });
+        return;
+      }
+    }
     if (!['config-change', 'behavioral', 'one-time-action'].includes(type)) {
       res.status(400).json({ error: 'type must be config-change, behavioral, or one-time-action' });
       return;

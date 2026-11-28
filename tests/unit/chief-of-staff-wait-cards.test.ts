@@ -103,7 +103,7 @@ describe('Chief of Staff wait cards — open', () => {
     expect(v.card.outward).toBe(false);
     expect(v.card.covers).toEqual([`cos:waiting:${CK}`]);
     expect(v.card.need).toContain('The spec waits for your yes.');
-    expect(v.card.need).toContain('PR 1 merged (fails)');
+    expect(v.card.need).toContain('See the project conversation for this completion check. (fails)');
     expect(v.card.approvalRequired).toBe(false);
     expect(v.status).toBe('with-person');
     expect(t.svc.lane(v, { isOwner: true, personKey: 'justin' })).toBe('waiting-on-you');
@@ -182,6 +182,18 @@ describe('Chief of Staff wait cards — the brief and a clean need', () => {
     ],
   };
   const NOTE = 'The agent is waiting for the owner to choose whether to run all three experiments, run only the guard test, or wait.';
+  it('keeps internal project language out of the visible wait card', () => {
+    const project = {
+      ...ENGINE, title: 'Complete CMT-123', goal: 'Finish PR 3642',
+      doneDefinition: [{ id: 'd1', kind: 'deterministic', text: 'requestApproved is set' }],
+    };
+    const card = composeWaitCard(project, 'answer', null, 'The owner must choose a worktree.', '2026-11-17T22:15:31.000Z', 'r');
+    expect(JSON.stringify(card)).not.toMatch(/CMT-123|PR 3642|requestApproved|worktree/);
+    expect(card.brief.ask).toBe('Read the decision in the project conversation and reply there.');
+    expect(card.brief.chiefSaid).toBeUndefined();
+    expect(card.brief.checks?.[0].text).toBe('See the project conversation for this completion check.');
+  });
+
   it('the screenshot card: need has no escapes, no wait id, no raw UTC, no glued status; brief carries the structure', () => {
     const c = composeWaitCard(ENGINE, 'answer', null, NOTE, '2026-11-17T22:15:31.000Z', 'check:c5c23e80');
     expect(c.need).not.toContain('\\');
@@ -239,7 +251,7 @@ describe('Chief of Staff wait cards — the brief and a clean need', () => {
     t.check('waiting-on-user', NOTE); t.sync();
     const id = waitCardId(CK);
     // Simulate a card written by the previous build: no brief, the old need.
-    expect(t.svc.edit({ kind: 'agent', server: true }, id, { brief: null, need: 'old (wait c5c23e80)' }).ok).toBe(true);
+    expect(t.svc.edit({ kind: 'agent', server: true }, id, { brief: null, need: 'The project is waiting for an answer.' }).ok).toBe(true);
     t.check('waiting-on-user', 'no new evidence');
     expect(t.sync().edited).toEqual([id]);
     expect(t.card()!.card.brief?.ask).toMatch(/^Choose whether/);

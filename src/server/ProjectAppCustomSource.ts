@@ -22,6 +22,7 @@
  * keys never leave the lease holder: another machine reports `copying` (fails safe, nothing leaks)
  * and an erase destroys the only copy.
  */
+import { workCardPlainLanguageIssue } from '../core/WorkCardPlainLanguage.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -68,12 +69,12 @@ export function checkAppVersion(html: string): string[] {
   const out: string[] = [];
   const urls = html.match(/\b(?:https?|wss?):\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi)?.filter((u) => !/^https?:\/\/www\.w3\.org$/i.test(u)) ?? [];
   if (urls.length) out.push(`This version mentions ${urls.length === 1 ? 'an outside web address' : `${urls.length} outside web addresses`}. The frame blocks outside requests, but ask your agent why they are there.`);
-  if (/\bRTCPeerConnection\b|\bwebkitRTCPeerConnection\b/.test(html)) out.push('This version opens a direct peer-to-peer connection (WebRTC), which can send data around the frame\'s limits.');
+  if (/\bRTCPeerConnection\b|\bwebkitRTCPeerConnection\b/.test(html)) out.push('This version opens a direct connection that may send data outside the app’s limits.');
   const passwordInput = /<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(html);
   const pinField = /\b(?:placeholder|name|id|aria-label|autocomplete)\s*=\s*["'][^"']*\b(?:password|passcode|pin|one-time-code|security code)\b/i.test(html)
     || /<label\b[^>]*>[^<]*\b(?:password|passcode|PIN)\b/i.test(html);
   if (passwordInput || pinField) out.push('This version asks for a password, PIN or code. Anything typed into it goes to your agent.');
-  if (/\beval\s*\(/.test(html) || /\bFunction\s*\(/.test(html)) out.push('This version runs code it builds from text (eval or Function), which makes it hard to know what it does.');
+  if (/\beval\s*\(/.test(html) || /\bFunction\s*\(/.test(html)) out.push('This version builds and runs code from text, which makes it harder to check what it does.');
   if (html.split('\n').some((l) => l.length > LONG_LINE)) out.push('This version has very long single lines (packed or minified code), which is hard to review.');
   let run = 0; let longest = 0;
   for (let i = 0; i < html.length; i++) {
@@ -82,7 +83,7 @@ export function checkAppVersion(html: string): string[] {
     run = b64 ? run + 1 : 0;
     if (run > longest) longest = run;
   }
-  if (longest > BASE64_BLOB) out.push('This version carries a large embedded blob of encoded data (over 50 KB).');
+  if (longest > BASE64_BLOB) out.push('This version includes a large block of data whose contents are hard to inspect.');
   return out;
 }
 
@@ -625,6 +626,9 @@ export class ProjectAppCustomSource implements CustomAppSource {
     if (typeof html !== 'string' || !html.trim()) return refuse(400, 'html-required', 'The app\'s source is one HTML document.');
     if (note !== undefined && (typeof note !== 'string' || note.length > NOTE_MAX_CHARS)) return refuse(400, 'bad-note', `A change note is text, at most ${NOTE_MAX_CHARS} characters.`);
     const nh = this.notHolder(); if (nh) return nh;
+    if (typeof note === 'string' && workCardPlainLanguageIssue({ need: cardNoteText(note) })) {
+      return refuse(422, 'card-text-needs-rewrite', 'Rewrite the change note for the person approving this version. Explain what will change in the app and keep internal references out of the note.');
+    }
     const ix = this.index();
     const head = headRevision(ix.revisions, appId, 'source');
     const w = this.writeRevision(appId, 'source', html, head?.id ?? null, 'agent', typeof note === 'string' ? note.trim() : undefined);

@@ -83,6 +83,16 @@ export function versionCardSupportLine(appId: string, contentSha: string | undef
   return `For support: app ${appId}${contentSha ? `, version ${contentSha}` : ''}, request ${gen}`;
 }
 
+/**
+ * The generation marker is part of the stored approval material. Omit only the
+ * exact server-generated suffix for this card from the words shown to a person.
+ */
+export function versionCardDisplayNeed(cardId: string, need: string): string {
+  const support = /\n\nFor support: app (pa_[0-9a-f]{16}), version [0-9a-f]{64}, request [1-9][0-9]*$/.exec(need);
+  if (!support || support.index + support[0].length !== need.length || versionCardId(support[1], 'serve') !== cardId) return need;
+  return need.slice(0, support.index);
+}
+
 /** The key segment after the purpose: the content hash, the target, or '-'. */
 const cardSubject = (contentSha: string | undefined, target: number | undefined) => contentSha ?? (target !== undefined ? String(target) : '-');
 

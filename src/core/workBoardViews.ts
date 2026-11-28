@@ -7,6 +7,7 @@
 import type { WorkBoardService, CardView } from './WorkBoardService.js';
 import { plainParkReason, isServerOwnedCard } from './WorkBoardService.js';
 import type { Lane } from './WorkCardStore.js';
+import { versionCardDisplayNeed } from './ProjectAppCustomFold.js';
 import { sha256Hex, isAgentInternalCard } from './WorkCardStore.js';
 
 export interface Viewer { personKey: string | null; isOwner: boolean; isAgent: boolean }
@@ -129,7 +130,7 @@ export function cardJson(svc: WorkBoardService, v: CardView, viewer: Viewer, nam
   const pending = v.pickups.filter((p) => p.status === 'pending' || p.status === 'parked');
   const out: Record<string, unknown> = {
     ...base,
-    title: c.title, titleHash: sha256Hex(c.title), need: c.need, recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
+    title: c.title, titleHash: sha256Hex(c.title), need: versionCardDisplayNeed(c.cardId, c.need), recommendation: c.recommendation, whyYou: c.whyYou, doneWhen: c.doneWhen,
     // A server-owned card's structured summary (display only; older clients keep reading `need`). Absent when none.
     ...(c.brief ? { brief: c.brief } : {}),
     // The Needs-you items this card is about (work-board-cards-appear §3); a server-owned card is written by the Chief of Staff itself.
@@ -250,7 +251,7 @@ export function notStartedCardsJson(svc: WorkBoardService, visibleIds?: Readonly
   const ids = svc.notStartedCardIds().filter((id) => !visibleIds || visibleIds.has(id));
   const shown = ids.slice(0, 10).map((id) => {
     const v = svc.view(id)!; const c = v.card;
-    return { id, title: c.title, titleHash: sha256Hex(c.title), materialHash: c.materialHash, need: c.need, requester: c.requester, doneWhen: c.doneWhen, links: c.links, outward: c.outward, createdAt: c.createdAt, projectKey: c.projectKey };
+    return { id, title: c.title, titleHash: sha256Hex(c.title), materialHash: c.materialHash, need: versionCardDisplayNeed(c.cardId, c.need), requester: c.requester, doneWhen: c.doneWhen, links: c.links, outward: c.outward, createdAt: c.createdAt, projectKey: c.projectKey };
   });
   return { count: ids.length, cardIds: ids, shown, more: Math.max(0, ids.length - shown.length) };
 }
