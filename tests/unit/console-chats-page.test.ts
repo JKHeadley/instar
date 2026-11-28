@@ -682,6 +682,59 @@ describe('Conversations page', () => {
     primaryPath: [{ ref: effort, title: '<b>App work</b>' }], visibleChildCount: 0, source: { platform: 'telegram', conversationId: topicId, title: `T${topicId}` } });
   const GRAPH = { items: [worker(2), worker(4)], partial: false, nextCursor: null };
 
+  it('uses the signed shared tree without lifting a pinned project child out of its project', async () => {
+    const { idb, publicKey } = await seeded();
+    const linkedId = '11111111-1111-4111-8111-111111111111';
+    const cardId = 'wc_0000000000000042';
+    const linked = { id: linkedId, platform: 'app', title: 'Linked conversation',
+      creationSource: { kind: 'work-board-card', cardId } };
+    const linkedNode = { ...worker(5), ref: { kind: 'conversation', platform: 'app', conversationKey: linkedId }, title: linked.title };
+    const projectRow = { id: 5, platform: 'telegram', title: 'Single project chat', unreadCount: 4 };
+    const projectNode = { ...worker(5), title: projectRow.title, childrenComplete: true, descendantConversationCount: 0,
+      project: { title: 'Single project', conversationKey: 'telegram:5' }, projectConversationKey: 'telegram:5' };
+    const tree = { partial: false, placementComplete: true, projects: 'known',
+      root: { ...worker(1), title: 'Chief of Staff' },
+      sections: { projects: [{ ref: effort, kind: 'effort', title: 'Dashboard project', visibleChildCount: 3,
+        project: { title: 'Dashboard project', conversationKey: 'telegram:2' },
+        children: [worker(2), worker(4), linkedNode], childrenComplete: true }, projectNode], groups: [], ungrouped: [worker(3)] },
+      nextCursor: null };
+    let resolveTree!: (result: { status: number; body: unknown }) => void;
+    const waitingTree = new Promise<{ status: number; body: unknown }>(resolve => { resolveTree = resolve; });
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { ...LIST(), conversations: [...LIST().conversations, linked, projectRow], pinnedRows: [LIST().conversations[3]], pinnedRefs: [] } };
+      if (c.url === '/mobile/work/projects') return { status: 200, body: { projects: [{ key: 'telegram:5', state: 'moving' }] } };
+      if (c.url === '/mobile/conversation-graph/tree') return waitingTree;
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 12; i++) await flush();
+    expect(doc.querySelector('.chat-rows')?.textContent).toContain('Loading conversation tree');
+    expect(doc.querySelector('.chat-rows')?.textContent).not.toContain('Deep');
+    resolveTree({ status: 200, body: tree });
+    for (let i = 0; i < 12; i++) await flush();
+    const read = calls.find((c) => c.url === '/mobile/conversation-graph/tree')!;
+    expect(verifySigned(read, publicKey).ok).toBe(true);
+    expect(doc.querySelector('.conversation-tree-chief .chat-row-title')?.textContent).toBe('Chief of Staff');
+    expect(doc.querySelector<HTMLDetailsElement>('.conversation-tree-section .chat-project-row')?.open).toBe(true);
+    expect(doc.querySelector('.chat-project-row')?.textContent).toContain('Deep');
+    expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
+    const single = [...doc.querySelectorAll('.chat-row')].find(row => row.querySelector('.chat-row-title')?.textContent === 'Single project');
+    expect(single?.getAttribute('href')).toBe('#/work/chats?c=telegram%3A5');
+    expect(single?.querySelector('.chat-group-icon-project svg')).toBeTruthy();
+    expect(single?.querySelector('.chat-project-status')?.textContent).toBe('Moving');
+    expect(single?.querySelector('.chat-unread')?.getAttribute('aria-label')).toBe('4 unread');
+    const card = doc.querySelector('.chat-project-row a[href="#/work/board?card=wc_0000000000000042"]');
+    expect(card?.textContent).toBe('Open linked work card');
+    expect(card?.closest('.conversation-tree-conversation')?.querySelector('.chat-row-title')?.textContent).toBe(linked.title);
+    const toggles = [...doc.querySelectorAll<HTMLButtonElement>('.chat-view-toggle button')];
+    expect(toggles.map(node => node.textContent)).toEqual(['Grouped', 'Flat']);
+    toggles[1].click();
+    expect(doc.querySelector('.chat-pinned-group')).toBeNull();
+    expect(doc.querySelector('.conversation-tree-section')).toBeNull();
+    expect(doc.querySelector('.chat-rows .chat-row-title')?.textContent).toBe('Chief of Staff');
+    expect([...doc.querySelectorAll('.chat-row-title')].map(node => node.textContent).filter(title => title === 'Deep')).toHaveLength(1);
+  });
+
   it('grouped: Chief of Staff first, a "Groups" header, each group one collapsed row with folder, count and unread, the rest under "Not in a group yet"; All shows the flat list and is remembered', async () => {
     const { idb, publicKey } = await seeded();
     const { doc } = await boot((c) => {

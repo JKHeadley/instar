@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "web-conversation-tree",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T10:49:22.189Z",
+  "artifactPath": "upgrades/side-effects/web-conversation-tree.md",
+  "artifactSha256": "a084990722cb5d50279f03af280df2ca469199c9c326ea81ac78905508a7415d",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "dashboard/console/conversation-tree.js",
+    "dashboard/console/conversations.js",
+    "tests/unit/console-chats-page.test.ts",
+    "tests/unit/console-conversation-tree.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Read-only conversation tree presentation changes.",
+  "eli16Path": "docs/specs/web-conversation-tree.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-conversation-tree.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

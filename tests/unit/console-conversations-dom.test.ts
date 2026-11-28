@@ -477,6 +477,38 @@ describe('native console Conversations', () => {
     expect(intents).toHaveLength(2);expect(intents[0].body).toBe(intents[1].body);
     expect(dom.window.document.querySelector('[role=dialog]')?.textContent).toContain('Placement updated.');
   });
+  it('reads the shared tree with dashboard owner proof and renders a single-chat branch as one row', async () => {
+    const chat = (topicId: number, title: string) => ({
+      ref: { kind: 'conversation', platform: 'telegram', chatId: '-100', topicId },
+      title, kind: 'conversation', visibleChildCount: 0,
+    });
+    const root = chat(1, 'Chief of Staff');
+    const projectChat = chat(2, 'Project conversation');
+    const branch = { ref: { kind: 'effort', id: 'one' }, kind: 'effort', title: 'Project one', visibleChildCount: 1,
+      children: [projectChat], childrenComplete: true };
+    const tree = { partial: false, placementComplete: true, projects: 'known', root,
+      sections: { projects: [branch], groups: [], ungrouped: [] }, nextCursor: null };
+    const { main, requests } = await boot('#/work/conversations', (url) =>
+      ({ body: url === '/conversation-graph/tree' ? tree : { items: [] } }));
+    expect(requests.find(r => r.url === '/conversation-graph/tree')?.headers).toMatchObject({
+      Authorization: 'Bearer bearer', 'X-Instar-Operator-Session': 'human-proof',
+    });
+    expect(main.querySelector('.conversation-tree-chief')?.textContent).toContain('Chief of Staff');
+    expect(main.querySelector('details details')).toBeNull();
+    // A one-chat group shows as one row carrying the group's own name.
+    expect(main.querySelector('details > a')?.textContent).toBe('Project one');
+    expect(main.querySelector('a[href$="view=flat"]')?.textContent).toBe('Flat');
+    expect(requests.some(r => r.url.startsWith('/conversation-graph/roots'))).toBe(false);
+  });
+
+  it('falls back to the older roots view when the shared tree fails with a server error', async () => {
+    const { main, requests } = await boot('#/work/conversations', (url) => url === '/conversation-graph/tree'
+      ? { status: 500, body: { error: 'boom' } } : { body: page([row(0), row(1)]) });
+    expect(requests.some(r => r.url === '/conversation-graph/tree')).toBe(true);
+    expect(requests.some(r => r.url.startsWith('/conversation-graph/roots'))).toBe(true);
+    expect(main.querySelectorAll('.conversation-row')).toHaveLength(2);
+  });
+
   it('requires human unlock and shows five safe text rows with All and search reachable', async () => {
     const { main, requests } = await boot('#/work/conversations', () => ({ body: page(Array.from({ length: 7 }, (_, n) => row(n))) }));
     expect(main.querySelectorAll('.conversation-row')).toHaveLength(5);

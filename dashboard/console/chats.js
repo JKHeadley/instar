@@ -10,6 +10,7 @@
 // parameter: each needs an action in the page. Only the media types in chats-model.js VIEWABLE_TYPES
 // become a viewable blob:; everything else is a download.
 
+import { compareConversationActivity, conversationRefKey, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeCardLink, treeConversationRow, treePage } from './conversation-tree.js';
 import { el, setKids, sheet, closeSheet, askPin, forgetOperatorSession, operatorSession } from './ui.js';
 import { conversationSession } from './conversation-session.js';
 import { beginConsoleOutbox, getConsoleOutbox, tryLiveStop, isOutboxStorageFailure, captureSignInFence, signInFenceMatches } from './outbox-runner.js';
@@ -108,6 +109,8 @@ class ChatsPage {
     this.retries401 = 0;
     // The list grouped by the conversation hierarchy: null until (and unless) the hierarchy read answers.
     this.hierarchy = null;
+    this.ownerTree = [];
+    this.treePreferences = conversationTreePreferences();
     this.hierarchyAt = 0;
     this.hierarchyLoading = false;
     this.groupProjects = new Map(); // effort key → the tracked project it is (Chief of Staff projects); empty → plain groups
@@ -409,13 +412,17 @@ class ChatsPage {
     const skew = this.device.clock.skewMinutes();
     this.listEl = el('div', { class: 'chat-rows', role: 'list' });
     this.moreBtn = el('button', { class: 'btn-quiet chat-more', type: 'button', text: 'Show more', hidden: true });
-    this.moreBtn.addEventListener('click', () => this.loadList(true));
+    this.moreBtn.addEventListener('click', () => {
+      if (this.ownerTree.length && this.listView === 'grouped') void this.loadHierarchy(true, true);
+      else void this.loadList(true);
+    });
     this.failedEl = el('p', { class: 'card-line chat-muted', hidden: true });
     this.listPinNoteEl = el('p', { class: 'unlock-error chat-list-pin-note', role: 'alert', hidden: true });
     // Grouped | All: shown only once the hierarchy has answered; the choice is remembered in this browser.
-    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'All' }) };
+    this.viewChips = { grouped: el('button', { class: 'chip', type: 'button', text: 'Grouped' }), all: el('button', { class: 'chip', type: 'button', text: 'Flat' }) };
     for (const [view, chip] of Object.entries(this.viewChips)) chip.addEventListener('click', () => this.setListView(view));
     this.viewToggleEl = el('div', { class: 'chat-view-toggle', role: 'group', 'aria-label': 'Show conversations', hidden: true }, this.viewChips.grouped, this.viewChips.all);
+    this.viewToggleEl.append(this.treePreferences.sortControl(() => this.paintList()));
     this.pendingEl = el('section', { class: 'chat-pending', 'aria-label': 'Saved messages', hidden: true });
     const newBtn = el('button', { class: 'btn-primary chat-new', type: 'button', text: 'New conversation' });
     newBtn.addEventListener('click', () => this.newConversation());
@@ -471,10 +478,43 @@ class ChatsPage {
    * is refused. Refused / missing / off (403, 404, 503) → no hierarchy: the list is flat, exactly as
    * before. Any other failure keeps the last answer, so a blip never reshuffles the list.
    */
-  async loadHierarchy(force = false) {
+  async loadHierarchy(force = false, moreTree = false) {
     if (this.hierarchyLoading || (!force && now() - this.hierarchyAt < HIERARCHY_TTL_MS)) return;
     this.hierarchyLoading = true;
     try {
+      const requested = moreTree ? this.ownerTree.at(-1)?.nextCursor : null;
+      if (moreTree && !requested) return;
+      const treeResult = await this.call('GET', `/mobile/conversation-graph/tree${requested ? `?cursor=${encodeURIComponent(requested)}` : ''}`);
+      if (!this.live || treeResult.gone) return;
+      const tree = treeResult.ok ? treePage(treeResult.data) : null;
+      if (hasAuthoritativeSections(tree)) {
+        if (tree.nextCursor === requested && requested) tree.nextCursor = null;
+        this.ownerTree = moreTree ? [...this.ownerTree, tree] : [tree];
+        this.hierarchyAt = now();
+        this.paintList();
+        if (!moreTree && tree.sections.projects.length) {
+          const projects = await this.call('GET', '/mobile/work/projects');
+          if (!this.live || projects.gone) return;
+          this.ownerTreeProjects = projects.ok ? trackedProjects(projects.data) : null;
+          this.paintList();
+        }
+        return;
+      }
+      if (moreTree) {
+        if (treeResult.status === 409) queueMicrotask(() => void this.loadHierarchy(true));
+        else {
+          this.failedEl.hidden = false;
+          this.failedEl.textContent = 'More groups could not be loaded. Try again.';
+        }
+        return;
+      }
+      if (this.ownerTree.length && ![401, 403, 404, 503].includes(treeResult.status)) {
+        // Keep the preceding authorized projection over a transient read failure.
+        this.failedEl.hidden = false;
+        this.failedEl.textContent = 'The conversation tree could not be refreshed.';
+        return;
+      }
+      this.ownerTree = [];
       let r = await this.readHierarchy((path) => this.call('GET', `/mobile${path}`));
       if (!this.live || r.gone) return;
       if (!r.ok && r.status === 403 && operatorSession()) r = await this.readHierarchy((path) => dashboardRead(path));
@@ -521,12 +561,42 @@ class ChatsPage {
       if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
     }
     // Grouped | All: the toggle shows only when the hierarchy answered; without it the list is the full flat list.
-    const grouped = Boolean(this.hierarchy) && this.listView === 'grouped';
+    if (this.listView === 'grouped' && this.hierarchyAt === 0) {
+      // Flat rows arrive first. Do not show pinned project descendants as loose
+      // conversations while their authoritative placement is still loading.
+      setKids(this.listEl, el('p', { class: 'card-line chat-muted', role: 'status', text: 'Loading conversation tree…' }));
+      this.moreBtn.hidden = true;
+      return;
+    }
+    const grouped = (this.ownerTree.length > 0 || Boolean(this.hierarchy)) && this.listView === 'grouped';
     if (this.viewToggleEl) {
-      this.viewToggleEl.hidden = !this.hierarchy;
+      this.viewToggleEl.hidden = !this.hierarchy && !this.ownerTree.length;
+      this.viewChips.all.textContent = this.ownerTree.length ? 'Flat' : 'All';
+      this.viewToggleEl.querySelector('select').hidden = !this.ownerTree.length;
       for (const [view, chip] of Object.entries(this.viewChips)) chip.setAttribute('aria-pressed', String(view === (grouped ? 'grouped' : 'all')));
     }
-    if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
+    if (grouped && this.ownerTree.length) {
+      const byKey = new Map(this.rows.map(row => [row.key, row]));
+      const details = (node) => el('a', { class: 'link-btn', href: `#/work/conversations?node=${encodeURIComponent(node.key)}`, text: 'See more in this group' });
+      const nodes = renderOwnerTree(this.ownerTree, {
+        preferences: this.treePreferences,
+        conversationRow: (node, affiliation) => {
+          const ref = parseConversationRef(conversationRefKey(node.ref));
+          if (!ref) return el('a', { class: 'row chat-row', href: `#/work/conversations?node=${encodeURIComponent(node.key)}`, text: node.title });
+          const row = byKey.get(refString(ref));
+          const title = affiliation?.title || row?.title || node.title;
+          return treeConversationRow(el('a', { class: `row chat-row${refString(ref) === open ? ' open' : ''}`, href: hashFor(ref) },
+            el('span', { class: 'chat-row-main' },
+              el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: title })),
+              row?.preview ? el('span', { class: 'chat-row-preview', text: row.preview }) : null),
+            row?.unread > 0 && refString(ref) !== open ? el('span', { class: 'chat-unread', text: String(row.unread), 'aria-label': `${row.unread} unread` }) : null), title, row?.lastActivity || node.freshness, affiliation);
+        },
+        projectStatus: key => this.ownerTreeProjects?.get(key)?.status,
+        linkedCard: (node) => treeCardLink(byKey.get(conversationRefKey(node.ref))?.cardId),
+        groupDetails: details,
+      });
+      setKids(this.listEl, nodes.length ? nodes : el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' }));
+    } else if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
       const pinsOn = Array.isArray(this.listPins);
       const { pinned, rest } = splitPinned(this.rows, pinsOn ? this.listPins : []);
@@ -545,7 +615,7 @@ class ChatsPage {
         return el('div', { class: 'chat-row-wrap' }, link, btn);
       };
       const kids = [];
-      if (pinned.length) {
+      if (pinned.length && !this.ownerTree.length) {
         kids.push(el('div', { class: 'chat-group-label chat-pinned-group', text: 'Pinned' }));
         for (const r of pinned) kids.push(rowEl(r, true));
         if (!grouped) kids.push(el('div', { class: 'chat-group-label', text: 'All conversations' }));
@@ -590,10 +660,18 @@ class ChatsPage {
             el('a', { class: 'chat-review-suggestions', href: '#/work/conversations?view=suggestions', text: 'Review suggestions' })));
           for (const r of ungrouped) kids.push(rowEl(r, false));
         }
-      } else for (const r of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(r, false));
+      } else if (this.ownerTree.length) {
+        const compare = compareConversationActivity(this.treePreferences.sort);
+        const pinnedKeys = new Set(pinned.map(row => row.key));
+        const rows = [...pinned, ...rest].sort((a, b) =>
+          Number(b.key === this.pinnedKey) - Number(a.key === this.pinnedKey) || compare(a, b));
+        for (const row of rows) kids.push(rowEl(row, pinnedKeys.has(row.key)));
+      } else {
+        for (const row of orderWithTree(rest, this.pinnedKey)) kids.push(rowEl(row, false));
+      }
       setKids(this.listEl, kids);
     }
-    this.moreBtn.hidden = !this.meta.nextCursor;
+    this.moreBtn.hidden = !(grouped && this.ownerTree.length ? this.ownerTree.at(-1).nextCursor : this.meta.nextCursor);
     const failed = this.meta.failed || [];
     this.failedEl.hidden = failed.length === 0;
     this.failedEl.textContent = failed.length ? `Not shown: conversations on ${failed.map((f) => f.machineId).join(', ')} (that machine did not answer).` : '';

@@ -50,6 +50,8 @@ export function listRows(body) {
       // The unread hook (§4.10): built separately; a badge only when the server sends a count.
       unread: Number.isInteger(r.unreadCount) && r.unreadCount >= 0 ? r.unreadCount : null,
       // Chief of Staff tree (chief-of-staff-topic.md §1.4): the parent conversation key, owner-only; absent ⇒ Unfiled.
+      cardId: r.creationSource?.kind === 'work-board-card' && /^wc_[a-f0-9]{16}$/.test(r.creationSource.cardId)
+        ? r.creationSource.cardId : null,
       parent: typeof r.parentConversationKey === 'string' ? r.parentConversationKey : null,
     });
   }

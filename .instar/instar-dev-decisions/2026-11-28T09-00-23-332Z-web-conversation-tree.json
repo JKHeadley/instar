@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-28T09:00:23.332Z",
+  "slug": "web-conversation-tree",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 9,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "dashboard/console/conversation-tree.js",
+      "dashboard/console/conversations.js"
+    ],
+    "addedLines": 6,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

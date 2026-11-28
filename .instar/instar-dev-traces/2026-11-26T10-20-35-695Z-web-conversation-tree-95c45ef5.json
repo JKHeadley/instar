@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "web-conversation-tree",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-26T10:20:35.695Z",
+  "artifactPath": "upgrades/side-effects/web-conversation-tree.md",
+  "artifactSha256": "5741eedbe3f28828671a3d0944213ff87f93062eafab1a9a58aa916ee2358bac",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/conversation-tree.js",
+    "docs/specs/web-conversation-tree.eli16.md",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/side-effects/web-conversation-tree.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible list presentation during loading and in Flat view. Authorization and placements still come from existing server reads.",
+  "eli16Path": "docs/specs/web-conversation-tree.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/web-conversation-tree.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,5 +1,7 @@
+import { trackedProjects } from './chats-model.js';
 // Native console Conversations. Owner-only reads use the existing PIN proof.
 // UI is a projection consumer: no inferred grouping, routing, or decision state.
+import { compareConversationActivity, conversationTreePreferences, hasAuthoritativeSections, renderOwnerTree, treeConversationRow, treePage } from './conversation-tree.js';
 import { el, pageHead, setKids, note, askPin, operatorSession, forgetOperatorSession, arrivalScrollPosition } from './ui.js';
 import { listModel, nodeModel, pageQuery, graphHistoryRoute, historyModel, encodeNodeRef, localOnlyEnvelope, localOnlyWords } from './conversations-model.js';
 import { mountPending } from './conversation-pending.js';
@@ -20,12 +22,12 @@ const runs = new WeakMap();
 function routeState() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const view = params.get('view');
-  return { view: view === 'all' || view === 'suggestions' ? view : 'overview', q: params.get('q') || '', ref: params.get('node') || '' };
+  return { view: view === 'flat' ? 'all' : view === 'all' || view === 'suggestions' ? view : 'overview', flatOnly: view === 'flat', q: params.get('q') || '', ref: params.get('node') || '' };
 }
 
-function href({ view = 'overview', q = '', ref = '' } = {}) {
+function href({ view = 'overview', flatOnly = false, q = '', ref = '' } = {}) {
   const p = new URLSearchParams();
-  if (view === 'all' || view === 'suggestions') p.set('view', view);
+  if (view === 'all' || view === 'suggestions') p.set('view', flatOnly && view === 'all' ? 'flat' : view);
   if (q) p.set('q', q);
   if (ref) p.set('node', ref);
   return PAGE + (p.size ? `?${p}` : '');
@@ -102,10 +104,10 @@ function failure(main, result, retry) {
       : el('button', { type: 'button', class: 'btn-quiet btn-inline', text: 'Try again', onclick: retry })));
 }
 
-function itemRow(item, state) {
+function itemRow(item, state, showChevron = true) {
   return el('a', { class: 'row conversation-row', href: href({ ...state, ref: item.key }), onclick: openNode },
     el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: item.title })),
-    el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }));
+    showChevron ? el('span', { class: 'chev', 'aria-hidden': 'true', text: '›' }) : null);
 }
 
 function messageRow(message, node) {
@@ -356,6 +358,76 @@ export async function renderConversations(main, ctx) {
     if(!current())return;restoreScroll(key);
     return;
   }
+  if (state.view === 'overview' && !state.q) {
+    const treeResult = await read('/conversation-graph/tree', controller.signal);
+    if (!current()) return;
+    if (treeResult.needsUnlock) { unlock(main, retry); return; }
+    const page = treeResult.ok ? treePage(treeResult.data) : null;
+    if (hasAuthoritativeSections(page)) {
+      const preferences = conversationTreePreferences();
+      const pages = [page];
+      let projects = null;
+      const groupRows = el('div', { class: 'rows conversation-rows' });
+      const paint = () => setKids(groupRows, renderOwnerTree(pages, {
+        preferences,
+        conversationRow: (node, affiliation) => {
+          const title = affiliation?.title || node.title;
+          return treeConversationRow(itemRow({ ...node, title }, state, false), title, node.freshness, affiliation);
+        },
+        projectStatus: key => projects?.get(key)?.status,
+        groupDetails: (node) => nav('See more in this group', href({ ...state, ref: node.key })),
+      }));
+      if (page.sections.projects.length) void read('/work/projects', controller.signal).then(result => {
+        if (!current() || !result.ok) return;
+        projects = trackedProjects(result.data);
+        if (projects) paint();
+      });
+      const status = el('p', { class: 'need-sub', role: 'status' });
+      const more = el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Show more', hidden: !page.nextCursor });
+      const seen = new Set();
+      more.addEventListener('click', async () => {
+        const cursor = pages.at(-1).nextCursor;
+        if (!cursor || seen.has(cursor)) return;
+        more.disabled = true;
+        const next = await read(`/conversation-graph/tree?cursor=${encodeURIComponent(cursor)}`, controller.signal);
+        if (!current()) return;
+        if (next.needsUnlock) { unlock(main, retry); return; }
+        const model = next.ok ? treePage(next.data) : null;
+        if (!hasAuthoritativeSections(model) || model.nextCursor === cursor) {
+          status.textContent = next.status === 409 ? 'This list changed. Refresh to see the latest conversations.' : 'More groups could not be loaded.';
+          if (next.status === 409) status.append(' ', el('button', { type: 'button', class: 'link-btn', text: 'Refresh', onclick: retry }));
+        } else {
+          seen.add(cursor);
+          pages.push(model);
+          more.hidden = !model.nextCursor || seen.has(model.nextCursor);
+          status.textContent = '';
+          paint();
+        }
+        more.disabled = false;
+      });
+      const body = el('div', { class: 'conversations-page' },
+        pageHead({ eyebrow: 'Conversations', headline: 'Your conversations' }),
+        el('nav', { class: 'conversation-tabs', 'aria-label': 'Conversation views' },
+          nav('Grouped', href(), 'chip active'), nav('Flat', href({ view: 'all', flatOnly: true }), 'chip'), preferences.sortControl(paint)),
+        groupRows, more, status);
+      const send = (path, payload) => read(path, controller.signal, payload);
+      const syncLine = el('p', { class: 'need-sub conversation-sync', role: 'status' });
+      body.append(syncLine);
+      if (page.canCorrect) body.append(nav('Review suggestions', href({ view: 'suggestions' }), 'btn-quiet btn-inline'));
+      const actions = effortActionControls({ canCorrect: page.canCorrect, send, current, unlock: () => unlock(main, retry), refresh: retry });
+      if (actions) body.append(actions);
+      setKids(main, body);
+      paint();
+      void machineControls({ send, current, unlock: () => unlock(main, retry), refresh: retry }).then(controls => {
+        if (controls && current()) body.append(controls);
+      }).catch(() => {});
+      await mountPending({ body, syncLine, baseSync: '', send, current, unlock: () => unlock(main, retry), refresh: retry,
+        catalog: [page.root, ...Object.values(page.sections).flat()].filter(Boolean) });
+      if (current()) restoreScroll(key);
+      return;
+    }
+    // Any tree failure falls back to the older roots view below (a sign-in refusal was already sent to unlock above).
+  }
   const result = await read(`${ROOTS}?${pageQuery(state.view, state.q)}`, controller.signal);
   if (!current()) return;
   if(localOnlyEnvelope(result)){
@@ -372,11 +444,11 @@ export async function renderConversations(main, ctx) {
   const model = listModel(result.data, state.view);
   if (!model.ok) { failure(main, { status: 0 }, retry); return; }
   const tabs = el('nav', { class: 'conversation-tabs', 'aria-label': 'Conversation views' },
-    nav('Overview', href(), state.view === 'overview' ? 'chip active' : 'chip'),
-    nav('All', href({ view: 'all' }), state.view === 'all' ? 'chip active' : 'chip'));
+    nav(state.flatOnly ? 'Grouped' : 'Overview', href(), state.view === 'overview' ? 'chip active' : 'chip'),
+    nav(state.flatOnly ? 'Flat' : 'All', href({ view: 'all', flatOnly: state.flatOnly }), state.view === 'all' ? 'chip active' : 'chip'));
   const search = el('input', { type: 'search', class: 'reason-input', value: state.q, placeholder: 'Search conversations', 'aria-label': 'Search conversations' });
   const form = el('form', { class: 'conversation-search' }, search, el('button', { type: 'submit', class: 'btn-quiet btn-inline', text: 'Search' }));
-  form.addEventListener('submit', (event) => { event.preventDefault(); remember(); location.hash = href({ view: 'all', q: search.value.trim() }); });
+  form.addEventListener('submit', (event) => { event.preventDefault(); remember(); location.hash = href({ view: 'all', flatOnly: state.flatOnly, q: search.value.trim() }); });
   let cursor = model.nextCursor;
   const loaded = [...model.items];
   const seen = new Set(model.items.map((item) => item.key));
@@ -398,7 +470,14 @@ export async function renderConversations(main, ctx) {
   // Overview: the Chief of Staff conversation is the top row and every root effort sits under it.
   const rootRow = state.view === 'overview' && model.root ? itemRow(model.root, state) : null;
   if (rootRow) rootRow.classList.add('conversation-root-row');
-  const rows = el('div', { class: rootRow ? 'rows conversation-rows conversation-under-root' : 'rows conversation-rows' }, loaded.map((item) => itemRow(item, state)));
+  const rows = el('div', { class: rootRow ? 'rows conversation-rows conversation-under-root' : 'rows conversation-rows' });
+  const preferences = conversationTreePreferences();
+  const paintRows = () => {
+    const visible = state.flatOnly ? loaded.filter(item => item.kind === 'conversation').sort(compareConversationActivity(preferences.sort)) : loaded;
+    setKids(rows, visible.map(item => itemRow(item, state)));
+  };
+  if (state.flatOnly) tabs.append(preferences.sortControl(paintRows));
+  paintRows();
   const status = el('p', { class: 'need-sub', role: 'status' });
   const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:model.sync});
   const body = el('div', { class: 'conversations-page' },
@@ -432,7 +511,8 @@ export async function renderConversations(main, ctx) {
       const page = next.ok ? listModel(next.data, 'all') : { ok: false };
       if (!page.ok) { status.textContent = 'More conversations could not be loaded.'; more.disabled = false; return; }
       cursors.add(cursor);
-      for (const item of page.items) if (!seen.has(item.key)) { seen.add(item.key); rows.append(itemRow(item, state)); }
+      for (const item of page.items) if (!seen.has(item.key)) { seen.add(item.key); loaded.push(item); }
+      paintRows();
       cursor = page.nextCursor;
       pagesLoaded++;
       visits.set(key, { ...(visits.get(key) || {}), pagesLoaded });
