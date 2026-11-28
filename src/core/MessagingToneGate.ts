@@ -35,7 +35,7 @@ import { detectSelfStopShape } from './self-stop-floor.js';
 import { detectDeferralShape } from './deferral-floor.js';
 import { DP_MESSAGING_TONE_GATE } from '../data/provenanceCoverage.js';
 import { scrubForStore } from './durableSecretScrub.js';
-import { CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
+import { buildStructuredSha256Identity, CONTENT_FULL_KEY } from './JudgmentProvenanceLog.js';
 import { resolveDevAgentGate } from './devAgentGate.js';
 
 /** Normalize volatile fields so repeated automated templates share one identity. */
@@ -393,6 +393,8 @@ export function buildToneDecisionContext(
     maxBodyChars?: number;
     /** The signal list the prompt was actually handed (jev-signal-live); absent ⇒ the detectors'. */
     gateSignals?: GateSignal[];
+    /** Replay-input capture (toneGate.replayInput): the exact parts and the prompt rendered from them. */
+    replay?: { parts: ToneGatePromptParts; prompt: string };
   },
 ): Record<string, unknown> {
   const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -489,7 +491,152 @@ export function buildToneDecisionContext(
     // provenance seam).
     deferralShapeDetected: safeDeferralShapeDetected(text),
   };
+  if (opts?.replay) {
+    const replay = buildToneGateReplayCapture(opts.replay.parts, opts.replay.prompt);
+    const { [CONTENT_FULL_KEY]: replayFull, ...replayIdentity } = replay;
+    Object.assign(ctx, replayIdentity);
+    if (replayFull !== undefined) {
+      // Same machine-local key as the candidate body: `candidateBody` and
+      // `replayParts` are sibling fields and never collide.
+      const existing = (ctx[CONTENT_FULL_KEY] as Record<string, unknown> | undefined) ?? {};
+      ctx[CONTENT_FULL_KEY] = { ...existing, ...(replayFull as Record<string, unknown>) };
+    }
+  }
   return ctx;
+}
+
+/** Version of the tone-gate replay capture written under CONTENT_FULL_KEY.replayParts. */
+export const TONE_REPLAY_CAPTURE_VERSION = 'tone-replay-input-v1';
+/**
+ * The scrub applied to the stored copy only (the model still sees the original):
+ * the same durable scrubber (scrubForStore) the candidate-body capture uses.
+ */
+export const TONE_REPLAY_SCRUB_VERSION = 'scrub-for-store-v1';
+/**
+ * Largest stored capture, in UTF-8 bytes of the parts as they serialize into the
+ * row (JSON.stringify of the scrubbed parts, so escaping and multi-byte text are
+ * counted). The provenance log replaces a whole row over 64 KB with a truncated
+ * head, which would also drop the row's identity fields that other readers use
+ * (readDeferralPatternObservations). The rest of a tone row is at most about
+ * 19 KB, so a 40,000-byte capture keeps the row under the clamp. A capture over
+ * this bound is skipped and labelled instead, so the row stays whole.
+ */
+export const TONE_REPLAY_MAX_CAPTURE_BYTES = 40_000;
+
+/** The string-valued parts of the prompt; each is scrubbed and each must be present on a replay. */
+const TONE_PROMPT_PART_KEYS = [
+  'channel', 'kindSection', 'contextSection', 'signalsSection', 'gateSignalsSection',
+  'styleSection', 'agentStateSection', 'standingAuthSection', 'agentReachSection',
+  'boundary', 'candidateJson',
+] as const;
+
+/** A JSON string literal on one line (encoded strings never hold a raw newline). */
+const JSON_STRING_LITERAL = /"(?:[^"\\\n]|\\.)*"/g;
+
+/**
+ * Scrub one prompt part with scrubForStore, the outbound check's own durable
+ * scrubber. The candidate, the recent messages and most signal values reach the
+ * prompt JSON-ENCODED, and encoding hides secrets from the patterns: a quote
+ * becomes \" (so `"api_key": "..."` no longer matches the labelled-secret
+ * pattern) and a newline becomes \n (so a multi-line private key no longer
+ * matches). So each JSON string literal is first DECODED, scrubbed as raw text,
+ * and re-encoded only if the scrub changed it; then the whole part is scrubbed as
+ * well. Pure. On scrubForStore's error or oversize path the text becomes a
+ * marker, which is stored instead of the original (never raw text).
+ */
+export function scrubToneGatePromptPartText(text: string): string {
+  const decodedPass = text.replace(JSON_STRING_LITERAL, (literal) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(literal);
+    } catch { /* @silent-fallback-ok — not a JSON literal after all; the whole-part pass below still scrubs it */
+      return literal;
+    }
+    if (typeof value !== 'string') return literal;
+    const scrubbed = scrubForStore(value).text;
+    return scrubbed === value ? literal : JSON.stringify(scrubbed);
+  });
+  return scrubForStore(decodedPass).text;
+}
+
+/**
+ * Credential scrub of every prompt part (see scrubToneGatePromptPartText),
+ * preserving structure, so the stored parts still render a prompt. Pure.
+ */
+export function scrubToneGatePromptParts(parts: ToneGatePromptParts): ToneGatePromptParts {
+  const out: Record<string, string> = {};
+  for (const key of TONE_PROMPT_PART_KEYS) out[key] = scrubToneGatePromptPartText(String(parts[key] ?? ''));
+  return out as unknown as ToneGatePromptParts;
+}
+
+/**
+ * Content-free replay identity plus the scrubbed parts under CONTENT_FULL_KEY.replayParts.
+ * `promptSha256` is the prompt the model saw; `replayPromptSha256` is the prompt
+ * rebuilt from the scrubbed parts. A capture failure drops only the capture.
+ */
+export function buildToneGateReplayCapture(parts: ToneGatePromptParts, prompt: string): Record<string, unknown> {
+  try {
+    const scrubbed = scrubToneGatePromptParts(parts);
+    const promptSha256 = buildStructuredSha256Identity(prompt);
+    const captureBytes = Buffer.byteLength(JSON.stringify(scrubbed), 'utf8');
+    if (captureBytes > TONE_REPLAY_MAX_CAPTURE_BYTES) {
+      return { promptSha256, captureVersion: 'capture-oversize', captureBytes };
+    }
+    const replayPromptSha256 = buildStructuredSha256Identity(renderToneGatePrompt(scrubbed));
+    return {
+      promptSha256,
+      replayPromptSha256,
+      scrubChanged: promptSha256 !== replayPromptSha256,
+      scrubVersion: TONE_REPLAY_SCRUB_VERSION,
+      captureVersion: TONE_REPLAY_CAPTURE_VERSION,
+      [CONTENT_FULL_KEY]: { replayParts: scrubbed },
+    };
+  } catch { /* @silent-fallback-ok — replay capture is observability only; the verdict path is untouched */
+    return { captureVersion: 'capture-failed' };
+  }
+}
+
+export type ToneGateReplayEligibility =
+  | { eligible: true; prompt: string; exact: boolean }
+  | { eligible: false; reason: 'row-truncated' | 'no-capture' | 'capture-oversize' | 'unknown-capture-version' | 'malformed-capture' | 'part-withheld' | 'sha-mismatch' };
+
+/**
+ * Decide whether a stored tone-gate decision row (its full, machine-local
+ * context) can be replayed. The prompt rebuilt from the stored parts must match
+ * `replayPromptSha256`; `exact` is true only when the scrub changed nothing, so
+ * the rebuilt prompt is ALSO the one the model saw (`promptSha256`). Truncation,
+ * a missing or malformed capture, or a sha mismatch is reported, never accepted.
+ */
+export function assessToneGateReplayEligibility(contextFull: unknown, opts: { rowTruncated?: boolean } = {}): ToneGateReplayEligibility {
+  if (opts.rowTruncated === true) return { eligible: false, reason: 'row-truncated' };
+  if (!contextFull || typeof contextFull !== 'object' || Array.isArray(contextFull)) return { eligible: false, reason: 'no-capture' };
+  const ctx = contextFull as Record<string, unknown>;
+  if (ctx.truncated === true) return { eligible: false, reason: 'row-truncated' };
+  const full = ctx[CONTENT_FULL_KEY] as Record<string, unknown> | undefined;
+  if (ctx.captureVersion === undefined && full?.replayParts === undefined) return { eligible: false, reason: 'no-capture' };
+  if (ctx.captureVersion === 'capture-oversize') return { eligible: false, reason: 'capture-oversize' };
+  if (ctx.captureVersion !== TONE_REPLAY_CAPTURE_VERSION) return { eligible: false, reason: 'unknown-capture-version' };
+  const parts = full?.replayParts as Record<string, unknown> | undefined;
+  if (!parts || typeof parts !== 'object' || Array.isArray(parts)
+    || TONE_PROMPT_PART_KEYS.some((key) => typeof parts[key] !== 'string')
+    || typeof ctx.replayPromptSha256 !== 'string' || typeof ctx.promptSha256 !== 'string') {
+    return { eligible: false, reason: 'malformed-capture' };
+  }
+  // A part scrubForStore replaced wholesale (its oversize or error path) no longer
+  // holds the real input, so a replay of it would judge a marker, not the message.
+  if (TONE_PROMPT_PART_KEYS.some((key) => /^\[REDACTED:(?:oversize|scrub-error)\]/.test(String(parts[key]))
+    || /^"\[REDACTED:(?:oversize|scrub-error)\]/.test(String(parts[key])))) {
+    return { eligible: false, reason: 'part-withheld' };
+  }
+  let prompt: string;
+  try {
+    prompt = renderToneGatePrompt(parts as unknown as ToneGatePromptParts);
+  } catch { /* @silent-fallback-ok — an unrebuildable capture is reported as malformed, never accepted */
+    return { eligible: false, reason: 'malformed-capture' };
+  }
+  const sha = buildStructuredSha256Identity(prompt);
+  if (sha !== ctx.replayPromptSha256) return { eligible: false, reason: 'sha-mismatch' };
+  return { eligible: true, prompt, exact: sha === ctx.promptSha256 };
 }
 
 /** Fail-open wrapper: the observe-only deferral signal must never break the
@@ -1349,6 +1496,15 @@ export interface ToneGateConfig {
    * `true` is the fleet flip.
    */
   advisoryMigration?: boolean;
+  /**
+   * Replay-input capture (`toneGate.replayInput.enabled`, dev-gated: unset = live
+   * on a development agent, dark on the fleet). When on, each provenance row also
+   * keeps the credential-scrubbed dynamic prompt parts (candidate, recent
+   * messages, signal sections, boundary) under the machine-local CONTENT_FULL_KEY,
+   * plus content-free replay identity, so a decision can be rebuilt and re-judged
+   * exactly. Never changes the prompt, model, parsing or verdict.
+   */
+  replayInput?: { enabled?: boolean };
 }
 
 /**
@@ -1375,6 +1531,13 @@ export function resolveToneGateOperatorConfig(config: unknown): ToneGateConfig {
       tg?.advisoryMigration,
       config as { developmentAgent?: boolean } | undefined,
     ),
+    // Dev-gated the same way; resolved here so the live getter is the one wiring point.
+    replayInput: {
+      enabled: resolveDevAgentGate(
+        tg?.replayInput?.enabled,
+        config as { developmentAgent?: boolean } | undefined,
+      ),
+    },
   };
 }
 
@@ -1459,7 +1622,7 @@ export class MessagingToneGate {
     // `decisionRef` — without it an override is an orphan log line that no
     // grader can ever join to the decision it disputes.
     let decisionRef: string | undefined;
-    const prompt = this.buildPrompt(
+    const promptParts = this.buildPromptParts(
       text,
       context.channel,
       context.recentMessages,
@@ -1473,6 +1636,7 @@ export class MessagingToneGate {
       context.specConstitutionChecks,
       context.waitingAsk,
     );
+    const prompt = renderToneGatePrompt(promptParts);
     // F5: route the operator-facing SYNCHRONOUS reply (a human is waiting) to the
     // interactive reservation lane in the host spawn cap. Honored only when the
     // reservation is enabled AND the wrapper's component allowlist passes; otherwise
@@ -1504,6 +1668,7 @@ export class MessagingToneGate {
           // operator can turn body capture on or off without a restart.
           recordCandidateBody: cfg.recordCandidateBody === true,
           gateSignals,
+          ...(cfg.replayInput?.enabled === true ? { replay: { parts: promptParts, prompt } } : {}),
         }),
         optionsPresented: [...TONE_OPTIONS_PRESENTED],
         promptId: (gateSignals ? TONE_GATE_PROMPT_ID_JEV : TONE_GATE_PROMPT_ID) + (context.waitingAsk ? TONE_GATE_PROMPT_ID_B26_SUFFIX : ''),
@@ -1721,7 +1886,8 @@ export class MessagingToneGate {
     };
   }
 
-  private buildPrompt(
+  /** The per-call dynamic parts of the prompt; `renderToneGatePrompt(parts)` is the prompt. */
+  private buildPromptParts(
     text: string,
     channel: string,
     recentMessages?: ToneReviewContextMessage[],
@@ -1734,7 +1900,7 @@ export class MessagingToneGate {
     agentReach?: ToneReviewContext['agentReach'],
     specConstitutionChecks?: ToneReviewContext['specConstitutionChecks'],
     waitingAsk?: ToneReviewContext['waitingAsk'],
-  ): string {
+  ): ToneGatePromptParts {
     const boundary = `MSG_BOUNDARY_${crypto.randomBytes(8).toString('hex')}`;
 
     const contextSection = this.renderRecentMessages(recentMessages);
@@ -1769,7 +1935,7 @@ export class MessagingToneGate {
     const kindSection = this.renderMessageKind(messageKind);
     const agentStateSection = this.renderAgentState(agentState);
 
-    return renderToneGatePrompt({
+    return {
       channel,
       kindSection,
       contextSection,
@@ -1781,7 +1947,7 @@ export class MessagingToneGate {
       agentReachSection,
       boundary,
       candidateJson: JSON.stringify(text),
-    });
+    };
   }
 
   private renderMessageKind(messageKind?: MessageKind): string {

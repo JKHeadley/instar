@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "tone-gate-replay-input",
+  "sessionId": "c5002075-e739-469b-b5ff-c90d1c4e7ea3",
+  "timestamp": "2026-11-27T23:32:28.022Z",
+  "artifactPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "artifactSha256": "1196402f78a8976c3c785e864a2dd5e497304e5cb260b439a6851af2c9316d01",
+  "coveredFiles": [
+    "docs/specs/tone-gate-replay-input.eli16.md",
+    "scripts/evaluation/tone_gate_replay_counts.mjs",
+    "src/core/MessagingToneGate.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/awareness/tone-gate-replay-input.md",
+    "src/data/feature-ladders.json",
+    "tests/unit/tone-gate-operator-config.test.ts",
+    "tests/unit/tone-gate-replay-input-capture.test.ts",
+    "upgrades/next/tone-gate-replay-input.md",
+    "upgrades/side-effects/tone-gate-replay-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "dev-gated observability on the tone gate; a revert fully undoes it; twin of PR 3944",
+  "eli16Path": "docs/specs/tone-gate-replay-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

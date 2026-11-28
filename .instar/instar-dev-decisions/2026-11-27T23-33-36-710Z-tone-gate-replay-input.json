@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-27T23:33:36.710Z",
+  "slug": "tone-gate-replay-input",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 269,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/evaluation/tone_gate_replay_counts.mjs",
+      "src/core/MessagingToneGate.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/awareness/tone-gate-replay-input.md",
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 263,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
