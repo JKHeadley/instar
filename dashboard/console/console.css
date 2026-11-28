@@ -1821,6 +1821,26 @@ a.needs-row:hover { background: var(--surface-raised); }
 .chat-file-recovery-sheet .chat-list-actions { min-width: 0; max-width: 100%; }
 .chat-file-recovery-sheet a[download] { min-width: 0; max-width: 100%; min-height: 44px; height: auto; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 
+/* Detail pages use content width after navigation. A readable card minimum in rem
+   responds to both available width and text size; a lone card fills the row. */
+.main.detail-page { max-width: none; min-width: 0; }
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .mb-groups) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: var(--s-4);
+  align-items: start;
+  min-width: 0;
+}
+.detail-page :where(.page-sections, .detail-card-grid, .machine-cards, .mb-groups) > * { min-width: 0; }
+.detail-page .page-sections > :not(.list-section):not(.card),
+.detail-page .page-sections > :where([data-operator-need], .attn, .bad) { grid-column: 1 / -1; }
+.detail-page p { max-width: 65ch; }
+.detail-card-grid:empty { display: none; }
+
+.detail-page .detail-card-grid > :where(h2, p, button) { grid-column: 1 / -1; }
+.detail-page :where(.mb-groups, .mb-hero, .mb-glance, .mb-tools, .mb-sources) { max-width: none; }
+.detail-page .mb-sub { max-width: 65ch; }
+
 /* Accounts remain a single reset-ordered list, including with full-width detail-page layouts. */
 .main.accounts-page { max-width: none; min-width: 0; }
 .accounts-page .acct-list,

@@ -116,3 +116,71 @@ describe('lint-standard-code-backreference', () => {
     expect(JSON.parse(fs.readFileSync('docs/standards-backreference-baseline.json', 'utf8')).grandfatheredNoBackreference).toEqual([]);
   });
 });
+
+// The widened population (STD-SUBCOUNTDOWN-backreference-completion, second half): decision
+// infrastructure the registry has never cited must also name its standard, with a shrink-only
+// baseline for files that predate the check.
+describe('lint-standard-code-backreference — widened infrastructure population', () => {
+  const INFRA = 'docs/standards-backreference-infrastructure-baseline.json';
+  function withInfra(root: string, entries: string[]): void {
+    fs.writeFileSync(path.join(root, INFRA), JSON.stringify({ grandfatheredInfrastructure: entries }));
+  }
+
+  it('fails a new guard-named file that names no standard, though the registry never cites it', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGuard.ts': 'export {};\n' } });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('src/core/WidgetGuard.ts is decision infrastructure');
+  });
+
+  it('treats lint scripts and hook sources as infrastructure, and passes them once they name a standard', () => {
+    const files = { 'scripts/lint-widgets.mjs': 'export {};\n', 'src/hooks/stop-thing.ts': 'export {};\n' };
+    const bad = run(fixture({ articles: [{ title: LONG, cites: [] }], files }));
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain('scripts/lint-widgets.mjs is decision infrastructure');
+    expect(bad.out).toContain('src/hooks/stop-thing.ts is decision infrastructure');
+    const good = run(fixture({
+      articles: [{ title: LONG, cites: [] }],
+      files: Object.fromEntries(Object.keys(files).map((k) => [k, `// Governed by: *${LONG}*\nexport {};\n`])),
+    }));
+    expect(good.code).toBe(0);
+    expect(good.out).toContain('2 further infrastructure file(s), 2 naming a standard back, 0 grandfathered');
+  });
+
+  it('a baselined infrastructure file passes, and must leave the baseline once it names a standard', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetGate.ts': 'export {};\n' } });
+    withInfra(root, ['src/core/WidgetGate.ts']);
+    expect(run(root).code).toBe(0);
+    fs.writeFileSync(path.join(root, 'src/core/WidgetGate.ts'), `// Governed by: *${LONG}*\nexport {};\n`);
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('src/core/WidgetGate.ts is in the infrastructure baseline but now names a standard');
+  });
+
+  it('ignores ordinary files, templates and declaration files', () => {
+    const root = fixture({
+      articles: [{ title: LONG, cites: [] }],
+      files: { 'src/core/Widget.ts': 'export {};\n', 'src/scaffold/templates/x/FooGuard.ts': 'export {};\n', 'src/types/BarGate.d.ts': 'export {};\n' },
+    });
+    const r = run(root);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('0 further infrastructure file(s)');
+  });
+
+  it('an absent infrastructure baseline counts as empty, so deleting it cannot switch the check off', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetSentinel.ts': 'export {};\n' } });
+    expect(fs.existsSync(path.join(root, INFRA))).toBe(false);
+    expect(run(root).code).toBe(1);
+  });
+
+  it('writes the infrastructure baseline once, and refuses to rewrite it', () => {
+    const root = fixture({ articles: [{ title: LONG, cites: [] }], files: { 'src/core/WidgetWatchdog.ts': 'export {};\n' } });
+    const write = () => spawnSync(process.execPath, [LINT, '--write-infrastructure-baseline'], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+    expect(write().status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(root, INFRA), 'utf8')).grandfatheredInfrastructure).toEqual(['src/core/WidgetWatchdog.ts']);
+    expect(run(root).code).toBe(0);
+    const again = write();
+    expect(again.status).toBe(1);
+    expect(`${again.stdout}${again.stderr}`).toContain('refusing --write-infrastructure-baseline');
+  });
+});
