@@ -86,7 +86,7 @@ function production(home: string, stateDir: string, values: Record<string, unkno
   const started: number[] = [];
   let busy = true; // another suite holds the host's slot until the test frees it
   const closed = new Set<number>();
-  seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: 'b'.repeat(40) });
+  seams.prView = async (pr) => ({ author: { login: 'EchoOfDawn' }, isCrossRepository: false, headRefName: `echo/pr-${pr}`, headRefOid: headOf(pr), baseRefName: 'main', baseRefOid: 'b'.repeat(40), isDraft: false, mergeable: 'MERGEABLE' });
   seams.baseHead = async () => 'b'.repeat(40);
   seams.isPrOpen = async (pr) => !closed.has(pr);
   seams.foreignSuiteHolders = () => (busy ? [{ pid: 1 }] : []);
@@ -109,6 +109,32 @@ const post = (a: express.Express, route: string, body: unknown) => request(a).po
 const operatorPath = (stateDir: string) => path.join(stateDir, 'state', 'local-verify', 'operator-queue.json');
 
 describe('local-verify queue controls lifecycle (production wiring)', () => {
+  it('the production service reloads a waiting request and admits it on a later healthy tick', async () => {
+    const { home, stateDir } = sourceCheckout();
+    const health = path.join(stateDir, 'state', 'local-verify', 'main-health.json');
+    fs.mkdirSync(path.dirname(health), { recursive: true });
+    fs.writeFileSync(health, JSON.stringify({ v: 1, machineId: 'm_e2e', state: 'healthy', redHead: null, lastGreenHead: null, reason: 'green', updatedAt: new Date().toISOString() }));
+    const values = { [KEY]: true };
+    const p = production(home, stateDir, values);
+    await p.svc.boot();
+    const a = serve(ctx(stateDir, p.svc));
+    for (let pr = 1; pr <= LOCAL_VERIFY_LIMITS.queueCap; pr++) expect((await request(a).post('/local-verify').send({ pr })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: 50 })).status).toBe(429);
+    p.svc.shutdown();
+    const q = production(home, stateDir, values);
+    await q.svc.boot();
+    const b = serve(ctx(stateDir, q.svc));
+    expect((await request(b).get('/local-verify')).body.waiting.map((w: { pr: number }) => w.pr)).toEqual([50]);
+    q.closed.add(1);
+    expect((await request(b).post('/local-verify').send({ pr: 1 })).status).toBe(409);
+    await q.svc.tick();
+    const snapshot = (await request(b).get('/local-verify')).body;
+    expect(snapshot.queue.find((e: { pr: number }) => e.pr === 50)).toMatchObject({ headSha: headOf(50) });
+    expect(snapshot.waiting).toEqual([]);
+    expect(q.started).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, 'state', 'local-verify', 'queue.json'))).toBe(true);
+  });
+
   it('the built dist ships the child entry the server spawns', () => {
     expect(fs.existsSync(DIST_ENTRY)).toBe(true);
   });

@@ -66,7 +66,7 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     async prView(pr: number): Promise<PrView | null> {
       // title/body/files feed the main-red repair match (mainRedHold.ts); gh lists the first 100 files.
       // labels: `merge-throughput` ranks the PR ahead of ordinary PRs (prPriority).
-      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels']);
+      const out = await gh(['pr', 'view', String(pr), '--repo', opts.repo, '--json', 'author,isCrossRepository,headRefName,headRefOid,baseRefName,baseRefOid,title,body,files,labels,isDraft,mergeable']);
       if (!out) return null;
       try {
         const v = JSON.parse(out) as PrView & { files?: unknown };

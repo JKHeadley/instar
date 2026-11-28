@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "local-verify-auto-refill",
+  "sessionId": "226c8fd7-d30f-4ba9-b47b-e02a86950234",
+  "timestamp": "2026-11-27T07:32:10.020Z",
+  "artifactPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "artifactSha256": "037e4f6220f32bf9c691e099bba6cc1dd826f7b63388412d5f1e9463462443c6",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyRoutes.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/e2e/local-verify-queue-controls-lifecycle.test.ts",
+    "tests/integration/local-verify-queue-controls.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/side-effects/local-verify-auto-refill.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Independent second-pass review of the harness-changing files at head 5c6295508; tier as declared by the branch.",
+  "eli16Path": "docs/specs/local-verify-automatic-waiting-refill.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-auto-refill.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

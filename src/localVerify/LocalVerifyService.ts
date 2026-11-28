@@ -47,6 +47,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { holdReasonOf, isStackedPr } from '../monitoring/greenPrLogic.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { exitSeenPath, MERGE_HANDOFF_RESTART_HOLD_MS, mergeHoldPath, PEER_RESTART_HOLD_MS, peerHoldPath, plannedRestartBypassesHolds, readPlannedRestartVerifyState, VERIFY_RESTART_HOLD_MS } from '../core/PlannedRestartVerifyGuard.js';
 import { executionKey, recordKey, validateRecord, isValidPr, isValidSha, MAIN_VERIFY_PR, type FlakyRetry, type LocalVerifyRecord } from './record.js';
@@ -230,6 +231,8 @@ export interface PrView {
   headRefOid: string;
   baseRefName: string;
   baseRefOid: string;
+  isDraft?: boolean;
+  mergeable?: string;
   /** Title + body + changed files (gh `--json title,body,files`; files = the first 100). Absent on older seams ⇒ unknown. */
   title?: string | null;
   body?: string | null;
@@ -669,7 +672,7 @@ export type RequestResult =
   | { ok: true; status: 'queued' | 'already-queued' | 'in-flight'; position?: number; hold?: MainRedHoldInfo; /** Admitted over the cap by an operator front or release. */ operatorOverCap?: true }
   | { ok: true; status: 'recorded'; record: LocalVerifyRecord }
   /** `held`: the operator holds this change (queue controls). `overflow-full`: an operator admission found the queue and its overflow full. */
-  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' };
+  | { ok: false; code: 'invalid-pr' | 'pr-unreadable' | 'pr-closed' | 'untrusted-head' | 'queue-full' | 'pr-invalid-shas' | 'main-unhealthy' | 'stopping' | 'peer-only' | 'held' | 'overflow-full' | 'not-lease-holder' | 'waiting-expired' | 'waiting-ineligible' };
 
 // ---- operator queue controls (spec local-verify-queue-controls.md) ----
 
@@ -1082,6 +1085,11 @@ export class LocalVerifyService {
   private suitePriorityClaimed = false;
   /** PRs refused for a full queue, oldest first refusal first (fb-7fde7f49-8ee). Lease holder only. */
   private readonly waiting: WaitingList;
+  /** Re-offer at most five live waiters every 30 seconds; overlapping ticks share one driver. */
+  private waitingRefillRunning = false;
+  private waitingRefillAt: number | null = null;
+  /** A transient unreadable waiter keeps its durable place, but cannot starve readable work. */
+  private readonly waitingRefillUnavailableUntil = new Map<number, number>();
   // ---- operator queue controls (spec local-verify-queue-controls.md) ----
   /** `monitoring.localVerify.queueControls`, read live at each decision. Absent ⇒ off. */
   private queueControlsEnabled: (() => boolean) | null = null;
@@ -1871,6 +1879,8 @@ export class LocalVerifyService {
 
   async request(pr: number, opts: {
     explicit?: boolean; force?: boolean; replay?: boolean; rerunAfterGreen?: boolean;
+    /** Internal automatic waiting-list offer: recheck health and coordinator ownership after async reads. */
+    waitingRefill?: Waiter;
     /** Queue controls: an admission made by an operator front or release (its own bounded overflow; ignored while the switch is off). */
     operator?: 'front' | 'release';
     /** Queue controls: what a released change carries back (its first refusal, and the time it was held). */
@@ -1923,6 +1933,21 @@ export class LocalVerifyService {
     if (this.seams.baseHead) {
       currentBase = await this.seams.baseHead(view.baseRefName).catch(() => null);
       if (!currentBase) return { ok: false, code: 'pr-unreadable' };
+    }
+    // Automatic offers may wait on network reads. Revalidate their original durable
+    // request before cancelling/replacing any run or touching queue/index state.
+    if (opts.waitingRefill) {
+      if (this.stopped) return { ok: false, code: 'stopping' };
+      if (this.operatorHeld(pr)) return { ok: false, code: 'held' };
+      if (this.waiting.get(pr) !== opts.waitingRefill || !this.waiting.isLive(opts.waitingRefill)) {
+        return { ok: false, code: 'waiting-expired' };
+      }
+      if (!this.health.isHealthy()) return { ok: false, code: 'main-unhealthy' };
+      if (!this.leaseState().holds) return { ok: false, code: 'not-lease-holder' };
+      if (view.isDraft !== false || view.mergeable !== 'MERGEABLE' || isStackedPr(view)
+        || holdReasonOf({ isDraft: view.isDraft, title: view.title ?? '', labels: view.labels?.map(label => label.name) ?? [] })) {
+        return { ok: false, code: 'waiting-ineligible' };
+      }
     }
     if (!isValidSha(view.headRefOid) || !isValidSha(currentBase)) return { ok: false, code: 'pr-invalid-shas' };
     const headSha = view.headRefOid;
@@ -2038,7 +2063,7 @@ export class LocalVerifyService {
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
-        const w = replayPriority ? null : this.waiting.refused(pr);
+        const w = replayPriority || opts.waitingRefill ? null : this.waiting.refused(pr);
         this.audit({ event: 'queue-full', pr, ...(hold.active ? { mainRedHold: true } : {}),
           ...(w ? { firstRefusedAt: w.firstRefusedAt, refusals: w.refusals, waitPosition: this.waiting.liveAhead(pr).length + 1 } : {}) });
         return { ok: false, code: 'queue-full' };
@@ -2052,9 +2077,9 @@ export class LocalVerifyService {
       // eligible cannot hold a slot empty. A labelled throughput PR, a replay and the one-shot
       // red→green failure re-run are admitted exactly as before (nothing would offer the re-run
       // again); a repair needs a red `main`, when the list reserves nothing.
-      const ahead = this.waitingAhead(pr);
+      const ahead = this.waitingAhead(pr, !!opts.waitingRefill);
       if (ahead.length > 0) {
-        const w = this.waiting.refused(pr);
+        const w = opts.waitingRefill ?? this.waiting.refused(pr);
         this.audit({ event: 'queue-full-waiting', pr, firstRefusedAt: w.firstRefusedAt, refusals: w.refusals,
           waitPosition: ahead.length + 1, ahead: ahead.slice(0, 5).map((x) => x.pr), freeSlots: LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() });
         return { ok: false, code: 'queue-full' };
@@ -2116,9 +2141,10 @@ export class LocalVerifyService {
    * `main` is not healthy (nothing is offered then) or nothing is queued (the verifier must
    * never sit idle for a reservation), or when there are more free slots than waiters ahead.
    */
-  private waitingAhead(pr: number): Waiter[] {
+  private waitingAhead(pr: number, automatic = false): Waiter[] {
     if (!this.health.isHealthy() || this.prQueueLength() === 0) return [];
-    const ahead = this.waiting.liveAhead(pr);
+    const ahead = this.waiting.liveAhead(pr).filter((w) => !automatic
+      || (this.waitingRefillUnavailableUntil.get(w.pr) ?? 0) <= this.now());
     return ahead.length >= LOCAL_VERIFY_LIMITS.queueCap - this.prQueueLength() ? ahead : [];
   }
 
@@ -2130,6 +2156,49 @@ export class LocalVerifyService {
       if (this.stopped) return;
       const open = await this.seams.isPrOpen(pr).catch(() => null);
       if (open === false) { this.waiting.remove(pr, 'closed'); this.operatorOnClosed(pr); }
+    }
+  }
+
+  /**
+   * A saved refusal is a durable request, not a requirement that its caller poll forever.
+   * The usual admission path re-reads its head/base and trust/hold checks. Operator pending
+   * fronts/releases run first; this driver only fills ordinary free places, never overflow.
+   * Stale requests still require a fresh offer from their owner/watcher, as before.
+   */
+  private async refillWaitingList(): Promise<void> {
+    if (this.waitingRefillRunning || this.stopped || this.cfg.peerOnly || !this.health.isHealthy()
+      || !this.leaseState().holds || this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) return;
+    const now = this.now();
+    if (this.waitingRefillAt !== null && now - this.waitingRefillAt < 30_000) return;
+    for (const pr of this.waitingRefillUnavailableUntil.keys()) {
+      if (!this.waiting.get(pr)) this.waitingRefillUnavailableUntil.delete(pr);
+    }
+    const candidates = this.waiting.list().filter((w) => w.live
+      && (this.waitingRefillUnavailableUntil.get(w.pr) ?? 0) <= now).slice(0, 5);
+    if (candidates.length === 0) return;
+    this.waitingRefillRunning = true;
+    this.waitingRefillAt = now;
+    try {
+      for (const w of candidates) {
+        if (this.stopped || !this.health.isHealthy() || !this.leaseState().holds
+          || this.prQueueLength() >= LOCAL_VERIFY_LIMITS.queueCap) break;
+        // A hold/removal applied while the preceding PR was read must not be resurrected.
+        const current = this.waiting.get(w.pr);
+        if (!current || !this.waiting.isLive(current)) continue;
+        try {
+          const r = await this.request(w.pr, { explicit: false, waitingRefill: current });
+          if (!r.ok && (r.code === 'pr-unreadable' || r.code === 'pr-invalid-shas' || r.code === 'waiting-ineligible')) {
+            this.waitingRefillUnavailableUntil.set(w.pr, this.now() + 120_000);
+          } else this.waitingRefillUnavailableUntil.delete(w.pr);
+          this.audit({ event: 'waiting-auto-offer', pr: w.pr, firstRefusedAt: w.firstRefusedAt,
+            result: r.ok ? r.status : r.code });
+        } catch (e) {
+          this.waitingRefillUnavailableUntil.set(w.pr, this.now() + 120_000);
+          this.audit({ event: 'waiting-auto-offer-error', pr: w.pr, detail: String(e) });
+        }
+      }
+    } finally {
+      this.waitingRefillRunning = false;
     }
   }
 
@@ -3669,6 +3738,7 @@ export class LocalVerifyService {
     if (!this.cfg.peerOnly) await this.sweepReplayCapacity();
     if (!this.cfg.peerOnly) await this.tickWaitingList();
     if (!this.cfg.peerOnly) await this.tickOperator().catch((e) => this.audit({ event: 'operator-tick-error', detail: e instanceof Error ? e.message : String(e) }));
+    if (!this.cfg.peerOnly) await this.refillWaitingList();
     this.checkPeerAttempt();
     this.borrowedCall('tick', (b) => b.tick(), undefined);
     await this.failedFileDiagnosisPeer?.tick();
