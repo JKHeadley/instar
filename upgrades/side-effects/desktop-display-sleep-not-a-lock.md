@@ -52,6 +52,8 @@ unbounded-self-action: closure n/a (negative declaration). At most one display w
 
 ## Second-pass review
 
+**Reviewer:** an independent second-pass subagent (Claude, fresh context, given the code at 25c85d05b and not the author's conclusion) read the change; verdict concur, no blocking defect.
+
 An independent reviewer read 25c85d05b and found no blocking defect. A locked Mac is still refused, because readiness still needs the helper's flag to clear, or the existing shield path. Fixed after review:
 - The ioreg output cap went from 256 KiB to 4 MiB. The Studio's Root plist is about 185 KB, and a larger registry would have read as unknown, so the fix would never have worked there.
 - In begin(), the operator lockout and the 10 s rate limit now run before the readiness probe. A locked-out operator, or a burst of requests, can no longer wake the display.
