@@ -1,3 +1,4 @@
+. .husky/instar-runtime.sh || exit 1
 # ── Fast gate: catch NEXT.md / version issues before running any tests ──
 echo "🔒 Running pre-push gate (NEXT.md + version check)..."
 if ! node scripts/pre-push-gate.js; then

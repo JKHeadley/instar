@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-clarity",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:29:31.237Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-clarity.md",
+  "artifactSha256": "92db1267f4ef5569be0f18d9c6f2dff5dc0fdba0979c5ac04bb24caa8ed6ad0e",
+  "specPath": "docs/specs/profile-confirmation-clarity.md",
+  "coveredFiles": [
+    "docs/specs/profile-confirmation-clarity.md",
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "src/commands/server.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "upgrades/side-effects/profile-confirmation-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Corrective native-question context after actual live reminder failure. Current owner/audience/epoch/consequence checked; no new consent authority. Scoped independent security concurrence recorded.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only context for user-driven replies; no self-triggered controller."
+  }
+}

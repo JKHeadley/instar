@@ -43,7 +43,7 @@ const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
  * Create a mock claude that shows a prompt character (❯) like the real TUI.
  * This lets us test prompt detection without a real Claude Code instance.
  */
-function createMockClaudeInteractive(dir: string): string {
+function createMockClaudeInteractive(dir: string, startupDelaySeconds = 1): string {
   const scriptPath = path.join(dir, 'mock-claude-interactive.sh');
   fs.writeFileSync(scriptPath, `#!/bin/bash
 # Simulate Claude Code startup sequence:
@@ -56,7 +56,7 @@ echo "│  Claude Code v2.1.86                 │"
 echo "│  Mock Mode                           │"
 echo "╰──────────────────────────────────────╯"
 
-sleep 1
+sleep ${startupDelaySeconds}
 
 echo "────────────────────────────────────────"
 echo "❯ "
@@ -333,8 +333,8 @@ describeMaybe('Session Management E2E', () => {
 
   describe('Feature: Spawning interactive sessions (no -p, REPL mode)', () => {
     it('should spawn an interactive session and detect prompt readiness', async () => {
-      // Given a mock claude that shows the TUI prompt
-      const claudePath = createMockClaudeInteractive(project.dir);
+      // A valid startup can outlast the old two-second snapshot.
+      const claudePath = createMockClaudeInteractive(project.dir, 3);
       const sm = createManager(project, claudePath);
       managers.push(sm);
 
@@ -346,10 +346,11 @@ describeMaybe('Session Management E2E', () => {
 
       // Then a tmux session should exist
       expect(tmuxSession).toContain(TMUX_PREFIX);
-      await new Promise(r => setTimeout(r, 2000));
+      // Wait for actual readiness, including the deliberately slow startup.
+      await waitFor(() => (sm.captureOutput(tmuxSession, 20) ?? '').includes('❯'), 15_000);
       expect(sm.isSessionAlive(tmuxSession)).toBe(true);
 
-      // And the prompt should eventually be detectable in tmux output
+      // Readiness must be visible in the real pane, not inferred from elapsed time.
       const output = sm.captureOutput(tmuxSession, 20);
       expect(output).not.toBeNull();
       expect(output).toContain('❯');

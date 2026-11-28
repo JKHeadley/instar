@@ -5,19 +5,41 @@
  * exercise the verdict-threshold boundaries deterministically, plus the --json
  * contract and the fail-soft path (no server → ledger=unavailable, still a verdict).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import path from 'node:path';
 import url from 'node:url';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../src/templates/scripts/load-assess.sh');
 
-function run(forceIdle: string | null, json = true): string {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  if (forceIdle !== null) env.LOAD_ASSESS_FORCE_IDLE = forceIdle;
+let fixture: string;
+let script: string;
+
+beforeAll(() => {
+  fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'load-assess-test-'));
+  const scripts = path.join(fixture, '.instar', 'scripts');
+  const bin = path.join(fixture, 'bin');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.mkdirSync(bin);
+  script = path.join(scripts, 'load-assess.sh');
+  fs.copyFileSync(SCRIPT, script);
+  // The verdict tests force idle below. Skip only the real sampling wait on each platform.
+  fs.writeFileSync(path.join(bin, 'top'), '#!/bin/sh\nprintf "%s\\n" "CPU usage: 0.0% user, 0.0% sys, 100.0% idle"\n', { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+});
+
+afterAll(() => {
+  SafeFsExecutor.safeRmSync(fixture, { recursive: true, force: true, operation: 'load-assess-script.test:cleanup' });
+});
+
+function run(forceIdle: string, json = true): string {
+  const env = { ...process.env, PATH: path.join(fixture, 'bin') + path.delimiter + process.env.PATH, LOAD_ASSESS_FORCE_IDLE: forceIdle };
   const args = json ? ['--json'] : [];
-  return execFileSync('bash', [SCRIPT, ...args], { env, encoding: 'utf-8', timeout: 20000 });
+  return execFileSync('bash', [script, ...args], { env, encoding: 'utf-8', timeout: 20000 });
 }
 
 describe('load-assess.sh — verdict thresholds (both sides of each boundary)', () => {
@@ -54,7 +76,7 @@ describe('load-assess.sh — --json contract', () => {
 describe('load-assess.sh — fail-soft', () => {
   it('still emits a verdict when the ResourceLedger is unreachable (no server in test env)', () => {
     const j = JSON.parse(run('40'));
-    // run from src/templates/scripts → no .instar/config.json → no auth → ledger unavailable
+    // The temporary agent has no auth or configured ledger.
     expect(j.ledger).toContain('unavailable');
     expect(j.verdict).toBe('OK'); // verdict still derived from CPU idle%, not the ledger
   });

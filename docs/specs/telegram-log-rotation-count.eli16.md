@@ -1,0 +1,5 @@
+# Telegram log rotation count, in plain words
+
+The agent keeps every Telegram message in one log file. So the file does not grow forever, the agent checks after each new message whether the file has more than 100,000 lines, and if so it keeps only the newest 75,000. To check, it used to read the entire file, turn it into text and split it into lines, every single time a message was written, as soon as the file was bigger than 20 MB. The Studio's log is about 33 MB with about 39,000 lines, so every message cost a full read of 33 MB while the agent could do nothing else, and the file never got rotated because it had fewer than 100,000 lines.
+
+Now the agent counts the lines once by counting the line breaks in the raw bytes, and remembers the count. After each new message it only looks at the bytes that were added since the last check. If the file got smaller or was replaced, it counts again from the start. Only when the count reaches 100,000 does it read the whole file, exactly as before, to rotate it. Nothing about which messages are kept changes.

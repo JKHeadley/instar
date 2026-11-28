@@ -33,7 +33,7 @@
  * The handler's own routing branches (warm/cold/pipe/peer place) are not run.
  */
 
-// canonical-migration-validator: threadline-inbound-canonical-store@4
+// canonical-migration-validator: threadline-inbound-canonical-store@5
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';

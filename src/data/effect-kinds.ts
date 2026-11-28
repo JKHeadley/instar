@@ -27,19 +27,46 @@ export interface EffectEntry {
   reversibility?: Reversibility;
   /** Input fields that name the recipients; absent means the effect has no recipient (`self`). */
   audienceFields?: string[];
+  /** Exact GitHub destination in the connector’s repository_full_name field. */
+  githubRepository?: string;
   /** True when the effect has no recipient at all. */
   selfOnly?: boolean;
   floor?: FloorItem[];
 }
 
-/**
- * Explicit entries refine the verb rules for tools whose real names and inputs are known. Stage 0
- * ships none beyond the sign-in rule below: a guessed tool name would classify nothing real and
- * would read as coverage that does not exist. Entries are added with the tool's real name and a
- * test, and each later entry ships with a migration recording a legacy grant at its current
- * behaviour (spec 6a), except sign-in, which is always governed (decision 15).
- */
-export const EFFECT_ENTRIES: readonly EffectEntry[] = [];
+export const INSTAR_GITHUB_REPOSITORY = 'jkheadley/instar';
+
+export const EFFECT_ENTRIES: readonly EffectEntry[] = [
+  { service: 'codex_apps', actions: ['github_create_pull_request'], operation: 'write', githubRepository: INSTAR_GITHUB_REPOSITORY },
+  { service: 'codex_apps', actions: ['github_update_pull_request'], operation: 'modify', githubRepository: INSTAR_GITHUB_REPOSITORY },
+  {
+    service: 'codex_apps', actions: ['github_merge_pull_request'], operation: 'modify',
+    reversibility: 'irreversible', githubRepository: INSTAR_GITHUB_REPOSITORY, floor: ['irreversible-outside-role'],
+  },
+];
+
+export function requiresOwnerProofForSameLevelGrant(service: string, operation: string, level: string): boolean {
+  return (level === 'log' || level === 'autonomous')
+    && EFFECT_ENTRIES.some((entry) => entry.service === service && entry.operation === operation && !entry.floor?.length);
+}
+
+export function standingGrantRepositories(service: string, operation: string): string[] {
+  return [...new Set(EFFECT_ENTRIES.flatMap((entry) =>
+    entry.service === service && entry.operation === operation && !entry.floor?.length && entry.githubRepository
+      ? [entry.githubRepository] : [],
+  ))].sort();
+}
+
+export function trustGrantProofSubject(service: string, operation: string, level: string) {
+  const repositories = standingGrantRepositories(service, operation);
+  return {
+    kind: 'trust-grant',
+    service,
+    operation,
+    level,
+    ...(repositories.length && requiresOwnerProofForSameLevelGrant(service, operation, level) ? { repositories } : {}),
+  };
+}
 
 /**
  * Decision 15, sign-in: on the Playwright MCP server (the browser tools today's gate intercepts),
@@ -72,6 +99,8 @@ export interface DerivedEffect {
   /** `self`, a sorted recipient list, or `unknown` (no audience rule). */
   audience: 'self' | 'unknown' | string[];
   floor: FloorItem[];
+  /** Standing and legacy admission for a repository-scoped entry. */
+  standingRepository?: string;
   /** True when an explicit table entry matched (not only the verb rules). */
   matched: boolean;
   /** Stable identity of this exact action: tool name plus canonical input. */
@@ -89,17 +118,32 @@ export function actionIdentityOf(toolName: string, toolInput: unknown): string {
 }
 
 /** The hook's verb rules, now held by the server (the hook keeps a copy only for its read fast path). */
-export function verbRules(action: string): { operation: EffectOperation; reversibility: Reversibility } {
+export function verbRules(action: string, classifyNamespacedMutations = true): { operation: EffectOperation; reversibility: Reversibility } {
   const tokens = action.split('_').filter(Boolean);
-  const mutatingTail = tokens.slice(1).some((t) => /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge)$/.test(t));
+  // Connector namespaces can precede the actual verb (github__fetch_pr or github_fetch_pr).
+  // Match whole tokens, never a service/engine allowlist or a substring such as "fetcher".
+  // A mutation or execution wrapper anywhere keeps a compound tool governed.
+  const mutatingPart = tokens.some((t) => /^(delete|remove|trash|purge|destroy|drop|clear|send|create|post|write|add|insert|new|compose|publish|update|modify|edit|replace|patch|rename|move|change|set|toggle|enable|disable|revoke|archive|flush|wipe|expunge|push|comment|merge|execute|run|call|invoke|eval|evaluate)$/.test(t));
+  // With explicit __ namespaces the final segment is the tool. In the flattened
+  // spelling recognize the observed GitHub connector alias only. An arbitrary
+  // unknown first word (inspect_read, launch_get_status) is NOT a namespace.
+  const segments = action.split('__');
+  const toolTokens = segments[segments.length - 1].split('_').filter(Boolean);
+  const readVerb = /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)$/;
+  const verb = toolTokens[segments.length === 1 && toolTokens[0] === 'github' ? 1 : 0] ?? '';
+  const mutationName = classifyNamespacedMutations ? verb : '';
+  const deletePrefix = /^(delete|remove|trash|purge|destroy|drop|clear)/;
+  const writePrefix = /^(send|create|post|write|add|insert|new|compose|publish)/;
+  const modifyPrefix = /^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/;
   let operation: EffectOperation = 'modify';
-  if (/^(delete|remove|trash|purge|destroy|drop|clear)/.test(action)) operation = 'delete';
-  else if (/^(send|create|post|write|add|insert|new|compose|publish)/.test(action)) operation = 'write';
-  else if (/^(update|modify|edit|patch|rename|move|change|set|toggle|enable|disable)/.test(action)) operation = 'modify';
-  else if (!mutatingTail && /^(get|list|search|fetch|check|read|view|describe|show|count|query|find|status)(?:_|$)/.test(action)) operation = 'read';
+  if (deletePrefix.test(action) || deletePrefix.test(mutationName)) operation = 'delete';
+  else if (writePrefix.test(action) || writePrefix.test(mutationName)) operation = 'write';
+  else if (!modifyPrefix.test(action) && !mutatingPart && readVerb.test(verb)) operation = 'read';
+  const irreversiblePrefix = /^(send|publish|post|destroy|purge|drop)/;
+  const partialPrefix = /^(delete|remove|trash)/;
   let reversibility: Reversibility = 'reversible';
-  if (/^(send|publish|post|destroy|purge|drop)/.test(action)) reversibility = 'irreversible';
-  else if (/^(delete|remove|trash)/.test(action)) reversibility = 'partially-reversible';
+  if (irreversiblePrefix.test(action) || irreversiblePrefix.test(mutationName)) reversibility = 'irreversible';
+  else if (partialPrefix.test(action) || partialPrefix.test(mutationName)) reversibility = 'partially-reversible';
   return { operation, reversibility };
 }
 
@@ -129,18 +173,25 @@ export function deriveEffect(toolName: string, toolInput: unknown): DerivedEffec
   let itemCount = 1;
   for (const v of Object.values(input)) if (Array.isArray(v)) itemCount = Math.max(itemCount, v.length);
   const entry = EFFECT_ENTRIES.find((e) => e.service === service && e.actions.includes(action));
-  const rules = verbRules(action);
+  // Preserve existing grant keys for mutations outside the explicit table.
+  const rules = verbRules(parts.slice(2).join('__'), !!entry);
   const signIn = isSignIn(service, action, input);
   const operation: EffectOperation = signIn ? 'sign-in' : (entry?.operation ?? rules.operation);
   const reversibility = entry?.reversibility ?? rules.reversibility;
   let audience: DerivedEffect['audience'] = 'unknown';
   if (entry?.selfOnly || signIn) audience = 'self';
-  else if (entry?.audienceFields) audience = recipients(input, entry.audienceFields);
+  else if (entry?.githubRepository) {
+    const repo = input.repository_full_name;
+    if (typeof repo === 'string' && repo === repo.trim() && /^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(repo) && !repo.endsWith('/.') && !repo.endsWith('/..')) {
+      audience = [repo.toLowerCase()];
+    }
+  } else if (entry?.audienceFields) audience = recipients(input, entry.audienceFields);
   return {
     toolName, service, action, operation, reversibility, itemCount,
     kind: `${service}.${operation}`,
     audience,
     floor: [...(entry?.floor ?? [])],
+    ...(entry?.githubRepository ? { standingRepository: entry.githubRepository } : {}),
     matched: !!entry || signIn,
     actionIdentity: actionIdentityOf(toolName, input),
   };

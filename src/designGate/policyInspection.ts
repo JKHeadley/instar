@@ -21,6 +21,10 @@ export function inspectDesignPolicy(input: {
       ...(side === 'head' ? { baseLock: input.base.lock } : {}) })) findings.push({ side, ...error });
   }
   const structurallyValid = findings.length === 0;
+  // A rule present at base and absent at head was deleted, or its heading no longer
+  // parses as a rule. Earned or not, that is never a clean report.
+  const headRuleIds = new Set(parsed.head.rules.map(rule => rule.id));
+  for (const rule of parsed.base.rules) if (!headRuleIds.has(rule.id)) findings.push({ side: 'head', code: 'rule-removed', ruleId: rule.id });
   const classification = classifyDesignPaths({ changedPaths: input.changedPaths,
     baseRegistry: input.base.registry as ScreenRegistry, candidateRegistry: input.head.registry as ScreenRegistry,
     sourceText: input.sourceText });

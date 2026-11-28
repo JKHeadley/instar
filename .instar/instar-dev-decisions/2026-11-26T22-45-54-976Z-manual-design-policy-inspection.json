@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-26T22:45:54.976Z",
+  "slug": "manual-design-policy-inspection",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/designGate/policyInspection.ts",
+      "src/localVerify/harnessClassifier.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One explicit manual invocation owns finite read-only Git children; no self-triggered loop."
+  },
+  "verdict": "pass"
+}

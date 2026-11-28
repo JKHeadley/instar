@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "verifier-lease-verdict-recovery",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-24T18:27:57.863Z",
+  "artifactPath": "upgrades/side-effects/verifier-lease-verdict-recovery.md",
+  "artifactSha256": "e90dda2650aa9a1519a7a9742ab88858ccaea427d5dae793ae4272c88545cd6b",
+  "specPath": "docs/specs/verifier-lease-verdict-recovery.md",
+  "coveredFiles": [
+    "docs/specs/reports/verifier-lease-verdict-recovery-convergence.md",
+    "docs/specs/verifier-lease-verdict-recovery.eli16.md",
+    "docs/specs/verifier-lease-verdict-recovery.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/verifier-lease-verdict-recovery.md",
+    "upgrades/side-effects/verifier-lease-verdict-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes when a previous success may satisfy a queue request and when the merger may see it.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

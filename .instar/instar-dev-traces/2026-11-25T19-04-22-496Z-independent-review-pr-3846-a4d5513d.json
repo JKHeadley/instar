@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "independent-review-pr-3846",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T19:04:22.496Z",
+  "artifactPath": "upgrades/side-effects/independent-review-pr-3846.md",
+  "artifactSha256": "36ed240591ad0247d5a3e8dc8c17af90ae144b4c4ebd86ac0cbda93b5deb3dc8",
+  "specPath": null,
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-main-on-peers.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/local-verify-peer-works-through-restart-lifecycle.test.ts",
+    "tests/integration/local-verify-peer-routes.test.ts",
+    "tests/unit/localVerify/smallPeerMemory.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hash-bound independent review of the exact verified source and test diff. This commit adds only the artifact and trace.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

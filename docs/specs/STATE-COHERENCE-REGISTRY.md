@@ -184,6 +184,12 @@ any sync.
 3. **Census refresh:** re-run the dual-pass census when the lint fires on
    unknown stores, and at each phase boundary; update `census-date`.
 
+### Observe-mode authority contracts
+
+The JSON registry also inventories the installed writers and planned owner for job definitions and project lifecycle. The current legacy, manifest, TaskFlow and Chief of Staff paths remain visible in the census until the owning migration proves cutover. Project digests are derived projections with a named materializer.
+
+The existing CI lint validates contract and store references and detects direct protected filesystem or database writes whose target it can resolve in the same source file, including common aliases and multiline paths. Some runtime references, wrapper calls and field-level writes in shared stores require review and store-specific proof. This census does not change execution, read routing, write permissions or migration state.
+
 ## 7. Hygiene work-list (byproduct — file separately, not this project)
 
 - Purge 782 `semantic.db.corrupt.*` + recovery-marker orphans (~250K, all
