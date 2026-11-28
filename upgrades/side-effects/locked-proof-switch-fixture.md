@@ -52,4 +52,6 @@ unbounded-self-action: closure n/a (negative declaration). Two operator-run scri
 
 ## Second-pass review
 
+**Reviewer:** an independent second-pass subagent (Claude, fresh context, given the code at 4d08b3d5c and not the author's conclusion) read both scripts and ran them against stand-in commands; verdict concur, no blocking defect.
+
 An independent reviewer read 4d08b3d5c and ran both scripts against stand-in commands only. Verdict: concur, no blocking defect. Fixed after review: the admin-refusal message pointed to remove-proof-user.sh, which refuses that same account; it now says a person deletes it by hand. Noted, not changed: "live" means on the console. A switch account still logged in behind fast user switching is stopped and deleted, which is what teardown wants. The full-name parse trims spaces, not tabs, so a tab-indented value refuses, which is the safe direction. A failed existence read exits 0 as "no user", as before this change.
