@@ -281,6 +281,8 @@ export interface PeerTarget {
   machineId: string;
   /** Base URL of the peer's agent server, e.g. `http://192.168.87.30:4042`. */
   url: string;
+  /** Optional strict offer ceiling. Null means an invalid configured ceiling. */
+  maxLoadPerCore?: number | null;
 }
 
 /** The coordinator's narrow HTTP seam to its peers (Bearer auth lives in the implementation). */
@@ -544,7 +546,12 @@ export function parsePeers(v: unknown, selfMachineId: string): PeerTarget[] {
     if (typeof machineId !== 'string' || !machineId || machineId === selfMachineId) continue;
     if (typeof url !== 'string' || !/^https?:\/\/[^\s/]+(:\d+)?\/?$/.test(url)) continue;
     if (out.some((o) => o.machineId === machineId)) continue;
-    out.push({ machineId, url: url.replace(/\/$/, '') });
+    const target: PeerTarget = { machineId, url: url.replace(/\/$/, '') };
+    if ('maxLoadPerCore' in p) {
+      const ceiling = p.maxLoadPerCore;
+      target.maxLoadPerCore = typeof ceiling === 'number' && Number.isFinite(ceiling) && ceiling > 0 && ceiling <= 1 ? ceiling : null;
+    }
+    out.push(target);
     if (out.length >= PEER_LIMITS.maxPeers) break;
   }
   return out;

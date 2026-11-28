@@ -2281,6 +2281,53 @@ export class LocalVerifyService {
     return kept.map((k) => k.peer);
   }
 
+  private meetsPeerLoadCeiling(peer: PeerTarget): boolean {
+    const ceiling = peer.maxLoadPerCore;
+    if (ceiling === undefined) return true;
+
+    let score: number | null = null;
+    let reason = 'ceiling-invalid';
+    if (ceiling !== null) {
+      try {
+        const fit = this.peerFitFn?.(peer.machineId);
+        const reading = fit?.score;
+        if (typeof reading === 'number' && Number.isFinite(reading) && reading >= 0) score = reading;
+        if (score === null) reason = 'load-unknown';
+        else if (score >= ceiling) reason = 'over-ceiling';
+        else if (fit && (fit.eligible || (fit.smallPeerHeadroom && this.smallPeerPolicy(peer.machineId)))) return true;
+        else reason = fit?.reason ?? 'load-unknown';
+      } catch (error) {
+        this.auditPeerCeilingSkip(peer, 'load-unreadable', score, String(error));
+        return false;
+      }
+    }
+
+    this.auditPeerCeilingSkip(peer, reason, score);
+    return false;
+  }
+
+  private auditPeerCeilingSkip(peer: PeerTarget, reason: string, score: number | null, detail?: string): void {
+    const key = `ceiling:${peer.machineId}:${reason}`;
+    const last = this.peerSkipAudited.get(key);
+    const now = this.now();
+    if (last !== undefined && now - last < PEER_SKIP_AUDIT_MS) return;
+    this.peerSkipAudited.set(key, now);
+    this.audit({ event: 'peer-skipped-ceiling', machineId: peer.machineId, reason, score, ceiling: peer.maxLoadPerCore, detail });
+    if (reason === 'ceiling-invalid' && last === undefined) {
+      try {
+        this.seams.onDegradation?.({
+          feature: 'local-verify-peer-load-ceiling',
+          primary: 'configured peer load ceiling',
+          fallback: 'hold new offers to the peer',
+          reason: `Invalid maxLoadPerCore for ${peer.machineId}`,
+          impact: 'Set a numeric maxLoadPerCore above zero and at most one, or remove the optional setting.',
+        });
+      } catch (error) {
+        this.audit({ event: 'peer-ceiling-degradation-report-failed', machineId: peer.machineId, detail: String(error) });
+      }
+    }
+  }
+
   private smallPeerPolicy(machineId: string): SmallPeerTrialPolicy | null {
     let p: SmallPeerTrialPolicy | null;
     try { p = parseSmallPeerTrialPolicy(this.smallPeerTrialSetting?.()); }
@@ -3169,6 +3216,10 @@ export class LocalVerifyService {
         }
         if (trial && (JSON.stringify(this.smallPeerPolicy(peer.machineId)) !== JSON.stringify(trial)
           || !this.peerFitFn?.(peer.machineId).smallPeerHeadroom || entry.kind === 'main')) continue;
+        // Read live configuration and the existing fresh load metric at reservation time.
+        // This guard only applies to new offers, so results from accepted runs can still import.
+        const currentPeer = this.configuredPeers().find((target) => target.machineId === peer.machineId && target.url === peer.url);
+        if (!currentPeer || !this.meetsPeerLoadCeiling(currentPeer)) continue;
         // The head is fixed here, before the snapshot: a reserved entry is never retargeted.
         if (entry.kind === 'main') this.retargetStaleMain(entry);
         // Computed ONCE, before the marker exists: the list that is sent is the list the marker remembers.

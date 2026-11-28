@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "verify-peer-load-ceiling",
+  "sessionId": "a4c875e9-a7d4-4699-b764-d80aa9165b4a",
+  "timestamp": "2026-11-28T02:23:35.690Z",
+  "artifactPath": "upgrades/side-effects/verify-peer-load-ceiling.md",
+  "artifactSha256": "71b53b27bc02ea133cec874baf4b7f6466a908475c3b59e5e9e2cb6c3e60e2f0",
+  "coveredFiles": [
+    "docs/specs/verify-peer-load-ceiling.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/verify-peer-load-ceiling.md",
+    "upgrades/side-effects/verify-peer-load-ceiling.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "An opt-in per-peer narrowing check preserves existing resource, lease and result custody.",
+  "eli16Path": "docs/specs/verify-peer-load-ceiling.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/verify-peer-load-ceiling.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
