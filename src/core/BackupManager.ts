@@ -1,5 +1,5 @@
 import { ORIGIN_LOCAL_BACKUP_PREFIXES } from '../messaging/telegram-origin/OriginLocalPaths.js';
-import { KEY_MATERIAL_BACKUP_PREFIXES } from './keyMaterialPaths.js';
+import { KEY_MATERIAL_BACKUP_PREFIXES, PRIVATE_IMPORT_DIRECTORIES } from './keyMaterialPaths.js';
 /**
  * Backup Manager — snapshot and restore agent state files.
  *
@@ -226,15 +226,36 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
  * re-import excluded state). llm-decision-quality-meter spec §5.3 / ACT-1201.
  */
 function isDeniedForBackup(relPath: string): boolean {
+  if (path.isAbsolute(relPath) || relPath.split(/[\\/]/).includes('..')) return true;
   const normalized = path.normalize(relPath);
   if (BLOCKED_FILES.has(path.basename(normalized)) || BLOCKED_FILES.has(relPath)) return true;
   // Case-folded: on a case-insensitive filesystem (macOS default) `Secrets/…` reaches
   // the same files as `secrets/…`.
   const folded = normalized.toLowerCase();
   for (const prefix of BLOCKED_PATH_PREFIXES) {
-    if (folded.startsWith(prefix.toLowerCase())) return true;
+    const p = prefix.toLowerCase();
+    if (folded.startsWith(p) || (p.endsWith('/') && folded === p.slice(0, -1))) return true;
   }
   return normalized.split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg));
+}
+
+// Resolve includes before reading a configured file or traversing a directory, including staged database copies.
+// A private multi-link on a volume containing imports has no unique original pathname. Keep it out of backups.
+function backupSource(stateRoot: string, candidate: string): string | null {
+  let resolved: string;
+  try { resolved = fs.realpathSync(candidate); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  const relative = path.relative(stateRoot, resolved);
+  if (isDeniedForBackup(relative)) return null;
+  const stat = fs.statSync(resolved, { throwIfNoEntry: false });
+  if (!stat) return null;
+  if (stat.isFile() && stat.nlink > 1 && (process.platform === 'win32' || (stat.mode & 0o077) === 0)) {
+    for (const root of PRIVATE_IMPORT_DIRECTORIES) {
+      const imports = fs.lstatSync(path.join(stateRoot, root), { throwIfNoEntry: false });
+      if (imports?.isDirectory() && imports.dev === stat.dev && imports.uid === stat.uid) return null;
+    }
+  }
+  return resolved;
 }
 
 const DEFAULT_CONFIG: BackupConfig = {
@@ -458,6 +479,7 @@ export class BackupManager {
       ? this.isRemediationEnabled()
       : false;
     for (const entry of this.config.includeFiles) {
+      if (entry.includes('*') && isDeniedForBackup(entry)) continue;
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
       // Gate: the layer store and the TopicMemory rows it references join the
@@ -584,6 +606,7 @@ export class BackupManager {
   }
 
   private fillSnapshot(id: string, snapshotDir: string, trigger: BackupSnapshot['trigger'], opts?: CreateSnapshotOptions): BackupSnapshot {
+    const stateRoot = fs.realpathSync(this.stateDir);
     const files: string[] = [];
     let totalBytes = 0;
     // Point-in-time copies taken by stageSqliteFiles() stand in for the live
@@ -608,10 +631,12 @@ export class BackupManager {
     };
     const copyStaged = (relative: string, stagedPath: string): void => {
       if (!fs.existsSync(stagedPath)) throw new Error(`staged copy for ${relative} is gone; the snapshot would not hold one moment`);
+      const permitted = backupSource(stateRoot, stagedPath);
+      if (!permitted) return;
       const dest = path.join(snapshotDir, relative);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.copyFileSync(stagedPath, dest, fs.constants.COPYFILE_FICLONE);
-      totalBytes += fs.statSync(stagedPath).size;
+      fs.copyFileSync(permitted, dest, fs.constants.COPYFILE_FICLONE);
+      totalBytes += fs.statSync(permitted).size;
       files.push(relative);
     };
     const copyOne = (relative: string, liveAbsolute: string, liveSize: number): void => {
@@ -626,7 +651,9 @@ export class BackupManager {
       const dest = path.join(snapshotDir, relative);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       try {
-        fs.copyFileSync(liveAbsolute, dest);
+        const permitted = backupSource(stateRoot, liveAbsolute);
+        if (!permitted) return;
+        fs.copyFileSync(permitted, dest);
       } catch (error) {
         if (goneDuringCopy(error)) return;
         throw error;
@@ -672,7 +699,9 @@ export class BackupManager {
         continue;
       }
 
-      const sourcePath = path.join(this.stateDir, entry);
+      if (isDeniedForBackup(entry)) continue;
+      const sourcePath = backupSource(stateRoot, path.join(this.stateDir, entry));
+      if (!sourcePath) continue;
 
       if (entry.endsWith('/')) {
         // Directory — copy all files in it
@@ -804,6 +833,7 @@ export class BackupManager {
   stageSqliteFiles(): StagedBackupSources {
     fs.mkdirSync(this.backupsDir, { recursive: true });
     const dir = fs.mkdtempSync(path.join(this.backupsDir, STAGING_DIR_PREFIX));
+    const stateRoot = fs.realpathSync(this.stateDir);
     const sources: Record<string, string> = {};
     let index = 0;
     const stage = (relative: string, absolute: string): void => {
@@ -811,8 +841,9 @@ export class BackupManager {
       const target = path.join(dir, String(index++));
       try {
         // A directory that merely has a database-like name is not staged.
-        if (!fs.statSync(absolute).isFile()) return;
-        fs.copyFileSync(absolute, target, fs.constants.COPYFILE_FICLONE);
+        const permitted = backupSource(stateRoot, absolute);
+        if (!permitted || !fs.statSync(permitted).isFile()) return;
+        fs.copyFileSync(permitted, target, fs.constants.COPYFILE_FICLONE);
         sources[stagedKey(relative)] = target;
       } catch (error) {
         // A file that vanished between the listing and the copy is simply not staged.
@@ -821,8 +852,9 @@ export class BackupManager {
     };
     try {
       for (const entry of this.resolveIncludedFiles()) {
-        if (this.isEntryBlocked(entry)) continue;
-        const sourcePath = path.join(this.stateDir, entry);
+        if (isDeniedForBackup(entry) || this.isEntryBlocked(entry)) continue;
+        const sourcePath = backupSource(stateRoot, path.join(this.stateDir, entry));
+        if (!sourcePath) continue;
         if (!entry.endsWith('/')) { stage(entry, sourcePath); continue; }
         const pending = [{ absolute: sourcePath, relative: entry }];
         while (pending.length > 0) {

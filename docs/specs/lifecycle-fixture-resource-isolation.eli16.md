@@ -1,0 +1,9 @@
+# Give every lifecycle test its own files and listening port
+
+Complete lifecycle checks exposed four fixture problems when two working copies tested at the same time. The failures did not come from changed reply or document behavior. The test inputs and resources were not independent.
+
+The unanswered-message test wrote its Python script and conversation input to fixed names in the system temporary folder. Another working copy could replace that input before Python read it. The sentinel test created its state directory directly inside the temporary folder, then put its log in the parent’s logs directory. Every fixture therefore shared that same log folder, and one fixture’s cleanup could delete another’s evidence. The documents test always listened on port 4987, so a second copy could not start. Finally, the reply-recovery fixture’s long temporary path exceeded the Mac’s Unix socket pathname limit. Node listened at a truncated path, and the permission check could not find the full name.
+
+The correction gives the Python helper its existing unique fixture directory, puts sentinel state and logs inside one owned root, asks the operating system for an available documents port and checks the actual listener’s URL, and uses a short socket fixture path with a length assertion. A new regression keeps one sentinel rig alive while another is cleaned up and verifies that the first can still write its log.
+
+All original behavior assertions remain. Thirty-four checks across the four corrected lifecycle files pass. The tests still exercise real production initialization, reply recovery, Python message classification, document creation and sentinel escalation. No production service, policy, standards document or user data changes. The complete suites and ordinary verification queue remain required before merge.

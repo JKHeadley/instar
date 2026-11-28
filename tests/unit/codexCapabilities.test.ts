@@ -6,7 +6,7 @@
  * and memoization paths.
  */
 
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,12 +19,18 @@ function fakeCodex(helpText: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-'));
   made.push(dir);
   const bin = path.join(dir, 'codex');
-  // Emit helpText for any args; exit 0.
-  fs.writeFileSync(bin, `#!/bin/bash\ncat <<'HELP'\n${helpText}\nHELP\n`, { mode: 0o755 });
+  // Use a shell builtin so the responding fixture never waits on a second process.
+  const quoted = "'" + helpText.replaceAll("'", "'\\''") + "'";
+  fs.writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' ${quoted}\n`, { mode: 0o755 });
   return bin;
 }
 
-beforeEach(() => __resetCodexCapabilityCache());
+beforeEach(() => {
+  __resetCodexCapabilityCache();
+  // Responding fixtures get scheduling headroom on a shared verifier.
+  vi.stubEnv('INSTAR_CODEX_VERSION_PROBE_SCALE', '5');
+});
+afterEach(() => vi.unstubAllEnvs());
 afterAll(() => { for (const d of made) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/unit/codexCapabilities.test.ts:cleanup' }); });
 
 describe('codexSupportsHookTrustBypass', () => {
@@ -121,6 +127,7 @@ describe('older-CLI fallback for the GPT-6.x ids (live boundary 2026-11-17: 0.16
   });
 
   it('a wedged codex does not block the event loop and is cached as unreadable', async () => {
+    vi.stubEnv('INSTAR_CODEX_VERSION_PROBE_SCALE', '1');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-'));
     made.push(dir);
     const bin = path.join(dir, 'codex');
@@ -137,6 +144,7 @@ describe('older-CLI fallback for the GPT-6.x ids (live boundary 2026-11-17: 0.16
   }, 10_000);
 
   it('a codex that reads stdin and ignores SIGTERM still settles within the probe deadline', async () => {
+    vi.stubEnv('INSTAR_CODEX_VERSION_PROBE_SCALE', '1');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-codex-'));
     made.push(dir);
     const bin = path.join(dir, 'codex');

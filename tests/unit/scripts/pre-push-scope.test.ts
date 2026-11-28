@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
+  classifySmokeInputs,
   classifyVitestListRun,
   evaluateAffectedSmokeSelection,
   evaluateSmokeBreadth,
@@ -20,6 +27,95 @@ function fakeGit(outputs: Record<string, string | Error>) {
 }
 
 describe('pre-push smoke scope helpers', () => {
+  it('selects directly changed tests without a related graph for a shared verifier input', () => {
+    expect(classifySmokeInputs(['src/localVerify/peer.ts', 'tests/unit/localVerify/peerVerifier.test.ts'])).toMatchObject({
+      directTests: ['tests/unit/localVerify/peerVerifier.test.ts'],
+      sharedInput: 'src/localVerify/peer.ts',
+    });
+  });
+
+  it.each([
+    'src/server/routes/x.ts', 'tests/setup/x.ts', 'tests/vitest-setup.ts', 'packages/x/package.json',
+    'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'vitest.push.config.ts',
+  ])(
+    'classifies %s as a shared input before launching related discovery',
+    (file) => expect(classifySmokeInputs([file]).sharedInput).toBe(file),
+  );
+
+  it('keeps E2E changes visible and does not widen matching to lookalike paths', () => {
+    expect(classifySmokeInputs(['tests/e2e/x.test.ts', 'docs/x.mdx'])).toEqual({
+      directTests: [], deferredE2e: ['tests/e2e/x.test.ts'], sharedInput: null, hasSourceChange: false,
+    });
+    for (const file of ['src/commands/server.tsx', 'src/server/routesFoo.ts', 'packages/a/b/package.json']) {
+      expect(classifySmokeInputs([file]).sharedInput).toBeNull();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('reuses a single related scan in the smoke CLI', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-smoke-cli-'));
+    try {
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      const selected = path.join(dir, 'tests/unit/one.test.ts');
+      const calls = path.join(dir, 'calls.jsonl');
+      fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh
+case "$1 $2" in
+  'branch --show-current') echo 'fixture';;
+  'rev-parse --abbrev-ref') echo 'origin/main';;
+  'rev-parse --verify') echo 'base';;
+  'diff --name-only') echo 'src/core/narrow.ts';;
+  *) exit 1;;
+esac
+`, { mode: 0o755 });
+      fs.writeFileSync(path.join(bin, 'npx'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.SMOKE_FIXTURE_CALLS, JSON.stringify(args) + '\\n');
+const out = args.find(a => a.startsWith('--json='));
+if (out) {
+  const entry = { file: process.env.SMOKE_FIXTURE_SELECTED };
+  if (!args.includes('--filesOnly')) entry.name = 'fixture case';
+  fs.writeFileSync(out.slice(7), JSON.stringify([entry]));
+}
+`, { mode: 0o755 });
+      const script = fileURLToPath(new URL('../../../scripts/pre-push-smoke.mjs', import.meta.url));
+      const result = spawnSync(process.execPath, [script], {
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          PATH: [bin, path.dirname(process.execPath), process.env.PATH].join(path.delimiter),
+          SMOKE_FIXTURE_CALLS: calls,
+          SMOKE_FIXTURE_SELECTED: selected,
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const invocations = fs.readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]);
+      expect(invocations.map(args => args[1])).toEqual(['list', 'list', 'run']);
+      expect(invocations.filter(args => args.includes('--changed'))).toHaveLength(1);
+      expect(invocations[0]).toContain('--filesOnly');
+      expect(invocations[1]).toContain(selected);
+      expect(invocations[2]).toContain(selected);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'pre-push-scope.test.ts:cleanup' });
+    }
+  }, 30_000);
+
+  it('keeps the normalized unique files for reuse after the first listing', () => {
+    const files = [{ file: '/repo/tests/a.test.ts' }, { file: '/repo/tests/a.test.ts' }, { file: '/repo/tests/b.test.ts' }];
+    expect(summarizeVitestFilesOnlyJson(JSON.stringify(files), { includeFiles: true })).toEqual({
+      testFileCount: 2, files: ['/repo/tests/a.test.ts', '/repo/tests/b.test.ts'],
+    });
+  });
+
+  it('retains affected discovery for a narrow source change and avoids it for test-only changes', () => {
+    expect(classifySmokeInputs(['src/core/example.ts'])).toMatchObject({ sharedInput: null, hasSourceChange: true });
+    expect(classifySmokeInputs(['tests/unit/example.test.ts', 'docs/example.md'])).toMatchObject({
+      directTests: ['tests/unit/example.test.ts'], sharedInput: null, hasSourceChange: false,
+    });
+  });
+
   it('uses a branch upstream when the upstream branch is main', () => {
     const base = resolvePrePushBase({
       git: fakeGit({
