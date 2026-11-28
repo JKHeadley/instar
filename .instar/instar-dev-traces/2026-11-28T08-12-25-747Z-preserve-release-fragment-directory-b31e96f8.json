@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "preserve-release-fragment-directory",
+  "sessionId": "b528b042-91e4-4687-b182-8f0750aaedd6",
+  "timestamp": "2026-11-28T08:12:25.747Z",
+  "artifactPath": "upgrades/side-effects/preserve-release-fragment-directory.md",
+  "artifactSha256": "b7ceb90923d79d22a14a6fa381cf1caa375f4ac3470170edff9e75d4dffa3f84",
+  "coveredFiles": [
+    ".github/workflows/publish.yml",
+    ".instar/instar-dev-decisions/2026-11-28T07-23-52-748Z-preserve-release-fragment-directory.json",
+    ".instar/instar-dev-traces/2026-11-28T07-23-08-568Z-preserve-release-fragment-directory-83e5d8dc.json",
+    "docs/specs/preserve-release-fragment-directory.eli16.md",
+    "scripts/check-repo-invariants.mjs",
+    "tests/unit/scripts/check-repo-invariants.test.ts",
+    "upgrades/next/.gitkeep",
+    "upgrades/next/preserve-release-fragment-directory.md",
+    "upgrades/side-effects/preserve-release-fragment-directory.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible release workflow invariant with no agent runtime changes.",
+  "eli16Path": "docs/specs/preserve-release-fragment-directory.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/preserve-release-fragment-directory.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

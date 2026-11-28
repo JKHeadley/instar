@@ -73,6 +73,17 @@ function signed(c: ReturnType<typeof setup>, method: 'GET' | 'POST', p: string, 
 const reg = (rev: number, extra: Record<string, unknown> = {}) => ({ token: TOKEN, environment: 'sandbox', notifyTokenHash: READ_HASH, revision: rev, ...extra });
 
 describe('mobile push routes', () => {
+  it('records build metadata only from the signed body and ignores invalid metadata', async () => {
+    const c = setup();
+    await signed(c, 'POST', '/mobile/device/push', reg(1, { appBuild: '146' })).expect(200);
+    await signed(c, 'POST', '/mobile/device/push', reg(2, { appBuild: 'invalid value' })).expect(200);
+    const list = await request(c.app).get('/mobile/devices').set('Authorization', 'Bearer tok-1').expect(200);
+    expect(list.body.devices).toMatchObject([{ id: c.id, appBuild: '146' }]);
+    await request(c.app).post('/mobile/device/push').set('Authorization', 'Bearer tok-1')
+      .send(reg(3, { appBuild: '147' })).expect(403);
+    expect(c.svc.devices.get(c.id)?.appBuild).toBe('146');
+  });
+
   it('registers a token (device-signed), refuses bearer, stale and conflicting revisions, never lists the token', async () => {
     const c = setup();
     expect((await request(c.app).post('/mobile/device/push').set('Authorization', 'Bearer tok-1').send(reg(1))).status).toBe(403);

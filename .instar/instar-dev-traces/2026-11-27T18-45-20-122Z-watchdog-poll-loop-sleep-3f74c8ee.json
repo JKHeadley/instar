@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "watchdog-poll-loop-sleep",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T18:45:20.122Z",
+  "artifactPath": "upgrades/side-effects/watchdog-poll-loop-sleep.md",
+  "artifactSha256": "e03d312e7e56643b8f338423deb103ef81db8a8839d903a9522c5cd96c03195f",
+  "coveredFiles": [
+    "src/monitoring/SessionWatchdog.ts",
+    "tests/unit/session-watchdog-poll-loop-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Second-pass fix: the sleeping loop is skipped in candidate selection so siblings are still checked; no new protection.",
+  "eli16Path": "docs/eli16/watchdog-poll-loop-sleep.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/watchdog-poll-loop-sleep.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

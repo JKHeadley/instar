@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-28T03:59:09.207Z",
+  "slug": "correction-class-review-graded-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 126,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json",
+      "src/monitoring/ClassReviewStore.ts",
+      "src/monitoring/CorrectionClassReview.ts",
+      "src/monitoring/FeatureEvidenceLog.ts",
+      "src/monitoring/LadderEvidenceReader.ts",
+      "src/server/maturationLadderRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 118,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

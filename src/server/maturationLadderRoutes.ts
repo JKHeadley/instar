@@ -15,7 +15,7 @@ import { Router, type Request, type Response } from 'express';
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
-import type { FeatureEvidenceInput, FeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
+import { isReservedGrader, type FeatureEvidenceInput, type FeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import type { MaturationLadderService } from '../monitoring/MaturationLadderService.js';
 import type { TargetRung } from '../monitoring/MaturationLadder.js';
 
@@ -126,6 +126,10 @@ export function createMaturationLadderRoutes(ctx: MaturationLadderCtx): Router {
     }
     if (typeof b.reason !== 'string' || !b.reason.trim()) {
       res.status(400).json({ error: 'a reason is required' });
+      return;
+    }
+    if (isReservedGrader(b.gradedBy)) {
+      res.status(400).json({ error: 'gradedBy names an operator decision; only the code path that checked the operator can record one' });
       return;
     }
     if (b.kind === 'outcome' && (typeof b.outcome !== 'string' || !OUTCOMES.has(b.outcome))) {

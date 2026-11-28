@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T18:37:25.891Z",
+  "slug": "watchdog-poll-loop-sleep",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 35,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/SessionWatchdog.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

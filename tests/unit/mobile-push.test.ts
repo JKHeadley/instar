@@ -195,6 +195,16 @@ describe('MobilePushService', () => {
 });
 
 describe('DeviceRegistry.setPush', () => {
+  it('persists the reported build across token clears and legacy registrations', () => {
+    const c = setup();
+    const initial = c.reg.get(c.id)?.pushRevision ?? 0;
+    expect(c.reg.setPush(c.id, { token: null, revision: initial + 1, appBuild: '146' }).ok).toBe(true);
+    expect(c.reg.setPush(c.id, { token: null, revision: initial + 1, appBuild: '146' }).ok).toBe(true);
+    expect(c.reg.setPush(c.id, { token: null, revision: initial + 1, appBuild: '147' })).toEqual({ ok: false, reason: 'revision-conflict' });
+    expect(c.reg.setPush(c.id, { token: null, revision: initial + 2 }).ok).toBe(true);
+    expect(c.reg.get(c.id)?.appBuild).toBe('146');
+  });
+
   it('older revision refused, same revision same body accepted, same revision other body refused; token held by one record', () => {
     const c = setup();
     expect(c.reg.setPush(c.id, { token: TOKEN, environment: 'sandbox', notifyTokenHash: HASH, revision: 1 }).ok).toBe(true);

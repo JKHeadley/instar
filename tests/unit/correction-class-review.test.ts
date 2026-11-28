@@ -196,7 +196,7 @@ describe('class-review lifecycle authority and retention', () => {
     store.fill('old', { standardReview: { verdict: 'new-standard-needed', proposedDelta: 'delta', isPolicyRelaxation: false },
       processReview: { verdict: 'process-gap', proposedDelta: 'process' }, rationale: 'r', confidence: 'high', semanticClassId: 'class-a' });
     // Explicit transition timestamp is old enough for deterministic aging.
-    store.transitionOutcome('old', 'standard', 'proposed');
+    store.transitionOutcome('old', 'standard', 'proposed', null);
     expect(store.ageExpiredUnreviewed(new Date('2100-01-01T00:00:00Z'))).toHaveLength(1);
     expect(store.get('old')).toMatchObject({ reviewLifecycle: 'parked', standardOutcome: 'expired-unreviewed' });
     store.defer('old', 'process', 'ACT-follow-up');

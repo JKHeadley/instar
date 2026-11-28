@@ -4,6 +4,7 @@ import type { IntelligenceProvider } from '../core/types.js';
 import { buildTranscriptSliceIdentityContext } from '../core/JudgmentProvenanceLog.js';
 import { DP_CORRECTION_CLASS_REVIEW } from '../data/provenanceCoverage.js';
 import type { CorrectionRecord } from './CorrectionLedger.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import {
   type ClassReviewRecord,
   type CorrectionOrigin,
@@ -11,6 +12,7 @@ import {
   type ReviewConfidence,
   type StandardReviewResult,
   ClassReviewStore,
+  CLASS_REVIEW_FEATURE_ID,
   canonicalStandardRef,
 } from './ClassReviewStore.js';
 
@@ -184,6 +186,17 @@ export class CorrectionClassReview {
       // admitted. This is the correspondence gate's required happens-before.
       let filled = this.opts.store.fill(correction.dedupeKey, { ...judgment, semanticClassId });
       if (!filled) return null;
+      // Evidence for the ladder, written as soon as the judgment is durable so a
+      // later bookkeeping failure cannot drop it: the verdicts only, never the text.
+      featureEvidence.record(CLASS_REVIEW_FEATURE_ID, {
+        kind: 'fired',
+        reason: `filled: standard ${judgment.standardReview.verdict}, process ${judgment.processReview.verdict}`,
+        subject: semanticClassId,
+        context: {
+          dedupeKey: correction.dedupeKey, standardVerdict: judgment.standardReview.verdict,
+          processVerdict: judgment.processReview.verdict, confidence: judgment.confidence,
+        },
+      });
       if (!eligibleForWork || judgment.standardReview.isPolicyRelaxation) {
         await this.opts.attentionRoute?.({
           title: 'Correction class review needs disposition',
@@ -255,7 +268,16 @@ export class CorrectionClassReview {
       deadLetter,
       nextAttemptAt: deadLetter ? undefined : new Date(Date.now() + delayMs).toISOString(),
     });
-    this.opts.audit?.({ event: deadLetter ? 'dead-lettered' : 'retry-scheduled', dedupeKey, reason, attemptCount: nextCount });
+    // Before the audit callback, so a throwing sink cannot drop it. A failure after the judgment was stored is bookkeeping, not a model failure:
+    // labelled so a reader of these rows does not count it as a model failure.
+    featureEvidence.record(CLASS_REVIEW_FEATURE_ID, {
+      // A fixed code, never the raw message: an error after the fill can echo text
+      // built from the correction (the raw message stays in the audit log).
+      kind: 'error', reason: current.fillState === 'filled' ? 'post-fill-error' : reason === 'invalid-structured-output' ? reason : /provider[- ]unavailable|no provider/i.test(reason) ? 'provider-unavailable' : 'provider-error',
+      context: { dedupeKey, attemptCount: nextCount, deadLettered: deadLetter, stage: current.fillState === 'filled' ? 'after-fill' : 'review' },
+    });
+    // A throwing audit sink must not turn a recorded failure into an unhandled rejection.
+    try { this.opts.audit?.({ event: deadLetter ? 'dead-lettered' : 'retry-scheduled', dedupeKey, reason, attemptCount: nextCount }); } catch { /* @silent-fallback-ok: the attempt and its evidence row are already recorded */ }
     if (deadLetter) {
       // Dead-letter is deliberately fail-open for the instance-fix gate, so it
       // must create one durable agent-owned retry rather than becoming a silent
