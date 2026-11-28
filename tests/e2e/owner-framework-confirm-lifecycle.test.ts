@@ -10,9 +10,11 @@ import { TopicProfileStore } from '../../src/core/TopicProfileStore.js';
 import { TopicProfileResolver } from '../../src/core/TopicProfileResolver.js';
 import { TopicProfileWriteSurface } from '../../src/core/topicProfileWriteSurface.js';
 import { ProfileConfirmSlots } from '../../src/core/topicProfileIngress.js';
-import { applyCrossTopicConfirm, crossTopicEligible } from '../../src/core/topicCreationProvenance.js';
+import { handleAndAcknowledgeProfileProposalReply, profileProposalConversationContext } from '../../src/core/handleProfileProposalReply.js';
+import { crossTopicEligible } from '../../src/core/topicCreationProvenance.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
-import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
+import { NotificationSelectivityGate, verifiedReplyEnvelope, requireTelegramDelivery } from '../../src/messaging/NotificationSelectivityGate.js';
+import { withNotificationEnvelope } from '../../src/messaging/notificationStampers.js';
 import { TeamConfinement } from '../../src/users/TeamConfinement.js';
 import { TEAM_ACCESS_DIR } from '../../src/core/TeamAccessLog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -34,7 +36,7 @@ function harness() {
   const store = new TopicProfileStore({ stateFilePath: path.join(stateDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
   const resolver = new TopicProfileResolver({ store, defaultFramework: () => 'claude-code', configTopicFrameworks: () => ({}), configProfileDefaults: () => ({}), frameworkDefaultModels: () => ({}), tierEscalationConfig: () => undefined, localModelBinding: () => null, frameworkBinaryPath: () => null });
   const slots = new ProfileConfirmSlots();
-  const telegram = new TelegramAdapter({ token: '123:lifecycle-fixture', chatId: '-1001', ownerUserId: OWNER }, stateDir, { suppressLifelineAutoCreate: true });
+  const telegram = new TelegramAdapter({ token: '123:lifecycle-fixture', chatId: '-1001', ownerUserId: OWNER, authorizedUserIds: [OWNER] }, stateDir, { suppressLifelineAutoCreate: true });
   vi.spyOn(telegram, 'getTopicName').mockImplementation(id => id === TARGET ? 'Project Work' : id === SOURCE ? 'Planning' : null);
   const gate = new NotificationSelectivityGate(stateDir, 'test-machine', () => ({ enabled: true, dryRun: false }));
   telegram.selectivity = gate;
@@ -51,18 +53,32 @@ function harness() {
   cleanup.push(async () => { await server.stop(); await gate.close(); SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'owner-framework-confirm-lifecycle' }); });
   const bind = (topic: number, uid: number) => server.getTopicOperatorStore()!.setAuthenticatedOperator(topic, { platform: 'telegram', uid: String(uid), displayName: 'Fixture operator' }, { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: String(uid), messageId: `fixture-${topic}-${uid}` });
   bind(SOURCE, OWNER);
-  const propose = (confirmIn?: number) => request(server.getApp()).post(`/topic-profile/${TARGET}/propose`).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ framework: 'codex-cli', ...(confirmIn ? { confirmIn } : {}) });
-  const confirm = async (uid = OWNER) => {
-    const match = slots.matchConfirm(String(SOURCE), { platformMessageId: mid + 1, forwarded: false });
-    expect(match.ok).toBe(true);
-    if (!match.ok) throw new Error('Expected actual delivered proposal slot');
-    return applyCrossTopicConfirm({ sourceTopicKey: String(SOURCE), targetTopicKey: match.armed.targetTopicKey!, patch: match.armed.patch as Record<string, unknown>, agentComposed: true, principal: { kind: 'operator', platform: 'telegram', uid: String(uid) }, eligibility: (confirmerUid, destKey, sourceKey) => {
-      const ops = server.getTopicOperatorStore()!;
-      const confinement = new TeamConfinement(stateDir);
-      return crossTopicEligible({ ownerUid: String(OWNER), confirmerUid, sourceConfined: confinement.isConfined(`telegram:${sourceKey}`), destKnown: telegram.getTopicName(Number(destKey)) !== null, destBinding: ops.getBinding(destKey), destVerifiedUid: ops.getOperator(destKey)?.uid ?? null, destConfined: confinement.isConfined(`telegram:${destKey}`) });
-    }, applyWrite: req => surface.applyWrite(req as Parameters<typeof surface.applyWrite>[0]) });
+  const delivered = new Map<string, { source: number; receipt: number }>();
+  const propose = async (confirmIn?: number, patch: Record<string, string> = { framework: 'codex-cli' }) => {
+    const response = await request(server.getApp()).post(`/topic-profile/${TARGET}/propose`).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ ...patch, ...(confirmIn ? { confirmIn } : {}) });
+    if (response.status === 200) delivered.set(response.body.requestId, { source: confirmIn ?? TARGET,
+      receipt: slots.proposals.get(String(confirmIn ?? TARGET), response.body.requestId)!.receipts.at(-1)!.messageId });
+    return response;
   };
-  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, confirm };
+  const remind = (id: string) => request(server.getApp()).post(`/topic-profile/${TARGET}/propose`).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ remindRequestId: id, confirmIn: SOURCE });
+  const confirm = async (uid = OWNER, id = [...delivered.keys()].at(-1)!, text = 'yes', inboundId = mid + 1, nativeReply?: number) => {
+    const delivery = delivered.get(id)!;
+    const out = await handleAndAcknowledgeProfileProposalReply({ requests: slots.proposals, surface,
+      source: String(delivery.source), text, messageId: inboundId, replyTo: nativeReply ?? delivery.receipt, forwarded: false,
+      principal: { kind: 'operator', platform: 'telegram', uid: String(uid) },
+      eligible: destKey => {
+        const ops = server.getTopicOperatorStore()!; const confinement = new TeamConfinement(stateDir);
+        return crossTopicEligible({ ownerUid: String(OWNER), confirmerUid: String(uid), sourceConfined: confinement.isConfined(`telegram:${delivery.source}`),
+          destKnown: telegram.getTopicName(Number(destKey)) !== null, destBinding: ops.getBinding(destKey),
+          destVerifiedUid: ops.getOperator(destKey)?.uid ?? null, destConfined: confinement.isConfined(`telegram:${destKey}`) }).ok;
+      }, placement: () => 'standalone', name: destKey => telegram.getTopicName(Number(destKey))! }, async text => {
+        const sent = await withNotificationEnvelope(verifiedReplyEnvelope('owner-framework-test-inbound'), async () => telegram.sendToTopic(delivery.source, text));
+        requireTelegramDelivery(sent);
+      });
+    return { ...out, written: out.result?.ok ?? false, reply: out.result?.reply };
+  };
+
+  return { stateDir, store, surface, slots, telegram, sent, respawns, bind, propose, remind, confirm, operators: server.getTopicOperatorStore()!, app: server.getApp() };
 }
 
 describe('Owner framework confirmation is alive through production composition', () => {
@@ -73,8 +89,10 @@ describe('Owner framework confirmation is alive through production composition',
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message_thread_id).toBe(SOURCE);
     expect(h.sent[0].text).toContain('Project Work');
-    expect(h.sent[0].text).toContain('framework → codex-cli');
-    expect(h.slots.peek(String(SOURCE))?.echoPlatformMessageId).toBe(901);
+    expect(h.sent[0].text).toContain('Use Codex');
+    expect(h.sent[0].text).toContain('summary');
+    expect(h.sent[0].text).not.toContain('framework →');
+    expect(h.slots.proposals.list(String(SOURCE))[0]?.receipts[0].messageId).toBe(901);
     expect(h.store.resolve(TARGET)).toBeNull();
     expect(h.respawns).toEqual([]);
     expect((await h.confirm()).written).toBe(true);
@@ -86,16 +104,112 @@ describe('Owner framework confirmation is alive through production composition',
     expect(JSON.stringify(persisted)).toContain('codex-cli');
   });
 
+  it('carries a real polling update reply receipt into confirmation instead of inventing one in the fixture', async () => {
+    const h = harness(); const proposed = await h.propose(SOURCE); expect(proposed.status).toBe(200);
+    let outcome: Awaited<ReturnType<typeof h.confirm>> | null = null;
+    h.telegram.onTopicMessage = async message => {
+      const nativeReply = message.metadata?.replyToMessageId;
+      if (typeof nativeReply !== 'number') return;
+      outcome = await h.confirm(Number(message.userId), proposed.body.requestId, message.content, Number(message.id.slice(3)), nativeReply);
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const update = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
+      from: { id: OWNER, first_name: 'Fixture operator' }, chat: { id: -1001, type: 'supergroup' }, text: 'yes', reply_to_message: { message_id: 901 } };
+    await polling.processUpdate({ update_id: 1, message: { ...update, reply_to_message: { message_id: 899 } } });
+    expect(h.store.resolve(TARGET)).toBeNull();
+    await polling.processUpdate({ update_id: 2, message: { ...update, message_id: 991 } });
+    expect(outcome).toMatchObject({ written: true });
+    expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli'); expect(h.respawns).toEqual([String(TARGET)]);
+  });
+
+  it('supplies the referenced server question to the ordinary agent turn without treating numbered yes as consent', async () => {
+    const h = harness(); const a = await h.propose(SOURCE); const b = await h.propose(SOURCE, { framework: 'claude-code' });
+    expect(a.status).toBe(200); expect(b.status).toBe(200);
+    let context = ''; let words = '';
+    h.telegram.onTopicMessage = async message => {
+      words = message.content;
+      context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(SOURCE),
+        replyTo: message.metadata?.replyToMessageId, messageId: Number(message.id.slice(3)), forwarded: message.metadata?.forwarded === true,
+        authenticatedOwner: () => h.operators.getOperator(SOURCE)?.uid === message.userId,
+        eligible: dest => crossTopicEligible({ ownerUid: String(OWNER), confirmerUid: message.userId,
+          sourceConfined: false, destKnown: h.telegram.getTopicName(Number(dest)) !== null,
+          destBinding: h.operators.getBinding(dest), destVerifiedUid: h.operators.getOperator(dest)?.uid ?? null, destConfined: false }).ok,
+        placement: () => 'standalone', currentEcho: p => { const fresh = h.surface.renderProposalEcho(p.target, p.patch, h.telegram.getTopicName(Number(p.target))!); return fresh.ok ? fresh.echo : null; },
+      });
+    };
+    const polling = h.telegram as unknown as { processUpdate(update: unknown): Promise<void> };
+    const message = { message_id: 990, message_thread_id: SOURCE, date: Math.floor(Date.now() / 1000),
+      from: { id: OWNER, first_name: 'Fixture' }, chat: { id: -1001, type: 'supergroup' }, text: '1) yes', reply_to_message: { message_id: 902 } };
+    await polling.processUpdate({ update_id: 1, message });
+    expect(words).toBe('1) yes'); expect(context).toContain(b.body.requestId); expect(context).not.toContain(a.body.requestId);
+    expect(context).toContain('Use Claude'); expect(h.store.resolve(TARGET)).toBeNull(); expect(h.slots.proposals.list(String(SOURCE))).toHaveLength(2);
+    const operation = JSON.parse(context.split('\n')[1]).reminder;
+    const reminder = await request(h.app).post(operation.path).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send(operation.body);
+    expect(reminder.status).toBe(200); expect(reminder.body.requestId).toBe(b.body.requestId);
+    expect(h.store.resolve(TARGET)).toBeNull();
+    const receipt = h.slots.proposals.get(String(SOURCE), b.body.requestId)!.receipts.at(-1)!.messageId;
+    expect((await h.confirm(OWNER, b.body.requestId, 'yes', 1002, receipt)).written).toBe(true);
+    expect(h.store.resolve(TARGET)?.framework).toBe('claude-code');
+
+    await polling.processUpdate({ update_id: 2, message: { ...message, message_id: 991, forward_origin: { type: 'user' } } });
+    expect(context).toBe(''); expect(h.store.resolve(TARGET)?.framework).toBe('claude-code');
+  });
+
+  it('executes the supplied same-topic reminder operation without an invalid cross-topic field', async () => {
+    const h = harness(); h.bind(TARGET, OWNER); const proposed = await h.propose(); expect(proposed.status).toBe(200);
+    const context = profileProposalConversationContext({ requests: h.slots.proposals, source: String(TARGET),
+      replyTo: 901, messageId: 990, forwarded: false,
+      authenticatedOwner: () => h.operators.getOperator(TARGET)?.uid === String(OWNER),
+      eligible: () => !new TeamConfinement(h.stateDir).isConfined(`telegram:${TARGET}`), placement: () => 'standalone',
+      currentEcho: p => { const fresh = h.surface.renderProposalEcho(p.target, p.patch, h.telegram.getTopicName(Number(p.target))!); return fresh.ok ? fresh.echo : null; },
+    });
+    const operation = JSON.parse(context.split('\n')[1]).reminder;
+    expect(operation.body).not.toHaveProperty('confirmIn');
+    const reminder = await request(h.app).post(operation.path).set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send(operation.body);
+    expect(reminder.status).toBe(200); expect(reminder.body.requestId).toBe(proposed.body.requestId); expect(h.store.resolve(TARGET)).toBeNull();
+    const receipt = h.slots.proposals.get(String(TARGET), proposed.body.requestId)!.receipts.at(-1)!.messageId;
+    expect((await h.confirm(OWNER, proposed.body.requestId, 'yes', 1002, receipt)).written).toBe(true);
+    expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli');
+  });
+
   it('delivers an in-topic proposal visibly while an ordinary automated report stays quiet', async () => {
     const h = harness();
     h.bind(TARGET, OWNER);
     expect((await h.propose()).status).toBe(200);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message_thread_id).toBe(TARGET);
-    expect(h.slots.peek(String(TARGET))?.echoPlatformMessageId).toBe(901);
+    expect(h.slots.proposals.list(String(TARGET))[0]?.receipts[0].messageId).toBe(901);
     expect(await h.telegram.sendToTopic(TARGET, 'Routine automated report')).toMatchObject({ recorded: true });
     expect(h.sent).toHaveLength(1);
     expect(h.store.resolve(TARGET)).toBeNull();
+  });
+
+  it('keeps two questions through agent activity and reminders; nonexact text never applies', async () => {
+    const h = harness(); const a = await h.propose(SOURCE); const b = await h.propose(SOURCE, { framework: 'claude-code' });
+    expect(a.status).toBe(200); expect(b.status).toBe(200);
+    h.slots.noteOutbound(String(SOURCE), 902);
+    expect((await h.confirm(OWNER, b.body.requestId, '1) yes')).written).toBe(false);
+    expect((await h.confirm(OWNER, b.body.requestId, `> ${b.body.echo.replaceAll('\n', '\n> ')}\nyes`)).written).toBe(false);
+    expect(h.store.resolve(TARGET)).toBeNull();
+    const reminder = await h.remind(b.body.requestId); expect(reminder.status).toBe(200);
+    expect(h.sent).toHaveLength(3); expect(h.sent[2].text).toContain('Use Claude');
+    expect(h.sent[2].text).not.toContain('Use Codex');
+    expect((await h.confirm(OWNER, b.body.requestId)).written).toBe(true);
+    expect(h.store.resolve(TARGET)?.framework).toBe('claude-code');
+    expect(h.slots.proposals.get(String(SOURCE), a.body.requestId)).not.toBeNull();
+    expect(h.respawns).toEqual([String(TARGET)]);
+  });
+
+  it('replays the saved result through the production acknowledgment consumer after a real adapter send failure', async () => {
+    const h = harness(); const proposed = await h.propose(SOURCE); expect(proposed.status).toBe(200);
+    const failedSend = vi.spyOn(h.telegram, 'sendToTopic').mockRejectedValueOnce(new Error('ack transport failed'));
+    const first = await h.confirm(OWNER, proposed.body.requestId, 'yes', 950);
+    expect(first.written).toBe(true); expect(first.acknowledgment).toBe('failed');
+    expect(failedSend).toHaveBeenCalledTimes(1); failedSend.mockRestore();
+    const duplicate = await h.confirm(OWNER, proposed.body.requestId, 'yes', 950);
+    expect(duplicate.result).toEqual(first.result); expect(duplicate.acknowledgment).toBe('delivered');
+    expect(h.respawns).toEqual([String(TARGET)]); expect(h.store.resolve(TARGET)?.framework).toBe('codex-cli');
+    expect(h.sent.at(-1)!.text).toContain('codex-cli');
   });
 
   it.each(['non-owner', 'other-operator', 'team'])('rechecks %s at confirmation and never writes or respawns the target', async boundary => {

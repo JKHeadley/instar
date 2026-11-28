@@ -333,6 +333,13 @@ describe('app conversations move between machines, on the production components'
 });
 
 describe('production wiring', () => {
+  it('uses narrow lease authority and non-blocking liveness in the production app binding path', () => {
+    const server = fs.readFileSync(path.join(process.cwd(), 'src', 'commands', 'server.ts'), 'utf8');
+    expect(server).toContain('appBindingLeaseAuthority: () => coordinator.appBindingLeaseAuthority()');
+    expect(server).toContain('sessionIdentity: (name) => state.findSessionByTmux(name)?.id ?? null');
+    expect(server).toContain('sessionRunning: (name) => sessionManager.isSessionAliveNonBlocking(name)');
+  });
+
   const dirs: string[] = [];
   const servers: AgentServer[] = [];
   afterAll(async () => {

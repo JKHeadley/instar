@@ -468,8 +468,8 @@ describe('propose-confirm echo (§10.1 — server-rendered, split named)', () =>
     const echo = h.surface.renderProposalEcho(23, { framework: 'codex-cli', thinkingMode: 'high' });
     expect(echo.ok).toBe(true);
     if (echo.ok) {
-      expect(echo.echo).toContain('framework → codex-cli: switches now (live)');
-      expect(echo.echo).toContain("thinkingMode → high: refused — the thinkingMode control isn't enabled");
+      expect(echo.echo).toContain('Use Codex for this conversation.');
+      expect(echo.echo).toContain('Thinking level: high cannot be applied because this setting is not enabled.');
     }
   });
 
@@ -477,7 +477,7 @@ describe('propose-confirm echo (§10.1 — server-rendered, split named)', () =>
     const h = harness(DEV_REGIME);
     const echo = h.surface.renderProposalEcho(23, { thinkingMode: 'high' });
     expect(echo.ok).toBe(true);
-    if (echo.ok) expect(echo.echo).toContain('recorded as a dry-run intent');
+    if (echo.ok) expect(echo.echo).toContain('recorded for preview only');
   });
 
   it('refuses an invalid proposal at propose time (never armed)', () => {
@@ -576,3 +576,39 @@ describe('identity-security-creation-provenance v5: a change the owner confirmed
   });
 });
 
+
+describe('confirmed identified proposals', () => {
+  it('rejects a consequence change under the lock before either live or shadow fields land', async () => {
+    const h = harness({ ...DEV_REGIME }); const patch = { framework: 'codex-cli', thinkingMode: 'high' };
+    const echo = h.surface.renderProposalEcho('23', patch, 'Scaling'); if (!echo.ok) throw new Error('echo');
+    let release!: () => void; let entered!: () => void;
+    const ready = new Promise<void>(r => { entered = r; });
+    const locked = h.store.withTopicLock('23', async () => { entered(); await new Promise<void>(r => { release = r; }); });
+    await ready;
+    const write = h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
+      confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => true }, discloseInReply: true });
+    h.regime.dryRun = false; release(); await locked;
+    const result = await write;
+    expect(result.refusal?.reason).toBe('proposal-changed'); expect(h.store.resolve('23')).toBeNull();
+    expect(h.store.get('23')?.intendedProfile ?? null).toBeNull(); expect(h.respawns).toEqual([]);
+  });
+  it('saves confirmed mixed live and preview fields in the same durable state', async () => {
+    const h = harness({ ...DEV_REGIME }); const patch = { framework: 'codex-cli', thinkingMode: 'high' };
+    const echo = h.surface.renderProposalEcho('23', patch, 'Scaling'); if (!echo.ok) throw new Error('echo');
+    const result = await h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
+      confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => true }, discloseInReply: true });
+    expect(result.ok).toBe(true);
+    const reloaded = new TopicProfileStore({ stateFilePath: path.join(tmpDir, 'state', 'topic-profiles.json'), isDryRun: () => true });
+    expect(reloaded.resolve('23')?.framework).toBe('codex-cli');
+    expect(reloaded.get('23')?.intendedProfile?.fields.thinkingMode).toBe('high');
+  });
+  it('reports saved settings separately when ownership changes during flush and skips runtime', async () => {
+    const h = harness({ ...FLEET_REGIME }); const patch = { framework: 'codex-cli' };
+    const echo = h.surface.renderProposalEcho('23', patch, 'Scaling'); if (!echo.ok) throw new Error('echo');
+    let checks = 0;
+    const result = await h.surface.applyWrite({ topicKey: '23', patch, principal: OPERATOR, origin: 'propose-confirm',
+      confirmation: { echo: echo.echo, name: 'Scaling', eligible: () => ++checks === 1 }, discloseInReply: true });
+    expect(result.ok).toBe(true); expect(result.reply).toContain('settings were saved');
+    expect(h.store.resolve('23')?.framework).toBe('codex-cli'); expect(h.respawns).toEqual([]);
+  });
+});

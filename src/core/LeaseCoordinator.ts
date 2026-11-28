@@ -681,11 +681,12 @@ export class LeaseCoordinator {
    * A tunnel lease is folded in only if acceptTunnelLease passes (valid sig,
    * ≥ git floor, fresh nonce).
    */
-  private effectiveView(): { lease: LeaseRecord | null; epoch: number; gitEpoch: number } {
+  private effectiveView(): { lease: LeaseRecord | null; epoch: number; gitEpoch: number; verifiedObservation: LeaseRecord | null } {
     const git = this.d.store.read();
     let bestLease = git.lease;
     let epoch = git.epoch;
     let peerOutranksSelf = false;
+    let verifiedObservation: LeaseRecord | null = null;
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
@@ -702,6 +703,7 @@ export class LeaseCoordinator {
         void _self;
         const decision = this.fl.acceptTunnelLease(obs.lease, git.epoch, nonceFloor);
         if (decision.accept) {
+          verifiedObservation = obs.lease;
           // F2 freshness stamp (VERIFIED fold-in): a renewing holder bumps its
           // signed nonce each renew (same OR higher epoch), so its watermark
           // advances; a non-renewing holder's stops. Stamp the OBSERVER's own
@@ -764,7 +766,25 @@ export class LeaseCoordinator {
       bestLease = this.selfIssued;
       epoch = this.selfIssued.epoch;
     }
-    return { lease: bestLease, epoch, gitEpoch: git.epoch };
+    return { lease: bestLease, epoch, gitEpoch: git.epoch, verifiedObservation };
+  }
+
+  /** Narrow, fresh authority observation for a synchronous app binding pass. */
+  appBindingLeaseAuthority(): { holdsLease: boolean; heldElsewhere: boolean } {
+    const view = this.effectiveView();
+    const lease = view.lease;
+    if (!lease || lease.released || lease.epoch !== view.epoch || this.fl.isExpired(lease, this.now()) ||
+        this.higherEpochEvidence() > view.epoch) {
+      return { holdsLease: false, heldElsewhere: false };
+    }
+    const observed = view.verifiedObservation;
+    const alreadyVerified = observed === lease || (observed?.signature === lease.signature &&
+      observed !== null && FencedLease.canonicalize(observed) === FencedLease.canonicalize(lease));
+    if (!alreadyVerified && !this.fl.verifyLease(lease)) return { holdsLease: false, heldElsewhere: false };
+    if (lease.holder !== this.selfMachineId) return { holdsLease: false, heldElsewhere: true };
+    const confirmed = this.lastRenewOkMonoMs !== null
+      && this.monotonicNow() - this.lastRenewOkMonoMs <= this.fl.ttlMs;
+    return { holdsLease: !this.suspended && confirmed, heldElsewhere: false };
   }
 
   /** Does THIS machine currently hold a valid lease at the effective epoch? */

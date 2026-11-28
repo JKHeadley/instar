@@ -37,12 +37,13 @@
  *                                                       #    at a fixture tree)
  *   node scripts/lint-state-registry.js <file> [<file>] # explicit files
  *
- * No deps; plain node stdlib.
+ * The existing TypeScript parser is used for protected, same-file writer resolution.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findAuthorityWrites, readAuthorityCensus } from './lib/state-authority-census.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..');
@@ -118,10 +119,20 @@ function loadRegistry() {
     }
     byCategory.set(e.category, e);
   }
-  return { entries, byCategory };
+  let authority;
+  try {
+    if (!registryPathArg && parsed.authorityCensus === undefined) {
+      throw new Error('the repository registry must declare its observe-mode authority census');
+    }
+    authority = readAuthorityCensus(parsed.authorityCensus, registryPathArg ? scanRoot : path.join(REPO_ROOT, 'src'), byCategory);
+  } catch (error) {
+    console.error(`lint-state-registry: ${error.message}`);
+    process.exit(1);
+  }
+  return { entries, byCategory, authority };
 }
 
-const { entries: REGISTRY, byCategory: REGISTRY_BY_CATEGORY } = loadRegistry();
+const { entries: REGISTRY, byCategory: REGISTRY_BY_CATEGORY, authority: AUTHORITY } = loadRegistry();
 
 // ── Path-glob matching (glob-ish hints → literal) ─────────────────────────
 // Registry `paths` are glob-ish hints. A write-site literal matches an entry
@@ -245,6 +256,7 @@ function annotationNear(lines, idx, radius) {
 
 let violations = 0;
 let danglingAnnotations = 0;
+let authorityViolations = 0;
 
 for (const file of listFiles()) {
   let content;
@@ -254,6 +266,11 @@ for (const file of listFiles()) {
     continue;
   }
   const rel = path.relative(REPO_ROOT, file).split(path.sep).join('/');
+  const authorityFile = normalize(path.relative(scanRoot, file));
+  for (const finding of findAuthorityWrites(content, authorityFile, AUTHORITY.physicalStores)) {
+    console.error(`${rel}:${finding.line} — undeclared ${finding.role} writer for "${finding.store}" in the observe-mode authority census.`);
+    authorityViolations++;
+  }
   const lines = content.split('\n');
 
   for (let i = 0; i < lines.length; i++) {
@@ -301,13 +318,13 @@ for (const file of listFiles()) {
   }
 }
 
-const total = violations + danglingAnnotations;
+const total = violations + danglingAnnotations + authorityViolations;
 if (total > 0) {
   console.error(
     `\nlint-state-registry: ${total} issue(s) ` +
-      `(${violations} undeclared store(s), ${danglingAnnotations} dangling annotation(s)). ` +
+      `(${violations} undeclared store(s), ${danglingAnnotations} dangling annotation(s), ${authorityViolations} undeclared protected writer(s)). ` +
       `See docs/specs/STATE-COHERENCE-REGISTRY.md and COHERENCE-JOURNAL-SPEC §3.6.`,
   );
   process.exit(1);
 }
-console.log(`lint-state-registry: clean (${REGISTRY.length} registry categories)`);
+console.log(`lint-state-registry: clean (${REGISTRY.length} registry categories, ${AUTHORITY.contracts.length} observe-mode authority contracts)`);

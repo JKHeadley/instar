@@ -269,7 +269,8 @@ export interface MobileConversationRouteDeps {
   /** Chief of Staff §4: the owner's phone checks in; absent where the feature is off. */
   chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
-  telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
+  /** `partial: true` on the returned array = some previews are not known yet (the page is marked partial). */
+  telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }> & { partial?: boolean };
   /**
    * Slack conversations for the unified list (§4.9). Absent when Slack is not configured; returns
    * null when Slack is configured but the operator's Slack user id is unset (rows withheld, and
@@ -371,7 +372,11 @@ export function localConversationListPage(deps: MobileConversationRouteDeps, lim
     let tgRows: ConversationListRow[] = [];
     if (deps.telegramTopics) {
       try {
-        tgRows = deps.telegramTopics()
+        const topics = deps.telegramTopics();
+        // Previews still being indexed: show every topic, but say the page is incomplete so no
+        // reader records a missing preview as "no activity".
+        if (topics.partial) partial = true;
+        tgRows = topics
           .map((t): ConversationListRow => ({ id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: t.lastPreview }))
           .filter((r) => isAfterListCursor(r, c));
       } catch { partial = true; DegradationReporter.getInstance().report({feature:'Conversations.slack-inventory',primary:'Read local Slack inventory',fallback:'Return explicitly partial inventory',reason:'slack-inventory-unavailable',impact:'Some Slack conversations are unavailable',internalOnly:true}); }

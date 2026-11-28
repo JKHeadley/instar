@@ -13,17 +13,31 @@ import { identityKey, type LoginSummary } from '../../src/monitoring/quotaPacing
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'manual balance HTTP cleanup' }); });
-function fixture() {
+function fixture(freshReset = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-balance-http-')); dirs.push(dir);
   const state = new StateManager(dir); const pool = new SubscriptionPool({ stateDir: dir }); const now = Date.now();
   const reset = new Date(now + 60 * 3_600_000).toISOString();
+  const forecastsForAccounts: LoginSummary[] = [];
   for (const id of ['source','amrch','sagemindai']) {
     const home = path.join(dir,id); fs.mkdirSync(home);
     pool.addFixture({ id, nickname: id, email: `${id}@example.test`, framework:'codex-cli', provider:'openai', configHome: home });
-    pool.update(id,{ lastQuota: { measuredAt:new Date(now).toISOString(), windowsListed:['sevenDay'], sevenDay:{utilizationPct:11,resetsAt:reset} } });
+    const cold = freshReset && id !== 'source';
+    const hoursLeft = cold ? (id === 'amrch' ? 166 : 164) : 60;
+    const resetsAt = cold ? new Date(now + hoursLeft * 3_600_000).toISOString() : reset;
+    const usage = cold ? 0 : 11;
+    pool.update(id, { lastQuota: { source: 'codex-app-server', measuredAt: new Date(now).toISOString(),
+      windowsListed: ['sevenDay'], sevenDay: { utilizationPct: usage, resetsAt } } });
+    if (id !== 'source') {
+      forecastsForAccounts.push({ accountId: id, identity: identityKey('openai', `${id}@example.test`),
+        provider: 'openai', framework: 'codex-cli', fresh: true, sourceKind: 'live',
+        newestMeasuredAt: new Date(now).toISOString(),
+        sevenDay: { used: usage, central: cold ? null : (id === 'amrch' ? 20 : 30), hoursLeft,
+          resetsAt, reason: cold ? 'not-enough-readings' : null },
+      } as LoginSummary);
+    }
   }
   for (const id of ['one','two','three','four']) state.saveSession({ id, name:id, tmuxSession:`topic-${id}`, framework:'codex-cli', subscriptionAccountId:'source', status:'running', startedAt:new Date().toISOString() } as any);
-  let forecasts: LoginSummary[] | null = ['amrch','sagemindai'].map(id => ({ accountId:id,identity:identityKey('openai',`${id}@example.test`),provider:'openai',framework:'codex-cli',fresh:true,sourceKind:'live',newestMeasuredAt:new Date(now).toISOString(),sevenDay:{central:id==='amrch'?20:30,hoursLeft:60,resetsAt:reset} } as LoginSummary));
+  let forecasts: LoginSummary[] | null = forecastsForAccounts;
   const targets:string[]=[]; let busy=false;
   const refresh = vi.fn(async (intent: {sessionName:string;accountId:string;callerClass?:string}) => {
     expect(intent.callerClass).toBe('interactive-refresh');
@@ -42,6 +56,14 @@ describe('explicit manual balance HTTP',()=>{
   it('four concurrent moves use both forecast targets through the real scheduler',async()=>{
     const x=fixture();const results=await Promise.all(['one','two','three','four'].map(id=>x.swap(id)));
     expect(results.every(r=>r.status===200&&r.body.swapped)).toBe(true);expect(x.targets).toEqual(['amrch','sagemindai','amrch','sagemindai']);
+  });
+  it('balances two verified fresh resets while their forecast is warming up', async () => {
+    const x = fixture(true);
+    const first = await x.swap('one');
+    const second = await x.swap('two');
+    expect(first.body).toMatchObject({ swapped: true, toAccountId: 'amrch' });
+    expect(second.body).toMatchObject({ swapped: true, toAccountId: 'sagemindai' });
+    expect(x.targets).toEqual(['amrch', 'sagemindai']);
   });
   it('unknown forecasts do not silently use reset-first; invalid flag types are rejected',async()=>{
     const x=fixture();x.setForecasts(null);

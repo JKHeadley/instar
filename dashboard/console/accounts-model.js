@@ -9,6 +9,7 @@ import { verifiedDisplayName } from './display-identity.js';
 import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export const READING_STALE_MS = 60 * 60 * 1000;
+const READING_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
 const FRAMEWORK_WORDS = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 
@@ -286,16 +287,19 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   for (const r of rows) {
     if (!r || !r.id) continue;
     const email = verifiedDisplayName(r.email, r.id);
-    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], readings: new Map() };
+    const g = byId.get(r.id) || { id: r.id, name: verifiedDisplayName(r.nickname, r.id) || email || 'Account name unavailable', email, framework: r.framework, cells: [], readings: new Map(), lastCheckedAt: 0 };
     if (g.name === 'Account name unavailable') g.name = verifiedDisplayName(r.nickname, r.id) || email || g.name;
     if (!g.email && email) g.email = email;
     const ep = epFor(r.id, r.machineId);
     const blocker = blockers.find((b) => b && b.accountId === r.id && b.machineId === r.machineId) || null;
     g.cells.push({ machineId: r.machineId, machine: verifiedDisplayName(r.machineNickname, r.machineId) || 'Machine name unavailable', ...cellState(r, ep, blocker, now), episode: ep, blocker, row: r });
     const at = Date.parse(r.lastQuota && r.lastQuota.measuredAt);
-    if (Number.isFinite(at)) for (const window of usageWindows(r.lastQuota, now)) {
-      const prior = g.readings.get(window.key);
-      if (!prior || at > prior.at) g.readings.set(window.key, { window, at });
+    if (Number.isFinite(at) && at <= now + READING_FUTURE_SKEW_MS) {
+      g.lastCheckedAt = Math.max(g.lastCheckedAt, at);
+      for (const window of usageWindows(r.lastQuota, now)) {
+        const prior = g.readings.get(window.key);
+        if (!prior || at > prior.at) g.readings.set(window.key, { window, at });
+      }
     }
     byId.set(r.id, g);
   }
@@ -335,6 +339,7 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
       ...g, reading, readingAt, tight: t, stale, windows, weeklyResetAt: nextWeeklyReset(reading, now),
       inUse: Boolean(inUse && inUse.activeAccountId === g.id),
       readingAge: readingAt ? ago(readingAt, now) : null,
+      lastCheckAge: g.lastCheckedAt ? ago(g.lastCheckedAt, now) : null,
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
         : `${Math.round(t.pct)}% of ${t.label}${resetWords(t.resetsAt, now) ? ' · ' + resetWords(t.resetsAt, now) : ''}`,
       second: t && t.second ? `${t.second.label} ${Math.round(t.second.pct)}%` : null,

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-27T13:17:48.465Z",
+  "slug": "app-lease-reconcile-tick",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 158,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AppConversationService.ts",
+      "src/core/LeaseCoordinator.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/appConversationPool.ts"
+    ],
+    "addedLines": 124,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

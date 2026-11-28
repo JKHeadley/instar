@@ -5,7 +5,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
 import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/RuntimeOriginObserver.js';
-import { TelegramOriginService } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
+import { TelegramOriginService, describeRequestShape, describeTelegramRefusal } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import type { OriginServiceStore } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
 import { compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
 import { PendingRelayStore } from '../../../src/messaging/pending-relay-store.js';
@@ -329,6 +329,55 @@ describe('origin service durable delivery', () => {
     expect(diagnose).toHaveBeenCalledOnce();
     expect((await reopened.getOrigin(row.record.originId))?.diagnostic?.state).toBe('complete');
     expect(await reopened.recoverableAdmissions()).toEqual([]);
+  });
+  it('logs Telegram\'s own refusal text for a 4xx send, bounded and without a token', async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fakeToken = 'bot' + '123456:' + 'A'.repeat(35);
+    h.network.mockResolvedValue(new Response(JSON.stringify({ ok: false, error_code: 400,
+      description: `Bad Request: message thread not found ${fakeToken}` }), { status: 400 }));
+    await expect(h.send()).rejects.toMatchObject({ outcome: 'known-failed', reason: 'telegram-400' });
+    const lines = warn.mock.calls.map(c => String(c[0])).filter(l => l.includes('Telegram refused'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[telegram-origin\] Telegram refused [0-9a-f-]+ \(sendMessage, status 400\): Bad Request: message thread not found bot<redacted>; request .*\btext=<\d+>/);
+    expect(lines[0]).not.toContain('A'.repeat(35));
+    warn.mockRestore();
+  });
+  it('describes a refused request by parameter names and shapes, never its text', () => {
+    const body = JSON.stringify({ chat_id: -1003742343280, message_thread_id: 2, text: 'private words here', parse_mode: 'HTML',
+      entities: [{ type: 'bold', offset: 0, length: 4 }, { type: 'text_link', offset: 5, length: 3, url: 'https://example.invalid/private' }],
+      reply_parameters: { message_id: 4558546720766503 }, link_preview_options: { is_disabled: true }, note: 'has spaces and private words' });
+    const shape = describeRequestShape(body);
+    expect(shape).toBe('chat_id=-1003742343280 entities=[bold@0+4,text_link@5+3] link_preview_options={is_disabled=true} message_thread_id=2 note=<string:28> parse_mode=HTML reply_parameters={message_id=4558546720766503} text=<18>');
+    expect(shape).not.toContain('private');
+    expect(describeRequestShape('{not json')).toBe('unparseable');
+  });
+  it('keeps safe-looking private words, hostile key names and nested text out of the request shape', () => {
+    const shape = describeRequestShape(JSON.stringify({ title: 'Secretword', performer: 'Privateband', 'a b\nc': 1,
+      reply_parameters: { message_id: 7, quote: 'privatequote', quote_entities: [{ type: 'bold', offset: 0, length: 3 }] },
+      link_preview_options: { url: 'https://example.invalid/private', is_disabled: false }, entities: [null, 5] }));
+    expect(shape).not.toMatch(/Secretword|Privateband|privatequote|example\.invalid|private/);
+    expect(shape).not.toContain('\n');
+    expect(shape).toContain('title=<string:10>');
+    expect(shape).toContain('abc=1');
+    expect(shape).toContain('reply_parameters={message_id=7,quote=<string>,quote_entities=<object>}');
+    expect(shape).toContain('link_preview_options={is_disabled=false,url=<string>}');
+    expect(shape).toContain('entities=[<invalid>,<invalid>]');
+  });
+  it('logs one refusal line for a 429 as well, with the existing retry unchanged', async () => {
+    const h = await harness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.network.mockResolvedValue(new Response(JSON.stringify({ ok: false, error_code: 429, description: 'Too Many Requests: retry after 8', parameters: { retry_after: 8 } }), { status: 429 }));
+    await expect(h.send()).rejects.toMatchObject({ outcome: 'known-failed', reason: 'telegram-429' });
+    expect(warn.mock.calls.map(c => String(c[0])).filter(l => l.includes('Telegram refused') && l.includes('status 429'))).toHaveLength(1);
+    warn.mockRestore();
+  });
+  it('bounds and flattens a refusal description, and names a missing one', () => {
+    expect(describeTelegramRefusal(undefined)).toBe('no description');
+    expect(describeTelegramRefusal('   ')).toBe('no description');
+    expect(describeTelegramRefusal('Bad Request:\ncan\'t parse entities')).toBe('Bad Request: can\'t parse entities');
+    expect(describeTelegramRefusal('x'.repeat(500))).toHaveLength(160);
+    expect(describeTelegramRefusal(`token ${'8615114091:' + 'B'.repeat(35)} leaked`)).toBe('token <redacted> leaked');
   });
   it('schedules only a definite Bot rate-limit refusal using the unchanged outbox budget', async () => {
     const h = await harness();

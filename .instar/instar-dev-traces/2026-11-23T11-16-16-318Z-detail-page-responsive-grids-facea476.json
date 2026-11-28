@@ -1,0 +1,44 @@
+{
+  "version": 3,
+  "slug": "detail-page-responsive-grids",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T11:16:16.318Z",
+  "artifactPath": "upgrades/side-effects/detail-page-responsive-grids.md",
+  "artifactSha256": "db493cb3c81b76c105644ac3677e915b969054821b24792e4674c39e6ef4dd87",
+  "coveredFiles": [
+    "dashboard/console/accounts.js",
+    "dashboard/console/console.css",
+    "dashboard/console/console.js",
+    "dashboard/console/health.js",
+    "dashboard/console/ideas.js",
+    "dashboard/console/machine-care.js",
+    "dashboard/console/notifications.js",
+    "docs/specs/dashboard-ui-quality-standard.md",
+    "docs/specs/detail-page-responsive-grids.eli16.md",
+    "tests/unit/console-dom.test.ts",
+    "upgrades/next/detail-page-responsive-grids.md",
+    "upgrades/side-effects/detail-page-responsive-grids.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Normal main merge preserves both independent CSS additions and original unreleased fragment; no authority or behavior change from the resolution.",
+  "eli16Path": "docs/specs/detail-page-responsive-grids.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/detail-page-responsive-grids.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "merge-integrity",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
