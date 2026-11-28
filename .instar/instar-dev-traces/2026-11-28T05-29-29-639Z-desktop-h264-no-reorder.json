@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "desktop-h264-no-reorder",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T05:29:29.639Z",
+  "artifactPath": "upgrades/side-effects/desktop-h264-no-reorder.md",
+  "artifactSha256": "d1f924fbddf5236ff6fa7ff20308f9e219185673411ba46d8933f0b8afb5f0a4",
+  "coveredFiles": [
+    "dashboard/desktop.js",
+    "tests/unit/desktop-video-viewer.test.ts",
+    "docs/specs/desktop-h264-no-reorder.eli16.md",
+    "upgrades/next/desktop-h264-no-reorder.md",
+    "upgrades/side-effects/desktop-h264-no-reorder.md",
+    "docs/specs/images/desktop-h264-no-reorder-before.png",
+    "docs/specs/images/desktop-h264-no-reorder-after.png"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A viewer-only bug fix: the H.264 keyframe SPS gains a VUI that says frames are never reordered, so Chrome on a Mac stops holding up to 12 frames before the first picture. Pure byte rewrite limited to Baseline SPS without a VUI; no server, helper, protocol or route change.",
+  "eli16Path": "docs/specs/desktop-h264-no-reorder.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-h264-no-reorder.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Mac and Windows encoders write a Baseline SPS with no VUI; Chrome assumes reordering up to MaxDpbFrames (Studio reading 2026-11-27 21:13 PT: 10 decodes, 0 outputs)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a pure byte rewrite per keyframe; adds no action, loop or retry"
+  }
+}

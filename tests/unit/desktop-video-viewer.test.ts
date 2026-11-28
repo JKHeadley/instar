@@ -30,7 +30,8 @@ function viewer() {
   const { window } = dom;
   Object.defineProperty(window, 'matchMedia', { value: () => ({ matches: true }) });
   Object.defineProperty(window, 'TextEncoder', { value: TextEncoder });
-  const decoders: Array<{ output: (frame: object) => void; error: () => void; closed: boolean }> = [];
+  const decoders: Array<{ output: (frame: object) => void; error: () => void; closed: boolean;
+    chunks: Array<{ type: string; data: Uint8Array }> }> = [];
   const commands: string[] = [];
   class Decoder {
     decodeQueueSize = 0;
@@ -43,15 +44,17 @@ function viewer() {
       decoders.push(this);
     }
     configure() {}
-    decode() {}
+    chunks: Array<{ type: string; data: Uint8Array }> = [];
+    decode(chunk: { init: { type: string; data: Uint8Array } }) { this.chunks.push(chunk.init); }
     close() { this.closed = true; }
   }
   Object.defineProperty(window, 'VideoDecoder', { value: Decoder });
-  Object.defineProperty(window, 'EncodedVideoChunk', { value: class { constructor(_: object) {} } });
+  Object.defineProperty(window, 'EncodedVideoChunk', { value: class { init: object; constructor(init: object) { this.init = init; } } });
   const source = fs.readFileSync(new URL('../../dashboard/desktop.js', import.meta.url), 'utf8');
   window.eval(`${source}\ninputEnabled = true; activeVideoCodec = 'h264';
     sendCommand = command => { window.__commands.push(command.type); return Promise.resolve(true); };
     window.__video = { receiveH264, fallbackVideo, leave, getCodec: () => activeVideoCodec };
+    window.__sps = { spsWithNoReorder, withNoReorderSps };
     window.__verifyTargetForTest = (trustedKey, result) => {
       machineId = 'm_target'; requestId = 'request-1';
       trustedTargetSigningPublicKey = trustedKey;
@@ -116,6 +119,75 @@ describe('desktop H.264 viewer resource bounds', () => {
     expect(v.video.getCodec()).toBe('h264');
     expect(v.decoders[1].closed).toBe(false);
     expect(v.commands).toEqual([]);
+    v.dom.window.close();
+  });
+});
+
+const hex = (value: string) => Uint8Array.from(Buffer.from(value, 'hex'));
+const toHex = (value: Uint8Array) => Buffer.from(value).toString('hex');
+// SPS written by VTCompressionSession with the Mac helper's settings (Baseline 4.0, no
+// reordering) at 608x1080: picture order count type 0 and no VUI.
+const MAC_SPS_608 = '27420028ab404c044fca80';
+const MAC_SPS_1080P = '27420028ab403c0113f2a0';
+
+describe('desktop H.264 viewer: frames are never held for reordering', () => {
+  type Sps = { spsWithNoReorder(nal: Uint8Array): Uint8Array; withNoReorderSps(data: Uint8Array): Uint8Array };
+  const sps = () => {
+    const v = viewer();
+    return { v, fns: (v.window as unknown as { __sps: Sps }).__sps };
+  };
+
+  it('adds max_num_reorder_frames 0 to the Mac encoder SPS, keeping every other field', () => {
+    const { v, fns } = sps();
+    // Checked field by field with an independent parser, and in Chrome 158 on a Mac:
+    // the original holds 12 frames before the first output, the rewrite outputs each frame.
+    expect(toHex(fns.spsWithNoReorder(hex(MAC_SPS_608)))).toBe('27420028ab404c044fcb00da08846a');
+    expect(toHex(fns.spsWithNoReorder(hex(MAC_SPS_1080P)))).toBe('27420028ab403c0113f2c03682211a80');
+    v.dom.window.close();
+  });
+
+  it('leaves an SPS alone that already has a VUI, is another profile, or cannot be read', () => {
+    const { v, fns } = sps();
+    const withVui = hex('27420028ab404c044fcb00da08846a');
+    expect(fns.spsWithNoReorder(withVui)).toBe(withVui);
+    const high = hex('2764001fac2b402802dd80880000030008000003018478c1953c');
+    expect(fns.spsWithNoReorder(high)).toBe(high);
+    const truncated = hex('27420028ab');
+    expect(fns.spsWithNoReorder(truncated)).toBe(truncated);
+    const notSps = hex('28ce3c80');
+    expect(fns.spsWithNoReorder(notSps)).toBe(notSps);
+    v.dom.window.close();
+  });
+
+  it('rewrites only the SPS inside an access unit and keeps the PPS and picture bytes', () => {
+    const { v, fns } = sps();
+    const unit = hex(`00000001${MAC_SPS_608}0000000128ce3c80000000012588840021`);
+    expect(toHex(fns.withNoReorderSps(unit)))
+      .toBe('0000000127420028ab404c044fcb00da08846a0000000128ce3c80000000012588840021');
+    const noSps = hex('0000000128ce3c80000000012588840021');
+    expect(fns.withNoReorderSps(noSps)).toBe(noSps);
+    v.dom.window.close();
+  });
+
+  it('decodes a keyframe with the rewritten SPS and a delta frame unchanged', () => {
+    const v = viewer();
+    const unit = hex(`00000001${MAC_SPS_608}0000000128ce3c80000000012588840021`);
+    const key = new Uint8Array(18 + unit.length);
+    key.set([73, 68, 86, 49, 1, 1]);
+    const view = new DataView(key.buffer);
+    view.setUint16(6, 608); view.setUint16(8, 1080); view.setBigUint64(10, 1_000n);
+    key.set(unit, 18);
+    v.video.receiveH264(key, 0);
+    const delta = new Uint8Array(18 + 9);
+    delta.set([73, 68, 86, 49, 1, 0]);
+    const deltaView = new DataView(delta.buffer);
+    deltaView.setUint16(6, 608); deltaView.setUint16(8, 1080); deltaView.setBigUint64(10, 2_000n);
+    delta.set(hex('000000012188840021'), 18);
+    v.video.receiveH264(delta, 0);
+    const chunks = v.decoders[0].chunks;
+    expect(chunks.map(chunk => chunk.type)).toEqual(['key', 'delta']);
+    expect(toHex(chunks[0].data)).toContain('27420028ab404c044fcb00da08846a');
+    expect(toHex(chunks[1].data)).toBe('000000012188840021');
     v.dom.window.close();
   });
 });
