@@ -4,6 +4,6 @@ Tier 1, documentation only. This adds one public-safe owner-feedback diagnosis, 
 
 ## Second-pass review
 
-Reviewer: an independent fresh-context reviewer that did not write the change, given the diff, current main, the renderer source and the private screenshot. First pass DISSENT with one blocking finding (the growth process requires a "why it was missed" line for every problem) and nine smaller ones; all were fixed. Second pass CONCUR; its two remaining notes (an analogy count, and stating when the machine check runs in the rule itself) were also fixed.
+**Reviewer:** an independent fresh-context reviewer that did not write the change, given the diff, current main, the renderer source and the private screenshot. First pass DISSENT with one blocking finding (the growth process requires a "why it was missed" line for every problem) and nine smaller ones; all were fixed. Second pass CONCUR; its two remaining notes (an analogy count, and stating when the machine check runs in the rule itself) were also fixed.
 
 Follow-up (2026-11-27): DF-0007 is put into the canonical feedback-entry format that the design check stack (3688) enforces: its problem list is the entry's "Diagnosis" section and its rule is listed in a "Rules this entry added or sharpened" table linking DS-WORDS-7 to all six problems. No sentence changes. Checked with the stack's entry check against this branch's standard: no findings (card, source and six problems read, DS-WORDS-7 linked).
