@@ -126,7 +126,9 @@ describe('DirectDesktopAccess', () => {
     stream.frameDropped?.();
     expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
     expect(requestedKeys).toEqual([true, false, true]);
+    expect(f.authority.status(requestId, 'dashboard-proof').videoDowngrade).toBeUndefined();
     stream.fallbackVideo?.();
+    expect(f.authority.status(requestId, 'dashboard-proof').videoDowngrade).toBe('viewer-fallback');
     expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
     expect(requestedKeys).toEqual([true, false, true]);
     stream.release('terminal');
@@ -207,6 +209,9 @@ describe('DirectDesktopAccess', () => {
     expect(await stream.captureEncrypted()).toBeInstanceOf(Buffer);
     expect(h264Capture).toHaveBeenCalledTimes(1);
     expect(jpegCapture).toHaveBeenCalledTimes(1);
+    // The status read names why the session left H.264, as a fixed word.
+    expect(f.authority.status(requestId, 'dashboard-proof')).toMatchObject({
+      videoCodec: 'h264', videoDowngrade: 'capture-mac-desktop-host-capture-unavailable' });
     stream.frameQueued?.();
     expect(await stream.captureEncrypted()).toBeNull();
     expect(h264Capture).toHaveBeenCalledTimes(1);

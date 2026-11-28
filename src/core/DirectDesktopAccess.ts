@@ -72,6 +72,8 @@ interface DirectRequest {
   lockedBegan?: boolean;
   lastPositive?: DesktopLockState;
   lastState?: DesktopLockState;
+  /** The first reason this session left H.264 for JPEG, for status reads. Never cleared. */
+  videoDowngrade?: string;
   /** The last state record sent to this viewer, so an unchanged one is not re-sent. */
   lastStateRecord?: string;
   outsideUnlockSeen?: boolean;
@@ -467,7 +469,7 @@ export class DirectDesktopAccess {
   status(requestId: string, operatorSessionToken: string): {
     status: string; connectionNonce?: string; targetEcdhPublicKey?: string; salt?: string;
     targetSigningPublicKey?: string; targetSignature?: string; machineId?: string; expiresAt?: number;
-    videoCodec?: 'jpeg' | 'h264';
+    videoCodec?: 'jpeg' | 'h264'; videoDowngrade?: string;
   } {
     const row = this.requests.get(requestId);
     if (!row) throw new Error('desktop request unavailable');
@@ -480,7 +482,8 @@ export class DirectDesktopAccess {
         targetEcdhPublicKey: row.targetEcdhPublicKey, salt: row.salt,
         targetSigningPublicKey: this.targetIdentity.publicKey.toString('base64'),
         targetSignature: row.targetSignature?.toString('base64'), machineId: row.machineId,
-        videoCodec: row.videoCodec, expiresAt: (row.approvedAt ?? 0) + GRANT_MS }
+        videoCodec: row.videoCodec, expiresAt: (row.approvedAt ?? 0) + GRANT_MS,
+        ...(row.videoDowngrade ? { videoDowngrade: row.videoDowngrade } : {}) }
       : { status: row.status };
   }
 
@@ -768,12 +771,17 @@ export class DirectDesktopAccess {
               throw error;
             }
             // Hardware encoding is optional. Downgrade this logical session
-            // without changing its controller lock or input authority.
+            // without changing its controller lock or input authority, and keep
+            // the reason (a fixed word, never free text) for status reads.
+            row.videoDowngrade ??= `capture-${auditReason(String((error as Error)?.message ?? ''))}`;
             activeCodec = 'jpeg';
             candidateVideoKeyframe = false;
             lastQueuedGeometry = '';
           }
-        } else if (activeCodec === 'h264') activeCodec = 'jpeg';
+        } else if (activeCodec === 'h264') {
+          row.videoDowngrade ??= 'host-no-h264';
+          activeCodec = 'jpeg';
+        }
         if (row.grantId !== admittedGrantId || !this.validGrant(row)) {
           throw new Error('desktop grant unavailable');
         }
@@ -814,7 +822,7 @@ export class DirectDesktopAccess {
       touch: () => {
         if (row.grantId === admittedGrantId && this.validGrant(row)) row.lastActivity = this.now();
       },
-      fallbackVideo: () => { activeCodec = 'jpeg'; candidateFrameDigest = null; },
+      fallbackVideo: () => { row.videoDowngrade ??= 'viewer-fallback'; activeCodec = 'jpeg'; candidateFrameDigest = null; },
       decryptCommand: (record: Buffer) => {
         if (row.grantId !== admittedGrantId) throw new Error('desktop grant unavailable');
         const value = admittedAead.decryptInput(record);
