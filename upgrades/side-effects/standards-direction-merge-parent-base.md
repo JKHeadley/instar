@@ -66,3 +66,7 @@ A narrow correction to the guard's input, with two safety conditions that keep t
 - It confirmed there is no bypass: a PR's own registry change sits in HEAD^2 and still counts as its own. Fork PRs have the upstream `origin/main`. `pull_request_target` is not a trigger, and the pin refuses adding it. The ancestor checks inside the `if` fail safe under `bash -e`.
 - Out of scope and stated: "Migration consumer lockstep" and `AUDIT_CHANGE_BASE_SHA` still read the event base.
 Review record: `.instar/state/handoffs/reviews/direction-guard-merge-parent-review.md` (agent-local).
+
+## Release note fix (2026-11-27, about 20:35 PT)
+
+CI assembles the release notes from main plus this branch. Main's upgrades/next/ was empty after a release, so this fragment was checked alone, and it failed the repository invariant "missing ## Summary of New Capabilities section" (seen on #4038). Fix: internal-only marker added: the change is CI-only and stages nothing under src/, so the assembler fills the two user-facing sections. Checked alone with the repository's own assembleNextMd and validateGuideContent: the old version fails and the new one passes.

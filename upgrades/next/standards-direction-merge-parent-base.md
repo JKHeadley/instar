@@ -1,6 +1,7 @@
 # Upgrade Guide — vNEXT
 
 <!-- bump: patch -->
+<!-- internal-only -->
 
 ## What Changed
 
