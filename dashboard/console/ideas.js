@@ -65,7 +65,7 @@ export async function renderIdeas(main, api) {
     const ideas = ideasInBand(s.ideas, band.id);
     if (!ideas.length) continue;
     const title = `${band.label} (${ideas.length})`;
-    const cards = ideas.map((i) => ideaCard(i, refresh));
+    const cards = el('div', { class: 'detail-card-grid' }, ideas.map((i) => ideaCard(i, refresh)));
     if (band.id === 'unranked') {
       parts.push(el('details', { class: 'ideas-unranked', ontoggle: (event) => {
         const group = event.currentTarget;
@@ -76,6 +76,8 @@ export async function renderIdeas(main, api) {
     }
   }
   parts.push(el('h2', { class: 'eyebrow section-label', text: 'Projects we review' }));
+  const projectCards = el('div', { class: 'detail-card-grid' });
+  parts.push(projectCards);
   for (const w of s.watchlist) {
     const status = el('p', { class: 'need-sub', role: 'status' });
     const row = [el('span', { class: 'need-title', text: w.repo }), el('p', { class: 'need-sub', text: projectLine(w) })];
@@ -84,13 +86,13 @@ export async function renderIdeas(main, api) {
       retry.addEventListener('click', async () => { const d = await send('/ecosystem-ideas/projects/retry', { repo: w.repo }); status.textContent = d.status === 200 ? 'It will try at the next round.' : 'That did not go through.'; });
       row.push(retry);
     }
-    parts.push(el('div', { class: 'need-card muted-card' }, row, status));
+    projectCards.append(el('div', { class: 'need-card muted-card' }, row, status));
   }
   for (const p of s.proposals) {
     const status = el('p', { class: 'need-sub', role: 'status' });
     const add = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Add to the list' });
     add.addEventListener('click', () => decide({ action: 'watchlist-add', repo: p.repo, reason: p.reason }, status, refresh));
-    parts.push(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
+    projectCards.append(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
   }
   if (s.lastTickError) parts.push(note(`The last round had a problem: ${s.lastTickError}`));
   setKids(main, el('div', { class: 'ideas-page' }, parts));

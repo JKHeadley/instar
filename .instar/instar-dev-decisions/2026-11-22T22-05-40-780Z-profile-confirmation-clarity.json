@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-22T22:05:40.780Z",
+  "slug": "profile-confirmation-clarity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 476,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ProfileProposalRequests.ts",
+      "src/core/TopicProfileStore.ts",
+      "src/core/handleProfileProposalReply.ts",
+      "src/core/profileProposalPlacement.ts",
+      "src/core/topicProfileIngress.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/data/awareness/profile-change-questions.md",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 420,
+    "deletedLines": 56
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-driven confirmation: a verified owner's native exact-yes reply commits one immutable request; no self-triggered restart or reminder loop is added."
+  },
+  "verdict": "blocked"
+}

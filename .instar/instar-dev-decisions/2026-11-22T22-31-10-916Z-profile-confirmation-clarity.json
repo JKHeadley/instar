@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-22T22:31:10.916Z",
+  "slug": "profile-confirmation-clarity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 49,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/handleProfileProposalReply.ts"
+    ],
+    "addedLines": 47,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only context for user-driven replies; no self-triggered loop."
+  },
+  "verdict": "pass"
+}

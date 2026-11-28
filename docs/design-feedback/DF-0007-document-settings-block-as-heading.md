@@ -28,7 +28,7 @@ The session that published it fixed that one document on 2026-11-21 by republish
 
 The page header itself was right: one title, a version picker and a short line saying where the document is discussed. No better version of this page exists to compare with; the bar is an ordinary well-set article.
 
-## Problems found
+## Diagnosis: problems found
 
 Each problem cites the rule it broke and why that rule's check did not catch it. Three of the citations apply a rule written for screens of data to a document page by close analogy; that is noted where it happens. DS-WORDS-7 is added so that the document case has a rule of its own and a machine check.
 
@@ -41,9 +41,13 @@ Each problem cites the rule it broke and why that rule's check did not catch it.
 
 The class of mistake: the documents page trusts that every input is prose. Any author text that a Markdown reader interprets differently from what the author meant (settings blocks, a paragraph directly above a line of dashes, a long run of text read as a heading) reaches the owner as broken formatting.
 
-## Rule added
+## Rules this entry added or sharpened
 
-DS-WORDS-7 · Settings at the top of a document never show as its text. Earned from this entry.
+| Rule | Added or sharpened | Problems |
+|---|---|---|
+| DS-WORDS-7 | Added | 1, 2, 3, 4, 5, 6 |
+
+DS-WORDS-7 · Settings at the top of a document never show as its text.
 
 ## Concrete fix
 
