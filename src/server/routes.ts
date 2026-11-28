@@ -154,6 +154,7 @@ import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { desktopPeerCheckReason } from './desktopPeerRopeFetch.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -16275,12 +16276,15 @@ export function createRoutes(ctx: RouteContext): Router {
       .filter(peer => peer.machineId !== target.machineId && /^m_[a-f0-9]{32}$/.test(peer.machineId))
       .slice(0, 7);
     const peerMachines = await Promise.all(knownPeers.map(async peer => {
+      const checkStarted = Date.now();
       try {
         if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
         // The pool's name wins: a peer's own copy of the registry can lag a rename.
         const probed = await ctx.desktopProbePeer(peer.machineId);
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
-      } catch {
+      } catch (error) {
+        // The viewer shows one plain sentence; the log keeps the fixed reason and the time taken.
+        console.warn(`[desktop] could not check ${peer.machineId}: ${desktopPeerCheckReason(error)} after ${Date.now() - checkStarted} ms`);
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
           unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }

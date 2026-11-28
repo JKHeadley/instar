@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
+  desktopPeerCheckReason,
   desktopPeerRopes,
   fetchDesktopPeerOverRopes,
   isConnectClassFailure,
@@ -180,5 +181,23 @@ describe('DesktopMeshBroker rope fallback', () => {
     expect(broker.consumeTicket('t'.repeat(32))?.url).toBe('https://live-mini.dawn-tunnel.dev');
     broker.close();
     expect(requestId).toBeDefined();
+  });
+});
+
+describe('desktopPeerCheckReason', () => {
+  it('names each failure with a fixed word and never the raw text', () => {
+    expect(desktopPeerCheckReason(Object.assign(new Error('desktop-peer-unavailable'), { status: 401 }))).toBe('http-401');
+    expect(desktopPeerCheckReason(new Error('desktop-peer-unavailable'))).toBe('unavailable');
+    expect(desktopPeerCheckReason(new Error('desktop-peer-unreachable'))).toBe('unreachable');
+    expect(desktopPeerCheckReason(new Error('desktop-peer-response-bound'))).toBe('response-bound');
+    expect(desktopPeerCheckReason(new DOMException('The operation timed out.', 'TimeoutError'))).toBe('timeout');
+    expect(desktopPeerCheckReason(new DOMException('This operation was aborted', 'AbortError'))).toBe('timeout');
+    expect(desktopPeerCheckReason(connectRefused())).toBe('connect');
+    expect(desktopPeerCheckReason(new Error('secret path /Users/someone/x'))).toBe('other');
+    expect(desktopPeerCheckReason(Object.assign(new Error('desktop-peer-unavailable'), { status: 9999 }))).toBe('unavailable');
+    expect(desktopPeerCheckReason(null)).toBe('other');
+    expect(desktopPeerCheckReason(Object.assign(new Error('peer-starting'), { name: 'PoolPeerBootingError' }))).toBe('starting');
+    expect(desktopPeerCheckReason(new SyntaxError('Unexpected token < in JSON'))).toBe('reply-invalid');
+    expect(desktopPeerCheckReason(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket'), { code: 'UND_ERR_SOCKET' }) }))).toBe('reset');
   });
 });

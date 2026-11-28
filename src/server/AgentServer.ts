@@ -7171,7 +7171,8 @@ export class AgentServer {
           },
           budgetMs: 3_000, connectCheckCapMs: 1_000, record: options.recordRopeResult,
         });
-        if (!response.ok) throw new Error('desktop-peer-unavailable');
+        // The status rides along so the front's log can say why (desktopPeerCheckReason).
+        if (!response.ok) throw Object.assign(new Error('desktop-peer-unavailable'), { status: response.status });
         const reader = response.body?.getReader();
         if (!reader) throw new Error('desktop-peer-response-empty');
         const chunks: Uint8Array[] = [];

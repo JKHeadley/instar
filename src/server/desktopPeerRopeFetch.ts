@@ -163,3 +163,33 @@ export async function fetchDesktopPeerOverRopes(o: DesktopRopeFetchOptions): Pro
   }
   throw new DesktopPeerUnreachableError();
 }
+
+/** A fixed word for why a front could not check a peer's desktop, for the server log.
+ *  Never the raw error text: only codes this module and the probe throw, an HTTP status,
+ *  or a timeout class. */
+export function desktopPeerCheckReason(error: unknown): string {
+  const e = error as { name?: unknown; message?: unknown; status?: unknown } | null;
+  if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) return 'timeout';
+  if (e && e.message === 'desktop-peer-unavailable' && typeof e.status === 'number'
+    && Number.isInteger(e.status) && e.status >= 100 && e.status <= 599) return `http-${e.status}`;
+  if (e && typeof e.message === 'string' && /^desktop-peer-[a-z-]{1,40}$/.test(e.message)) {
+    return e.message.slice('desktop-peer-'.length);
+  }
+  if (e && e.name === 'PoolPeerBootingError') return 'starting';
+  if (e && e.name === 'SyntaxError') return 'reply-invalid';
+  if (isConnectClassFailure(error)) return 'connect';
+  if (hasCauseCode(error, RESET_CODES)) return 'reset';
+  return 'other';
+}
+
+const RESET_CODES = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+
+function hasCauseCode(error: unknown, codes: Set<string>): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && codes.has(code)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
