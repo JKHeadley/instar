@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-28T03:59:35.811Z",
+  "slug": "maturation-dated-owner-lint",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 585,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/lint-maturation-dated-owner.mjs",
+      "src/data/feature-ladders.json",
+      "src/monitoring/MaturationLadder.ts"
+    ],
+    "addedLines": 352,
+    "deletedLines": 233
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

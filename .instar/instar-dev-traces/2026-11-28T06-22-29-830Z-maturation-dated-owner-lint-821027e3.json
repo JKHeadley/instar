@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "maturation-dated-owner-lint",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T06:22:29.830Z",
+  "artifactPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "artifactSha256": "ff0261e8a2b5ead4df6b052b848a9827e8ab56b04aabc6567de7da9ee44cf668",
+  "coveredFiles": [
+    "docs/specs/maturation-dated-owner-lint.eli16.md",
+    "package.json",
+    "scripts/lint-maturation-dated-owner.mjs",
+    "src/data/feature-ladders.json",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/lint-maturation-dated-owner.test.ts",
+    "upgrades/next/maturation-dated-owner-lint.md",
+    "upgrades/side-effects/maturation-dated-owner-lint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note fix on this branch (reader concurred on the delta, review file echo-pipeline-strategy-release-note-fix-1127.md); a revert undoes it; covers every file this branch changes",
+  "eli16Path": "docs/specs/maturation-dated-owner-lint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

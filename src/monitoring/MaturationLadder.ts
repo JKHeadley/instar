@@ -100,7 +100,14 @@ export interface LadderEntry {
    * setting, so the setting cannot say its rung. `ref` names the change.
    */
   shippedOn?: { ref: string };
-  tracking: { state: 'measured' | 'needed'; plan: string };
+  /**
+   * `owner` and `reviewDue` are the dark rung's dated owner (Maturation Path, clause (h)): who
+   * decides the next rung, and by when. They are optional here so one entry without them can never
+   * reject the whole registry at runtime; `scripts/lint-maturation-dated-owner.mjs` is what fails
+   * the BUILD for a dark rung that lacks them. `reviewDueReason` records why a date was set or
+   * moved (the article's "re-dated with a recorded reason").
+   */
+  tracking: { state: 'measured' | 'needed'; plan: string; owner?: string; reviewDue?: string; reviewDueReason?: string };
   rungs: Partial<Record<TargetRung, LadderRung>>;
 }
 
@@ -138,6 +145,13 @@ export function subjectFromId(id: string): string {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return `${slug.slice(0, 54).replace(/-+$/g, '')}-${h.toString(36).slice(0, 8)}`;
+}
+
+/** A real calendar date in YYYY-MM-DD form: the shape alone would accept 2026-02-30. */
+function isCalendarDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
 function isText(v: unknown, max = MAX_TEXT): v is string {
@@ -282,6 +296,9 @@ export function parseLadderRegistry(text: string): LadderParseResult {
     if (e.risk !== 'standard' && e.risk !== 'sensitive') return { ok: false, reason: `${at}.risk` };
     const t = e.tracking as Record<string, unknown> | undefined;
     if (!t || (t.state !== 'measured' && t.state !== 'needed') || !isText(t.plan)) return { ok: false, reason: `${at}.tracking` };
+    if (t.owner !== undefined && !isText(t.owner, 120)) return { ok: false, reason: `${at}.tracking.owner` };
+    if (t.reviewDue !== undefined && !isCalendarDate(t.reviewDue)) return { ok: false, reason: `${at}.tracking.reviewDue` };
+    if (t.reviewDueReason !== undefined && !isText(t.reviewDueReason, 240)) return { ok: false, reason: `${at}.tracking.reviewDueReason` };
     if (e.final !== 'default-on' && e.final !== 'default-off-by-preference') return { ok: false, reason: `${at}.final` };
     if (e.final === 'default-off-by-preference') {
       const p = e.preference as Record<string, unknown> | undefined;
@@ -345,7 +362,13 @@ export function parseLadderRegistry(text: string): LadderParseResult {
       ...(e.start ? { start: e.start as LadderEntry['start'] } : {}),
       ...(e.restartNeeded ? { restartNeeded: true } : {}),
       ...(e.shippedOn ? { shippedOn: { ref: (e.shippedOn as { ref: string }).ref } } : {}),
-      tracking: { state: t.state as 'measured' | 'needed', plan: t.plan as string },
+      tracking: {
+        state: t.state as 'measured' | 'needed',
+        plan: t.plan as string,
+        ...(t.owner !== undefined ? { owner: t.owner as string } : {}),
+        ...(t.reviewDue !== undefined ? { reviewDue: t.reviewDue as string } : {}),
+        ...(t.reviewDueReason !== undefined ? { reviewDueReason: t.reviewDueReason as string } : {}),
+      },
       rungs: rungs as LadderEntry['rungs'],
     });
   }
