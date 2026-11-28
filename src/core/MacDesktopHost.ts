@@ -10,6 +10,7 @@ import { parseNativeH264, type DesktopH264Frame } from './DesktopVideo.js';
 import type { DesktopSealedSecret } from './DesktopHost.js';
 import { DesktopHelperRetention } from './DesktopHelperRetention.js';
 import { macDesktopHelperBudgetMs, macDesktopHelperRunBaseMs } from './MacDesktopHelperBudget.js';
+import { MacDisplayWake, type DisplayWakeResult } from './MacDisplayWake.js';
 
 export type MacDesktopInput = DesktopInput;
 export type MacDesktopProbe = DesktopProbe;
@@ -99,7 +100,11 @@ export class MacDesktopHost implements DesktopHost {
   constructor(
     private readonly binary = DEFAULT_MAC_DESKTOP_HELPER,
     private readonly retention: DesktopHelperRetention | null = null,
+    private readonly displayWake: MacDisplayWake = new MacDisplayWake(),
   ) {}
+
+  /** A sleeping display is not a lock: see MacDisplayWake. */
+  wakeDisplay(): Promise<DisplayWakeResult> { return this.displayWake.wake(); }
 
   setInputFailureHandler(handler: () => void): void { this.inputFailureHandler = handler; }
   setSealKeyHandler(handler: (key: string) => void): void { this.sealKeyHandler = handler; }

@@ -152,6 +152,12 @@ export interface DesktopHost {
   selectDisplay?(displayId: string | null): Promise<boolean>;
   probe(): Promise<DesktopProbe>;
   requestPermission?(): Promise<{ screenPermission: boolean; inputPermission: boolean }>;
+  /**
+   * macOS: wake a display that is only asleep. Reads the console lock first and
+   * never wakes a locked or unreadable console. Called at admission only, at
+   * most once per attempt; never from a background probe.
+   */
+  wakeDisplay?(): Promise<import('./MacDisplayWake.js').DisplayWakeResult>;
   capture(): Promise<Buffer>;
   /** Optional: running totals of capture time spent inside the host OS. */
   captureTiming?(): { count: number; totalMs: number; maxMs: number };
