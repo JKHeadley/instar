@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-27T14:27:28.291Z",
+  "slug": "windows-companion-bootstrap-causes",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WindowsDesktopBootstrapStatus.ts"
+    ],
+    "addedLines": 33,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "pure classifier: maps a finished installer error to a fixed code; it triggers, retries or kills nothing, and its one caller runs the installer once per boot"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "windows-companion-bootstrap-causes",
+  "sessionId": "e197595b-784b-43bd-a9ea-d7c04634f1a7",
+  "timestamp": "2026-11-27T14:33:17.648Z",
+  "artifactPath": "upgrades/side-effects/windows-companion-bootstrap-causes.md",
+  "artifactSha256": "e6a033cf0b90f8dbeba31cb4aa73ef9ff5cdb591efe21400651924912c4e2876",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T14-27-28-291Z-windows-companion-bootstrap-causes.json",
+    "docs/specs/windows-companion-bootstrap-causes.eli16.md",
+    "src/core/WindowsDesktopBootstrapStatus.ts",
+    "tests/unit/windows-desktop-bootstrap-status.test.ts",
+    "upgrades/next/windows-companion-bootstrap-causes.md",
+    "upgrades/side-effects/windows-companion-bootstrap-causes.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnosis vocabulary only: fixed failure codes for the Windows companion installer; no installer, boot, route or stored-shape change.",
+  "eli16Path": "docs/specs/windows-companion-bootstrap-causes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/windows-companion-bootstrap-causes.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "pure classifier: maps a finished installer error to a fixed code; it triggers, retries or kills nothing, and its one caller runs the installer once per boot"
+  }
+}
