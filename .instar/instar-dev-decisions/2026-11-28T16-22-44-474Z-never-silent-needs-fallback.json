@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-28T16:22:44.474Z",
+  "slug": "never-silent-needs-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/neverSilent/NeverSilentWatcher.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "covered by registered controller never-silent-conversation-recovery (notify actions); raise bounded to one item per incident and kind per failure streak, only from step-2 backed-off failed tries; restart re-raise is an idempotent upsert of the same row"
+    }
+  },
+  "verdict": "pass"
+}

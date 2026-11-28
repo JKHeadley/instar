@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { LocalAttentionItems } from '../../src/core/LocalAttentionItems.js';
 import { neverSilentNeedItem } from '../../src/monitoring/neverSilent/neverSilentWiring.js';
 import { needId } from '../../src/monitoring/neverSilent/NeverSilentWatcher.js';
 // @ts-expect-error Console runs as native ESM in the browser.
@@ -70,5 +71,26 @@ describe('never-silent Needs-you item', () => {
   it('a thrown send and an unknown label read as plain words', () => {
     expect(neverSilentNeedItem(need('145738', { reason: 'threw:TypeError' })).description).toContain('the send failed with an error');
     expect(neverSilentNeedItem(need('145738', { platform: 'slack', conversationKey: 'C123' })).title).toContain('Slack conversation C123');
+  });
+
+  it('with no Telegram, the local attention list carries it to the Needs-you list, closes it and reopens it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-needs-local-'));
+    try {
+      const local = new LocalAttentionItems(dir);
+      const item = neverSilentNeedItem(need('145738', { platform: 'slack', conversationKey: 'C0123' }));
+      expect(local.raise(item)).toBe(true);
+      const open = local.list('OPEN');
+      expect(open.map((i) => i.id)).toEqual([item.id]);
+      expect(needsOperator(open[0])).toBe(true);
+      const row = (buildNeeds({ ok: true, data: { items: open } }, Date.now()).all as Array<{ main: string }>)[0];
+      expect(row.main).toContain('Slack conversation C0123');
+      // A second instance on the same folder (the agent server's own) sees and closes the same row.
+      expect(new LocalAttentionItems(dir).setStatus(item.id, 'DONE', 'cleared')?.status).toBe('DONE');
+      expect(local.list('OPEN')).toHaveLength(0);
+      expect(local.raise(item)).toBe(true);
+      expect(local.list('OPEN').map((i) => i.id)).toEqual([item.id]);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'never-silent local needs test cleanup' });
+    }
   });
 });

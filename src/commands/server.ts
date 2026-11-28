@@ -21001,6 +21001,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         return nsReferees.get(fw) ?? null;
       };
       const nsTelegram = telegram;
+      let nsLocal: import('../core/LocalAttentionItems.js').LocalAttentionItems | null = null;
+      const { LocalAttentionItems: NsLocalAttentionItems } = await import('../core/LocalAttentionItems.js');
+      const nsLocalAttention = () => (nsLocal ??= new NsLocalAttentionItems(config.stateDir));
       const neverSilent = buildNeverSilent({
         stateDir: config.stateDir,
         logsDir: path.join(config.stateDir, '..', 'logs'),
@@ -21085,15 +21088,26 @@ export async function startServer(options: StartOptions): Promise<void> {
         },
         // CMT-2078 step 3: a notice that keeps failing becomes one Needs-you item. Record only, so it
         // does not depend on the chat service that is failing to take the notice; GET /needs reads it.
-        raiseNeed: nsTelegram ? async (need) => {
-          const item: AttentionObservation = neverSilentNeedItem(need);
-          await nsTelegram.createAttentionItem(item, { recordOnly: true });
-          return true;
-        } : undefined,
-        clearNeed: nsTelegram ? async (id) => {
-          const closed = await nsTelegram.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' });
+        // With no Telegram adapter it goes to the local attention list, the one GET /attention serves
+        // for such an agent (every LocalAttentionItems call reads and writes the file in one step, so
+        // this instance and the agent server's own share it safely).
+        raiseNeed: async (need) => {
+          if (nsTelegram) {
+            const item: AttentionObservation = neverSilentNeedItem(need);
+            await nsTelegram.createAttentionItem(item, { recordOnly: true });
+            return true;
+          }
+          // An item the owner dismissed stays dismissed (the Telegram path holds such a reopen too).
+          if (nsLocalAttention().get(need.id)?.status === 'WONT_DO') return true;
+          return nsLocalAttention().raise(neverSilentNeedItem(need));
+        },
+        clearNeed: async (id) => {
+          const closed = nsTelegram
+            ? await nsTelegram.updateAttentionStatus(id, 'DONE', { silent: true, closedBy: 'cause-cleared' })
+            // An owner's WONT_DO stays as the owner left it; the item is closed either way.
+            : nsLocalAttention().get(id)?.status === 'WONT_DO' || !!nsLocalAttention().setStatus(id, 'DONE', 'cleared: the notice got through or the message was answered');
           if (!closed) throw new Error('attention item not found');
-        } : undefined,
+        },
         evidence: (kind, reason, context) => {
           const flat: Record<string, string | number | boolean | null> = {};
           for (const [k, v] of Object.entries(context)) {
@@ -21111,6 +21125,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         const inc = neverSilent.store.getIncident(m[1]);
         return !inc || inc.closedAt ? 'cleared' : 'active';
       });
+      // The local list has no lifecycle pass, so close its never-silent items whose wait is over at boot
+      // (an item raised before a restart is otherwise never closed by the watcher, which forgot it).
+      if (!nsTelegram) {
+        try {
+          for (const it of nsLocalAttention().list().filter((i) => i.status === 'OPEN' || i.status === 'ACKNOWLEDGED' || i.status === 'IN_PROGRESS')) {
+            const m = /^never-silent:(nsi-[0-9a-f]+):(waiting|status)$/.exec(it.id);
+            if (!m) continue;
+            const inc = neverSilent.store.getIncident(m[1]);
+            if (!inc || inc.closedAt) nsLocalAttention().setStatus(it.id, 'DONE', 'cleared: the wait was over at restart');
+            else neverSilent.watcher.adoptRaisedNeed(it.id, m[1]); // still waiting: the sweep closes it later
+          }
+        } catch (err) { console.warn(`[never-silent] local Needs-you items not checked at boot: ${err instanceof Error ? err.message : String(err)}`); }
+      }
       // lease-freshness-lapse-retry — count this machine's replies held at the send boundary for the lease. The
       // origin runtime boots before never-silent exists, so the recorder is assigned late (as readDetectorHealth is).
       // The conversation key follows the delivery notice: the topic for the main chat, the offset topic for the

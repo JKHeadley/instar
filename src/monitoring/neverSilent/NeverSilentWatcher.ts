@@ -536,6 +536,15 @@ export class NeverSilentWatcher {
     this.noticeRetry.delete(`${incidentId}|${kind}`);
     this.clearRaisedNeed(needId(incidentId, kind), 'delivered');
   }
+  /**
+   * Take back a Needs-you item raised before a restart (the server reads it from a list with no
+   * lifecycle pass), so the sweep closes it once its incident is over. Ignores a malformed id.
+   */
+  adoptRaisedNeed(id: string, incidentId: string): void {
+    if (!/^never-silent:nsi-[0-9a-f]+:(waiting|status)$/.test(id) || this.raisedNeeds.has(id)) return;
+    this.raisedNeeds.set(id, incidentId);
+    while (this.raisedNeeds.size > NOTICE_RETRY_MAX_ENTRIES) this.raisedNeeds.delete(this.raisedNeeds.keys().next().value as string);
+  }
   /** Close raised items whose incident is over (answered or closed) — run once per sweep. */
   private clearFinishedNeeds(): void {
     for (const [id, incidentId] of [...this.raisedNeeds]) {

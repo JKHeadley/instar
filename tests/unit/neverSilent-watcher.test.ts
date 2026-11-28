@@ -416,6 +416,20 @@ describe('NeverSilentWatcher', () => {
       expect(events.filter((e) => e.event === 'need-unavailable')).toHaveLength(1);
     });
 
+    it('an item adopted after a restart is closed by the sweep once the message is answered', async () => {
+      const cleared: string[] = [];
+      const h = harness({ sendNotice: async () => '1', clearNeed: (id) => { cleared.push(id); } }, { judge: false });
+      h.w.onInbound('telegram', '7', '101', 'hello');
+      const inc = h.store.ensureIncident('telegram', '7', { sessionName: null, framework: null, accountId: null });
+      h.w.adoptRaisedNeed(needId(inc.id, 'waiting'), inc.id);
+      h.w.adoptRaisedNeed('not-ours', inc.id); // ignored
+      await h.w.tick();
+      expect(cleared).toEqual([]);
+      h.w.onReply('telegram', '7');
+      await h.w.tick();
+      expect(cleared).toEqual([needId(inc.id, 'waiting')]);
+    });
+
     it('a status notice that keeps failing raises its own item', async () => {
       const raised: NeverSilentNeed[] = [];
       const h = harness({ sendNotice: async () => null, raiseNeed: async (n) => { raised.push(n); return true; } }, { actions: false });
