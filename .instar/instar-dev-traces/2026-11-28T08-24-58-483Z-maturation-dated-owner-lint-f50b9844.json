@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "maturation-dated-owner-lint",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T08:24:58.483Z",
+  "artifactPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "artifactSha256": "4635d8082bc6bc399acac7b4e00372861bdb88a9682a8593720f8fe12f0eaff5",
+  "coveredFiles": [
+    "docs/specs/maturation-dated-owner-lint.eli16.md",
+    "package.json",
+    "scripts/lint-maturation-dated-owner.mjs",
+    "src/data/feature-ladders.json",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/lint-maturation-dated-owner.test.ts",
+    "upgrades/next/maturation-dated-owner-lint.md",
+    "upgrades/side-effects/maturation-dated-owner-lint.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Review-binding trace after the final merge of main: same reviewed change, a revert undoes it; the independent reader concurred (second-pass/maturation-dated-owner-review.md, two rounds; echo-pipeline-strategy-release-note-fix-1127.md, including its 4044 package.json read of 2026-11-28 00:18)",
+  "eli16Path": "docs/specs/maturation-dated-owner-lint.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-dated-owner-lint.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
