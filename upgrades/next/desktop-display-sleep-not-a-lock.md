@@ -1,0 +1,18 @@
+<!-- bump: patch -->
+
+## What Changed
+
+Remote Desktop no longer refuses a Mac whose display is only asleep. When a session
+starts and the Mac reads "not ready", Instar checks macOS's own console lock. If the Mac
+is not locked, it wakes the display, as moving the mouse would, and checks again for up
+to 3 seconds. A locked Mac, or one whose lock cannot be read, is refused as before.
+Each wake attempt is recorded in the desktop access log.
+
+## What to Tell Your User
+
+Remote Desktop now opens a Mac whose screen has gone to sleep, instead of saying it is
+not ready. A Mac that is really locked is still refused.
+
+## Summary of New Capabilities
+
+None. A fix to session start on macOS.

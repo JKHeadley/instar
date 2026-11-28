@@ -24,6 +24,9 @@ const UNLOCK_CAUSE_WINDOW_MS = 15_000;
 const ATTEMPT_REFUND_WINDOW_MS = 10_000;
 const RESPAWN_BACKOFF_MS = [1_000, 2_000, 4_000];
 const LOCK_SAMPLE_WHILE_INTERRUPTED_MS = 1_000;
+/** After a display wake, how long admission rereads readiness, and how often. */
+const DISPLAY_WAKE_WAIT_MS = 3_000;
+const DISPLAY_WAKE_POLL_MS = 500;
 
 interface DirectRequest {
   id: string;
@@ -317,6 +320,36 @@ export class DirectDesktopAccess {
     return { ...state, lockState, ready: ready || shieldReady };
   }
 
+  /**
+   * Readiness at admission. A Mac whose display is only asleep reads not ready,
+   * because the helper's session flag is set, while macOS's own console lock
+   * says it is not locked. Only here, never in a background probe, the host may
+   * wake that display once, as a person moving the mouse would, and readiness is
+   * read again for up to 3 s. A locked or unreadable console is refused as before.
+   */
+  private async admissionProbe(audit: { grantId: string; operatorUid: string; requestId?: string }): Promise<DesktopProbe & { ready: boolean }> {
+    const first = await this.probe();
+    if (first.ready || first.sessionActive || !first.screenPermission || !first.inputPermission
+      || !this.host.wakeDisplay) return first;
+    const woke = await this.host.wakeDisplay().catch(() => 'unknown' as const); // @silent-fallback-ok — `unknown` refuses as before and is audited below.
+    let result: DesktopProbe & { ready: boolean } = first;
+    if (woke === 'woke') {
+      for (let waited = 0; waited < DISPLAY_WAKE_WAIT_MS && !result.ready; waited += DISPLAY_WAKE_POLL_MS) {
+        await new Promise(resolve => setTimeout(resolve, DISPLAY_WAKE_POLL_MS));
+        result = await this.probe();
+      }
+    }
+    const reason = woke === 'woke' ? (result.ready ? 'woke-ready' : 'woke-not-ready') : woke;
+    try { this.audit?.record({ kind: 'display-wake', grantId: audit.grantId, machineId: this.machineId, operatorUid: audit.operatorUid, reason }); }
+    catch { /* @silent-fallback-ok — an audit write failure must not change an admission decision */ }
+    // The wake and rereads take seconds: the locked-screen refusal is read again after them.
+    if (woke === 'woke') {
+      const refusal = await this.locked?.admissionRefusal(audit.requestId);
+      if (refusal) throw new Error(refusal);
+    }
+    return result;
+  }
+
   /** Status for the viewer and the card; decides nothing. */
   lockedStatus(): Promise<Record<string, unknown>> | null {
     return this.locked ? this.locked.status(undefined, this.lastHostProbe) : null;
@@ -353,13 +386,18 @@ export class DirectDesktopAccess {
       check.generateKeys();
       check.computeSecret(browserEcdh);
     } catch { throw new Error('browser ECDH key invalid'); }
-    const refusal = await this.locked?.admissionRefusal();
-    if (refusal) throw new Error(refusal);
-    if (!(await this.probe()).ready) throw new Error('desktop host is not ready');
+    // Lockout and rate limit come before the readiness probe, which may wake the display.
     const lockoutKey = this.requiresTelegramStepUp()
       ? `${input.operatorUid}:${input.machineId}`
       : `${this.sessionHash(input.operatorSessionToken)}:${input.machineId}`;
     if (this.requiresTelegramStepUp() && this.lockouts.get(lockoutKey) > this.now()) throw new Error('desktop approval is locked');
+    if (this.now() - (this.lastRequestAt.get(lockoutKey) ?? 0) < 10_000) throw new Error('wait before requesting another desktop session');
+    const refusal = await this.locked?.admissionRefusal();
+    if (refusal) throw new Error(refusal);
+    // Audit identity matches what the request row will store.
+    const auditOperator = this.requiresTelegramStepUp() ? input.operatorUid
+      : `dashboard-pin:${this.sessionHash(input.operatorSessionToken).slice(0, 16)}`;
+    if (!(await this.admissionProbe({ grantId: 'admission', operatorUid: auditOperator })).ready) throw new Error('desktop host is not ready');
     for (const [id, row] of this.requests) {
       if (this.now() - row.createdAt > 60 * 60_000) this.requests.delete(id);
     }
@@ -540,7 +578,11 @@ export class DirectDesktopAccess {
     if (row.admitPending) await row.admitPending.catch(() => {});
     const refusal = await this.locked?.admissionRefusal(requestId);
     if (refusal) throw new Error(refusal);
-    const resumed = await this.probe();
+    if (row.lockedActive && row.outsideUnlockSeen) {
+      this.revokeRow(row);
+      throw new Error('desktop resume unavailable');
+    }
+    const resumed = await this.admissionProbe({ grantId: row.grantId ?? 'admission', operatorUid: row.operatorUid, requestId });
     if (!resumed.ready) throw new Error('desktop host is not ready');
     if (row.lockedActive && (row.outsideUnlockSeen
       || (resumed.lockState && !await this.trackLock(row, resumed.lockState as DesktopLockState)))) {
