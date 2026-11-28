@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "design-feedback-rule-links",
+  "sessionId": "e7d3ee73-b4ae-43b6-9d89-bbc229ef91ad",
+  "timestamp": "2026-11-28T02:38:02.017Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-rule-links.md",
+  "artifactSha256": "6b24dc34e27b2963d9ed5cb1a45658dc6793f5b8234a11b56b539d5023696ad1",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-23T15-27-37-857Z-design-feedback-rule-links.json",
+    "docs/design-feedback/DF-0002-fixed-chief-of-staff.md",
+    "docs/design-feedback/DF-0003-native-context-menus.md",
+    "docs/design-feedback/DF-0004-generated-chat-parentage.md",
+    "src/designGate/feedbackRuleLinks.ts",
+    "tests/fixtures/designStandardForEntries.ts",
+    "tests/unit/design-feedback-rule-links.test.ts",
+    "upgrades/next/design-feedback-rule-links.md",
+    "upgrades/side-effects/design-feedback-rule-links.md",
+    "upgrades/side-effects/design-feedback-rule-links.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging the updated parent; second pass concurred; whole files green on the stack head.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

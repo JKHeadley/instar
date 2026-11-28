@@ -53,3 +53,7 @@ Defect class unbounded-self-action, closure n/a: this pure function creates no c
 Artifact second-pass: boundary reviewer concurs with the exact pure-component and false authority/privacy limits. No material finding.
 
 Migration (2026-11-27): DF-0002, DF-0003 and DF-0004 are brought into this entry format without removing any sentence: a header table (entry, date, card, source message, relay), the owner's own words from the 2026-11-22 message alongside the relayed wording, rule citations on each numbered problem, and the rules table linking each earned rule to the problems that cite it. DF-0004 cites its implementation card; DF-0002 and DF-0003 cite their commitments (CMT-2367, CMT-2368) as "card pending", because no source-bound card exists yet. Over the real entries this check now reports exactly two findings, `entry-card-missing` for DF-0002 and DF-0003, by the Chief of Staff's decision to report rather than exempt them until their cards exist.
+
+## Second-pass review
+
+**Reviewer:** a fresh, independent Claude Opus 5.5 second-pass reviewer, not the author, started by the Design Standards session on 2026-11-27 (rule 7 pre-queue review, 12:22 to 12:24 PT); final verdict concur, with any wording findings fixed in this head.
