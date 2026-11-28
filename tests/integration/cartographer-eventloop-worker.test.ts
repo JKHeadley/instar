@@ -247,7 +247,9 @@ describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worke
       if (priorPath === undefined) delete process.env.PATH;
       else process.env.PATH = priorPath;
     }
-  });
+    // The worker deadline above is 10s, which equals the unit lane's default test
+    // timeout, so the test must outlast the deadline it is waiting for (#3965).
+  }, 30_000);
 
   it('rollback (detectInWorker:false) runs the SAME bounded module synchronously', async () => {
     const t = tree();
