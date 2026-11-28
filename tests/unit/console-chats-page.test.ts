@@ -481,8 +481,10 @@ describe('Conversations page', () => {
       return prev(url, init);
     };
     dom.window.dispatchEvent(new dom.window.Event('focus'));
-    // A list refresh (the leader's 30 s refresh in real use; here the list's own Show more, which reloads it).
-    (doc.querySelector('button.chat-more') as HTMLButtonElement).click();
+    // The initial list failure exposes a retry, rather than a pagination control.
+    const retry = doc.querySelector<HTMLButtonElement>('button.chat-list-retry');
+    expect(retry?.hidden).toBe(false);
+    retry!.click();
     for (let i = 0; i < 60 && doc.querySelector('.chat-title')?.textContent !== 'Plans for Saturday'; i++) await flush(100);
     expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
   }, 15_000);

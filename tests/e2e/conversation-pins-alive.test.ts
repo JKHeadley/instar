@@ -95,6 +95,10 @@ describe('pinned messages — production wiring', () => {
     const created = await send('POST', '/mobile/conversations', { title: 'Plans', requestId: `${Date.now()}-${crypto.randomUUID()}` });
     expect(created.status).toBe(200);
     const key = created.body.conversationKey as string;
+    const conversations = await send('GET', '/mobile/conversations?scope=pool&limit=100');
+    expect(conversations.status).toBe(200);
+    expect(conversations.body.listCoverageComplete).toBe(true);
+    expect(conversations.body.conversations).toEqual(expect.arrayContaining([expect.objectContaining({ id: key })]));
     server.appConversations!.store.append({ eventId: 'e-agent-1', kind: 'message', conversationKey: key, at: new Date().toISOString(), machineId: server.appConversations!.deps.machineId(), messageId: 'msg-agent-1', role: 'agent', text: 'Here is the plan' });
 
     const pinned = await send('POST', `/mobile/chat/app/${key}/pins`, { messageId: 'msg-agent-1', pinned: true, requestId: `${Date.now()}-${crypto.randomUUID()}` });
