@@ -209,7 +209,7 @@ describe('peer breaker and peer list', () => {
 
 interface Spawned { pid: number; args: string[]; resultPath: string; inputPath: string; resolve: (x: { status: number | null; signal: string | null }) => void }
 
-function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean; watermark?: Record<string, unknown> } = {}) {
+function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: string; views?: Record<number, PrView>; spawnThrows?: boolean; watermark?: Record<string, unknown>; onDegradation?: LocalVerifyServiceSeams['onDegradation'] } = {}) {
   const stateDir = opts.stateDir ?? fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lvpeer-')));
   if (!opts.stateDir) {
     dirs.push(stateDir);
@@ -244,6 +244,7 @@ function harness(opts: { peerOnly?: boolean; machineId?: string; stateDir?: stri
     killGroup: (pgid, signal) => { killed.push({ pgid, signal }); },
     readProcessArgs: async () => null,
     foreignSuiteHolders: () => foreignHolders,
+    ...(opts.onDegradation ? { onDegradation: opts.onDegradation } : {}),
     setSuitePriority: (active) => { priorities.push(active); },
     signal: (key) => { signals.push(key); },
     now: () => t,
@@ -1482,8 +1483,12 @@ describe('code review round 2 fixes', () => {
 // ── resource-aware placement §4: peers respect size and load ───────────
 
 describe('coordinator — peer fit (resource-aware placement)', () => {
-  function twoPeers(peerFit?: (id: string) => { eligible: boolean; reason: string; score: number | null }, maxLoadPerCore?: unknown) {
-    const h = harness();
+  function twoPeers(
+    peerFit?: (id: string) => { eligible: boolean; reason: string; score: number | null },
+    maxLoadPerCore?: unknown,
+    onDegradation?: LocalVerifyServiceSeams['onDegradation'],
+  ) {
+    const h = harness({ onDegradation });
     const peer = fakePeer();
     const sentTo: string[] = [];
     const client: PeerClient = { ...peer.client, run: async (p, req) => { sentTo.push(p.machineId); return peer.client.run(p, req); } };
@@ -1535,6 +1540,39 @@ describe('coordinator — peer fit (resource-aware placement)', () => {
     await c.svc.request(1);
     await c.runTimers();
     expect(c.sentTo[0]).toBe(expected);
+  });
+
+  it.each([
+    { score: 0.85, ceiling: 0.85, reason: 'over-ceiling' },
+    { score: 0.1, ceiling: '0.85', reason: 'ceiling-invalid' },
+    { score: null, ceiling: 0.85, reason: 'load-unknown' },
+  ])('audits $reason once inside the peer skip window', async ({ score, ceiling, reason }) => {
+    const onDegradation = vi.fn();
+    const c = twoPeers((id) => id === 'mini'
+      ? { eligible: true, reason: 'fits', score }
+      : { eligible: false, reason: 'machine-busy', score: null }, ceiling, onDegradation);
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    await c.svc.request(2);
+    await c.runTimers();
+    expect(c.sentTo).toEqual([]);
+    const lines = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').trim().split('\n');
+    const skips = lines.map((line) => JSON.parse(line)).filter((event) => event.event === 'peer-skipped-ceiling');
+    expect(skips).toEqual([expect.objectContaining({
+      machineId: 'mini', reason,
+      score: typeof ceiling === 'number' ? score : null,
+      ceiling: typeof ceiling === 'number' ? ceiling : null,
+    })]);
+    if (reason === 'ceiling-invalid') {
+      expect(onDegradation).toHaveBeenCalledTimes(1);
+      expect(onDegradation).toHaveBeenCalledWith(expect.objectContaining({
+        feature: 'local-verify-peer-load-ceiling',
+        reason: 'Invalid maxLoadPerCore for mini',
+      }));
+    } else {
+      expect(onDegradation).not.toHaveBeenCalled();
+    }
   });
 
   it('eligible peers are tried least-loaded first', async () => {

@@ -2257,21 +2257,6 @@ export class LocalVerifyService {
    * full verify, and try the rest least-loaded first. A skip is audited at most once
    * per peer per reason per PEER_SKIP_AUDIT_MS. Seam absent ⇒ the configured order.
    */
-  private meetsPeerLoadCeiling(peer: PeerTarget): boolean {
-    const ceiling = peer.maxLoadPerCore;
-    if (ceiling === undefined) return true;
-    if (ceiling === null) return false;
-    try {
-      const fit = this.peerFitFn?.(peer.machineId);
-      const score = fit?.score;
-      return !!fit && (fit.eligible || !!(fit.smallPeerHeadroom && this.smallPeerPolicy(peer.machineId)))
-        && typeof score === 'number' && Number.isFinite(score) && score >= 0 && score < ceiling;
-    } catch (error) {
-      this.audit({ event: 'peer-load-ceiling-read-failed', machineId: peer.machineId, detail: String(error) });
-      return false;
-    }
-  }
-
   private fitPeers(peers: PeerTarget[]): PeerTarget[] {
     const fitFn = this.peerFitFn;
     if (!fitFn || peers.length === 0) return peers;
@@ -2294,6 +2279,53 @@ export class LocalVerifyService {
     });
     kept.sort((a, b) => (a.score - b.score) || (a.i - b.i));
     return kept.map((k) => k.peer);
+  }
+
+  private meetsPeerLoadCeiling(peer: PeerTarget): boolean {
+    const ceiling = peer.maxLoadPerCore;
+    if (ceiling === undefined) return true;
+
+    let score: number | null = null;
+    let reason = 'ceiling-invalid';
+    if (ceiling !== null) {
+      try {
+        const fit = this.peerFitFn?.(peer.machineId);
+        const reading = fit?.score;
+        if (typeof reading === 'number' && Number.isFinite(reading) && reading >= 0) score = reading;
+        if (score === null) reason = 'load-unknown';
+        else if (score >= ceiling) reason = 'over-ceiling';
+        else if (fit && (fit.eligible || (fit.smallPeerHeadroom && this.smallPeerPolicy(peer.machineId)))) return true;
+        else reason = fit?.reason ?? 'load-unknown';
+      } catch (error) {
+        this.auditPeerCeilingSkip(peer, 'load-unreadable', score, String(error));
+        return false;
+      }
+    }
+
+    this.auditPeerCeilingSkip(peer, reason, score);
+    return false;
+  }
+
+  private auditPeerCeilingSkip(peer: PeerTarget, reason: string, score: number | null, detail?: string): void {
+    const key = `ceiling:${peer.machineId}:${reason}`;
+    const last = this.peerSkipAudited.get(key);
+    const now = this.now();
+    if (last !== undefined && now - last < PEER_SKIP_AUDIT_MS) return;
+    this.peerSkipAudited.set(key, now);
+    this.audit({ event: 'peer-skipped-ceiling', machineId: peer.machineId, reason, score, ceiling: peer.maxLoadPerCore, detail });
+    if (reason === 'ceiling-invalid' && last === undefined) {
+      try {
+        this.seams.onDegradation?.({
+          feature: 'local-verify-peer-load-ceiling',
+          primary: 'configured peer load ceiling',
+          fallback: 'hold new offers to the peer',
+          reason: `Invalid maxLoadPerCore for ${peer.machineId}`,
+          impact: 'Set a numeric maxLoadPerCore above zero and at most one, or remove the optional setting.',
+        });
+      } catch (error) {
+        this.audit({ event: 'peer-ceiling-degradation-report-failed', machineId: peer.machineId, detail: String(error) });
+      }
+    }
   }
 
   private smallPeerPolicy(machineId: string): SmallPeerTrialPolicy | null {
