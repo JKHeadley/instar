@@ -49,3 +49,9 @@ The existing "oldest first when rows are enqueued in the same clock tick" case, 
   - The src and tests changes against main are byte-identical to b46cf1526e's against its base, with matching patch ids.
   - No shipped upgrades guide differs from main.
   - Review file: `.instar/state/handoffs/reviews/second-pass/echo-pipeline-strategy-4014-main-merge.md` (agent home).
+- **2026-11-28 01:48 PT, the fixture reconciliation after the full Studio gate failed on `tests/integration/feedback-drain-performance.test.ts:35`: CONCUR (after one CONCUR-with-conditions round).**
+  - The failure was the intended behaviour: the tick's own clustering readies one high-priority cluster of about 500 reports, which now outranks the seeded normal, 1-report items.
+  - The fixture keeps those items unchanged and now asserts the full order: the cluster first, the oldest seeded item second, the newer third. That shows old, lower-ranked work still drains in the same tick, oldest first within a rank.
+  - The 500-row envelope, the concurrent ingest and the lag checks are untouched.
+  - Acceptance criteria 13 and 16 in `docs/specs/feedback-factory-operating-drain.md` now say highest-ranked first, oldest within a rank. Lower-ranked work has no hard age bound; aging and the `simulateClaims` alignment are tracked as CMT-2388.
+  - Notes: `.instar/state/handoffs/reviews/second-pass/4014-fixture-reconciliation.md` (agent home).

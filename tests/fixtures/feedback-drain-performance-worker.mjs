@@ -77,6 +77,11 @@ process.stdout.write(JSON.stringify({
   projectionLag: processing.stats().byStatus.unprocessed ?? 0,
   queued: metrics.work.queued, completed: metrics.work.completed, wouldCreate: tick.wouldCreate, completedWithinTicks: consumed.includes('feedback-work:oldest-eligible:1') ? 1 : null,
   firstClaimedWorkKey: consumed[0] ?? null,
+  // Claims order by priority, then report count, then age (WORK_CLAIM_ORDER). The tick's own clustering
+  // readies one high-priority cluster of about 500 reports, so it leads; the two seeded normal, 1-report
+  // items must still drain in the same tick, the older before the newer (no starvation among equals).
+  oldestClaimedAt: consumed.indexOf('feedback-work:oldest-eligible:1'),
+  newerClaimedAt: consumed.indexOf('feedback-work:newer-eligible:1'),
   authoritativeReadBack: Boolean(tracker.findByFeedbackWorkKey('feedback-work:oldest-eligible:1')),
 }));
 store.close();
