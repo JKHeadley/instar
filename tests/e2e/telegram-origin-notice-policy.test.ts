@@ -181,8 +181,9 @@ describe('production bootstrap outage authority separation', () => {
     // File-watch delivery is asynchronous; allow the production five-second
     // refresh plus its bounded two-second source read to observe the rotation.
     await vi.waitFor(() => expect(h.runtime.options.getAlertPolicy('operator-attention-hub')).toBeNull(), { timeout: 7500 });
+    const mark = h.noticeMark();
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome, h.diagnostics()).toBe('suppressed'));
+    await vi.waitFor(() => expect(h.suppressedSince(mark), h.diagnostics()).toMatchObject({ suppressed: true, attempted: false }));
     await expect(telegramFetch('https://api.telegram.org/bot123:notice-fixture/sendMessage', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text: 'Must not use revoked credential authority' }) })).rejects.toThrow();
     expect(h.wire).not.toHaveBeenCalled();
