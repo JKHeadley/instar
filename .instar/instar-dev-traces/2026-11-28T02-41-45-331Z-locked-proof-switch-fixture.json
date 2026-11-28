@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "locked-proof-switch-fixture",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T02:41:45.331Z",
+  "artifactPath": "upgrades/side-effects/locked-proof-switch-fixture.md",
+  "artifactSha256": "319d5546b32f6d2ba984460d99508a0bfbff840985cc3069aaf9e9a75bf9d5f9",
+  "coveredFiles": [
+    "scripts/locked-proof/create-proof-user.sh",
+    "upgrades/side-effects/locked-proof-switch-fixture.md",
+    "docs/specs/locked-proof-switch-fixture.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One wording fix to a hand-run developer proof script after second-pass review, plus the review record.",
+  "eli16Path": "docs/specs/locked-proof-switch-fixture.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/locked-proof-switch-fixture.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "message text only"
+  }
+}

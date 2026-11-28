@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Create the throwaway macOS user for the locked-Mac proof run (instarproof).
+# Create a throwaway macOS user for the locked-Mac proof run.
 #
-#   create-proof-user.sh --agent-home DIR [--execute] [--replace-vault]
+#   create-proof-user.sh --agent-home DIR [--fixture proof|switch] [--execute] [--replace-vault]
+#
+# --fixture is a closed choice; nothing else names the account:
+#   proof  (default) instarproof        vault key locked_proof_user_password
+#   switch           instarproofswitch  vault key locked_proof_switch_user_password
+#                    (the second account case 12.12 switches the console to and back from)
 #
 # Without --execute it only prints the plan. With --execute (run as an admin with
 # passwordless sudo, on the proof Mac):
 #   1. generates a throwaway password (20 lowercase letters/digits, layout-safe),
 #   2. stores it in the agent's vault FIRST (credential-store.mjs, value on stdin),
-#      under key locked_proof_user_password, so no password exists that the vault lacks.
+#      under the fixture's vault key, so no password exists that the vault lacks.
 #      credential-store.mjs writes Bitwarden first; this script refuses to run unless that
 #      helper hands Bitwarden the encoded item on stdin (an older copy put it on `bw`'s
 #      command line, where `ps` can read it),
@@ -15,34 +20,42 @@
 #      prompt through a pseudo-terminal (never on a command line, never in a log),
 #   4. clears the user's account policies, so macOS does not force a password change
 #      at first login and does not lock the account after failed attempts,
-#   5. checks the stored password authenticates (dscl -authonly, again by prompt).
+#   5. checks the account is not in the admin group, and the stored password
+#      authenticates (dscl -authonly, again by prompt).
 # The password is never printed. Remove everything with remove-proof-user.sh.
 #
 # Tests point LOCKED_PROOF_FAKE_BIN at stand-in commands; then sudo is not used.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROOF_USER="instarproof"
-VAULT_KEY="locked_proof_user_password"
+FIXTURE="proof"
 AGENT_HOME=""
 EXECUTE=0
 REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent-home) AGENT_HOME="$2"; shift 2 ;;
+    --fixture) FIXTURE="${2:-}"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
     --replace-vault) REPLACE=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [ -n "$AGENT_HOME" ] || { echo "--agent-home is required" >&2; exit 2; }
+case "$FIXTURE" in
+  proof)  PROOF_USER="instarproof";       VAULT_KEY="locked_proof_user_password";        FULL_NAME="Instar proof";        BW_NAME="Instar locked-proof test user" ;;
+  switch) PROOF_USER="instarproofswitch"; VAULT_KEY="locked_proof_switch_user_password"; FULL_NAME="Instar proof switch"; BW_NAME="Instar locked-proof switch user" ;;
+  *) echo "unknown fixture: $FIXTURE (proof or switch)" >&2; exit 2 ;;
+esac
 
 if [ -n "${LOCKED_PROOF_FAKE_BIN:-}" ]; then
   SUDO=""; BIN="$LOCKED_PROOF_FAKE_BIN"
   SYSADMINCTL="$BIN/sysadminctl"; DSCL="$BIN/dscl"; PWPOLICY="$BIN/pwpolicy"; STORE="$BIN/credential-store"
+  MEMBERUTIL="$BIN/dsmemberutil"
 else
   SUDO="sudo -n"
   SYSADMINCTL="/usr/sbin/sysadminctl"; DSCL="/usr/bin/dscl"; PWPOLICY="/usr/bin/pwpolicy"
+  MEMBERUTIL="/usr/bin/dsmemberutil"
   STORE="node $AGENT_HOME/.instar/scripts/credential-store.mjs"
 fi
 
@@ -77,13 +90,20 @@ PW="$(node --input-type=module -e "import { generateProofPassword } from '$HERE/
 FORCE_ARG=""
 [ "$REPLACE" -eq 1 ] && FORCE_ARG="--force"
 # printf is a shell builtin: the value is never an argument of any process.
-printf '%s' "$PW" | (cd "$AGENT_HOME" && $STORE "$VAULT_KEY" --bw-name "Instar locked-proof test user ($HOST_LABEL)" \
+printf '%s' "$PW" | (cd "$AGENT_HOME" && $STORE "$VAULT_KEY" --bw-name "$BW_NAME ($HOST_LABEL)" \
   --bw-user "$PROOF_USER" --bw-note "Throwaway macOS user for the locked-screen proof run. Delete with the user." $FORCE_ARG)
 echo "stored in the vault as $VAULT_KEY"
 
 printf '%s' "$PW" | $SUDO python3 "$HERE/pty-feed.py" --prompts 2 --timeout 120 -- \
-  $SYSADMINCTL -addUser "$PROOF_USER" -fullName "Instar proof" -password -
+  $SYSADMINCTL -addUser "$PROOF_USER" -fullName "$FULL_NAME" -password -
 $SUDO $PWPOLICY -u "$PROOF_USER" -clearaccountpolicies >/dev/null
+# A throwaway must never be an admin. dsmemberutil resolves nested groups; anything but
+# the exact "not a member" answer (an error, a missing tool, "is a member") refuses.
+if [ "$($MEMBERUTIL checkmembership -U "$PROOF_USER" -G admin 2>/dev/null || true)" != "user is not a member of the group" ]; then
+  unset PW
+  echo "refusing: $PROOF_USER is not confirmed outside the admin group. remove-proof-user.sh refuses it too, so a person deletes it by hand (System Settings, Users & Groups); its vault key is $VAULT_KEY" >&2
+  exit 1
+fi
 printf '%s' "$PW" | $SUDO python3 "$HERE/pty-feed.py" --prompts 1 --timeout 30 -- $DSCL . -authonly "$PROOF_USER"
 unset PW
 echo "created $PROOF_USER; the stored password authenticates"

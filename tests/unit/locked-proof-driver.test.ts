@@ -931,43 +931,154 @@ describe('pty-feed answers a password prompt without a command line', () => {
   });
 });
 
+/** Stand-in commands for create-proof-user.sh; `member` is what dsmemberutil answers. */
+function runCreate(args: string[], member = 'user is not a member of the group') {
+  const d = tmp('proof-user-');
+  const bin = path.join(d, 'bin');
+  fs.mkdirSync(bin);
+  const order = path.join(d, 'order.log');
+  const vault = path.join(d, 'vault.txt');
+  const created = path.join(d, 'created.jsonl');
+  writePrompter(path.join(bin, 'sysadminctl'), created);
+  fs.appendFileSync(path.join(bin, 'sysadminctl'), `open(${JSON.stringify(order)}, 'a').write('sysadminctl\\n')\n`);
+  fs.writeFileSync(path.join(bin, 'credential-store'), `#!/bin/sh\necho "store $*" >> ${JSON.stringify(order)}\ncat > ${JSON.stringify(vault)}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'pwpolicy'), `#!/bin/sh\necho "pwpolicy $*" >> ${JSON.stringify(order)}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'dsmemberutil'), `#!/bin/sh\necho "member $*" >> ${JSON.stringify(order)}\necho ${JSON.stringify(member)}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'dscl'), `#!/usr/bin/env python3
+import getpass, sys
+if '-read' in sys.argv: sys.exit(1)
+pw = getpass.getpass('Password:')
+open(${JSON.stringify(order)}, 'a').write('authonly ' + ' '.join(sys.argv[3:]) + ' ' + ('ok' if pw == open(${JSON.stringify(vault)}).read() else 'bad') + '\\n')
+`, { mode: 0o755 });
+  const r = spawnSync('bash', [path.join(DIR, 'create-proof-user.sh'), '--agent-home', d, ...args, '--execute'], { encoding: 'utf8', env: { ...process.env, LOCKED_PROOF_FAKE_BIN: bin } });
+  const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '');
+  const out = { r, pw: read(vault), order: read(order), created: read(created) };
+  rm(d);
+  return out;
+}
+
 describe('create-proof-user.sh with stand-in commands', () => {
   it('dry run does nothing', () => {
     const out = execFileSync('bash', [path.join(DIR, 'create-proof-user.sh'), '--agent-home', '/nonexistent'], { encoding: 'utf8', env: { ...process.env, LOCKED_PROOF_FAKE_BIN: '/nonexistent' } });
     expect(out).toMatch(/Dry run: nothing done/);
   });
 
-  it('stores the password in the vault first, creates the user by prompt, clears policies, verifies; never prints it', () => {
-    const d = tmp('proof-user-');
-    try {
-      const bin = path.join(d, 'bin');
-      fs.mkdirSync(bin);
-      const order = path.join(d, 'order.log');
-      const vault = path.join(d, 'vault.txt');
-      const created = path.join(d, 'created.jsonl');
-      writePrompter(path.join(bin, 'sysadminctl'), created);
-      fs.appendFileSync(path.join(bin, 'sysadminctl'), `open(${JSON.stringify(order)}, 'a').write('sysadminctl\\n')\n`);
-      fs.writeFileSync(path.join(bin, 'credential-store'), `#!/bin/sh\necho "store $*" >> ${JSON.stringify(order)}\ncat > ${JSON.stringify(vault)}\n`, { mode: 0o755 });
-      fs.writeFileSync(path.join(bin, 'pwpolicy'), `#!/bin/sh\necho "pwpolicy $*" >> ${JSON.stringify(order)}\n`, { mode: 0o755 });
-      fs.writeFileSync(path.join(bin, 'dscl'), `#!/usr/bin/env python3
-import getpass, sys
-if '-read' in sys.argv: sys.exit(1)
-pw = getpass.getpass('Password:')
-open(${JSON.stringify(order)}, 'a').write('authonly ' + ('ok' if pw == open(${JSON.stringify(vault)}).read() else 'bad') + '\\n')
-`, { mode: 0o755 });
-      const r = spawnSync('bash', [path.join(DIR, 'create-proof-user.sh'), '--agent-home', d, '--execute'], { encoding: 'utf8', env: { ...process.env, LOCKED_PROOF_FAKE_BIN: bin } });
-      expect(r.status, r.stderr).toBe(0);
-      const pw = fs.readFileSync(vault, 'utf8');
-      expect(pw).toMatch(/^[a-z2-9]{20}$/);
-      const steps = fs.readFileSync(order, 'utf8').trim().split('\n');
-      expect(steps[0]).toMatch(/^store locked_proof_user_password --bw-name Instar locked-proof test user/);
-      expect(steps.slice(1)).toEqual(['sysadminctl', 'pwpolicy -u instarproof -clearaccountpolicies', 'authonly ok']);
-      const row = JSON.parse(fs.readFileSync(created, 'utf8').trim());
-      expect(row.pw).toBe(pw);
-      expect(row.argv).toEqual(['-addUser', 'instarproof', '-fullName', 'Instar proof', '-password', '-']);
+  it('stores the password in the vault first, creates the user by prompt, clears policies, checks non-admin, verifies; never prints it', () => {
+    const { r, pw, order, created } = runCreate([]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(pw).toMatch(/^[a-z2-9]{20}$/);
+    const steps = order.trim().split('\n');
+    expect(steps[0]).toMatch(/^store locked_proof_user_password --bw-name Instar locked-proof test user \(/);
+    expect(steps.slice(1)).toEqual(['sysadminctl', 'pwpolicy -u instarproof -clearaccountpolicies', 'member checkmembership -U instarproof -G admin', 'authonly instarproof ok']);
+    const row = JSON.parse(created.trim());
+    expect(row.pw).toBe(pw);
+    expect(row.argv).toEqual(['-addUser', 'instarproof', '-fullName', 'Instar proof', '-password', '-']);
+    expect(r.stdout + r.stderr).not.toContain(pw);
+    expect(order).not.toContain(pw);
+  });
+
+  it('--fixture switch makes instarproofswitch under its own vault key, vault first, never printed', () => {
+    const { r, pw, order, created } = runCreate(['--fixture', 'switch']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(pw).toMatch(/^[a-z2-9]{20}$/);
+    const steps = order.trim().split('\n');
+    expect(steps[0]).toMatch(/^store locked_proof_switch_user_password --bw-name Instar locked-proof switch user \(.* --bw-user instarproofswitch /);
+    expect(steps.slice(1)).toEqual(['sysadminctl', 'pwpolicy -u instarproofswitch -clearaccountpolicies', 'member checkmembership -U instarproofswitch -G admin', 'authonly instarproofswitch ok']);
+    expect(JSON.parse(created.trim()).argv).toEqual(['-addUser', 'instarproofswitch', '-fullName', 'Instar proof switch', '-password', '-']);
+    expect(r.stdout + r.stderr + order).not.toContain(pw);
+  });
+
+  it('refuses any fixture outside the closed list before storing or creating anything', () => {
+    for (const bad of ['justin_instar_1', 'instarproofswitch', 'Switch', '']) {
+      const { r, order } = runCreate(['--fixture', bad]);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/unknown fixture/);
+      expect(order).toBe('');
+    }
+  });
+
+  it('stops before the password check unless the account is confirmed outside the admin group', () => {
+    for (const answer of ['user is a member of the group', 'There was an unknown error.', '']) {
+      const { r, pw, order } = runCreate(['--fixture', 'switch'], answer);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/not confirmed outside the admin group/);
+      expect(order).not.toMatch(/authonly/);
       expect(r.stdout + r.stderr).not.toContain(pw);
-      expect(fs.readFileSync(order, 'utf8')).not.toContain(pw);
-    } finally { rm(d); }
+    }
+  });
+});
+
+/** Stand-in commands for remove-proof-user.sh. */
+function runRemove(args: string[], o: { console?: string; member?: string; realName?: string; exists?: boolean } = {}) {
+  const d = tmp('proof-remove-');
+  const bin = path.join(d, 'bin');
+  fs.mkdirSync(bin);
+  const calls = path.join(d, 'calls.log');
+  const log = (name: string, body = '') => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(calls)}\n${body}`, { mode: 0o755 });
+  const realName = o.realName ?? 'Instar proof switch';
+  fs.writeFileSync(path.join(bin, 'dscl'), `#!/bin/sh
+case "$*" in
+  *UniqueID*) ${o.exists === false ? 'exit 1' : 'echo "UniqueID: 502"'} ;;
+  *RealName*) printf 'RealName:\\n ${realName} \\n' ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'console-owner'), `#!/bin/sh\n${o.console === undefined ? 'echo instarproof' : o.console ? `echo ${o.console}` : 'exit 1'}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'dsmemberutil'), `#!/bin/sh\necho ${JSON.stringify(o.member ?? 'user is not a member of the group')}\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'id'), '#!/bin/sh\necho 502\n', { mode: 0o755 });
+  for (const name of ['launchctl', 'pkill', 'sysadminctl']) log(name);
+  const r = spawnSync('bash', [path.join(DIR, 'remove-proof-user.sh'), ...args], { encoding: 'utf8', env: { ...process.env, LOCKED_PROOF_FAKE_BIN: bin } });
+  const out = { r, calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : [] };
+  rm(d);
+  return out;
+}
+
+describe('remove-proof-user.sh with stand-in commands', () => {
+  it('dry run does nothing', () => {
+    const { r, calls } = runRemove(['--fixture', 'switch']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/Dry run: nothing done/);
+    expect(calls).toEqual([]);
+  });
+
+  it('removes only the named fixture account, after its checks', () => {
+    const { r, calls } = runRemove(['--fixture', 'switch', '--execute']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls).toEqual(['launchctl bootout gui/502', 'pkill -KILL -U instarproofswitch', 'sysadminctl -deleteUser instarproofswitch -secure']);
+    const def = runRemove(['--execute'], { console: 'instarproofswitch', realName: 'Instar proof' });
+    expect(def.r.status, def.r.stderr).toBe(0);
+    expect(def.calls).toEqual(['launchctl bootout gui/502', 'pkill -KILL -U instarproof', 'sysadminctl -deleteUser instarproof -secure']);
+  });
+
+  it('refuses any fixture outside the closed list', () => {
+    for (const bad of ['justin_instar_1', 'instarproofswitch', '']) {
+      const { r, calls } = runRemove(['--fixture', bad, '--execute']);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/unknown fixture/);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('refuses a live, admin, unreadable or differently named account before stopping anything', () => {
+    const cases: Array<[Parameters<typeof runRemove>[1], RegExp]> = [
+      [{ console: 'instarproofswitch' }, /is on the console/],
+      [{ console: '' }, /console owner could not be read/],
+      [{ member: 'user is a member of the group' }, /not confirmed outside the admin group/],
+      [{ member: 'There was an unknown error.' }, /not confirmed outside the admin group/],
+      [{ realName: 'Justin' }, /not the throwaway this script made/],
+    ];
+    for (const [o, msg] of cases) {
+      const { r, calls } = runRemove(['--fixture', 'switch', '--execute'], o);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(msg);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('does nothing when the account does not exist', () => {
+    const { r, calls } = runRemove(['--fixture', 'switch', '--execute'], { exists: false });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/no user instarproofswitch/);
+    expect(calls).toEqual([]);
   });
 });
 

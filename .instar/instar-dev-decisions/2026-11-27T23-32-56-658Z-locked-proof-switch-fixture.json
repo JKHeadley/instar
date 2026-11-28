@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-27T23:32:56.658Z",
+  "slug": "locked-proof-switch-fixture",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 103,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/locked-proof/create-proof-user.sh",
+      "scripts/locked-proof/remove-proof-user.sh"
+    ],
+    "addedLines": 83,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "hand-run one-shot scripts; the pkill and bootout target only the named throwaway account once, after refusals; no loop or self-trigger"
+  },
+  "verdict": "pass"
+}
