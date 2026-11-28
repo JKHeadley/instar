@@ -175,7 +175,9 @@ describe('tone-gate replay capture (toneGate.replayInput)', () => {
     await new MessagingToneGate(b.provider, on).review(`All done ${BODY_MARKER}`, reviewContext());
     // Every per-call boundary is random; everything else must match byte for byte.
     const strip = (p: string) => p.replace(/\b([A-Z_]+_BOUNDARY|ASK_LINKS)_[0-9a-f]{16}/g, '$1_X');
-    expect(strip(b.prompt!)).toBe(strip(a.prompt!));
+    expect(a.seen.prompt).toBeTypeOf('string');
+    expect(b.seen.prompt).toBeTypeOf('string');
+    expect(strip(b.seen.prompt!)).toBe(strip(a.seen.prompt!));
   });
 });
 

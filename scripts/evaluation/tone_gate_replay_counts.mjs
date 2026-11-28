@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Governed by: Observable Intelligence — No Autonomous LLM Action Is Unauditable (its Decision Provenance & Outcome Review subsection).
 // Benchmark Milestone 1, step 1: count the tone-gate decisions in this machine's
 // local judgment provenance log that are captured, replayable and exact.
 // Read-only. Prints counts and refusal codes only, never message text.

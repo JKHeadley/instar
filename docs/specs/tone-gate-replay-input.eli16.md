@@ -23,3 +23,7 @@ On development agents, each tone-gate row now also keeps the parts the prompt is
 ## What you need to decide
 
 Nothing. The replay and the two-judge grading are analysis on the stored rows and report back in the benchmark topic.
+
+## Later fix
+
+One test meant to prove the switch never changes the prompt was comparing two empty values, so it could not fail. It now compares the prompts the model actually saw. The counting script also names the standard it serves, as a new repository check requires.

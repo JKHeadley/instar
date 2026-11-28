@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "tone-gate-replay-input",
+  "sessionId": "c5002075-e739-469b-b5ff-c90d1c4e7ea3",
+  "timestamp": "2026-11-28T02:36:16.826Z",
+  "artifactPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "artifactSha256": "5b8455c92a91e781cc2f63d4d15e59aa1c61e7e2f2ad94f4003e2a47294950fc",
+  "coveredFiles": [
+    "docs/specs/tone-gate-replay-input.eli16.md",
+    "scripts/evaluation/tone_gate_replay_counts.mjs",
+    "tests/unit/tone-gate-replay-input-capture.test.ts",
+    "upgrades/side-effects/tone-gate-replay-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only fix (the prompt-equality test read an unset field) plus a header comment naming the governing standard on the counter, required by the new backreference lint; a revert fully undoes it",
+  "eli16Path": "docs/specs/tone-gate-replay-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
