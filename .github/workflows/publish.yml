@@ -272,6 +272,13 @@ jobs:
             rm -f upgrades/next/*.md
             echo "Removed consumed release-note fragments from upgrades/next/"
           fi
+          # An empty directory lets Git infer a rename into upgrades/.
+          # Fail before publishing if cleanup removed the tracked marker.
+          git ls-files --error-unmatch upgrades/next/.gitkeep >/dev/null
+          if [ ! -f upgrades/next/.gitkeep ]; then
+            echo "::error::Release cleanup must keep upgrades/next/.gitkeep"
+            exit 1
+          fi
 
       - name: Check upgrade guide
         if: steps.guide-check.outputs.skip != 'true' && steps.tier-gate.outputs.skip != 'true'
