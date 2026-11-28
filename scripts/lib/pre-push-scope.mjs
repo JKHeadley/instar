@@ -93,6 +93,28 @@ export function changedFilesSince(baseRef, opts = {}) {
     .filter(Boolean);
 }
 
+// These paths either affect discovery itself or fan out through shared server wiring.
+// The local smoke tier cannot cheaply derive a narrow related set for them.
+const SHARED_SMOKE_INPUT = /^(?:src\/(?:commands\/server\.ts$|server\/routes(?:\.ts$|\/)|localVerify\/)|tests\/(?:setup\/|vitest-setup\.ts$)|vitest[^/]*\.config\.[cm]?[jt]s$|(?:package(?:-lock)?\.json|pnpm-lock\.yaml)$|packages\/[^/]+\/package\.json$)/;
+const SMOKE_TEST = /^tests\/(unit|integration|e2e)\/[a-zA-Z0-9_./-]+\.test\.ts$/;
+const DOC = /\.(?:md|mdx)$/;
+
+export function classifySmokeInputs(changedFiles) {
+  const directTests = [];
+  const deferredE2e = [];
+  for (const file of changedFiles) {
+    const lane = SMOKE_TEST.exec(file)?.[1];
+    if (lane === 'e2e') deferredE2e.push(file);
+    else if (lane) directTests.push(file);
+  }
+  return {
+    directTests,
+    deferredE2e,
+    sharedInput: changedFiles.find(file => SHARED_SMOKE_INPUT.test(file)) ?? null,
+    hasSourceChange: changedFiles.some(file => !SMOKE_TEST.test(file) && !DOC.test(file)),
+  };
+}
+
 export function readSmokeLimits(env = process.env) {
   return {
     maxChangedFiles: Number.parseInt(env.INSTAR_PRE_PUSH_SMOKE_MAX_CHANGED_FILES ?? '', 10) || DEFAULT_SMOKE_LIMITS.maxChangedFiles,
@@ -165,11 +187,10 @@ export function summarizeVitestListJson(jsonText) {
 
 /**
  * Parse `vitest list --filesOnly --json` output: an array of `{ file }` entries.
- * This listing never imports a test file, so it stays fast however many files a
- * change reaches — the full listing (which collects every test case) is only run
- * once this count is under the smoke cap.
+ * Files-only mode skips test-case collection. A related selection can still
+ * transform the import graph before it returns this file list.
  */
-export function summarizeVitestFilesOnlyJson(jsonText) {
+export function summarizeVitestFilesOnlyJson(jsonText, { includeFiles = false } = {}) {
   const text = String(jsonText);
   if (text.trim().length === 0) throw new Error('Vitest files-only list JSON is empty');
   let parsed;
@@ -189,7 +210,7 @@ export function summarizeVitestFilesOnlyJson(jsonText) {
     }
     files.add(path.normalize(entry.file));
   }
-  return { testFileCount: files.size };
+  return { testFileCount: files.size, ...(includeFiles ? { files: [...files] } : {}) };
 }
 
 export function evaluateAffectedSmokeSelection(

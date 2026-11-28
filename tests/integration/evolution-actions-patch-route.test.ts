@@ -162,3 +162,35 @@ describe('CMT-1132 action hold and archive routes', () => {
     await request(app).post(`/evolution/actions/${action.id}/restore`).expect(404);
   });
 });
+
+describe('PATCH /evolution/actions/:id and correction class reviews (CMT-2086)', () => {
+  it('completing a class-review action marks the process arm shipped and writes no grade (the route has no PIN)', async () => {
+    const { ClassReviewStore } = await import('../../src/monitoring/ClassReviewStore.js');
+    const { FeatureEvidenceLog, setFeatureEvidenceLog } = await import('../../src/monitoring/FeatureEvidenceLog.js');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evolution-actions-grade-'));
+    tmpDirs.push(stateDir);
+    const evidence = new FeatureEvidenceLog({ projectDir: stateDir, machine: 't', instarVersion: 'test' });
+    setFeatureEvidenceLog(evidence);
+    try {
+      const store = new ClassReviewStore({ dbPath: ':memory:', machineId: 't' });
+      store.ensureShell({ dedupeKey: 'infra-gap:abc123', correctionId: 'c1', origin: 'operator-attributed' });
+      store.fill('infra-gap:abc123', { standardReview: { verdict: 'not-applicable', isPolicyRelaxation: false },
+        processReview: { verdict: 'process-gap', proposedDelta: 'p' }, rationale: 'r', confidence: 'high' });
+      const evolution = new EvolutionManager({ stateDir });
+      const ctx = { config: { authToken: '', stateDir, projectDir: stateDir, port: 0 }, evolution, classReviewStore: store, startTime: new Date() } as unknown as RouteContext;
+      const app = express();
+      app.use(express.json());
+      app.use('/', createRoutes(ctx));
+      const action = evolution.addAction({ title: 'fix the gap', description: 'd', priority: 'medium', tags: ['class-review:infra-gap:abc123'] } as any);
+      const res = await request(app).patch(`/evolution/actions/${action.id}`).send({ status: 'completed', resolution: 'done' });
+      expect(res.status).toBe(200);
+      expect(store.get('infra-gap:abc123')?.processOutcome).toBe('shipped');
+      const rows = fs.existsSync(evidence.filePath)
+        ? fs.readFileSync(evidence.filePath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.kind === 'outcome')
+        : [];
+      expect(rows).toHaveLength(0);
+    } finally {
+      setFeatureEvidenceLog(null);
+    }
+  });
+});

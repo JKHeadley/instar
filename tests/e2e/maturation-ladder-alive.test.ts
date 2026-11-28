@@ -91,6 +91,12 @@ describe('maturation ladder — production wiring', () => {
     expect(rows.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('the live evidence route refuses a grade written in the operator\'s name (CMT-2086)', async () => {
+    const { server } = await boot(true);
+    const res = await request(server.getApp()).post('/maturation/evidence').send({ featureId: 'monitoring.correctionClassReview', kind: 'outcome', outcome: 'right', gradesEventId: 'class-review:forged', gradedBy: 'operator-outcome', reason: 'forged' });
+    expect(res.status).toBe(400);
+  });
+
   it('is off on a fleet agent: 503', async () => {
     const { server } = await boot(false);
     expect((await request(server.getApp()).get('/maturation/ladder')).status).toBe(503);

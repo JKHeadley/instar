@@ -38,6 +38,10 @@ export async function* jsonArrayItems(stream: Readable, maxElementChars: number 
     if (depth >= 2) segStart = 0;
     for (let i = 0; i < chunk.length; i++) {
       const c = chunk[i];
+      if (depth === -1) {
+        if (!/\s/.test(c)) throw new Error('trailing-data');
+        continue;
+      }
       if (inString) {
         if (escape) escape = false;
         else if (c === '\\') escape = true;
@@ -74,8 +78,9 @@ export async function* jsonArrayItems(stream: Readable, maxElementChars: number 
           }
           parts = []; partLen = 0; oversize = false;
         } else if (depth === 0) {
-          started = false; // end of the array; anything after is ignored
-          depth = -1;
+          if (c !== ']') throw new Error('not-an-array');
+          started = false;
+          depth = -1; // Keep consuming the stream so a concatenated second export cannot be hidden.
         }
         continue;
       }
@@ -83,7 +88,6 @@ export async function* jsonArrayItems(stream: Readable, maxElementChars: number 
     if (depth >= 2) flushSegment(chunk, chunk.length);
     segStart = -1;
     for (const item of out) yield item;
-    if (depth === -1) return;
   }
   if (!started && depth !== -1) throw new Error('not-an-array');
   if (depth > 0) throw new Error('ended-early');

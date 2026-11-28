@@ -75,6 +75,21 @@ for (const name of FIXTURE_STOWAWAYS) {
 {
   const upgradesDir = path.join(ROOT, 'upgrades');
   if (fs.existsSync(upgradesDir)) {
+    const marker = path.join(upgradesDir, 'next', '.gitkeep');
+    if (!fs.statSync(marker, { throwIfNoEntry: false })?.isFile()) {
+      failures.push('Missing upgrades/next/.gitkeep. Keep it after publishing the last pending release note.');
+    }
+    const releaseGuide = /^\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?\.md$/;
+    for (const entry of fs.readdirSync(upgradesDir, { withFileTypes: true })) {
+      const name = entry.name;
+      if (entry.isDirectory() || !name.endsWith('.md') ||
+          name === 'NEXT.md' || name.endsWith('.eli16.md') || releaseGuide.test(name)) {
+        continue;
+      }
+      failures.push(
+        `Unexpected release note upgrades/${name}. Pending fragments belong under upgrades/next/.`,
+      );
+    }
     try {
       const { inputs } = gatherFragmentInputs(upgradesDir);
       if (inputs.length > 0) {

@@ -118,8 +118,8 @@ describe('Compaction & Telegram context recovery E2E', () => {
   describe('Unanswered detection algorithm (Python parity)', () => {
     // Execute the ACTUAL Python detection logic used in the hooks
     function runPythonDetection(msgs: Array<{ text: string; fromUser: boolean; timestamp: string }>): string[] {
-      const scriptPath = path.join(os.tmpdir(), 'test-unanswered-detect.py');
-      const dataPath = path.join(os.tmpdir(), 'test-unanswered-data.json');
+      const scriptPath = path.join(tmpDir, 'test-unanswered-detect.py');
+      const dataPath = path.join(tmpDir, 'test-unanswered-data.json');
       fs.writeFileSync(scriptPath, `
 import json, sys
 msgs = json.load(open(sys.argv[1]))
@@ -135,7 +135,7 @@ for m in msgs:
 print(json.dumps([m['text'] for m in pending_user]))
 `);
       fs.writeFileSync(dataPath, JSON.stringify(msgs));
-      const result = execSync(`python3 "${scriptPath}" "${dataPath}"`, { encoding: 'utf-8' }).trim();
+      const result = execFileSync('python3', [scriptPath, dataPath], { encoding: 'utf-8' }).trim();
       return JSON.parse(result);
     }
 

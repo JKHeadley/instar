@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-28T03:58:27.579Z",
+  "slug": "correction-class-review-graded-evidence",
+  "carriers": {
+    "CMT-066": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Design and propose grading a recurrence after a no-action call (gradedBy recurrence, kept separate from operator grades), or record why not, by 2026-12-11."
+    }
+  }
+}

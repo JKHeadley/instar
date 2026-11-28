@@ -36,6 +36,8 @@ const SRC = path.join(REPO_ROOT, 'src');
 
 /** The 15 long-lived (process-lifetime) SQLite stores — the registry allowlist. */
 const LONG_LIVED_STORES = [
+  'src/import/HistoryAcquisition.ts',
+  'src/import/AcquisitionWorkerLease.ts',
   'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
   'src/core/FeatureRegistry.ts',
@@ -112,6 +114,7 @@ const LONG_LIVED_STORES = [
  * each documented as a transient (closes itself) or a non-owning helper.
  */
 const TRANSIENT_SKIP: Record<string, string> = {
+  'src/import/ImportedHistoryStore.ts': 'withWriter registers its transaction-scoped writer-lock handle, then unregisters and closes it in finally',
   'src/core/GraphCustodyRetiredRoles.ts': 'Opens a retired role database briefly to purge or verify it, then closes it in the same call.',
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
   'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',

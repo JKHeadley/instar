@@ -60,6 +60,29 @@ describe('BackupManager', () => {
   });
 
   describe('createSnapshot', () => {
+    it('retains a normal backup source and omits private imports in ordinary and point-in-time snapshots', () => {
+      const imports = path.join(stateDir, 'history-acquisition');
+      fs.mkdirSync(imports, { mode: 0o700 });
+      const db = path.join(imports, 'jobs.sqlite');
+      fs.writeFileSync(db, 'fixture', { mode: 0o600 });
+      fs.symlinkSync(imports, path.join(stateDir, 'alias-dir'));
+      fs.symlinkSync(db, path.join(stateDir, 'alias-file.sqlite'));
+      fs.linkSync(db, path.join(stateDir, 'linked.sqlite'));
+      const manager = new BackupManager(stateDir, { includeFiles: [
+        'AGENT.md', 'history-acquisition/', 'alias-dir/', 'alias-file.sqlite', 'linked.sqlite',
+        'relationships/../history-acquisition/jobs.sqlite',
+      ] });
+      const staged = manager.stageSqliteFiles();
+      try {
+        expect(Object.keys(staged.sources)).toEqual([]);
+        for (const options of [undefined, { stagedSources: staged.sources }]) {
+          const snapshot = manager.createSnapshot('manual', options);
+          expect(snapshot.files).toContain('AGENT.md');
+          expect(snapshot.files.some(name => name.includes('alias') || name.includes('sqlite'))).toBe(false);
+        }
+      } finally { manager.removeStaging(staged.dir); }
+    });
+
     it('creates a snapshot with all included files', () => {
       const manager = new BackupManager(stateDir);
       const snapshot = manager.createSnapshot('manual');

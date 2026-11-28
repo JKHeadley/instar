@@ -72,8 +72,10 @@ describe('check-repo-invariants', () => {
   // reaches main jams EVERY release at publish-time (v1.3.180, #781).
 
   function writeFragment(name: string, content: string): void {
-    fs.mkdirSync(path.join(dir, 'upgrades', 'next'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'upgrades', 'next', name), content);
+    const pending = path.join(dir, 'upgrades', 'next');
+    fs.mkdirSync(pending, { recursive: true });
+    fs.writeFileSync(path.join(pending, '.gitkeep'), '');
+    fs.writeFileSync(path.join(pending, name), content);
   }
 
   const VALID_FRAGMENT =
@@ -105,11 +107,28 @@ describe('check-repo-invariants', () => {
     expect(r.stderr).toContain('jam the publish workflow');
   });
 
-  it('passes when no upgrades dir / no fragments exist (post-release-cut state)', () => {
-    // fakeRepo has no upgrades dir at all — covered by the healthy test, but
-    // also pin the empty-fragments-dir shape explicitly.
-    fs.mkdirSync(path.join(dir, 'upgrades', 'next'), { recursive: true });
+  it('passes when only the placeholder remains after release', () => {
+    writeFragment('.gitkeep', '');
     const r = runInvariants(dir);
     expect(r.exitCode).toBe(0);
+  });
+
+  it('fails when release cleanup loses the placeholder', () => {
+    fs.mkdirSync(path.join(dir, 'upgrades', 'next'), { recursive: true });
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('Missing upgrades/next/.gitkeep');
+  });
+
+  it('reports a misplaced pending fragment while accepting shipped guides and ELI16 companions', () => {
+    writeFragment('.gitkeep', '');
+    fs.writeFileSync(path.join(dir, 'upgrades', '1.2.3-beta.4.md'), '');
+    fs.writeFileSync(path.join(dir, 'upgrades', 'example.eli16.md'), '');
+    expect(runInvariants(dir).exitCode).toBe(0);
+
+    fs.writeFileSync(path.join(dir, 'upgrades', 'misplaced.md'), VALID_FRAGMENT);
+    const r = runInvariants(dir);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('Unexpected release note upgrades/misplaced.md');
   });
 });

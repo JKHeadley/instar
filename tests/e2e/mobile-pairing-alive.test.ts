@@ -99,8 +99,12 @@ describe('mobile pairing — production wiring', () => {
     // Mobile push (mobile-push): the registration route is mounted and device-signed; the service
     // is built (not null) and with no APNs key in the vault reports keyConfigured false.
     const hash = crypto.createHash('sha256').update('read').digest('hex');
-    const pushReg = await send('POST', '/mobile/device/push', { token: 'a'.repeat(64), environment: 'sandbox', notifyTokenHash: hash, revision: 1 });
+    const pushReg = await send('POST', '/mobile/device/push', { token: 'a'.repeat(64), environment: 'sandbox', notifyTokenHash: hash, revision: 1, appBuild: '146' });
     expect(pushReg.status).toBe(200);
+    expect((await send('GET', '/mobile/device')).body.appBuild).toBe('146');
+    expect((await send('GET', '/mobile/needs')).body.viewer).toMatchObject({ role: 'owner', appBuild: '146' });
+    const ownerDevices = await request(app).get('/mobile/devices').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
+    expect(ownerDevices.body.devices[0]).toMatchObject({ appBuild: '146' });
     const st = await request(app).get('/mobile/push').set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'mp-e2e');
     expect(st.status).toBe(200);
     expect(st.body).toMatchObject({ enabled: true, keyConfigured: false });

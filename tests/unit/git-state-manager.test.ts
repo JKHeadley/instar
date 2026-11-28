@@ -130,15 +130,31 @@ describe('GitStateManager', () => {
       expect(() => manager.init()).toThrow('already initialized');
     });
 
+    it('keeps a shared ignore file intact and installs local import exclusions before the first commit', () => {
+      const original = path.join(stateDir, 'custom-ignore');
+      fs.writeFileSync(original, '*.scratch\n');
+      fs.symlinkSync(original, path.join(stateDir, '.gitignore'));
+      fs.mkdirSync(path.join(stateDir, 'history-acquisition'));
+      fs.writeFileSync(path.join(stateDir, 'history-acquisition', 'jobs.sqlite'), 'fixture');
+      new GitStateManager(stateDir).init();
+      expect(fs.readFileSync(original, 'utf8')).toBe('*.scratch\n');
+      expect(fs.readFileSync(path.join(stateDir, '.git', 'info', 'exclude'), 'utf8')).toContain('history-acquisition/');
+      expect(SafeGitExecutor.readSync(['ls-files', '--', 'history-acquisition'], { cwd: stateDir, encoding: 'utf8', operation: 'check shared ignore fallback' })).toBe('');
+    });
+
     it('preserves existing .gitignore', () => {
       fs.writeFileSync(path.join(stateDir, '.gitignore'), '# Custom gitignore\n*.log\n');
 
+      fs.mkdirSync(path.join(stateDir, 'imported-history'));
+      fs.writeFileSync(path.join(stateDir, 'imported-history', 'manifest.json'), '{}');
       const manager = new GitStateManager(stateDir);
       manager.init();
 
       const gitignore = fs.readFileSync(path.join(stateDir, '.gitignore'), 'utf-8');
       expect(gitignore).toContain('# Custom gitignore');
       expect(gitignore).toContain('*.log');
+      expect(gitignore.split('\n')).toContain('imported-history/');
+      expect(SafeGitExecutor.readSync(['ls-files', '--', 'imported-history'], { cwd: stateDir, encoding: 'utf8', operation: 'check private history exclusion' })).toBe('');
     });
   });
 

@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "history-import-verification-repairs",
+  "sessionId": "c2c63f1e-c980-4c22-83e9-95850b28354c",
+  "timestamp": "2026-11-27T06:17:31.548Z",
+  "artifactPath": "upgrades/side-effects/history-import-verification-repairs.md",
+  "artifactSha256": "9b831905765c7829fdf8b39270f93da131e2e88ca24320e01bb28a90a4843aaa",
+  "specPath": "docs/specs/import-from-claude-chatgpt.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T06-15-57-916Z-history-import-verification-repairs.json",
+    "src/server/historyAcquisitionRoutes.ts",
+    "tests/e2e/history-acquisition-chat-alive.test.ts",
+    "tests/integration/history-acquisition-chat.test.ts",
+    "upgrades/side-effects/history-import-verification-repairs.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The localized diagnostic belongs to the approved private history import path.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
