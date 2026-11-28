@@ -276,6 +276,9 @@ import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
+import { createWorkDiscoveryRouter } from './workDiscoveryRoutes.js';
+import { ChiefOfStaffPrSearch } from '../core/ChiefOfStaffPrSearch.js';
+import { resolveGitHubToken } from '../core/githubRuntime.js';
 import { conversationIndexSources } from './conversationMeaningSearch.js';
 import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
 import { telegramRowId } from '../core/ConversationReadMarkers.js';
@@ -2106,6 +2109,12 @@ export class AgentServer {
       verify: keepRawBody,
     };
     this.app.use('/completion-claim/observe', boundedBody(96 * 1024, express.json({ limit: '96kb', verify: keepRawBody })));
+    // Keep the privacy header even when authentication or JSON parsing refuses the request.
+    this.app.use('/work/discover', (_req, res, next) => {
+      res.set('Cache-Control', 'no-store');
+      next();
+    });
+    this.app.use('/work/discover', boundedBody(4 * 1024, express.json({ limit: '4kb', verify: keepRawBody })));
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', boundedBody(256 * 1024, express.json({ limit: '256kb' })));
@@ -7646,6 +7655,22 @@ export class AgentServer {
         });
       }
     }
+    const workDiscoveryPrSearch = new ChiefOfStaffPrSearch({
+      readToken: () => resolveGitHubToken({ stateDir: this.config.stateDir }),
+    });
+    routeCtx.chiefOfStaffPrSearch = workDiscoveryPrSearch;
+    let workDiscoveryConversationSource: ConversationSearchRouteDeps | null = null;
+    this.app.use(createWorkDiscoveryRouter({
+      enabled: () => this.config.developmentAgent === true,
+      mayReadPrivateWork: (req, res) => {
+        if (res.locals.dashboardScopedSession !== true || this.config.security?.dashboardScopedToken?.enabled !== true) return false;
+        const bearer = req.get('Authorization');
+        return !!bearer?.startsWith('Bearer dst_') && this.dashboardSessionStore.verify(bearer.slice(7));
+      },
+      conversationSource: () => workDiscoveryConversationSource,
+      configuredMessaging: platform => this.config.messaging.some(adapter => adapter.enabled && adapter.type === platform),
+      pullRequestSource: workDiscoveryPrSearch,
+    }));
     const routes = createRoutes(routeCtx);
     this.attachWorkBoardRequestGate(options);
     // sibling-machine-reach: the background holdings cache's timers stop with the server.
@@ -8357,6 +8382,7 @@ export class AgentServer {
           });
         }
       }
+      workDiscoveryConversationSource = searchDeps;
       this.app.use(createConversationSearchRouter(searchDeps));
       if(routeCtx.conversationRegistry){
         startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');

@@ -7,10 +7,11 @@ interface ChiefOfStaffPrSearchRouteOptions {
   ownerToken(): string | undefined;
   enabled(): boolean;
   stateDir?: string;
+  lookup?: ChiefOfStaffPrSearch;
 }
 
 export function mountChiefOfStaffPrSearch(router: Router, options: ChiefOfStaffPrSearchRouteOptions): void {
-  const lookup = new ChiefOfStaffPrSearch({ readToken: () => resolveGitHubToken({ stateDir: options.stateDir }) });
+  const lookup = options.lookup ?? new ChiefOfStaffPrSearch({ readToken: () => resolveGitHubToken({ stateDir: options.stateDir }) });
   router.get('/chief-of-staff/pr-search', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     const principal = (req as unknown as { instarPrincipal?: unknown }).instarPrincipal;

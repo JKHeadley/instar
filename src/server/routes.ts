@@ -1391,6 +1391,7 @@ export interface RouteContext {
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
   prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
+  chiefOfStaffPrSearch?: import('../core/ChiefOfStaffPrSearch.js').ChiefOfStaffPrSearch;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -10263,6 +10264,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
   mountChiefOfStaffPrSearch(router, {
     ownerToken: () => ctx.config.authToken,
+    lookup: ctx.chiefOfStaffPrSearch,
     enabled: () => ctx.config.developmentAgent === true && !!ctx.chiefOfStaffLoop
       && (ctx.liveConfig?.get<boolean | undefined>('chiefOfStaff.enabled', ctx.config.chiefOfStaff?.enabled) !== false),
     stateDir: ctx.config.stateDir,

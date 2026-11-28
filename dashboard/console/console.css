@@ -1553,6 +1553,11 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 
 /* Work board (work.js) */
 .work-page .work-lane { margin-top: var(--s-4); }
+.work-discovery-matches { list-style: none; padding: 0; margin: 0; }
+.work-discovery-hit { padding: var(--s-2) 0; border-top: 1px solid var(--hairline); overflow-wrap: anywhere; }
+.work-discovery-hit p { margin: var(--s-1) 0 0; }
+.work-discovery-coverage { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s-1) var(--s-2); }
+.work-discovery-coverage dd { margin: 0; }
 .work-card { gap: var(--s-1); margin: var(--s-2) 0; }
 .work-card p, .work-card .need-sub { margin: 0; }
 .work-card .work-open { text-align: left; align-self: flex-start; font-size: 15.5px; color: var(--text-strong); min-height: 32px; }

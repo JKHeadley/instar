@@ -24,6 +24,29 @@ const MAX_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_MATCHES = 20;
 const MAX_EXCERPT = 240;
 
+type MatchKind = 'literal' | 'all-terms';
+
+const WORK_STOP_WORDS = new Set(['a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'with']);
+
+function* workTerms(text: string): Generator<string> {
+  for (const [match] of text.matchAll(/[a-z0-9]+(?:[.-][a-z0-9]+)*/gi)) {
+    const term = match.toLowerCase();
+    if (!/^[a-z]{4,}$/.test(term) || /(?:ss|us|is)$/.test(term)) yield term;
+    else if (term.endsWith('sses')) yield term.slice(0, -2);
+    else yield term.replace(/s$/, '');
+  }
+}
+
+function matchesWorkTerms(row: IndexedPr, terms: readonly string[]): boolean {
+  const remaining = new Set(terms);
+  for (const field of [row.title, row.headRefName, row.baseRefName, row.body]) {
+    for (const term of workTerms(field)) {
+      if (remaining.delete(term) && remaining.size === 0) return true;
+    }
+  }
+  return false;
+}
+
 type PrState = 'OPEN' | 'MERGED';
 type PrRow = {
   number: number;
@@ -120,6 +143,14 @@ export class ChiefOfStaffPrSearch {
   }
 
   async search(query: string, scope?: PrState, offset = 0) {
+    return this.lookup(query, scope, offset, false);
+  }
+
+  async searchForWork(query: string) {
+    return this.lookup(query, undefined, 0, true);
+  }
+
+  private async lookup(query: string, scope: PrState | undefined, offset: number, allowTermFallback: boolean) {
     const token = this.deps.readToken();
     if (this.cacheToken !== token) {
       this.credentialGeneration++;
@@ -141,7 +172,7 @@ export class ChiefOfStaffPrSearch {
       await this.inFlight;
     }
     const visible = !!token && this.credentialGeneration === generation && this.deps.readToken() === token;
-    return this.result(query, scope, offset, visible);
+    return this.result(query, scope, offset, visible, allowTermFallback);
   }
 
   private status(state: PrState): SourceStatus {
@@ -169,7 +200,7 @@ export class ChiefOfStaffPrSearch {
     return status === 'partial' && prior && this.now() - prior.finishedAt < RETAIN_MS ? prior : undefined;
   }
 
-  private result(query: string, scope: PrState | undefined, offset: number, visible: boolean) {
+  private result(query: string, scope: PrState | undefined, offset: number, visible: boolean, allowTermFallback: boolean) {
     const coverage = { open: this.coverage('OPEN', visible), merged: this.coverage('MERGED', visible) };
     const scopes = [['OPEN', coverage.open], ['MERGED', coverage.merged]] as const;
     const candidates = new Map<number, { row: IndexedPr; observedAt: number; priorComplete: boolean }>();
@@ -195,10 +226,26 @@ export class ChiefOfStaffPrSearch {
       if (fallback) observe(fallback, true, currentNumbers, mergedSince);
     }
     const search = query.toLowerCase().trim();
-    const matches = [...candidates.values()].filter(({ row }) => !scope || row.state === scope)
-      .map(candidate => ({ ...candidate, rank: matchRank(candidate.row, search) }))
-      .filter(match => match.rank >= 0)
-      .sort((a, b) => a.rank - b.rank || Date.parse(b.row.updatedAt) - Date.parse(a.row.updatedAt) || b.row.number - a.row.number);
+    const scoped = [...candidates.values()].filter(({ row }) => !scope || row.state === scope);
+    let termSearchAttempted = false;
+    const matches = scoped.flatMap(candidate => {
+      const rank = matchRank(candidate.row, search);
+      return rank < 0 ? [] : [{ ...candidate, rank, matchedBy: 'literal' as MatchKind }];
+    });
+    const literalCount = matches.length;
+    if (allowTermFallback && literalCount < MAX_MATCHES && !/#\d/.test(search)) {
+      const terms = [...new Set([...workTerms(search)].filter(term => !WORK_STOP_WORDS.has(term)))];
+      if (terms.length >= 2 && terms.length <= 8) {
+        termSearchAttempted = true;
+        const literalNumbers = new Set(matches.map(({ row }) => row.number));
+        for (const candidate of scoped) {
+          if (!literalNumbers.has(candidate.row.number) && matchesWorkTerms(candidate.row, terms)) {
+            matches.push({ ...candidate, rank: 4, matchedBy: 'all-terms' });
+          }
+        }
+      }
+    }
+    matches.sort((a, b) => a.rank - b.rank || Date.parse(b.row.updatedAt) - Date.parse(a.row.updatedAt) || b.row.number - a.row.number);
     const selectedCoverage = scope === 'OPEN' ? [coverage.open] : scope === 'MERGED' ? [coverage.merged] : [coverage.open, coverage.merged];
     const available = selectedCoverage.some(info => info.status !== 'unavailable');
     const complete = selectedCoverage.every(info => info.status === 'fresh' || info.status === 'stale');
@@ -208,16 +255,17 @@ export class ChiefOfStaffPrSearch {
     return {
       repository: CHIEF_OF_STAFF_PR_REPO,
       coverage,
-      matchKind: 'literal',
+      matchKind: termSearchAttempted ? literalCount ? 'literal-and-all-terms' as const : 'all-terms' as const : 'literal' as const,
       matchCount: complete ? matches.length : null,
       knownMatchCount: available ? matches.length : null,
       revision,
       nextOffset: offset + MAX_MATCHES < matches.length ? offset + MAX_MATCHES : null,
-      items: matches.slice(offset, offset + MAX_MATCHES).map(({ row: { body, ...row }, observedAt, priorComplete }) => ({
+      items: matches.slice(offset, offset + MAX_MATCHES).map(({ row: { body, ...row }, observedAt, priorComplete, matchedBy }) => ({
         ...row,
         observedAt: new Date(observedAt).toISOString(),
         priorComplete,
-        ...bodyMatchExcerpt(body, search),
+        ...(allowTermFallback ? { matchedBy } : {}),
+        ...(matchedBy === 'literal' ? bodyMatchExcerpt(body, search) : {}),
         url: `https://github.com/${CHIEF_OF_STAFF_PR_REPO}/pull/${row.number}`,
       })),
     };

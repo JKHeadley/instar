@@ -180,6 +180,17 @@ describe('each channel maps to the ref and the history id', () => {
     expect(r.unsearched).toEqual([]);
   });
 
+  it('limits work discovery to current native user-side evidence and does not invoke platform caches', async () => {
+    const source = await deps({
+      telegramTopics: () => { throw new Error('work discovery must not read an unverifiable Telegram source'); },
+      slack: () => { throw new Error('work discovery must not read an unverifiable Slack source'); },
+    });
+    const q = { terms: ['rocket'], limit: 20, only: null, nativeUserLeadsOnly: true };
+    expect(searchLocal(source, q, all).results.map(hit => hit.messageId)).toEqual(['ev-op']);
+    source.service!.liveConversation = () => null;
+    expect(searchLocal(source, q, all).results).toEqual([]);
+  });
+
   it('ref restricts to one conversation, and the limit holds', async () => {
     const d = await deps();
     expect(new Set(searchLocal(d, { terms: ['rocket'], limit: 50, only: 'telegram:42' }, all).results.map((h) => h.ref))).toEqual(new Set(['telegram:42']));

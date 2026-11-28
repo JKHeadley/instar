@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "slug": "work-discovery-console",
+  "sessionId": "5591f135-974d-45ff-afdb-df56f5dbd35e",
+  "timestamp": "2026-11-24T05:03:18.387Z",
+  "artifactPath": "upgrades/side-effects/work-discovery-console.md",
+  "artifactSha256": "6602301bc6ee1440c06b329e20cce545a38f4be93dc2b44e0273359690dd1cff",
+  "specPath": "docs/specs/canonical-records-and-work-discovery.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-24T05-02-24-775Z-work-discovery-console.json",
+    ".instar/instar-dev-traces/2026-11-24T05-01-57-770Z-work-discovery-console-29e11098.json",
+    "dashboard/console/console.css",
+    "dashboard/console/work-discovery.js",
+    "dashboard/console/work.js",
+    "src/data/awareness/work-discovery-read.md",
+    "tests/e2e/work-discovery-alive.test.ts",
+    "tests/unit/console-work-discovery.test.ts",
+    "upgrades/next/work-discovery-console.md",
+    "upgrades/side-effects/work-discovery-console.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The private Work view handles owner-scoped evidence. Independent review verified safe link construction, scoped session handling and the normal form test.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "reviewSkills": [
+      {
+        "name": "independent-side-effects-review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/canonical-records-and-work-discovery-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}
