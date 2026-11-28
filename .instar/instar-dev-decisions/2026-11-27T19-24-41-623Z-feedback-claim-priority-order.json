@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T19:24:41.623Z",
+  "slug": "feedback-claim-priority-order",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 15,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/feedback-factory/drain/FeedbackDrainStore.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

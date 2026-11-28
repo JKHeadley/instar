@@ -137,6 +137,52 @@ describe('FeedbackDrainStore', () => {
       .toBe('oldest');
   });
 
+  describe('claim order: highest priority, then most reported, then oldest (2026-11-27)', () => {
+    let sharedAuth: ReturnType<typeof authority> | undefined;
+    beforeEach(() => { sharedAuth = undefined; });
+    const enqueueWork = (clusterId: string, priority: string, reportCount: number, firstSeenAt: number) => {
+      const auth = (sharedAuth ??= authority());
+      store.ensureReadiness(clusterId, now);
+      store.approveReady({ clusterId, approvalKey: `approval-${clusterId}`, authorityId: auth.authorityId,
+        authorityGeneration: auth.generation, evidenceHash: `evidence-${clusterId}`, ...APPROVAL_BINDING });
+      store.enqueue({ clusterId, title: clusterId, summary: 'order', priority, reportCount,
+        firstSeenAt, lastSeenAt: firstSeenAt + 1, authorityRef: 'decision-1', evidenceRef: `evidence-${clusterId}` });
+    };
+    const claimAll = () => {
+      const order: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        const w = store.claimNext({ consumerId: 'test', ownerAuthorityEpoch: 7, leaseMs: 1_000 });
+        if (!w) break;
+        order.push(w.clusterId);
+      }
+      return order;
+    };
+
+    it('claims high priority before older normal work, and more-reported before fewer within a priority', () => {
+      enqueueWork('old-normal-1-report', 'normal', 1, 1);
+      enqueueWork('newer-high-7-reports', 'high', 7, 5);
+      enqueueWork('newest-high-1768-reports', 'high', 1768, 9);
+      enqueueWork('normal-3-reports', 'normal', 3, 3);
+      expect(claimAll()).toEqual(['newest-high-1768-reports', 'newer-high-7-reports', 'normal-3-reports', 'old-normal-1-report']);
+    });
+
+    it('the promotion preview lists work in exactly the order it will be claimed', () => {
+      enqueueWork('a-normal', 'normal', 1, 1);
+      enqueueWork('b-high', 'high', 9, 4);
+      enqueueWork('c-high', 'high', 40, 6);
+      enqueueWork('d-normal', 'normal', 2, 2);
+      const preview = store.claimableWork(10).map((w) => w.clusterId);
+      expect(preview).toEqual(['c-high', 'b-high', 'd-normal', 'a-normal']);
+      expect(claimAll()).toEqual(preview);
+    });
+
+    it('treats priority case-insensitively', () => {
+      enqueueWork('upper-high', 'HIGH', 5, 8);
+      enqueueWork('lower-normal', 'normal', 50, 1);
+      expect(claimAll()[0]).toBe('upper-high');
+    });
+  });
+
   it('persists bounded agent-request replay protection instead of relying on process memory', () => {
     expect(store.admitRequestNonce('reader', 'nonce-1234567890123456', { now, ttlMs: 10_000 })).toBe(true);
     expect(store.admitRequestNonce('reader', 'nonce-1234567890123456', { now, ttlMs: 10_000 })).toBe(false);

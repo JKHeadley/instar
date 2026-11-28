@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-claim-priority-order",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-28T08:14:22.714Z",
+  "artifactPath": "upgrades/side-effects/feedback-claim-priority-order.md",
+  "artifactSha256": "0b184c299372dc5dd3c32264c7fbc074138927e0c959ee70fd1ba2b230aa0523",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-27T19-24-41-623Z-feedback-claim-priority-order.json",
+    "docs/eli16/feedback-claim-priority-order.eli16.md",
+    "src/feedback-factory/drain/FeedbackDrainStore.ts",
+    "tests/unit/feedback-drain-store.test.ts",
+    "upgrades/next/feedback-claim-priority-order.md",
+    "upgrades/side-effects/feedback-claim-priority-order.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One shared ORDER BY constant for claiming and its preview: priority, then report count, then age; no other behaviour change. Main merged at 482a94b9 with the release note kept under upgrades/next.",
+  "eli16Path": "docs/eli16/feedback-claim-priority-order.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-claim-priority-order.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

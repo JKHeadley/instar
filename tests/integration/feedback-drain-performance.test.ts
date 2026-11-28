@@ -14,7 +14,7 @@ afterEach(() => { for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(di
 describe('Feedback Factory 150k reference envelope', () => {
   it('processes the bounded 500-row slice under the 90s / 512MiB envelope and exposes lag', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedback-drain-150k-')); dirs.push(dir);
-    const evidence = await new Promise<{ processed: number; clusteringMs: number; durationMs: number; rssBytes: number; sourceLagBytes: number; projectionLag: number; queued: number; completed: number; wouldCreate: number; completedWithinTicks: number | null; firstClaimedWorkKey: string | null; authoritativeReadBack: boolean; tickResult: string }>((resolve, reject) => {
+    const evidence = await new Promise<{ processed: number; clusteringMs: number; durationMs: number; rssBytes: number; oldestClaimedAt: number; newerClaimedAt: number; sourceLagBytes: number; projectionLag: number; queued: number; completed: number; wouldCreate: number; completedWithinTicks: number | null; firstClaimedWorkKey: string | null; authoritativeReadBack: boolean; tickResult: string }>((resolve, reject) => {
       const child = spawn(viteNode, [worker, dir], { stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = ''; let stderr = '';
       child.stdout.on('data', (chunk) => { stdout += String(chunk); });
@@ -32,7 +32,11 @@ describe('Feedback Factory 150k reference envelope', () => {
     expect(evidence.projectionLag).toBeGreaterThanOrEqual(149_500);
     expect(evidence.tickResult).toBe('succeeded');
     expect(evidence.completed).toBeGreaterThanOrEqual(2);
-    expect(evidence.firstClaimedWorkKey).toBe('feedback-work:oldest-eligible:1');
+    // Highest-ranked first: the cluster this tick readied (high, about 500 reports) is claimed before the
+    // seeded normal, 1-report items, which still drain in the same tick, the oldest before the newer.
+    expect(evidence.firstClaimedWorkKey).toMatch(/^feedback-work:cluster-repeated-/);
+    expect(evidence.oldestClaimedAt).toBe(1);
+    expect(evidence.newerClaimedAt).toBe(2);
     expect(evidence.authoritativeReadBack).toBe(true);
     expect(evidence.completedWithinTicks).toBeLessThanOrEqual(10);
   }, 100_000);
