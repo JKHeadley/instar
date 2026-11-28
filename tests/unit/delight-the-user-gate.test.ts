@@ -314,7 +314,10 @@ describe('wiring integrity — the gate is real, not a no-op', () => {
     expect(PRECOMMIT).toMatch(/secondPassReviewedScreenshots\(content, trace, verdict\.screenshots\.pairs\)/);
   });
   it('screen files are in the gate scope, so a dashboard-only commit is reviewed', () => {
-    const inScope = PRECOMMIT.slice(PRECOMMIT.indexOf('function inScope(file)'), PRECOMMIT.indexOf('const inScopeFiles'));
+    // The rule lives in scripts/lib/instar-dev-scope.mjs (docs/specs/judgment-call-rating.md).
+    expect(PRECOMMIT).toContain('const inScope = isInstarDevInScope;');
+    const SCOPE = fs.readFileSync(path.join(ROOT, 'scripts/lib/instar-dev-scope.mjs'), 'utf-8');
+    const inScope = SCOPE.slice(SCOPE.indexOf('export function isInstarDevInScope(file)'));
     expect(inScope).toMatch(/isUserFacingSurfaceFile\(file\)/);
   });
   it('the template seeds the §6c question and both screenshot lines', () => {

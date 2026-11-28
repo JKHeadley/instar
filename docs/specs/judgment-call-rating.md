@@ -8,6 +8,7 @@ countdown: STD-SUBCOUNTDOWN-judgment-call-rating (2026-12-21)
 spec-due: 2026-12-07
 build-due: 2026-12-16
 eli16-overview: docs/specs/judgment-call-rating.eli16.md
+parent-principle: "Observable Intelligence — No Autonomous LLM Action Is Unauditable"
 review-convergence: "2026-11-28T06:21:46.769Z"
 review-iterations: 10
 review-completed-at: "2026-11-28T06:21:46.769Z"
@@ -348,7 +349,7 @@ the next run compares against the last run that had rates.
 
 ### Calibration (outcome check, judges blind)
 
-Calibration compares **landing cohorts after a fixed follow-up**: the calls of PRs that landed in
+Calibration compares **landing cohorts after a fixed observation window**: the calls of PRs that landed in
 the same four-week window are compared once that window is 30 days old, so every call in a cohort
 had the same time to be reverted or blamed. Within a cohort, a call is outcome-implicated when,
 within those 30 days, a revert of its PR landed on main or a record's `causalAutopsy` (`origin:
@@ -491,7 +492,7 @@ for a re-date, so the countdown is never closed on records nobody has rated.
    retrospective association within strata, never an accuracy score.
 6. Sample 40, belowFloor cap 60, cohort catch-up cap 40, diff bound 60,000, two retries, calibration
    minimum 20 — cheap-to-change-after: run-plan parameters that touch no stored data. The four-week
-   cohort window and 30-day follow-up are cheap to change for future cohorts, but a change breaks
+   cohort window and 30-day observation window are cheap to change for future cohorts, but a change breaks
    comparison with earlier cohorts, so it is recorded in the run plan and the totals.
 7. Weekly grading on the Studio — cheap-to-change-after: a schedule edit.
 8. The Milestone 1 grader is the base; `instar-dev-grade` is a mode of it, not a new tool.

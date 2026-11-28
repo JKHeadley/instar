@@ -43,6 +43,9 @@ const COPY_FILES = [
   'scripts/lib/delight-the-user.mjs',
   'scripts/lib/self-action-detect.mjs',
   'scripts/lib/open-pr-overlap.mjs',
+  // docs/specs/judgment-call-rating.md: the record's judgment block and the shared scope rule.
+  'scripts/lib/judgment-context.mjs',
+  'scripts/lib/instar-dev-scope.mjs',
   'skills/instar-dev/scripts/verify-proposal-derived-runbook.mjs',
   // audit-convergence-enforcement §2: the precommit now imports these two sibling
   // scripts (Step 1.5 audit gate) — copy them so the fixture hook resolves imports.

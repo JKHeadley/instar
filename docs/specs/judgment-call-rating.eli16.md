@@ -65,3 +65,7 @@ Nothing yet. The standard names the decision journal as the lasting place for th
 evidence says the commit record in the repository is the lasting place. That wording change will be
 proposed with the registry edit that closes the deadline, which needs Justin's approval on GitHub,
 and only after the first real grading run.
+
+## Build progress
+
+The first part is built: each Instar commit record now keeps the short reasoning behind its tier choice and the fingerprints of what was checked, and a commit that passes but whose record cannot be saved is refused. The grader that rates these calls is the next part, and it waits until the tone-gate and judge-runner pull requests merge.

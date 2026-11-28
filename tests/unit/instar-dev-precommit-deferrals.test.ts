@@ -165,6 +165,38 @@ describe('instar-dev pre-commit — orphan deferrals enforcement', () => {
     expect(result.status).toBe(0);
   });
 
+  // docs/specs/judgment-call-rating.md → Change 1, the Tier 2+ call site (after Step 5).
+  it('a passing Tier 2+ record carries the judgment block, with the spec and the validated trace', async () => {
+    const { specPath, artifactPath, tracePath } = stageFixture({
+      specFrontmatter: 'title: Clean spec\nslug: fixture\napproved: true\nreview-convergence: tactical\neli16-overview: x.md',
+      specBody: 'Everything is in scope and ships in this PR. Done.',
+    });
+    const reportRel = 'docs/specs/reports/fixture-convergence.md';
+    fs.mkdirSync(path.join(sandbox, 'docs', 'specs', 'reports'), { recursive: true });
+    fs.writeFileSync(path.join(sandbox, reportRel), '# Convergence report\n');
+    execFileSync('git', ['add', reportRel], { cwd: sandbox });
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    const dir = path.join(sandbox, '.instar', 'instar-dev-decisions');
+    const [file] = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const entry = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+    expect(entry.verdict).toBe('pass');
+    expect('headCommit' in entry).toBe(true);
+    const j = entry.judgment;
+    expect(j.error).toBeUndefined();
+    expect(j.tierReasoning).toBe('missing');
+    expect(j.trace.path).toBe(tracePath);
+    expect(j.traceDiffers).toBe(false);
+    expect(j.artifact.path).toBe(artifactPath);
+    expect(j.artifact.stagedHash).toBe(execFileSync('git', ['rev-parse', `:${artifactPath}`], { cwd: sandbox, encoding: 'utf8' }).trim());
+    expect(j.spec.path).toBe(specPath);
+    expect(j.spec.staged).toBe(true);
+    expect(j.spec.stagedHash).toBe(execFileSync('git', ['rev-parse', `:${specPath}`], { cwd: sandbox, encoding: 'utf8' }).trim());
+    expect(j.spec.convergenceReport).toEqual({ path: reportRel, stagedHash: execFileSync('git', ['rev-parse', `:${reportRel}`], { cwd: sandbox, encoding: 'utf8' }).trim() });
+    expect(j.secondPassStatus).toBe('unknown');
+    expect(j.perFileLines.map((l: { path: string }) => l.path)).toEqual(['src/touched.ts']);
+  });
+
   it('Step 7.6 (Constitutional Traceability): blocks a spec with no parent-principle', async () => {
     stageFixture({
       specFrontmatter: 'title: Unanchored spec\napproved: true\nreview-convergence: tactical\neli16-overview: x.md',

@@ -46,6 +46,8 @@ import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from '
 import { scanForSecrets } from './audit-secret-patterns.mjs';
 import { checkOpenPrOverlap } from './lib/open-pr-overlap.mjs';
 import { traceIsComplete, traceMissingCoverage, artifactSha256, MIN_ARTIFACT_CHARS as SHARED_MIN_ARTIFACT_CHARS } from './lib/instar-dev-trace.mjs';
+import { buildJudgmentBlockSafe, gitIo, headCommitOf } from './lib/judgment-context.mjs';
+import { isInstarDevInScope } from './lib/instar-dev-scope.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
 // The precommit reads NO config file and runs pre-compile, so it cannot import
@@ -76,15 +78,53 @@ const DECISIONS_DIR = path.join(ROOT, '.instar', 'instar-dev-decisions');
 // try/catch, and the handler registration is never even reached when
 // blockCommit exits first (top-level statements run in source order).
 let pendingAuditEntry = null;
+// Set by writeDecisionAudit when its first write or stage fails, so a commit
+// that would otherwise PASS is refused rather than landing with no record
+// (docs/specs/judgment-call-rating.md → "Change 2"). Checked before the early
+// return for a missing entry.
+let decisionRecordFailure = null;
 process.on('exit', (code) => {
-  if (!pendingAuditEntry) return;
+  if (!pendingAuditEntry) {
+    if (code === 0 && decisionRecordFailure) {
+      refuseUnsavedRecord(decisionRecordFailure.entryPath, decisionRecordFailure.message);
+    }
+    return;
+  }
+  const { entryPath, entryData } = pendingAuditEntry;
+  entryData.verdict = code === 0 ? 'pass' : 'blocked';
+  let written = false;
   try {
-    const { entryPath, entryData } = pendingAuditEntry;
-    entryData.verdict = code === 0 ? 'pass' : 'blocked';
     fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
+    written = true;
     execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
-  } catch { /* best-effort — 'pending' is still more truthful than no verdict */ }
+  } catch (err) {
+    // A blocked commit is already refused; its record stays best-effort.
+    if (code !== 0) return;
+    if (written) {
+      // Only the stage failed: never leave a 'pass' record for a refused commit
+      // where a later `git add -A` could pick it up.
+      try {
+        entryData.verdict = 'blocked';
+        fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
+      } catch { /* best-effort: the commit is refused either way */ }
+    }
+    refuseUnsavedRecord(entryPath, err instanceof Error ? err.message : String(err));
+  }
 });
+
+// The only refusal docs/specs/judgment-call-rating.md adds: a commit that
+// passed every check but whose decision record could not be saved. A Node
+// 'exit' listener's exitCode replaces the code, and .husky/pre-commit passes
+// it to git.
+function refuseUnsavedRecord(entryPath, message) {
+  console.error('');
+  console.error('[instar-dev-precommit] BLOCKED: this commit passed the gate, but its decision record could not be saved.');
+  console.error(`  Record: ${entryPath ? path.relative(ROOT, entryPath) : '.instar/instar-dev-decisions/ (not created)'}`);
+  console.error(`  Error: ${String(message).slice(0, 300)}`);
+  console.error('  Fix the write (disk space, permissions, the git index lock) and commit again; nothing was committed.');
+  console.error('');
+  process.exitCode = 1;
+}
 const WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 // One definition, shared with the local verifier's independent-review check.
 const MIN_ARTIFACT_CHARS = SHARED_MIN_ARTIFACT_CHARS;
@@ -269,22 +309,9 @@ for (const f of auditReports) {
 
 // ─── Step 2: classify staged files ───────────────────────────────────────
 
-function inScope(file) {
-  // Files that require review: anything that ships behavior.
-  if (file.startsWith('src/')) return true;
-  if (file.startsWith('scripts/')) return true;
-  if (file.startsWith('.husky/')) return true;
-  if (file.startsWith('skills/') && file.endsWith('SKILL.md')) return true;
-  if (file.startsWith('skills/') && (file.endsWith('.sh') || file.endsWith('.mjs') || file.endsWith('.js'))) return true;
-  // A screen a person sees (dashboard, pairing pages, the public site's pages
-  // and styles, approval / secret-drop pages) ships behavior too: what the
-  // person sees IS the behavior. Without this a dashboard-only commit passed
-  // straight through, so the Operator-Surface Quality and Delight the User
-  // questions never ran on exactly the commits they exist for.
-  // (Standard: docs/STANDARDS-REGISTRY.md → "Delight the User".)
-  if (isUserFacingSurfaceFile(file)) return true;
-  return false;
-}
+// One definition of the in-scope rule, shared with the judgment-call grader
+// (scripts/lib/instar-dev-scope.mjs).
+const inScope = isInstarDevInScope;
 
 const inScopeFiles = [...new Set([...staged, ...scopeOnlyPaths])].filter(inScope);
 
@@ -428,12 +455,16 @@ let declaredTier = null;
 let tierReasoning = '';
 let freshestTrace = null;
 let freshestTraceEntry = null;
+// The exact bytes parsed, so the judgment block fingerprints what was judged.
+let freshestTraceBuffer = null;
 for (const entry of traceEntries) {
   try {
-    const candidate = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
+    const buffer = fs.readFileSync(entry.file);
+    const candidate = JSON.parse(buffer.toString('utf8'));
     if (traceIsComplete(candidate) && traceMissingCoverage(candidate, inScopeFiles).length === 0) {
       freshestTrace = candidate;
       freshestTraceEntry = entry;
+      freshestTraceBuffer = buffer;
       break;
     }
   } catch {
@@ -629,7 +660,9 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  const artifactContent = fs.readFileSync(artifactPath, 'utf8');
+  // Bytes kept so the judgment block fingerprints exactly what was checked.
+  const artifactBuffer = fs.readFileSync(artifactPath);
+  const artifactContent = artifactBuffer.toString('utf8');
   if (artifactContent.trim().length < MIN_ARTIFACT_CHARS) {
     attempts.push(
       `${path.basename(entry.file)}: artifact is too short (${artifactContent.trim().length} chars, need ${MIN_ARTIFACT_CHARS})`,
@@ -662,7 +695,7 @@ for (const entry of traceEntries) {
     continue;
   }
 
-  validTrace = { entry, trace };
+  validTrace = { entry, trace, artifactBuffer };
   break;
 }
 
@@ -683,6 +716,8 @@ if (!validTrace) {
 // /spec-converge to convergence, and (b) been explicitly approved by the
 // user. The trace's `specPath` field points at the spec file. We parse its
 // YAML frontmatter and verify both tags are present.
+
+attachJudgment({ path: path.relative(ROOT, validTrace.entry.file), file: validTrace.entry.file }, validTrace.entry.file === freshestTraceEntry.file ? validTrace.artifactBuffer : null);
 
 const spec = validTrace.trace.specPath;
 if (!spec) {
@@ -1502,6 +1537,8 @@ function blockCommit(files, reason) {
 // blocked by the gate, the staged line simply rides the retry commit — both
 // lines describe real gate evaluations.
 function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, riskFloorReasons, belowFloor, files, loc, scopeFiles, addedLines, deletedLines, causalAutopsy = null, classClosure = null }) {
+  let attemptedPath = null;
+  let written = false;
   try {
     fs.mkdirSync(DECISIONS_DIR, { recursive: true });
     const ts = new Date().toISOString();
@@ -1518,6 +1555,9 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
     const entryData = {
       ts,
       slug,
+      // HEAD when the gate ran: outside `judgment`, so it is present even when
+      // the block fails (docs/specs/judgment-call-rating.md).
+      headCommit: headCommitOf(gitIo(ROOT)),
       suggestedTier,
       declaredTier,
       // riskFloor (the number) keeps the entry self-contained for later review
@@ -1558,13 +1598,67 @@ function writeDecisionAudit({ slug, suggestedTier, declaredTier, riskFloor, risk
       // entries in one day. The verdict makes every entry self-describing.
       verdict: 'pending',
     };
+    attemptedPath = entryPath;
     fs.writeFileSync(entryPath, JSON.stringify(entryData, null, 2) + '\n');
+    written = true;
     execSync(`git add ${JSON.stringify(path.relative(ROOT, entryPath))}`, { cwd: ROOT });
     pendingAuditEntry = { entryPath, entryData };
     return entryPath;
-  } catch {
-    // best-effort — never block on audit I/O
+  } catch (err) {
+    // Never crash the gate here. A blocked commit's record stays best-effort;
+    // a commit that would PASS is refused by the exit handler (Change 2).
+    if (written && attemptedPath) {
+      try {
+        const data = JSON.parse(fs.readFileSync(attemptedPath, 'utf8'));
+        data.verdict = 'blocked';
+        fs.writeFileSync(attemptedPath, JSON.stringify(data, null, 2) + '\n');
+      } catch { /* best-effort */ }
+    }
+    decisionRecordFailure = { entryPath: attemptedPath, message: err instanceof Error ? err.message : String(err) };
     return null;
+  }
+}
+
+/** Per-file added/deleted lines for the record's in-scope files (renames split). */
+function stagedPerFileLines() {
+  try {
+    const out = execFileSync('git', ['diff', '--cached', '--numstat', '--no-renames', '-z', '--', ...inScopeFiles], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    const rows = [];
+    for (const rec of out.split('\0')) {
+      const m = /^(-|\d+)\t(-|\d+)\t(.+)$/.exec(rec.replace(/^\n/, ''));
+      if (!m) continue;
+      rows.push({ path: m[3], added: m[1] === '-' ? null : Number(m[1]), deleted: m[2] === '-' ? null : Number(m[2]) });
+    }
+    return rows;
+  } catch {
+    return inScopeFiles.map((f) => ({ path: f, added: null, deleted: null }));
+  }
+}
+
+/**
+ * Patch the pending record with the judgment block, built from the same
+ * trace the record's other fields came from (freshestTrace). Called once on
+ * the Tier 1 path (in enforceTier1, before its exit) and once on the Tier 2+
+ * path (after Step 5). Never throws: a failure becomes `judgment.error`.
+ */
+function attachJudgment(validated, artifactBuffer = null) {
+  if (!pendingAuditEntry || !freshestTrace || !freshestTraceEntry) return;
+  try {
+    // Read inside the try: a trace that vanished after Step 5 is an error in
+    // the block, never a refusal.
+    if (validated && validated.file) validated = { path: validated.path, buffer: fs.readFileSync(validated.file) };
+    pendingAuditEntry.entryData.judgment = buildJudgmentBlockSafe({
+      trace: freshestTrace,
+      tracePath: path.relative(ROOT, freshestTraceEntry.file),
+      traceBuffer: freshestTraceBuffer,
+      validated,
+      tier: validated ? (declaredTier ?? 2) : 1,
+      lines: stagedPerFileLines(),
+      artifactBuffer,
+      io: gitIo(ROOT),
+    });
+  } catch (err) {
+    pendingAuditEntry.entryData.judgment = { version: 1, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) };
   }
 }
 
@@ -1656,7 +1750,8 @@ function enforceTier1(trace, traceFile) {
       ].join('\n'),
     );
   }
-  const sideEffectsContent = fs.readFileSync(sideEffectsAbs, 'utf8');
+  const sideEffectsBuffer = fs.readFileSync(sideEffectsAbs);
+  const sideEffectsContent = sideEffectsBuffer.toString('utf8');
   if (sideEffectsContent.trim().length < MIN_ARTIFACT_CHARS) {
     blockCommit(
       inScopeFiles,
@@ -1691,6 +1786,7 @@ function enforceTier1(trace, traceFile) {
       `ELI16 ${eli16Rel} (${eli16Content.trim().length} chars) + side-effects ${sideEffectsRel} staged & verified. ` +
       `No converged spec required for Tier 1.`,
   );
+  attachJudgment(null, sideEffectsBuffer);
   removeDupBuildMarkerOnCommitSuccess();
   process.exit(0);
 }

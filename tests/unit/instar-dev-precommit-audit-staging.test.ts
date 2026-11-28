@@ -322,6 +322,96 @@ describe('instar-dev pre-commit — decision-audit line rides the commit (self-s
     });
   });
 
+  // docs/specs/judgment-call-rating.md → Change 1 and Change 2.
+  function stageTier1Bundle(slug: string, extra: Record<string, unknown> = {}) {
+    const srcRel = 'src/touched.ts';
+    const eli16Rel = `upgrades/${slug}.eli16.md`;
+    const seRel = `upgrades/side-effects/${slug}.md`;
+    fs.writeFileSync(path.join(sandbox, srcRel), '// touched\n// twice\n');
+    fs.writeFileSync(path.join(sandbox, eli16Rel), 'E'.repeat(900));
+    fs.writeFileSync(path.join(sandbox, seRel), `# Side-Effects Review\n\n## 1. Over-block\n\nNone.\n\n${'S'.repeat(250)}\n`);
+    const traceRel = path.join('.instar', 'instar-dev-traces', `${Date.now()}-${slug}.json`);
+    fs.writeFileSync(path.join(sandbox, traceRel), JSON.stringify({
+      phase: 'complete', slug, tier: 1, coveredFiles: [srcRel, eli16Rel, seRel],
+      eli16Path: eli16Rel, sideEffectsPath: seRel, createdAt: new Date().toISOString(), ...extra,
+    }, null, 2));
+    execFileSync('git', ['add', srcRel, eli16Rel, seRel], { cwd: sandbox });
+    return { srcRel, seRel, traceRel };
+  }
+
+  it('a passing Tier-1 record carries headCommit and the judgment block from the same trace', async () => {
+    fs.writeFileSync(path.join(sandbox, 'README.md'), 'base\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: sandbox });
+    execFileSync('git', ['commit', '-q', '-m', 'base', '--no-verify'], { cwd: sandbox });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sandbox, encoding: 'utf8' }).trim();
+    // The real side-effects template, so the headings come from the hook's own read.
+    const templateRel = 'skills/instar-dev/templates/side-effects-artifact.md';
+    fs.mkdirSync(path.join(sandbox, path.dirname(templateRel)), { recursive: true });
+    fs.copyFileSync(path.join(path.dirname(HOOK_SCRIPT), '..', templateRel), path.join(sandbox, templateRel));
+    const { srcRel, seRel, traceRel } = stageTier1Bundle('judgment-fixture', { tierReasoning: 'narrow fix', secondPass: 'not-required' });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(0);
+    const [file] = listEntryFiles();
+    const entry = JSON.parse(fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', file), 'utf8'));
+    expect(entry.verdict).toBe('pass');
+    expect(entry.headCommit).toBe(head);
+    const j = entry.judgment;
+    expect(j.version).toBe(1);
+    expect(j.error).toBeUndefined();
+    expect(j.tierReasoning).toBe('narrow fix');
+    expect(j.trace.path).toBe(traceRel);
+    expect(j.trace.hash).toBe(execFileSync('git', ['hash-object', traceRel], { cwd: sandbox, encoding: 'utf8' }).trim());
+    expect(j.trace.staged).toBe(false);
+    expect(j.traceDiffers).toBe(false);
+    expect(j.artifact.path).toBe(seRel);
+    expect(j.artifact.stagedHash).toBe(execFileSync('git', ['rev-parse', `:${seRel}`], { cwd: sandbox, encoding: 'utf8' }).trim());
+    expect(j.artifact.hash).toBe(j.artifact.stagedHash);
+    expect(j.spec).toBeNull();
+    expect(j.secondPassStatus).toBe('not-required');
+    expect(j.template).toBe(execFileSync('git', ['hash-object', templateRel], { cwd: sandbox, encoding: 'utf8' }).trim());
+    expect(j.headings['1. Over-block']).toEqual({ present: true, chars: 'None.\n\n'.length + 250 });
+    expect(j.headings['8. Rollback cost']).toBe('missing');
+    expect(j.headings['Second-pass review']).toBeUndefined();
+    expect(j.perFileLines).toEqual([{
+      path: srcRel, added: 2, deleted: 0, baseBlob: null,
+      stagedBlob: execFileSync('git', ['rev-parse', `:${srcRel}`], { cwd: sandbox, encoding: 'utf8' }).trim(),
+    }]);
+  });
+
+  it('a passing commit whose decision record cannot be saved is REFUSED (the one new refusal)', async () => {
+    // A file where the decisions folder should be: the first write fails.
+    fs.mkdirSync(path.join(sandbox, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions'), 'not a folder');
+    stageTier1Bundle('unsaved-fixture');
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('its decision record could not be saved');
+  });
+
+  it('a passing commit whose record is written but cannot be STAGED is refused, and the record reads blocked', async () => {
+    stageTier1Bundle('unstaged-fixture');
+    // A held index lock: reads still work, the record's `git add` fails.
+    fs.writeFileSync(path.join(sandbox, '.git', 'index.lock'), '');
+    const result = await runHook(process.env, sandbox);
+    fs.rmSync(path.join(sandbox, '.git', 'index.lock'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('its decision record could not be saved');
+    const [file] = listEntryFiles();
+    expect(JSON.parse(fs.readFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions', file), 'utf8')).verdict).toBe('blocked');
+  });
+
+  it('a BLOCKED commit whose record cannot be saved stays blocked with no extra refusal text', async () => {
+    fs.mkdirSync(path.join(sandbox, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(sandbox, '.instar', 'instar-dev-decisions'), 'not a folder');
+    stageTier1Bundle('unsaved-blocked-fixture', { eli16Path: undefined });
+
+    const result = await runHook(process.env, sandbox);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).not.toContain('its decision record could not be saved');
+  });
+
   it('binds the decision audit to the newest trace that covers the staged change', async () => {
     const srcRel = 'src/touched.ts';
     const eli16Rel = 'upgrades/pass-fixture.eli16.md';
