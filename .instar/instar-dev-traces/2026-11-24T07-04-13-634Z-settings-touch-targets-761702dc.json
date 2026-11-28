@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "settings-touch-targets",
+  "sessionId": "ab1b66cc-de80-48bd-9b94-4ede369ccb55",
+  "timestamp": "2026-11-24T07:04:13.634Z",
+  "artifactPath": "upgrades/side-effects/settings-touch-targets.md",
+  "artifactSha256": "db7b57a55115506f60855b1716bca48f960019130b3fd04a96fcedc5464a272f",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "upgrades/next/settings-touch-targets.md",
+    "upgrades/side-effects/settings-touch-targets.eli16.md",
+    "upgrades/side-effects/settings-touch-targets.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Scoped reversible CSS sizing with existing behavior",
+  "eli16Path": "upgrades/side-effects/settings-touch-targets.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/settings-touch-targets.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true
+}
