@@ -32,3 +32,5 @@ Nothing new. One setup step remains on my side: creating the push key in your Ap
 **Agents with no Telegram:** the notification service is built on every agent, because a phone can be paired to an agent that has no Telegram. Such an agent has no Attention hub post of its own, so it buzzes the phone only when another of its machines passes on a notice.
 
 A config with no project name no longer stops the server starting.
+
+An updated phone can report its app build when it registers for notifications. The agent keeps the most recent build reported by that pairing, so an owner can distinguish an app that has checked in from an update that is simply available for download. A missing report leaves the installed build unknown. This observation gives the phone no new permissions.

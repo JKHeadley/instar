@@ -3496,6 +3496,10 @@ export function createRoutes(ctx: RouteContext): Router {
     ownerCardCandidate: ownerNeedsCandidate,
     withdrawalJournalFor: ctx.ownerNeedsWithdrawalJournalFor,
     canary: ownerNeedsCandidate ? undefined : needsCanary,
+    appBuildFor: (id) => {
+      const pairing = ctx.mobilePairingService?.devices.get(id);
+      return pairing?.status === 'active' ? pairing.appBuild : undefined;
+    },
     read: (p) => needsSelfRead(p),
     bearerOk: (req) => bearerMatches(req, ctx.config.authToken),
     boardFor: (req) => (workBoardReadAs ? workBoardReadAs(req) : { status: 503, body: { error: 'work-board-starting' } }),
