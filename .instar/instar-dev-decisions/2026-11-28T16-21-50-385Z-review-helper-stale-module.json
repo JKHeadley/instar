@@ -1,0 +1,108 @@
+{
+  "ts": "2026-11-28T16:21:50.385Z",
+  "slug": "review-helper-stale-module",
+  "headCommit": "3c1501ac1a064d142bac502802d3c0fcec0c88ba",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 112,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/core/crossModelReviewer.ts"
+    ],
+    "addedLines": 103,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass",
+  "judgment": {
+    "version": 1,
+    "tierReasoning": "Small helper repair: module-candidate selection and one failure label; no state, no migration, a revert fully undoes it",
+    "trace": {
+      "path": ".instar/instar-dev-traces/2026-11-28T16-21-05-469Z-review-helper-stale-module-344ac665.json",
+      "hash": "535ccb1a2cba191a83b3c0c11556ea16bf10abf7",
+      "staged": true
+    },
+    "traceDiffers": false,
+    "artifact": {
+      "path": "upgrades/side-effects/review-helper-stale-module.md",
+      "hash": "db4f8ae2522d93b2ea735458afe7b41ec74a0272",
+      "stagedHash": "db4f8ae2522d93b2ea735458afe7b41ec74a0272"
+    },
+    "spec": null,
+    "template": "a33b7e354c2b936bb350305efddc4de1f6e1d658",
+    "headings": {
+      "1. Over-block": {
+        "present": true,
+        "chars": 563
+      },
+      "2. Under-block": {
+        "present": true,
+        "chars": 482
+      },
+      "3. Level-of-abstraction fit": {
+        "present": true,
+        "chars": 181
+      },
+      "4. Signal vs authority compliance": {
+        "present": true,
+        "chars": 165
+      },
+      "4b. Judgment-point check": {
+        "present": true,
+        "chars": 192
+      },
+      "5. Interactions": {
+        "present": true,
+        "chars": 965
+      },
+      "6. External surfaces": {
+        "present": true,
+        "chars": 275
+      },
+      "7. Multi-machine posture": {
+        "present": true,
+        "chars": 134
+      },
+      "8. Rollback cost": {
+        "present": true,
+        "chars": 53
+      },
+      "6b. Operator-surface quality": {
+        "present": true,
+        "chars": 36
+      },
+      "6c. Delight the user": {
+        "present": true,
+        "chars": 129
+      },
+      "Second-pass review": {
+        "present": true,
+        "chars": 1540
+      }
+    },
+    "secondPassStatus": "required-concurred",
+    "perFileLines": [
+      {
+        "path": "skills/spec-converge/scripts/cross-model-review.mjs",
+        "added": 93,
+        "deleted": 9,
+        "baseBlob": "580a19c5164e68fb961ac4664f6d0f59f32dfdf3",
+        "stagedBlob": "e2be08f9f5892fd3e77a4d00f7498b1cb91dbf55"
+      },
+      {
+        "path": "src/core/crossModelReviewer.ts",
+        "added": 10,
+        "deleted": 0,
+        "baseBlob": "5102e57265bbad6a765a4f75b29b6199e13ebaae",
+        "stagedBlob": "bae2f85cd722d60eb2814b25be4356caa951ea98"
+      }
+    ]
+  }
+}

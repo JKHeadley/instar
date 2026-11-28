@@ -62,7 +62,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const ROOT = path.resolve(new URL('../../..', import.meta.url).pathname);
@@ -133,7 +133,8 @@ function parseArgs() {
  * contexts, and surface the winner (`resolvedModulePath`) so a future dead
  * source is observable instead of silent.
  */
-function moduleCandidates() {
+export function moduleCandidates(root = ROOT, scriptUrl = import.meta.url) {
+  const ROOT = root; // shadowing on purpose: the tests pass a copied script's own root
   const rel = path.join('dist', 'core', 'crossModelReviewer.js');
   const out = [];
   const push = (p) => {
@@ -142,6 +143,13 @@ function moduleCandidates() {
   // (1) checkout / published package: the skill ships inside the instar package,
   //     so the package's own dist sits beside `skills/` at ROOT.
   push(path.join(ROOT, rel));
+  // (1b) a copy run from `<agent home>/skills/...` (SKILL.md's documented
+  //      `node skills/spec-converge/...` from the agent home): ROOT IS the agent
+  //      home, so its real install sits under ROOT, not one level up. Without
+  //      these, an orphan `<agent home>/dist` was the only candidate that existed
+  //      (review-helper-stale-module, the Studio gpt-5.5 failure).
+  push(path.join(ROOT, '.instar', 'shadow-install', 'node_modules', 'instar', rel));
+  push(path.join(ROOT, 'node_modules', 'instar', rel));
   // (2) installed-into-`.claude` copy: ROOT is `<agent home>/.claude`, which has
   //     no dist — resolve the agent's REAL instar install one level up.
   const home = path.resolve(ROOT, '..');
@@ -150,16 +158,75 @@ function moduleCandidates() {
   // (3) ordinary node resolution from this script upward (covers a global or
   //     hoisted install neither of the above named).
   try {
-    push(createRequire(import.meta.url).resolve('instar/dist/core/crossModelReviewer.js'));
+    push(createRequire(scriptUrl).resolve('instar/dist/core/crossModelReviewer.js'));
   } catch {
     /* not resolvable from here — the explicit candidates above still apply */
   }
   return out;
 }
 
+/**
+ * Is this built reviewer module safe to load? (review-helper-stale-module)
+ *
+ * The ladder used to take the FIRST candidate that existed. On the Studio that
+ * was an untracked `dist/` left in the agent's home folder from an old build:
+ * no instar package beside it, a model table that still named gpt-5.5, which
+ * the ChatGPT account now refuses. Every review through it degraded.
+ *
+ * A candidate is passed over (never deleted, never loaded) when:
+ *   - `orphan-build`: the folder two levels above `dist/` has no package.json
+ *     naming `instar`, so nothing says what version the build is; or
+ *   - `stale-build`: the folder is a checkout (it has `src/`) and one of the
+ *     reviewer's source files is newer than its built copy, so the build
+ *     predates the source (for example a pull without a rebuild).
+ * Pure apart from the injected file reads; exported for the unit tests.
+ */
+const FRESHNESS_PAIRS = [
+  ['src/core/crossModelReviewer.ts', 'dist/core/crossModelReviewer.js'],
+  ['src/providers/adapters/openai-codex/models.ts', 'dist/providers/adapters/openai-codex/models.js'],
+];
+
+export function assessModuleCandidate(modPath, io = fs) {
+  if (!io.existsSync(modPath)) return { path: modPath, usable: false, reason: 'missing' };
+  const pkgRoot = path.resolve(path.dirname(modPath), '..', '..');
+  let name = null;
+  try {
+    name = JSON.parse(io.readFileSync(path.join(pkgRoot, 'package.json'), 'utf-8')).name ?? null;
+  } catch {
+    name = null; // unreadable or absent package.json: treated as an orphan build below
+  }
+  if (name !== 'instar') return { path: modPath, usable: false, reason: 'orphan-build' };
+  for (const [src, built] of FRESHNESS_PAIRS) {
+    const srcPath = path.join(pkgRoot, src);
+    if (!io.existsSync(srcPath)) continue; // a published package ships no src: nothing to compare
+    const builtPath = path.join(pkgRoot, built);
+    if (!io.existsSync(builtPath)) return { path: modPath, usable: false, reason: 'stale-build', detail: `${built} missing` };
+    if (io.statSync(srcPath).mtimeMs > io.statSync(builtPath).mtimeMs) {
+      return { path: modPath, usable: false, reason: 'stale-build', detail: `${src} is newer than ${built}` };
+    }
+  }
+  return { path: modPath, usable: true };
+}
+
+/**
+ * First usable candidate wins. When none is usable but one exists, the first
+ * existing one is still loaded (the review never blocks) and `moduleStale`
+ * says so. Every candidate passed over is listed with its reason.
+ */
+export function selectReviewerModule(candidates, io = fs) {
+  const assessed = candidates.map((p) => assessModuleCandidate(p, io));
+  const skipped = assessed
+    .filter((a) => !a.usable && a.reason !== 'missing')
+    .map((a) => ({ path: a.path, reason: a.reason, ...(a.detail ? { detail: a.detail } : {}) }));
+  const usable = assessed.find((a) => a.usable);
+  if (usable) return { hit: usable.path, skipped, moduleStale: false };
+  const existing = assessed.find((a) => a.reason !== 'missing');
+  return { hit: existing ? existing.path : null, skipped, moduleStale: Boolean(existing) };
+}
+
 async function loadModule() {
   const tried = moduleCandidates();
-  const hit = tried.find((p) => fs.existsSync(p));
+  const { hit, skipped, moduleStale } = selectReviewerModule(tried);
   if (!hit) {
     fail(
       'crossModelReviewer module not found. In an instar checkout run `pnpm build` ' +
@@ -169,7 +236,7 @@ async function loadModule() {
     );
   }
   const mod = await import(pathToFileURL(hit).href);
-  return { mod, resolvedModulePath: hit };
+  return { mod, resolvedModulePath: hit, moduleSkipped: skipped, moduleStale };
 }
 
 /**
@@ -381,7 +448,15 @@ async function fetchGeminiApiDoor(reviewerConfig, resolvedConfigPath) {
 
 async function main() {
   const { spec, context, detectOnly, hashOnly, family, stateDir, timeoutMs, config, round } = parseArgs();
-  const { mod, resolvedModulePath } = await loadModule();
+  const { mod, resolvedModulePath, moduleSkipped, moduleStale } = await loadModule();
+  // Which built module served this run, and which were passed over, on EVERY
+  // output (not only --detect-only): a stale copy must be visible in the
+  // review result itself, where the Studio failure was first seen.
+  const moduleReport = {
+    resolvedModulePath,
+    ...(moduleSkipped.length ? { moduleSkipped } : {}),
+    ...(moduleStale ? { moduleStale: true } : {}),
+  };
   // Config-gate the Anthropic clean-door family (§1.5). Absent config ⇒ fleet-dark.
   const { config: reviewerConfig, resolvedConfigPath } = loadReviewerConfig(config);
 
@@ -425,7 +500,7 @@ async function main() {
       resolvedConfigPath: resolvedConfigPath ?? 'none-found',
       // Same reason, for the MODULE carrier (round-9): which of the ladder's
       // candidates actually served the built reviewer module.
-      resolvedModulePath,
+      ...moduleReport,
       ...(first.framework ? { framework: first.framework } : {}),
       ...(first.model ? { model: first.model } : {}),
       ...(first.reason ? { reason: first.reason } : {}),
@@ -564,11 +639,20 @@ async function main() {
       });
 
   // Surface truncation in the emitted result so the skill/report can note it.
-  process.stdout.write(JSON.stringify({ ...result, promptTruncated: assembled.truncated }) + '\n');
+  process.stdout.write(JSON.stringify({ ...result, promptTruncated: assembled.truncated, ...moduleReport }) + '\n');
   process.exit(0);
 }
 
-main().catch((err) => {
+// Run only when executed as a script; the unit tests import the selectors above.
+const invokedDirectly = (() => {
+  try {
+    return fs.realpathSync(process.argv[1] ?? '') === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return true; // cannot tell (argv path unreadable): keep the old always-run behaviour
+  }
+})();
+
+if (invokedDirectly) main().catch((err) => {
   // Even an unexpected crash must not block convergence: emit a degraded
   // result and exit 0 so the skill folds in internal-only + records degraded.
   const reason = err instanceof Error ? err.message.slice(0, 200) : String(err);

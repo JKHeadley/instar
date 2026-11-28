@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "review-helper-stale-module",
+  "sessionId": "dba91cd0-cb62-4fbf-be3e-45bfd60f5250",
+  "timestamp": "2026-11-28T16:21:05.469Z",
+  "artifactPath": "upgrades/side-effects/review-helper-stale-module.md",
+  "artifactSha256": "d6604b602c7f6d9f5ec91a92748f78a146ab4c0563d4613683c8a7d3a21d122c",
+  "coveredFiles": [
+    "docs/specs/review-helper-stale-module.eli16.md",
+    "skills/spec-converge/scripts/cross-model-review.mjs",
+    "src/core/crossModelReviewer.ts",
+    "tests/integration/cross-model-review-module-resolution.test.ts",
+    "tests/unit/cross-model-review-module-freshness.test.ts",
+    "tests/unit/crossModelReviewer.test.ts",
+    "upgrades/next/review-helper-stale-module.md",
+    "upgrades/side-effects/review-helper-stale-module.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small helper repair: module-candidate selection and one failure label; no state, no migration, a revert fully undoes it",
+  "eli16Path": "docs/specs/review-helper-stale-module.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/review-helper-stale-module.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
