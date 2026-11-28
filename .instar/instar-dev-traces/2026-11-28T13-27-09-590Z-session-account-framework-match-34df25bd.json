@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "session-account-framework-match",
+  "sessionId": "05495e3f-bf2b-44d8-bd9c-039e1afdbbdc",
+  "timestamp": "2026-11-28T13:27:09.590Z",
+  "artifactPath": "upgrades/side-effects/session-account-framework-match.md",
+  "artifactSha256": "1d5298df7c05f666315efaf945ef7fcfe1bf1b110159e7f0a4a20d6af0ead3e8",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/QuotaAwareScheduler.ts",
+    "src/core/SessionManager.ts",
+    "src/core/accountFrameworkMatch.ts",
+    "src/server/routes.ts",
+    "tests/integration/subscription-pool-swap-target.test.ts",
+    "tests/unit/account-framework-match.test.ts",
+    "tests/unit/interactive-session-pin.test.ts",
+    "upgrades/next/session-account-framework-match.md",
+    "upgrades/side-effects/session-account-framework-match.eli16.md",
+    "upgrades/side-effects/session-account-framework-match.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Drops a wrong-framework account at spawn and adds an exact-target operator repair to the swap route; a revert fully undoes it, no state or migration",
+  "eli16Path": "upgrades/side-effects/session-account-framework-match.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-account-framework-match.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

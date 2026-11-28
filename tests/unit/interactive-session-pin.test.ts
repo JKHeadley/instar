@@ -151,6 +151,42 @@ describe('interactive session pinning (B1) — unit', () => {
     expect(newSessionArgs()).toContain(`CODEX_HOME=${home}`);
   });
 
+  // 2026-11-28, Mama topic 144319: a Codex topic respawned tagged with a Claude account.
+  it('drops a caller-supplied Claude account for a Codex session and uses the Codex resolver', async () => {
+    const claudeHome = path.join(dir, 'claude-justin-gmail');
+    const codexHome = path.join(dir, 'codex-sagemindai');
+    manager.setAccountFrameworkLookup((ref) => (ref.accountId === 'justin-gmail' || ref.configHome === claudeHome) ? 'claude-code' : null);
+    manager.setCodexSpawnAccountResolver(() => ({ configHome: codexHome, accountId: 'codex-sagemindai' }));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-stale-claude', {
+      framework: 'codex-cli', configHome: claudeHome, subscriptionAccountId: 'justin-gmail',
+    });
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('codex-sagemindai');
+    expect(newSessionArgs()).toContain(`CODEX_HOME=${codexHome}`);
+    expect(newSessionArgs().some((a) => typeof a === 'string' && a.includes(claudeHome))).toBe(false);
+  });
+
+  it('drops a caller-supplied Codex account for a Claude session and uses the Claude resolver', async () => {
+    manager.setAccountFrameworkLookup((ref) => ref.accountId === 'codex-amrch' ? 'codex-cli' : null);
+    manager.setSpawnAccountResolver(() => ({ configHome: '/h/.claude-pool-a', accountId: 'acct-a' }));
+    const tmux = await manager.spawnInteractiveSession(undefined, 'claude-stale-codex', {
+      configHome: '/h/.codex-amrch', subscriptionAccountId: 'codex-amrch',
+    });
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('acct-a');
+    expect(newSessionArgs()).toContain('CLAUDE_CONFIG_DIR=/h/.claude-pool-a');
+  });
+
+  it('keeps a matching explicit account when the lookup is wired (no needless drop)', async () => {
+    const home = path.join(dir, 'codex-ok');
+    manager.setAccountFrameworkLookup((ref) => ref.accountId === 'codex-ok' ? 'codex-cli' : null);
+    const resolver = vi.fn(() => ({ configHome: path.join(dir, 'automatic'), accountId: 'automatic' }));
+    manager.setCodexSpawnAccountResolver(resolver);
+    const tmux = await manager.spawnInteractiveSession(undefined, 'codex-match', {
+      framework: 'codex-cli', configHome: home, subscriptionAccountId: 'codex-ok',
+    });
+    expect(resolver).not.toHaveBeenCalled();
+    expect(recordFor(tmux)?.subscriptionAccountId).toBe('codex-ok');
+  });
+
   it('does not choose a subscription account for a local Codex model', async () => {
     const resolver = vi.fn(() => ({ configHome: path.join(dir, 'paid'), accountId: 'paid' }));
     manager.setCodexSpawnAccountResolver(resolver);

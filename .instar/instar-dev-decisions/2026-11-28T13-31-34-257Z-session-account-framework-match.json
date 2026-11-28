@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-28T13:31:34.257Z",
+  "slug": "session-account-framework-match",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 132,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/QuotaAwareScheduler.ts",
+      "src/core/SessionManager.ts",
+      "src/core/accountFrameworkMatch.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 125,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

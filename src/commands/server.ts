@@ -26163,6 +26163,14 @@ export async function startServer(options: StartOptions): Promise<void> {
       // session with one that has room, or refuse when none does. Same switch
       // and walled predicate as the rescue; no Codex accounts → unchanged.
       sessionManager.setCodexSpawnAccountResolver((context) => wallRescue.codexSpawnAccount(context));
+      // Framework match at spawn (2026-11-28, Mama topic 144319): a caller-supplied account or
+      // home from another framework is dropped and placement re-selects for the session's own.
+      sessionManager.setAccountFrameworkLookup((ref) => {
+        const norm = (h: string) => path.resolve(h.replace(/^~(?=$|\/)/, os.homedir()));
+        const hit = subscriptionPool.list().find((a) => (ref.accountId !== undefined && a.id === ref.accountId)
+          || (ref.configHome !== undefined && typeof a.configHome === 'string' && a.configHome.length > 0 && norm(a.configHome) === norm(ref.configHome)));
+        return hit?.framework ?? null;
+      });
       // A Codex conversation moved onto an account's home is looked for in every
       // Codex account home, so its resume finds the conversation there.
       sessionManager.setCodexAccountHomesResolver(() => subscriptionPool.list()
