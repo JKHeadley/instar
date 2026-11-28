@@ -74,6 +74,7 @@ These rules can be measured without a person. They are the ones to build automat
 | `DS-ACTION-6` | Every control has a visible label or an accessible name. |
 | `DS-WORDS-2` | No word from the internal-terms list appears in screen text. |
 | `DS-WORDS-5` | Every screen has a purpose sentence. |
+| `DS-WORDS-7` | Rendering a fixed set of awkward documents through the real renderer yields no multi-line or `name: value` heading and no settings line in the body. |
 | `DS-STATE-1` | Every data area declares an empty-state message. |
 | `DS-STATE-6` | Every referenced image and icon exists. |
 | `DS-PARITY-2` | Each surface's thresholds equal the shared definition. |
@@ -527,6 +528,15 @@ These rules can be measured without a person. They are the ones to build automat
 - **Check**: review, using the before-and-after examples in the UX standard; fixed notices are also scanned by the existing plain-notice check.
 - **Source**: UX standard Rule 8.
 
+### DS-WORDS-7 · Settings at the top of a document never show as its text
+- **Rule**: Wherever a document or other author text is rendered (the document page, the dashboard file viewer, private views), settings written for tools at the top of the document (a block of `name: value` lines between two lines of three dashes) are never rendered as the document's text. They are hidden, or shown as a small "About this document" table in secondary text, one setting per row, with ids, short names and session names left out of the owner's view. A heading is made from one source line only; author text is never turned into a heading, bold run or divider that the author did not write as one. The first screen at phone size shows the start of the document's own text.
+- **Why**: Lines meant for tools, shown in the largest type on the page, make a finished document look broken and push its content off the first screen.
+- **Bad**: A draft article whose first phone screen is one giant bold heading made of its title, short name, author, status and requester lines run together.
+- **Good**: The article's title in the page header, then its first paragraph; the settings collapsed under "About this document".
+- **Surfaces**: All.
+- **Check**: machine, on every change to the document renderer or the document page. Render a fixed set of awkward documents (a settings block at the top; a paragraph directly above a line of dashes; a very long first line) through the real renderer: no heading block may span more than one source line or contain a `name: value` line, and no settings line may appear in the rendered body. Review, at 390 x 844, that the first screen shows the document's own text.
+- **Source**: owner feedback. **Earned from**: DF-0007.
+
 ## 7. States: empty, loading, error
 
 ### DS-STATE-1 · An empty screen says what will appear and how
@@ -751,5 +761,5 @@ The earlier documents stay in force for the details they hold (for example the d
 |---|---|---|
 | 2026-11-21 | First version: 65 rules in 10 sections, standard screenshot sizes, and the growth process. | Owner request, 2026-11-21 |
 | 2026-11-21 | Added DS-LAYOUT-3, DS-DATA-1, DS-DATA-2, DS-DATA-3, DS-DATA-6, DS-DATA-7, DS-DATA-8, DS-TYPE-3, DS-COLOUR-3, DS-COLOUR-4, DS-COLOUR-7, DS-PARITY-1 to DS-PARITY-5 and DS-DELIGHT-1. Sharpened DS-DATA-4, DS-DATA-5, DS-DATA-9, DS-WORDS-4 and DS-DELIGHT-6. | DF-0001 |
-
 | 2026-11-22 | Added the fixed main conversation rule DS-LAYOUT-12, native context actions rule DS-ACTION-8 and generated-work provenance rule DS-LAYOUT-13. Implementation and release evidence remain open in their records. | DF-0002, DF-0003, DF-0004 |
+| 2026-11-27 | Added DS-WORDS-7: a document's settings block never renders as its text, with a machine check on the real renderer. The renderer fix is owned by the documents project. | DF-0007 |

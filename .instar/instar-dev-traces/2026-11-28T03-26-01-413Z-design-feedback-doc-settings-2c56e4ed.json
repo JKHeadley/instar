@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "design-feedback-doc-settings",
+  "sessionId": "e7d3ee73-b4ae-43b6-9d89-bbc229ef91ad",
+  "timestamp": "2026-11-28T03:26:01.413Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-doc-settings.md",
+  "artifactSha256": "2cf025a2965bd212839fba53c790abeb8177d9eba0b2521565aa5d88e3424afe",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "docs/DESIGN-STANDARD.md",
+    "docs/design-feedback/DF-0007-document-settings-block-as-heading.md",
+    "upgrades/next/design-feedback-doc-settings.md",
+    "upgrades/side-effects/design-feedback-doc-settings.eli16.md",
+    "upgrades/side-effects/design-feedback-doc-settings.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging main and marking the second-pass reviewer line.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
