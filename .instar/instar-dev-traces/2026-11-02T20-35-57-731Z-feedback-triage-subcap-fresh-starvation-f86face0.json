@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "feedback-triage-subcap-fresh-starvation",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-02T20:35:57.731Z",
+  "artifactPath": "upgrades/side-effects/feedback-triage-subcap-fresh-starvation.md",
+  "artifactSha256": "d32b3468d21e96bb26beb9a3a47f0ea03937b1b1d899238e0fe790ffc7e3f73c",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/triage/FeedbackTriageService.ts",
+    "tests/unit/feedback-factory/triage-service.test.ts",
+    "upgrades/next/feedback-triage-subcap-fresh-starvation.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
