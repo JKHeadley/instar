@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "dashboard-shared-touch-targets",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-24T12:31:08.974Z",
+  "artifactPath": "upgrades/side-effects/dashboard-shared-touch-targets.md",
+  "artifactSha256": "80ab1a4c8e48adb4bff296aedb1166f085e295d07eb68fe8afb286d730890a75",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "upgrades/next/dashboard-shared-touch-targets.md",
+    "upgrades/side-effects/dashboard-shared-touch-targets.eli16.md",
+    "upgrades/side-effects/dashboard-shared-touch-targets.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible sizing of shared dashboard controls. No behavior, data or permission changes.",
+  "eli16Path": "upgrades/side-effects/dashboard-shared-touch-targets.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-shared-touch-targets.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

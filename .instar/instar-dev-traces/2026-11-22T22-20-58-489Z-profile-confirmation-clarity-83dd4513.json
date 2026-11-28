@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-clarity",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:20:58.489Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-clarity.md",
+  "artifactSha256": "4a50d124d52fd7f33c79e0a9fca334aa8ec15ad91d9569844bddbc0ebbbccd71",
+  "specPath": "docs/specs/profile-confirmation-clarity.md",
+  "coveredFiles": [
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/integration/telegram-internal-routes-lifeline-secret.test.ts",
+    "tests/unit/telegram-adapter.test.ts",
+    "upgrades/side-effects/profile-confirmation-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Repair the first-party native reply wiring discovered by actual Telegram proof, under Chief77da8c47. No new consent authority; full proof remains held.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "User-driven reply wiring only; no self-triggered loop."
+  }
+}

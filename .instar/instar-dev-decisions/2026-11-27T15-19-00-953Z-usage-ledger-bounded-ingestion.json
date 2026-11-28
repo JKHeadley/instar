@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-27T15:19:00.953Z",
+  "slug": "usage-ledger-bounded-ingestion",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 555,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/UsageLedgerTranscript.ts",
+      "src/monitoring/UsageLedgerTranscript.worker.ts"
+    ],
+    "addedLines": 459,
+    "deletedLines": 96
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

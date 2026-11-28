@@ -20,6 +20,7 @@ import { ReplicatedRecordEmitter } from '../../src/core/ReplicatedRecordEmitter.
 import { ReplicatedPeerStreamReader } from '../../src/core/ReplicatedPeerStreamReader.js';
 import { HybridLogicalClock } from '../../src/core/HybridLogicalClock.js';
 import { AdaptiveTrust } from '../../src/core/AdaptiveTrust.js';
+import { ExternalOperationGate, AUTONOMY_PROFILES } from '../../src/core/ExternalOperationGate.js';
 import { createTrustJourneyRuntime, journalSink } from '../../src/core/trustJourney/TrustJourneyRuntime.js';
 import { TRUST_GRANT_KIND_REGISTRATION, TRUST_JOURNEY_STORE_KEY } from '../../src/core/trustJourney/TrustJourneyStore.js';
 import { acceptanceStatement } from '../../src/core/trustJourney/accountPath.js';
@@ -65,6 +66,46 @@ function journalRig(stateDir: string) {
 }
 
 describe('Trust account path E2E (feature is alive)', () => {
+  it('a started production server admits connector reads without granting writes, including after runtime reload', async () => {
+    const { config, stateDir } = mkConfig();
+    const rig = journalRig(stateDir);
+    const trust = new AdaptiveTrust({ stateDir });
+    const makeRuntime = () => createTrustJourneyRuntime({
+      stateDir, configPath: path.join(stateDir, 'config.json'), runtimeConfig: config as never,
+      installationId: 'connector-e2e', sink: rig.sink, adaptiveTrust: trust,
+      autonomyManager: null, trustRecovery: null, telegram: null, slack: null,
+      slackOwnerUserId: () => null, holdsLease: () => true,
+    });
+    try {
+      for (let boot = 0; boot < 2; boot++) {
+        const runtime = makeRuntime();
+        const server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as never,
+          state: new StateManager(stateDir), adaptiveTrust: trust, trustAccountPath: runtime,
+          operationGate: new ExternalOperationGate({ stateDir, autonomyDefaults: AUTONOMY_PROFILES.collaborative }),
+        });
+        await server.start();
+        try {
+          const evaluate = (tool_name: string) => request(server.getApp()).post('/operations/evaluate')
+            .set('Authorization', `Bearer ${AUTH}`).send({ service: tool_name.split('__')[1], mutability: 'modify',
+              reversibility: 'reversible', description: 'connector lifecycle fixture', tool_name, tool_input: {} });
+          for (const name of ['mcp__codex_apps__github__fetch_pr', 'mcp__codex_apps__github_get_pr_info', 'mcp__other_engine__github__list_pull_requests',
+            'mcp__threadline__threadline_discover', 'mcp__threadline__threadline_agents']) {
+            const response = await evaluate(name);
+            expect(response.status).toBe(200);
+            expect(response.body).toMatchObject({ action: 'proceed', trust: { verdict: 'not-gated', why: 'read' } });
+          }
+          expect(runtime.store.openRequests()).toHaveLength(0);
+          for (const name of ['mcp__codex_apps__github__push_files', 'mcp__other_engine__github_read_then_merge', 'mcp__bridge__inspect_read', 'mcp__bridge__opaque',
+            'mcp__threadline__threadline_send', 'mcp__threadline__threadline_delete']) {
+            const response = await evaluate(name);
+            expect(response.status).toBe(200);
+            expect(response.body).toMatchObject({ action: 'ask', trust: { verdict: 'ask', why: 'no-grant' } });
+          }
+        } finally { await server.stop(); }
+      }
+    } finally { rig.journal.close(); }
+  });
+
   it('routes answer, the card flow raises through the journal, and a restart keeps the proven raise and restores a hand edit', async () => {
     const { config, stateDir } = mkConfig();
     const rig = journalRig(stateDir);

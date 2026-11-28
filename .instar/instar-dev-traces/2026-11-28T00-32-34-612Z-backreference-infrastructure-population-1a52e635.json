@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "backreference-infrastructure-population",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T00:32:34.612Z",
+  "artifactPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "artifactSha256": "a4b38414ab08e458c1408e25e628eedf69b09e4be366dbd535897d7dd467ef05",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/specs/backreference-infrastructure-population.eli16.md",
+    "docs/standards-backreference-infrastructure-baseline.json",
+    "scripts/lint-standard-code-backreference.mjs",
+    "tests/unit/lint-standard-code-backreference.test.ts",
+    "upgrades/next/backreference-infrastructure-population.md",
+    "upgrades/side-effects/backreference-infrastructure-population.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Extends an existing repository lint with the same matching and the same shrink-only baseline pattern; no runtime change; a revert fully undoes it; second pass required because it can fail commits",
+  "eli16Path": "docs/specs/backreference-infrastructure-population.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

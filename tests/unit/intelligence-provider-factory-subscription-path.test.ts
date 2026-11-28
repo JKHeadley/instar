@@ -8,7 +8,10 @@
  * call is served by the pool and `claude` is NEVER exec'd.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -31,6 +34,10 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { execFile } from 'node:child_process';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
+import { getHostSpawnSemaphore, _resetHostSpawnSemaphoreForTest } from '../../src/core/hostSpawnSemaphore.js';
+import { _resetSpawnPollersForTest } from '../../src/core/SpawnCapIntelligenceProvider.js';
+import { __resetLlmCircuitBreakerSingleton } from '../../src/core/LlmCircuitBreaker.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { CapabilityFlag } from '../../src/providers/capabilities.js';
 import type { ProviderAdapter } from '../../src/providers/registry.js';
 
@@ -50,8 +57,26 @@ function fakePoolAdapter(text: string): ProviderAdapter {
   };
 }
 
+let fixtureHome: string;
+let homeSpy: { mockRestore(): void };
+
 beforeEach(() => {
+  fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'subscription-path-'));
+  homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(fixtureHome);
+  _resetHostSpawnSemaphoreForTest();
+  _resetSpawnPollersForTest();
+  __resetLlmCircuitBreakerSingleton();
+  expect(getHostSpawnSemaphore().status().holdersPath)
+    .toBe(path.join(fixtureHome, '.instar', 'host-spawn-holders.json'));
   vi.mocked(execFile).mockClear();
+});
+
+afterEach(() => {
+  _resetSpawnPollersForTest();
+  _resetHostSpawnSemaphoreForTest();
+  __resetLlmCircuitBreakerSingleton();
+  homeSpy.mockRestore();
+  SafeFsExecutor.safeRmSync(fixtureHome, { recursive: true, force: true, operation: 'subscription-path-test:cleanup' });
 });
 
 describe('buildIntelligenceProvider — subscriptionPath option', () => {

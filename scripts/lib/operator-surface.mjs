@@ -16,6 +16,8 @@
  * by tests (Testing Integrity → semantic-correctness).
  */
 
+import { extractSection, isRealReason } from './delight-the-user.mjs';
+
 /**
  * An operator surface is anything a person uses to authorize, decide, or act:
  *   - dashboard renderer / markup files (dashboard/*.js, dashboard/*.html), AND
@@ -49,8 +51,28 @@ export function isOperatorSurfaceFile(file) {
  * @param {string} content the side-effects artifact text
  * @returns {boolean}
  */
-export function artifactAddressesOperatorSurfaceQuality(content) {
-  return /operator[- ]surface quality/i.test(String(content ?? ''));
+export function artifactAddressesOperatorSurfaceQuality(content, opts = {}) {
+  const text = String(content ?? '');
+  if (!/operator[- ]surface quality/i.test(text)) return false;
+  // Hollow-copy hole (found reviewing Delight the User, 2026-11-18): the §6b
+  // HEADING itself carries the phrase, so an artifact copied from the template
+  // and never answered used to pass. When the gate supplies the template text
+  // and the artifact has a §6b-style heading, the section must hold at least
+  // one line of the author's own words (template lines copied unchanged and
+  // bracketed placeholders do not count). Without a heading, or without the
+  // template, the phrase test above stands as before.
+  if (!opts.templateText) return true;
+  const section = extractSection(text, /operator[- ]surface quality/i);
+  if (section === null) return true;
+  const tmpl = new Set(
+    (extractSection(opts.templateText, /operator[- ]surface quality/i) ?? '')
+      .split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+  );
+  const own = section.split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !tmpl.has(l) && !/^\[.*\]$/.test(l))
+    .join(' ');
+  return isRealReason(own);
 }
 
 /**

@@ -217,6 +217,23 @@ describe('annotateOutcome keying', () => {
 /* ── Envelope builders (§5.2) ─────────────────────────────────────────── */
 
 describe('buildBoundedContext', () => {
+  it('scrubs JSON snippets and private key blocks before encoding', async () => {
+    const secret = 'exampleValue12345';
+    const keyBody = 'QUJDREVGRw==';
+    const snippet = `{"api_key":"${secret}"}`;
+    const pem = ['-----BEGIN PRIVATE KEY-----', keyBody, '-----END PRIVATE KEY-----'].join('\n');
+    const context = buildBoundedContext({ nested: { capture: { snippet, pem } } });
+    const log = makeLog();
+    log.recordDecision(seamInput({ context }));
+    await log.flush();
+    const stored = fs.readFileSync(path.join(tmpDir, `${TODAY}.jsonl`), 'utf8');
+    expect(stored).toContain('REDACTED');
+    expect(stored).toContain('api_key');
+    expect(stored).not.toContain(secret);
+    expect(stored).not.toContain(keyBody);
+    expect(stored).not.toContain('BEGIN PRIVATE KEY');
+  });
+
   it('keeps code-authored facts and clamps + scrubs strings to 300 chars', () => {
     const out = buildBoundedContext({
       commandHash: 'abc123',

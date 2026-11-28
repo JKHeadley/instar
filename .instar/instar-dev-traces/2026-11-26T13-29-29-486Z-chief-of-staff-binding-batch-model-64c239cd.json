@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-binding-batch-model",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-26T13:29:29.486Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-binding-batch-model.md",
+  "artifactSha256": "195b25c8b0fcf52023452caa5b06a8f5d73f705a25dce89a1775567ad75955d4",
+  "coveredFiles": [
+    "docs/specs/chief-of-staff-batch-project-binding.eli16.md",
+    "docs/specs/chief-of-staff-batch-project-binding.md",
+    "src/core/ChiefOfStaffBindingBatch.ts",
+    "tests/unit/chief-of-staff-binding-batch.test.ts",
+    "upgrades/side-effects/chief-of-staff-binding-batch-model.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "This commit is a small reversible pure-data foundation. It adds no route, owner callback, write path, or runtime behavior, and its validator is not wired to any decision authority.",
+  "eli16Path": "docs/specs/chief-of-staff-batch-project-binding.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chief-of-staff-binding-batch-model.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

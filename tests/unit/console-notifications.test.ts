@@ -30,6 +30,33 @@ describe('Notifications operator page', () => {
     expect(main.querySelector('.glance-root')?.textContent).toContain('Unread notices');
     expect(main.querySelector('.glance-root')?.textContent).toContain('Push choices');
   });
+  it.each(['another page', 'a newer notifications view', 'a detached page'])('keeps a delayed save from repainting %s', async target => {
+    const { main, fetch } = page();
+    const original = fetch.getMockImplementation()!;
+    let finishSave!: () => void;
+    const pending = new Promise<void>(resolve => { finishSave = resolve; });
+    fetch.mockImplementation(async (url: string, options?: RequestInit) => {
+      if (options?.method === 'PATCH') await pending;
+      return original(url, options);
+    });
+    const { renderNotifications } = await import('../../dashboard/console/notifications.js');
+    await renderNotifications(main);
+    const button = [...main.querySelectorAll('button')].find(node => node.textContent === 'Mark read')!;
+    button.click();
+    expect(fetch.mock.calls.filter(([, options]) => options?.method === 'PATCH')).toHaveLength(1);
+    if (target === 'another page') main.innerHTML = '<h1>Accounts</h1><p>Current page</p>';
+    else if (target === 'a newer notifications view') await renderNotifications(main, undefined, { unread: false });
+    else main.remove();
+    const current = main.innerHTML;
+    const requests = fetch.mock.calls.length;
+    finishSave();
+    // Drain the actual async click callback, including the response's json() and any refresh.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(main.innerHTML).toBe(current);
+    expect(fetch.mock.calls).toHaveLength(requests);
+    if (target === 'a newer notifications view') expect((main.querySelector('[aria-label="Only unread notices"]') as HTMLInputElement).checked).toBe(false);
+  });
+
   it('marks a notice read at its owner and refreshes the feed', async () => {
     const { main, fetch } = page();
     const { renderNotifications } = await import('../../dashboard/console/notifications.js');

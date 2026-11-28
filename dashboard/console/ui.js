@@ -100,32 +100,72 @@ export function section({ id, title, rows, collapsed = false, empty, limit = 20,
 
 /** 3. Detail sheet: bottom sheet on a phone, side panel on desktop. */
 let openSheet = null;
+const SHEET_CONTROLS = 'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"]';
+
+function sheetControls(panel) {
+  const visible = [...panel.querySelectorAll(SHEET_CONTROLS)].filter(node =>
+    !node.matches(':disabled, input[type="hidden"]') &&
+    !node.closest('[hidden], [inert]') &&
+    (node.tabIndex >= 0 || !node.hasAttribute('tabindex') && node.matches('summary:first-of-type, [contenteditable="true"]')) &&
+    node.getClientRects().length > 0 && getComputedStyle(node).visibility === 'visible');
+  return visible.filter(node => !node.matches('input[type="radio"]:not(:checked)') || !node.name ||
+    !visible.some(other => other.matches('input[type="radio"]:checked') && other.name === node.name && other.form === node.form));
+}
+
+let sheetGeneration = 0;
 export function sheet({ title, onClose }, ...content) {
   closeSheet();
+  const opener = document.activeElement;
   const priorOverflow = document.documentElement.style.overflow;
   document.documentElement.style.overflow = 'hidden';
-  const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+  const panel = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, tabindex: '-1' },
     el('div', { class: 'sheet-grab', 'aria-hidden': 'true' }),
     el('div', { class: 'sheet-head' }, el('h2', { class: 'sheet-title', text: title }),
       el('button', { class: 'chip icon-btn sheet-close', type: 'button', 'aria-label': 'Close', text: '×', onclick: () => closeSheet() })),
     el('div', { class: 'sheet-body' }, content));
   const scrim = el('div', { class: 'scrim', onclick: () => closeSheet() });
   const root = el('div', { class: 'sheet-root' }, scrim, panel);
+  const background = [...document.body.children].filter(node => !node.hasAttribute('inert'));
+  for (const node of background) node.setAttribute('inert', '');
   document.body.append(root);
-  const onKey = (e) => { if (e.key === 'Escape') closeSheet(); };
+  const onKey = (e) => {
+    if (e.defaultPrevented) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSheet();
+    } else if (e.key === 'Tab') {
+      const controls = sheetControls(panel);
+      const active = document.activeElement;
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (!first || !controls.includes(active) || active === (e.shiftKey ? first : last)) {
+        e.preventDefault();
+        ((e.shiftKey ? last : first) || panel).focus({ preventScroll: true });
+      }
+    }
+  };
+  const onFocus = (e) => {
+    if (!panel.contains(e.target)) (sheetControls(panel)[0] || panel).focus({ preventScroll: true });
+  };
   document.addEventListener('keydown', onKey);
-  openSheet = { root, onClose, onKey, priorOverflow };
+  document.addEventListener('focusin', onFocus);
+  openSheet = { root, onClose, onKey, onFocus, priorOverflow, background, opener };
+  sheetGeneration++;
   requestAnimationFrame(() => root.classList.add('open'));
   panel.querySelector('.sheet-close').focus({ preventScroll: true });
   return panel;
 }
 export function closeSheet() {
   if (!openSheet) return;
-  const { root, onClose, onKey, priorOverflow } = openSheet;
+  const { root, onClose, onKey, onFocus, priorOverflow, background, opener } = openSheet;
   openSheet = null;
+  sheetGeneration++;
   document.documentElement.style.overflow = priorOverflow;
   document.removeEventListener('keydown', onKey);
+  document.removeEventListener('focusin', onFocus);
   root.remove();
+  for (const node of background) node.removeAttribute('inert');
+  if (opener?.isConnected && !opener.closest('[inert]')) opener.focus({ preventScroll: true });
   if (onClose) onClose();
 }
 export function sheetIsOpen() { return Boolean(openSheet); }
@@ -401,10 +441,15 @@ export function refusedUnlock(check) {
   );
 }
 
-export function askPin({ title, explain, adapter = 'body', fresh = false }) {
+let latestPinCheck = 0;
+export function askPin({ title, explain, adapter = 'body', fresh = false, isCurrent = () => true }) {
+  if (!isCurrent()) return Promise.resolve(null);
+  const pinCheck = ++latestPinCheck;
+  const startingSheet = sheetGeneration;
   // `fresh`: ask even while an unlock is held, for a long action that would outlive the one it has.
   if (adapter === 'session' && operatorSession() && !fresh) return Promise.resolve({ session: operatorSession() });
   return unlockCheck().then((check) => new Promise((resolve) => {
+    if (!isCurrent() || pinCheck !== latestPinCheck || startingSheet !== sheetGeneration) { resolve(null); return; }
     if (!check.accepted) {
       sheet({ title: title || 'Your PIN', onClose: () => resolve(null) }, refusedUnlock(check));
       return;
@@ -415,8 +460,10 @@ export function askPin({ title, explain, adapter = 'body', fresh = false }) {
     let settled = false;
     const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
     const form = el('form', { class: 'pin-form' }, el('p', { class: 'confirm-text', text: explain || 'This needs your dashboard PIN.' }), input, go, err);
+    const stillOpen = () => isCurrent() && panel.isConnected;
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
+      if (!stillOpen() || go.disabled) return;
       const pin = input.value;
       if (!pin) { err.textContent = 'Type your PIN.'; return; }
       if (adapter === 'body') { input.value = ''; finish({ pin }); closeSheet(); return; }
@@ -425,15 +472,19 @@ export function askPin({ title, explain, adapter = 'body', fresh = false }) {
         const r = await fetch('/dashboard/unlock', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
         input.value = '';
         const d = await r.json().catch(() => ({}));
+        if (!stillOpen()) { finish(null); return; }
         if (!r.ok || typeof d.operatorSessionToken !== 'string' || !d.operatorSessionToken) {
           err.textContent = d.error ? `${d.error}${typeof d.attemptsRemaining === 'number' ? ` · ${d.attemptsRemaining} tries left` : ''}` : 'That did not work.';
           go.disabled = false; input.focus(); return;
         }
         opSession = { token: d.operatorSessionToken, expiresAt: d.operatorSessionExpiresAt || new Date(Date.now() + 10 * 60000).toISOString() };
         finish({ session: opSession.token }); closeSheet();
-      } catch { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+      } catch {
+        if (stillOpen()) { err.textContent = 'The server could not be reached.'; go.disabled = false; }
+        else finish(null);
+      }
     });
-    sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
-    setTimeout(() => input.focus(), 50);
+    const panel = sheet({ title: title || 'Your PIN', onClose: () => finish(null) }, form);
+    setTimeout(() => { if (stillOpen()) input.focus(); }, 50);
   }));
 }

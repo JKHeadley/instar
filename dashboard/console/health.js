@@ -94,8 +94,9 @@ export async function renderHealth(main, ctx) {
   if (hidden && want === 'hidden') hidden.setAttribute('open', '');
   setKids(main,
     pageHead({ noAsk: true, eyebrow: 'Capacity · Health', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.uptime ? [{ n: page.uptime, label: 'running for' }] : [] }),
-    page.problems.map((i) => markNeed(card(i, true), 'health')),
-    page.unsorted.map((i) => card(i, false)),
+    el('div', { class: 'detail-card-grid' },
+      page.problems.map((i) => markNeed(card(i, true), 'health')),
+      page.unsorted.map((i) => card(i, false))),
     quiet,
     hidden,
     page.hiddenUnreadable ? note('I couldn’t read what you’ve hidden, so everything is showing.') : null,

@@ -66,6 +66,7 @@ async function machine(id: string, peers: () => Peer[], over: { maxBytes?: numbe
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => id, registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Justin',
     signer, keyLookup, keyLedger, dispatch: () => null,
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
   });
   cleanups.push(() => svc.stop());
   const app = express();

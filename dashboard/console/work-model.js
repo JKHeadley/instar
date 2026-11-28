@@ -535,11 +535,10 @@ export function workBoardNeedRows(wb) {
   const lane = b.lanes['waiting-on-you'];
   const soft = b.settings && typeof b.settings.softOpenCards === 'number' && b.settings.softOpenCards > 0 ? b.settings.softOpenCards : Infinity;
   const shown = lane.cards.slice(0, soft);
-  const rest = lane.more + (lane.cards.length - shown.length);
   const rows = shown.map((c) => ({
     key: `work:${c.id}`,
     main: needRowTitle(c.title),
-    sub: String(c.needLine || ''),
+    sub: (c.serverOwned === true && c.status === 'with-person' && str(c.brief?.ask)) || String(c.needLine || ''),
     href: `#/work/board?card=${encodeURIComponent(c.id)}`,
     // The Needs-you items this card is about (work-board-cards-appear §3). Only a card that just waits on the
     // person to act (no Approve, no Confirm done, no open question, nothing outward) may stand in for its rows.
@@ -549,8 +548,8 @@ export function workBoardNeedRows(wb) {
     serverOwned: c.serverOwned === true,
     createdAt: typeof c.createdAt === 'string' ? c.createdAt : '',
     cardId: c.id,
+    ...(c.ownerAction === false || c.agentInternal === true ? { ownerAction: false } : {}),
   }));
-  if (rest > 0) rows.push({ key: 'work:more', main: rest === 1 ? '1 more card is waiting on you' : `${rest} more cards are waiting on you`, sub: 'On the work board, oldest first.', href: '#/work/board' });
   // Internal policy-blocked work is diagnostic data, never an owner request. Genuine asks are in the waiting lane.
   return rows;
 }

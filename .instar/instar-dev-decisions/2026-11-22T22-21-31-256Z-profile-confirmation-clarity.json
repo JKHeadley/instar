@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-22T22:21:31.256Z",
+  "slug": "profile-confirmation-clarity",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "User-driven reply wiring only; no self-triggered loop."
+  },
+  "verdict": "pass"
+}

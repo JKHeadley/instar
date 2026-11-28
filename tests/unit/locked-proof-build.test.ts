@@ -89,6 +89,13 @@ describe('locked-proof test build helpers', () => {
     expect(src).toMatch(/execFileSync\('npm', \['run', 'build'\], \{[^}]*env: buildEnv/);
   });
 
+  it('drops the prepare script from the packed copy, so npm pack never runs husky without node_modules', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'scripts/build-locked-proof.mjs'), 'utf8');
+    const drop = src.indexOf('delete pkg.scripts.prepare');
+    expect(drop).toBeGreaterThan(-1);
+    expect(drop).toBeLessThan(src.indexOf("fs.writeFileSync(path.join(scratch, 'package.json')"));
+  });
+
   it('the script refuses an output directory inside the checkout', () => {
     let failed = false;
     try {

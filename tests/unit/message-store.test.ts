@@ -13,7 +13,7 @@
  * - Edge cases (corrupt files, missing dirs)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -104,6 +104,63 @@ describe('MessageStore', () => {
   afterEach(async () => {
     await store.destroy();
     cleanup(tmpDir);
+  });
+
+  it('reuses retry metadata and notices delivery writes and external replacements', async () => {
+    const direct = makeEnvelope({ id: 'retry-direct', createdAt: '2026-11-26T00:00:00.000Z' });
+    const broadcast = makeEnvelope({
+      id: 'retry-broadcast',
+      to: { ...direct.message.to, agent: '*' },
+      createdAt: '2026-11-27T00:00:00.000Z',
+    });
+    direct.delivery.phase = 'queued';
+    await store.save(direct);
+    await store.save(broadcast);
+
+    const readFile = vi.spyOn(fs.promises, 'readFile');
+    try {
+      const first = await store.queryRetryInbox('target-agent');
+      expect(first.map(entry => entry.message.id)).toEqual(['retry-broadcast', 'retry-direct']);
+      expect(readFile).toHaveBeenCalledTimes(2);
+      expect(await store.queryRetryInbox('target-agent')).toEqual(first);
+      expect(readFile).toHaveBeenCalledTimes(2);
+
+      await store.updateDelivery(direct.message.id, { ...direct.delivery, phase: 'failed' });
+      expect((await store.queryRetryInbox('target-agent'))[1].delivery.phase).toBe('failed');
+      expect(readFile).toHaveBeenCalledTimes(3);
+
+      const file = path.join(tmpDir, 'store', 'retry-direct.json');
+      const original = fs.statSync(file);
+      const replacement = file + '.replacement';
+      direct.delivery.phase = 'queued';
+      fs.writeFileSync(replacement, JSON.stringify(direct, null, 2));
+      expect(fs.statSync(replacement).size).toBe(original.size);
+      fs.utimesSync(replacement, original.atime, original.mtime);
+      fs.renameSync(replacement, file);
+      expect((await store.queryRetryInbox('target-agent'))[1].delivery.phase).toBe('queued');
+      expect(readFile).toHaveBeenCalledTimes(4);
+
+      await store.deadLetter(direct.message.id, 'fixture retirement');
+      expect((await store.queryRetryInbox('target-agent')).map(entry => entry.message.id)).toEqual(['retry-broadcast']);
+      expect(readFile).toHaveBeenCalledTimes(4);
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it('returns an empty retry inbox before the store directory exists', async () => {
+    const absent = new MessageStore(path.join(tmpDir, 'absent-store'));
+    expect(await absent.queryRetryInbox('target-agent')).toEqual([]);
+  });
+
+  it('skips corrupt envelopes and picks up a repaired file on the next scan', async () => {
+    const envelope = makeEnvelope({ id: 'retry-repaired' });
+    const file = path.join(tmpDir, 'store', 'retry-repaired.json');
+    fs.writeFileSync(file, '{');
+    expect(await store.queryRetryInbox('target-agent')).toEqual([]);
+
+    fs.writeFileSync(file, JSON.stringify(envelope));
+    expect((await store.queryRetryInbox('target-agent')).map(entry => entry.message.id)).toEqual(['retry-repaired']);
   });
 
   // ── Initialization ──────────────────────────────────────────────
