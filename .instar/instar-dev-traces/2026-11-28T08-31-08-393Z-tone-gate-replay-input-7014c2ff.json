@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "tone-gate-replay-input",
+  "sessionId": "c5002075-e739-469b-b5ff-c90d1c4e7ea3",
+  "timestamp": "2026-11-28T08:31:08.393Z",
+  "artifactPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "artifactSha256": "1b46ff16a0ee1aeb57813a944bb6b5b2e801fc2e8863ca3c0164bd3e40c110ee",
+  "coveredFiles": [
+    "docs/specs/tone-gate-replay-input.eli16.md",
+    "scripts/evaluation/tone_gate_replay_counts.mjs",
+    "src/core/MessagingToneGate.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/awareness/tone-gate-replay-input.md",
+    "src/data/feature-ladders.json",
+    "tests/unit/tone-gate-operator-config.test.ts",
+    "tests/unit/tone-gate-replay-input-capture.test.ts",
+    "upgrades/next/tone-gate-replay-input.md",
+    "upgrades/side-effects/tone-gate-replay-input.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dev-gated capture of the tone gate's scrubbed inputs for offline replay; the live prompt and verdict are unchanged and a revert fully undoes it. This trace records the whole-PR independent second pass on the head after the final merge of main (it concurred), and the whole-file runs of the touched and pinning tests on that head.",
+  "eli16Path": "docs/specs/tone-gate-replay-input.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tone-gate-replay-input.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
