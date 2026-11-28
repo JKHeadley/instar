@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'topicWorktreeMeasure',
+    configPath: 'monitoring.diskSteward.topicWorktreeMeasure',
+    description: 'Topic-worktree reclaim measurement (docs/specs/topic-worktree-reclaim.md part D): inside the disk-steward child, measures which topic worktrees are safely reclaimable and audits each verdict a second way; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only: removes nothing, writes only its own plan and audit files under local-state, and every git/gh call is capped by the disk-steward run deadline so it cannot cost that run its other results. false turns it off.',
+  },
+  {
     name: 'bootSlowCallbacks',
     configPath: 'monitoring.bootSlowCallbacks',
     description: 'Boot slow-callback attributor (fb-756ec068-89d): for 120 s after boot, logs any callback that holds the event loop over 1 s with the code that scheduled it; omitted ⇒ live on a development agent, dark on the fleet.',

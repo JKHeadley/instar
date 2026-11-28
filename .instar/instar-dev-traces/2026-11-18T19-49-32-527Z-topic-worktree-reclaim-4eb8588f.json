@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "topic-worktree-reclaim",
+  "sessionId": "fd2ce461-1e24-498f-87dc-7910bcdc7a30",
+  "timestamp": "2026-11-18T19:49:32.527Z",
+  "artifactPath": "upgrades/side-effects/topic-worktree-reclaim.md",
+  "artifactSha256": "4fec010cf168e77afdeca1de8113d46ec7cab24e659258ccbbe20081fdfc6d4f",
+  "specPath": "docs/specs/topic-worktree-reclaim.md",
+  "coveredFiles": [
+    "docs/specs/topic-worktree-reclaim.eli16.md",
+    "docs/specs/topic-worktree-reclaim.md",
+    "src/core/devGatedFeatures.ts",
+    "upgrades/side-effects/topic-worktree-reclaim.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Registry entry for the already-reviewed dev-gated flag plus the CMT-1958 carrier excerpt; no behaviour change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

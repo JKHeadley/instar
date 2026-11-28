@@ -192,7 +192,7 @@ describe('isBranchMerged (git cherry) — conservative, never false-positive', (
 });
 
 describe('fetchMergedPrHeadOids — gh-backed multi-commit-squash detection', () => {
-  const ghOut = (rows: Array<{ headRefName: string; headRefOid: string }>): RunGh => () => JSON.stringify(rows);
+  const ghOut = (rows: Array<{ headRefName: string; headRefOid: string; baseRefName?: string }>): RunGh => () => JSON.stringify(rows.map((r) => ({ baseRefName: 'main', ...r })));
 
   it('parses gh merged-PR JSON into a headRefName→headRefOid map', () => {
     const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
@@ -212,6 +212,15 @@ describe('fetchMergedPrHeadOids — gh-backed multi-commit-squash detection', ()
     expect(m.get('echo/reused')).toBe('newest');
   });
 
+  it('drops a PR merged into another branch (topic-worktree-reclaim B)', () => {
+    const m = fetchMergedPrHeadOids('/repo', { runGh: ghOut([
+      { headRefName: 'echo/into-main', headRefOid: 'a' },
+      { headRefName: 'echo/into-release', headRefOid: 'b', baseRefName: 'release-1.3' },
+      { headRefName: 'echo/no-base', headRefOid: 'c', baseRefName: undefined as unknown as string },
+    ]) });
+    expect([...m.keys()]).toEqual(['echo/into-main']);
+  });
+
   it('fail-safe to EMPTY map when gh is unavailable (null) — conservative KEEP', () => {
     const m = fetchMergedPrHeadOids('/repo', { runGh: () => null });
     expect(m.size).toBe(0);
@@ -224,8 +233,8 @@ describe('fetchMergedPrHeadOids — gh-backed multi-commit-squash detection', ()
 
   it('ignores rows missing name or oid', () => {
     const m = fetchMergedPrHeadOids('/repo', { runGh: () => JSON.stringify([
-      { headRefName: 'ok', headRefOid: 'oidOk' },
-      { headRefName: '', headRefOid: 'x' },
+      { headRefName: 'ok', headRefOid: 'oidOk', baseRefName: 'main' },
+      { headRefName: '', headRefOid: 'x', baseRefName: 'main' },
       { headRefOid: 'noName' },
       { headRefName: 'noOid' },
     ]) });
@@ -946,7 +955,7 @@ describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded
     );
     const trips: Array<{ path: string; failures: number }> = [];
     r.on('reclaim-breaker', (e) => trips.push(e));
-    r.on('error', () => { /* swallow expected removal errors */ });
+    r.on('reclaim-failed', () => { /* swallow expected removal errors */ });
 
     const p1 = await r.reap(); // fail #1 (count 1)
     const p2 = await r.reap(); // fail #2 (count 2 == cap → trip)
@@ -960,6 +969,13 @@ describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded
     expect(trips[0].path).toBe('/wt/a');
   });
 
+  it('a removal failure with no listener does not throw out of the pass (reclaim-failed, not error)', async () => {
+    const removeWorktree = vi.fn(() => { throw new Error('cannot remove'); });
+    const r = new AgentWorktreeReaper(deps({ removeWorktree }), { enabled: true, dryRun: false });
+    await expect(r.reap()).resolves.toBeDefined(); // the special 'error' event would have thrown here
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
   it('a successful removal clears the breaker count (no false trip from transient failures)', async () => {
     let calls = 0;
     const removeWorktree = vi.fn(() => { calls++; if (calls === 1) throw new Error('transient'); });
@@ -967,7 +983,7 @@ describe('AgentWorktreeReaper — per-path reclaim-failure breaker (No Unbounded
       deps({ removeWorktree }),
       { enabled: true, dryRun: false, maxReclaimFailuresPerPath: 2 },
     );
-    r.on('error', () => {});
+    r.on('reclaim-failed', () => {});
     await r.reap();                 // fail #1 (count 1)
     const ok = await r.reap();      // succeeds → count cleared
     expect(ok.reaped).toEqual(['/wt/a']);
