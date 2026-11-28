@@ -2037,7 +2037,7 @@ export class SlackAdapter implements MessagingAdapter {
       ...(threadTs && threadTs !== ts ? { threadTs } : {}),
     };
     this.logger.append(logEntry);
-    this.onMessageLogged?.(logEntry);
+    this.notifyMessageLogged(logEntry);
 
     // Acknowledge with reaction (fire-and-forget)
     this.addReaction(channelId, ts, 'eyes');
@@ -2243,7 +2243,7 @@ export class SlackAdapter implements MessagingAdapter {
       platform: 'slack',
     };
     this.logger.append(logEntry);
-    this.onMessageLogged?.(logEntry);
+    this.notifyMessageLogged(logEntry);
 
     // Convert to Instar Message format and route to handler
     const isDM = channelId.startsWith('D');
@@ -2355,9 +2355,35 @@ export class SlackAdapter implements MessagingAdapter {
     // operator message sent from the Instar app is a row too (context-budget §14). A caller that
     // already notifies for this row itself passes `notify: false` (the agent-reply route does).
     if (opts.notify !== false) {
-      try { this.onMessageLogged?.(row); } catch (err) {
-        console.error(`[slack] onMessageLogged failed for a logged row: ${(err as Error).message}`);
-      }
+      this.notifyMessageLogged(row);
+    }
+  }
+
+  /**
+   * Dispatch a logged row to `onMessageLogged`, containing the subscriber's failure.
+   *
+   * The subscriber is server.ts's Slack closure, and it does the TopicMemory dual-write
+   * (`writeSlackLogRow` -> `TopicRowWriter.writeRow` -> `insertKeyedMessage` -> SQLite).
+   * Nothing between there and here catches, so an operational write failure used to escape
+   * into `_handleMessage` / `_handleFileShared` and take the whole inbound message with it:
+   * no reaction, no hand-off to the message handler. Telegram's two dispatch sites have
+   * contained the same failure since they were written; this is the same guard, one funnel.
+   */
+  private notifyMessageLogged(row: LogEntry): void {
+    try {
+      this.onMessageLogged?.(row);
+    } catch (err) {
+      // Normalize first: a subscriber may throw a non-Error (even null or undefined),
+      // and reading `.message` off that would escape this containment.
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(`[slack] onMessageLogged failed for a logged row: ${detail}`);
+      DegradationReporter.getInstance().report({
+        feature: 'TopicMemory.dualWrite',
+        primary: 'SQLite dual-write of messages for search and summaries',
+        fallback: 'Message only in slack-messages.jsonl (no search, no summary updates)',
+        reason: `onMessageLogged callback failed: ${detail}`,
+        impact: 'Message may be missing from topic search and context summaries; delivery itself is unaffected.',
+      });
     }
   }
 

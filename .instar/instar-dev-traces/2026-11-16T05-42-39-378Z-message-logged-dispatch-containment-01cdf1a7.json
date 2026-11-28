@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "message-logged-dispatch-containment",
+  "sessionId": "5ff17a90-8e33-4204-aa63-d70fa308ae59",
+  "timestamp": "2026-11-16T05:42:39.378Z",
+  "artifactPath": "upgrades/side-effects/message-logged-dispatch-containment.md",
+  "artifactSha256": "82e476a691a995df69477b9cadaa71d49c280264f3499fa206ee4b580ef529bf",
+  "coveredFiles": [
+    "src/messaging/imessage/IMessageAdapter.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/server/routes.ts",
+    "tests/integration/slack-reply-logged-dispatch.test.ts",
+    "tests/unit/message-logged-dispatch-population.test.ts",
+    "tests/unit/slack-message-logged-dispatch-contained.test.ts",
+    "upgrades/eli16/message-logged-dispatch-containment.md",
+    "upgrades/next/message-logged-dispatch-containment.md",
+    "upgrades/side-effects/message-logged-dispatch-containment.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Three catch bodies plus one shared private method at a seam where FOUR sibling sites already contain this exact failure, so the altitude and the pattern are the repo's own, not new. No new route, config key, schema, auth, token or secret surface; no self-triggered controller; every added line is a catch body, a comment, or the funnel the three Slack call sites now share, and the success path is byte-for-byte unchanged. A revert fully undoes it. classify-tier gives riskFloor 1 (none of src/messaging/slack/, src/messaging/imessage/ or src/server/routes.ts matches a safety-invariant, irreversibility or fleet-rollout path); its size suggestion is 2 only because the diff spans three in-scope files. Precedent for declaring 1 at this size: feedback-executor-merge-path (3 src files, 2026-11-16).",
+  "eli16Path": "upgrades/eli16/message-logged-dispatch-containment.md",
+  "sideEffectsPath": "upgrades/side-effects/message-logged-dispatch-containment.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

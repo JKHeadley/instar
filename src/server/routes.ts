@@ -25403,15 +25403,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)
       if (ctx.slack.onMessageLogged) {
-        ctx.slack.onMessageLogged({
-          messageId: ts,
-          channelId,
-          text,
-          fromUser: false,
-          timestamp: new Date().toISOString(),
-          sessionName: null,
-          platform: 'slack',
-        });
+        try {
+          ctx.slack.onMessageLogged({
+            messageId: ts,
+            channelId,
+            text,
+            fromUser: false,
+            timestamp: new Date().toISOString(),
+            sessionName: null,
+            platform: 'slack',
+          });
+        } catch (err) {
+          // @silent-fallback-ok — the reply was already sent; the subscriber's TopicMemory
+          // write is not this route's to own, and its failure must not skip the promise
+          // tracking below or 500 a delivered message. Same shape as the logMessage
+          // fallback a few lines above, and as the adapter's own dispatch guard.
+          // E2E-PAIRING: EXEMPT — no new route and no new feature; this narrows ONE existing
+          // failure answer, and that answer is proven in
+          // tests/integration/slack-reply-logged-dispatch.test.ts, beside every other
+          // /slack/reply status-code case (adapter-timeout, delivery-id, mrkdwn-reply).
+          console.error(`[slack-reply] onMessageLogged failed after a sent reply: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
 
       // Track for promise detection (detect "give me a minute" patterns).
