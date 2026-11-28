@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "slug": "dashboard-accessibility-shared",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-24T12:41:13.112Z",
+  "artifactPath": "upgrades/side-effects/dashboard-accessibility-shared.md",
+  "artifactSha256": "e2128b5a95adb75e20aa8dd4d0b1a0fec4d5eeb04e1b44f80f0d2dc86299b09a",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/ui.js",
+    "tests/unit/console-sheet-focus.test.ts",
+    "upgrades/next/dashboard-accessibility-shared.md",
+    "upgrades/side-effects/dashboard-accessibility-shared.eli16.md",
+    "upgrades/side-effects/dashboard-accessibility-shared.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible browser presentation and modal keyboard behavior. No state schema, security policy or request changes.",
+  "eli16Path": "upgrades/side-effects/dashboard-accessibility-shared.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-accessibility-shared.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "dashboard-dialogs-marks",
+  "sessionId": "b5892410-5874-4620-9f7b-5e54791d9a9e",
+  "timestamp": "2026-11-24T12:50:38.531Z",
+  "artifactPath": "upgrades/side-effects/dashboard-dialogs-marks.md",
+  "artifactSha256": "1c58ae0d61add509f89cafcdb752a3c7d7f62e6781ac82a74f98db04b7b6fb6f",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "upgrades/next/dashboard-dialogs-marks.md",
+    "upgrades/side-effects/dashboard-dialogs-marks.eli16.md",
+    "upgrades/side-effects/dashboard-dialogs-marks.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible scoped stylesheet contrast changes. No behavior, state or permission changes.",
+  "eli16Path": "upgrades/side-effects/dashboard-dialogs-marks.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-dialogs-marks.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
