@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "app-first-owner-approvals",
+  "sessionId": "2489beca-6bce-4817-b1fb-9ba4ff1d41b2",
+  "timestamp": "2026-11-23T03:40:37.696Z",
+  "artifactPath": "upgrades/side-effects/app-first-owner-approvals.md",
+  "artifactSha256": "6079a8cb1a49a8d9c727012eb63e05345499d976dc78fc2697d4afbb4e80610e",
+  "coveredFiles": [
+    "src/data/awareness/app-first-owner-approvals.md",
+    "upgrades/side-effects/app-first-owner-approvals.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two YAML delimiters repair a rejected awareness entry; no approval runtime or authority change.",
+  "eli16Path": "docs/specs/app-first-owner-approvals.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-first-owner-approvals.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

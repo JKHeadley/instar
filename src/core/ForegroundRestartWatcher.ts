@@ -17,11 +17,13 @@
  * it handles restarts and this watcher should not be started.
  */
 
+import { removeActiveRestartRequestFile } from './restartRequestFile.js';
 import { describeRestartRequester, recordRestartRequest } from './restartRequestAttribution.js';
+import { markRestartAdmissionTimeout, restartAdmissionTimedOut, retireTimedOutRestartRequest } from './plannedRestartAdmissionTimeout.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { markPlannedRestartDeferred, plannedRestartVerifyState } from './PlannedRestartVerifyGuard.js';
 
 export interface RestartRequest {
@@ -50,6 +52,7 @@ export interface ForegroundRestartWatcherConfig {
   exitOnRestart?: boolean;
   /** Process exit code. Default: 0. */
   exitCode?: number;
+  plannedLeaseAdmission?: (request: { requestedBy: string; requestedAt: string }) => 'ready' | 'wait' | 'not-applicable';
   /**
    * planned-restart-keeps-lead §1 step 3 — before this consumer acts on a request, give the lease
    * holder one chance to persist a window renewal for it (null = nothing to wait for). Awaited once
@@ -64,9 +67,23 @@ export class ForegroundRestartWatcher extends EventEmitter {
   private flagPath: string;
   private isShuttingDown = false;
   private deferredRestartRequestedAt: string | null = null;
+  private deferredLeaseRequest: string | null = null;
   /** The request whose `beforeConsume` wait ran (or is running); the same request is not waited for twice. */
   private continuityAwaitedFor: string | null = null;
   private awaitingContinuity = false;
+  private reportedTimeout: string | null = null;
+
+  private reportTimeout(raw: string): void {
+    if (this.reportedTimeout === raw) return;
+    this.reportedTimeout = raw;
+    DegradationReporter.getInstance().report({
+      feature: 'planned-restart-lease-admission',
+      primary: 'Restart with a peer-confirmed lease window',
+      fallback: 'Keep the server running',
+      reason: 'The restart request expired without sufficient lease confirmation.',
+      impact: 'The requested restart did not run. Any change that requires a restart is still pending.',
+    });
+  }
 
   constructor(config: ForegroundRestartWatcherConfig) {
     super();
@@ -101,12 +118,28 @@ export class ForegroundRestartWatcher extends EventEmitter {
       if (!fs.existsSync(this.flagPath)) return;
 
       const raw = fs.readFileSync(this.flagPath, 'utf-8');
-      let data: RestartRequest = JSON.parse(raw);
+      if (restartAdmissionTimedOut(this.flagPath, raw)) {
+        this.reportTimeout(raw);
+        retireTimedOutRestartRequest(this.flagPath, raw);
+        return;
+      }
+      let data: RestartRequest;
+      try {
+        data = JSON.parse(raw) as RestartRequest;
+      } catch {
+        removeActiveRestartRequestFile(this.flagPath, raw);
+        return;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        removeActiveRestartRequestFile(this.flagPath, raw);
+        return;
+      }
+
 
       // planned-restart-keeps-lead §1 step 3 — one bounded wait per request for the holder's
       // window renewal, with the guard held so a second tick cannot consume meanwhile. Afterwards
       // the file is re-read: gone (withdrawn, or taken by the supervisor) means nothing to do here.
-      const key = `${data.requestedAt}|${data.requestedBy}`;
+      const key = JSON.stringify([data.requestedBy, data.requestedAt]);
       if (this.config.beforeConsume && this.continuityAwaitedFor !== key) {
         this.continuityAwaitedFor = key;
         const wait = this.config.beforeConsume(data);
@@ -116,9 +149,14 @@ export class ForegroundRestartWatcher extends EventEmitter {
           finally { this.awaitingContinuity = false; }
           if (this.isShuttingDown) return;
           if (!fs.existsSync(this.flagPath)) { this.continuityAwaitedFor = null; return; }
-          data = JSON.parse(fs.readFileSync(this.flagPath, 'utf-8')) as RestartRequest;
-          if (`${data.requestedAt}|${data.requestedBy}` !== key) { this.continuityAwaitedFor = null; return; } // a different request: judged on the next tick
+          if (fs.readFileSync(this.flagPath, 'utf-8') !== raw) { this.continuityAwaitedFor = null; return; } // a different request: judged on the next tick
         }
+      }
+
+      if (restartAdmissionTimedOut(this.flagPath, raw)) {
+        this.reportTimeout(raw);
+        retireTimedOutRestartRequest(this.flagPath, raw);
+        return;
       }
 
       // The foreground consumer races the supervisor for the same flag. Both
@@ -143,13 +181,30 @@ export class ForegroundRestartWatcher extends EventEmitter {
       }
 
       const requester = describeRestartRequester(data);
+      if (this.config.plannedLeaseAdmission && data.plannedRestart === true &&
+          data.bypassHolds !== true && data.requestedBy !== 'role-change') {
+        const admission = requester.attributed && typeof data.requestedAt === 'string'
+          ? this.config.plannedLeaseAdmission({ requestedBy: requester.label, requestedAt: data.requestedAt })
+          : 'wait';
+        if (admission !== 'ready' && admission !== 'not-applicable') {
+          if (markRestartAdmissionTimeout(this.flagPath, raw)) {
+            this.reportTimeout(raw);
+            retireTimedOutRestartRequest(this.flagPath, raw);
+            return;
+          }
+          if (this.deferredLeaseRequest !== key) {
+            this.deferredLeaseRequest = key;
+            console.log('[ForegroundRestartWatcher] Planned restart deferred for preferred-holder lease confirmation');
+          }
+          return;
+        }
+      }
+      this.deferredLeaseRequest = null;
+      if (!removeActiveRestartRequestFile(this.flagPath, raw)) return;
       recordRestartRequest(path.dirname(path.dirname(this.flagPath)), data, 'foreground-watcher');
       console.log(data.targetVersion
         ? `[ForegroundRestartWatcher] Restart requested by ${requester.label} for v${data.targetVersion} (from v${data.previousVersion})`
         : `[ForegroundRestartWatcher] Restart requested by ${requester.label} (no version change${typeof data.reason === 'string' && data.reason ? `: ${data.reason.slice(0, 200)}` : ''})`);
-
-      // Clear the flag to prevent re-triggering on next startup
-      try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:102' }); } catch { /* ignore */ }
 
       // Write a planned-exit marker so the supervisor (if running) knows this
       // was a planned restart, not a crash. Solves the race condition where we
@@ -189,8 +244,7 @@ export class ForegroundRestartWatcher extends EventEmitter {
         }, delayMs);
       }
     } catch {
-      // Malformed flag — clean up
-      try { SafeFsExecutor.safeUnlinkSync(this.flagPath, { operation: 'src/core/ForegroundRestartWatcher.ts:144' }); } catch { /* ignore */ }
+      // The request may have been replaced after the read. Leave it for the next poll.
     }
   }
 }

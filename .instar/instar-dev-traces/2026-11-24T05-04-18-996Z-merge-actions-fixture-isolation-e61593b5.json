@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "merge-actions-fixture-isolation",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T05:04:18.996Z",
+  "artifactPath": "upgrades/side-effects/merge-actions-fixture-isolation.md",
+  "artifactSha256": "68d7009b196b528a9d79b0e38ef7fc7a276bafd50010e8437e82a416f5cfa342",
+  "coveredFiles": [
+    "docs/specs/merge-actions-fixture-isolation.eli16.md",
+    "tests/integration/safe-merge-no-checks-ran.test.ts",
+    "upgrades/next/merge-actions-fixture-isolation.md",
+    "upgrades/side-effects/merge-actions-fixture-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One integration fixture selects and isolates its Actions configuration. All six Actions and eighteen local-floor cases passed together. Production source is unchanged.",
+  "eli16Path": "docs/specs/merge-actions-fixture-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/merge-actions-fixture-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

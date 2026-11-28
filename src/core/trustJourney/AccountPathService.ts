@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import { newApprovalCode, acceptanceStatement, isAcceptanceReply, parseApproveCommand, receiptApproves, renderRequestCard, DISCLOSURE,
   deviceApprovalDisclosure, SET_UP_APPROVALS_TEXT, UNKNOWN_OUTCOME_TEXT,
   type AdapterKind, type Receipt, type RequestRecord } from './accountPath.js';
+import { trustGrantProofSubject } from '../../data/effect-kinds.js';
 import { issueOperatorProofFromConsumedReceipt, proposalHashOf, type OperatorProof } from '../TrustRaiseGuard.js';
 import type { DeviceAcceptanceRecord, TrustChange, TrustJourneyStore } from './TrustJourneyStore.js';
 
@@ -40,6 +41,8 @@ export interface DeviceSnapshot {
 /** The device registry, seen from the trust journey. */
 export interface DeviceDirectory {
   get(deviceId: string): DeviceSnapshot | null;
+  /** Fresh local native owner devices; pairing permits delivery, not approval. */
+  list?(): DeviceSnapshot[];
   /** A contentless push notice to the paired devices (optional; fixed wording per subject). */
   notify?(subject: 'trust-request' | 'trust-device-change', dedupeKey: string): void;
   /** False when approving from a device is switched off (`mobilePairing.trustApproval`): no device approves then. */
@@ -106,7 +109,7 @@ export interface AccountPathDeps {
 /** The exact value a proof names for a change: the same shape the trust owners hash. */
 export function proofSubject(change: TrustChange): unknown {
   switch (change.kind) {
-    case 'trust-grant': return { kind: 'trust-grant', service: change.service, operation: change.operation, level: change.level };
+    case 'trust-grant': return trustGrantProofSubject(change.service, change.operation, change.level);
     case 'autonomy-profile': return { kind: 'autonomy-profile', from: change.from, to: change.to };
     case 'trust-recovery': return { kind: 'trust-recovery', incidentId: change.incidentId };
     default: return change;
@@ -115,14 +118,39 @@ export function proofSubject(change: TrustChange): unknown {
 
 export type ProposeResult =
   | { status: 'not-a-raise' }
-  | { status: 'no-approver'; message: string }
-  | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device' }
+  | { status: 'no-approver'; message: string; requestId?: string }
+  | { status: 'not-holder'; message: string }
+  | { status: 'awaiting-acceptance' | 'sent'; requestId: string; code: string; expiresAt: string; deduped?: boolean; via?: 'chat' | 'device'; message?: string }
   | { status: 'undelivered'; message: string }
   | { status: 'not-recorded'; message: string }
   | { status: 'too-large' | 'too-many-open' | 'too-many-undelivered' | 'withdrawn-recently'; message: string };
 
 /** The card's change lines may not exceed this (the card must fit whole in one message). */
 export const MAX_CARD_SUMMARY = 3000;
+
+/** Compatibility with the shipped native decoder: 40 lines of 400 Characters.
+ * Code points are at least as numerous as Swift grapheme clusters. Never truncate
+ * disclosure, including requests persisted by older servers.
+ */
+export function appApprovalSummaryLines(summary: readonly string[]): string[] | null {
+  if (summary.length <= 40 && summary.every((line) => Array.from(line).length <= 400)) return [...summary];
+  const text = summary.join('\n');
+  if (Array.from(text).length > 40 * 400) return null;
+  const lines: string[] = [];
+  let line = '', count = 0;
+  // Native views render each entry separately. Keep flags, combining marks and
+  // ZWJ sequences together rather than changing their displayed meaning.
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+    const size = Array.from(segment).length;
+    if (size > 400) return null;
+    if (count + size > 400) { lines.push(line); line = ''; count = 0; }
+    line += segment; count += size;
+  }
+  if (line) lines.push(line);
+  if (lines.length > 40) return null;
+  return lines;
+}
+
 /** Open, unexpired requests one person may have at a time. */
 export const MAX_OPEN_REQUESTS = 3;
 
@@ -132,6 +160,8 @@ export type ReceiptOutcome =
 export class AccountPathService {
   private readonly now: () => Date;
   private devices: DeviceDirectory | null;
+  private proposalTail: Promise<void> = Promise.resolve();
+  private readonly deliveryReservations = new Map<string, string>();
   constructor(private readonly d: AccountPathDeps) { this.now = d.now ?? (() => new Date()); this.devices = d.devices ?? null; }
 
   /** The device registry lives in the server, built after this service; the server binds it here. */
@@ -145,60 +175,108 @@ export class AccountPathService {
     return null;
   }
 
+  /** Current app reachability is distinct from historical chat delivery and from approval consent. */
+  async approvalDelivery(principal = 'owner'): Promise<{ state: 'accepted' | 'setup' | 'none' | 'unknown'; message: string }> {
+    if (!this.holds()) return { state: 'unknown', message: HOLDER_MESSAGE };
+    try {
+      if (!this.devices || this.devices.enabled?.() === false) return { state: 'none', message: 'App approvals are unavailable here. A configured private approval chat can still be used.' };
+      const accepted = await this.approvingDevices(principal);
+      if (!this.holds()) return { state: 'unknown', message: HOLDER_MESSAGE };
+      if (accepted.length > 0) return { state: 'accepted', message: 'Review this in the Instar app under Changes to approve. Confirm the exact change with Face ID or Touch ID.' };
+      const paired = principal === 'owner' ? (this.devices.list?.() ?? []).filter((d) => d.active && !!d.keyFingerprint) : [];
+      if (!paired.length) return { state: 'none', message: 'No eligible owner app device is available. Pair an iPhone through the app on the agent’s computer, or use a locally paired Mac with Touch ID. A reconnected remote phone alone does not restore approval consent.' };
+      const firstPhone = paired.some((d) => d.deviceKind === 'phone' && (d.firstPairing || d.localInstall));
+      return { state: 'setup', message: firstPhone
+        ? 'Open Changes to approve in the Instar iPhone app and turn on approvals before approving this request. Telegram is not required.'
+        : 'Open Changes to approve on an already accepted device to allow this one. With no accepted device, pair an iPhone through the local Instar app first. A locally paired Mac with Touch ID can set up or replace its approval key; a Mac without Touch ID needs the iPhone.' };
+    } catch (err) {
+      // @silent-fallback-ok: unknown refuses routing, never falls through to chat or grants approval.
+      this.d.log?.('trust-device-availability-unknown', { error: err instanceof Error ? err.message : String(err) });
+      return { state: 'unknown', message: 'I could not check the paired approval devices. The request has not changed. Try again.' };
+    }
+  }
+
   async propose(change: TrustChange, principal = 'owner'): Promise<ProposeResult> {
+    // Reserve fresh-request admission through the durable write, never across an external chat call.
+    const before = this.proposalTail;
+    let release!: () => void;
+    this.proposalTail = new Promise<void>((done) => { release = done; });
+    await before;
+    let prepared: ProposeResult | (() => Promise<ProposeResult>);
+    try { prepared = await this.prepareProposal(change, principal); } finally { release(); }
+    return typeof prepared === 'function' ? prepared() : prepared;
+  }
+
+  private async prepareProposal(change: TrustChange, principal: string): Promise<ProposeResult | (() => Promise<ProposeResult>)> {
+    if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
     if (this.d.raisesOf(change).length === 0) return { status: 'not-a-raise' };
+    const delivery = await this.approvalDelivery(principal);
+    if (delivery.state === 'unknown') return { status: 'not-recorded', message: delivery.message };
+    const app = delivery.state === 'accepted' || delivery.state === 'setup';
     const adapter = this.ownerAdapter();
-    const approvingDevices = await this.approvingDevices(principal);
-    if (!adapter && approvingDevices.length === 0) {
-      return { status: 'no-approver', message: `Nothing can approve this yet: no direct chat reaches the owner and no paired device has accepted approvals. ${SET_UP_APPROVALS_TEXT} (A chat also works: set the owner id for Telegram, messaging telegram config ownerUserId, or Slack, mobilePairing.slackOwnerUserId, in the setup conversation.)` };
-    }
     const proposalHash = proposalHashOf(proofSubject(change));
-    const dup = this.d.store.openRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal);
-    if (dup && new Date(dup.expiresAt) > this.now()) {
-      if (dup.adapter === 'device') return { status: 'sent', via: 'device', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
-      return { status: dup.cardMessageId ? 'sent' : 'awaiting-acceptance', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true };
+    const dup = this.d.store.openRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && new Date(r.expiresAt) > this.now());
+    if (dup) {
+      const derived = app ? this.derivedSummary(dup) : null;
+      if (app && !derived) return { status: 'not-recorded', message: 'This request does not match the change it would make. The existing request is unchanged; ask for a fresh request.' };
+      if (app && !appApprovalSummaryLines(derived!)) return { status: 'too-large', message: 'This request cannot be shown whole in this app. The existing request is unchanged; split the change into smaller requests.' };
+      if (app) {
+        if (dup.adapter !== 'device' && !dup.cardMessageId) {
+          if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
+          const w = await this.d.store.write('request-carrier', { requestId: dup.requestId, principal: dup.principal, proposalHash: dup.proposalHash, expiresAt: dup.expiresAt, adapter: 'device' }, `tj:request-carrier:${dup.requestId}:device`);
+          if (!w.ok && this.d.store.request(dup.requestId)?.adapter !== 'device') return { status: 'not-recorded', message: 'The app delivery update could not be recorded. The original request is unchanged.' };
+          if (w.ok && this.holds()) this.notifyDevices('trust-request', `trust-request:${dup.requestId}`);
+        }
+        return { status: delivery.state === 'accepted' ? 'sent' : 'awaiting-acceptance', via: 'device', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true, message: delivery.message };
+      }
+      if (dup.adapter === 'device') return { status: 'no-approver', requestId: dup.requestId, message: delivery.message };
+      return { status: dup.cardMessageId ? 'sent' : 'awaiting-acceptance', via: 'chat', requestId: dup.requestId, code: dup.code, expiresAt: dup.expiresAt, deduped: true,
+        ...(!dup.cardMessageId ? { message: 'Chat delivery is unconfirmed. In your private approval chat, repeat the acceptance statement to resend pending cards. Nothing has been approved.' } : {}) };
     }
-    // agent-work-cards-default §5 (b): a withdrawn proposal cannot be re-raised for `cardTtlDays`, so withdraw-and-re-raise mints no fresh cards.
+    if (!app && !adapter) return { status: 'no-approver', message: `Nothing can approve this yet. ${delivery.message} ${SET_UP_APPROVALS_TEXT}` };
     const recentlyWithdrawn = this.d.store.allRequests().find((r) => r.proposalHash === proposalHash && r.principal === principal && r.status === 'withdrawn' && new Date(r.expiresAt) > this.now());
     if (recentlyWithdrawn) return { status: 'withdrawn-recently', message: `This exact change was withdrawn by the agent and cannot be asked again until ${recentlyWithdrawn.expiresAt}.` };
+    const summary = this.d.summarize(change);
+    if (summary.join('\n').length > MAX_CARD_SUMMARY || (app && !appApprovalSummaryLines(summary))) return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
+    const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
+    if (this.deliveryCount(principal) >= MAX_OPEN_REQUESTS) return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
+    if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered. Answer, deliver or let one expire before creating another.` };
     const code = newApprovalCode((c) => this.d.store.codeTaken(c));
     const expiresAt = new Date(this.now().getTime() + this.d.cardTtlDays() * 86_400_000).toISOString();
     const requestId = `tr-${proposalHash.slice(0, 12)}-${code}`;
-    const summary = this.d.summarize(change);
-    if (summary.join('\n').length > MAX_CARD_SUMMARY) {
-      return { status: 'too-large', message: 'This change is too large to show whole on one card, so no card was sent. Split it into smaller changes.' };
+    const carrier = app ? 'device' as const : adapter!;
+    const ownerId = app ? '' : this.d.ownerPlatformId(adapter!)!;
+    const base = { requestId, code, proposalHash, principal, adapter: carrier, approverPlatformId: ownerId, expiresAt, status: 'open' as const, change, summary, cardMessageId: '', cardChatId: '' };
+    if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
+    // Reserve before the durability await so an independent acceptance flush cannot take this slot.
+    const creatorReserved = !app && !!this.d.store.acceptance(principal, adapter!);
+    if (app || creatorReserved) this.deliveryReservations.set(requestId, principal);
+    let w: { ok: boolean };
+    try { w = await this.d.store.write('request', base, `tj:request:${requestId}`); }
+    catch (err) {
+      // @silent-fallback-ok: a failed durable append refuses publication; no send or approval follows.
+      this.deliveryReservations.delete(requestId);
+      this.d.log?.('trust-request-not-recorded', { requestId, error: err instanceof Error ? err.message : String(err) });
+      return { status: 'not-recorded', message: 'The request could not be recorded durably, so nothing was sent.' };
     }
-    // At most a few open requests per person, so the person is never flooded toward approving. Only a DELIVERED
-    // request (a card in the chat, or a device request) counts toward the open cap (agent-work-cards-default §5):
-    // undelivered chat requests have their own cap of the same size, and the acceptance flush sends what fits.
-    const live = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now());
-    if (live.filter((r) => this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
-      return { status: 'too-many-open', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting for the person; no new card is sent until one is answered or expires.` };
-    }
-    if (live.filter((r) => !this.delivered(r)).length >= MAX_OPEN_REQUESTS) {
-      return { status: 'too-many-undelivered', message: `There are already ${MAX_OPEN_REQUESTS} requests waiting to be delivered to the person (their chat has not accepted approvals yet); no new one is recorded until one is sent, answered or expires.` };
-    }
-    if (!adapter) {
-      // No chat: the request goes to the accepted devices (app-trust-approval §B, When there's no chat).
-      const w = await this.d.store.write('request', { requestId, code, proposalHash, principal, adapter: 'device', approverPlatformId: '', expiresAt, status: 'open', change, summary, cardMessageId: '', cardChatId: '' }, `tj:request:${requestId}`);
-      if (!w.ok) return { status: 'not-recorded', message: 'The request could not be recorded durably, so nothing was sent.' };
+    if (!w.ok) { this.deliveryReservations.delete(requestId); return { status: 'not-recorded', message: 'The request could not be recorded durably, so nothing was sent.' }; }
+    if (app) {
+      this.deliveryReservations.delete(requestId); // The durable device row now owns the same delivery slot.
+      if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
       this.notifyDevices('trust-request', `trust-request:${requestId}`);
-      return { status: 'sent', via: 'device', requestId, code, expiresAt };
+      return { status: delivery.state === 'accepted' ? 'sent' : 'awaiting-acceptance', via: 'device', requestId, code, expiresAt, message: delivery.message };
     }
-    const ownerId = this.d.ownerPlatformId(adapter)!;
-    const base = { requestId, code, proposalHash, principal, adapter, approverPlatformId: ownerId, expiresAt, status: 'open', change, summary };
-    // An accepted device can approve a chat request too; the first approval to arrive consumes it.
-    if (approvingDevices.length > 0) this.notifyDevices('trust-request', `trust-request:${requestId}`);
-
-    if (!this.d.store.acceptance(principal, adapter)) {
-      const w = await this.d.store.write('request', { ...base, cardMessageId: '', cardChatId: '' });
-      if (!w.ok) return { status: 'not-recorded', message: 'The request could not be recorded durably, so nothing was sent.' };
-      if (!(await this.sendAcceptanceStatement(principal, adapter, ownerId))) {
-        return { status: 'undelivered', message: 'The acceptance message could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet), so no card can follow. Nothing was approved.' };
+    // The creating invocation alone owns this send. A duplicate observes the pending durable row.
+    return async () => {
+      try {
+      if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
+      if (!this.d.store.acceptance(principal, adapter!)) {
+        if (!(await this.sendAcceptanceStatement(principal, adapter!, ownerId))) return { status: 'undelivered', message: 'The acceptance message could not be delivered to the owner’s private chat. The request remains visible in Needs-you and in the Instar app. Nothing was approved.' };
+        return { status: 'awaiting-acceptance', via: 'chat', requestId, code, expiresAt };
       }
-      return { status: 'awaiting-acceptance', requestId, code, expiresAt };
-    }
-    return this.sendCard(base as unknown as RequestRecord & { summary: string[] });
+      return await this.sendCard(base, creatorReserved);
+      } finally { if (creatorReserved) this.deliveryReservations.delete(requestId); }
+    };
   }
 
   /** True when the statement is in the person's chat (sent now, or within the last day). */
@@ -218,17 +296,26 @@ export class AccountPathService {
     return false;
   }
 
-  private async sendCard(req: RequestRecord & { summary: string[]; change?: TrustChange }): Promise<ProposeResult> {
+  private async sendCard(req: RequestRecord & { summary: string[]; change?: TrustChange }, creatorReserved = false): Promise<ProposeResult> {
+    if (!this.holds()) return { status: 'not-holder', message: HOLDER_MESSAGE };
     if (req.adapter === 'device') return { status: 'sent', via: 'device', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
-    const port = this.d.adapters[req.adapter]!;
-    const text = renderRequestCard({ summary: { lines: req.summary }, code: req.code, expiresAt: req.expiresAt });
-    const sent = await port.sendDirect(req.approverPlatformId, text);
-    if (!sent) {
-      return { status: 'undelivered', message: 'The request card could not be delivered to the owner\'s direct chat (they may not have opened a chat with the bot yet). Nothing was approved.' };
+    if (!creatorReserved && this.deliveryReservations.has(req.requestId)) return { status: 'awaiting-acceptance', via: 'chat', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt, deduped: true, message: 'Delivery of this existing request is already in progress.' };
+    const ownsReservation = !creatorReserved;
+    if (ownsReservation) {
+      if (this.deliveryCount(req.principal) >= MAX_OPEN_REQUESTS) return { status: 'too-many-open', message: 'The existing approval delivery allowance is full. This pending request stays visible until another is answered or expires.' };
+      this.deliveryReservations.set(req.requestId, req.principal);
     }
-    const w = await this.d.store.write('request', { ...req, cardMessageId: sent.messageId, cardChatId: sent.chatId, status: 'open' }, `tj:request:${req.requestId}:card`);
-    if (!w.ok) return { status: 'not-recorded', message: 'The card was sent but could not be recorded, so a reply to it will not approve anything.' };
-    return { status: 'sent', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
+    try {
+      const port = this.d.adapters[req.adapter]!;
+      const live = this.verified(req);
+      if (!live.ok) return { status: 'undelivered', message: 'This request does not match the change it would make, so no card was sent and nothing was approved.' };
+      const text = renderRequestCard({ summary: { lines: live.summary }, code: req.code, expiresAt: req.expiresAt });
+      const sent = await port.sendDirect(req.approverPlatformId, text);
+      if (!sent) return { status: 'undelivered', message: 'The request card could not be delivered to the owner’s private chat. The pending request remains visible; nothing was approved.' };
+      const w = await this.d.store.write('request', { ...req, cardMessageId: sent.messageId, cardChatId: sent.chatId, status: 'open' }, `tj:request:${req.requestId}:card`);
+      if (!w.ok) return { status: 'not-recorded', message: 'The chat accepted the card but its delivery record is unconfirmed. The pending request remains visible; a reply to that unrecorded card cannot approve anything.' };
+      return { status: 'sent', via: 'chat', requestId: req.requestId, code: req.code, expiresAt: req.expiresAt };
+    } finally { if (ownsReservation) this.deliveryReservations.delete(req.requestId); }
   }
 
   /** A receipt from the adapter's own inbound path. Called on the holder. */
@@ -293,8 +380,8 @@ export class AccountPathService {
       // The flush is bounded (agent-work-cards-default §5): min(cap − delivered open, undelivered), newest first; the
       // rest stay undelivered and expire at `cardTtlDays`.
       const open = this.d.store.openRequests().filter((x) => x.principal === principal && new Date(x.expiresAt) > this.now());
-      const room = Math.max(0, MAX_OPEN_REQUESTS - open.filter((x) => this.delivered(x)).length);
-      const undelivered = open.filter((x) => x.adapter === adapter && !x.cardMessageId).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
+      const room = Math.max(0, MAX_OPEN_REQUESTS - this.deliveryCount(principal));
+      const undelivered = open.filter((x) => x.adapter === adapter && !x.cardMessageId && !this.deliveryReservations.has(x.requestId)).sort((a, b) => (a.expiresAt < b.expiresAt ? 1 : a.expiresAt > b.expiresAt ? -1 : 0));
       for (const q of undelivered.slice(0, room)) {
         await this.sendCard(q);
       }
@@ -329,11 +416,18 @@ export class AccountPathService {
       return 'refused';
     }
 
+    // SEC-141: approve only a request whose change still matches its hash; the reply names the change itself.
+    const live = this.verified(req);
+    if (!live.ok) {
+      await this.d.adapters[adapter]?.replyTo(r.chatId, r.messageId, 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
+      return 'refused';
+    }
+
     // 3. Approve: claim the request before any wait, so a second reply arriving meanwhile is refused.
     if (this.inFlight.has(req.requestId)) return 'refused';
     this.inFlight.add(req.requestId);
     try {
-      return await this.consume(r, req, acceptance!);
+      return await this.consume(r, { ...req, summary: live.summary }, acceptance!);
     } finally {
       this.inFlight.delete(req.requestId);
     }
@@ -401,6 +495,14 @@ export class AccountPathService {
   /** The person withdraws their acceptance (a narrowing: stops new consumption, keeps committed grants). */
   /** A request counts as delivered when its card is in the person's chat, or it is a device request. */
   private delivered(r: { adapter: string; cardMessageId: string }): boolean { return r.adapter === 'device' || !!r.cardMessageId; }
+
+  /** In-flight reservations count even before their base request is durable; never count a durable row twice. */
+  private deliveryCount(principal: string): number {
+    const delivered = this.d.store.openRequests().filter((r) => r.principal === principal && new Date(r.expiresAt) > this.now() && this.delivered(r));
+    const ids = new Set(delivered.map((r) => r.requestId));
+    return delivered.length + [...this.deliveryReservations].filter(([id, who]) => who === principal && !ids.has(id)).length;
+  }
+
 
   /**
    * agent-work-cards-default §5 (b): withdraw a request the agent raised and that no person has answered. The stored
@@ -623,6 +725,34 @@ export class AccountPathService {
    * device with this key; the device is still paired and active with that same key. Then the shared
    * consumption (one key, one compare-and-set), the proof `accepted-device`, the apply and the outcome.
    */
+  /**
+   * SEC-141: the text a person approves is rebuilt from the change itself, never read from the stored
+   * request. A request record is replicated, and its `summary` is a separate field nothing derived
+   * again, so a forged record could pair a harmless summary with a dangerous change and a matching
+   * hash. A request whose change no longer hashes to its recorded `proposalHash`, or that has no
+   * change, is treated as altered and is neither listed as approvable nor approved.
+   */
+  /** SEC-141: the text for a request rebuilt from its change, or null when the request is altered. */
+  derivedSummary(req: { change?: TrustChange; proposalHash: string; requestId: string }): string[] | null {
+    const v = this.verified(req);
+    return v.ok ? v.summary : null;
+  }
+
+  private verified<R extends { change?: TrustChange; proposalHash: string; requestId: string }>(req: R): { ok: true; summary: string[] } | { ok: false } {
+    if (!req.change) return { ok: false };
+    try {
+      if (proposalHashOf(proofSubject(req.change)) !== req.proposalHash) {
+        this.d.log?.('trust-request-altered', { requestId: req.requestId });
+        return { ok: false };
+      }
+      return { ok: true, summary: this.d.summarize(req.change) };
+    } catch {
+      // @silent-fallback-ok — an unreadable change is refused (ok:false), and logged
+      this.d.log?.('trust-request-altered', { requestId: req.requestId, reason: 'summarize-failed' });
+      return { ok: false };
+    }
+  }
+
   async onPresenceApproval(auth: DeviceAuthorization): Promise<DeviceApprovalResult> {
     const refuse = (reason: string, message: string): DeviceApprovalResult => ({ status: 'refused', reason, message });
     if (!this.holds()) return { status: 'not-holder', reason: 'not-holder', message: HOLDER_MESSAGE };
@@ -637,6 +767,9 @@ export class AccountPathService {
       return refuse('request-expired', 'This request has expired, so nothing was approved. The agent can send a fresh one.');
     }
     if (req.proposalHash !== auth.proposalHash) return refuse('proposal-changed', 'This request is not the one shown on the card, so nothing was approved. Look again.');
+    const live = this.verified(req);
+    if (!live.ok) return refuse('request-altered', 'This request does not match the change it would make, so nothing was approved. The agent can send a fresh one.');
+    if (!appApprovalSummaryLines(live.summary)) return refuse('disclosure-too-large', 'This request cannot be shown whole in this app, so nothing was approved. Ask the agent to split it into smaller requests.');
     const onRecord = this.d.store.deviceAcceptance(auth.deviceId);
     if (!onRecord) {
       return this.d.store.deviceAcceptanceWithdrawn(auth.deviceId)
@@ -670,10 +803,38 @@ export class AccountPathService {
       const name = this.devices?.get(auth.deviceId)?.name ?? null;
       if (!done.outcomeRecorded) return { status: 'unknown', requestId: req.requestId, message: UNKNOWN_OUTCOME_TEXT };
       if (!done.applied.ok) return { status: 'not-applied', requestId: req.requestId, message: `Your approval was recorded, but the change did not take effect (${done.applied.detail ?? 'unknown reason'}). Nothing else changed; the agent will need to ask again.` };
-      return { status: 'applied', requestId: req.requestId, message: `Done: ${req.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
+      return { status: 'applied', requestId: req.requestId, message: `Done: ${live.summary.join('; ')}. ${deviceApprovalDisclosure(name)}`, ...(done.applied.detail ? { detail: done.applied.detail } : {}) };
     } finally {
       this.inFlight.delete(req.requestId);
     }
+  }
+
+  /** Recognize a pending approval for a paired owner even while approval consent is unavailable. */
+  hasPendingOwnerDeviceApproval(deviceId: string, requestId: string, proposalHash: string): boolean {
+    const request = this.d.store.request(requestId);
+    const device = this.devices?.get(deviceId);
+    if (!device?.active || !device.keyFingerprint || !request || request.principal !== 'owner' ||
+      request.status !== 'open' || request.adapter !== 'device' || request.proposalHash !== proposalHash ||
+      !(new Date(request.expiresAt).getTime() > this.now().getTime()) ||
+      this.d.store.requestConsumedOrPending(requestId) || this.inFlight.has(requestId)) return false;
+    return this.verified(request).ok;
+  }
+
+  /** Read an exact, currently eligible disclosure for an already authenticated device. */
+  openDeviceApprovalDisclosure(deviceId: string, requestId: string):
+    { requestId: string; proposalHash: string; summary: string[] } | null {
+    if (!this.holds() || this.devices?.enabled?.() === false) return null;
+    const request = this.d.store.request(requestId);
+    const device = this.devices?.get(deviceId) ?? null;
+    const acceptance = this.d.store.deviceAcceptance(deviceId);
+    if (!request || request.status !== 'open' || request.adapter !== 'device' ||
+      new Date(request.expiresAt).getTime() <= this.now().getTime() ||
+      this.d.store.requestConsumedOrPending(requestId) || this.inFlight.has(requestId) ||
+      !acceptance || acceptance.principal !== request.principal || this.acceptanceMismatch(acceptance, device)) return null;
+
+    const verified = this.verified(request);
+    const summary = verified.ok ? appApprovalSummaryLines(verified.summary) : null;
+    return summary ? { requestId, proposalHash: request.proposalHash, summary } : null;
   }
 
   /**
@@ -686,6 +847,9 @@ export class AccountPathService {
     const weekAgo = now - 7 * 86_400_000;
     const out: DeviceRequestRow[] = [];
     for (const r of this.d.store.allRequests()) {
+      // SEC-141: list only requests whose change matches their hash, with text rebuilt from the change.
+      const live = this.verified(r);
+      if (!live.ok) continue;
       const consumption = this.d.store.consumptionOf(r.requestId);
       const expired = new Date(r.expiresAt).getTime() <= now;
       let status: DeviceRequestRow['status'];
@@ -700,8 +864,9 @@ export class AccountPathService {
       const outcome = this.d.store.applyOutcome(r.requestId);
       const byDevice = consumption?.kind === 'accepted-device';
       out.push({
-        requestId: r.requestId, status, summary: r.summary, proposalHash: r.proposalHash, expiresAt: r.expiresAt,
+        requestId: r.requestId, status, summary: appApprovalSummaryLines(live.summary) ?? ['This request is too large to show whole in this app. It cannot be approved here. Ask the agent to split it into smaller requests.'], proposalHash: r.proposalHash, expiresAt: r.expiresAt,
         changeKind: r.change?.kind ?? null, via: r.adapter === 'device' ? 'device' : 'chat',
+        delivery: r.adapter === 'device' ? 'app-listed' : r.cardMessageId ? 'chat-confirmed' : 'chat-unconfirmed',
         ...(consumption ? {
           approvedAt: consumption.at,
           approvedOn: byDevice ? 'device' as const : 'chat' as const,
@@ -723,6 +888,7 @@ export interface DeviceRequestRow {
   expiresAt: string;
   changeKind: string | null;
   via: 'chat' | 'device';
+  delivery: 'app-listed' | 'chat-confirmed' | 'chat-unconfirmed';
   approvedAt?: string;
   approvedOn?: 'chat' | 'device';
   disclosure?: string;

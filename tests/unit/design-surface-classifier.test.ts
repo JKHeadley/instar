@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyDesignPaths, validateScreenRegistry, type ScreenRegistry } from '../../src/designGate/surfaceClassifier.js';
+import { classifyDesignPaths, pathsNeedingSourceText, validateScreenRegistry, type ScreenRegistry } from '../../src/designGate/surfaceClassifier.js';
 const registry: ScreenRegistry = { version: 1, screens: [{ id: 'accounts', surface: 'Web', title: 'Accounts', mainQuestion: 'Which account has capacity?', route: '/dashboard/console#/capacity/accounts', sources: ['dashboard/console/accounts.js', 'src/server/mobileCapacityRoutes.ts'], shared: ['dashboard/console/console.css'], capture: 'uncaptured', trackedBy: 'CMT-2169' }] };
 const classify = (paths: string[], content: Record<string, string | null> = {}) => classifyDesignPaths({ changedPaths: paths, baseRegistry: registry, sourceText: content });
 
@@ -56,3 +56,16 @@ it('requires the title and the main question that a reviewer must judge', () => 
   candidate.screens[0].title = ''; candidate.screens[0].mainQuestion = '';
   expect(validateScreenRegistry(candidate).map(e => e.code)).toEqual(expect.arrayContaining(['missing-title', 'missing-main-question']));
 });
+it('asks for source text only where classification reads it, and the classifier agrees', () => {
+    const paths = ['src/server/mobileCapacityRoutes.ts', 'dashboard/console/new-page.js', 'tests/unit/x.test.ts',
+      'src/designGate/modes.ts', 'site/page.html', 'src/unregistered.ts', 'README.md'];
+    const needed = pathsNeedingSourceText({ changedPaths: paths, baseRegistry: registry });
+    expect(needed).toEqual(['src/unregistered.ts']);
+    // With text for only those paths, nothing is unreadable.
+    expect(classify(paths, { 'src/unregistered.ts': 'export const x = 1;' }).errors).toEqual([]);
+    // A path the candidate registry adds is not read either.
+    const candidate = structuredClone(registry); candidate.screens[0].sources.push('src/unregistered.ts');
+    expect(pathsNeedingSourceText({ changedPaths: paths, baseRegistry: registry, candidateRegistry: candidate })).toEqual([]);
+    // An invalid registry needs no text: classification is unreadable regardless.
+    expect(pathsNeedingSourceText({ changedPaths: paths, baseRegistry: { version: 2 } })).toEqual([]);
+  });

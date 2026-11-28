@@ -655,7 +655,7 @@ program.command('design:inspect')
   .option('--head <ref>', 'Candidate commit or ref', 'HEAD')
   .option('--repo <path>', 'Git repository to read', '.')
   .action(async (options) => {
-    const { runDesignPolicyInspection } = await import('./commands/designPolicy.js');
+    const { runDesignPolicyInspection } = await import('./commands/designInspect.js');
     process.exitCode = await runDesignPolicyInspection(options);
   });
 
@@ -797,6 +797,40 @@ backupCmd
   .action(async (id, opts) => {
     const { restoreBackup } = await import('./commands/backup.js');
     return restoreBackup(id, opts);
+  });
+
+// ── Borrowed-machine helper (local-verify-borrowed-unit-slices) ──
+
+const helperCmd = program
+  .command('helper')
+  .description('Owner controls for this machine\'s borrowed-machine test helper (pause, resume, uninstall)');
+
+helperCmd
+  .command('pause')
+  .description('Pause the helper: it refuses new work and stops current work')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, true);
+  });
+
+helperCmd
+  .command('resume')
+  .description('Resume the helper: it accepts new work again')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { helperPause } = await import('./commands/helper.js');
+    return helperPause(opts, false);
+  });
+
+helperCmd
+  .command('uninstall')
+  .description('Remove the helper sandbox, its learned list and its setting (needs --yes)')
+  .option('-d, --dir <path>', 'Project directory')
+  .option('--yes', 'Actually remove (without it, only lists what would be removed)')
+  .action(async (opts) => {
+    const { helperUninstall } = await import('./commands/helper.js');
+    return helperUninstall(opts);
   });
 
 // ── Git State ────────────────────────────────────────────────────

@@ -50,7 +50,15 @@ describe('chiefOfStaffNeedRows', () => {
     expect(rows[1].main).toBe('Monroe launch is waiting on you');
     expect(rows[2].main).toBe('Keep every one of the customer onboarding flows working… is waiting on you');
     expect(rows[0].action.href).toBe('#/work/chats?c=telegram%3A1');
+    expect(rows[0].sub).toBe('The project is waiting for your reply in its conversation.');
     for (const r of rows) expect(r.main).not.toMatch(/\w…\w/);
+  });
+  it('uses a plain fallback when a waiting project has no display name', () => {
+    const rows = chiefOfStaffNeedRows(ok({ lease: { live: true }, projects: [
+      { conversationKey: 'telegram:456', lastVerdict: 'waiting-on-user' },
+    ] }), NOW);
+    expect(rows[0].main).toBe('A project is waiting on you');
+    expect(rows[0].action.href).toBe('#/work/chats?c=telegram%3A456');
   });
   it('the dashboard name rule matches the note rule exactly', () => {
     const goals = ["Emily Ghosh's affiliate intelligence project: confirm the weekly report", 'Get Monroe AI ready for public launch: DNS, chat rate limits', 'Billing cleanup — every invoice matched', 'Ship the iOS app. Then tell the beta group.', 'https://example.com goes live', 'Keep every one of the customer onboarding flows working smoothly across all of the regions we serve', '   ', 'Supercalifragilisticexpialidociousandthensome'];

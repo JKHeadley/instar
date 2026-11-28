@@ -24,6 +24,19 @@ describe('manual design policy signals', () => {
   const head = snapshot(); head.lock.ids = head.lock.ids.filter((id: string) => id !== 'DS-DATA-2');
   expect(run(snapshot(), head).findings).toContainEqual(expect.objectContaining({ side: 'head', code: 'rule-id-history-removed', ruleId: 'DS-DATA-2' }));
  });
+ it('reports a deleted rule that has no Earned from mark', () => {
+  const head = snapshot(); head.standard = head.standard.replace(/^### DS-LAYOUT-1 [\s\S]*?(?=^### )/m, '');
+  const r = run(snapshot(), head);
+  expect(r.counts.headRules).toBe(r.counts.baseRules - 1);
+  expect(r.status).not.toBe('structurally-valid');
+  expect(r.findings).toContainEqual(expect.objectContaining({ side: 'head', code: 'rule-removed', ruleId: 'DS-LAYOUT-1' }));
+ });
+ it('reports a rule whose heading no longer parses as a rule', () => {
+  const head = snapshot(); head.standard = head.standard.replace(/^### DS-LAYOUT-1 /m, '### Layout one ');
+  const r = run(snapshot(), head);
+  expect(r.status).not.toBe('structurally-valid');
+  expect(r.findings).toContainEqual(expect.objectContaining({ code: 'rule-removed', ruleId: 'DS-LAYOUT-1' }));
+ });
  it('retains both wordings when an earned tolerance changes', () => {
   const head = snapshot(); head.standard = head.standard.replace('within 1 unit', 'within 10 units');
   const r = run(snapshot(), head);

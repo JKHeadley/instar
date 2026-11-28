@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "slug": "engine-neutral-connector-reads",
+  "sessionId": "3f879ccf-9bce-46f4-9ea5-9839c11dff20",
+  "timestamp": "2026-11-23T19:52:12.660Z",
+  "artifactPath": "upgrades/side-effects/engine-neutral-connector-reads.md",
+  "artifactSha256": "dca7cd9f0342648830f56e9d35eec4d61d93c269f5b1d3dfc2d7de84c5246b69",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/effect-kinds.ts",
+    "tests/e2e/trust-account-path-alive.test.ts",
+    "tests/integration/trust-governed-effects-routes.test.ts",
+    "tests/unit/connector-read-effects.test.ts",
+    "tests/unit/connector-read-hook-migration.test.ts",
+    "upgrades/eli16/engine-neutral-connector-reads.eli16.md",
+    "upgrades/next/engine-neutral-connector-reads.md",
+    "upgrades/side-effects/engine-neutral-connector-reads.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible repair of existing tool-name parser and generated hook; no grant, policy, persisted permission, schema or controller changes. Explicitly authorized engine-neutral bug fix; full repository suite delegated to throughput.",
+  "eli16Path": "upgrades/eli16/engine-neutral-connector-reads.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/engine-neutral-connector-reads.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Connector namespace preceded the read verb, while the parser assumed the verb started the whole action. Exact introducing PR is unknown. Real-name regressions reproduce the failure; independent review caught and corrected arbitrary unknown-prefix expansion."
+  }
+}

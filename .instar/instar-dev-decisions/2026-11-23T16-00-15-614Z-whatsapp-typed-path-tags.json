@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-23T16:00:15.614Z",
+  "slug": "whatsapp-typed-path-tags",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no loop or spawn added"
+  },
+  "verdict": "pass"
+}

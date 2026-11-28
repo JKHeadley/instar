@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "profile-confirmation-clarity",
+  "sessionId": "46d2584d-9368-4893-8815-e24b5ccc0c9b",
+  "timestamp": "2026-11-22T22:30:35.810Z",
+  "artifactPath": "upgrades/side-effects/profile-confirmation-clarity.md",
+  "artifactSha256": "92db1267f4ef5569be0f18d9c6f2dff5dc0fdba0979c5ac04bb24caa8ed6ad0e",
+  "specPath": "docs/specs/profile-confirmation-clarity.md",
+  "coveredFiles": [
+    "docs/specs/profile-confirmation-clarity.eli16.md",
+    "docs/specs/profile-confirmation-clarity.md",
+    "docs/specs/reports/profile-confirmation-clarity-review.md",
+    "src/commands/server.ts",
+    "src/core/handleProfileProposalReply.ts",
+    "tests/e2e/owner-framework-confirm-lifecycle.test.ts",
+    "tests/unit/profile-proposal-requests.test.ts",
+    "upgrades/side-effects/profile-confirmation-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Safe native-question context after live reminder failure; no new consent authority; scoped independent security concurrence.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Read-only context for user-driven replies; no self-triggered loop."
+  }
+}

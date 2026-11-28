@@ -2,15 +2,22 @@
  * Console shell in a DOM (docs/specs/console-makeover.md, MVP 1–2): boots the
  * SHIPPED console.js in jsdom against mocked routes and checks the behaviour
  * the screenshots cannot: the PIN screen without a token, six cards from live
- * answers, a failing source rendering "Can't tell" on its own card, See all,
- * a row that stays open across a refresh, and every legacy link being an
+ * answers, a failing source rendering "Can't tell" on its own card, bounded
+ * authoritative Needs-you rows, and every legacy link being an
  * ordinary link (no iframe).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 
 const NOW = new Date().toISOString();
+const needs = (items: unknown[], options = {}) => ({
+  schemaVersion: 2, count: items.length, complete: true, items, ...options,
+});
+const instruction = (title: string, step = 'Open Instar again.') => ({
+  id: title, title, ownerAction: 'physical', action: { kind: 'instructions', steps: [step] },
+});
 const ROUTES: Record<string, unknown> = {
+  '/needs': needs([1, 2, 3, 4, 5].map(n => instruction(`Item ${n}`))),
   '/sessions': { sessions: [] },
   '/health': { project: { name: 'echo' }, telegramOrigin: { heldForward: { count: 0, observedAt: Date.now(), expiredUnreported: 0 } } },
   '/attention?scope=pool&status=OPEN': { items: [1, 2, 3, 4, 5].map((n) => ({ id: `a${n}`, title: `Item ${n}`, status: 'OPEN', priority: 'URGENT', createdAt: NOW, description: `Detail ${n}` })), pool: { failed: [] } },
@@ -25,18 +32,19 @@ const ROUTES: Record<string, unknown> = {
 let dom: JSDOM;
 const flush = () => new Promise((r) => setTimeout(r, 30));
 
-async function boot(token: string | null) {
+async function boot(token: string | null, ownerNeeds: () => unknown = () => ROUTES['/needs']) {
   // Home is a page of the phone app's frame now; on the web its address lands on Conversations (work-front-doors §2.1).
   dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/home?phone=1' });
   const g = globalThis as Record<string, unknown>;
   Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage });
   g.requestAnimationFrame = (cb: FrameRequestCallback) => setTimeout(cb, 0);
   if (token) dom.window.localStorage.setItem('instar_token', token);
-  g.fetch = async (url: string) => {
-    const body = ROUTES[url];
-    if (body === undefined) return new dom.window.Response('{}', { status: 404 }) as unknown as Response;
-    if (body === null) return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
-    return { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)) } as unknown as Response;
+  g.fetch = async (url: string, options?: { headers?: Record<string, string> }) => {
+    if (url === '/needs') expect(options?.headers?.['X-Instar-Needs-Contract']).toBe('in-place-v1');
+    const body = url === '/needs' ? ownerNeeds() : ROUTES[url];
+    if (body === undefined) return new Response('{}', { status: 404 });
+    if (body === null) return new Response('{}', { status: 500 });
+    return Response.json(body);
   };
   vi.resetModules();
   await import('../../dashboard/console/console.js');
@@ -47,6 +55,20 @@ async function boot(token: string | null) {
 afterEach(() => { dom?.window.close(); });
 
 describe('console shell (jsdom)', () => {
+  it('uses detail grids for informational pages while canonical and phone-alias workspaces keep their own layout', async () => {
+    const doc = await boot('t');
+    for (const hash of ['#/work/schedule']) {
+      dom.window.location.hash = hash;
+      await flush(); await flush();
+      expect(doc.querySelector('main')?.classList.contains('detail-page'), hash).toBe(true);
+    }
+    for (const hash of ['#/work/chats', '#/chats?phone=1', '#/work/sessions', '#/sessions?phone=1', '#/settings/files', '#/files?phone=1']) {
+      dom.window.location.hash = hash;
+      await flush(); await flush();
+      expect(doc.querySelector('main')?.classList.contains('detail-page'), hash).toBe(false);
+    }
+  });
+
   it('renders the pooled topic title on Home instead of the local topic-ID placeholder', async () => {
     const oldSessions = ROUTES['/sessions?scope=pool'];
     const oldTopics = ROUTES['/telegram/topics?scope=pool'];
@@ -64,157 +86,95 @@ describe('console shell (jsdom)', () => {
     expect(doc.querySelector('#card-needs')).toBeNull();
   });
 
-  it('with a token it renders the headline as a link to the first thing, and five cards (no delivery card)', async () => {
+  it('renders one negotiated Needs-you list and four independent status cards', async () => {
     const doc = await boot('t');
-    expect(doc.querySelectorAll('.card')).toHaveLength(5);
-    expect(doc.querySelector('#card-reach')).toBeNull();
+    expect(doc.querySelectorAll('.card')).toHaveLength(4);
+    expect(doc.querySelectorAll('#homeNeedsStrip')).toHaveLength(1);
+    expect(doc.querySelector('#card-needs, #card-reach')).toBeNull();
     expect(doc.querySelector('#heroTitle')!.textContent).toBe('Item 1');
   });
 
-  it('links the one request directly and keeps a missing machine under status', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [{ id: 'approve-1', title: 'Approve the schedule change',
-      status: 'OPEN', priority: 'URGENT', topicId: 127504, createdAt: NOW }],
-      pool: { failed: [{ nickname: 'Laptop' }] } };
-    try {
-      const doc = await boot('t');
-      const direct = doc.querySelector('#heroTitle a') as HTMLAnchorElement;
-      expect(direct.textContent).toContain('Approve the schedule change');
-      expect(direct.href).toBe('https://t.me/c/3742343280/127504');
-      expect(doc.querySelector('#heroSub')!.textContent).not.toContain('Laptop');
-      expect(doc.querySelector('#card-needs')!.textContent).not.toContain('Laptop');
-      expect(doc.querySelector('.home-details summary')!.textContent).toContain('some checks incomplete');
-      expect(doc.querySelector('#homeStatusNote')!.textContent).toContain("Couldn't reach Laptop");
-    } finally { ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention; }
+  it('renders a gate-off response and keeps its direct link on the request', async () => {
+    const href = 'https://t.me/c/3742343280/127504';
+    const doc = await boot('t', () => needs([
+      { id: 'approve-1', title: 'Approve the schedule change', action: { kind: 'href', href } },
+    ], { schemaVersion: 1, complete: false, couldNotCheck: ['Laptop'] }));
+    expect(doc.querySelector('#heroTitle')?.textContent).toBe('Approve the schedule change');
+    const link = doc.querySelector<HTMLAnchorElement>('#homeNeedsStrip a.needs-row');
+    expect(link?.href).toBe(href);
+    expect(doc.querySelector('#heroSub')?.textContent).not.toContain('Laptop');
+    expect(doc.querySelector('#homeStatusNote')?.textContent).toContain('Could not check Laptop.');
   });
 
-  it('one tap on the named Home request opens its action sheet', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
-    ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
-      id: 'CMT-1043', status: 'pending', owner: 'user', blockedOn: 'user-authorization',
-      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Approve rulebook changes',
-      agentResponse: 'I will merge after approval.', topicId: 95267,
-    }] };
-    try {
-      const doc = await boot('t');
-      const link = doc.querySelector('#heroTitle a.hero-action') as HTMLAnchorElement;
-      expect(link?.textContent).toBe('Approve rulebook changes');
-      expect(link?.getAttribute('href')).toContain('id=CMT-1043');
-      expect((doc.querySelector('#card-needs') as HTMLElement).hidden).toBe(true);
-      expect((doc.querySelector('.home-details') as HTMLDetailsElement).open).toBe(false);
-      dom.window.location.hash = link.getAttribute('href')!;
-      for (let i = 0; i < 10; i++) await flush();
-      expect(doc.querySelector('.sheet[role="dialog"]')?.textContent).toContain('Approve rulebook changes');
-      expect(doc.querySelector('.sheet-actions a')?.textContent).toBe('Reply in the conversation');
-    } finally {
-      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
-      ROUTES['/commitments?scope=mesh'] = oldCommitments;
-    }
+  it('shows a verified physical request in place and keeps unsigned approvals hidden', async () => {
+    const doc = await boot('t', () => needs([
+      instruction('Update Instar on your phone'),
+      { id: 'approval', title: 'Approve rulebook changes', action: { kind: 'approval', requestId: 'opaque' } },
+    ]));
+    expect(doc.querySelector('#heroTitle')?.textContent).toBe('Update Instar on your phone');
+    expect(doc.querySelector('#homeNeedsStrip .needs-instructions li')?.textContent).toBe('Open Instar again.');
+    expect(doc.querySelector('#homeNeedsStrip .needs-badge')?.textContent).toBe('2');
+    expect(doc.querySelector('#homeNeedsStrip')?.textContent).not.toContain('Approve rulebook changes');
+    expect(doc.querySelector('#homeNeedsStrip .needs-consent')).toBeNull();
   });
 
-  it('keeps an Echo-owned missed promise out of the default headline', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
+  it('keeps an agent-owned missed promise out of the authoritative headline', async () => {
+    const old = ROUTES['/commitments?scope=mesh'];
     ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
-      id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', hardDeadlineAt: new Date(Date.parse(NOW) - 60_000).toISOString(),
-      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Please change the schedule',
-      agentResponse: 'Changing the schedule now', topicId: 95267,
+      id: 'CMT-MISS', status: 'violated', owner: 'agent', blockedOn: 'none', createdAt: NOW,
+      hardDeadlineAt: new Date(Date.parse(NOW) - 60000).toISOString(),
+      originMachineId: 'm1', userRequest: 'Please change the schedule',
     }] };
     try {
-      const doc = await boot('t');
+      const doc = await boot('t', () => needs([], { divertedCount: 1 }));
       expect(doc.querySelector('#heroTitle')?.textContent).not.toContain('Overdue');
       expect(doc.querySelector('#heroTitle a.hero-action')).toBeNull();
-      expect((doc.querySelector('#heroIssueLink') as HTMLAnchorElement).hidden).toBe(true);
-    } finally {
-      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
-      ROUTES['/commitments?scope=mesh'] = oldCommitments;
-    }
+      expect(doc.querySelector('#homeNeedsStrip')?.textContent).toContain('Nothing needs you right now.');
+      expect(doc.querySelector('#homeNeedsStrip')?.textContent).toContain('1 item was left out');
+    } finally { ROUTES['/commitments?scope=mesh'] = old; }
   });
 
-  it('retries a failed promise read before declaring the action queue unknown', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
-    let reads = 0;
-    Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads === 1 ? null : {
-      enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-RETRY', status: 'pending', owner: 'user',
-        blockedOn: 'user-input', createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
-    } });
-    try {
-      const doc = await boot('t');
-      expect(reads).toBe(2);
-      expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
-      expect(doc.querySelector('#card-needs')?.textContent).not.toContain("Couldn't check for promises");
-    } finally {
-      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
-      Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, writable: true, value: oldCommitments });
-    }
+  it('shows an incomplete result and retries the negotiated list on demand', async () => {
+    let available = false;
+    const doc = await boot('t', () => available ? needs([instruction('Choose a time')]) : null);
+    expect(doc.querySelector('#heroTitle')?.textContent).toContain("Couldn't check");
+    const retry = [...doc.querySelectorAll<HTMLButtonElement>('#homeNeedsStrip button')].find(button => button.textContent === 'Try again');
+    expect(retry).toBeTruthy();
+    available = true;
+    retry!.click();
+    await flush();
+    expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
   });
 
-  it('keeps retrying a promise read after several failures until the action arrives', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
-    let reads = 0;
-    Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, get: () => ++reads < 4 ? null : {
-      enabled: true, scope: 'mesh', commitments: [{ id: 'CMT-LATE-ANSWER', status: 'pending', owner: 'user',
-        blockedOn: 'user-input', createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time' }],
-    } });
+  it('uses a successful authoritative read while a separate promise status read fails', async () => {
+    const old = ROUTES['/commitments?scope=mesh'];
+    ROUTES['/commitments?scope=mesh'] = null;
     try {
-      const doc = await boot('t');
-      // Each read retries once on its own, so three failures in a row are
-      // absorbed on the first load: no "can't tell" ever reaches the page.
-      for (let i = 0; i < 80 && reads < 4; i++) await flush();
-      expect(doc.querySelector('#card-promised')?.textContent).not.toContain("Can't tell");
-      expect(reads).toBe(4);
+      const doc = await boot('t', () => needs([instruction('Choose a time')]));
       expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
-    } finally {
-      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
-      Object.defineProperty(ROUTES, '/commitments?scope=mesh', { configurable: true, writable: true, value: oldCommitments });
-    }
+      expect(doc.querySelector('#card-promised')?.getAttribute('data-state')).toBe('unknown');
+    } finally { ROUTES['/commitments?scope=mesh'] = old; }
   });
 
-  it('retries a partial attention answer when a machine did not answer', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    let reads = 0;
-    Object.defineProperty(ROUTES, '/attention?scope=pool&status=OPEN', { configurable: true, get: () => ({
-      items: [], pool: { failed: ++reads === 1 ? [{ machineId: 'm2' }] : [] },
-    }) });
-    try {
-      const doc = await boot('t');
-      for (let i = 0; i < 20 && reads < 2; i++) await flush();
-      expect(reads).toBe(2);
-      expect(doc.querySelector('#card-needs')?.textContent).not.toContain('Checking again automatically');
-    } finally {
-      Object.defineProperty(ROUTES, '/attention?scope=pool&status=OPEN', { configurable: true, writable: true, value: oldAttention });
-    }
+  it('keeps server coverage under agent status while preserving a known request', async () => {
+    const doc = await boot('t', () => needs([instruction('Choose a time')], {
+      complete: false, couldNotCheck: ['promises'],
+    }));
+    expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
+    expect(doc.querySelector('#heroSub')?.textContent).not.toContain('promises');
+    expect(doc.querySelector('#homeStatusNote')?.textContent).toContain('Could not check promises.');
   });
 
-  it('keeps the last promise result in the action queue after two failed refresh reads', async () => {
-    const oldAttention = ROUTES['/attention?scope=pool&status=OPEN'];
-    const oldCommitments = ROUTES['/commitments?scope=mesh'];
-    ROUTES['/attention?scope=pool&status=OPEN'] = { items: [], pool: { failed: [] } };
-    ROUTES['/commitments?scope=mesh'] = { enabled: true, scope: 'mesh', commitments: [{
-      id: 'CMT-LAST', status: 'pending', owner: 'user', blockedOn: 'user-input',
-      createdAt: NOW, hardDeadlineAt: NOW, originMachineId: 'm1', userRequest: 'Choose a time',
-    }] };
-    try {
-      const doc = await boot('t');
-      expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
-      ROUTES['/commitments?scope=mesh'] = null;
-      dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
-      for (let i = 0; i < 15; i++) await flush();
-      expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
-      expect(doc.querySelector('#card-needs')?.textContent).not.toContain('last successful check');
-      expect(doc.querySelector('#homeStatusNote')?.textContent).toContain('last successful check');
-      expect(doc.querySelector('#card-promised')?.textContent).toContain('Showing what I saw');
-    } finally {
-      ROUTES['/attention?scope=pool&status=OPEN'] = oldAttention;
-      ROUTES['/commitments?scope=mesh'] = oldCommitments;
-    }
+  it('does not rebuild a failed negotiated read from raw or previously displayed requests', async () => {
+    let available = true;
+    const doc = await boot('t', () => available ? needs([instruction('Choose a time')]) : null);
+    expect(doc.querySelector('#heroTitle')?.textContent).toBe('Choose a time');
+    available = false;
+    dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
+    for (let i = 0; i < 15; i++) await flush();
+    expect(doc.querySelector('#heroTitle')?.textContent).toContain("Couldn't check");
+    expect(doc.querySelector('#homeNeedsStrip')?.textContent).not.toContain('Choose a time');
+    expect(doc.querySelector('#homeNeedsStrip')?.textContent).not.toContain('Item 1');
   });
 
   it('a failing source says "Can\'t tell" on its own card; the others render', async () => {
@@ -225,23 +185,17 @@ describe('console shell (jsdom)', () => {
     expect(doc.querySelector('#card-doing')!.getAttribute('data-state')).toBe('ok');
   });
 
-  it('See all reveals every row; a row opened stays open across a refresh', async () => {
+  it('expands and collapses the authoritative rows in place', async () => {
     const doc = await boot('t');
-    const card = doc.querySelector('#card-needs')!;
-    expect(card.querySelectorAll('button.row')).toHaveLength(3);
-    (card.querySelector('.link-btn') as HTMLButtonElement).click();
-    expect(card.querySelectorAll('button.row')).toHaveLength(5);
-    const first = card.querySelector('button.row') as HTMLButtonElement;
-    first.click();
-    expect(first.getAttribute('aria-expanded')).toBe('true');
-    // A refresh repaints the card from new data.
-    dom.window.dispatchEvent(new dom.window.HashChangeEvent('hashchange'));
-    for (let i = 0; i < 10; i++) await flush();
-    const again = doc.querySelector('#card-needs')!;
-    // The page re-rendered; open state is per-session memory, so the row re-opens.
-    const row = [...again.querySelectorAll('button.row')].find((b) => b.textContent!.includes('Item 1')) as HTMLButtonElement;
-    expect(row.getAttribute('aria-expanded')).toBe('true');
-    expect(again.querySelectorAll('button.row')).toHaveLength(5);
+    const strip = doc.querySelector('#homeNeedsStrip')!;
+    const rows = () => strip.querySelectorAll('.needs-row');
+    const button = (words: RegExp) => [...strip.querySelectorAll('button')].find(b => words.test(b.textContent || ''));
+    expect(rows()).toHaveLength(3);
+    button(/Show all/)!.click();
+    expect(rows()).toHaveLength(5);
+    expect(strip.querySelector('.needs-groups')?.getAttribute('aria-label')).toBe('Requests that need you');
+    button(/Show fewer/)!.click();
+    expect(rows()).toHaveLength(3);
   });
 
   it('group pages link to their pages as ordinary links, with no iframe', async () => {

@@ -3,8 +3,12 @@ import { inspectFeedbackHistory } from './feedbackHistory.js';
 import type { FeedbackEntryDocument } from './feedbackRuleLinks.js';
 import { performance } from 'node:perf_hooks';
 import { inspectDesignPolicy, type DesignPolicySnapshot } from './policyInspection.js';
+import { pathsNeedingSourceText } from './surfaceClassifier.js';
 
 const MAX_BLOB = 2 * 1024 * 1024;
+/** Per-file cap for a changed source file the classifier must read (one side). Large
+ * unregistered modules such as src/commands/server.ts are about 2.5 MiB. */
+const MAX_SOURCE_BLOB = 8 * 1024 * 1024;
 const MAX_DIFF = 4 * 1024 * 1024;
 const MAX_PATHS = 2000;
 const MAX_TOTAL_READ = 16 * 1024 * 1024;
@@ -59,13 +63,13 @@ export async function inspectDesignGitTrees(input: { repo: string; base: string;
       return sha;
     };
     baseCommit = await resolve(input.base); headCommit = await resolve(input.head);
-    const read = async (commit: string, file: string): Promise<string | null> => {
+    const read = async (commit: string, file: string, maxBlob = MAX_BLOB): Promise<string | null> => {
       // Literal pathspec; a repository filename cannot broaden another read.
-      const entry = await git(['ls-tree', '-z', commit, '--', `:(literal)${file}`]);
+      const entry = await git(['ls-tree', '--full-tree', '-z', commit, '--', `:(literal)${file}`]);
       if (!entry) return null;
       const match = /^(100644|100755) blob ([a-f0-9]{40,64})\t([^\0]+)\0$/.exec(entry);
       if (!match || match[3] !== file) throw new InspectionUnavailable('non-regular-policy-or-source');
-      return git(['cat-file', 'blob', match[2]]);
+      return git(['cat-file', 'blob', match[2]], maxBlob);
     };
     const snapshot = async (commit: string): Promise<DesignPolicySnapshot> => {
       const standard = await read(commit, 'docs/DESIGN-STANDARD.md');
@@ -82,10 +86,11 @@ export async function inspectDesignGitTrees(input: { repo: string; base: string;
     if (changedPaths.length > MAX_PATHS) throw new InspectionUnavailable('diff-capacity');
     if (changedPaths.some(file => file.includes('\\') || /[\0\r\n]/.test(file) || file.split('/').some(part => !part || part === '.' || part === '..'))) throw new InspectionUnavailable('noncanonical-git-path');
     const sourceText: Record<string, string | null> = Object.create(null);
-    for (const file of changedPaths) {
-      if (!/\.[cm]?[jt]sx?$/.test(file)) continue;
+    // Read only the sources the classifier will look at; registered, UI-root,
+    // test and policy paths are classified by name and registry alone.
+    for (const file of pathsNeedingSourceText({ changedPaths, baseRegistry: base.registry, candidateRegistry: head.registry })) {
       // Look at both sides: removing the only HTML marker must not hide a UI edit.
-      const before = await read(baseCommit, file), after = await read(headCommit, file);
+      const before = await read(baseCommit, file, MAX_SOURCE_BLOB), after = await read(headCommit, file, MAX_SOURCE_BLOB);
       sourceText[file] = before === null && after === null ? null : `${before ?? ''}\n${after ?? ''}`;
     }
     if (performance.now() >= deadline) throw new InspectionUnavailable('read-deadline');

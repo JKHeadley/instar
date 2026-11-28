@@ -71,6 +71,23 @@ describe('manual inspector reads immutable real Git trees', () => {
   expect(await inspectDesignGitTrees({ repo: f.root, base: f.base, head })).toMatchObject({ status: 'unavailable', code: 'git-read-failed' });
  });
 
+ it('does not read registered or UI-root sources, so a large registered file stays readable', async () => {
+  // Real main has registered files over the 2 MiB policy cap (src/server/routes.ts).
+  const f = fixture(); const registry = structuredClone(f.registry); registry.screens[0].shared.push('src/big-routes.ts');
+  const base = f.commit({ 'docs/design/screens.json': JSON.stringify(registry), 'src/big-routes.ts': '// a\n' });
+  const head = f.commit({ 'src/big-routes.ts': '// invented\n' + 'x'.repeat(3 * 1024 * 1024), 'dashboard/accounts.js': 'export const title = "' + 'y'.repeat(3 * 1024 * 1024) + '";' });
+  const r = await inspectDesignGitTrees({ repo: f.root, base, head });
+  expect(r.status).toBe('structurally-valid'); if ('classification' in r) expect(r.classification.screens).toEqual(['accounts']);
+ });
+ it('reads a large unregistered source under the per-file source cap and refuses one over it', async () => {
+  const f = fixture();
+  const within = f.commit({ 'src/big-page.ts': 'export const page = "<!doctype html>";\n// ' + 'x'.repeat(3 * 1024 * 1024) });
+  const r = await inspectDesignGitTrees({ repo: f.root, base: f.base, head: within });
+  expect(r.status).toBe('findings'); if ('classification' in r) expect(r.classification.unregistered).toContain('src/big-page.ts');
+  const over = f.commit({ 'src/big-page.ts': '// ' + 'x'.repeat(8 * 1024 * 1024 + 1) });
+  expect(await inspectDesignGitTrees({ repo: f.root, base: f.base, head: over })).toMatchObject({ status: 'unavailable', code: 'git-read-failed' });
+ });
+
  it('refuses a complete diff exceeding the declared changed-path budget', async () => {
   const f = fixture(); const oid = f.git('rev-parse', f.base + ':dashboard/accounts.js');
   const head = f.commitObjects(Array.from({ length: 2001 }, (_, i) => ({ path: Buffer.from(`dashboard/new-${i}.html`), mode: '100644', oid })));

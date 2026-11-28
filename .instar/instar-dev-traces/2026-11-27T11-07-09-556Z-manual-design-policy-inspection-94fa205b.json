@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "manual-design-policy-inspection",
+  "sessionId": "388169ac-1928-4157-989f-3b4de5d67158",
+  "timestamp": "2026-11-27T11:07:09.556Z",
+  "artifactPath": "upgrades/side-effects/manual-design-policy-inspection.md",
+  "artifactSha256": "b9a4e944641327cbe21a18ad992799fd60a46f8da1a7691a9d4b945a6b9e748e",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "docs/design/screens.json",
+    "upgrades/side-effects/manual-design-policy-inspection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Data-only screen registry catch-up after main added screens; no code change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

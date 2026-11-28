@@ -3,12 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { designRuleLockForStandard, designStandardForEntries } from './designStandardForEntries.js';
 export function createDesignPolicyGitRepo() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'design-policy-fixture-')));
   const git = (...args: string[]) => SafeGitExecutor.run(args, { cwd: root, operation: 'tests/design-policy-git-fixture', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-q'); git('config', 'user.name', 'Design Policy Test'); git('config', 'user.email', 'design@example.com');
-  const standard = fs.readFileSync(new URL('../../docs/DESIGN-STANDARD.md', import.meta.url), 'utf8');
-  const lock = fs.readFileSync(new URL('../../docs/design/rule-ids.lock.json', import.meta.url), 'utf8');
+  // The fixture commits only DF-0001, so the standard and its id lock keep only the rules that entry (or no entry) earned.
+  const standard = designStandardForEntries(fs.readFileSync(new URL('../../docs/DESIGN-STANDARD.md', import.meta.url), 'utf8'), ['DF-0001']);
+  const lock = designRuleLockForStandard(fs.readFileSync(new URL('../../docs/design/rule-ids.lock.json', import.meta.url), 'utf8'), standard);
   const registry = { version: 1, screens: [{ id: 'accounts', title: 'Accounts', mainQuestion: 'Which account has room?', surface: 'Web', route: '/accounts', sources: ['dashboard/accounts.js'], shared: [], capture: 'uncaptured', trackedBy: 'CMT-2169' }] };
   const write = (file: string, contents: string) => { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), contents); };
   const commit = (files: Record<string, string>) => {

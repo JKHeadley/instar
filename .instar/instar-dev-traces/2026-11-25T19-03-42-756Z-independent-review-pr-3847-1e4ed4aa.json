@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "independent-review-pr-3847",
+  "sessionId": "017c26ed-5596-4576-9c20-20af13e4c1f8",
+  "timestamp": "2026-11-25T19:03:42.756Z",
+  "artifactPath": "upgrades/side-effects/independent-review-pr-3847.md",
+  "artifactSha256": "05d3834af379a3ec5514343203d7bda26ba212f2f4d7f88cee7ba17c201d0ca3",
+  "specPath": null,
+  "coveredFiles": [
+    "src/data/awareness/failed-verification-evidence.md",
+    "src/localVerify/failureEvidence.ts",
+    "src/localVerify/orchestrator.ts",
+    "tests/e2e/internal-codex-reset-first-lifecycle.test.ts",
+    "tests/e2e/security-preflight-alive.test.ts",
+    "tests/e2e/threadline/pairing-handshake-production-path.test.ts",
+    "tests/helpers/conversation-graph-frozen-dist.mjs",
+    "tests/helpers/conversation-graph-live-server.mjs",
+    "tests/unit/coordination-protocol.test.ts",
+    "tests/unit/localVerify/failureEvidence.test.ts",
+    "tests/unit/localVerify/orchestrator.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hash-bound independent review of the exact verified source and test diff. This commit adds only the artifact and trace.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "mini-sustained-start-headroom",
+  "sessionId": "ed99de61-509a-4e0d-908f-801b299fef73",
+  "timestamp": "2026-11-26T01:18:47.753Z",
+  "artifactPath": "upgrades/side-effects/mini-sustained-start-headroom.md",
+  "artifactSha256": "ad6976b8d1f6e3b6b04c66909404957bcd6be10c31c2c75ec43aa392c3068496",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/smallPeerMemory.ts",
+    "tests/unit/localVerify/smallPeerMemory.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Optional reversible admission check for one already supervised peer. The runtime floor and stop authority are unchanged.",
+  "eli16Path": "upgrades/next/mini-sustained-start-headroom.md",
+  "sideEffectsPath": "upgrades/side-effects/mini-sustained-start-headroom.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

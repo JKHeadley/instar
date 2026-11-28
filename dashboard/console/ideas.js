@@ -21,12 +21,12 @@ async function decide(request, status, refresh) {
   status.textContent = 'Working…';
   const planned = await send('/ecosystem-ideas/plan', request);
   if (planned.status !== 200) { status.textContent = planned.data.detail || planned.data.error || 'That could not be prepared.'; return; }
-  const pin = await askPin({ title: 'Confirm', explain: planned.data.renderedText });
+  const pin = await askPin({ title: 'Confirm', explain: planned.data.renderedText, isCurrent: () => status.isConnected });
   if (!pin) { status.textContent = ''; return; }
   const done = await send('/ecosystem-ideas/commit', { pin: pin.pin, planId: planned.data.planId, nonce: planned.data.nonce });
   pin.pin = '';
   status.textContent = done.status === 200 ? 'Done.' : (done.data.error || 'That did not go through.');
-  if (done.status === 200) setTimeout(refresh, 600);
+  if (done.status === 200) setTimeout(() => { if (status.isConnected) refresh(); }, 600);
 }
 
 function ideaCard(idea, refresh) {
@@ -64,9 +64,20 @@ export async function renderIdeas(main, api) {
   for (const band of BANDS) {
     const ideas = ideasInBand(s.ideas, band.id);
     if (!ideas.length) continue;
-    parts.push(el('h2', { class: 'eyebrow section-label', text: `${band.label} (${ideas.length})` }), el('p', { class: 'need-sub', text: band.note }), ...ideas.map((i) => ideaCard(i, refresh)));
+    const title = `${band.label} (${ideas.length})`;
+    const cards = el('div', { class: 'detail-card-grid' }, ideas.map((i) => ideaCard(i, refresh)));
+    if (band.id === 'unranked') {
+      parts.push(el('details', { class: 'ideas-unranked', ontoggle: (event) => {
+        const group = event.currentTarget;
+        group.toggleAttribute('data-interaction-open', group.open);
+      } }, el('summary', { text: title }), el('p', { class: 'need-sub', text: band.note }), cards));
+    } else {
+      parts.push(el('h2', { class: 'eyebrow section-label', text: title }), el('p', { class: 'need-sub', text: band.note }), cards);
+    }
   }
   parts.push(el('h2', { class: 'eyebrow section-label', text: 'Projects we review' }));
+  const projectCards = el('div', { class: 'detail-card-grid' });
+  parts.push(projectCards);
   for (const w of s.watchlist) {
     const status = el('p', { class: 'need-sub', role: 'status' });
     const row = [el('span', { class: 'need-title', text: w.repo }), el('p', { class: 'need-sub', text: projectLine(w) })];
@@ -75,13 +86,13 @@ export async function renderIdeas(main, api) {
       retry.addEventListener('click', async () => { const d = await send('/ecosystem-ideas/projects/retry', { repo: w.repo }); status.textContent = d.status === 200 ? 'It will try at the next round.' : 'That did not go through.'; });
       row.push(retry);
     }
-    parts.push(el('div', { class: 'need-card muted-card' }, row, status));
+    projectCards.append(el('div', { class: 'need-card muted-card' }, row, status));
   }
   for (const p of s.proposals) {
     const status = el('p', { class: 'need-sub', role: 'status' });
     const add = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Add to the list' });
     add.addEventListener('click', () => decide({ action: 'watchlist-add', repo: p.repo, reason: p.reason }, status, refresh));
-    parts.push(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
+    projectCards.append(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: `Suggested: ${p.repo}` }), el('p', { class: 'need-sub', text: p.reason }), add, status));
   }
   if (s.lastTickError) parts.push(note(`The last round had a problem: ${s.lastTickError}`));
   setKids(main, el('div', { class: 'ideas-page' }, parts));

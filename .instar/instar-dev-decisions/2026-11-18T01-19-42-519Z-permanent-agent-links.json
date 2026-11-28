@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-18T01:19:42.519Z",
+  "slug": "permanent-agent-links",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 315,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AgentLinks.ts",
+      "src/core/types.ts",
+      "src/data/awareness/agent-links.md",
+      "src/data/feature-ladders.json",
+      "src/server/AgentServer.ts",
+      "src/server/agentLinkRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 314,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

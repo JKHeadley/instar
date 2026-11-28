@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "plan-approval-clarity",
+  "sessionId": "f89a20e9-05d7-4a9b-ab75-327a8400d64f",
+  "timestamp": "2026-11-23T18:15:37.970Z",
+  "artifactPath": "upgrades/side-effects/plan-approval-clarity.md",
+  "artifactSha256": "c222dffb60c04b23680f518b797352fe3a58e1a1228a17c5d4e4568a558cb900",
+  "coveredFiles": [
+    "dashboard/console/plans-model.js",
+    "dashboard/console/plans.js",
+    "docs/specs/plan-approval-clarity.eli16.md",
+    "tests/unit/console-plans.test.ts",
+    "upgrades/next/plan-approval-clarity.md",
+    "upgrades/side-effects/plan-approval-clarity.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only reversible clarification of existing approval requests, no authority or payload changes",
+  "eli16Path": "docs/specs/plan-approval-clarity.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/plan-approval-clarity.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

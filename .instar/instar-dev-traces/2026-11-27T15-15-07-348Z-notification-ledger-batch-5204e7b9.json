@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "notification-ledger-batch",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T15:15:07.348Z",
+  "artifactPath": "upgrades/side-effects/notification-ledger-batch.md",
+  "artifactSha256": "4562bc9609993398fbb11d92085fc6501a980a10d7810b41a66e322f6cc52492",
+  "coveredFiles": [
+    "src/messaging/NotificationSelectivityGate.ts",
+    "tests/unit/notification-selectivity.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Keep the old never-throws guarantee for an unserializable ledger row after moving serialization into ledger().",
+  "eli16Path": "docs/eli16/notification-ledger-batch.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-ledger-batch.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
