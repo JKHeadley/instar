@@ -56,4 +56,6 @@ unbounded-self-action: closure n/a (negative declaration). A log line on a failu
 
 ## Second-pass review
 
+**Reviewer:** an independent second-pass subagent (Claude, fresh context, given the code and the symptom) traced every throw site; verdict concur, nothing blocking.
+
 An independent reviewer traced every throw site from routes.ts through fetchDesktopPeerOverRopes, poolPeerFetch and the reply parsing. The only consumer that matches on these messages, DesktopMeshBroker, is untouched. Every message the `desktop-peer-` pattern can match is a fixed string in our own code, and `status` is limited to an integer from 100 to 599. Verdict: concur. Taken from review: `starting` for PoolPeerBootingError, `reply-invalid` for a JSON parse failure, and `reset` for socket resets and undici header or body timeouts, which would otherwise have logged `other`. Accepted as is: a budget that runs out during connect checks logs `unreachable`, and the elapsed ms near 3000 tells it apart.
