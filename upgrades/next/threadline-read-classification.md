@@ -1,0 +1,17 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The external-operation gate recognizes the exact Threadline discovery, agent listing, history, and registry lookup tools as reads. Threadline still checks access to the results. Network discovery and registry search send their search filters to the existing relay or registry.
+
+## What to Tell Your User
+
+Your agent can look up other agents and read accessible Threadline history without opening an approval request. Sending messages still follows your approval settings.
+
+## Summary of New Capabilities
+
+Threadline lookups use the existing read path in the approval gate.
+
+## Evidence
+
+The classifier cases cover the exact lookup names and protect the send, delete, acknowledgment, registry update, and unrecognized tool paths. The production startup fixture exercises discovery, listing, send, and delete before and after a restart.
