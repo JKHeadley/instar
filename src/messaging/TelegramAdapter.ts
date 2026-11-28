@@ -1,4 +1,5 @@
 import { categoryForAttention } from './notificationCategories.js';
+import { resolveAttentionRoutingMode } from './attentionRoutingMode.js';
 import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
 const stampResponse = responseNotificationStamper('src/messaging/TelegramAdapter.ts');
@@ -200,8 +201,9 @@ export interface TelegramConfig {
    * 'single-topic' mode — the DEFAULT — EVERY attention item, all priorities
    * included (HIGH/URGENT too), is posted as one message into the single
    * durable "🔔 Attention" hub topic instead of spawning a forum topic per
-   * item. 'per-item' restores the legacy topic-per-item behavior (still
-   * shaped by attentionTopicGuard + topicCreationBudget). The agent-health
+   * item. 'per-item' (deprecated, see src/messaging/attentionRoutingMode.ts)
+   * restores the legacy topic-per-item behavior until 2027-03-01, still
+   * shaped by attentionTopicGuard + topicCreationBudget. The agent-health
    * lane is unaffected in either mode.
    */
   attentionRouting?: {
@@ -1512,7 +1514,12 @@ export class TelegramAdapter implements MessagingAdapter {
       maxTrackedKeys: Number.isFinite(alc.maxTrackedKeys) && (alc.maxTrackedKeys as number) > 0 ? Math.floor(alc.maxTrackedKeys as number) : 256,
       dedupWindowMs: Number.isFinite(alc.dedupWindowMs) && (alc.dedupWindowMs as number) > 0 ? (alc.dedupWindowMs as number) : 30 * 60 * 1000,
     };
-    this.attentionRoutingMode = config.attentionRouting?.mode === 'per-item' ? 'per-item' : 'single-topic';
+    {
+      // Legacy per-item routing is dated for removal (STD-SUBCOUNTDOWN-per-item-routing-retirement).
+      const routing = resolveAttentionRoutingMode(config.attentionRouting?.mode);
+      this.attentionRoutingMode = routing.mode;
+      if (routing.notice) console.warn(routing.notice);
+    }
     this.attentionHubFilterMode = resolveHubFilterMode(config.attentionHubFilter);
     this.loadRegistry();
     this.loadOffset();
