@@ -108,7 +108,7 @@ export interface MachineRouteContext {
    * browser-bound operator assertion before it creates a grant. */
   onDesktopOperatorBegin?: (body: unknown, authenticatedFrontId: string) => Promise<{ requestId: string; targetSessionToken: string }>;
   onDesktopOperatorKeepAlive?: (body: unknown, authenticatedFrontId: string) => boolean;
-  onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  onDesktopAvailability?: () => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string; checkFailure?: string }>;
   onDesktopOperatorCommand?: (body: unknown, authenticatedFrontId: string) => Promise<unknown>;
   /** Guided setup from the front. Reachable while desktop is off: this is how it comes on. */
   onDesktopSetup?: (body: unknown, authenticatedSenderId: string) => Promise<unknown>;

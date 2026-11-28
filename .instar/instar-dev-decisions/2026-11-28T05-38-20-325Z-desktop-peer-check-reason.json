@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-28T05:38:20.325Z",
+  "slug": "desktop-peer-check-reason",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/AgentServer.ts",
+      "src/server/desktopPeerRopeFetch.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 2
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The /desktop/targets peer catch discarded the failure reason; the Mama PC showed 'Could not check' with nothing in the Studio log (2026-11-27 21:13 PT)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a log line on a failure path a person triggers by loading the list; adds no action, loop or retry"
+  },
+  "verdict": "pass"
+}

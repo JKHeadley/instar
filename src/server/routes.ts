@@ -154,6 +154,7 @@ import { loadJobsDetailed } from '../scheduler/JobLoader.js';
 import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { DESKTOP_CHECK_FAILED_REASON, desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
+import { desktopPeerCheckReason } from './desktopPeerRopeFetch.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
 import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
 import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
@@ -2118,7 +2119,7 @@ export interface RouteContext {
   desktopTargetSigningKey?: (machineId: string) => string | null;
   /** Other pool machines a pool status read should ask. */
   desktopTargets?: () => string[];
-  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string }>;
+  desktopProbePeer?: (machineId: string) => Promise<{ machineId: string; label: string; ready: boolean; unavailableReason?: string; checkFailure?: string }>;
   /** Guided setup: reachable with desktop off, because it is how desktop comes on. */
   desktopSetupTarget?: import('../core/DesktopSetupTarget.js').DesktopSetupTarget | null;
   desktopSetupPeerCall?: (machineId: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -16279,12 +16280,17 @@ export function createRoutes(ctx: RouteContext): Router {
       .filter(peer => peer.machineId !== target.machineId && /^m_[a-f0-9]{32}$/.test(peer.machineId))
       .slice(0, 7);
     const peerMachines = await Promise.all(knownPeers.map(async peer => {
+      const checkStarted = Date.now();
       try {
         if (!ctx.desktopMeshBroker || !ctx.desktopProbePeer) throw new Error('desktop-peer-unavailable');
         // The pool's name wins: a peer's own copy of the registry can lag a rename.
-        const probed = await ctx.desktopProbePeer(peer.machineId);
+        const { checkFailure, ...probed } = await ctx.desktopProbePeer(peer.machineId);
+        // The peer answered, but could not check its own desktop: log its fixed word, never show it.
+        if (checkFailure) console.warn(`[desktop] ${peer.machineId} could not check its own desktop: ${checkFailure} after ${Date.now() - checkStarted} ms`);
         return { ...probed, label: verifiedEntityName(peer.machineId, peer.nickname) ?? probed.label };
-      } catch {
+      } catch (error) {
+        // The viewer shows one plain sentence; the log keeps the fixed reason and the time taken.
+        console.warn(`[desktop] could not check ${peer.machineId}: ${desktopPeerCheckReason(error)} after ${Date.now() - checkStarted} ms`);
         return { machineId: peer.machineId, label: peer.nickname || 'Other machine', ready: false,
           unavailableReason: DESKTOP_CHECK_FAILED_REASON };
       }

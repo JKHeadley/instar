@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "slug": "desktop-peer-check-reason",
+  "sessionId": "dcbdf3b8-b0ce-4950-9a7c-d8e435210733",
+  "timestamp": "2026-11-28T11:31:23.537Z",
+  "artifactPath": "upgrades/side-effects/desktop-peer-check-reason.md",
+  "artifactSha256": "376b0dc9c8dc6490e6e3d1704eeabbec06ae6c94cf4fd8971ac6abfde25786b3",
+  "coveredFiles": [
+    "src/server/desktopPeerRopeFetch.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/desktop-peer-rope-fetch.test.ts",
+    "docs/specs/desktop-peer-check-reason.eli16.md",
+    "upgrades/next/desktop-peer-check-reason.md",
+    "upgrades/side-effects/desktop-peer-check-reason.md",
+    "src/server/machineRoutes.ts",
+    "tests/integration/desktop-routes.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic only: one log line with a fixed reason word and elapsed ms when the Remote Desktop front cannot check a peer. The response, every error message and every consumer are unchanged.",
+  "eli16Path": "docs/specs/desktop-peer-check-reason.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/desktop-peer-check-reason.md",
+  "secondPass": true,
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The /desktop/targets peer catch discarded the failure reason; the Mama PC showed 'Could not check' with nothing in the Studio log (2026-11-27 21:13 PT)."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "a log line on a failure path a person triggers by loading the list; adds no action, loop or retry"
+  }
+}
