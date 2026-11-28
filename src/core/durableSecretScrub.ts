@@ -353,3 +353,35 @@ export function scrubStructured<T extends Record<string, unknown>>(
 
   return { record: out as T, redactions, truncated, error };
 }
+
+/** Scrub raw leaves before a JSON-shaped value is serialized or forwarded. */
+export function scrubJsonValueForStore(value: unknown, scrubAdditionalPatterns?: (text: string) => string): unknown {
+  const activeObjects = new WeakSet<object>();
+  const labeledField = /(?:token|secret|password|passwd|pwd|api[_-]?key)$/i;
+
+  function scrubText(text: string): string {
+    const scrubbed = scrubForStore(text).text;
+    return scrubAdditionalPatterns ? scrubAdditionalPatterns(scrubbed) : scrubbed;
+  }
+
+  function visit(input: unknown, depth: number): unknown {
+    if (typeof input === 'string') return scrubText(input);
+    if (input === null || typeof input !== 'object') return input;
+    if (depth >= 32 || activeObjects.has(input)) return '[REDACTED:unsupported-structure]';
+
+    activeObjects.add(input);
+    try {
+      if (Array.isArray(input)) return input.map(item => visit(item, depth + 1));
+      return Object.fromEntries(Object.entries(input).map(([key, item]) => [
+        scrubText(key),
+        (typeof item === 'string' || typeof item === 'number') && labeledField.test(key)
+          ? '[REDACTED:labeled-secret]'
+          : visit(item, depth + 1),
+      ]));
+    } finally {
+      activeObjects.delete(input);
+    }
+  }
+
+  return visit(value, 0);
+}

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "design-coverage-policy-composition",
+  "sessionId": "e7d3ee73-b4ae-43b6-9d89-bbc229ef91ad",
+  "timestamp": "2026-11-28T02:26:13.577Z",
+  "artifactPath": "upgrades/side-effects/design-coverage-policy-composition.md",
+  "artifactSha256": "6903eb8714d77f00fc4b3a0f9e5f9cce7dbdcc84c3f4fe0d00d26fd063d4f002",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-23T15-03-53-014Z-design-coverage-policy-composition.json",
+    "src/designGate/coveragePolicyInspection.ts",
+    "tests/unit/design-coverage-policy-inspection.test.ts",
+    "upgrades/next/design-coverage-policy-composition.md",
+    "upgrades/side-effects/design-coverage-policy-composition.md",
+    "upgrades/side-effects/design-coverage-policy-composition.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Whole-PR trace after merging the new 3683 head and recording the second-pass reviewers; whole file re-run green on this head.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

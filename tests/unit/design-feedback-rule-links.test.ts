@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { inspectFeedbackRuleLinks } from '../../src/designGate/feedbackRuleLinks.js';
-const standard = fs.readFileSync('docs/DESIGN-STANDARD.md', 'utf8');
+import { designStandardForEntries } from '../fixtures/designStandardForEntries.js';
+// Only DF-0001 is passed below, so the standard keeps only the rules it (or no entry) earned.
+const standard = designStandardForEntries(fs.readFileSync('docs/DESIGN-STANDARD.md', 'utf8'), ['DF-0001']);
 const filename = 'docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md';
 const markdown = fs.readFileSync(filename, 'utf8');
 const entry = (text = markdown, path = filename) => ({ path, markdown: text });

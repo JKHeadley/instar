@@ -1,0 +1,9 @@
+# Evidence Before Reducing Security Review Context
+
+Security review needs judgment and full access to its evidence. We found that one run received an identical long ledger result twice, but that does not prove a later read is safe to skip. The model may have compacted its context, the source may have changed, or delivery may have failed. This change measures the inputs without making that decision.
+
+A new switch, off by default, lets the scheduler make a private packet after an ordinary security-review session starts. The packet contains every byte of four declared inputs: the private findings ledger, the selected checkout’s threat map, the rotation state and the actual dispatched prompt. It divides them into bounded chunks with exact offsets and hashes, so another local tool can verify that no source text was silently dropped. Repeated entries and mixed statuses stay intact; the preflight does not decide which findings matter.
+
+The packet records the actual run, session and machine. It explicitly says it does not prove model delivery, retained context, code-tree coverage, model availability or review quality. Missing files, changing sources, storage problems and loss of write ownership produce unavailable evidence while the normal review continues. A slow or failed packet capture cannot hold the model session or start another one.
+
+Packets stay in the existing private directory, with private file permissions and bounded retention. Nothing is posted publicly or sent to another model. The original ledger and rotation files are never changed by this feature. Existing installations receive the code and awareness through their normal update, but no setting is enabled. Turning the switch off or reverting the code restores the previous behavior and leaves only inert diagnostic files. This is the complete approved evidence-only stage; it does not suppress reads, skip security reviews or claim realized token savings.

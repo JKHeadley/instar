@@ -37,6 +37,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { scrub, scrubString } from './CredentialAuditEmit.js';
+import { scrubJsonValueForStore } from './durableSecretScrub.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Per-row byte clamp (§3.5 write discipline) — a code constant, not config. */
@@ -697,7 +698,7 @@ function boundValue(v: unknown, depth: number): unknown {
   if (depth >= 2) {
     // Too deep for a bounded envelope — collapse to a scrubbed JSON head.
     try {
-      return scrubString(JSON.stringify(v) ?? '').slice(0, CONTEXT_HEAD_CLAMP);
+      return (JSON.stringify(scrub(scrubJsonValueForStore(v))) ?? '').slice(0, CONTEXT_HEAD_CLAMP);
     } catch {
       // @silent-fallback-ok: a cyclic/unserializable deep value becomes a fixed
       // marker — the envelope builder must never throw into an enrolling callsite.

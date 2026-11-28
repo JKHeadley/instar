@@ -150,8 +150,10 @@ export interface AppPoolHandle {
   read(recordKey: string): SessionOwnershipRecord | null;
   gateOpenFor(conversationKey: string): boolean;
   drainRunning(recordKey: string): boolean;
-  sessionRunning(tmuxSession: string): boolean;
-  closeLostSession(conversationKey: string, tmuxSession: string): Promise<{ closed: boolean; detail?: string }>;
+  sessionIdentity?(tmuxSession: string): string | null;
+  sessionRunning(tmuxSession: string): boolean | Promise<boolean | 'indeterminate'>;
+  /** Recheck mayCommit immediately before a durable or irreversible close. */
+  closeLostSession(conversationKey: string, tmuxSession: string, mayCommit: () => boolean): Promise<{ closed: boolean; detail?: string }>;
   route(msg: InboundMessage): Promise<RouteOutcome>;
   /** Another machine is named as lease holder. A suspended or missed renewal alone is not the lease moving (§2.1). */
   leaseHeldElsewhere(): boolean;
@@ -487,6 +489,8 @@ export interface DeliverStoredInput {
   event: MessageEvent | MediaMessageEvent;
   ownerName: string;
   memoryPersonId: string | null;
+  /** SEC-164 §4.5: a one-line note for the session only (never stored), e.g. that a key was removed. */
+  sessionNote?: string;
 }
 
 /**
@@ -507,7 +511,7 @@ export async function dispatchStoredAppMessage(s: AppConversationService, input:
   // This conversation's documents, when their list changed since it was last sent (§3.7).
   let docNotes: string[] = [];
   try { docNotes = s.deps.documentNotes?.(key) ?? []; } catch { docNotes = []; } // @silent-fallback-ok — a missed documents note never blocks a message
-  const notes = [...docNotes, ...pending.lines];
+  const notes = [...docNotes, ...pending.lines, ...(input.sessionNote ? [input.sessionNote] : [])];
   const originVerdict = s.verify(event);
   // 💻 for a browser key, from the signed ledger activation row (dashboard-conversations-browser-device §4.3, §4.7).
   const originClient = s.originClient(event, originVerdict);

@@ -15,6 +15,26 @@ export interface SelectivityConfig {
   enabled?: boolean; dryRun?: boolean; legacy?: Partial<Record<NotificationCategoryId, boolean>>; push?: { categories?: Partial<Record<NotificationCategoryId, boolean>>; jobs?: Record<string, boolean>; jobTopics?: Record<string, number | null> };
   digest?: { enabled?: boolean; cadence?: 'daily' }; quietStore?: { retentionDays?: number; maxEntries?: number };
 }
+/**
+ * Categories that push by default (docs/specs/no-data-loss-on-machine-death.md §6.2, D13): a disk
+ * warning must reach a person, so it is exempt from quiet-by-default. An explicit owner choice to
+ * quiet it (`push.categories['disk-steward']: false`) still stands.
+ */
+export const DEFAULT_PUSH_CATEGORIES: ReadonlySet<NotificationCategoryId> = new Set<NotificationCategoryId>(['disk-steward']);
+
+/** Whether a category pushes under these settings: an explicit opt-in, or a default-push category the owner has not quieted. */
+export function categoryPushes(config: SelectivityConfig, category: NotificationCategoryId): boolean {
+  const explicit = config.push?.categories?.[category];
+  const legacy = config.legacy?.[category];
+  if (explicit === true || legacy === true) return true;
+  return DEFAULT_PUSH_CATEGORIES.has(category) && explicit !== false && legacy !== false;
+}
+
+/** The owner explicitly quieted a category that would otherwise push by default. */
+export function ownerQuietedCategory(config: SelectivityConfig, category: NotificationCategoryId): boolean {
+  return DEFAULT_PUSH_CATEGORIES.has(category) && (config.push?.categories?.[category] === false || config.legacy?.[category] === false);
+}
+
 export type NotificationDecision = { decision: 'deliver' | 'deliver-push' | 'record'; reason: string; category: NotificationCategoryId; dryRun: boolean; mapCold?: boolean };
 export type QuietReceipt = { messageId?: never; delivered: false; recorded: true; quietId: string; topicId?: number };
 export class QuietRecordedError extends Error {
@@ -127,8 +147,10 @@ export class NotificationSelectivityGate {
     });
   }
   isEnforcing(): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false; }
-  categoryPushEnabled(category: NotificationCategoryId): boolean { const config = this.config(); return this.isEnforcing() && (config.push?.categories?.[category] === true || config.legacy?.[category] === true); }
-  holdsCategory(category: NotificationCategoryId): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false && config.push?.categories?.[category] !== true && config.legacy?.[category] !== true; }
+  categoryPushEnabled(category: NotificationCategoryId): boolean { const config = this.config(); return this.isEnforcing() && categoryPushes(config, category); }
+  /** The owner explicitly quieted a default-push category (the disk post then says so, §6.2). */
+  ownerQuieted(category: NotificationCategoryId): boolean { return ownerQuietedCategory(this.config(), category); }
+  holdsCategory(category: NotificationCategoryId): boolean { const config = this.config(); return config.enabled === true && config.dryRun === false && !categoryPushes(config, category); }
   jobPush(): Record<string, boolean> { return this.config().push?.jobs ?? {}; }
   /** Text and priority play no part: only a verified identity and the operator's own choice. */
   private jobOptedIn(envelope: OutboundEnvelope | undefined, config: SelectivityConfig): boolean {
@@ -217,7 +239,7 @@ export class NotificationSelectivityGate {
     }
     const significant = envelope?.significantClass && SIGNIFICANT_TABLE[category]?.includes(envelope.significantClass);
     const promotedUpdate = category === 'update-announcement' && envelope?.releaseAudiencePromoted === true && settings.push?.categories?.[category] !== false;
-    const categoryPush = settings.push?.categories?.[category] === true || settings.legacy?.[category] === true;
+    const categoryPush = categoryPushes(settings, category);
     const jobOptIn = !categoryPush && this.jobOptedIn(envelope, settings);
     if (!significant && !promotedUpdate && !categoryPush && !jobOptIn) return result('record', 'quiet-default');
     if (significant) {
@@ -244,12 +266,16 @@ export class NotificationSelectivityGate {
     return this.evidenceWrites;
   }
   async tickDigest(): Promise<void> {
-    if (this.digestBusy || this.config().digest?.enabled !== true || !this.onSummary) return;
+    if (this.digestBusy || !this.onSummary) return;
+    const digestOn = this.config().digest?.enabled === true;
     this.digestBusy = true;
     try {
       await this.digestReady; await this.store.ready;
       if (this.now() - this.digestLast < 86400000) return;
       const counts = this.store.summarySince(Math.max(this.digestLast, this.now() - 86400000));
+      // The daily summary also runs, digest off or not, on any day a disk post was held quiet
+      // (no-data-loss-on-machine-death.md §6.2): a quiet disk warning must still reach a person once a day.
+      if (!digestOn && !(counts['disk-steward'] > 0)) return;
       this.digestLast = this.now();
       const file = path.join(this.root, 'state', 'notification-digest.json');
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
@@ -257,10 +283,10 @@ export class NotificationSelectivityGate {
       await fs.promises.rename(file + '.next', file);
       const total = Object.values(counts).reduce((sum, value) => sum + value, 0); if (!total) return;
       const lines = notificationCategories.filter(([id]) => counts[id]).map(([id, name]) => `${counts[id]} ${name.toLowerCase()}`);
-      const inventory = notificationCategories.filter(([id]) => this.config().push?.categories?.[id] === true).map(([, name]) => name.toLowerCase());
+      const inventory = notificationCategories.filter(([id]) => categoryPushes(this.config(), id)).map(([, name]) => name.toLowerCase());
       const jobs = pushedJobs(this.config());
       const permit = `${this.machineId}:digest:${this.now()}`; this.permits.set(permit, this.now() + 60000);
-      await this.onSummary(`${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}.${jobs.length ? ` Pushed jobs: ${jobs.join(', ')}.` : ''} ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
+      await this.onSummary(`${digestOn ? '' : 'A disk space notice was held quiet today, so here is the daily summary even though it is switched off. '}${total} quiet notices since the last digest: ${lines.join(', ')}. ${this.store.counters().unreadAging} unread notices are over three days old. Pushed categories: ${inventory.join(', ') || 'none'}.${jobs.length ? ` Pushed jobs: ${jobs.join(', ')}.` : ''} ${this.dashboardLink?.() ?? 'See the dashboard Notifications feed.'}`, {
         origin: 'automated', category: 'selectivity-digest', sourceContext: 'selectivity-digest', localPermit: permit,
       });
     } catch (error) { console.warn('[selectivity] digest unavailable; next attempt is the next daily cadence:', error); }
@@ -277,7 +303,7 @@ export class NotificationSelectivityGate {
       const summary = this.summaries.get(key); this.summaries.delete(key);
       if (!summary || !this.onSummary) return;
       const current = this.config();
-      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) && !pushedJobs(current).length : current.push?.categories?.[summary.category] !== true && current.legacy?.[summary.category] !== true && !(summary.category === 'job-status' && pushedJobs(current).length)))) return;
+      if (!this.isEnforcing() || (!significant && (global ? !Object.values(current.push?.categories ?? {}).some(Boolean) && !pushedJobs(current).length : !categoryPushes(current, summary.category) && !(summary.category === 'job-status' && pushedJobs(current).length)))) return;
       for (const [id, until] of this.permits) if (until < this.now()) this.permits.delete(id);
       const permit = `${this.machineId}:${this.now()}:${Math.random()}`;
       this.permits.set(permit, this.now() + 60000);
@@ -287,12 +313,28 @@ export class NotificationSelectivityGate {
     }, 600000);
     timer.unref(); this.summaries.set(key, { count: 1, category: verdict.category, label, timer });
   }
+  /** Ledger lines waiting for the next write; a burst becomes one append instead of one per row. */
+  private ledgerPending: string[] = [];
   private ledger(row: unknown): void {
+    // Serialize here (rows must keep call order), but keep the old guarantee that a row which
+    // cannot be serialized only marks the ledger unhealthy and never throws out of route().
+    let line: string;
+    try { line = JSON.stringify(row) + '\n'; } catch (error) {
+      this.metrics.ledgerHealthy = false;
+      console.warn('[selectivity] decision ledger row not serializable:', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    this.ledgerPending.push(line);
+    // A write is already queued and has not taken its batch yet: it will carry this row too.
+    if (this.ledgerPending.length > 1) return;
     this.ledgerWrites = this.ledgerWrites.then(async () => {
+      const lines = this.ledgerPending.splice(0);
+      if (lines.length === 0) return;
       const file = path.join(this.root, 'logs', 'notification-selectivity.jsonl');
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      // Rotation is checked per batch, so a file can exceed the cap by at most one batch.
       if (this.ledgerBytes >= 2 * 1024 * 1024) { await fs.promises.rename(file, file + '.previous'); this.ledgerBytes = 0; }
-      const line = JSON.stringify(row) + '\n'; await fs.promises.appendFile(file, line); this.ledgerBytes += Buffer.byteLength(line);
+      const chunk = lines.join(''); await fs.promises.appendFile(file, chunk); this.ledgerBytes += Buffer.byteLength(chunk);
     }).catch(error => { this.metrics.ledgerHealthy = false; console.warn('[selectivity] decision ledger unavailable:', error instanceof Error ? error.message : String(error)); });
   }
   withEnvelope<T>(envelope: OutboundEnvelope | undefined, fn: () => T): T {
@@ -382,7 +424,7 @@ export class NotificationSelectivityGate {
       preferences: this.preferences?.status(),
       soakEvidence: { ...this.evidence, healthy: this.evidenceHealthy, scope: 'this-machine', resetAfterUncleanShutdown: true, cleanDays: this.evidence.observingSince ? Math.max(0, (this.now() - Date.parse(this.evidence.observingSince)) / 86400000) : 0, operatorFlipRequired: true },
       counters: { ...this.metrics, ...this.store.counters() }, store: { ...this.store.health },
-      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !PROTECTED_DELIVERY_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: this.config().push?.categories?.[id] === true || this.config().legacy?.[id] === true })) };
+      categories: notificationCategories.map(([id, description]) => ({ id, description, configurable: !PROTECTED_DELIVERY_CATEGORIES.has(id), counters: this.categoryCounters.get(id) ?? { delivered: 0, pushed: 0, recorded: 0 }, push: categoryPushes(this.config(), id) })) };
   }
   async bootContextPool(topicId: number): Promise<string> {
     await this.store.ready;

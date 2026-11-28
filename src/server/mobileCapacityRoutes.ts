@@ -168,7 +168,15 @@ export function kindWord(framework: unknown): string { return (typeof framework 
  */
 export interface MobileAccountWindow { label: string; name: string; pct: number; resetsAt: string | null; tone: UsageTone; rolledOver: boolean }
 export type UsageTone = 'bad' | 'attn' | null;
-export interface MobileAccountMachine { name: string; isSelf: boolean; state: 'ok' | 'attn' | 'working' | 'unknown'; label: string }
+export interface MobileAccountMachine {
+  name: string;
+  isSelf: boolean;
+  state: 'ok' | 'attn' | 'working' | 'unknown';
+  label: string;
+  /** Stable identity for grouping only, never an action target. */
+  machineKey: string | null;
+  present: true;
+}
 export interface MobileAccount {
   key: string;
   name: string;
@@ -180,6 +188,7 @@ export interface MobileAccount {
   usageLine: string;
   tone: 'bad' | 'attn' | null;
   readingAt: string | null;
+  lastCheckedAt?: string;
   stale: boolean;
   machines: MobileAccountMachine[];
 }
@@ -276,7 +285,7 @@ export function accountEmail(id: string, email: unknown): string | null {
   return v;
 }
 
-interface AccountGroup { id: string; name: string | null; email: string | null; framework: unknown; cells: Array<{ row: Rec; machine: string; isSelf: boolean }>; reading: unknown; readingAt: number }
+interface AccountGroup { id: string; name: string | null; email: string | null; framework: unknown; cells: Array<{ row: Rec; machine: string; isSelf: boolean }>; readings: Map<string, { window: MobileAccountWindow; at: number }>; lastCheckedAt: number }
 export interface AccountsOptions {
   /** The account this machine's sessions run on (`/subscription-pool/in-use`), or null. */
   inUseAccountId?: string | null;
@@ -425,7 +434,7 @@ export function summarizeAccounts(
     const r = rec(raw);
     const id = str(r.id);
     if (!id) continue;
-    const g = groups.get(id) ?? { id, name: null, email: null, framework: r.framework, cells: [], reading: null, readingAt: 0 };
+    const g = groups.get(id) ?? { id, name: null, email: null, framework: r.framework, cells: [], readings: new Map<string, { window: MobileAccountWindow; at: number }>(), lastCheckedAt: 0 };
     g.name = g.name ?? phoneText(verifiedEntityName(id, r.nickname), 80);
     g.email = g.email ?? accountEmail(id, r.email);
     const mid = String(r.machineId ?? '');
@@ -435,19 +444,30 @@ export function summarizeAccounts(
     const q = rec(r.lastQuota);
     const at = Date.parse(String(q.measuredAt ?? ''));
     // A reading dated in the future (beyond small skew) is not evidence; it can never win "freshest".
-    if (Object.keys(q).length && Number.isFinite(at) && at <= opts.now + FUTURE_SKEW_MS && at > g.readingAt) { g.reading = q; g.readingAt = at; }
+    if (Number.isFinite(at) && at <= opts.now + FUTURE_SKEW_MS) {
+      g.lastCheckedAt = Math.max(g.lastCheckedAt, at);
+      // A newer response may omit a limit that another machine could still read.
+      for (const window of usageWindows(q, opts.now)) {
+        const previous = g.readings.get(window.label);
+        if (!previous || at > previous.at) g.readings.set(window.label, { window, at });
+      }
+    }
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
     const machines = g.cells.map((c) => {
       const mid = String(c.row.machineId ?? '');
+      const sourceId = str(c.row.machineId);
+      const stableId = sourceId && sourceId !== 'self' ? sourceId : c.isSelf && selfId !== 'self' ? selfId : null;
       // Latest repair for this account on THIS machine (self rows may carry no machineId: match self).
       const latest = (opts.repairs ?? [])
         .filter((r) => r.accountId === g.id && (r.machineId === mid || (c.isSelf && (!mid || r.machineId === selfId))))
         .sort((a, b) => Date.parse(String(b.updatedAt ?? '')) - Date.parse(String(a.updatedAt ?? '')))[0] ?? null;
-      return { name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
+      return { name: c.machine, isSelf: c.isSelf, machineKey: stableId ? rowKey('account-machine', stableId) : null, present: true as const, ...accountCellState(c.row, opts.repairs ? !!latest && REPAIR_WORKING.has(latest.state) : c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === mid)?.reason ?? null, opts.now, latest) };
     });
-    const windows = usageWindows(g.reading, opts.now);
+    const readings = [...g.readings.values()];
+    const windows = readings.map(({ window }) => window).sort((a, b) => WINDOW_RANK[a.label] - WINDOW_RANK[b.label]);
+    const readingAt = readings.length ? Math.min(...readings.map(({ at }) => at)) : 0;
     const top = topWindow(windows);
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
       : machines.some((m) => m.state === 'working') ? 'signing-in'
@@ -464,8 +484,9 @@ export function summarizeAccounts(
       windows: windows.map((w) => ({ ...w, resetsAt: w.resetsAt && Date.parse(w.resetsAt) > opts.now ? w.resetsAt : null })),
       usageLine: top ? `${top.pct}% of ${top.label}` : g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.',
       tone: top ? usageTone(top.pct) : null,
-      readingAt: g.readingAt ? new Date(g.readingAt).toISOString() : null,
-      stale: !!g.readingAt && opts.now - g.readingAt > READING_STALE_MS,
+      readingAt: readingAt ? new Date(readingAt).toISOString() : null,
+      ...(windows.length === 0 && g.lastCheckedAt ? { lastCheckedAt: new Date(g.lastCheckedAt).toISOString() } : {}),
+      stale: !!readingAt && opts.now - readingAt > READING_STALE_MS,
       machines,
       _pct: top ? top.pct : -1,
     };

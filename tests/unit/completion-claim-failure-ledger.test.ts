@@ -59,20 +59,20 @@ describe('ClaimClauseArbiter failure attribution', () => {
 });
 
 describe('CMT-1131 root cause', () => {
-  // The shape of production: estimated cost charged per call against a shared cap.
+  // At 0.25 cents per call, the 3-cent background share covers 12 of 15 turns.
   it('a shared queue refuses calls after its background share is spent, and the ledger says so', withDir(async (dir) => {
-    const shared = new LlmQueue({ maxConcurrent: 3, interactiveReservePct: 0.4, maxDailyCents: 100 });
+    const shared = new LlmQueue({ maxConcurrent: 3, interactiveReservePct: 0.4, maxDailyCents: 5 });
     const model = provider(OK);
     const intelligence = { evaluate: (prompt: string, options: any) => shared.enqueueMetered({ component: 'claim-verification',
       estimatedInputTokens: 10, maxOutputTokens: 10, estimatedCostCents: 0.25, hourly: { requests: 100_000 },
       daily: { requests: 100_000, inputTokens: 1e12, outputTokens: 1e12, costCents: 1e9 },
       run: () => model.evaluate(prompt, options) }) } as any;
     const verifier = new CompletionClaimVerifier({ intelligence, stateDir: dir, enabled: true, dryRun: true });
-    for (let turn = 0; turn < 300; turn++) await verifier.observe(`I merged thing ${turn}`, evidence);
-    expect(model.evaluate.mock.calls.length).toBe(240);
-    expect(verifier.stats().invalidOutputTurns).toBe(60);
+    for (let turn = 0; turn < 15; turn++) await verifier.observe(`I merged thing ${turn}`, evidence);
+    expect(model.evaluate.mock.calls.length).toBe(12);
+    expect(verifier.stats().invalidOutputTurns).toBe(3);
     const rows = verifier.readFailures(500);
-    expect(rows).toHaveLength(60);
+    expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({ reason: 'lane-reserve', branch: 'admission' });
   }));
 
@@ -84,8 +84,8 @@ describe('CMT-1131 root cause', () => {
       daily: { requests: 2_000, inputTokens: 1e12, outputTokens: 1e12, costCents: 500 },
       run: () => model.evaluate(prompt, options) }) } as any;
     const verifier = new CompletionClaimVerifier({ intelligence, stateDir: dir, enabled: true, dryRun: true });
-    for (let turn = 0; turn < 300; turn++) await verifier.observe(`I merged thing ${turn}`, evidence);
-    expect(model.evaluate.mock.calls.length).toBe(300);
+    for (let turn = 0; turn < 15; turn++) await verifier.observe(`I merged thing ${turn}`, evidence);
+    expect(model.evaluate.mock.calls.length).toBe(15);
     expect(verifier.stats().invalidOutputTurns).toBe(0);
   }));
 });
@@ -116,17 +116,17 @@ describe('CompletionClaimFailureLedger', () => {
   }));
 
   it('opens only when each of the 7 complete days is under 5%', withDir((dir) => {
-    expect(seed(dir, () => ({ turns: 100, failed: 4 })).gate().met).toBe(true);
+    expect(seed(dir, () => ({ turns: 21, failed: 1 })).gate().met).toBe(true);
   }));
   it('holds at exactly 5%', withDir((dir) => {
-    expect(seed(dir, (back) => ({ turns: 100, failed: back === 3 ? 5 : 0 })).gate().met).toBe(false);
+    expect(seed(dir, (back) => ({ turns: 20, failed: back === 3 ? 1 : 0 })).gate().met).toBe(false);
   }));
   it('holds on a quiet day and on a missing day', withDir((dir) => {
-    expect(seed(dir, (back) => ({ turns: back === 2 ? 19 : 100, failed: 0 })).gate().met).toBe(false);
+    expect(seed(dir, (back) => ({ turns: back === 2 ? 19 : 20, failed: 0 })).gate().met).toBe(false);
     expect(new CompletionClaimFailureLedger({ stateDir: path.join(dir, 'empty'), now: () => NOW }).gate().met).toBe(false);
   }));
   it('ignores today, survives a restart, and a corrupt rollup keeps the gate closed', withDir((dir) => {
-    seed(dir, () => ({ turns: 100, failed: 0 }));
+    seed(dir, () => ({ turns: 20, failed: 0 }));
     const reread = new CompletionClaimFailureLedger({ stateDir: dir, now: () => NOW });
     reread.recordFailure({ reason: 'provider-error', branch: 'provider' });
     expect(reread.gate().met).toBe(true);

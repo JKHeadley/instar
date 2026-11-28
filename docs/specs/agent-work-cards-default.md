@@ -39,6 +39,13 @@ approved: true
 approved-by: "echo (agent; converged spec, no constitution or protected-list change; operator request topic 134088 2026-11-20)"
 ---
 
+## Owner-surface amendment, November 23, 2026
+
+Justin's later instruction separates purely internal agent work from requests made by people. This amendment supersedes the aggregate and quiet-row display rules below. A pure internal card has no requester, no outward work, an agent carrier, no person waiting or open question, no owner-confirmation criterion and no outstanding completion confirmation. It stays outside default owner board lanes, Projects, Conversations, search, pins, unread counts and Needs you. Filter before counts and cuts. A deliberate `view=agent` board read shows only those cards and contributes zero owner requests. Existing history is retained; creating an internal card does not create an empty owner chat. Materialize execution history only when an allowed note or dispatch requires it.
+
+Additive card fields `agentInternal` and `conversationAvailable` describe these decisions. Owner board/list responses carry `ownerProjectionVersion: 1`; board responses identify `view`. Clients retain compatibility when fields are absent, suppress chat links only on explicit false, and follow cursors across short or empty filtered pages. Requester-backed cards, real questions, outward approvals and owner confirmations remain visible. Held, parked, quiet, unknown or capacity-limited execution alone never means the owner owes a decision. Diagnostic not-started counts never manufacture a Needs-you aggregate. This changes projection and wording; existing execution policy and approval proofs remain enforced. A policy change uses the actual approved trust-journey proof, never a remembered instruction as a substitute for it.
+
+
 # Agent work cards by default
 
 ## Problem statement

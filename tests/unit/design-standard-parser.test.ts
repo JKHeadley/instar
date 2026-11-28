@@ -23,8 +23,8 @@ describe('design standard parser', () => {
   it('reads the approved standard unchanged, including all accessibility and inline earned references', () => {
     const parsed = parseDesignStandard(standard);
     expect(parsed.errors).toEqual([]);
-    expect(parsed.rules).toHaveLength(65);
-    expect(parsed.rules.filter(r => r.checkKind === 'machine')).toHaveLength(27);
+    expect(parsed.rules).toHaveLength(68);
+    expect(parsed.rules.filter(r => r.checkKind === 'machine')).toHaveLength(28);
     expect(parsed.rules.find(r => r.id === 'DS-A11Y-1')).toBeDefined();
     expect(parsed.rules.find(r => r.id === 'DS-DELIGHT-6')?.earnedFrom).toContain('DF-0001');
     expect(parsed.rules.find(r => r.id === 'DS-DATA-2')?.measurement).toContain('within 1 unit');
@@ -69,3 +69,16 @@ it('rejects a malformed provenance ID even when another valid ID is present', ()
   const result = parseDesignStandard(fixture().replace('DF-0001.', 'DF-0001, DF-00020.'));
   expect(result.errors.some(e => e.code === 'invalid-earned-reference')).toBe(true);
 });
+it('reads a long malformed index row in linear time', () => {
+    const row = '| DS-A-1 | ' + ' '.repeat(20000) + 'x';
+    const doc = standard.replace('## Machine-checkable rules at a glance\n', `## Machine-checkable rules at a glance\n${row}\n`);
+    expect(doc).not.toBe(standard);
+    const started = Date.now(); parseDesignStandard(doc);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+  it('reads index rows with one-sided ticks, tight cells and inner bars as before', () => {
+    const extra = ['| `DS-A-1 | one-sided tick |', '|DS-C-3|tight|', '| DS-D-4 | has | inner bar |'].join('\n');
+    const doc = standard.replace('## Machine-checkable rules at a glance\n', `## Machine-checkable rules at a glance\n${extra}\n`);
+    expect(doc).not.toBe(standard);
+    expect(() => parseDesignStandard(doc)).not.toThrow();
+  });

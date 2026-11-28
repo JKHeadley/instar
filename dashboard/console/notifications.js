@@ -37,7 +37,13 @@ export async function renderNotifications(main, ctx, view) {
     const topicNames = topicNameMap(topics);
     const machineNames = Object.fromEntries((Array.isArray(pool?.machines) ? pool.machines : [])
       .filter((m) => m && typeof m.machineId === 'string' && typeof m.nickname === 'string').map((m) => [m.machineId, m.nickname]));
-    const refresh = () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+    // A completed save belongs to this rendered view. Navigation or a newer filter
+    // detaches its root; the server write still completes, but must not replace that page.
+    const refresh = () => {
+      if (root.isConnected && root.parentNode === main) {
+        return renderNotifications(main, ctx, { unread: notificationView.unread, cursors: undefined });
+      }
+    };
     const filter = el('input', { type: 'checkbox', 'aria-label': 'Only unread notices' }); filter.checked = notificationView.unread;
     filter.addEventListener('change', () => renderNotifications(main, ctx, { unread: filter.checked, cursors: undefined }));
     root.append(el('label', { style: 'display:flex;align-items:center;gap:12px;min-height:48px' }, filter, 'Only unread notices'));
@@ -46,6 +52,8 @@ export async function renderNotifications(main, ctx, view) {
     root.append(glance, notices);
     if (feed.unavailable?.length) notices.append(note('Some machines did not answer. Their notices are unknown until they return.'));
     if (!feed.items.length) notices.append(note(notificationView.unread ? 'No unread notices from the machines that answered.' : 'No notices on this page.'));
+    const noticeCards = el('div', { class: 'detail-card-grid' });
+    notices.append(noticeCards);
     for (const item of feed.items) {
       const row = el('article', { class: 'need-card' },
         el('strong', { text: status.categories.find(c => c.id === item.category)?.description || 'Automated notice' }),
@@ -55,7 +63,7 @@ export async function renderNotifications(main, ctx, view) {
         try { await request(`/notifications/quiet/${encodeURIComponent(item.id)}?machineId=${encodeURIComponent(item.machineId)}`, { method: 'PATCH', body: '{}' }); await refresh(); }
         catch (error) { feedback.textContent = error.message; }
       } }));
-      notices.append(row);
+      noticeCards.append(row);
     }
     if (feed.hasMore) notices.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Older notices', onclick: () => renderNotifications(main, ctx, { unread: notificationView.unread, cursors: feed.nextCursors }) }));
     if (notificationView.cursors) notices.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Newest notices', onclick: refresh }));

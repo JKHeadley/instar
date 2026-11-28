@@ -11,7 +11,7 @@
  * canonical sources existing on disk.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -31,6 +31,13 @@ function newMigrator(projectDir: string): PostUpdateMigrator {
     hasTelegram: false,
     projectName: 'test',
   });
+}
+
+function runParityBackfill(projectDir: string) {
+  const migrator = newMigrator(projectDir);
+  // These cases exercise the async backfill. The last case runs both phases.
+  vi.spyOn(migrator, 'migrate').mockReturnValue({ upgraded: [], skipped: [], errors: [] });
+  return migrator.migrateAsync();
 }
 
 const NOOP: Pick<ParityRule, 'listInstances' | 'verify' | 'listOrphans' | 'removeOrphans'> = {
@@ -107,7 +114,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors).toEqual([]);
     expect(calls).toContain('skill/foo/claude-code');
@@ -127,7 +134,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
 
     expect(calls).toEqual(['foo/claude-code']); // no codex-cli call
   });
@@ -143,7 +150,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
 
     expect(calls.sort()).toEqual(['foo/claude-code', 'foo/codex-cli']);
   });
@@ -157,7 +164,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors).toEqual([]);
     expect(result.skipped.some(s => s.includes('user-edit-conflict'))).toBe(true);
@@ -172,7 +179,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors.some(e => e.includes('disk full'))).toBe(true);
   });
@@ -190,7 +197,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       } as unknown as ParityRule,
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
 
     // Before the fix the runtime filter dropped 'grok-build' silently, so this
     // was ['foo/claude-code'] while the TYPE said grok-build was possible.
@@ -207,7 +214,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
     } as unknown as ParityRule;
     restoreRules = isolateRules([rule]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
     expect(calls).toEqual(['foo/claude-code']);
 
     // The operator opts into grok afterwards — the P3 shape this guards:
@@ -217,7 +224,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
     cfg['enabledFrameworks'] = ['claude-code', 'grok-build'];
     fs.writeFileSync(configPath, JSON.stringify(cfg));
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
     expect(calls.sort()).toEqual(['foo/claude-code', 'foo/claude-code', 'foo/grok-build']);
   });
 
@@ -240,7 +247,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
     expect(calls).toEqual([]);
     expect(result.skipped.some(s => s.includes('legacy marker covers this set'))).toBe(true);
   });
@@ -259,7 +266,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       } as unknown as ParityRule,
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
     expect(calls.sort()).toEqual(['foo/claude-code', 'foo/grok-build']);
   });
 
@@ -273,11 +280,11 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
     expect(calls1.length).toBe(1);
 
     // Re-install the same rules; second migrateAsync should skip via marker.
-    const result2 = await newMigrator(projectDir).migrateAsync();
+    const result2 = await runParityBackfill(projectDir);
     expect(result2.skipped.some(s => s.includes('parity-renderings: already migrated'))).toBe(true);
     expect(calls1.length).toBe(1); // remediate NOT called again
   });
@@ -291,7 +298,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    await newMigrator(projectDir).migrateAsync();
+    await runParityBackfill(projectDir);
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const migrations = config._instar_migrations as string[];
@@ -307,7 +314,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors).toEqual([]);
     expect(result.skipped.some(s => s.includes('no canonical instances found'))).toBe(true);
@@ -330,7 +337,7 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors.some(e => e.includes('skill') && e.includes('disk corruption'))).toBe(true);
     expect(calls).toEqual(['foo.sh/claude-code']); // hook still ran
@@ -346,16 +353,24 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
       }),
     ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const result = await runParityBackfill(projectDir);
 
     expect(result.errors).toEqual([]);
     expect(result.skipped.some(s => s.includes('config.json not found'))).toBe(true);
   });
 
   it('migrateAsync wraps sync migrate() + async backfill', async () => {
-    restoreRules = isolateRules([]);
+    const remediate = vi.fn(async () => {});
+    restoreRules = isolateRules([
+      makeStubRule({ primitive: 'skill', instances: ['fixture'], remediateImpl: remediate }),
+    ]);
 
-    const result = await newMigrator(projectDir).migrateAsync();
+    const migrator = newMigrator(projectDir);
+    const syncMigration = vi.spyOn(migrator, 'migrate');
+    const result = await migrator.migrateAsync();
+
+    expect(syncMigration).toHaveBeenCalledOnce();
+    expect(remediate).toHaveBeenCalledWith('fixture', 'claude-code');
 
     // Confirm result is a proper MigrationResult shape from migrateAsync.
     expect(Array.isArray(result.upgraded)).toBe(true);

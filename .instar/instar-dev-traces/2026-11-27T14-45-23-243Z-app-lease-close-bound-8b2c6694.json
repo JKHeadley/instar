@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "app-lease-close-bound",
+  "sessionId": "599a21ed-1e6a-4e32-9ed1-9e2985fee973",
+  "timestamp": "2026-11-27T14:45:23.243Z",
+  "artifactPath": "upgrades/side-effects/app-lease-close-bound.md",
+  "artifactSha256": "c210a3a7d8fe324cf08b0ea61e835af9de34b69161d186df23c67a6e4226de1b",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/AppConversationService.ts",
+    "src/core/appConversationPool.ts",
+    "tests/unit/app-conversations-pool-consumers.test.ts",
+    "tests/unit/app-conversations-pool.test.ts",
+    "upgrades/next/app-lease-close-bound.md",
+    "upgrades/side-effects/app-lease-close-bound.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The deadline protects termination of a live session during cross-machine lease reconciliation.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

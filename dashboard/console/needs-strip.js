@@ -3,6 +3,7 @@
 // complete read returns zero; a failed read, a failed source or a read still loading keeps it, says
 // "could not check …", and marks the count incomplete.
 import { el } from './ui.js';
+import { canRenderStrictAction, createStrictAction } from './needs-actions.js';
 
 export const STRIP_ROWS = 3;
 // Its own period, apart from the pages' 30 s refresh, so a leak of either is visible on its own.
@@ -35,10 +36,16 @@ export function stripModel(res, { expanded = false } = {}) {
   if (!items || items.length > 100 || count === null || items.length > count || !validPage
     || items.some((item) => !item || typeof item.title !== 'string' || typeof item.action?.kind !== 'string')) return { show: true, state: 'unknown', badge: '?', incomplete: true, title: 'Could not check what needs you', rows: [], more: 0, line: 'The list answered in a shape this page cannot read.' };
   const missed = Array.isArray(d.couldNotCheck) ? d.couldNotCheck.filter((x) => typeof x === 'string') : [];
-  const complete = d.complete === true && missed.length === 0;
+  const strict = d.schemaVersion === 2;
+  const notes = strict && Array.isArray(d.notes) ? d.notes.filter((note) => typeof note === 'string' && note.trim()) : [];
+  const diverted = strict && Number.isSafeInteger(d.divertedCount) && d.divertedCount > 0
+    ? d.divertedCount : 0;
+  const divertNote = diverted === 1 ? '1 item was left out because it had no verified owner action.'
+    : diverted ? `${diverted} items were left out because they had no verified owner action.` : '';
+  const complete = d.complete === true && missed.length === 0 && notes.length === 0;
   const truncated = !page && (d.truncated === true || count > items.length);
   const omitted = Math.max(0, count - items.length);
-  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: '' };
+  if (count === 0 && complete && !truncated) return { show: false, state: 'ok', badge: '0', incomplete: false, title: '', rows: [], more: 0, line: divertNote };
   // Expand only rows actually received. The server bounds each answer; name any omitted rows.
   const rows = expanded ? items : items.slice(0, STRIP_ROWS);
   return {
@@ -53,10 +60,26 @@ export function stripModel(res, { expanded = false } = {}) {
     more: Math.max(0, items.length - rows.length),
     truncated,
     page,
+    strict,
     line: [
       missed.length ? `Could not check ${list(missed)}.` : '',
+      ...notes,
+      divertNote,
+      !complete && !missed.length && !notes.length ? 'Some checks did not finish.' : '',
       truncated ? `This list has ${items.length} of ${count} needs.${omitted > 0 ? ` ${omitted} more ${omitted === 1 ? 'is' : 'are'} not shown.` : ' Some needs may not be shown.'}` : '',
     ].filter(Boolean).join(' '),
+  };
+}
+
+export function homeNeedsModel(model) {
+  const count = Number.parseInt(model.badge, 10);
+  return {
+    combined: true,
+    authoritative: true,
+    state: model.state === 'loading' ? 'loading' : model.incomplete ? (count > 0 ? 'partial' : 'unknown') : model.state,
+    count,
+    rows: model.rows.map((row) => ({ main: row.title })),
+    statusNote: model.line,
   };
 }
 
@@ -100,22 +123,36 @@ export function needGroups(rows) {
 let stopPrevious;
 // Open or closed, kept across page changes in this tab (closed by default).
 let rememberedOpen = false;
-export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
+export function mountNeedsStrip(host, { get, hrefFor, open: startOpen, home = false, onModel, signedAdapters = {} }) {
   stopPrevious?.();
+  let actionBusy = false;
   let active = true, expanded = false, busy = false, sequence = 0, open = typeof startOpen === 'boolean' ? startOpen : rememberedOpen;
-  let answer = null, cursor = null, failure = null;
+  let answer = null, cursor = null, failure = null, actionStatus = '';
   let retryTarget = { cursor: null, start: 0 };
   const button = (text, click, attrs = {}) => el('button', {
     type: 'button', class: 'needs-more link-btn', text, onclick: click, ...attrs,
   });
   const paint = () => {
     const m = stripModel(answer, { expanded });
-    host.hidden = !m.show;
+    const pageLength = m.rows.length;
+    if (m.strict) {
+      m.rows = m.rows.filter((row) => canRenderStrictAction(row, signedAdapters));
+      if (m.rows.length < pageLength) {
+        m.line = [m.line, 'Some requests cannot be completed on this device.'].filter(Boolean).join(' ');
+      }
+    }
+    onModel?.(m);
+    host.hidden = !m.show && !home && !actionStatus;
+    if (!m.show && (home || actionStatus)) {
+      host.replaceChildren(el('p', { class: 'needs-line', role: 'status', text: actionStatus || 'Nothing needs you right now.' }));
+      if (home && m.line) host.append(el('p', { class: 'needs-line', text: m.line }));
+      return;
+    }
     host.dataset.state = m.state;
     host.dataset.incomplete = m.incomplete ? '1' : '0';
     if (!m.show) { host.replaceChildren(); return; }
     host.dataset.open = open ? '1' : '0';
-    const toggle = (next) => { open = next; rememberedOpen = next; if (!next) expanded = false; paint(); host.querySelector('.needs-compact, .needs-close')?.focus(); };
+    const toggle = (next) => { open = next; if (!home) rememberedOpen = next; if (!next) expanded = false; paint(); host.querySelector('.needs-compact, .needs-close')?.focus(); };
     if (!open) {
       const c = compactLine(m);
       host.replaceChildren(el('button', { type: 'button', class: 'needs-compact', 'aria-expanded': 'false', 'aria-label': `${c.label}${c.first ? `: ${c.first}` : ''}. Show the list`, onclick: () => toggle(true) },
@@ -127,6 +164,27 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
     }
     const heading = el('h2', { class: 'needs-heading', tabindex: '-1', text: m.title });
     const renderRow = (r) => {
+      if (m.strict) {
+        const adapters = Object.fromEntries(Object.entries(signedAdapters).map(([kind, invoke]) => [kind, async (id, control) => {
+          if (actionBusy) return;
+          actionBusy = true;
+          control.disabled = true;
+          try {
+            const result = await invoke(id, control);
+            if (!active || result === 'cancelled') return;
+            actionStatus = result === 'stale' ? 'This request has changed. Check the current list.' :
+              result === 'completed' ? 'The request was completed.' : 'Could not complete this request.';
+            if (result === 'stale' || result === 'completed') await load({ cursor: null, start: 0 });
+            else paint();
+          } catch {
+            if (active) { actionStatus = 'Could not complete this request.'; paint(); }
+          } finally { actionBusy = false; control.disabled = false; }
+        }]));
+        return el('li', {}, el('div', { class: 'needs-row' }, el('div', { class: 'needs-text' },
+          el('span', { class: 'needs-title', text: r.title }),
+          el('span', { class: 'needs-why', text: r.why || '' }),
+          createStrictAction(r, adapters))));
+      }
       const href = hrefFor ? hrefFor(r.action) : null;
       const body = [el('span', { class: TONE_DOT[r.tone] || 'dot attn', 'aria-hidden': 'true' }),
         el('span', { class: 'needs-text' }, el('span', { class: 'needs-title', text: r.title }), el('span', { class: 'needs-why', text: r.why || '' }))];
@@ -137,7 +195,8 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
       const card = cardLinkOf(r);
       const cardHref = card && hrefFor ? hrefFor({ kind: 'href', href: card.href }) : card?.href;
       const showCard = card && cardHref !== href;
-      return el('li', {}, href ? el('a', { class: 'needs-row', href }, ...body) : el('div', { class: 'needs-row' }, ...body),
+      const action = href ? el('span', { class: 'needs-row-action', text: cardHref === href ? 'Open card' : 'Open details' }) : null;
+      return el('li', {}, href ? el('a', { class: 'needs-row needs-row-link', href }, ...body, action) : el('div', { class: 'needs-row' }, ...body),
         ...(showCard ? [el('a', { class: 'link-btn needs-card-link', href: card.href, text: card.label })] : []),
         ...(also ? [el('a', { class: 'needs-also', href: also, text: r.alsoOpens.label || 'Open the project conversation' })] : []));
     };
@@ -147,7 +206,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
         el('ul', { class: 'needs-rows' }, g.rows.map(renderRow)))))
       : el('ul', { class: 'needs-rows' }, m.rows.map(renderRow));
     const controls = [];
-    if (m.more > 0 || (expanded && (m.rows.length > STRIP_ROWS || m.page?.previousCursor)) || (!expanded && m.page?.nextCursor)) {
+    if (m.more > 0 || (expanded && (pageLength > STRIP_ROWS || m.page?.previousCursor)) || (!expanded && m.page?.nextCursor)) {
       const text = expanded ? 'Show fewer' : m.page?.nextCursor ? 'Show more needs' : m.truncated ? `Show ${m.more} more available ${m.more === 1 ? 'item' : 'items'}` :
         (m.more === 1 ? 'One more thing needs you. Show it' : `${m.more} more things need you. Show all`);
       controls.push(button(text, () => {
@@ -159,12 +218,12 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
         (firstNewRow || host.querySelector('[aria-expanded]'))?.focus();
       }, { 'aria-expanded': String(expanded) }));
     }
-    if (expanded && m.page && m.rows.length) {
+    if (expanded && m.page && pageLength) {
       const { start, previousCursor, nextCursor } = m.page;
-      controls.push(el('p', { role: 'status', text: `Showing ${start + 1}–${start + m.rows.length} of ${answer.data.count}` }));
+      controls.push(el('p', { role: 'status', text: `Showing ${start + 1}–${start + pageLength} of ${answer.data.count}` }));
       if (nextCursor || previousCursor) controls.push(el('nav', { 'aria-label': 'Needs list pages' },
         previousCursor && button('Previous page', () => load({ cursor: previousCursor, end: start })),
-        nextCursor && button('Next page', () => load({ cursor: nextCursor, start: start + m.rows.length }))));
+        nextCursor && button('Next page', () => load({ cursor: nextCursor, start: start + pageLength }))));
     }
     if (failure) controls.push(button(failure === 'stale' ? 'Reload current list' : 'Try again',
       () => load(failure === 'stale' ? { cursor: null, start: 0 } : retryTarget)));
@@ -172,6 +231,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
       el('span', { class: 'needs-badge', 'aria-label': m.incomplete ? `${String(m.badge).replace(/\+$/, '')} or more` : m.badge, text: m.badge }),
       el('button', { type: 'button', class: 'needs-close link-btn', 'aria-expanded': 'true', 'aria-label': 'Hide the list', text: 'Hide', onclick: () => toggle(false) })),
       ...(m.rows.length ? [rows] : []), ...controls,
+      ...(actionStatus ? [el('p', { class: 'needs-line', role: 'status', text: actionStatus })] : []),
       ...(m.line ? [el('p', { class: 'needs-line', text: failure === 'stale' ? 'The needs list changed. Reload to see its current items.' : m.line })] : []));
   };
   const load = async (target, background = false) => {
@@ -207,7 +267,7 @@ export function mountNeedsStrip(host, { get, hrefFor, open: startOpen }) {
   };
   const timer = setInterval(() => {
     if (!host.isConnected) { stop(); return; }
-    if (!busy && failure !== 'stale' && document.visibilityState !== 'hidden') {
+    if (!busy && !actionBusy && failure !== 'stale' && document.visibilityState !== 'hidden') {
       void load(failure === 'retry' ? retryTarget : { cursor, start: answer?.data?.continuation?.start ?? 0 }, true);
     }
   }, STRIP_REFRESH_MS);

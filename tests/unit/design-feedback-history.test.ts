@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { inspectFeedbackHistory } from '../../src/designGate/feedbackHistory.js';
-const standard = fs.readFileSync('docs/DESIGN-STANDARD.md', 'utf8');
+import { designStandardForEntries } from '../fixtures/designStandardForEntries.js';
+// Only DF-0001 is passed below, so the standard keeps only its rules and changelog rows.
+const standard = designStandardForEntries(fs.readFileSync('docs/DESIGN-STANDARD.md', 'utf8'), ['DF-0001']);
 const path = 'docs/design-feedback/DF-0001-accounts-usage-mac-vs-web.md';
 const markdown = fs.readFileSync(path, 'utf8');
 const snapshot = () => ({ standard, entries: [{ path, markdown }] });

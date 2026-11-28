@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "discovery-setup-lock-test-isolation",
+  "sessionId": "d4b9743a-b9a5-4e03-a043-7d2490322b08",
+  "timestamp": "2026-11-24T02:48:18.760Z",
+  "artifactPath": "upgrades/side-effects/discovery-setup-lock-test-isolation.md",
+  "artifactSha256": "9fa1b6dd824e6316332b07a491f6977c7d683c15efd914af37cd6ef35802e000",
+  "coveredFiles": [
+    "docs/specs/discovery-setup-lock-test-isolation.eli16.md",
+    "tests/helpers/privateDiscoverySetupLock.ts",
+    "tests/integration/discovery-pipeline.test.ts",
+    "tests/unit/Discovery.test.ts",
+    "upgrades/next/discovery-setup-lock-test-isolation.md",
+    "upgrades/side-effects/discovery-setup-lock-test-isolation.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test fixture isolation is fully reversible and changes no production code.",
+  "eli16Path": "docs/specs/discovery-setup-lock-test-isolation.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/discovery-setup-lock-test-isolation.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Explicit test fixture setup and teardown do not start an autonomous action loop."
+  }
+}

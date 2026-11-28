@@ -41,6 +41,8 @@ export function plainReferenceText(text, { topicNames = {}, machineNames = {} } 
   // Ids inside brackets that hold nothing else go entirely: "(CMT-056)", "(ACT-12, CMT-9)".
   t = t.replace(/\s*\((?:\s*(?:CMT|ACT|BLK|EVO)-\d+\s*[,;/]?\s*)+\)/g, '');
   t = t.replace(/\b(CMT|ACT|BLK|EVO)-\d+\b/g, (_, k) => CODE_WORDS[k]);
+  // A one- or two-digit topic the sender could not name (a held reply can say "topic 0"). Longer ids use the name lookup below.
+  t = t.replace(/\b(?:telegram\s+)?topic\s*#?\d{1,2}\s*\((?:name unresolved|name unavailable)\)/gi, 'a conversation');
   // Conversations: "topic 1234", "topic #1234", "Telegram topic 1234".
   t = t.replace(/\b(?:telegram\s+)?topic\s*#?(\d{3,})\b/gi, (_, id) => {
     const name = verifiedDisplayName(topicNames[id], id);

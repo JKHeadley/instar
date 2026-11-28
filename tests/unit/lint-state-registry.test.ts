@@ -168,3 +168,80 @@ describe('lint-state-registry — out-of-scope sites stay quiet', () => {
     expect(r.code).toBe(0);
   });
 });
+
+describe('lint-state-registry — observe-mode authority contracts', () => {
+  it('refuses a second direct job writer despite a matching registry annotation', () => {
+    writeFile(path.join(sandbox, 'other.ts'), [
+      '/* state-registry: job-definitions */',
+      "fs.writeFileSync(path.join(stateDir, 'jobs.json'), data);",
+    ].join('\n'));
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared legacy writer for "legacy-job-definitions"');
+  });
+
+  it('resolves aliased writes and a multiline manifest path', () => {
+    writeFile(path.join(sandbox, 'alternate.ts'), [
+      "import { writeFileSync as publish } from 'node:fs';",
+      "const folder = path.join(stateDir, 'jobs', 'schedule');",
+      'const destination = path.join(',
+      '  folder,',
+      '  `${slug}.json`',
+      ');',
+      'const writer = publish;',
+      'writer(destination, data);',
+    ].join('\n'));
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared target writer for "job-manifests"');
+  });
+
+  it('refuses an undeclared atomic writer to the jobs ledger', () => {
+    writeFile(path.join(sandbox, 'alternate.ts'),
+      "SafeFsExecutor.atomicWriteFileSync(path.join(stateDir, 'jobs.json'), data);");
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared legacy writer');
+  });
+
+  it('refuses another writer to the project digest projection', () => {
+    writeFile(path.join(sandbox, 'alternate.ts'), [
+      "const target = path.join(stateDir, 'projects-digest.cache');",
+      'fs.renameSync(tmp, target);',
+    ].join('\n'));
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared projection writer for "project-digest"');
+  });
+
+  it('accepts the registered digest materializer and read-through view', () => {
+    writeFile(path.join(sandbox, 'core', 'ProjectDigestCache.ts'), [
+      "const target = path.join(stateDir, 'projects-digest.cache');",
+      'fs.renameSync(tmp, target);',
+    ].join('\n'));
+    writeFile(path.join(sandbox, 'view.ts'),
+      "const data = fs.readFileSync(path.join(stateDir, 'projects-digest.cache'));");
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('2 observe-mode authority contracts');
+  });
+
+  it('protects the Chief of Staff journal kind without claiming unrelated streams', () => {
+    const file = path.join(sandbox, 'alternate.ts');
+    writeFile(file, "fs.writeFileSync(path.join(stateDir, 'state', 'coherence-journal', 'machine.topic-placement.jsonl'), data);");
+    expect(runLint('--root', sandbox).stderr).not.toContain('undeclared legacy writer');
+    writeFile(file, "fs.writeFileSync(path.join(stateDir, 'state', 'coherence-journal', 'machine.chief-of-staff-record.jsonl'), data);");
+    expect(runLint('--root', sandbox).stderr).toContain('undeclared legacy writer for "chief-of-staff-bindings"');
+  });
+  it('refuses a rename away from a protected store but permits copying from it', () => {
+    const file = path.join(sandbox, 'alternate.ts');
+    const source = "const source = path.join(stateDir, 'projects-digest.cache');\n";
+    writeFile(file, source + "fs.copyFileSync(source, 'destination.txt');");
+    expect(runLint('--root', sandbox).code).toBe(0);
+    writeFile(file, source + "fs.renameSync(source, 'destination.txt');");
+    const result = runLint('--root', sandbox);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('undeclared projection writer for "project-digest"');
+  });
+
+});

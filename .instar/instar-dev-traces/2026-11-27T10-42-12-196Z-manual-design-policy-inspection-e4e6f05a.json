@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "manual-design-policy-inspection",
+  "sessionId": "42e25984-8f84-4591-b1d0-5ea8b719d65e",
+  "timestamp": "2026-11-27T10:42:12.196Z",
+  "artifactPath": "upgrades/side-effects/manual-design-policy-inspection.md",
+  "artifactSha256": "1ceef84c97d26d8a82895c9fda65cf84332a549c91ecf4b0ba6a931660b20a2f",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "site/astro.config.mjs",
+    "site/src/content/docs/features/design-policy-inspection.md",
+    "site/src/content/docs/reference/cli.md",
+    "src/cli.ts",
+    "src/commands/designInspect.ts",
+    "src/commands/designPolicy.ts",
+    "src/localVerify/harnessClassifier.ts",
+    "tests/unit/localVerify/harnessClassifier.test.ts",
+    "upgrades/side-effects/manual-design-policy-inspection.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation-coverage correction: renames the design:inspect command file to match its command name (contents unchanged) and documents the command; harness list flags the same files.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

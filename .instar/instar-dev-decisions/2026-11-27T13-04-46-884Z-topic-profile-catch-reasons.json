@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-27T13:04:46.884Z",
+  "slug": "topic-profile-catch-reasons",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 31,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/handleProfileProposalReply.ts",
+      "src/core/profileProposalPlacement.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

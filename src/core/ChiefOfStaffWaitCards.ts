@@ -21,7 +21,8 @@
 import { createHash } from 'node:crypto';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { compareHlc, sameValue } from './WorkCardStore.js';
-import { foldBindingState, type BindingState, type ProjectCheckState, type UnionEntry, type CosVerdict } from './ChiefOfStaffStore.js';
+import { foldBindingState, hlcKey, type BindingState, type ProjectCheckState, type UnionEntry, type CosVerdict } from './ChiefOfStaffStore.js';
+import { deriveOwnerNeedsAskIdentity } from './OwnerNeedsWithdrawal.js';
 import type { WorkBoardService, WorkPrincipal } from './WorkBoardService.js';
 import type { BriefCheckStatus, CardBrief } from './WorkCardStore.js';
 
@@ -110,7 +111,7 @@ function isHlc(v: unknown): v is HlcTimestamp {
 function clears(s: SourceRec, bindingHlc: HlcTimestamp | null): boolean {
   if (s.kind === 'check') return !!s.verdict && s.verdict !== 'waiting-on-user' && s.verdict !== 'unknown';
   if (s.event === 'owner-pause') return s.effective === true;
-  if (s.event === 'closed') return !!bindingHlc && !!s.bindingHlc && compareHlc(s.bindingHlc, bindingHlc) === 0;
+  if (s.event === 'closed' || s.event === 'owner-ask-completed') return !!bindingHlc && !!s.bindingHlc && compareHlc(s.bindingHlc, bindingHlc) === 0;
   return false;
 }
 
@@ -122,18 +123,52 @@ const VERDICT_WORDS: Record<string, string> = {
  * Where the current wait started: the first `waiting-on-user` check after the newest record that ended the last
  * one (a clearing record, or an owner resume). Its note: the newest real note among the waiting checks since.
  */
-function waitStart(sources: SourceRec[], bindingHlc: HlcTimestamp | null, after: HlcTimestamp | null = null): { rec: SourceRec; note: string | null } | null {
+function waitingChecks(sources: SourceRec[], bindingHlc: HlcTimestamp | null, after: HlcTimestamp | null): SourceRec[] {
   let from = 0;
   for (let i = sources.length - 1; i >= 0; i--) {
     const s = sources[i];
-    // A boundary: a clearing record, an owner resume, an owner unpark, or (after a close) the record the card was closed at.
     const boundary = clears(s, bindingHlc) || (s.event === 'owner-resume' && s.effective) || (s.event === 'unpark' && s.by === 'owner-tap') || (after !== null && compareHlc(s.hlc, after) <= 0);
     if (boundary) { from = i + 1; break; }
   }
-  const waiting = sources.slice(from).filter((s) => s.kind === 'check' && s.verdict === 'waiting-on-user');
+  return sources.slice(from).filter((s) => s.kind === 'check' && s.verdict === 'waiting-on-user');
+}
+
+function waitStart(sources: SourceRec[], bindingHlc: HlcTimestamp | null, after: HlcTimestamp | null = null): { rec: SourceRec; note: string | null } | null {
+  const waiting = waitingChecks(sources, bindingHlc, after);
   if (!waiting.length) return null;
   const real = [...waiting].reverse().find((s) => s.note && s.note !== CARRY_FORWARD_NOTE);
   return { rec: waiting[0], note: real?.note ?? null };
+}
+
+/** Resolve an open wait from the complete journal and the source's current trusted disclosure. */
+export function resolveOwnerNeedsWaitIdentity(
+  union: UnionEntry[], conversationKey: string, disclosure: { revision: string; action: unknown },
+) {
+  // The source supplies a durable revision, including when a changed disclosure restores earlier wording.
+  if (!disclosure.revision) return null;
+  const binding = foldBindingState(union).get(conversationKey);
+  if (!binding?.confirmed || !binding.bindingHlc || binding.closed || binding.pausedBy) return null;
+  const sources = sourcesByProject(union).get(conversationKey) ?? [];
+  const latestCheck = sources.slice().reverse().find(source => source.kind === 'check');
+  if (latestCheck?.verdict !== 'waiting-on-user') return null;
+  const waiting = waitingChecks(sources, binding.bindingHlc, binding.bindingHlc);
+  const opening = waiting[0];
+  if (!opening) return null;
+
+  let wording = opening;
+  let note: string | undefined;
+  for (const source of waiting) {
+    if (!source.note || source.note === CARRY_FORWARD_NOTE || source.note === note) continue;
+    wording = source;
+    note = source.note;
+  }
+  return deriveOwnerNeedsAskIdentity({
+    project: conversationKey,
+    bindingVersion: hlcKey(binding.bindingHlc),
+    episodeRecord: opening.ref,
+    requestRecord: wording.ref,
+    disclosure,
+  });
 }
 
 /** The evidence a close rests on, in words, from the clearing record itself (so a retry writes the same text). */

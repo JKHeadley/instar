@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "sec172-pool-judge-lockdown",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T21:38:29.954Z",
+  "artifactPath": "upgrades/side-effects/sec172-pool-judge-lockdown.md",
+  "artifactSha256": "316dde01c7c97bf98780107f15d218c4c91ca156079adefce5aa5a4dbb1ced15",
+  "coveredFiles": [
+    "docs/specs/sec172-pool-judge-lockdown.eli16.md",
+    "src/providers/adapters/anthropic-interactive-pool/README.md",
+    "src/providers/adapters/anthropic-interactive-pool/config.ts",
+    "src/providers/adapters/anthropic-interactive-pool/pool.ts",
+    "tests/unit/sec172-pool-judge-lockdown.test.ts",
+    "upgrades/next/sec172-pool-judge-lockdown.md",
+    "upgrades/side-effects/sec172-pool-judge-lockdown.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-172: pool judge REPLs spawn with no tools, no MCP, user settings only, slash commands off, and serve one prompt each; two source files; reversible by revert; independently reviewed.",
+  "eli16Path": "docs/specs/sec172-pool-judge-lockdown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec172-pool-judge-lockdown.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one spawn per judgment, bounded by poolSize and the existing replacement retry limit"
+  }
+}
