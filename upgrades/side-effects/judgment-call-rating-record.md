@@ -71,3 +71,12 @@ Required: the change touches the commit gate.
 - `tests/unit/judgment-context.test.ts`: the block's fields, the second-pass mapping table, heading matching, the secret scan over the whole text, the bound, spec staged versus HEAD, and the never-throw builder.
 - `tests/unit/instar-dev-precommit-audit-staging.test.ts`: a passing Tier 1 commit's record carries `headCommit` and a block built from the same trace, with headings read from the real template; a passing commit whose record cannot be written is refused; one whose record is written but cannot be staged at the first write (a held index lock, so the stage in `writeDecisionAudit` fails) is refused and its record reads `blocked`; a blocked one stays blocked without the extra refusal. Two paths have no test because each needs a fault between two writes: a failure of the exit handler's final rewrite, and a failure of only the exit handler's own stage. The reviewer traced both by hand.
 - `tests/unit/instar-dev-precommit-deferrals.test.ts`: a passing Tier 2+ record carries the block on the Tier 2+ call site, with the spec's staged blob and its convergence report from the index.
+
+## Changes after the review, at commit time
+
+Three edits made after the reviewer's concur, each to satisfy a commit check, none changing behaviour:
+- `scripts/lib/judgment-context.mjs` gains a first-line `safe-git-allow` marker. The destructive-git lint refuses a direct `git` call without one; the module's calls only read (`hash-object --stdin` without `-w` writes nothing, plus `rev-parse` and `diff --cached`).
+- The spec's frontmatter names its parent standard (`parent-principle: "Observable Intelligence — No Autonomous LLM Action Is Unauditable"`), which the gate requires of every spec; the code headers already named it.
+- The spec's calibration period is called a "30-day observation window" instead of "follow-up", which the no-deferrals check read as deferred work. The design is unchanged.
+
+The commit's own decision record, written by the new gate, is the first live record: verdict `pass`, `headCommit` set, and a complete `judgment` block (trace, artifact, spec and its convergence report, template, all ten headings present, second-pass status `required-concurred`, five per-file rows).
