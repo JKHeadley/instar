@@ -105,7 +105,61 @@ describe('readiness account admission', () => {
     ['unreadable pinned quota', ['gmail'], { gmail: null }, 'pinned-account-quota-unreadable'],
   ] as const)('a pin refuses with a named reason: %s', async (_label, ids, used, reason) => {
     const h = harness(ids.map((id) => account(id)), used as Record<string, number | null>, { mode: 'on', pinnedAccountId: 'gmail' });
-    expect(await h.admission.admit('codex-cli', NOW + 30_000)).toEqual({ kind: 'refused', reason, pinned: true });
+    expect(await h.admission.admit('codex-cli', NOW + 30_000)).toMatchObject({ kind: 'refused', reason, pinned: true });
+  });
+
+  // 2026-11-28, codex-amrch: two pinned refusals were most likely read timeouts under a 5 s cap.
+  it('an unreadable pin says why, and retries a transient read once within the deadline', async () => {
+    const h = harness([account('gmail')], { gmail: null }, { mode: 'on', pinnedAccountId: 'gmail' });
+    expect(await h.admission.admit('codex-cli', NOW + 30_000)).toEqual({ kind: 'refused', reason: 'pinned-account-quota-unreadable', pinned: true, cause: 'no-snapshot', attempts: 2 });
+    expect(h.reads).toEqual(['gmail', 'gmail']);
+  });
+
+  it('a pin recovers on the retry when the first live read fails', async () => {
+    const acct = account('gmail');
+    const roster = pool([acct]);
+    let calls = 0;
+    const selector = new FeedbackTriageAccountSelector(roster, async () => (++calls === 1 ? null : snapshot(20)), () => NOW);
+    const admission = buildReadinessAccountAdmission({ config: () => ({ mode: 'on', pinnedAccountId: 'gmail' }), selector, pool: roster, clock: () => NOW });
+    expect(await admission.admit('codex-cli', NOW + 30_000)).toMatchObject({ kind: 'account', pinned: true, account: { accountId: 'gmail', usedPercent: 20 } });
+    expect(calls).toBe(2);
+  });
+
+  it('a slow read is classed as a timeout, and the retry never runs past the deadline', async () => {
+    const acct = account('gmail');
+    const roster = pool([acct]);
+    let clock = NOW;
+    const timeouts: number[] = [];
+    const selector = new FeedbackTriageAccountSelector(roster, async ({ timeoutMs }) => { timeouts.push(timeoutMs); clock += timeoutMs; return null; }, () => clock);
+    const admission = buildReadinessAccountAdmission({ config: () => ({ mode: 'on', pinnedAccountId: 'gmail' }), selector, pool: roster, clock: () => clock });
+    const deadline = NOW + 6_000;
+    expect(await admission.admit('codex-cli', deadline)).toMatchObject({ kind: 'refused', reason: 'pinned-account-quota-unreadable', cause: 'timeout', attempts: 2 });
+    expect(timeouts[0]).toBe(4_200);
+    expect(clock).toBeLessThanOrEqual(deadline);
+    expect(timeouts.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(6_000 - 700);
+  });
+
+  it('a pin with less time than one safe read left refuses with cause deadline and reads nothing', async () => {
+    const h = harness([account('gmail')], { gmail: 13 }, { mode: 'on', pinnedAccountId: 'gmail' });
+    expect(await h.admission.admit('codex-cli', NOW + 500)).toEqual({ kind: 'refused', reason: 'pinned-account-quota-unreadable', pinned: true, cause: 'deadline', attempts: 0 });
+    expect(h.reads).toEqual([]);
+  });
+
+  it('a non-transient failure (stale capture, rate limit reached) is not retried and keeps its class', async () => {
+    const acct = account('gmail');
+    const roster = pool([acct]);
+    let calls = 0;
+    const stale = { ...snapshot(20), capturedAt: new Date(NOW - 10 * 60_000).toISOString() };
+    const selector = new FeedbackTriageAccountSelector(roster, async () => { calls++; return stale; }, () => NOW);
+    const admission = buildReadinessAccountAdmission({ config: () => ({ mode: 'on', pinnedAccountId: 'gmail' }), selector, pool: roster, clock: () => NOW });
+    expect(await admission.admit('codex-cli', NOW + 30_000)).toMatchObject({ cause: 'stale-capture', attempts: 1 });
+    expect(calls).toBe(1);
+    let calls2 = 0;
+    const limited = { ...snapshot(20), rateLimitReachedType: 'primary' } as CodexUsageSnapshot;
+    const s2 = new FeedbackTriageAccountSelector(roster, async () => { calls2++; return limited; }, () => NOW);
+    const a2 = buildReadinessAccountAdmission({ config: () => ({ mode: 'on', pinnedAccountId: 'gmail' }), selector: s2, pool: roster, clock: () => NOW });
+    expect(await a2.admit('codex-cli', NOW + 30_000)).toMatchObject({ cause: 'rate-limit-reached', attempts: 1 });
+    expect(calls2).toBe(1);
   });
 
   it('a pinned account that is paused or signed out is refused as unverified', async () => {

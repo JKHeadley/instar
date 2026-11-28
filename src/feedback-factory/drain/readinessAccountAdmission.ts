@@ -19,7 +19,7 @@ import { CODEX_CLI_FRAMEWORK } from '../../core/frameworkFacts.js';
 import type { SubscriptionPool } from '../../core/SubscriptionPool.js';
 import {
   revalidateTriageAccount, verifyTriageExecutionIdentity,
-  type FeedbackTriageAccountSelector, type VerifiedTriageAccount,
+  type FeedbackTriageAccountSelector, type VerifiedTriageAccount, type LiveReadFailureCause,
 } from '../triage/FeedbackTriageAccountSelector.js';
 
 export type ReadinessAccountMode = 'off' | 'observe' | 'on';
@@ -58,7 +58,7 @@ export type ReadinessRefusalReason =
 export type ReadinessAdmission =
   | { kind: 'shared'; reason: 'selection-off' | 'observe-only' | 'non-codex-provider'; observedAccountId: string | null }
   | { kind: 'account'; account: VerifiedTriageAccount; pinned: boolean }
-  | { kind: 'refused'; reason: ReadinessRefusalReason; pinned: boolean };
+  | { kind: 'refused'; reason: ReadinessRefusalReason; pinned: boolean; cause?: LiveReadFailureCause; attempts?: number };
 
 export interface ReadinessAccountAdmission {
   config(): ReadinessAccountConfig;
@@ -88,9 +88,11 @@ export function buildReadinessAccountAdmission(input: {
           if (!input.selector) return { kind: 'refused', reason: 'account-selection-unavailable', pinned: true };
           const picked = await input.selector.selectPinned(pinnedAccountId, deadlineAt);
           if (picked.state === 'eligible') return { kind: 'account', account: picked.account, pinned: true };
+          if (picked.state === 'unreadable') {
+            return { kind: 'refused', reason: 'pinned-account-quota-unreadable', pinned: true, cause: picked.cause, attempts: picked.attempts };
+          }
           const reason: ReadinessRefusalReason = picked.state === 'missing' ? 'pinned-account-missing'
-            : picked.state === 'unverified' ? 'pinned-account-unverified'
-              : picked.state === 'saturated' ? 'pinned-account-saturated' : 'pinned-account-quota-unreadable';
+            : picked.state === 'unverified' ? 'pinned-account-unverified' : 'pinned-account-saturated';
           return { kind: 'refused', reason, pinned: true };
         }
         if (mode === 'off') return { kind: 'shared', reason: 'selection-off', observedAccountId: null };
