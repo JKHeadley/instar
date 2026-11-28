@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-18T09:44:51.220Z",
+  "slug": "feedback-468f3a51-3435-4-34faf421-a1",
+  "gate": "feedback-executor",
+  "attemptId": "feedback-468f3a51-3435-4e7f-b0c4-62e79022e64f:a1",
+  "initiativeId": "feedback-468f3a51-3435-4e7f-b0c4-62e79022e64f",
+  "kind": "fix",
+  "suggestedTier": null,
+  "declaredTier": null,
+  "files": 3,
+  "scope": {
+    "basis": "feedback-executor-change-set-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/QuotaAwareScheduler.ts",
+      "src/core/SessionRefresh.ts"
+    ]
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

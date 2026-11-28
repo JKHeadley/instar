@@ -301,7 +301,7 @@ export type RefreshFn = (opts: {
   callerClass?: 'proactive-swap' | 'reactive-swap' | 'interactive-refresh';
   /** Final synchronous consistency check after refresh work gates and before any kill. */
   beforeKill?: () => boolean;
-}) => Promise<boolean | { ok: boolean; code?: string }>;
+}) => Promise<boolean | { ok: boolean; code?: string; conversationPreserved?: boolean }>;
 
 export interface SwapResult {
   swapped: boolean;
@@ -520,7 +520,7 @@ export class QuotaAwareScheduler {
     }
 
     if (isManual && !args.manualBalanceSourceCurrent?.()) return { swapped: false, toAccountId: next.id, reason: 'manual-balance-source-changed' };
-    let refreshOutcome: boolean | { ok: boolean; code?: string };
+    let refreshOutcome: boolean | { ok: boolean; code?: string; conversationPreserved?: boolean };
     try {
       refreshOutcome = await this.cfg.refreshFn({
         sessionName,
@@ -567,9 +567,22 @@ export class QuotaAwareScheduler {
       }
       return { swapped: false, toAccountId: next.id, reason: code ?? 'refresh-failed' };
     }
-    this.cfg.logger?.log(
-      `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
-    );
+    const preserved = typeof refreshOutcome === 'boolean' ? undefined : refreshOutcome.conversationPreserved;
+    if (preserved === false) {
+      this.cfg.logger?.warn(
+        `[QuotaAwareScheduler] ${sessionName}: moved to ${next.id} (was ${exhaustedAccountId}) — earlier conversation NOT carried over; original brief re-delivered where on record`,
+      );
+    } else if (preserved === undefined) {
+      // A legacy boolean result (or an object without the field) carries no evidence either
+      // way, so never log it as confirmed preservation.
+      this.cfg.logger?.log(
+        `[QuotaAwareScheduler] ${sessionName}: moved to ${next.id} (was ${exhaustedAccountId}) — whether the earlier conversation carried over is unknown (not reported)`,
+      );
+    } else {
+      this.cfg.logger?.log(
+        `[QuotaAwareScheduler] ${sessionName}: resumed on ${next.id} (was ${exhaustedAccountId}) — conversation preserved via --resume`,
+      );
+    }
     if (!isProactive && !isManual) {
       this.cfg.antiThrash?.onReactiveExecuted?.({
         session: sessionName,

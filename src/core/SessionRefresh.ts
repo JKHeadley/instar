@@ -212,6 +212,11 @@ export type RefreshResult =
        *  payload attached (reactive-after-grace or force). Lets the swap
        *  orchestration avoid double-recording (the proceeded row is written). */
       proceededOverBusy?: boolean;
+      /** Account swaps only: whether the conversation transcript was verified
+       *  openable under the target login before the respawn. `false` = the
+       *  respawn starts without its conversation (the original spawn brief is
+       *  re-delivered when one is on record). Absent = not an account swap. */
+      conversationPreserved?: boolean;
       /** Telegram topic id, or (Slack) the stable NEGATIVE synthetic id —
        *  same hash the rest of the system uses to bridge Slack channels into
        *  numeric topic space. Kept required for back-compat consumers. */
@@ -242,6 +247,10 @@ export type RefreshFailureCode =
   | 'no_telegram_adapter'
   | 'slack_respawner_unwired'
   | 'refresh_in_progress'
+  // Topic 54028 (2026-11-11): a proactive swap whose conversation transcript
+  // cannot be placed in the target login is refused BEFORE the kill — the
+  // original session keeps running on its current account.
+  | 'conversation-not-recoverable'
   // swap-continuity-antithrash §4.5 — one spelling everywhere: the wire code
   // and the ledger reason are BOTH the hyphenated `session-busy`.
   | 'session-busy'
@@ -604,6 +613,27 @@ export class SessionRefresh {
         }
       }
 
+      // ── continuity preflight (topic 54028, 2026-11-11) ──────────────
+      // An account swap moves the session to a login that may not hold its
+      // transcript. Verify the conversation is placeable BEFORE anything is
+      // killed. A proactive swap is optional (the source account still
+      // works), so an unrecoverable conversation refuses it outright; other
+      // callers must move anyway and get the brief re-delivered below.
+      const swapsAccount = !!opts.configHome && !fresh;
+      if (swapsAccount && opts.callerClass === 'proactive-swap') {
+        const pre = await this.placeTranscript(stateSession.claudeSessionId, opts.configHome!);
+        if (!pre.ok) {
+          console.warn(
+            `[SessionRefresh] account-swap continuity: proactive swap of "${sessionName}" REFUSED — conversation not recoverable under ${opts.configHome} (${pre.outcome}); session left running on its current account`,
+          );
+          return {
+            ok: false,
+            code: 'conversation-not-recoverable',
+            message: `Session "${sessionName}" cannot carry its conversation to ${opts.accountId ?? opts.configHome} (${pre.outcome}) — proactive swap refused, session left running.`,
+          };
+        }
+      }
+
       // The work gate can await. A manual balance selection must still name the same
       // source and eligible target at the last synchronous boundary before the kill.
       if (opts.beforeKill) {
@@ -709,20 +739,35 @@ export class SessionRefresh {
       // across or `--resume` finds nothing. Skip on `fresh` (we intentionally
       // start a new conversation then). Best-effort: a miss just means the
       // resumed session starts fresh — logged, never fatal.
+      let conversationPreserved: boolean | undefined;
       if (accountSwap?.configHome && !fresh) {
         const resumeUuid = stateSession.claudeSessionId;
+        // Re-run after the kill so the final turns written before exit are
+        // carried too (idempotent: 'present'/'replaced' when the preflight ran).
+        const placed = await this.placeTranscript(resumeUuid, accountSwap.configHome);
+        conversationPreserved = placed.ok;
         if (resumeUuid) {
-          // Same freshest-copy, never-delete placement the topic spawn uses
-          // (Resume Follows the Account §3.1) — the old first-found copy could be stale.
-          const outcome = await placeResumeTranscript(resumeUuid, accountSwap.configHome);
-          const ok = outcome === 'present' || outcome === 'copied' || outcome === 'replaced' || outcome === 'forked';
           console.log(
-            `[SessionRefresh] account-swap continuity: transcript ${ok ? `ensured in (${outcome})` : `NOT placed (${outcome}) for`} ${accountSwap.configHome} (uuid=${resumeUuid}, sessionName=${sessionName})`,
+            `[SessionRefresh] account-swap continuity: transcript ${placed.ok ? `ensured in (${placed.outcome})` : `NOT placed (${placed.outcome}) for`} ${accountSwap.configHome} (uuid=${resumeUuid}, sessionName=${sessionName})`,
           );
         } else {
           console.log(
-            `[SessionRefresh] account-swap continuity: no claudeSessionId on session "${sessionName}" — cannot pre-copy transcript; resumed session may start fresh`,
+            `[SessionRefresh] account-swap continuity: no claudeSessionId on session "${sessionName}" — cannot pre-copy transcript; resumed session starts without its conversation`,
           );
+        }
+        if (!placed.ok) {
+          // The respawn cannot reopen the conversation. Re-deliver the
+          // original spawn brief so a worker does not sit idle without its
+          // assignment (topic 54028).
+          const brief = (stateSession as { prompt?: string }).prompt;
+          if (brief && brief.trim().length > 0) {
+            followUpWithMitigations = [
+              followUpWithMitigations,
+              'Your session moved to another account and its earlier conversation could not be carried over. '
+                + 'Your original assignment is restated below — continue it.\n\n' + brief,
+            ].filter((x): x is string => !!x && x.length > 0).join('\n\n');
+            console.log(`[SessionRefresh] account-swap continuity: original brief re-delivered to the respawn of "${sessionName}"`);
+          }
         }
       }
 
@@ -743,6 +788,7 @@ export class SessionRefresh {
           platform: 'slack',
           conversationKey,
           ...(proceededOverBusy ? { proceededOverBusy: true } : {}),
+          ...(conversationPreserved !== undefined ? { conversationPreserved } : {}),
         };
       }
 
@@ -750,10 +796,29 @@ export class SessionRefresh {
 
       // ── verify + finalize ────────────────────────────────────────────
       console.log(`[SessionRefresh] Refreshed "${sessionName}" → "${newSessionName}" (topic ${topicId})${reason ? ` reason="${reason}"` : ''}`);
-      return { ok: true, newSessionName, topicId: topicId!, ...(proceededOverBusy ? { proceededOverBusy: true } : {}) };
+      return {
+        ok: true,
+        newSessionName,
+        topicId: topicId!,
+        ...(proceededOverBusy ? { proceededOverBusy: true } : {}),
+        ...(conversationPreserved !== undefined ? { conversationPreserved } : {}),
+      };
     } finally {
       this.inFlight.delete(sessionName);
     }
+  }
+
+  /** Place the resume transcript in the target login; ok = openable there. Never throws. */
+  private async placeTranscript(
+    resumeUuid: string | undefined,
+    configHome: string,
+  ): Promise<{ ok: boolean; outcome: string }> {
+    if (!resumeUuid) return { ok: false, outcome: 'no-session-id' };
+    // Same freshest-copy, never-delete placement the topic spawn uses
+    // (Resume Follows the Account §3.1).
+    const outcome = await placeResumeTranscript(resumeUuid, configHome);
+    const ok = outcome === 'present' || outcome === 'copied' || outcome === 'replaced' || outcome === 'forked';
+    return { ok, outcome };
   }
 
   /**

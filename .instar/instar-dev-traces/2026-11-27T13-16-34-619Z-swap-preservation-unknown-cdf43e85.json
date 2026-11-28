@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "swap-preservation-unknown",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T13:16:34.619Z",
+  "artifactPath": "upgrades/side-effects/swap-preservation-unknown.md",
+  "artifactSha256": "70a0b542ebe27f60e1bc8b17aee267dbe0a0076fc98332886dc158d8e2d1e40d",
+  "coveredFiles": [
+    "src/core/QuotaAwareScheduler.ts",
+    "tests/unit/swap-continuity-verified-recovery.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One log branch split so an unreported carry-over reads unknown; no control-flow or result change.",
+  "eli16Path": "docs/eli16/swap-preservation-unknown.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/swap-preservation-unknown.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
