@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "backreference-infrastructure-population",
+  "sessionId": "ae1fe470-7739-47a3-8af1-dbb52326c4c8",
+  "timestamp": "2026-11-28T01:29:46.008Z",
+  "artifactPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "artifactSha256": "825ad8c6e9e499210e3aa7d8de9cd18375d6ea2f445890c4953a7775bbaa1bcb",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-28T00-33-04-817Z-backreference-infrastructure-population.json",
+    ".instar/instar-dev-traces/2026-11-28T00-32-34-612Z-backreference-infrastructure-population-1a52e635.json",
+    ".instar/instar-dev-traces/2026-11-28T00-45-18-304Z-backreference-infrastructure-population-b2950bcb.json",
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/backreference-infrastructure-population-building-2026-11-27.json",
+    "docs/specs/backreference-infrastructure-population.eli16.md",
+    "docs/specs/reports/backreference-infrastructure-population-building-review-2026-11-27.md",
+    "docs/standards-backreference-infrastructure-baseline.json",
+    "docs/standards-registry-area-audits.json",
+    "scripts/lint-standard-code-backreference.mjs",
+    "tests/unit/lint-standard-code-backreference.test.ts",
+    "upgrades/next/backreference-infrastructure-population.md",
+    "upgrades/side-effects/backreference-infrastructure-population.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Records the independent second pass (CONCUR on bee6368e and on the 736b184e delta) in machine-readable form over every file PR 4024 changes; the side-effects artifact gains its Second-pass review section; no reviewed content changes",
+  "eli16Path": "docs/specs/backreference-infrastructure-population.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/backreference-infrastructure-population.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

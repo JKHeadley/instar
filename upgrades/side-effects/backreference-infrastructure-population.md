@@ -3,7 +3,7 @@
 **Version / slug:** `backreference-infrastructure-population`
 **Date:** `2026-11-27`
 **Author:** `echo (Pipeline Strategy, owner by the Chief of Staff's assignment, 2026-11-27 16:28; CMT-2373)`
-**Second-pass reviewer:** `required (the lint can fail commits); to be named`
+**Second-pass reviewer:** `independent read-only reviewer (Pipeline Strategy's review subagent): CONCUR on bee6368e, CONCUR on the bee6368e..736b184e delta`
 
 ## Summary of the change
 
@@ -74,3 +74,11 @@ Revert the commit. The baseline file goes with it, and the registry text returns
   - an absent baseline counts as empty;
   - the baseline is written once and a rewrite is refused.
 - On the real tree at main 096f6e88, with the registry edit, the lint reports: "70 cited file(s), 70 naming a standard back, 0 grandfathered; 289 further infrastructure file(s), 21 naming a standard back, 268 grandfathered", and the countdown lint is clean.
+
+## Second-pass review
+
+**Reviewer:** independent read-only reviewer subagent, launched by the Pipeline Strategy session with no part in writing the change. It worked from the diff and a temporary worktree only.
+**Verdict:** CONCUR, on both heads.
+- **bee6368e** (the lint, the baseline, the registry edit and the tests): CONCUR, with one follow-up that should land soon. Evidence: both lints pass, the hierarchy check and the other registry lints are clean, and the test file passes 16 of 16. The shrink-only baseline holds: a file that gains a back-reference must leave it, the write flag refuses once a baseline exists, and a missing or corrupt baseline fails all 268 files, so it fails safe. The follow-ups (a ceiling equal to the baseline size, corrupt and stale baseline failures, whole-word name matching) are built on a separate branch, to land after this merges.
+- **bee6368e..736b184e** (the Building family audit record): CONCUR. The change is docs, audit data and a trace only. The floor is unchanged at 34/40. `auditSha256` and `convergenceSha256` match the committed files, and `areaSha256` matches the live area (`standards-coverage.mjs --check` was run on that head).
+**Why this section was added in a later commit:** the trace written with bee6368e recorded the second pass before the reviewer had concurred, and the 736b184e trace did not cover the registry. So the shared verifier's protected-path rule ("an independent second-pass review in the head's tree, covering every flagged path") could not be met. This commit records the concurrence in machine-readable form, with a trace covering every file the PR changes. The reviewed content is unchanged.
