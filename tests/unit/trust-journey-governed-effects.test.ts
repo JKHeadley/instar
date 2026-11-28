@@ -8,6 +8,21 @@ import { askSentence, decideAdmission, type AdmissionInputs } from '../../src/co
 import { planLegacyImport } from '../../src/core/trustJourney/legacyImport.js';
 
 describe('deriveEffect', () => {
+  it.each([
+    'threadline_discover', 'threadline_agents', 'threadline_history',
+    'threadline_registry_search', 'threadline_registry_status', 'threadline_registry_get',
+  ])('classifies the exact Threadline tool %s as read-only', (name) => {
+    const effect = deriveEffect(`mcp__threadline__${name}`, {});
+    expect(effect).toMatchObject({ kind: 'threadline.read', matched: true });
+    expect(decideAdmission(base({ effect }))).toEqual({ verdict: 'not-gated', why: 'read' });
+  });
+  it.each([
+    'threadline_send', 'threadline_ack', 'threadline_delete', 'threadline_registry_update',
+    'threadline_discover_and_send',
+  ])('keeps Threadline tool %s subject to admission', (name) => {
+    const effect = deriveEffect(`mcp__threadline__${name}`, {});
+    expect(decideAdmission(base({ effect }))).toEqual({ verdict: 'ask', why: 'no-grant' });
+  });
   it('ignores non-MCP and malformed names', () => {
     expect(deriveEffect('Bash', {})).toBeNull();
     expect(deriveEffect('mcp__x', {})).toBeNull();
