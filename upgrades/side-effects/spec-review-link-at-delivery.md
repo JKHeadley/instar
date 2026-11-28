@@ -21,7 +21,7 @@ The `SPEC_REVIEW_LINK` check (check 8) is deleted from `src/templates/scripts/co
   - revision memory is keyed by channel and topic;
   - the route gets the outbound messaging timeout (`src/server/middleware.ts`).
 - **Evidence:** rows under `toneGate.specReviewLinks` in the feature-evidence log. Per-call body capture applies only on enrolled agents (`toneGate.specReviewLinks.captureBodies`), up to a separate 20,000-character ceiling.
-- **Supporting changes:** two dev-gated switches, two ladder entries, one awareness entry.
+- **Supporting changes:** two dev-gated switches, two ladder entries, one awareness entry, and the corrected spec-converge skill sentence, bundled and migrated to installed copies (CMT-075).
 
 **Tier:** 2 (it narrows a blocking hook check and puts a new route under the outbound gate). **Size:** about 21 files: about 570 source lines and about 620 test lines. **Effort:** 6 spec review rounds (at the cap), one second-pass review round, and one commit attempt so far.
 
@@ -96,9 +96,23 @@ Eligibility, facts and the chain are invariants, each with an enumerable-domain 
 
 **Status surfaces:** none new. The ladder entries show in the existing maturation board.
 
+## 6a. Agent Proposes, Operator Approves
+
+The commit gate marks `src/core/approvalWhereRequiredSkillText.ts` as an approval surface by its name. This change only adds one skill-wording sentence swap to its table (CMT-075). It creates no approval flow and changes no authority. The operator approves nothing new and constructs nothing:
+- (1) No request is pre-filled or built. No approval page, card or form is touched.
+- (2) No authority statement is shown to the operator. The changed text is instructions inside an agent skill, authored in source and shipped with the release, not agent free-text at runtime.
+
+The spec approval itself stays the agent's under Approval Only Where Required, and B25 still holds an approval ask that lacks its constitution check.
+
 ## 6b. Operator-surface quality
 
 Not applicable: no dashboard renderer, approval page or form is touched.
+
+## 6c. Delight the user
+
+No screen a person sees changes. The gate flags `src/core/approvalWhereRequiredSkillText.ts` by its approval-surface name, but the file only holds skill-instruction sentences that a migration swaps inside agent skill files.
+
+- Screenshots: no visible change — one sentence in the spec-converge skill instructions (agent-facing text in `.instar/.claude/.agents/skills`) is replaced. No dashboard, app, page or form renders it.
 
 ## 7. Multi-machine posture (Cross-Machine Coherence)
 
@@ -128,7 +142,7 @@ The change removes a misfiring keyword veto and puts its intent where the recipi
 - **The test** now checks that prompt 1 shows B27 and that every prompt after it does not.
 - **M2:** pass and other-rule evidence rows are written only when the review rendered B27.
 - **M1, M3, M4, M5, M8:** stated above in sections 1, 5 and 6.
-- **M7, skill text:** the bundled `skills/spec-converge/SKILL.md` backstop line is corrected. Installed copies need a hash-aware update step, tracked as CMT-075 (PR by 2026-12-04). The awareness entry is one file for both switches, and the spec now says so. The own-host list is the same as B24's: loopback plus the tunnel host.
+- **M7, skill text:** the bundled `skills/spec-converge/SKILL.md` backstop line is corrected. Installed copies get the same sentence through the existing safe sentence swap (`APPROVAL_WHERE_REQUIRED_SKILL_TEXT` in `src/core/approvalWhereRequiredSkillText.ts`, run by `migrateApprovalWhereRequired`). It rewrites the canonical copy and both renderings, re-stamps an in-sync rendering, and leaves a customized copy alone. This closes CMT-075 in this PR. Its log line reads "approval only where required", which is imprecise for this sentence, and a code comment says so. The awareness entry is one file for both switches, and the spec now says so. The own-host list is the same as B24's: loopback plus the tunnel host.
 - **M6, tests:** an existence-fact test (yes, no, unknown, view, outside) was added to the route integration file. These spec-listed tests are narrowed:
   - **The over-4,000-character email capture:** covered by the gate unit test of the 20,000 ceiling, `buildToneDecisionContext`. The route only passes `captureBody`.
   - **Recovery after the outbox row is terminal:** this reads the decision record, not the outbox. The unit capture test covers it, and the reader procedure lives in the graduation review, not in code.

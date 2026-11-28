@@ -76,6 +76,13 @@ export const APPROVAL_WHERE_REQUIRED_SKILL_TEXT: readonly SkillTextChanges[] = [
         prior: "- It does not auto-approve on behalf of the user. Approval is the user's structural contribution to the process.",
         next: '- It does not auto-approve. Approval is a separate, recorded step by the approver: the agent for its own spec, the operator for a constitution or protected-list amendment.',
       },
+      // spec-review-link-at-delivery (CMT-075): the retired hook criterion 8. Not an approval
+      // sentence; it rides this table because the same safe sentence swap (canonical copy plus
+      // both renderings, re-stamped, customized copies left alone) is exactly what it needs.
+      {
+        prior: 'Backstop (Structure > Willpower): the pre-messaging gate (`convergence-check.sh`, criterion 8) **blocks** any hand-sent spec-review message that lacks a rendered `/view/` link, so the requirement cannot be silently skipped even if the script is bypassed.',
+        next: 'Backstop (Structure > Willpower): where it is switched on (development agents first, `toneGate.specReviewLinks.enabled`), the server\'s outbound check hands back a reply to the person that hands over a spec with no readable link (rule `B27_SPEC_REVIEW_UNLINKED`, judged by meaning, overridable with a reason). It runs only on routes that reach a person, so review verdicts between the agent\'s own sessions on the local bus are never blocked. The old pre-messaging hook criterion 8 is retired (docs/specs/spec-review-link-at-delivery.md).',
+      },
     ],
   },
 ];
