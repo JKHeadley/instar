@@ -13,6 +13,7 @@
     "src/core/PostUpdateMigrator.ts",
     "tests/unit/PostUpdateMigrator-vaultAuthResolve.test.ts",
     "tests/unit/autonomous-stop-hook-scope-accretion.test.ts",
+    "upgrades/next/autonomous-explicit-deadline.md",
     "upgrades/side-effects/autonomous-explicit-deadline.md"
   ],
   "phase": "complete",
