@@ -1,4 +1,5 @@
 import type { RoutineCodexPlacementContext } from './routineCodexPlacement.js';
+import { accountFrameworkMismatch, type AccountFrameworkLookup } from './accountFrameworkMatch.js';
 import { neutralizeTerminalControls, sanitizeTypedText } from './terminalControlBytes.js';
 import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
@@ -2314,6 +2315,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setSpawnAccountResolver(resolver: (ctx?: SpawnPlacementContext) => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  /**
+   * Framework of a pool account, by id or by config home (null = not a pool account / unknown).
+   * Wired at boot from the subscription pool. Used to refuse a caller-supplied account whose
+   * framework differs from the session being started (2026-11-28 Mama topic 144319: a Codex
+   * topic respawned tagged with a Claude account and landed on the Codex sign-in menu).
+   */
+  private accountFrameworkLookup: AccountFrameworkLookup | null = null;
+
+  setAccountFrameworkLookup(lookup: AccountFrameworkLookup | null): void {
+    this.accountFrameworkLookup = lookup;
+  }
+
+  /** A one-line reason when a caller-supplied account or home is of another framework (see accountFrameworkMatch). */
+  private explicitAccountFrameworkMismatch(framework: string, accountId: string | undefined, configHome: string | undefined): string | null {
+    return accountFrameworkMismatch(this.accountFrameworkLookup, framework, accountId, configHome);
   }
 
   /**
@@ -8589,6 +8607,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
     //     Local models keep their local provider and do not select a paid login.
     //   • No-op unless the resolver is wired (pinSessionsToPool) and returns an
     //     account → default-login behavior is exactly unchanged when off.
+    // Framework match: a caller-supplied account (SessionRefresh, an account swap or a stale-login
+    // refresh) from ANOTHER framework is dropped, and placement re-selects for this session's own
+    // framework, as if no account had been passed. The session still starts; it never launches a
+    // Codex pane under a Claude account (or the reverse).
+    const accountMismatch = this.explicitAccountFrameworkMismatch(framework, options?.subscriptionAccountId, options?.configHome);
+    if (accountMismatch && options) {
+      console.warn(`[SessionManager] ${tmuxSession}: dropped a caller-supplied account for a ${framework} session (${accountMismatch}); re-selecting placement for ${framework}`);
+      options = { ...options, configHome: undefined, subscriptionAccountId: undefined };
+    }
     const explicitConfigHome = options?.configHome;
     if (framework === CODEX_CLI_FRAMEWORK && options?.subscriptionAccountId && !explicitConfigHome) {
       throw new Error('A Codex account pin requires its config home; refusing a tag without a matching launch home.');

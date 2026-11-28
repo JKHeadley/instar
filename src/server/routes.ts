@@ -909,6 +909,7 @@ import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
 import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 import { CODEX_CLI_FRAMEWORK } from '../core/frameworkFacts.js';
+import { SUBSCRIPTION_FRAMEWORKS } from '../core/subscriptionEnums.js';
 import { resolveFrameworkBinaryPath } from '../core/frameworkSessionLaunch.js';
 import { codexCliVersionCached, refreshCodexCliVersion } from '../core/codexCapabilities.js';
 import { operatorOnlyPathsInPatch } from '../config/bearerConfigWrite.js';
@@ -44318,12 +44319,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const { sessionName, exhaustedAccountId, balanceUnusedQuota } = req.body ?? {};
+    const rawTarget: unknown = req.body?.targetAccountId;
+    const targetAccountId = typeof rawTarget === 'string' ? rawTarget.trim() : rawTarget;
     if (balanceUnusedQuota !== undefined && typeof balanceUnusedQuota !== 'boolean') {
       res.status(400).json({ error: 'balanceUnusedQuota must be boolean' }); return;
     }
     if (typeof sessionName !== 'string' || typeof exhaustedAccountId !== 'string' || !sessionName || !exhaustedAccountId) {
       res.status(400).json({ error: 'sessionName and exhaustedAccountId are required' });
       return;
+    }
+    if (targetAccountId !== undefined && (typeof targetAccountId !== 'string' || !targetAccountId)) {
+      res.status(400).json({ error: 'targetAccountId must be a non-empty string' }); return;
+    }
+    if (targetAccountId !== undefined && balanceUnusedQuota === true) {
+      res.status(400).json({ error: 'targetAccountId and balanceUnusedQuota cannot be combined' }); return;
+    }
+    // The framework is the SESSION's, never inferred from exhaustedAccountId: a session tagged with
+    // an account of another framework (2026-11-28, Mama topic 144319: a Codex session tagged with a
+    // Claude account) must be moved onto an account of its own framework.
+    let liveSession: { framework?: string } | undefined;
+    try {
+      liveSession = typeof ctx.sessionManager?.listRunningSessions === 'function'
+        ? ctx.sessionManager.listRunningSessions().find((s) => s.tmuxSession === sessionName)
+        : undefined;
+    } catch {
+      liveSession = undefined; // @silent-fallback-ok — no session list keeps today's framework inference
+    }
+    const sessionFramework = ((SUBSCRIPTION_FRAMEWORKS as readonly string[]).includes(liveSession?.framework ?? '') ? liveSession!.framework : undefined) as import('../core/SubscriptionPool.js').SubscriptionFramework | undefined;
+    if (typeof targetAccountId === 'string') {
+      const target = ctx.subscriptionPool?.list().find((a) => a.id === targetAccountId);
+      if (!target) { res.status(404).json({ error: 'targetAccountId is not a pool account', code: 'target-not-found' }); return; }
+      if (sessionFramework && target.framework !== sessionFramework) {
+        res.status(409).json({ error: `target account is ${target.framework}, the session runs ${sessionFramework}`, code: 'target-framework-mismatch' }); return;
+      }
     }
     try {
       if (balanceUnusedQuota === true) {
@@ -44335,6 +44363,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         sessionName,
         exhaustedAccountId,
         nowMs: Date.now(),
+        ...(sessionFramework ? { framework: sessionFramework } : {}),
+        ...(typeof targetAccountId === 'string' ? { repairTargetAccountId: targetAccountId } : {}),
       });
       res.json({ enabled: true, ...result });
     } catch (err) {
