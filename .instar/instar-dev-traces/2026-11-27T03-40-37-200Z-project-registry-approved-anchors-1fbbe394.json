@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "slug": "project-registry-approved-anchors",
+  "sessionId": "da669a50-23b9-4744-9fa3-8fd2bf10a0e7",
+  "timestamp": "2026-11-27T03:40:37.200Z",
+  "artifactPath": "upgrades/side-effects/project-registry-approved-anchors.md",
+  "artifactSha256": "bb20f1964d5283fd1f8ee516377c3d02b96b2727e03c84c937b25024e04494ca",
+  "specPath": "docs/specs/project-registry-approved-anchors.md",
+  "coveredFiles": [
+    "src/core/InitiativeTracker.ts",
+    "src/core/ProjectAnchorRegistry.ts",
+    "src/data/awareness/project-registry-approved-anchors.md",
+    "src/server/routes.ts",
+    "src/tasks/TaskFlowRegistry.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds an authenticated registry write that can disclose owner-selected text to a project conversation.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/project-registry-approved-anchors-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  }
+}

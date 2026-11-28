@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { InitiativeTracker } from '../../src/core/InitiativeTracker.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -50,6 +51,31 @@ const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 afterAll(() => { for (const d of tmpDirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/chief-of-staff-alive.test.ts' }); });
 
 describe('Chief of Staff E2E (feature is alive)', () => {
+  it('mounts the source-backed anchor route behind operator authorization', async () => {
+    const { config, stateDir } = mkConfig();
+    const tracker = new InitiativeTracker(stateDir);
+    const project = await tracker.create({
+      id: 'anchor-pilot', title: 'Anchor Pilot', kind: 'project', description: 'Fixture',
+      phases: [{ id: 'first', name: 'First' }], telegramTopicId: '141014',
+    });
+    const server = new AgentServer({
+      config, sessionManager: sm(), state: new StateManager(stateDir), initiativeTracker: tracker,
+    });
+    await server.start();
+    try {
+      const body = {
+        expectedVersion: project.version, conversationKey: CK,
+        sourceMessage: { conversationKey: CK, messageId: '41', at: '2026-11-26T22:00:00Z' },
+      };
+      const route = '/projects/anchor-pilot/alignment-anchor';
+      await request(server.getApp()).put(route).set('X-Instar-Request', '1').send(body).expect(401);
+      await request(server.getApp()).put(route).set(auth()).set('X-Instar-Request', '1').send(body)
+        .expect(403, { error: 'dashboard-operator-session-required' });
+      expect(tracker.get(project.id)?.approvedProjectAnchor).toBeUndefined();
+    } finally { await server.stop(); }
+  });
+
+
   it('without the loop (dev-gated off) the routes answer an honest 503', async () => {
     const { config, stateDir } = mkConfig();
     const server = new AgentServer({ config, sessionManager: sm(), state: new StateManager(stateDir) });
@@ -100,6 +126,10 @@ describe('Chief of Staff E2E (feature is alive)', () => {
       expect(Array.isArray(r.body.projects)).toBe(true);
       expect(r.body.projects.map((p: { conversationKey: string }) => p.conversationKey)).toEqual([CK]);
       expect(r.body.projects[0].goal).toBe('Ship the thing');
+      expect(r.body.projects[0]).toMatchObject({
+        lastProgressAt: null, lastProgressKind: null, waitingOn: [], stalledSince: null,
+        progressCheckedAt: null, progressEvidenceComplete: false,
+      });
 
       const unlock = await request(server.getApp()).post('/dashboard/unlock').send({ pin: '424242' }).expect(200);
       const preview = await request(server.getApp()).post('/chief-of-staff/project-binding-preview')

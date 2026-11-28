@@ -107,6 +107,35 @@ describe('InitiativeTracker × TaskFlow Phase 4 — basic lifecycle', () => {
     expect(flows[0].currentStep).toBe('plan');
   });
 
+  it('persists an approved anchor while preserving the existing wait instance', async () => {
+    r = await rig();
+    const project = await r.tracker.create({
+      ...baseInput(), kind: 'project', telegramTopicId: '141133',
+    });
+    const waiting = await r.tracker.update(project.id, { needsUser: true });
+    const prior = r.registry.findByControllerId(INITIATIVE_TASKFLOW_CONTROLLER_ID)[0];
+    expect(prior.status).toBe('waiting');
+    expect(prior.waitInstanceId).toBeTruthy();
+
+    const anchor = {
+      revision: 1,
+      purpose: 'Fixture purpose',
+      sourceMessages: [{ conversationKey: 'telegram:141133', messageId: '11', at: '2026-11-26T22:00:00Z' }],
+      done: [{ id: 'one', text: 'Complete the example', state: 'open' as const }],
+      outOfScope: [],
+    };
+    await r.tracker.approveProjectAnchor(project.id, waiting.version!, 'telegram:141133', anchor);
+
+    const after = r.registry.getFlow(prior.flowId, { bypassCache: true });
+    expect(after).toMatchObject({
+      status: 'waiting', waitInstanceId: prior.waitInstanceId, waitJson: prior.waitJson,
+      revision: prior.revision + 1,
+    });
+    const restarted = new InitiativeTracker(r.dir);
+    restarted.setTaskFlowRegistry(r.registry, 'test-instance-1');
+    expect(restarted.get(project.id)?.approvedProjectAnchor?.anchor).toEqual(anchor);
+  });
+
   it('create() persists the full Initiative shape in stateJson', async () => {
     r = await rig();
     const created = await r.tracker.create(baseInput());
