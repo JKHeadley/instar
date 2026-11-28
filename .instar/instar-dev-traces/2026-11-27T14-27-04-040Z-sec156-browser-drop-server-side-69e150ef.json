@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "sec156-browser-drop-server-side",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T14:27:04.040Z",
+  "artifactPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "artifactSha256": "3a86036d5842c8d41127e257fbd09d8293c8921cb3049bb7eddbe343f4e31581",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/server/routes.ts",
+    "src/templates/scripts/secret-drop-retrieve.mjs",
+    "tests/integration/secret-drop-store-first.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes driver output from one route's response and from the helper's printout; fixed category instead; re-declares the helper's non-blocking hash; no change to typing or consumption.",
+  "eli16Path": "docs/eli16/sec156-type-response-boundary.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -125,6 +125,39 @@ describe('Secret Drop store-first E2E lifecycle (survives a real server restart)
     }
   }, 60_000); // two real AgentServer boots + stops
 
+  it('SEC-156: a browser password is never returned by retrieve; the real server types it and it is gone afterwards', async () => {
+    const { server, app } = await bootServer();
+    try {
+      const reqRes = await request(app).post('/secrets/request').set(auth())
+        .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
+      expect(reqRes.status).toBe(201);
+      const token = reqRes.body.token as string;
+      const formRes = await request(app).get(`/secrets/drop/${token}`);
+      const csrf = /name="_csrf" value="([^"]+)"/.exec(formRes.text)?.[1];
+      expect((await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw-browser-only' })).status).toBe(200);
+
+      const peek = await request(app).post(`/secrets/retrieve/${token}`).set(auth());
+      expect(peek.status).toBe(409);
+      expect(peek.body).toMatchObject({ error: 'browser-only', browserHost: 'accounts.example.com', fieldRefs: ['password'] });
+      expect(JSON.stringify(peek.body)).not.toContain('pw-browser-only');
+
+      // The agent's browser driver, replaced by a recorder of what it was handed.
+      const browserDir = path.join(stateDir, 'scripts', 'browser');
+      fs.mkdirSync(browserDir, { recursive: true });
+      const called = path.join(tmpDir, 'typed.txt');
+      fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), `#!/bin/bash\n{ echo "args=$*"; echo "stdin=$(cat)"; } > ${called}\nexit 0\n`, { mode: 0o755 });
+      expect((await request(app).post(`/secrets/type/${token}`).send({ field: 'password', profile: 'site' })).status).toBe(401);
+      const typed = await request(app).post(`/secrets/type/${token}`).set(auth()).send({ field: 'password', profile: 'site' });
+      expect(typed.status).toBe(200);
+      expect(typed.body).toMatchObject({ typed: true, consumed: true });
+      expect(JSON.stringify(typed.body)).not.toContain('pw-browser-only');
+      expect(fs.readFileSync(called, 'utf8')).toBe('args=typesecret accounts.example.com\nstdin=pw-browser-only\n');
+      expect((await request(app).post(`/secrets/retrieve/${token}`).set(auth())).status).toBe(404);
+    } finally {
+      await server.stop();
+    }
+  }, 60_000);
+
   it('consume while persistence is off cannot resurrect after re-enabling and restart', async () => {
     const first = await bootServer();
     let token: string;

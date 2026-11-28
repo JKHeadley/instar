@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-27T14:49:52.364Z",
+  "slug": "sec156-browser-drop-server-side",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

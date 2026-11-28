@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "sec156-browser-drop-server-side",
+  "sessionId": "09b2b18b-f7f7-499f-bc7b-1d38025c1520",
+  "timestamp": "2026-11-22T16:11:55.312Z",
+  "artifactPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "artifactSha256": "1dcca96664f6876b017e8a902d2f2618a427ce3acaf31f2cf504ccf727a9b082",
+  "coveredFiles": [
+    "docs/specs/sec156-browser-drop-server-side.eli16.md",
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/server/middleware.ts",
+    "src/server/routes.ts",
+    "src/templates/scripts/secret-drop-retrieve.mjs",
+    "tests/e2e/secret-drop-store-first-lifecycle.test.ts",
+    "tests/integration/linux-browser-routes.test.ts",
+    "tests/integration/secret-drop-store-first.test.ts",
+    "tests/unit/dashboard-session-store.test.ts",
+    "tests/unit/normal-chrome-linux-wrapper.test.ts",
+    "upgrades/next/sec156-browser-drop-server-side.md",
+    "upgrades/side-effects/sec156-browser-drop-server-side.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "SEC-156: the API-key retrieve refuses a browser-only Secret Drop; a new bearer route types it server-side via the agent's own driver with the value on stdin; helper --browser uses it; dashboard step-up entry; reversible by revert, no stored data; independently reviewed.",
+  "eli16Path": "docs/specs/sec156-browser-drop-server-side.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one driver run per request, single-flight per drop; no retry or schedule"
+  }
+}

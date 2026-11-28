@@ -291,7 +291,7 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     expect(vaultHas(token)).toBe(false);
   });
 
-  it('a browser password (never stored) is consumed even if the vault cannot be written', async () => {
+  it('a browser password (never stored) is refused by retrieve and consumed by the server-side type, even if the vault cannot be written', async () => {
     const app = mount(tmpDir);
     const reqRes = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
       .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
@@ -300,10 +300,51 @@ describe('Secret Drop — consume removes the stored copy first', () => {
     const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
     await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw' }).expect(200);
     const spy = vi.spyOn(SecretStore.prototype, 'delete').mockImplementation(() => { throw new Error('vault unreadable'); });
-    const r = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    // SEC-156: the API-key retrieve refuses a browser password outright, and consumes nothing.
+    const refused = await request(app).post(`/secrets/retrieve/${token}?consume=true`).set('Authorization', `Bearer ${AUTH}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('browser-only');
+    // It is consumed by the server-side type, with no vault write (a browser password is never stored).
+    const browserDir = path.join(tmpDir, '.instar', 'scripts', 'browser');
+    fs.mkdirSync(browserDir, { recursive: true });
+    fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), '#!/bin/bash\ncat >/dev/null\nexit 0\n', { mode: 0o755 });
+    const r = await request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
     expect(r.status).toBe(200);
-    expect(r.body.consumed).toBe(true);
+    expect(r.body).toMatchObject({ typed: true, consumed: true });
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  const browserTypeWithDriver = async (driverBody: string) => {
+    const app = mount(tmpDir);
+    const reqRes = await request(app).post('/secrets/request').set('Authorization', `Bearer ${AUTH}`)
+      .send({ label: 'Site', fields: [{ name: 'password', label: 'Password' }], browserHost: 'accounts.example.com' });
+    const token = reqRes.body.token as string;
+    const form = await request(app).get(`/secrets/drop/${token}`);
+    const csrf = /name="_csrf" value="([^"]+)"/.exec(form.text)?.[1];
+    await request(app).post(`/secrets/drop/${token}`).send({ _csrf: csrf, password: 'pw-SYNTHETIC-VALUE' }).expect(200);
+    const browserDir = path.join(tmpDir, '.instar', 'scripts', 'browser');
+    fs.mkdirSync(browserDir, { recursive: true });
+    fs.writeFileSync(path.join(browserDir, 'xdrive.sh'), `#!/bin/bash\n${driverBody}\n`, { mode: 0o755 });
+    const r = await request(app).post(`/secrets/type/${token}`).set('Authorization', `Bearer ${AUTH}`).send({ field: 'password', profile: 'site' });
+    return Object.assign(r, { app, dropToken: token });
+  };
+
+  it('the type response carries a fixed category and never the driver output, on success', async () => {
+    // The synthetic driver echoes the value it read plus page text: none of it may come back.
+    const r = await browserTypeWithDriver('v=$(cat); echo "typed $v into SENSITIVE-PAGE-TEXT"; echo "stderr $v" >&2; exit 0');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ typed: true, exitCode: 0, consumed: true, browserHost: 'accounts.example.com', category: 'typed' });
+    expect(JSON.stringify(r.body)).not.toMatch(/SYNTHETIC-VALUE|SENSITIVE-PAGE-TEXT|stderr/);
+  });
+
+  it('the type response carries a fixed category and never the driver output, on failure (kept for retry)', async () => {
+    const r = await browserTypeWithDriver('v=$(cat); echo "out $v on SENSITIVE-PAGE-TEXT"; echo "failed with $v on SENSITIVE-PAGE-TEXT" >&2; exit 3');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ typed: false, exitCode: 3, consumed: false, browserHost: 'accounts.example.com', category: 'driver-failed' });
+    expect(JSON.stringify(r.body)).not.toMatch(/SYNTHETIC-VALUE|SENSITIVE-PAGE-TEXT/);
+    // Kept for a retry: the drop still exists (the retrieve refuses it as browser-only, not 404).
+    const still = await request(r.app).post(`/secrets/retrieve/${r.dropToken}`).set('Authorization', `Bearer ${AUTH}`);
+    expect(still.status).toBe(409);
   });
 
   it('stored-copy branch (after a restart): a failed delete consumes nothing (503) and a retry succeeds', async () => {

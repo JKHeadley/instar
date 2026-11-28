@@ -103,7 +103,59 @@ describe('Secret Drop with browserHost', () => {
       const full = path.join(dir, '.instar', name);
       if (fs.statSync(full).isFile()) expect(fs.readFileSync(full).includes('S3cret!')).toBe(false);
     }
-    const peek = await request(app).post(`/secrets/retrieve/${made.body.token}`).expect(200);
-    expect(peek.body.browserHost).toBe('accounts.example.com');
+    // SEC-156: the API-key retrieve refuses a browser-only password: names and host only, never the value.
+    const peek = await request(app).post(`/secrets/retrieve/${made.body.token}`).expect(409);
+    expect(peek.body).toMatchObject({ error: 'browser-only', browserHost: 'accounts.example.com', fieldRefs: ['password'] });
+    expect(JSON.stringify(peek.body)).not.toContain('S3cret!');
+    const consume = await request(app).post(`/secrets/retrieve/${made.body.token}?consume=true`).expect(409);
+    expect(JSON.stringify(consume.body)).not.toContain('S3cret!');
+  });
+
+  /** A browser password, submitted, plus a recorder in place of the agent's xdrive.sh. */
+  async function submittedBrowserDrop(exit: number) {
+    const app = mount();
+    const made = await request(app).post('/secrets/request').set('Authorization', `Bearer ${token}`).send(body).expect(201);
+    const form = await request(app).get(`/secrets/drop/${made.body.token}`).expect(200);
+    const csrf = /name="_csrf"\s+value="([0-9a-f]+)"/.exec(form.text)?.[1] ?? /csrfToken['":\s=]+['"]([0-9a-f]+)/.exec(form.text)?.[1];
+    await request(app).post(`/secrets/drop/${made.body.token}`).send({ _csrf: csrf, password: 'S3cret!' }).expect(200);
+    const browserDir = path.join(dir, '.instar', 'scripts', 'browser');
+    fs.mkdirSync(browserDir, { recursive: true });
+    const called = path.join(dir, 'called.txt');
+    fs.writeFileSync(path.join(browserDir, 'xdrive.sh'),
+      `#!/bin/bash\n{ echo "args=$*"; echo "marker=$XD_SECRET_BROWSER"; echo "profile=$XD_PROFILE"; echo "stdin=$(cat)"; } > ${called}\necho "OK driver"\nexit ${exit}\n`, { mode: 0o755 });
+    return { app, dropToken: made.body.token as string, called };
+  }
+
+  it('SEC-156: the server types it with the stored host and the value on standard input, returns no value, and consumes on success', async () => {
+    const { app, dropToken, called } = await submittedBrowserDrop(0);
+    const r = await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: 'work-google' }).expect(200);
+    // The driver prints "OK driver"; none of its output is returned, only a fixed category.
+    expect(r.body).toEqual({ typed: true, exitCode: 0, consumed: true, browserHost: 'accounts.example.com', category: 'typed' });
+    expect(JSON.stringify(r.body)).not.toContain('OK driver');
+    expect(JSON.stringify(r.body)).not.toContain('S3cret!');
+    expect(fs.readFileSync(called, 'utf8')).toBe('args=typesecret accounts.example.com\nmarker=1\nprofile=work-google\nstdin=S3cret!\n');
+    await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: 'work-google' }).expect(404);
+  });
+
+  it('SEC-156: one typing run per drop at a time', async () => {
+    const { app, dropToken } = await submittedBrowserDrop(0);
+    const driver = path.join(dir, '.instar', 'scripts', 'browser', 'xdrive.sh');
+    fs.writeFileSync(driver, '#!/bin/bash\ncat >/dev/null\nsleep 1\nexit 0\n', { mode: 0o755 });
+    const send = () => request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: 'p' });
+    const [a, b] = await Promise.all([send(), new Promise((r) => setTimeout(r, 150)).then(send)]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    expect((a.status === 409 ? a : b).body.error).toBe('typing-in-progress');
+  });
+
+  it('SEC-156: a failed type keeps the drop for a retry; the route needs a real field and a valid profile', async () => {
+    const { app, dropToken } = await submittedBrowserDrop(2);
+    const r = await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: '#1', profile: 'work-google' }).expect(200);
+    expect(r.body).toEqual({ typed: false, exitCode: 2, consumed: false, browserHost: 'accounts.example.com', category: 'driver-failed' });
+    await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'nope', profile: 'p' }).expect(404);
+    await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: '__proto__', profile: 'p' }).expect(404);
+    await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'constructor', profile: 'p' }).expect(404);
+    await request(app).post(`/secrets/type/${dropToken}`).set('Authorization', `Bearer ${token}`).send({ field: 'password', profile: '../x' }).expect(400);
+    // Still there: the retrieve still refuses it as browser-only rather than 404.
+    await request(app).post(`/secrets/retrieve/${dropToken}`).set('Authorization', `Bearer ${token}`).expect(409);
   });
 });

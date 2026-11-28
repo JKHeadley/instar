@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "sec156-browser-drop-server-side",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T15:05:07.086Z",
+  "artifactPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "artifactSha256": "69ea7ae71f7a387dcdf10cfca64991f77c7a4d5b0c559f0575daf8cfd3eb6ef9",
+  "coveredFiles": [
+    "src/server/routes.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Code comment correction only.",
+  "eli16Path": "docs/eli16/sec156-maxbuffer-comment.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

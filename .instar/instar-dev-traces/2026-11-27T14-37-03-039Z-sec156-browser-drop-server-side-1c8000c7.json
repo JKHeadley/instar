@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "sec156-browser-drop-server-side",
+  "sessionId": "d46b6499-411b-4e0b-8c2c-ea0fa7c75309",
+  "timestamp": "2026-11-27T14:37:03.039Z",
+  "artifactPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "artifactSha256": "5192e10e5f370da157e6bb9a57a8fafbd97d5381e3f26a8635739c0b8412aa5c",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/server/routes.ts",
+    "src/templates/scripts/secret-drop-retrieve.mjs",
+    "tests/integration/linux-browser-routes.test.ts",
+    "tests/integration/secret-drop-store-first.test.ts",
+    "tests/unit/normal-chrome-linux-wrapper.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test and wording corrections after the pre-queue review; no behavior change.",
+  "eli16Path": "docs/eli16/sec156-type-response-boundary.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/sec156-browser-drop-server-side.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
