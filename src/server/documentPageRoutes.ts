@@ -22,7 +22,7 @@ import type { ResolvedPerson } from '../core/MobilePeople.js';
 import { checkBlob, type Blob } from '../documents/blobs.js';
 import { verifyDocpage, type DocpageOp } from '../documents/docpageAuth.js';
 import { latestVersion } from '../documents/fold.js';
-import { renderTree } from '../documents/render.js';
+import { renderPageTree } from '../documents/render.js';
 import { DocError, type Caller } from '../documents/service.js';
 import { isUuid, type Actor, type SignedOrigin } from '../documents/rows.js';
 import { isDocumentsEnabled, resolveCaller, type DocumentRouteDeps } from './documentRoutes.js';
@@ -532,7 +532,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
       const versionId = typeof req.query.version === 'string' ? req.query.version : undefined;
       const d = svc.read(id, c, versionId);
       const latest = latestVersion(d.state);
-      const blocks = d.version && d.markdown !== null ? renderTree(d.markdown, d.version.projectionVersion) : [];
+      const blocks = d.version && d.markdown !== null ? renderPageTree(d.markdown, d.version.projectionVersion) : [];
       const sent = svc.sentKeys(id, c);
       const meKey = c.principal.kind === 'person' ? c.principal.personKey : 'owner';
       const nameOf = (author: string): string => author === meKey ? 'You' : author === 'owner' ? (deps.ownerName?.() ?? 'Owner') : author.startsWith('agent.') ? (deps.agentName?.() ?? 'Echo') : (deps.personName?.(author) ?? author);

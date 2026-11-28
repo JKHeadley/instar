@@ -44,7 +44,7 @@ function deviceKey() {
   return { raw: Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, 'base64url'), Buffer.from(jwk.y, 'base64url')]).toString('base64url'), privateKey };
 }
 
-function setup() {
+function setup(markdown = '# Plan\n\nWe ship the viewer on Friday.\n') {
   const kp = generateSigningKeyPair();
   const signer: MachineSigner = { machineId: () => 'A', signerKeyHash: () => signerKeyHashOf(kp.publicKey), sign: (p) => ({ machineId: 'A', signerKeyHash: signerKeyHashOf(kp.publicKey), sig: edSign(p, kp.privateKey) }) };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docpage-')); tmp.push(dir);
@@ -89,7 +89,7 @@ function setup() {
   a.use(createDocumentRoutes(deps));
   a.use(createDocumentPageRoutes(deps));
   const bearer: Caller = { principal: { kind: 'bearer' }, actor: { type: 'agent', placeKey: 'owner-reach' }, access: {}, reader: { kind: 'owner' } };
-  const { id } = service.create(bearer, { title: 'Plan', markdown: '# Plan\n\nWe ship the viewer on Friday.\n', primary: OWN });
+  const { id } = service.create(bearer, { title: 'Plan', markdown, primary: OWN });
   return { a, id, owner, stranger, presence, store, service, setOrigin: (o: string | null) => { origin = o; }, setConfig: (c: Record<string, unknown>) => { cfg = c; } };
 }
 
@@ -210,9 +210,11 @@ describe('document page', () => {
   });
 
   it('a device-signed comment is stored; a changed body, a replay, or an unknown person is refused', async () => {
-    const s = setup();
+    const s = setup('---\ntitle: Internal note\n---\n\n# Plan\n\nWe ship the viewer on Friday.\n');
     const cookie = await openCookie(s);
     const page = (await request(s.a).get(`/docs/${s.id}/page-data`).set('Cookie', cookie)).body;
+    expect(page.blocks).toHaveLength(2);
+    expect(page.blocks[0]).toMatchObject({ kind: 'heading', start: 'title: Internal note\n'.length });
     const para = page.blocks[1];
     const salt = crypto.randomBytes(16).toString('hex');
     const text = 'Can we make it Thursday?';

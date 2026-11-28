@@ -1,6 +1,6 @@
 /** The render tree matches the projection character for character (spec §3.5, §3.6). */
 import { describe, expect, it } from 'vitest';
-import { renderTree } from '../../src/documents/render.js';
+import { renderPageTree, renderTree } from '../../src/documents/render.js';
 import { projectText } from '../../src/documents/projection.js';
 
 const CORPUS = [
@@ -24,6 +24,27 @@ describe('render tree', () => {
       for (const b of blocks) expect(b.end - b.start).toBe(b.runs.map((r) => r.text).join('').length);
     }
   });
+  it('omits leading settings from the page and preserves the body projection offsets', () => {
+    const md = '---\ntitle: Draft\nstatus: pending\nrequested-by: |\n  owner note\n---\n\n# Article\n\nSelect this sentence.';
+    const projection = projectText(md);
+    const body = renderPageTree(md);
+    expect(body.map(block => [block.kind, block.runs.map(run => run.text).join('')])).toEqual([
+      ['heading', 'Article'], ['paragraph', 'Select this sentence.'],
+    ]);
+    expect(body[0].start).toBe(projection.text.indexOf('Article'));
+    expect(projection.text.slice(body[1].start, body[1].end)).toBe('Select this sentence.');
+  });
+
+  it('keeps authored prose around dividers, and renders dash-underlined prose without a heading', () => {
+    const md = '---\nA real paragraph\nspanning two lines\n---\n\nA single line above a divider\n---\n\nA heading\n===\n';
+    expect(renderPageTree(md).map(block => [block.kind, block.runs.map(run => run.text).join('')])).toEqual([
+      ['paragraph', 'A real paragraph spanning two lines'],
+      ['paragraph', 'A single line above a divider'],
+      ['heading', 'A heading'],
+    ]);
+    expect(renderPageTree('---\ntitle: Draft\n---\n')).toEqual([]);
+  });
+
   it('equals the projection on 400 random documents', () => {
     const r = rnd(42);
     for (let n = 0; n < 400; n++) {

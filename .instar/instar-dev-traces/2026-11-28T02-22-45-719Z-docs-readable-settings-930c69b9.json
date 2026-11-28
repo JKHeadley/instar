@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "docs-readable-settings",
+  "sessionId": "f84816a2-2f4b-4710-a14b-20f51e9af624",
+  "timestamp": "2026-11-28T02:22:45.719Z",
+  "artifactPath": "upgrades/side-effects/docs-readable-settings.md",
+  "artifactSha256": "b6e9ad13bce2acfadba66af5b21c4654245a9b7e1975fcd1aef6a46102698572",
+  "coveredFiles": [
+    "src/documents/render.ts",
+    "src/server/documentPageRoutes.ts",
+    "tests/integration/documents-page.test.ts",
+    "tests/unit/documents-render.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible document presentation fix with stable persisted comment coordinates and unchanged access checks.",
+  "eli16Path": "upgrades/side-effects/docs-readable-settings.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/docs-readable-settings.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
