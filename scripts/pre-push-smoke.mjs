@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   changedFilesSince,
+  classifySmokeInputs,
   classifyVitestListRun,
   evaluateAffectedSmokeSelection,
   evaluateSmokeBreadth,
@@ -46,7 +47,7 @@ function readFailedFiles(reportFile) {
   }
 }
 
-function listAffectedTests(baseRef, { filesOnly = false } = {}) {
+function listSmokeTests(selection, { filesOnly = false } = {}) {
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-list-'));
   const reportFile = path.join(reportDir, 'vitest-list.json');
   try {
@@ -56,8 +57,7 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
       ...(filesOnly ? ['--filesOnly'] : []),
       '--config',
       'vitest.push.config.ts',
-      '--changed',
-      baseRef,
+      ...selection,
       `--json=${reportFile}`,
     ], {
       timeout: Number.parseInt(process.env.INSTAR_PRE_PUSH_SMOKE_LIST_TIMEOUT_MS ?? '', 10) || 120_000,
@@ -67,7 +67,7 @@ function listAffectedTests(baseRef, { filesOnly = false } = {}) {
 
     try {
       const text = fs.readFileSync(reportFile, 'utf-8');
-      const selected = filesOnly ? summarizeVitestFilesOnlyJson(text) : summarizeVitestListJson(text);
+      const selected = filesOnly ? summarizeVitestFilesOnlyJson(text, { includeFiles: true }) : summarizeVitestListJson(text);
       return { result, selected };
     } catch (err) {
       return { result, selectionError: err };
@@ -102,7 +102,7 @@ function exitOnUnusableListing(listed) {
   }
 }
 
-function runAffectedSmoke(baseRef) {
+function runAffectedSmoke(selection) {
   const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-pre-push-smoke-'));
   const reportFile = path.join(reportDir, 'vitest-results.json');
   try {
@@ -111,8 +111,7 @@ function runAffectedSmoke(baseRef) {
       'run',
       '--config',
       'vitest.push.config.ts',
-      '--changed',
-      baseRef,
+      ...selection,
       '--reporter=default',
       '--reporter=json',
       `--outputFile.json=${reportFile}`,
@@ -166,30 +165,36 @@ if (breadth.skip) {
   process.exit(0);
 }
 
-// Stage 1: file names only. It imports no test file, so a change that reaches
-// hundreds of tests is found too broad in seconds instead of timing out the
-// full listing (which then skipped the smoke tier with tests_run=0).
-const filesListed = listAffectedTests(base.ref, { filesOnly: true });
-exitOnUnusableListing(filesListed);
-breadth = evaluateSmokeBreadth(
-  { changedFileCount: changed.length, testFileCount: filesListed.selected.testFileCount, testCaseCount: 0 },
-  limits,
-);
+const { directTests, deferredE2e, sharedInput, hasSourceChange } = classifySmokeInputs(changed);
+let files;
+const direct = Boolean(sharedInput) || !hasSourceChange;
+if (direct) {
+  if (sharedInput) console.log(`Local smoke: shared input ${sharedInput}; related coverage deferred to CI.`);
+  if (deferredE2e.length > 0) console.log(`Local smoke: ${deferredE2e.length} directly changed E2E files deferred to the CI E2E job.`);
+  files = directTests.filter(file => fs.existsSync(file)).map(file => path.resolve(file));
+} else {
+  // Related discovery transforms imports. Do it once and reuse the file list.
+  const filenames = listSmokeTests(['--changed', base.ref], { filesOnly: true });
+  exitOnUnusableListing(filenames);
+  files = filenames.selected.files;
+}
+
+breadth = evaluateSmokeBreadth({ changedFileCount: changed.length, testFileCount: files.length, testCaseCount: 0 }, limits);
 if (breadth.skip) {
   printSkip(breadth.reason);
   process.exit(0);
 }
-if (filesListed.selected.testFileCount === 0) {
-  console.log('✅ No affected tests selected by Vitest.');
+if (files.length === 0) {
+  console.log('Local smoke: zero test files selected. CI supplies full coverage.');
   process.exit(0);
 }
 
-// Stage 2: collect test cases, now bounded by the file cap.
-const listed = listAffectedTests(base.ref);
+// Collect and run the exact bounded file selection without another related scan.
+const listed = listSmokeTests(files);
 exitOnUnusableListing(listed);
 
 const selected = listed.selected;
-console.log(`🧪 Smoke affected set: ${selected.testFileCount} test files / ${selected.testCaseCount} test cases.`);
+console.log(`🧪 Local smoke ${direct ? 'direct' : 'related'} selection: ${selected.testFileCount} test files / ${selected.testCaseCount} test cases.`);
 
 const selection = evaluateAffectedSmokeSelection(
   { changedFileCount: changed.length, testFileCount: selected.testFileCount, testCaseCount: selected.testCaseCount },
@@ -201,8 +206,8 @@ if (selection.action === 'skip') {
 }
 
 if (selection.action === 'no-tests') {
-  console.log('✅ No affected tests selected by Vitest.');
+  console.log(direct ? 'Local smoke: zero test cases selected from directly changed files under the push config.' : 'Local smoke: zero test cases selected from the related file list.');
   process.exit(0);
 }
 
-process.exit(runAffectedSmoke(base.ref));
+process.exit(runAffectedSmoke(files));
