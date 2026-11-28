@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "slug": "design-feedback-rule-links",
+  "sessionId": "081d8824-59d3-4d61-bb9b-a2a100a5f881",
+  "timestamp": "2026-11-23T15:27:01.911Z",
+  "artifactPath": "upgrades/side-effects/design-feedback-rule-links.md",
+  "artifactSha256": "a2b772e2d46b7ebccd260f436ccb2b2dbcf04227d98b1e794c3eb4bdb0b94ffb",
+  "specPath": "docs/specs/design-standard-enforcement.md",
+  "coveredFiles": [
+    "src/designGate/feedbackRuleLinks.ts",
+    "tests/unit/design-feedback-rule-links.test.ts",
+    "upgrades/next/design-feedback-rule-links.md",
+    "upgrades/side-effects/design-feedback-rule-links.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Pure structural feedback-link component under approved section5; explicit no source/privacy/merge authority and no activation.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  }
+}
