@@ -18,6 +18,19 @@ export function notificationsGlanceSpec(feed, activate = {}) {
       { key: 'preferences', label: 'Push choices', value: 'Review', onActivate: activate.preferences },
     ] };
 }
+/** Bound the first read without losing a notice's full, already-humanized text. */
+function noticeBody(text) {
+  const chars = Array.from(text);
+  if (chars.length <= 320) return el('p', { text });
+  return el('div', { class: 'notice-body' },
+    el('p', { class: 'notice-preview', text: chars.slice(0, 220).join('').trimEnd() + '…' }),
+    el('details', { class: 'notice-disclosure', ontoggle: (event) => {
+      const node = event.currentTarget;
+      node.toggleAttribute('data-interaction-open', node.open);
+    } },
+      el('summary', { text: 'Read full notice' }),
+      el('p', { class: 'notice-full', text })));
+}
 /** All server/peer text is rendered as text, including stored HTML and quoted notices. */
 let notificationClick = 0;
 let notificationView = { unread: true, cursors: undefined };
@@ -57,8 +70,8 @@ export async function renderNotifications(main, ctx, view) {
     for (const item of feed.items) {
       const row = el('article', { class: 'need-card' },
         el('strong', { text: status.categories.find(c => c.id === item.category)?.description || 'Automated notice' }),
-        // Names, not ids: conversation and machine ids read as their names (or plain words); the full text stays on hover.
-        el('p', { text: plainReferenceText(item.text, { topicNames, machineNames }), title: item.text }), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
+        // Names, not ids: humanize once, then retain the same safe text in the disclosure.
+        noticeBody(plainReferenceText(item.text, { topicNames, machineNames })), el('small', { text: `${item.count} occurrence${item.count === 1 ? '' : 's'} · ${new Date(item.updatedAt).toLocaleString()}` }));
       row.append(el('button', { class: 'btn-secondary', style: 'min-height:44px', type: 'button', text: 'Mark read', onclick: async () => {
         try { await request(`/notifications/quiet/${encodeURIComponent(item.id)}?machineId=${encodeURIComponent(item.machineId)}`, { method: 'PATCH', body: '{}' }); await refresh(); }
         catch (error) { feedback.textContent = error.message; }

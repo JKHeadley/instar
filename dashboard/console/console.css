@@ -1806,6 +1806,12 @@ a.needs-row:hover { background: var(--surface-raised); }
 .ideas-unranked { min-width: 0; margin: var(--s-4) 0; }
 .ideas-unranked > summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
 
+/* Quiet reports keep their full text behind an explicit, keyboard-accessible read. */
+.notice-body { min-width: 0; }
+.notice-body p { margin: 0; overflow-wrap: anywhere; }
+.notice-disclosure summary { min-height: 44px; padding: 10px 0; cursor: pointer; color: var(--text); }
+.notice-disclosure[open] .notice-full { white-space: pre-wrap; margin-top: var(--s-2); }
+
 
 /* A long approval inbox stays within the screen; all received actions remain reachable. */
 .needs-groups { max-height: min(52vh, 28rem); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--strip-line); border-top: 0; background: var(--surface); scrollbar-gutter: stable; }

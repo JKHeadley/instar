@@ -1,0 +1,38 @@
+{
+  "version": 3,
+  "slug": "notification-previews",
+  "sessionId": "e89a8055-5779-4187-b7ec-972b5146fde6",
+  "timestamp": "2026-11-23T06:19:32.498Z",
+  "artifactPath": "upgrades/side-effects/notification-previews.md",
+  "artifactSha256": "cf60dc18794a89f5225e6bc5e5e677b5a653dd1d4e2797124db6a742a9b86bf3",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/notifications.js",
+    "docs/specs/notification-previews.eli16.md",
+    "tests/unit/console-notifications.test.ts",
+    "upgrades/next/notification-previews.md",
+    "upgrades/side-effects/notification-previews.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible notice presentation only; no permissions, API or persistent state changes.",
+  "eli16Path": "docs/specs/notification-previews.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/notification-previews.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "21a45a5a5f03",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "ux-lifecycle",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  }
+}
