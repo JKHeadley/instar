@@ -743,12 +743,12 @@ export const LOCAL_VERIFY_MAIN_RED_HOLD_CLAUDEMD_LINE = '- Local Verify main-red
 /** docs/specs/local-verify-peer-works-through-restart.md Visibility: the phrase `migrateClaudeMd` rewrites in existing agents. */
 export const LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch).';
 export const LOCAL_VERIFY_PEERS_NEW_EPOCH_PHRASE = '(same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch).';
-export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: a second machine can run single PR verifies the serving-lease holder hands it, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 2). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the second verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
+export const LOCAL_VERIFY_PEERS_CLAUDEMD_LINE = '- Local Verify peer verifiers: up to three remote machines can each run one PR verification at a time, and the holder imports the record only if it answers exactly that hand-off (same attempt id, PR, head, base, verifier version, policy and lease epoch, or, when `monitoring.localVerify.peerWorksThroughRestart.enabled` is on, a later epoch of this machine\'s unbroken holding; that setting is also the off switch). Turn a machine into a peer with `monitoring.localVerify.enabled: true` + `monitoring.localVerify.peer.enabled: true` (a peer needs no source checkout and never merges); list it on the holder in `monitoring.localVerify.peers` (`[{"machineId": "…", "url": "http://…:4042"}]`, at most 3). Before activation, confirm GET /local-verify/peer-status accepts the coordinator API token; paired machines can use different local tokens, so a 401 or 403 means this peer cannot be enabled. `GET /local-verify` → `peers` (configured peers, breaker state, reserved entries); on the peer `GET /local-verify/peer-status`. A peer that fails 3 times in a row is skipped for 30 min (one `local-verify:peer-breaker:<machineId>` item). When the user asks "why did that PR\'s verify run on the other machine?" or "is the peer verifier working?" → read `peers` and the audit (`peer-dispatch`, `peer-imported`, `peer-record-rejected`).';
 /**
  * Local Verify merge-throughput overflow — the awareness line appended to an existing CLAUDE.md's
  * Local Verify section (`migrateClaudeMd`, content-sniffed on its own phrase).
  */
-export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue is full (10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
+export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify throughput overflow: a PR labelled `merge-throughput` is admitted even when the queue reaches its configured cap (default 10), up to 5 extra entries, so its priority applies at once; an ordinary PR still answers `queue-full`. When a labelled PR answers `queue-full`, the overflow is full too: wait for an entry to finish and request it again.';
 
 /**
  * Local Verify fail-fast — the awareness line appended to an existing CLAUDE.md's Local Verify
@@ -14052,6 +14052,19 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify peer-verifier awareness');
     }
+    const updatedPeerCapacity = content.replace(
+      /^(- (?:\*\*Peer verifiers \(a second machine\)\.\*\*|Local Verify peer verifiers:)[^\n]*?monitoring\.localVerify\.peers` \([^\n)]*?at most )2(\)[^\n]*)$/gm,
+      (_line, before: string, after: string) => (before + '3' + after)
+        .replace('Peer verifiers (a second machine)', 'Peer verifiers')
+        .replace(/a second machine can run single PR verifies the serving-lease holder hands it/i,
+          (old: string) => `${old.startsWith('A') ? 'Up' : 'up'} to three remote machines can each run one PR verification at a time`)
+        .replace('is the second verifier working?', 'is the peer verifier working?'),
+    );
+    if (updatedPeerCapacity !== content) {
+      content = updatedPeerCapacity;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the three-peer Local Verify limit');
+    }
     // local-verify-peer-works-through-restart (Visibility): the peer line in existing agents still says a
     // record needs "the same … lease epoch". Rewrite that one phrase; content-sniffed on the setting key.
     if (content.includes(LOCAL_VERIFY_PEERS_OLD_EPOCH_PHRASE) && !content.includes('monitoring.localVerify.peerWorksThroughRestart.enabled')) {
@@ -14069,11 +14082,21 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: small Mac verification awareness names both worker settings');
     }
+
     // local-verify merge-throughput overflow: a labelled PR is admitted past a full queue.
     if (content.includes('/local-verify') && !content.includes('Local Verify throughput overflow')) {
       content += '\n' + LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify merge-throughput overflow awareness');
+    }
+    const updatedOverflowCapacity = content.replace(
+      /^(- Local Verify throughput overflow:[^\n]*?)when the queue is full \(10\), up to 5 extra entries/gm,
+      '$1when the queue reaches its configured cap (default 10), up to 5 extra entries',
+    );
+    if (updatedOverflowCapacity !== content) {
+      content = updatedOverflowCapacity;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: clarified the default Local Verify admission limit');
     }
     // local-verify fail-fast: a PR verify stops its other lanes once one lane has a real failure.
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.failFast')) {

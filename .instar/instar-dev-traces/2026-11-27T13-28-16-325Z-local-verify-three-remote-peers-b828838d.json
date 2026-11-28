@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-verify-three-remote-peers",
+  "sessionId": "b528b042-91e4-4687-b182-8f0750aaedd6",
+  "timestamp": "2026-11-27T13:28:16.325Z",
+  "artifactPath": "upgrades/side-effects/local-verify-three-remote-peers.md",
+  "artifactSha256": "0611f53a336af21e7a3ce2a6b5fdabaccfe21300f759c0e101942852a8f3011d",
+  "specPath": "docs/specs/local-verify-capacity.md",
+  "coveredFiles": [
+    "docs/specs/local-verify-capacity.eli16.md",
+    "docs/specs/local-verify-capacity.md",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/awareness/local-verify-capacity.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-localVerifyMainRedHold.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/localVerify/waitingListService.test.ts",
+    "upgrades/next/local-verify-three-remote-peers.md",
+    "upgrades/side-effects/local-verify-three-remote-peers.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "This changes coordinator queue configuration, peer bounds and runtime audit behavior. Independent static reviewers checked the change and the existing dispatch authority.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -296,7 +296,7 @@ export interface PeerClient {
 
 export const PEER_LIMITS = Object.freeze({
   /** At most this many peers. */
-  maxPeers: 2,
+  maxPeers: 3,
   /** Remote attempts per queue entry before it is only ever run locally. */
   maxAttemptsPerEntry: 2,
   /** A remote attempt not done within this is abandoned on both sides; this, not a lane deadline, is what ends a stuck peer run. */

@@ -88,8 +88,9 @@ describe('Local Verify peer-verifier awareness', () => {
   it('the template and the migration line name the settings and the read surfaces; appended once', async () => {
     const { LOCAL_VERIFY_PEERS_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
     const md = generateClaudeMd('fixture', 'Fixture', 4042, true);
+    expect(md).toContain('monitoring.localVerify.queueCap');
     for (const text of [md, LOCAL_VERIFY_PEERS_CLAUDEMD_LINE]) {
-      for (const k of ['monitoring.localVerify.peers', 'monitoring.localVerify.peer.enabled', 'peer-status', 'local-verify:peer-breaker']) expect(text).toContain(k);
+      for (const k of ['monitoring.localVerify.peers', 'monitoring.localVerify.peer.enabled', 'peer-status', 'local-verify:peer-breaker', 'at most 3']) expect(text).toContain(k);
     }
     const { projectDir, claudeMd } = project('# CLAUDE.md\n\n### Local Verify\n- Ask: `POST /local-verify`\n- `monitoring.localVerify.mainRedHold: false`\n- `GET /local-verify/status`\n- `monitoring.localVerify.mergeLine: false`\n- merge-throughput\n');
     const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
@@ -97,9 +98,36 @@ describe('Local Verify peer-verifier awareness', () => {
     expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(LOCAL_VERIFY_PEERS_CLAUDEMD_LINE);
     expect(runMigrateClaudeMd(m).upgraded).not.toContain('CLAUDE.md: added Local Verify peer-verifier awareness');
   });
+
+  it('updates the old peer limit once and preserves custom text on the same line', () => {
+    const { projectDir, claudeMd } = project(
+      '# CLAUDE.md\n\n- **Peer verifiers (a second machine).** A second machine can run single PR verifies the serving-lease holder hands it. '
+      + 'Set `monitoring.localVerify.peers` (at most 2). Keep the Laptop on AC power.\n',
+    );
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    const notice = 'CLAUDE.md: documented the three-peer Local Verify limit';
+    expect(runMigrateClaudeMd(m).upgraded).toContain(notice);
+    const text = fs.readFileSync(claudeMd, 'utf-8');
+    expect(text).toContain('Up to three remote machines can each run one PR verification at a time');
+    expect(text).toContain('`monitoring.localVerify.peers` (at most 3). Keep the Laptop on AC power.');
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain(notice);
+  });
 });
 
 describe('Local Verify throughput overflow awareness', () => {
+  it('updates the old fixed overflow limit without changing nearby operator notes', () => {
+    const { projectDir, claudeMd } = project(
+      '# CLAUDE.md\n\n- Local Verify throughput overflow: an eligible PR is admitted even when the queue is full (10), up to 5 extra entries. Keep the Laptop on AC power.\n',
+    );
+    const m = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'), port: 4042, hasTelegram: true, projectName: 'test-agent' });
+    const notice = 'CLAUDE.md: clarified the default Local Verify admission limit';
+    expect(runMigrateClaudeMd(m).upgraded).toContain(notice);
+    expect(fs.readFileSync(claudeMd, 'utf-8')).toContain(
+      'when the queue reaches its configured cap (default 10), up to 5 extra entries. Keep the Laptop on AC power.',
+    );
+    expect(runMigrateClaudeMd(m).upgraded).not.toContain(notice);
+  });
+
   it('the template and the migration line carry it; appended once to an existing section', async () => {
     const { LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE } = await import('../../src/core/PostUpdateMigrator.js');
     expect(generateClaudeMd('fixture', 'Fixture', 4042, true)).toContain('Local Verify throughput overflow');

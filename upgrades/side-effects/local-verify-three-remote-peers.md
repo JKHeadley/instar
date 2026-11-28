@@ -1,0 +1,105 @@
+# Side-Effects Review — Local Verify can use three remote peers
+
+**Version / slug:** local-verify-three-remote-peers  
+**Date:** 2026-11-26  
+**Author:** Echo  
+**Second-pass reviewer:** peer_capacity_review
+
+## Summary of the change
+
+The coordinator reads up to three configured remote verifiers, for four machines including the coordinator. The verifier parser, operating instructions, and regression tests reflect the new bound.
+
+## Decision-point inventory
+
+- The peer configuration parser increases the number of valid configured remote verifiers it accepts from two to three.
+- The dispatcher continues to check resource availability, lease ownership and epoch, verifier version, policy hash, signer pin, and existing reservations.
+- The migration refreshes the shipped instruction for existing agents while preserving edits elsewhere on the line.
+
+## 1. Over-block
+
+A fourth valid remote entry stays outside the configured pool. Three entries cover the four-machine deployment, including the coordinator.
+
+## 2. Under-block
+
+A third entry that was already present in configuration becomes eligible at activation if it passes the normal dispatch checks. The operator can review configured entries on the coordinator before updating.
+
+## 3. Level-of-abstraction fit
+
+The existing parser owns the list bound. A single adjustment reaches both dispatcher and failed-file diagnosis callers.
+
+## 4. Signal vs authority compliance
+
+The parser capacity is a deterministic invariant. Peer eligibility continues through the existing resource, trust and lease checks. See the [Signal vs Authority standard](../../docs/signal-vs-authority.md).
+
+## 4b. Judgment-point check
+
+The patch adds no heuristic for choosing among competing signals. The existing peer selection and queue ordering handle that choice.
+
+## 5. Interactions
+
+A third peer can add one concurrent test and one status call per polling pass. Each machine can hold one reservation. The reservation, result import, retry and failover paths retain their existing lifecycle. The failed-file diagnosis coordinator can also consider the third peer. Its attempt limit and full-verification priority still apply.
+
+## 6. External surfaces
+
+The existing `GET /local-verify` response can include a third configured peer. An eligible third peer can produce a normal signed verification result for the existing merge gates. The configuration format, result shape and approval surfaces stay compatible.
+
+## 6b. Operator-surface quality
+
+No new operator control or UI is introduced.
+
+## 7. Multi-machine posture
+
+Machine-local by design. The holder reads its configured peer list and reports it through `GET /local-verify`. The status view refers to the active coordinator and its configured participants. The lease gate redirects a standby reader to the holder. This patch introduces no notice, URL, or durable state format.
+
+## 8. Rollback cost
+
+Remove the third entry after any reservation on it has drained, or revert and ship a patch. Draining first preserves the coordinator's ability to fetch and import its result. Existing installations with at most two valid entries require no configuration migration.
+
+## Conclusion
+
+The parser fixture covers the third peer, overflow, duplicates, self, and malformed URLs. The dispatch fixture checks distinct accepted reservations on three peers while the local slot is occupied. The migration fixture covers existing instructions and idempotence. The reviewer concurred with the change on static review and identified the failed-file diagnosis interaction recorded above.
+
+The coordinator reads `monitoring.localVerify.queueCap` live. It accepts integers from 10 through 30 and defaults to 10. Lowering the limit slows new admissions while the existing queue drains. Entries already admitted stay eligible for restoration after a restart.
+
+Drain the queue to the old admission limit before reverting to a binary with the fixed restore limit. The independent queue-cap review checked admission, restore, and the existing overflow paths.
+
+The invalid-cap audit entry records the setting name and the supported bounds
+once per invalid episode. It omits the raw configuration value and leaves
+admission at the usual default. The awareness registry distributes the
+capacity note to new and existing agents. The legacy peer sentence is
+corrected in place so older instructions do not retain an obsolete limit.
+
+## Independent review
+
+The Chief of Staff's standing reviewer concurred on draft #3987 at
+`d06812c1528e4ac423730d28984bc0de1c6f1781` and requested boundary and
+live overflow coverage, explicit audit evidence and registry awareness.
+That receipt is scoped to the reviewed head. The revised head requires a
+fresh independent trace covering LocalVerifyService.ts, localVerifyWiring.ts
+and peer.ts before it becomes merge eligible.
+
+The independent queue capacity reviewer concurred with the revised follow-up.
+The review verified that the dispatch fixture now gives the service all four
+entries, the audit re-arms after the setting returns to its default, and the
+migration preserves operator text. The peer capacity reviewer independently
+concurred on the underlying peer limit change and its reservation safeguards.
+
+## Second-pass review
+
+**Reviewer:** independent second-pass reviewer, Claude Fable 5.2 helper for the Echo Chief of Staff session, not the author
+
+**Reviewed head:** `18ac59014c3e8912f54e1dd91f18168fa12b1841` (full branch against merge base `18fd2b5b8312169d2df3dc3ccde86d1be30c300c`; the delta from the earlier reviewed head `d06812c1528e4ac423730d28984bc0de1c6f1781` was read line by line).
+
+**Verdict:** concur.
+
+What I checked on this exact head:
+
+- `src/localVerify/peer.ts`: the only change is the peer limit (three). Acceptance of a returned record is unchanged: it must answer exactly the hand-off that was persisted before the send (attempt id, PR, head, base, verifier version, policy and lease epoch).
+- `src/localVerify/LocalVerifyService.ts`: the dispatch loop is generic over the configured peers, keeps one outstanding attempt per peer and persists the reservation before sending. `queueCap()` returns the configured value only for an integer from 10 through 30 and otherwise the fixed default of 10; the restore bound uses the fixed maximum, so a restart with a lowered or invalid setting cannot drop admitted work. The delta adds only the `invalid-queue-cap` audit entry: it is written once per invalid episode, carries the setting name and bounds and not the raw value, goes through the audit writer that never throws, and does not change the returned cap.
+- `src/localVerify/localVerifyWiring.ts`: the setting is read live; the delta changes the absent-value default from null to undefined so that an unset setting is not audited as invalid. An explicit null is audited and falls back to 10.
+- Tests added in the delta cover what I asked for: values 31, 9, 0, -1, 10.5 and the string "30" fall back and audit once; the audit re-arms after the setting returns to its default; a cap of 30 admits exactly thirty and refuses the next; a fourth configured peer receives nothing while three peers hold PRs 1 to 3 and the fourth PR stays queued.
+- Awareness now arrives through the registry file `src/data/awareness/local-verify-capacity.md`; the hand-added line in the template and migrator was removed, and the older overflow sentence is corrected in place by an idempotent, line-anchored replacement that leaves surrounding operator text alone.
+
+Nothing in the delta weakens what I judged sound at the earlier head: verdict integrity with three peers, the default cap of 10, the per-peer resource gates and queue ordering are unchanged. No test was removed and no skip was added.
+
+Limits of this review: I read the code and tests; I did not run the suites (machine-load rule). The integration order with #3730 (this change merges first, #3730 is then rebased so both read the same live cap) is stated in the pull request body and is a merge-order commitment, not something this branch enforces.

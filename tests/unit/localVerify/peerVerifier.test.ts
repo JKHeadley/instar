@@ -199,9 +199,14 @@ describe('peer breaker and peer list', () => {
   it('parsePeers keeps at most the limit, drops self, bad urls and duplicates', () => {
     const peers = parsePeers([
       { machineId: 'self', url: 'http://a:1' }, { machineId: 'p1', url: 'http://192.168.0.2:4042/' }, { machineId: 'p1', url: 'http://x:1' },
-      { machineId: 'p2', url: 'ftp://nope' }, { machineId: 'p3', url: 'https://p3.example' }, { machineId: 'p4', url: 'http://p4:1' },
+      { machineId: 'p2', url: 'ftp://nope' }, { machineId: 'p3', url: 'https://p3.example' },
+      { machineId: 'p4', url: 'http://p4:1' }, { machineId: 'p5', url: 'https://p5.example' },
     ], 'self');
-    expect(peers).toEqual([{ machineId: 'p1', url: 'http://192.168.0.2:4042' }, { machineId: 'p3', url: 'https://p3.example' }]);
+    expect(peers).toEqual([
+      { machineId: 'p1', url: 'http://192.168.0.2:4042' },
+      { machineId: 'p3', url: 'https://p3.example' },
+      { machineId: 'p4', url: 'http://p4:1' },
+    ]);
   });
 });
 
@@ -336,7 +341,7 @@ function seedLocalAnchor(stateDir: string, epoch = 7): void {
     notLocallyVerifiedAt: null, locallyVerified: ['f'.repeat(40)], peerMainGreens: [], quarantine: {}, arbitration: null, durations: Array.from({ length: 10 }, () => 10 * 60_000) }));
 }
 
-function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean; watermark?: Record<string, unknown> } = {}) {
+function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: boolean; noAnchor?: boolean; watermark?: Record<string, unknown>; peerIds?: string[] } = {}) {
   const h = harness({ watermark: opts.watermark });
   if (!opts.noAnchor) seedLocalAnchor(h.stateDir, opts.epoch ?? 7);
   const peer = fakePeer();
@@ -344,7 +349,7 @@ function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: bool
   let holds = opts.holds ?? true;
   let mainOnPeers = opts.mainOnPeers ?? false;
   h.svc.setPeerWiring({
-    peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }],
+    peers: () => (opts.peerIds ?? ['peer1']).map((machineId) => ({ machineId, url: `http://${machineId}:4042` })),
     client: peer.client,
     lease: { holdsLease: () => holds, leaseEpoch: () => epoch, holderMachineId: () => 'coord' },
     mainOnPeers: () => mainOnPeers,
@@ -357,6 +362,24 @@ function coordinator(opts: { epoch?: number; holds?: boolean; mainOnPeers?: bool
 // ── coordinator ────────────────────────────────────────────────────────
 
 describe('coordinator — dispatch', () => {
+  it('reserves distinct runs on three peers and leaves a fourth configured peer unused', async () => {
+    const c = coordinator({ peerIds: ['peer1', 'peer2', 'peer3', 'peer4'] });
+    c.views[4] = view({ headRefOid: sha('f') });
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.svc.request(2);
+    await c.svc.request(3);
+    expect(await c.svc.request(4)).toMatchObject({ ok: true });
+    await c.runTimers();
+    expect(c.spawned).toHaveLength(0);
+    expect(c.peer.runs().map((r) => r.pr)).toEqual([1, 2, 3]);
+    expect(c.svc.snapshot().peers.reserved).toEqual([
+      expect.objectContaining({ pr: 1, peer: 'peer1', state: 'accepted' }),
+      expect.objectContaining({ pr: 2, peer: 'peer2', state: 'accepted' }),
+      expect.objectContaining({ pr: 3, peer: 'peer3', state: 'accepted' }),
+    ]);
+  });
+
   it('hands the next entry to an idle peer after local work starts, with the intent persisted before the send', async () => {
     const c = coordinator();
     await c.svc.request(1);
