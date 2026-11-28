@@ -27,6 +27,8 @@ Justin asked for two things. First, an agent must not need Telegram: the app sho
 - The phone can still only reach the short list of routes it is allowed to use, and every request is still signed and time-limited.
 - When the agent runs on several machines, each machine keeps the conversations it holds and the app's list combines all of them; a message for a conversation held elsewhere is passed to the right machine.
 
+If the agent saved a message and lost its serving lease before trying to deliver it, the phone can retry that same request after the agent reconnects. The agent reuses the original message and files. If it cannot tell whether delivery already started, it keeps reporting that uncertainty.
+
 ## What needs deciding
 
 Nothing from Justin. The open design choices (reuse the Slack numbering, show a warning for broken signatures, use the dashboard PIN for Telegram-less pairing) follow standing rules and are recorded in the spec.

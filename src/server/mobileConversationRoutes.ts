@@ -47,7 +47,7 @@ import type { AppConversationService } from '../core/AppConversationService.js';
 import { transcriptForDelivery } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileChatRequests.js';
 import {
-  cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
+  cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens, removeAuthorityTokensAndKeys,
 } from '../core/appConversationText.js';
 import { isOwnerPerson } from '../core/MobilePeople.js';
 import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
@@ -993,7 +993,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 
     // Step 2 — look up. Step 7 — a done/unknown request answers from the CURRENT delivery state.
     const prior = requests.lookup(deviceId, requestId, hash);
-    if (prior.kind === 'done' || prior.kind === 'outcome-unknown') {
+    const saved = prior.kind === 'done' && requests.get(deviceId, requestId)?.awaitingAppOwner === true
+      && s.store.deliveryState(messageId) === 'pending' && s.deps.holdsLease()
+      ? s.store.getMessageEvent(key, messageId)
+      : null;
+    const resumed = saved?.eventId === eventId && (saved.kind === 'message' || saved.kind === 'media-message') ? saved : null;
+    if (!resumed && (prior.kind === 'done' || prior.kind === 'outcome-unknown')) {
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `duplicate send answered from record: ${prior.kind}`, context: { messageId, deviceId, priorKind: prior.kind } });
       const state = s.store.deliveryState(messageId);
       const recorded = prior.kind === 'done' ? prior.body : {};
@@ -1009,7 +1014,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         return;
       }
     }
-    if (answerLookup(res, prior)) return;
+    if (!resumed && answerLookup(res, prior)) return;
 
     const conv = s.liveConversation(key);
     if (!conv) { res.status(404).json({ error: 'unknown-conversation' }); return; }
@@ -1029,89 +1034,128 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // SEC-164 §3.5: after the device signature is checked, live keys are masked before the authority
     // tokens are removed, and their kinds join the signed redaction attestation, so the stored record
     // holds only the masked text and still verifies (the raw body is not kept when anything is removed).
-    const credMasked = maskInbound(text, { enabled: appCredentialScrubOn(deps.config) });
+    const scrubCredentials = appCredentialScrubOn(deps.config);
+    const credMasked = maskInbound(text, { enabled: scrubCredentials });
     const credRemovedKinds = credMasked.outcome === 'masked' || credMasked.outcome === 'fallback' ? credMasked.kinds : [];
     const removed = removeAuthorityTokens(credMasked.text);
     const delivered = removed.text;
 
-    // Media preflight (§4.3): every named upload must be this device's finished upload for this
-    // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
-    // treatment, so a dictated code or a named invite never reaches a session or the store.
-    const removedKinds = new Set<string>([...removed.kinds, ...credRemovedKinds]);
-    let uploadIds: string[] = [];
-    let stored: AppAttachment[] = [];
-    if (signedFiles) {
-      const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t), maskCredentials: appCredentialScrubOn(deps.config) });
-      if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
-      uploadIds = pre.uploadIds;
-      stored = pre.stored;
-      for (const k of pre.removedKinds) removedKinds.add(k);
-    }
-    const classifiedText = [delivered, ...stored.map((a) => a.transcript ?? '')].filter(Boolean).join('\n');
-    const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
-
-    // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
-    // the edge of the 60 s window is judged by the same clock that admitted it.
-    const t = deviceAdmittedAt(req) ?? now();
-    const receivedAt = new Date(t).toISOString();
-    const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, [...removedKinds], s.deps.signer ?? null, receivedAt,
-      (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail), signedFiles ? stored : undefined);
-    const base = {
-      eventId, conversationKey: key, messageId, role: 'operator' as const, text: delivered,
-      at: receivedAt, machineId: deps.machineId(), receivedAt,
-      ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
-      // People and roles §3.3: who sent it, recorded at accept time.
-      ...(sender ? { senderName: sender.name, senderRole: sender.role } : {}), ...(senderPerson ? { senderPerson } : {}),
-    };
-    const msg: MessageEvent | MediaMessageEvent = signedFiles ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
-    // §4.1: the record exactly as stored and as journaled must fit, before any upload is claimed.
-    if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, deps.machineId())) {
-      res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
-      return;
-    }
-
-    // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
-    let r: ReturnType<typeof requests.reserve>;
-    try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
-      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
-      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc!.deps.stateDir));
-      return;
-    }
-    if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
-    if (r.kind !== 'reserved') { answerLookup(res, r); return; }
-
-    // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
-    if (msg.kind === 'media-message') {
-      const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
-      if (refused) {
-        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files could not be claimed for the message', context: { messageId, files: uploadIds.length, status: refused.status } });
-        requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return;
+    let msg: MessageEvent | MediaMessageEvent;
+    let extras: Record<string, unknown>;
+    if (resumed && prior.kind === 'done') {
+      const attachments = resumed.kind === 'media-message' ? resumed.attachments : [];
+      const files = signedFiles ?? [];
+      const mediaMatches = attachments.length === files.length &&
+        attachments.every((attachment, index) => {
+          const file = files[index]!;
+          const filename = removeAuthorityTokensAndKeys(file.filename, scrubCredentials).text.slice(0, 255);
+          const transcript = file.transcript === undefined ? undefined
+            : removeAuthorityTokensAndKeys(file.transcript, scrubCredentials).text;
+          return attachment.filename === filename && attachment.transcript === transcript;
+        });
+      if (resumed.text !== delivered || !mediaMatches) {
+        res.status(409).json({ error: 'not-delivered', conversationKey: key, eventId, messageId,
+          detail: 'This saved message no longer matches the agent’s message safety settings. Review it before sending again.' });
+        return;
       }
+      try {
+        if (!requests.claimSavedAppSend(deviceId, requestId, hash)) {
+          if (!answerLookup(res, requests.lookup(deviceId, requestId, hash))) res.status(prior.status).json(prior.body);
+          return;
+        }
+      } catch (err) { // @silent-fallback-ok — reported; the original record still describes the saved send
+        s.deps.reportDegradation?.('AppConversations.requestStore', err instanceof Error ? err.message : String(err));
+        res.status(prior.status).json(prior.body);
+        return;
+      }
+      msg = resumed;
+      const { redacted, removed, credentialShaped, reclassified } = prior.body;
+      extras = {
+        ...(redacted === true ? { redacted, removed } : {}),
+        ...(credentialShaped === true ? { credentialShaped } : {}),
+        ...(Array.isArray(reclassified) ? { reclassified } : {}),
+      };
+    } else {
+      // Media preflight (§4.3): every named upload must be this device's finished upload for this
+      // conversation, with exactly the signed fields. Transcripts and filenames get the caption's
+      // treatment, so a dictated code or a named invite never reaches a session or the store.
+      const removedKinds = new Set<string>([...removed.kinds, ...credRemovedKinds]);
+      let uploadIds: string[] = [];
+      let stored: AppAttachment[] = [];
+      if (signedFiles) {
+        const pre = preflightMediaAttachments(s, { deviceId, conversationRef: `app:${key}`, messageId, files: signedFiles, scanInbound: (t) => deps.pairing.scanInbound(t), maskCredentials: scrubCredentials });
+        if (!pre.ok) { res.status(pre.status).json(pre.body); return; }
+        uploadIds = pre.uploadIds;
+        stored = pre.stored;
+        for (const k of pre.removedKinds) removedKinds.add(k);
+      }
+      const credentialShaped = detectOutboundCredential([text, ...(signedFiles ?? []).map((a) => a.transcript ?? '')].join('\n')).detected;
+
+      // `receivedAt` is when the device signature was accepted (the authenticator), so a request at
+      // the edge of the 60 s window is judged by the same clock that admitted it.
+      const t = deviceAdmittedAt(req) ?? now();
+      const receivedAt = new Date(t).toISOString();
+      const signed = buildSignedOrigin(req, deps.pairing, deviceId, delivered, [...removedKinds], s.deps.signer ?? null, receivedAt,
+        (detail) => s.deps.reportDegradation?.('AppConversations.sign', detail), signedFiles ? stored : undefined);
+      const base = {
+        eventId, conversationKey: key, messageId, role: 'operator' as const, text: delivered,
+        at: receivedAt, machineId: deps.machineId(), receivedAt,
+        ...(signed.origin ? { origin: signed.origin } : {}), ...(signed.receipt ? { receipt: signed.receipt } : {}),
+        // People and roles §3.3: who sent it, recorded at accept time.
+        ...(sender ? { senderName: sender.name, senderRole: sender.role } : {}), ...(senderPerson ? { senderPerson } : {}),
+      };
+      msg = signedFiles ? { ...base, kind: 'media-message', attachments: stored } : { ...base, kind: 'message' };
+      // §4.1: the record exactly as stored and as journaled must fit, before any upload is claimed.
+      if (msg.kind === 'media-message' && mediaRecordTooLarge(msg, signed.origin, deps.machineId())) {
+        res.status(413).json({ error: 'message-too-large', detail: 'This message is too long to store. Shorten the text or send fewer files.' });
+        return;
+      }
+
+      // Step 4 — reserve, then persist the message with its signed origin (fsync) BEFORE dispatch.
+      let r: ReturnType<typeof requests.reserve>;
+      try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
+        featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
+        res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc!.deps.stateDir));
+        return;
+      }
+      if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
+      if (r.kind !== 'reserved') { answerLookup(res, r); return; }
+
+      // Media (§4.3): claim every upload at once, make the bytes durable, and only then the event.
+      if (msg.kind === 'media-message') {
+        const refused = await claimMediaUploads(s, uploadIds, messageId, (detail) => s.deps.reportDegradation?.('AppMedia.publish', detail));
+        if (refused) {
+          featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files could not be claimed for the message', context: { messageId, files: uploadIds.length, status: refused.status } });
+          requests.release(deviceId, requestId); res.status(refused.status).json(refused.body); return;
+        }
+      }
+      // Publish and append with no await between them (media review finding 1): nothing can remove
+      // a blob after it is published and before the event that references it is stored.
+      try {
+        if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
+        else s.store.append(msg);
+      } catch (err) {
+        requests.release(deviceId, requestId);
+        s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
+        featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: message could not be saved', context: { messageId, deviceId, files: stored.length } });
+        if (stored.length > 0) featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files not published: message could not be saved', context: { messageId, files: stored.length } });
+        res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc!.deps.stateDir));
+        return;
+      }
+      for (const a of stored) {
+        featureEvidence.record('mobilePairing.native.media', { kind: 'fired', reason: 'file sent', context: { messageId, index: a.index, fileKind: a.kind, declaredKind: a.declaredKind, size: a.size, files: stored.length } });
+      }
+      const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
+      extras = {
+        ...(removedKinds.size > 0 ? { redacted: true, removed: [...removedKinds] } : {}),
+        ...(credentialShaped ? { credentialShaped: true } : {}),
+        ...(reclassified.length > 0 ? { reclassified } : {}),
+      };
     }
-    // Publish and append with no await between them (media review finding 1): nothing can remove
-    // a blob after it is published and before the event that references it is stored.
-    try {
-      if (msg.kind === 'media-message') publishMediaMessage(s, uploadIds, msg);
-      else s.store.append(msg);
-    } catch (err) {
-      requests.release(deviceId, requestId);
-      s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
-      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: message could not be saved', context: { messageId, deviceId, files: stored.length } });
-      if (stored.length > 0) featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files not published: message could not be saved', context: { messageId, files: stored.length } });
-      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc!.deps.stateDir));
-      return;
-    }
-    for (const a of stored) {
-      featureEvidence.record('mobilePairing.native.media', { kind: 'fired', reason: 'file sent', context: { messageId, index: a.index, fileKind: a.kind, declaredKind: a.declaredKind, size: a.size, files: stored.length } });
-    }
-    const reclassified = stored.filter((a) => a.kind !== a.declaredKind).map((a) => a.index);
-    const extras = {
-      ...(removedKinds.size > 0 ? { redacted: true, removed: [...removedKinds] } : {}),
-      ...(credentialShaped ? { credentialShaped: true } : {}),
-      ...(reclassified.length > 0 ? { reclassified } : {}),
-    };
-    const finish = (status: number, b: Record<string, unknown>): void => {
-      if (!requests.finish(deviceId, requestId, { status, body: b })) s.deps.reportDegradation?.('AppConversations.requestStore', 'could not record a finished request');
+    const stored = msg.kind === 'media-message' ? msg.attachments : [];
+    const classifiedText = [msg.text, ...stored.map((attachment) => attachment.transcript ?? '')].filter(Boolean).join('\n');
+    const finish = (status: number, b: Record<string, unknown>, options?: { awaitingAppOwner: true }): void => {
+      if (!requests.finish(deviceId, requestId, { status, body: b }, options)) s.deps.reportDegradation?.('AppConversations.requestStore', 'could not record a finished request');
       res.status(status).json(b);
     };
 
@@ -1166,7 +1210,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const alias = s.deps.registry.appAliasFor(key) ?? (() => { const m = s.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
     if (alias === null || !s.deps.holdsLease()) {
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: owner unavailable', context: { messageId, deviceId, aliasMinted: alias !== null } });
-      finish(503, { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.', conversationKey: key, eventId, messageId, ...extras });
+      finish(503, { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.', conversationKey: key, eventId, messageId, ...extras }, { awaitingAppOwner: true });
       return;
     }
     if (deps.sentinel && classifiedText) {
@@ -1241,7 +1285,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       return;
     }
     s.appendDelivery(key, messageId, outcome, seed);
-    featureEvidence.record('mobilePairing.native', { kind: outcome === 'delivered' && originVerdict !== 'failed' ? 'fired' : 'error', reason: originVerdict === 'failed' ? `failed verdict on a message: ${outcome}` : `message ${outcome}`, context: { messageId, deviceId, outcome, originVerdict, files: stored.length, redacted: removedKinds.size > 0, senderRole: sender?.role ?? null } });
+    featureEvidence.record('mobilePairing.native', { kind: outcome === 'delivered' && originVerdict !== 'failed' ? 'fired' : 'error', reason: originVerdict === 'failed' ? `failed verdict on a message: ${outcome}` : `message ${outcome}`, context: { messageId, deviceId, outcome, originVerdict, files: stored.length, redacted: extras.redacted === true, senderRole: sender?.role ?? null } });
     finish(200, { ok: true, outcome, conversationKey: key, eventId, messageId, deliveryState: outcome, ...extras });
   });
 

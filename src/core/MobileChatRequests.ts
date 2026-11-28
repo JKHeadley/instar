@@ -27,6 +27,7 @@ export interface ChatRecord {
   /** When the id can no longer be accepted (embedded time + 24h 5m); the record lives until then. */
   keepUntil: number;
   result?: { status: number; body: Record<string, unknown> };
+  awaitingAppOwner?: true;
   /**
    * Operation details written WITH the reservation, before any effect (native app conversations,
    * docs/specs/mobile-native-conversations.md §4.1/§4.2): e.g. a create's chosen conversation key,
@@ -112,7 +113,7 @@ export class MobileChatRequestStore {
   }
 
   /** The core finished: store the full answer. A failed write leaves `entered` (→ outcome-unknown). */
-  finish(deviceId: string, requestId: string, result: { status: number; body: Record<string, unknown> }): boolean {
+  finish(deviceId: string, requestId: string, result: { status: number; body: Record<string, unknown> }, options?: { awaitingAppOwner: true }): boolean {
     const k = key(deviceId, requestId);
     this.active.delete(k);
     const r = this.records.get(k);
@@ -120,12 +121,29 @@ export class MobileChatRequestStore {
     const prev = { ...r };
     r.state = 'done';
     r.result = result;
+    if (options?.awaitingAppOwner) r.awaitingAppOwner = true;
+    else delete r.awaitingAppOwner;
     // A purge's attachment list is only needed until it is done (it can be large).
     if (r.extra?.op === 'purge') delete r.extra.sets;
     try { this.persist(); return true; } catch {
       this.records.set(k, prev); // @silent-fallback-ok — the caller reports the request as outcome-unknown
       return false;
     }
+  }
+
+  /** Claim a saved send that explicitly stopped before routing. A crash after the claim is uncertain. */
+  claimSavedAppSend(deviceId: string, requestId: string, hash: string): boolean {
+    const k = key(deviceId, requestId);
+    const r = this.records.get(k);
+    if (!r || r.payloadHash !== hash || r.state !== 'done' || r.awaitingAppOwner !== true
+        || r.extra?.op !== 'send' || r.keepUntil < this.now()) return false;
+    const next: ChatRecord = { ...r, state: 'entered', bootId: this.bootId, at: new Date(this.now()).toISOString() };
+    delete next.result;
+    delete next.awaitingAppOwner;
+    this.records.set(k, next);
+    try { this.persist(); } catch (err) { this.records.set(k, r); throw err; }
+    this.active.add(k);
+    return true;
   }
 
   /** The send that carried this message, for finishing it after the fact (app-conversations-in-the-pool §2.2). */

@@ -50,6 +50,30 @@ describe('MobileChatRequestStore', () => {
     expect(after.reserve('d', id, h, 1).kind).toBe('outcome-unknown');
   });
 
+  it('claims only a definitely unsent app message, including after a restart', () => {
+    const dir = tmp();
+    const s = new MobileChatRequestStore(dir);
+    const deferred = rid();
+    const legacy = rid();
+    const h = payloadHash(0, 'saved message');
+    const unavailable = { status: 503, body: { error: 'owner-unavailable' } };
+    const send = { op: 'send', conversationKey: 'conversation', messageId: 'message' };
+    s.reserve('d', deferred, h, 0, send);
+    s.reserve('d', legacy, h, 0, send);
+    expect(s.finish('d', deferred, unavailable, { awaitingAppOwner: true })).toBe(true);
+    expect(s.finish('d', legacy, unavailable)).toBe(true);
+
+    const restarted = new MobileChatRequestStore(dir);
+    expect(restarted.claimSavedAppSend('d', legacy, h)).toBe(false);
+    expect(restarted.claimSavedAppSend('d', deferred, payloadHash(0, 'different'))).toBe(false);
+    expect(restarted.claimSavedAppSend('d', deferred, h)).toBe(true);
+    expect(restarted.lookup('d', deferred, h)).toEqual({ kind: 'in-progress' });
+    expect(restarted.claimSavedAppSend('d', deferred, h)).toBe(false);
+    const afterClaimCrash = new MobileChatRequestStore(dir);
+    expect(afterClaimCrash.lookup('d', deferred, h)).toEqual({ kind: 'outcome-unknown' });
+    expect(afterClaimCrash.claimSavedAppSend('d', deferred, h)).toBe(false);
+  });
+
   it('a failed done write leaves the request outcome-unknown without a restart', () => {
     const s = new MobileChatRequestStore(tmp());
     const id = rid(); const h = payloadHash(1, 'a');
