@@ -19,11 +19,11 @@ export function privateAcquisitionStateDir(stateDir: string): string {
 }
 
 /** Fixed database names and their SQLite sidecars must not redirect writes outside the private root. */
-export function privateAcquisitionDatabasePath(stateDir: string, name: 'jobs.sqlite' | 'worker-lock.sqlite'): string {
+export function privateAcquisitionDatabasePath(stateDir: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'native-captures.sqlite'): string {
   return privateImportDatabasePath(privateAcquisitionStateDir(stateDir), name);
 }
 
-export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'write-lock.sqlite'): string {
+export function privateImportDatabasePath(directory: string, name: 'jobs.sqlite' | 'worker-lock.sqlite' | 'native-captures.sqlite' | 'write-lock.sqlite'): string {
   verifyPrivateImportDirectory(directory);
   const file = path.join(directory, name);
   try { fs.closeSync(fs.openSync(file, 'wx', 0o600)); }

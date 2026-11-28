@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "native-history-receipt",
+  "sessionId": "db01f5ec-7e07-4447-a2bc-3edb1a73d2f5",
+  "timestamp": "2026-11-18T06:55:45.673Z",
+  "artifactPath": "upgrades/side-effects/native-history-receipt.md",
+  "artifactSha256": "3ce5933ca249b3e53360bb6a59a11640c397f94b37a50ac9c3be01071439f6a0",
+  "specPath": "docs/specs/import-from-claude-chatgpt.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-18T06-52-38-358Z-native-history-receipt.json",
+    ".instar/instar-dev-decisions/2026-11-18T06-53-42-793Z-native-history-receipt.json",
+    ".instar/instar-dev-decisions/2026-11-18T06-54-24-254Z-native-history-receipt.json",
+    ".instar/instar-dev-decisions/2026-11-18T06-55-32-373Z-native-history-receipt.json",
+    "src/import/HistoryAcquisition.ts",
+    "src/import/HistoryAcquisitionWorker.ts",
+    "src/import/archiveStaging.ts",
+    "src/import/nativeCaptureReceiver.ts",
+    "src/import/nativeCaptureSource.ts",
+    "src/import/privateImportState.ts",
+    "src/server/nativeCaptureAdmission.ts",
+    "tests/unit/native-capture-admission.test.ts",
+    "tests/unit/native-capture-receiver.test.ts",
+    "upgrades/next/native-history-receipt.md",
+    "upgrades/side-effects/native-history-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a signed same-Mac admission path and private file read for history exports; dark in production, stacked on the approved importer design.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. Periodic acquisition work stays under the parent's registered convergence guard."
+  }
+}

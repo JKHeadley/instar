@@ -2,6 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import path from 'node:path';
+import type { NativeCaptureCaller } from '../server/nativeCaptureAdmission.js';
+import { NativeCaptureReceiver, type NativeCaptureInstallation, type NativeReceipt } from './nativeCaptureReceiver.js';
 import { AcquisitionWorkerLease } from './AcquisitionWorkerLease.js';
 import { AcquisitionArchives } from './archiveStaging.js';
 import { receiveExportDelivery, type DeliveryDeps } from './exportDelivery.js';
@@ -25,6 +27,7 @@ export interface WorkerOptions {
   /** Runtime authority: local native owner still controls this private conversation. Required even on recovery. */
   authorized: (chat: OwnerChat) => boolean;
   browserDir?: string;
+  nativeCapture?: NativeCaptureInstallation;
   connection: AcquisitionConnection;
   request?: typeof requestPersonalExport;
   observe?: typeof observePersonalExport;
@@ -42,6 +45,7 @@ export class HistoryAcquisitionWorker {
   private onIdle?: () => void;
   private closeResult?: Promise<void>;
   private readonly lease: AcquisitionWorkerLease;
+  private readonly native?: NativeCaptureReceiver;
   private readonly jobs: HistoryAcquisitionStore;
   private readonly archives: AcquisitionArchives;
   private readonly busyProfiles = new Set<string>();
@@ -59,7 +63,20 @@ export class HistoryAcquisitionWorker {
       this.archives = new AcquisitionArchives(options.stateDir);
       this.jobs.recoverInterruptedApplies();
       this.archives.recover(id => this.jobs.keepArchive(id));
+      if (options.nativeCapture) {
+        this.native = new NativeCaptureReceiver({stateDir:options.stateDir,install:options.nativeCapture,archives:this.archives,
+          now:this.now,holdJob:(chat,id) => this.jobs.holdNativeJob(chat,id),readAuthorizedJob:(chat,id) => {
+            if (this.closing || !options.authorized(chat)) return undefined;
+            const job = this.jobs.read(chat,id);
+            const origin = this.jobs.originatingStart(chat,id);
+            if (!job || !origin || !options.nativeCapture!.verifySignedStart(job,origin)) return undefined;
+            return this.accounts(chat,job.provider).some(a => a.profileId===job.profileId && a.expectedEmail.trim().toLowerCase()===job.expectedEmail)
+              ? job : undefined;
+          }});
+        this.native.sweepExpired(true);
+      }
     } catch (error) {
+      this.native?.close();
       opened?.close();
       this.lease.close();
       throw error;
@@ -120,8 +137,10 @@ export class HistoryAcquisitionWorker {
       if (!accountIsCurrent()) {
         return observedStatus('verify-account');
       }
+      const nativeMode = this.native?.deliveryMode(job.id) ?? 'ordinary';
+      if (nativeMode !== 'accepted' && this.jobs.hasNativeHandoff(job.id)) return observedStatus('native-capture-pending');
       const delivery = this.options.connection.delivery(job);
-      if (!delivery) return observedStatus('mail-access');
+      if (!delivery && nativeMode !== 'accepted') return observedStatus('mail-access');
       const options = {
         browserDir: this.browserDir,
         signal: control.signal,
@@ -145,6 +164,7 @@ export class HistoryAcquisitionWorker {
       // A restart after publishing the file but before recording its preview needs no second download.
       let staged = this.archives.hasArchive(id);
       if (!staged) {
+        if (!delivery || nativeMode === 'accepted') return observedStatus('native-capture-unavailable');
         if (job.phase === 'submitting') {
           const observed = await (this.options.observe ?? observePersonalExport)(job, options);
           if (observed.status === 'acknowledged') this.jobs.acknowledge(chat, id);
@@ -241,10 +261,25 @@ export class HistoryAcquisitionWorker {
     return result;
   }
 
+  /** Internal pilot handoff. No HTTP caller supplies a job path or device identity. */
+  issueNativeCapture(chat:OwnerChat,id:string,caller:NativeCaptureCaller) {
+    this.requireOwner(chat);
+    if (!this.native || this.active.has(id)) throw new Error('capture-unavailable');
+    return this.native.issue(chat,id,caller);
+  }
+
+  receiveNativeCapture(caller:NativeCaptureCaller,receipt:NativeReceipt) {
+    return this.tracked(async () => {
+      if (!this.native) throw new Error('capture-unavailable');
+      return this.native.receive(caller,receipt);
+    });
+  }
+
   cancel(chat: OwnerChat, id: string): boolean {
     this.requireOwner(chat);
     if (!this.jobs.cancel(chat, id)) return false;
     this.active.get(id)?.abort();
+    this.native?.cancelJob(id);
     this.archives.discard(id);
     return true;
   }
@@ -281,6 +316,8 @@ export class HistoryAcquisitionWorker {
       this.ticking = true;
       try {
         await this.tracked(async () => {
+          await this.native?.reconcilePublished();
+          this.native?.sweepExpired();
           this.archives.recover(id => this.jobs.keepArchive(id));
           if (cleanupOnly) {
             this.jobs.restoreNotices(); // Expire rows even when no archive directory exists.
@@ -335,9 +372,10 @@ export class HistoryAcquisitionWorker {
     if (this.closeResult) return this.closeResult;
     this.closing = true;
     clearInterval(this.timer);
+    this.native?.abortAll();
     for (const controller of this.active.values()) controller.abort();
     this.closeResult = new Promise<void>(resolve => {
-      const finish = () => { try { this.jobs.close(); } finally { this.lease.close(); resolve(); } };
+      const finish = () => { try { this.native?.close(); this.jobs.close(); } finally { this.lease.close(); resolve(); } };
       if (this.operations === 0) finish(); else this.onIdle = finish;
     });
     return this.closeResult;

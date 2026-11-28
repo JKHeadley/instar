@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "native-history-receipt",
+  "sessionId": "db01f5ec-7e07-4447-a2bc-3edb1a73d2f5",
+  "timestamp": "2026-11-18T07:23:13.525Z",
+  "artifactPath": "upgrades/side-effects/native-history-receipt.md",
+  "artifactSha256": "f023e727ee09961042338015a9e7eb4b92e100bcdb7a7ab99fbd3c80d4be058b",
+  "specPath": "docs/specs/import-from-claude-chatgpt.md",
+  "coveredFiles": [
+    "src/import/HistoryAcquisitionWorker.ts",
+    "src/import/nativeCaptureReceiver.ts",
+    "tests/unit/native-capture-receiver.test.ts",
+    "upgrades/side-effects/native-history-receipt.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Closes the reviewer's publication-before-acknowledgement liveness case in the dark native receipt receiver.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot caller-driven action: each signed same-Mac receipt request spawns one bounded reader with a single expiry timer; no retry, respawn or self-triggered loop. The tick's reconcilePublished is a one-way state check (receiving to accepted, at most once per capture), with no spawn, notify or retry; periodic acquisition work stays under the parent's registered convergence guard."
+  }
+}
