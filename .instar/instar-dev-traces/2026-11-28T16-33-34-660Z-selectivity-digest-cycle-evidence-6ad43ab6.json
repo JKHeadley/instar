@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "selectivity-digest-cycle-evidence",
+  "sessionId": "7714969b-6bd0-46f4-943c-199a71acc74a",
+  "timestamp": "2026-11-28T16:33:34.660Z",
+  "artifactPath": "upgrades/side-effects/selectivity-digest-cycle-evidence.md",
+  "artifactSha256": "a7cd23db83de3f186b14a4d75a18d98ea1a088d6f728e990a04a0977ee617803",
+  "coveredFiles": [
+    "docs/specs/selectivity-digest-cycle-evidence.eli16.md",
+    "src/data/feature-ladders.json",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "tests/unit/notification-digest-cycle-evidence.test.ts",
+    "upgrades/next/selectivity-digest-cycle-evidence.md",
+    "upgrades/side-effects/selectivity-digest-cycle-evidence.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One count-only ledger row per daily digest cycle plus the digest ladder metrics; no behaviour, authority or config change.",
+  "eli16Path": "docs/specs/selectivity-digest-cycle-evidence.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/selectivity-digest-cycle-evidence.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
